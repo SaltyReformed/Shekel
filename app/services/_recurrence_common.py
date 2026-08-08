@@ -12,9 +12,17 @@ place, where the two cannot drift:
   - the cross-user ownership defense (:func:`check_scenario_ownership`),
   - the per-period skip predicate (:func:`should_skip_period`),
   - the regenerate row-partition (:func:`partition_regeneration_rows`),
+  - the regenerate sweep bound (:func:`regeneration_bound`),
   - the regenerate row fetch (:func:`query_rows_from_effective_date`),
   - the cross-user audit ``log_event(...)`` blocks (the ``log_*`` helpers
     below).
+
+What both engines TAKE rather than share -- the owner's pay-period schedule
+and the window one pass writes into -- is
+:class:`~app.services.generation_schedule.GenerationSchedule`, and it lives in
+its own public module because the route layer constructs it too.  This module
+is package-private (``shekel-private-module-import``), so a type a route must
+name cannot live here.
 
 The model-specific halves -- constructing a ``Transaction`` vs routing
 a ``Transfer`` through ``transfer_service`` for shadow atomicity -- stay
@@ -276,6 +284,41 @@ def refuse_unstorable_repeats(template, matching_periods, existing) -> None:
             period_start=repeats[0].start_date,
             period_end=repeats[0].end_date,
         )
+
+
+def regeneration_bound(schedule, effective_from):
+    """Return the date a regenerate pass sweeps and rewrites from.
+
+    Shared by both engines' ``regenerate_for_template`` because it is one
+    decision, not two that happen to agree: the DELETE sweep is an SQL bound on
+    ``pay_periods.end_date``, so "no lower bound" has to become a concrete date
+    -- and it must be the same date the regeneration writes within.
+
+    **The date is the WRITE WINDOW's opening, not the schedule's.**  Taking the
+    schedule's opening instead would delete every non-override template row
+    from the owner's first payday forward while regenerating only inside the
+    window, destroying rows nothing would recreate.  No route reaches that
+    today (both callers pass a whole-schedule window, where the two coincide),
+    which is why the asymmetry is closed here rather than left to be found with
+    a narrow window (plan step R4b-1, adversarial review).
+
+    Args:
+        schedule: The pass's
+            :class:`~app.services.generation_schedule.GenerationSchedule`.
+        effective_from: The caller's explicit bound, or ``None``.
+
+    Returns:
+        *effective_from* when the caller stated one; else the earliest payday
+        in the write window; else ``None``, for a window with no periods at
+        all, where the sweep has nothing to bound and nothing to delete.
+    """
+    if effective_from is not None:
+        return effective_from
+    if not schedule.write_periods:
+        return None
+    return min(
+        period.start_date for period in schedule.write_periods.values()
+    )
 
 
 def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:

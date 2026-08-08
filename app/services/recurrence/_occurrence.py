@@ -479,13 +479,16 @@ def occurrences(
     the opening side for the calendar units; ledger row D6 is the same
     asymmetry seen from the schema.
 
-    **There is no LOWER window argument, and the adapter needs one.**
-    ``match_periods`` takes an ``effective_from``, and every production path
-    that reaches it supplies or defaults one: both unarchive paths, both
-    regenerate paths, ``period_population``'s batch boundary,
-    ``can_generate_in_period``, the preview's display choice, and
-    ``recurring_view``'s ``as_of``.  Each narrows generation to a window the
-    RULE does not state.  That is a per-call display/regeneration boundary rather
+    **There is no LOWER window argument, and the adapter takes one.**
+    ``match_periods`` takes an ``effective_from``, and the production paths
+    that state one narrow generation to a window the RULE does not state: both
+    unarchive paths, both regenerate paths, ``period_population``'s batch
+    boundary, the preview's display choice, and ``recurring_view``'s ``as_of``.
+    The paths that state NOTHING pass ``None`` since plan step R4b-1 -- the
+    template create path, ``generate_transfers_for_all_periods`` and
+    ``can_generate_in_period`` -- because the two defaults
+    ``resolve_generation_plan`` used to apply were already inside the
+    anchor.  That is a per-call display/regeneration boundary rather
     than a property of the recurrence, and conflating the two is how defect D2
     happened -- so it stays out of here, and plan step R4a's adapter filters
     the placements it gets back on the placed period's ``end_date``, which is

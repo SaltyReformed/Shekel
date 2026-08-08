@@ -36,6 +36,7 @@ from app.services import (
     transfer_recurrence,
 )
 from app.services.balance_at import BalanceContext
+from app.services.generation_schedule import GenerationSchedule
 from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
@@ -218,7 +219,7 @@ class TestStartBoundIsSynced:
         # first installment after the 2026-04-15 closing is 2026-05-20.
         with auth_client.application.app_context():
             transfer_recurrence.regenerate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
                 effective_from=seed_periods[0].start_date,
             )
             db.session.commit()
@@ -389,7 +390,7 @@ class TestNoPaymentGeneratesBeforeTheLoan:
 
         with auth_client.application.app_context():
             transfer_recurrence.regenerate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
                 effective_from=seed_periods[0].start_date,
             )
             db.session.commit()

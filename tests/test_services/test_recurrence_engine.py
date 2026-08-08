@@ -18,6 +18,7 @@ from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
 from app.services import pay_period_service, recurrence_engine
 from app.services.recurrence import RecurrenceResolutionError
+from app.services.recurrence import PeriodCalendar
 from app.services.recurrence_engine import match_periods
 from app.exceptions import (
     RecurrenceCadenceUnsupported,
@@ -25,6 +26,7 @@ from app.exceptions import (
     ValidationError,
 )
 from app.services import account_service
+from app.services.generation_schedule import GenerationSchedule
 
 # Map human-readable pattern names to RecurrencePatternEnum members for
 # use in build_rule and test helpers.  Allows tests to construct a rule
@@ -33,6 +35,16 @@ _PATTERN_NAME_TO_ENUM = {e.value: e for e in RecurrencePatternEnum}
 
 
 # --- Rule / period objects for the pure pattern-matching tests ---------------
+
+
+#: The owner every rule and calendar the PURE matcher tests build names.  The
+#: ``FakePeriod`` schedule carries no ``user_id``, and
+#: ``app.services.recurrence.resolve`` REFUSES a rule paired with another
+#: user's schedule -- so one constant is what keeps the two halves agreeing.
+#: Until plan step R4b-1 no constant was needed: ``match_periods`` built the
+#: calendar from ``rule.user_id`` itself, so the owner check compared a value
+#: against itself and could not fail.
+_MATCH_USER_ID = 1
 
 
 def build_rule(pattern_name="Every Period", interval_n=1,
@@ -83,6 +95,7 @@ def build_rule(pattern_name="Every Period", interval_n=1,
     """
     enum_member = _PATTERN_NAME_TO_ENUM.get(pattern_name)
     return RecurrenceRule(
+        user_id=_MATCH_USER_ID,
         pattern_id=(
             ref_cache.recurrence_pattern_id(enum_member)
             if enum_member else None
@@ -173,7 +186,7 @@ class TestRecurrenceGeneration:
                 seed_user, "Every Period"
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             assert len(created) == len(seed_periods)
@@ -198,7 +211,7 @@ class TestRecurrenceGeneration:
                 interval_n=2, offset_periods=1,
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             # With 10 periods (indices 0-9), offset=1 matches indices 1,3,5,7,9 → 5.
@@ -240,7 +253,7 @@ class TestRecurrenceGeneration:
             assert template.recurrence_rule is None
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             assert len(created) == 0
@@ -254,14 +267,14 @@ class TestRecurrenceGeneration:
 
             # First generation.
             first_run = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(first_run) == len(seed_periods)
 
             # Second generation -- should create nothing new.
             second_run = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             assert len(second_run) == 0
 
@@ -274,7 +287,7 @@ class TestRecurrenceGeneration:
 
             # Generate entries.
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -288,7 +301,7 @@ class TestRecurrenceGeneration:
 
             try:
                 recurrence_engine.regenerate_for_template(
-                    template, seed_periods, seed_user["scenario"].id,
+                    template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
                 )
             except RecurrenceConflict as conflict:
                 assert created[0].id in conflict.overridden
@@ -305,7 +318,7 @@ class TestRecurrenceGeneration:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -317,7 +330,7 @@ class TestRecurrenceGeneration:
 
             # Regenerate -- should not delete the done transaction.
             recurrence_engine.regenerate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -335,21 +348,41 @@ class TestRecurrenceGeneration:
 # instead of against a private helper that no longer exists.
 
 
-def _matches(rule, periods):
-    """Return the periods *rule* fires in, from the schedule's opening.
+def _calendar(periods):
+    """Return the resolver's view of a ``FakePeriod`` schedule.
 
-    The engine's own fallback when no caller supplies an ``effective_from``
-    (``resolve_generation_plan``: the first candidate period's ``start_date``),
-    named once here so each pattern test states the rule and nothing else.
+    ``match_periods`` takes the OWNER's schedule as a
+    :class:`~app.services.recurrence.PeriodCalendar` since plan step R4b-1,
+    rather than building one from whatever candidate list it was handed.
+    Named once here so each pattern test states the rule and nothing else.
+
+    Args:
+        periods: The schedule, in ``period_index`` order.
+
+    Returns:
+        The :class:`~app.services.recurrence.PeriodCalendar` for
+        :data:`_MATCH_USER_ID`.
+    """
+    return PeriodCalendar.from_pay_periods(periods, _MATCH_USER_ID)
+
+
+def _matches(rule, periods):
+    """Return the periods *rule* fires in, over the whole schedule.
+
+    ``effective_from`` is ``None`` -- no lower window bound.  It used to be
+    ``periods[0].start_date``, which plan step R4b-1 proved redundant: the
+    anchor's own floor is ``PeriodCalendar.opening_bound()``, so no walk can
+    emit an occurrence placed before it.
 
     Args:
         rule: The unsaved rule from :func:`build_rule`.
         periods: The schedule to match against, in ``period_index`` order.
 
     Returns:
-        The matched period objects, ascending by occurrence date.
+        The matched :class:`~app.services.recurrence.SchedulePeriod` values,
+        ascending by occurrence date.
     """
-    return match_periods(rule, periods, periods[0].start_date)
+    return match_periods(rule, _calendar(periods), None)
 
 
 class TestMatchMonthly:
@@ -578,7 +611,7 @@ class TestMatchPeriodsEdgeCases:
         # Use the 4th period's start_date as effective_from.
         effective_from = biweekly_periods[3].start_date
 
-        matched = match_periods(rule, biweekly_periods,
+        matched = match_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         assert len(matched) == 26 - 3  # Periods 3-25.
@@ -606,7 +639,7 @@ class TestMatchPeriodsEdgeCases:
         effective_from = biweekly_periods[0].start_date
 
         with pytest.raises(RecurrenceResolutionError, match="99999"):
-            match_periods(rule, biweekly_periods, effective_from)
+            match_periods(rule, _calendar(biweekly_periods), effective_from)
 
 
 class TestTheEveryNPeriodsPhase:
@@ -648,7 +681,7 @@ class TestTheEveryNPeriodsPhase:
         )
 
         matched = match_periods(
-            rule, biweekly_periods, biweekly_periods[0].start_date,
+            rule, _calendar(biweekly_periods), biweekly_periods[0].start_date,
         )
 
         assert [p.period_index for p in matched] == [4, 7, 10, 13, 16, 19, 22, 25]
@@ -676,7 +709,7 @@ class TestTheEveryNPeriodsPhase:
             start_period_id=biweekly_periods[4].id,
         )
 
-        matched = match_periods(rule, window, window[0].start_date)
+        matched = match_periods(rule, _calendar(window), window[0].start_date)
 
         # Phase 1 of 3: indices 7, 10, 13, ... -- the STORED column's cadence.
         assert [p.period_index for p in matched] == [7, 10, 13, 16, 19, 22, 25]
@@ -690,7 +723,7 @@ class TestMatchPeriodsFull:
         rule = build_rule(pattern_name="Every Period")
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, biweekly_periods,
+        matched = match_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         assert len(matched) == 26
@@ -699,7 +732,7 @@ class TestMatchPeriodsFull:
         """Empty periods list produces an empty result."""
         rule = build_rule(pattern_name="Every Period")
 
-        matched = match_periods(rule, [],
+        matched = match_periods(rule, _calendar([]),
                                  date(2026, 1, 1))
 
         assert matched == []
@@ -754,7 +787,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         )
         with pytest.raises(RecurrenceResolutionError, match="interval_n"):
             match_periods(
-                rule, biweekly_periods,
+                rule, _calendar(biweekly_periods),
                 biweekly_periods[0].start_date,
             )
 
@@ -775,7 +808,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         )
         with pytest.raises(TypeError):
             match_periods(
-                rule, biweekly_periods,
+                rule, _calendar(biweekly_periods),
                 biweekly_periods[0].start_date,
             )
 
@@ -802,7 +835,7 @@ class TestMatchPeriodsEdgeCaseSafety:
 
         with pytest.raises(RecurrenceResolutionError, match="day_of_month"):
             match_periods(
-                rule, biweekly_periods,
+                rule, _calendar(biweekly_periods),
                 biweekly_periods[0].start_date,
             )
 
@@ -824,14 +857,14 @@ class TestMatchPeriodsEdgeCaseSafety:
         effective = biweekly_periods[0].start_date
 
         matched_none = match_periods(
-            rule_none, biweekly_periods, effective,
+            rule_none, _calendar(biweekly_periods), effective,
         )
         matched_one = match_periods(
-            rule_one, biweekly_periods, effective,
+            rule_one, _calendar(biweekly_periods), effective,
         )
         assert (
-            [p.id for p in matched_none]
-            == [p.id for p in matched_one]
+            [p.period_index for p in matched_none]
+            == [p.period_index for p in matched_one]
         ), (
             "day_of_month=None should produce identical matches "
             "to day_of_month=1 via 'or 1' fallback"
@@ -870,16 +903,16 @@ class TestMatchPeriodsEdgeCaseSafety:
 
         matched_null = match_periods(
             rule_null,
-            biweekly_periods, effective,
+            _calendar(biweekly_periods), effective,
         )
         matched_one = match_periods(
             rule_one,
-            biweekly_periods, effective,
+            _calendar(biweekly_periods), effective,
         )
 
         assert (
-            [p.id for p in matched_null]
-            == [p.id for p in matched_one]
+            [p.period_index for p in matched_null]
+            == [p.period_index for p in matched_one]
         ), "a NULL month_of_year should behave identically to January"
         # Stated absolutely, not only relatively: two equal-but-wrong answers
         # would satisfy the comparison above.  Every period is in 2026, so the
@@ -917,7 +950,7 @@ class TestMatchPeriodsEdgeCaseSafety:
 
         with pytest.raises(RecurrenceResolutionError, match="month_of_year"):
             match_periods(
-                rule, biweekly_periods,
+                rule, _calendar(biweekly_periods),
                 biweekly_periods[0].start_date,
             )
 
@@ -1012,17 +1045,19 @@ class TestGenerateForTemplate:
             # would pass vacuously if the engine ever stopped duplicating, and
             # the guard would be a gate over nothing.
             matched = match_periods(
-                template.recurrence_rule, long_periods,
+                template.recurrence_rule, _calendar(long_periods),
                 long_periods[0].start_date,
             )
-            assert len(matched) > len({period.id for period in matched}), (
+            assert len(matched) > len(
+                {period.period_index for period in matched}
+            ), (
                 "the engine no longer repeats a period, so this test proves "
                 "nothing about the guard"
             )
 
             with pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
                 recurrence_engine.generate_for_template(
-                    template, long_periods, seed_user["scenario"].id,
+                    template, GenerationSchedule.for_periods(template.user_id, long_periods), seed_user["scenario"].id,
                 )
 
             # Named, not generic: the definition, the paycheck, the count.
@@ -1075,7 +1110,7 @@ class TestGenerateForTemplate:
             db.session.flush()
 
             created = recurrence_engine.generate_for_template(
-                template, long_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, long_periods), seed_user["scenario"].id,
             )
 
             assert created == []
@@ -1090,7 +1125,7 @@ class TestGenerateForTemplate:
             )
             effective_from = seed_periods[3].start_date
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
                 effective_from=effective_from,
             )
 
@@ -1112,7 +1147,7 @@ class TestGenerateForTemplate:
 
             # First generation.
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(created) == 10
@@ -1123,7 +1158,7 @@ class TestGenerateForTemplate:
 
             # Second generation -- should not duplicate the deleted entry.
             second_run = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             assert len(second_run) == 0
 
@@ -1136,7 +1171,7 @@ class TestGenerateForTemplate:
                 seed_user, "Monthly", day_of_month=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             # 10 biweekly periods starting Jan 2 span ~5 months.
@@ -1204,7 +1239,7 @@ class TestRegenerateForTemplate:
 
             # Generate initial entries.
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
             old_ids = [txn.id for txn in created]
@@ -1216,7 +1251,7 @@ class TestRegenerateForTemplate:
 
             # Regenerate -- should delete old and create new.
             new_created = recurrence_engine.regenerate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1235,7 +1270,7 @@ class TestRegenerateForTemplate:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1247,7 +1282,7 @@ class TestRegenerateForTemplate:
             # Regenerate -- should raise with deleted list.
             with pytest.raises(RecurrenceConflict) as exc_info:
                 recurrence_engine.regenerate_for_template(
-                    template, seed_periods, seed_user["scenario"].id,
+                    template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
                 )
 
             assert deleted_id in exc_info.value.deleted
@@ -1312,7 +1347,7 @@ class TestResolveConflicts:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1342,7 +1377,7 @@ class TestResolveConflicts:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1375,7 +1410,7 @@ class TestResolveConflicts:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1408,7 +1443,7 @@ class TestResolveConflicts:
                 seed_user, "Every Period"
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1438,7 +1473,7 @@ class TestResolveConflicts:
                 seed_user, "Every Period"
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1467,7 +1502,7 @@ class TestResolveConflicts:
                 seed_user, "Every Period"
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1497,7 +1532,7 @@ class TestResolveConflicts:
                 seed_user, "Every Period"
             )
             created_a = recurrence_engine.generate_for_template(
-                template_a, seed_periods, seed_user["scenario"].id,
+                template_a, GenerationSchedule.for_periods(template_a.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
             txn_a = created_a[0]
@@ -1516,7 +1551,7 @@ class TestResolveConflicts:
                 second_user, "Every Period", category_key="Rent",
             )
             created_b = recurrence_engine.generate_for_template(
-                template_b, periods_b, second_user["scenario"].id,
+                template_b, GenerationSchedule.for_periods(template_b.user_id, periods_b), second_user["scenario"].id,
             )
             db.session.flush()
             txn_b = created_b[0]
@@ -1738,7 +1773,7 @@ class TestResolveConflictsShadowGuard:
             db.session.flush()
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
             txn = created[0]
@@ -1828,7 +1863,7 @@ class TestCrossUserIsolation:
             # be rejected but currently is not.
             created = recurrence_engine.generate_for_template(
                 template,
-                seed_periods,
+                GenerationSchedule.for_periods(template.user_id, seed_periods),
                 second_user["scenario"].id,
             )
 
@@ -1911,7 +1946,7 @@ class TestNegativePaths:
                 seed_user, "Every Period", default_amount=Decimal("0.00")
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             # Engine generates for all periods regardless of amount.
@@ -1949,7 +1984,7 @@ class TestNegativePaths:
             db.session.refresh(template)
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             assert created == []
@@ -1972,7 +2007,7 @@ class TestNegativePaths:
 
             # Initial generation.
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(created) == len(seed_periods)
@@ -1988,7 +2023,7 @@ class TestNegativePaths:
 
             # Regenerate -- received transaction must survive.
             recurrence_engine.regenerate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -2014,7 +2049,7 @@ class TestNegativePaths:
                 seed_user, "Every Period"
             )
             created = recurrence_engine.generate_for_template(
-                template, [], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, []), seed_user["scenario"].id,
                 effective_from=date(2026, 1, 1),
             )
 
@@ -2036,7 +2071,7 @@ class TestNegativePaths:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(created) == len(seed_periods)
@@ -2052,7 +2087,7 @@ class TestNegativePaths:
 
             # Regenerate.
             recurrence_engine.regenerate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -2081,7 +2116,7 @@ class TestNegativePaths:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(created) == len(seed_periods)
@@ -2097,7 +2132,7 @@ class TestNegativePaths:
 
             # Regenerate.
             recurrence_engine.regenerate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -2245,7 +2280,7 @@ class TestEndDate:
         rule = build_rule(pattern_name="Every Period", end_date=end)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, biweekly_periods,
+        matched = match_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         assert len(matched) == 5
@@ -2257,7 +2292,7 @@ class TestEndDate:
         rule = build_rule(pattern_name="Every Period", end_date=None)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, biweekly_periods,
+        matched = match_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         assert len(matched) == 26
@@ -2269,7 +2304,7 @@ class TestEndDate:
                         end_date=date(2026, 3, 31))
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, biweekly_periods,
+        matched = match_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         # Should get Jan, Feb, Mar only.
@@ -2283,7 +2318,7 @@ class TestEndDate:
                         end_date=date(2025, 12, 31))
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, biweekly_periods,
+        matched = match_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         assert matched == []
@@ -2295,7 +2330,7 @@ class TestEndDate:
         end = biweekly_periods[10].start_date
         rule = build_rule(pattern_name="Every Period", end_date=end)
 
-        matched = match_periods(rule, biweekly_periods,
+        matched = match_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         # Periods 5 through 10 inclusive.
@@ -2311,10 +2346,14 @@ class TestEndDate:
                         end_date=target_period.start_date)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, biweekly_periods,
+        matched = match_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
-        assert target_period in matched
+        # ``match_periods`` answers in the resolver's own ``SchedulePeriod``
+        # values since plan step R4b-1, so identity against the fixture's
+        # ``FakePeriod`` no longer holds; the schedule ordinal is the stable
+        # identity either way.
+        assert target_period.period_index in [p.period_index for p in matched]
 
     def test_end_date_with_every_n_periods(self, biweekly_periods):
         """end_date works correctly with every_n_periods pattern."""
@@ -2324,7 +2363,7 @@ class TestEndDate:
                         offset_periods=0, end_date=end)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, biweekly_periods,
+        matched = match_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         # Periods 0, 3, 6, 9 (index % 3 == 0 and start_date <= end).
@@ -2386,7 +2425,7 @@ class TestEndDateIntegration:
             )
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             assert len(created) == 5
@@ -2404,13 +2443,13 @@ class TestEndDateIntegration:
 
             # Initial generation.
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             assert len(created) == 3
 
             # Regenerate -- should produce the same count.
             regenerated = recurrence_engine.regenerate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             assert len(regenerated) == 3
 
@@ -2511,7 +2550,7 @@ class TestDueDateGeneration:
                 seed_user, "Monthly", day_of_month=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             # Find the transaction assigned to the period containing Jan 15.
@@ -2534,7 +2573,7 @@ class TestDueDateGeneration:
                 seed_user, "Every Period",
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             assert len(created) == len(seed_periods)
@@ -2565,7 +2604,7 @@ class TestDueDateGeneration:
                 seed_user, "Monthly", day_of_month=30,
             )
             created = recurrence_engine.generate_for_template(
-                template, [period], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -2585,7 +2624,7 @@ class TestDueDateGeneration:
                 seed_user, "Monthly", day_of_month=29,
             )
             created = recurrence_engine.generate_for_template(
-                template, [period], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -2605,7 +2644,7 @@ class TestDueDateGeneration:
                 seed_user, "Monthly", day_of_month=31,
             )
             created = recurrence_engine.generate_for_template(
-                template, [period], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -2628,7 +2667,7 @@ class TestDueDateGeneration:
                 day_of_month=22, due_day_of_month=1,
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             # P1 (Jan 16-29) contains Jan 22.
@@ -2655,7 +2694,7 @@ class TestDueDateGeneration:
                 day_of_month=1, due_day_of_month=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, [period], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -2677,7 +2716,7 @@ class TestDueDateGeneration:
                 day_of_month=22, due_day_of_month=1,
             )
             created = recurrence_engine.generate_for_template(
-                template, [period], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -2696,7 +2735,7 @@ class TestDueDateGeneration:
                 day_of_month=15, due_day_of_month=None,
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             jan_txns = [
@@ -2721,7 +2760,7 @@ class TestDueDateGeneration:
                 day_of_month=15, due_day_of_month=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             jan_txns = [
@@ -2764,7 +2803,7 @@ class TestDueDateGeneration:
             db.session.refresh(template)
 
             created = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
 
             assert created == []
@@ -2795,7 +2834,7 @@ class TestDueDateGeneration:
                 month_of_year=1, day_of_month=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), seed_user["scenario"].id,
             )
 
             assert len(created) == 4
@@ -2823,7 +2862,7 @@ class TestDueDateGeneration:
                 month_of_year=10, day_of_month=1,
             )
             created = recurrence_engine.generate_for_template(
-                template, [period], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -2848,7 +2887,7 @@ class TestDueDateGeneration:
                 month_of_year=1, day_of_month=15,
             )
             created = recurrence_engine.generate_for_template(
-                template, periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), seed_user["scenario"].id,
             )
 
             assert len(created) == 2
@@ -2873,7 +2912,7 @@ class TestDueDateGeneration:
                 seed_user, "Monthly", day_of_month=1,
             )
             created = recurrence_engine.generate_for_template(
-                template, [period], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -2897,7 +2936,7 @@ class TestDueDateGeneration:
                 day_of_month=15, due_day_of_month=31,
             )
             created = recurrence_engine.generate_for_template(
-                template, [period], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
             )
 
             assert len(created) == 1
@@ -2920,7 +2959,7 @@ class TestDueDateGeneration:
                 day_of_month=31, due_day_of_month=30,
             )
             created = recurrence_engine.generate_for_template(
-                template, [period], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
             )
 
             assert len(created) == 1

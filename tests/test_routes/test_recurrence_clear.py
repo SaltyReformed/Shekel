@@ -52,6 +52,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
+from app.services.generation_schedule import GenerationSchedule
 from app.services import (
     account_service,
     pay_period_service,
@@ -104,7 +105,7 @@ def _recurring_txn_template(seed_user, rule=None):
     if rule is not None:
         recurrence_engine.generate_for_template(
             template,
-            pay_period_service.get_all_periods(seed_user["user"].id),
+            GenerationSchedule.for_periods(template.user_id, pay_period_service.get_all_periods(seed_user["user"].id)),
             seed_user["scenario"].id,
         )
     db.session.commit()
@@ -143,7 +144,7 @@ def _recurring_transfer_template(seed_user, savings, rule=None):
     if rule is not None:
         transfer_recurrence.generate_for_template(
             template,
-            pay_period_service.get_all_periods(seed_user["user"].id),
+            GenerationSchedule.for_periods(template.user_id, pay_period_service.get_all_periods(seed_user["user"].id)),
             seed_user["scenario"].id,
         )
     db.session.commit()

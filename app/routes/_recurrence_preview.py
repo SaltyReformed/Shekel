@@ -33,6 +33,7 @@ from app.services.recurrence import (
     PeriodCalendar,
     RecurrenceResolutionError,
     RecurrenceSpec,
+    SchedulePeriod,
     build_transient_rule,
     modelled_pattern,
 )
@@ -145,12 +146,17 @@ def build_preview_rule(
     )
 
 
-def render_preview_html(preview_periods: list[PayPeriod]) -> Markup:
+def render_preview_html(
+    preview_periods: list[SchedulePeriod],
+) -> Markup:
     """Render the occurrence-preview HTML fragment for *preview_periods*.
 
     Args:
         preview_periods: The matched
-            :class:`~app.models.pay_period.PayPeriod` rows to list.
+            :class:`~app.services.recurrence.SchedulePeriod` values to list --
+            the resolver's own view of a pay period, which is what
+            ``match_periods`` answers in since plan step R4b-1.  Only the two
+            dates are rendered, so the fragment is unchanged.
 
     Returns:
         The fragment markup.
@@ -237,13 +243,14 @@ def recurrence_preview_fragment() -> str:
         # The schedule is resolved BEFORE the rule: the authoring seam
         # measures a rule's first occurrence against it, so an empty schedule
         # is refused rather than anchored against nothing.  Built from the
-        # periods already loaded, so this adds no query.
-        rule = build_preview_rule(
-            pattern_id, start_period,
-            PeriodCalendar.from_pay_periods(periods, current_user.id),
-        )
+        # periods already loaded, so this adds no query -- and ONE calendar
+        # serves both the authoring seam and the match, which is what stops
+        # the preview from resolving against a different schedule than the
+        # save would (plan step R4b-1).
+        calendar = PeriodCalendar.from_pay_periods(periods, current_user.id)
+        rule = build_preview_rule(pattern_id, start_period, calendar)
         matching = recurrence_engine.match_periods(
-            rule, periods, effective_from,
+            rule, calendar, effective_from,
         )
     except RecurrenceResolutionError as exc:
         # The submitted arguments do not name a recurrence this application

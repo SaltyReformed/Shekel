@@ -205,6 +205,13 @@ def build_schedule(
     return periods
 
 
+#: The owner every spec and calendar this module builds names.  The baseline's
+#: pay periods are unsaved and carry no ``user_id``, and
+#: ``app.services.recurrence.resolve`` REFUSES a spec paired with another
+#: user's schedule -- so one constant is what keeps the two halves agreeing.
+SHAPE_USER_ID: int = 1
+
+
 def build_shape_rule(shape: RuleShape) -> RecurrenceRule:
     """Return a real, unsaved rule for *shape*.
 
@@ -224,6 +231,12 @@ def build_shape_rule(shape: RuleShape) -> RecurrenceRule:
         An unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
     return RecurrenceRule(
+        # The owner is STATED, and until plan step R4b-1 it did not need to
+        # be: ``match_periods`` built the calendar from ``rule.user_id``, so
+        # the resolver's owner check compared a value against itself.  The
+        # calendar is an argument now, so the rule has to name the same owner
+        # the schedule does -- which is that check finally doing its job.
+        user_id=SHAPE_USER_ID,
         pattern_id=ref_cache.recurrence_pattern_id(shape.pattern),
         interval_n=shape.interval_n,
         offset_periods=shape.offset_periods,
@@ -234,12 +247,6 @@ def build_shape_rule(shape: RuleShape) -> RecurrenceRule:
         end_date=shape.end_date,
     )
 
-
-#: The owner every spec and calendar this module builds names.  The baseline's
-#: pay periods are unsaved and carry no ``user_id``, and
-#: ``app.services.recurrence.resolve`` REFUSES a spec paired with another
-#: user's schedule -- so one constant is what keeps the two halves agreeing.
-SHAPE_USER_ID: int = 1
 
 #: Parses one captured blob line back into its label, period index and due
 #: date.  Written beside :func:`capture_shape`, which produces the format, so
@@ -610,8 +617,16 @@ def capture_shape(shape: RuleShape, periods: list[PayPeriod]) -> list[str]:
         One line per matched period, or a single ``(none)`` line.
     """
     rule = build_shape_rule(shape)
+    # The whole schedule, as plan step R4b-1 made explicit: the baseline has
+    # always captured against the FULL period list, so building the calendar
+    # from the same list is the same measurement.  ``effective_from`` is now
+    # ``None`` rather than the first period's start, and the two are equal by
+    # construction -- the anchor's own floor is
+    # ``PeriodCalendar.opening_bound()``, so no walk can emit an occurrence
+    # placed before it.  That equality is what keeps the blob byte-identical
+    # across this step, and the blob is what proves it.
     matched = recurrence_engine.match_periods(
-        rule, periods, periods[0].start_date,
+        rule, build_shape_calendar(periods), None,
     )
     if not matched:
         return [f"{shape.label} (none)"]

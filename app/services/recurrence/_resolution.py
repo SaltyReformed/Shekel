@@ -40,9 +40,18 @@ The four derivations
    The GREATEST of the schedule's opening payday, the rule's ``start_date``,
    and its start period's ``start_date``.  That single maximum reproduces both
    of the reverse matcher's branches: it applied the ``start_date`` filter
-   itself AND an ``effective_from`` that
-   ``resolve_generation_plan`` always supplies -- the start period's start when
-   the rule has one, else the earliest pay period's.
+   itself AND an ``effective_from`` that ``resolve_generation_plan`` used to
+   default -- the start period's start when the rule has one, else the earliest
+   pay period's.
+
+   **Plan step R4b-1 DELETED both of those defaults**, precisely because this
+   maximum already subsumes them: no walk emits an occurrence placed before the
+   anchor, so a lower window bound equal to one of these three values can never
+   drop a row the anchor has not already dropped.  ``effective_from`` is now a
+   caller's display / regeneration boundary and nothing else, and ``None``
+   means it stated none.  The equivalence was measured, not argued: identical
+   answers for all 46 live production rules over all 61 periods, and a
+   byte-identical ``tests/oracles/recurrence_baseline.txt`` over 428 shapes.
 
 2. **A pay-period-space rule** (Every Period / Every N Periods) anchors on the effective
    start ITSELF, not on a period boundary.  ``anchor_date`` is the occurrence

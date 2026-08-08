@@ -29,6 +29,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services import account_service
+from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import create_loan_account
 
 
@@ -94,7 +95,7 @@ def _future_override_txn(seed_user, template, amount="1500.00"):
     from app.services import recurrence_engine, pay_period_service
     scenario = seed_user["scenario"]
     periods = pay_period_service.get_all_periods(seed_user["user"].id)
-    recurrence_engine.generate_for_template(template, periods, scenario.id)
+    recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
     db.session.flush()
     txn = (
         db.session.query(Transaction)
@@ -616,7 +617,7 @@ class TestTemplateUpdate:
             )
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
             db.session.flush()
             txn = (
                 db.session.query(Transaction)
@@ -664,7 +665,7 @@ class TestTemplateUpdate:
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
             )
             db.session.commit()
 
@@ -713,7 +714,7 @@ class TestTemplateUpdate:
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
             )
             db.session.flush()
 
@@ -749,7 +750,7 @@ class TestTemplateUpdate:
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
             )
             db.session.commit()
 
@@ -799,7 +800,7 @@ class TestGridRowKeyBuilder:
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
             )
             db.session.flush()
 
@@ -904,7 +905,7 @@ class TestTemplateArchive:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
             db.session.commit()
 
             txn_count = db.session.query(Transaction).filter_by(
@@ -969,7 +970,7 @@ class TestTemplateUnarchive:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
             db.session.commit()
 
             # Archive via the archive route.
@@ -1552,7 +1553,7 @@ class TestTemplateHardDelete:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
             db.session.commit()
 
             template_id = template.id
@@ -1599,7 +1600,7 @@ class TestTemplateHardDelete:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
             db.session.commit()
 
             # Mark one transaction as Paid.
@@ -1647,7 +1648,7 @@ class TestTemplateHardDelete:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
             db.session.commit()
 
             # Mark one transaction as Paid.
@@ -1681,7 +1682,7 @@ class TestTemplateHardDelete:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
             db.session.commit()
 
             # Pre-archive via route (soft-deletes projected txns).
@@ -1936,7 +1937,7 @@ class TestTemplateHardDelete:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
             db.session.commit()
 
             resp = auth_client.post(

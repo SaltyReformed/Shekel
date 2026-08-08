@@ -33,6 +33,7 @@ from app.services import (
     recurrence_engine,
 )
 from app.services.recurrence import RecurrenceSpec, author_rule, calendar_for
+from app.services.generation_schedule import GenerationSchedule
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
 from app.routes._commit_helpers import (
@@ -185,9 +186,12 @@ def create_profile():
         db.session.add(profile)
         db.session.flush()
 
-        # Generate income transactions via recurrence engine
-        periods = pay_period_service.get_all_periods(current_user.id)
-        recurrence_engine.generate_for_template(template, periods, scenario.id)
+        # Generate income transactions via recurrence engine.  The schedule
+        # is the OWNER's whole one, which is also what the paycheck
+        # calculator reads as ``all_periods`` (plan step R4b-1).
+        schedule = GenerationSchedule.for_user(current_user.id)
+        periods = list(schedule.periods)
+        recurrence_engine.generate_for_template(template, schedule, scenario.id)
 
         # Update the template's default_amount from gross to net so that
         # any future fallback (e.g. missing tax configs for a period)

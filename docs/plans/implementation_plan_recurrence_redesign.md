@@ -6,16 +6,15 @@
 for untangling the cash-date / installment-date collision. Design LOCKED 2026-08-05; R1-R3 ARCHIVED.
 
 **R1-R2e IS IN PRODUCTION** (PR #84, 2026-08-07; prod runs `d4a71f6e30bb`).
-**R3 and R4a are BUILT on `dev`, not yet PR'd** -- `4b5c577b` and `1836a928`.
+**R3, R4a and R4b-1 are BUILT on `dev`, not yet PR'd.** R4b split into two leaves 2026-08-08 --
+measuring the first turned up a SECOND live money defect with the same root cause (**D25**, a stored
+paycheck $502.45 low), and every money change belongs in one reviewable leaf.
 
-**Next: R4b**, whose specification is its section 4 entry. It moves generation onto the
-`(occurrence, PayPeriod)` pairs and resolves each rule against the OWNER's whole schedule rather
-than the caller's window, which is what closes **D22** -- three duplicate `Phone Allowance` rows
-measured live, $118.62 and growing by ~$39.54 on roughly every other extend -- and **D2**. It rules
-**D7** (log the gap, skip it), upgrades R4a's D19 refusal to name the occurrence DATES, and carries
-the migration deleting those three rows. **Read `1836a928` first**: it says what R4a's adapter can
-and cannot answer, and R4b's whole job is removing that limit. **Also live:** R-F1, whose failure
-mode is a broken deploy, and R-F6.
+**Next: R4b-2**, whose specification is its section 4 entry. It rules **D7** (log the gap, skip it),
+upgrades R4a's D19 refusal to name the occurrence DATES, adds **D10**'s missing baseline shape, and
+deletes `match_periods` with its last reader. **Read R4b-1's commit first**: generation now takes a
+`GenerationSchedule`, and R4b-2 changes only the SHAPE of the answer, not the schedule it is
+measured against. **Also live:** R-F1, whose failure mode is a broken deploy, and R-F6.
 
 **Where detail lives:** section 4 is the step list, each step carrying its own specification;
 section 5 is the findings ledger, one line per finding naming the step that closes it; section 7 is
@@ -480,21 +479,28 @@ the Half-A part of R9); Half B = R5, R6 (see section 0).
       domain check bind the AUTHORED value. **Binds R4b:** the refusal names the paycheck and the
       count, not the dates -- generation does not carry occurrences until R4b does.
 
-- [ ] **R4b -- generation moves onto the occurrence pairs.**
+- [ ] **R4b-1 -- the rule resolves against the OWNER's schedule.**
 
-**R4 is TWO leaves**, split 2026-08-08 after the first was measured: the answer changing and the
-callers changing are separate reviews, and only the first moved a committed baseline line.
+**R4b split into TWO leaves 2026-08-08**, after measuring the first turned up a second live money
+defect with the same root cause. `app/services/generation_schedule.py`'s `GenerationSchedule`
+separates the two facts one `periods` argument carried: the schedule a rule is RESOLVED against (the
+owner's, loaded by the value's own constructors) and the window a pass WRITES into (the caller's).
+Closes **D22**, **D25** and **D2**; carries the migration that deletes the 3 duplicate rows and
+corrects the one wrong stored paycheck -- destructive, so it takes the `Review:` line and a
+downgrade that refuses with the literal SQL. Two adversarial reviews changed it: an N+1 in
+carry-forward (0 -> 12 schedule reads per preview, 24 per execute), a regenerate sweep bounded by
+the schedule while writing into the window, a `GenerationSchedule` whose stated guarantee the code
+did not enforce, and -- the lesson -- a "verified red" claim for D2 that a lossy test port had
+faked.
+
+- [ ] **R4b-2 -- generation moves onto the occurrence pairs.**
+
 `resolve_generation_plan` returns `(occurrence, PayPeriod)` rows, both engines consume them, and
-`match_periods` is deleted with its last reader.
-**The rule resolves against the OWNER's whole schedule**, threaded once per request, not against the
-caller's `periods` window -- which is what closes **D22** and **D2**. Ruling 2026-08-08: an
-occurrence in a schedule GAP is logged and skipped (**D7**). R4a's D19 refusal upgrades here from
-"the paycheck and the count" to the occurrence DATES, which generation finally carries. It must also
-keep the window a WINDOW: `periods` is two things today (the resolution schedule AND what to write
-into), and only the first becomes the owner's whole schedule -- drop the intersection and an extend
-re-walks every historical period. The same commit carries the migration deleting the 3 duplicate
-rows -- destructive, so it takes the `Review:` line and a downgrade that refuses with the literal
-SQL. **This step needs its own review pass.**
+`match_periods` is deleted with its last reader. Ruling 2026-08-08: an occurrence in a schedule GAP
+is logged and skipped (**D7**). R4a's D19 refusal upgrades here from "the paycheck and the count" to
+the occurrence DATES, which generation finally carries. **D10** gets the baseline shape that pins a
+`Monthly First` rule bounded past the horizon, then a surface says so.
+**This step needs its own review pass.**
 
 - [ ] **R5 -- Row columns.**
 
@@ -756,14 +762,14 @@ D14/D15, `eef43eef` for D13/D16, `4b5c577b` for D9, and `1836a928` for D3/D5. **
 found by R2e-3's review; **D18-D21** were found while building R3; **D22, D23, D24 and F-10** while
 building R4a, and none of the eight is part of the step that found it.
 
-**The ledger stands at 25 rows.**
+**The ledger stands at 26 rows.**
 
 | id | finding (one line) | worst measured | status | owned by |
 |---|---|---|---|---|
-| D2 | an edit ignores the chosen "First paycheck": `effective_from` overrides `start_period_id` | 4 rows materialised in excluded periods | OPEN | R7b (the form rewrite that retires `start_period_id`) |
+| D2 | an edit ignores the chosen "First paycheck": `effective_from` overrides `start_period_id` | 4 rows materialised in excluded periods | OPEN, NARROWED at R4b-1 -- the bound is no longer bypassable by a caller's window, because the start period is looked up in the OWNER's schedule; what survives is the FIELD, which R7b deletes | R7b (the form rewrite that retires `start_period_id`) |
 | D4 | a loan's cash date and contractual installment date cannot differ | $0 -- labels only (payoff date, schedule rows, history) | OPEN | R6 |
 | D6 | folding `start_date` into `anchor_date` is lossy for PERIOD-unit rules | the loan origination bound stops being an exact date | OPEN, NARROWED TWICE -- R-R8 made an anchor a date, and R2d made it COMPUTED, so the "a rebuild strands the anchor" half is dead: there is no stored anchor to strand, and `_repoint_recurrence_rules` narrowed back to the rules the wipe actually nulled | R9 (re-check before dropping `start_date`) |
-| D7 | pay periods are NOT contiguous by construction, so `place()` is not total -- section 3's totality argument rests on a false premise | a date in a schedule GAP belongs to no period; reachable because `_reject_overlapping_batch` rejects overlaps, not gaps, and registration bootstraps a period the user's real schedule then starts after | OPEN, NARROWED at R3 -- `place()` answers `None` and `occurrence_placements` REPORTS the unplaced occurrence instead of dropping it, so the hole is nameable; what generation DOES with one is RULED (2026-08-08: log the gap, skip it, and close the cause separately -- finding F-10) but unbuilt | R4b |
+| D7 | pay periods are NOT contiguous by construction, so `place()` is not total -- section 3's totality argument rests on a false premise | a date in a schedule GAP belongs to no period; reachable because `_reject_overlapping_batch` rejects overlaps, not gaps, and registration bootstraps a period the user's real schedule then starts after | OPEN, NARROWED at R3 -- `place()` answers `None` and `occurrence_placements` REPORTS the unplaced occurrence instead of dropping it, so the hole is nameable; what generation DOES with one is RULED (2026-08-08: log the gap, skip it, and close the cause separately -- finding F-10) but unbuilt | R4b-2 |
 | F-1 | five `ref` identity sequences sit behind their data, on production | the next value added to those enums aborts a DEPLOY | OPEN | R-F1 |
 | F-2 | the ref-seed parity scan's last `INSERT` body runs to end-of-file | none today; a literal quoted below the seed would pass | OPEN | R-F2 |
 | F-3 | `ref` tables use auto-named constraints while the database rule says name them | none -- the names are never referenced | OPEN | R-F3 (developer ruling first) |
@@ -773,13 +779,14 @@ building R4a, and none of the eight is part of the step that found it.
 | D19 | `idx_transactions_template_period_scenario` is UNIQUE over `(template, period, scenario)`, so one template can owe a paycheck only ONCE -- but a monthly bill legitimately occurs several times in one paycheck at a cadence >= 30 days | the index is a generation-idempotency guard keyed on the wrong column: a generated row's identity is its OCCURRENCE, not its paycheck. Measured: a monthly bill at a 90-day cadence occurs 3x per paycheck, and `Monthly First` defers 2-3 months onto one. Rows stay SEPARATE and only the grid sums them (developer ruling 2026-08-07), so the fix is to re-key onto `(template, scenario, occurs_on)` -- which **needs D18 first**: `compute_due_date` dates a row from its PERIOD, so two occurrences in one paycheck get the SAME date and the unique index cannot be built on the very data D19 describes (every repeated line in the re-frozen blob is byte-identical, `due=` included). R4a REFUSES meanwhile, naming the definition, the paycheck and the count (developer ruling 2026-08-08); the alternatives measured were an IntegrityError 500 that aborts the enclosing transaction, or a silently under-budgeted paycheck | OPEN | R5 (re-key it, after D18 gives the rows distinct dates) |
 | D20 | the placement axis has no "the LAST paycheck on or before the occurrence", so a bill funded IN ADVANCE is inexpressible | both members fund on or AFTER: at a 90-day cadence today's `Monthly First` funds February's rent on 31 March, 59 days late. Zero impact at a cadence <= 28 days, where every month holds a payday | OPEN | R8 (the add-ons step, which already owns the placement-adjacent business-day shift) |
 | D21 | the PERIOD unit's phase is read from the `offset_periods` COLUMN, which R7c drops | deriving it from the anchor instead diverges exactly where `_phased_period_anchor` falls back to the raw bound (fewer than `interval_n` periods remain past the bound): today's engine generates nothing there, an anchor-derived phase would generate from the first out-of-phase period | OPEN | R7c (the authored anchor must carry the phase by construction) |
-| D10 | a `Monthly First` anchor is horizon-dependent: re-authoring an unchanged rule after the schedule extends can move it a month earlier | inherent to a pattern defined in terms of paydays, and equally true of the scan R2b shipped -- but no surface says so. **R4a's re-freeze does NOT pin it**: no baseline shape bounds a `Monthly First` rule past the horizon, so the blob never exercises the branch | OPEN | R4b (add the shape, then say it on a surface) |
+| D10 | a `Monthly First` anchor is horizon-dependent: re-authoring an unchanged rule after the schedule extends can move it a month earlier | inherent to a pattern defined in terms of paydays, and equally true of the scan R2b shipped -- but no surface says so. **R4a's re-freeze does NOT pin it**: no baseline shape bounds a `Monthly First` rule past the horizon, so the blob never exercises the branch | OPEN | R4b-2 (add the shape, then say it on a surface) |
 | D11 | two branches of `_first_of_month_anchor` are unreachable, and one comments a case that cannot execute | none -- both are dead; proven by argument and by a 243,018-case sweep in which neither was ever taken | OPEN | R-F7 |
 | D12 | `ref_cache.recurrence_unit_id` / `period_placement_id` / `business_day_shift_id` have ZERO callers in `app/` since R2d made `resolve()` return enum members | none -- they are correct and tested; the risk is a dead-code sweep DELETING them before their first consumer exists | OPEN | R7c (its backfill maps enums back to ids) |
 | D17 | `RecurrenceRule.pattern` is `lazy="joined"`, so every rule load eager-joins `ref.recurrence_patterns` for a relationship whose only reader is the `recurrence_cell` macro's else-branch | none -- one join per rule load | OPEN | R7a (deletes that branch, the labels dict and `pattern_labels_by_name` together, so the join goes with them) |
-| D22 | a `Monthly First` rule generates a DUPLICATE row for a month already covered, every time the schedule is extended into it | **live on production**: template 3 `Phone Allowance` carries 3 spurious projected rows (2 in 2028-03, 3 in 2028-06) at $39.54 each -- $118.62 over-budgeted and growing by ~$39.54 on roughly every other extend. `_match_monthly_first` picks "the first period whose start falls in each month" from the CANDIDATE list, and the extend path hands it only the new periods; it is the one matcher with no containment test, so it is the one that is window-dependent. Measured 2026-08-08 against `shekel-prod-db`, with each duplicate's `created_at` matching a separate extend | OPEN | R4b (resolve against the OWNER's whole schedule, and delete the 3 rows in the same commit) |
+| D22 | a `Monthly First` rule generated a DUPLICATE row for a month already covered, every time the schedule was extended into it | **live on production**: template 3 `Phone Allowance` carries 3 spurious projected rows (2 in 2028-03, 3 in 2028-06) at $39.54 each -- $118.62 over-budgeted and growing by ~$39.54 on roughly every other extend. `_match_monthly_first` picks "the first period whose start falls in each month" from the CANDIDATE list, and the extend path hands it only the new periods; it is the one matcher with no containment test, so it is the one that is window-dependent. Measured 2026-08-08 against `shekel-prod-db`, with each duplicate's `created_at` matching a separate extend | CLOSED at R4b-1 -- the rule resolves against the owner's schedule and the migration deleted the 3 rows | R4b-1 |
 | D23 | the recurrence write door refuses 3 of the table's 7 CHECK constraints; the other four reach the flush as an unhandled `IntegrityError` naming neither field nor value | none today -- every live writer is schema-validated. R4a added `ck_recurrence_rules_dom` and `ck_recurrence_rules_moy` to the door (they were forced: deleting `_match_annual` removed the only thing refusing month 13); `due_dom`, `valid_offset`, `positive_max_occurrences` and `single_end_bound` are not mirrored | OPEN | R7b (the form rewrite that gives `max_occurrences` its first writer, so it owns both bound CHECKs) |
 | D24 | an `Every N Periods` rule's phase is READ from the start period when the schedule handed in contains it, and from the stored `offset_periods` column when it does not | none -- the write door has DERIVED the column from the start period on every write since R2c-1 (defect D1's fix), so the two can disagree only on a row written before that and never re-authored: zero on production, and all 46 live rules carry `interval_n = 1` where the phase is inert (measured 2026-08-08). Found by adversarial review of R4a, which is where the READ started agreeing with the write; the path-dependence is real -- the extend path hands over only the new periods, so it takes the column while create / regenerate take the derivation | OPEN | R7c (drops the column, so the authored anchor must carry the phase by construction -- the same requirement D21 states from the anchor's side) |
+| D25 | the paycheck calculator read the caller's WINDOW as its `all_periods`, so third-paycheck detection, the first-paycheck-of-month deductions, the annual rounding reconciliation, the FICA wage-base cumulative and a deduction's annual cap all answered from 1-3 periods instead of 61 | transaction 2756 (2028-06-29, the third paycheck of June 2028) STORED at $2,814.45 where the whole schedule gives $3,316.90. Never displayed -- the balance fold and the grid cell both recompute salary income live (`income_service.live_projected_net`), measured on an unmigrated clone -- but the grid's inline amount editor pre-fills from the stored column and saving it sets `is_override`, the flag that DISABLES that recompute, so the wrong figure was one click from becoming the projection | CLOSED at R4b-1 -- `_get_transaction_amount` takes the owner's whole schedule, and the migration corrected the row | R4b-1 |
 | F-10 | pay periods may be generated with a GAP: `_reject_overlapping_batch` requires a new batch to start AFTER the latest `end_date`, so `latest_end + 5 days` is accepted | none on production (all 61 periods contiguous, measured 2026-08-08), but a bill occurring in the hole is owed and has no paycheck to live in -- which is D7's cause rather than its symptom | OPEN | R-F10 (developer ruling first: refuse a gapped batch, or bridge it?) |
 | F-8 | a deploy's auto-rollback cannot survive a migration: the PREVIOUS image's Alembic tree cannot resolve a DB stamped by the new one, and `init_database.py` runs `command.upgrade(cfg, "head")` unguarded at entrypoint step 3 | probed on the R2e-3 revision: `CommandError: Can't locate revision identified by 'd4a71f6e30bb'` -- so every migration-bearing release rolls back into a dead container, and `docs/runbook.md` does not cover it | OPEN | operator (guard the upgrade and fall back, or accept it and document the restore-from-backup recovery?) |
 | F-9 | a transfer create with no baseline scenario reports success having materialised nothing -- the outcome the adjacent missing-period branch was just made to refuse | none: every owner gets a baseline at registration, so it is unreachable; both create paths (`_materialize_one_time_transfer` and `generate_transfers_for_all_periods`) share the shape | OPEN | operator (refuse both paths, or leave the broken-setup state to the baseline repair handler?) |

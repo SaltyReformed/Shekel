@@ -225,10 +225,13 @@ class PeriodCalendar:
     def opening_bound(self) -> date | None:
         """Return the schedule's first payday, or ``None`` when it is empty.
 
-        This is the floor every rule's effective start is measured from,
-        because ``recurrence_engine.resolve_generation_plan`` falls back to
-        ``periods[0].start_date`` when a rule names no start period and no
-        caller supplies an ``effective_from``.
+        This is the floor every rule's effective start is measured from
+        (``_resolution._effective_start`` takes it as one of three bounds).
+        It USED to be reached a second way -- ``resolve_generation_plan``
+        defaulted ``effective_from`` to ``periods[0].start_date`` for a rule
+        naming no start period -- and plan step R4b-1 deleted that default
+        because this floor already states it.  One producer, not two that
+        happen to agree.
 
         Returns:
             The earliest period's ``start_date``, or ``None`` for an empty

@@ -26,6 +26,7 @@ from app.services._recurrence_common import (
     check_scenario_ownership,
     log_resource_access_denied,
     partition_regeneration_rows,
+    regeneration_bound,
     query_rows_from_effective_date,
     refuse_unstorable_repeats,
     should_skip_period,
@@ -44,27 +45,30 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
-def generate_for_template(template, periods, scenario_id, effective_from=None):
-    """Generate transfers for a template across the given pay periods.
+def generate_for_template(template, schedule, scenario_id, effective_from=None):
+    """Generate transfers for a template across a pay-period window.
 
     Args:
         template:       A TransferTemplate with a loaded recurrence_rule.
-        periods:        List of PayPeriod objects to consider (ordered by index).
+        schedule:       The owner's
+                        :class:`~app.services.generation_schedule.GenerationSchedule`
+                        -- their whole pay-period schedule plus the window this
+                        pass may write into.
         scenario_id:    The scenario to generate into.
-        effective_from: Optional date -- only generate for periods starting on or
-                        after this date.
+        effective_from: Optional date -- only generate for periods ending on or
+                        after this date.  ``None`` applies no lower bound.
 
     Returns:
         List of newly created Transfer objects.
     """
     # Resolve the shared gating + period-matching preamble (cross-user
-    # defense, rule-present gating, effective_from defaulting, pattern
-    # match) via the transaction engine's helper -- the transfer engine
-    # is a deliberate parallel and must apply the rule identically.  A
-    # None result means generate nothing.  See
+    # defense, rule-present gating, the pattern match against the OWNER's
+    # schedule, and the narrowing to this pass's window) via the transaction
+    # engine's helper -- the transfer engine is a deliberate parallel and must
+    # apply the rule identically.  A None result means generate nothing.  See
     # recurrence_engine.resolve_generation_plan.
     plan = resolve_generation_plan(
-        template, periods, scenario_id, effective_from,
+        template, schedule, scenario_id, effective_from,
         block_message="Blocked cross-user transfer recurrence generation",
     )
     if plan is None:
@@ -130,14 +134,20 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     return created
 
 
-def regenerate_for_template(template, periods, scenario_id, effective_from=None):
+def regenerate_for_template(template, schedule, scenario_id, effective_from=None):
     """Delete non-overridden auto-generated transfers and regenerate.
 
     Args:
         template:       The updated TransferTemplate.
-        periods:        List of PayPeriod objects.
+        schedule:       The owner's
+                        :class:`~app.services.generation_schedule.GenerationSchedule`.
         scenario_id:    The target scenario.
-        effective_from: Date from which to regenerate (default: first period).
+        effective_from: Date from which to regenerate (default: the WRITE
+                        WINDOW's first payday).  The delete sweep needs a
+                        concrete date to bound ``pay_periods.end_date``
+                        against, and it must be the same bound the
+                        regeneration writes within -- see
+                        ``recurrence_engine.regenerate_for_template``.
 
     Returns:
         List of newly created Transfer objects.
@@ -152,8 +162,7 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     ):
         return []
 
-    if effective_from is None and periods:
-        effective_from = periods[0].start_date
+    effective_from = regeneration_bound(schedule, effective_from)
 
     # Find all existing template-linked transfers on or after effective_from,
     # then partition them into conflicts vs rows safe to delete and regenerate.
@@ -174,7 +183,9 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
         transfer_service.delete_transfer(xfer.id, template.user_id, soft=False)
     db.session.flush()
 
-    created = generate_for_template(template, periods, scenario_id, effective_from)
+    created = generate_for_template(
+        template, schedule, scenario_id, effective_from,
+    )
 
     # Pylint: ``duplicate-code`` -- regenerate audit-log + conflict-raise
     # tail.  This is the parallel twin of

@@ -30,6 +30,13 @@ the instance's due date, so a row's "next date" cannot disagree with the
 grid cell it points at.  This retires the ``/obligations`` approximation
 (``_next_occurrence``) the audit flagged.
 
+**It takes the owner's whole schedule as a ``PeriodCalendar``**, not a list
+of pay periods (plan step R4b-1).  A recurrence's first occurrence is measured
+against the owner's schedule, so the value this surface passes has to BE that
+schedule; taking ORM rows and rebuilding the calendar per row would be a second
+producer of one answer, and taking a subset would date a row from a schedule
+its owner does not have.
+
 What appears vs what totals
 ---------------------------
 The list is a management surface, so it shows EVERY active definition,
@@ -42,9 +49,10 @@ total (matching the retired /obligations kernel exactly).
 
 Boundary discipline (``CLAUDE.md`` Architecture): no Flask imports; inputs
 are already-loaded ORM template lists (or any duck-typed equivalent, as the
-tests build with ``types.SimpleNamespace``) plus the user's pay periods and
-an ``as_of`` date; output is a frozen dataclass tree of ``Decimal`` /
-``date``.  All money math is ``Decimal``; the route/template only display.
+tests build with ``types.SimpleNamespace``) plus the user's pay-period
+schedule as a ``PeriodCalendar`` and an ``as_of`` date; output is a frozen
+dataclass tree of ``Decimal`` / ``date``.  All money math is ``Decimal``; the
+route/template only display.
 """
 
 from dataclasses import dataclass
@@ -55,6 +63,7 @@ from app.services.obligations_aggregator import (
     RecurringTemplate,
     template_monthly_or_none,
 )
+from app.services.recurrence import PeriodCalendar
 from app.services.recurrence_engine import compute_due_date, match_periods
 from app.utils.money import (
     MONTHS_PER_YEAR,
@@ -204,7 +213,7 @@ def _share_pct(
 
 
 def _next_occurrence(
-    template: RecurringTemplate, periods: list, as_of: date,
+    template: RecurringTemplate, calendar: PeriodCalendar, as_of: date,
 ) -> date | None:
     """Engine-backed date of the next occurrence on or after ``as_of``.
 
@@ -231,10 +240,12 @@ def _next_occurrence(
     ``match_periods`` used to log a warning and answer ``[]`` for a rule it
     could not read; it now raises
     :class:`~app.services.recurrence.RecurrenceResolutionError` (an unmodelled
-    pattern, an interval below 1, a day or month outside its column's domain)
-    or ``RecurrenceScheduleError`` (a schedule whose periods overlap), so ONE
-    such rule takes the whole Recurring surface to a 500 rather than rendering
-    the other definitions beside a silently blank cell.  Every one of those is
+    pattern, an interval below 1, a day or month outside its column's domain),
+    so ONE such rule takes the whole Recurring surface to a 500 rather than
+    rendering the other definitions beside a silently blank cell.  The
+    overlapping-schedule refusal (``RecurrenceScheduleError``) moved with the
+    calendar at plan step R4b-1: it is raised where the calendar is BUILT, so
+    the route now meets it before this producer runs.  Every one of those is
     a state the CHECK constraints and the write door already refuse, and the
     project's disposition for a broken invariant is the loud one -- but the
     contract is stated rather than discovered.
@@ -242,12 +253,11 @@ def _next_occurrence(
     Raises:
         RecurrenceResolutionError: When the rule names a cadence this
             application cannot derive.
-        RecurrenceScheduleError: When *periods* overlap or run backwards.
     """
     rule = getattr(template, "recurrence_rule", None)
     if rule is None:
         return None
-    for period in match_periods(rule, periods, as_of):
+    for period in match_periods(rule, calendar, as_of):
         due = compute_due_date(rule, period)
         if due >= as_of:
             return due
@@ -255,7 +265,7 @@ def _next_occurrence(
 
 
 def _build_section(
-    templates: list[RecurringTemplate], periods: list, as_of: date,
+    templates: list[RecurringTemplate], calendar: PeriodCalendar, as_of: date,
 ) -> RecurringSection:
     """Build one kind-grouped section: its rows and both-units subtotal.
 
@@ -280,7 +290,7 @@ def _build_section(
         RecurringRow(
             template=template,
             equivalent=_unit_pair(monthly_full),
-            next_date=_next_occurrence(template, periods, as_of),
+            next_date=_next_occurrence(template, calendar, as_of),
             share_pct=_share_pct(monthly_full, section_total_full),
         )
         for template, monthly_full in monthly_by_template
@@ -339,7 +349,7 @@ def build_view(
     income_templates: list[RecurringTemplate],
     expense_templates: list[RecurringTemplate],
     transfer_templates: list[RecurringTemplate],
-    periods: list,
+    calendar: PeriodCalendar,
     as_of: date,
 ) -> RecurringView:
     """Produce the unified Recurring surface's full display model.
@@ -351,8 +361,9 @@ def build_view(
             ``TransactionTemplate`` rows.
         transfer_templates: The user's active recurring ``TransferTemplate``
             rows.
-        periods: All the user's ``PayPeriod`` rows, for engine-backed next
-            dates (``match_periods`` seeds and filters against the full set).
+        calendar: The owner's whole pay-period schedule
+            (:class:`~app.services.recurrence.PeriodCalendar`), which the
+            engine-backed next dates are measured against.
         as_of: Reference date -- "now" for the expired-rule filter and the
             next-occurrence search.  Callers pass ``date.today()``.
 
@@ -362,9 +373,9 @@ def build_view(
         both-units subtotal.  Every figure is a ``Decimal`` rounded to
         cents; the caller only displays.
     """
-    income_section = _build_section(income_templates, periods, as_of)
-    expense_section = _build_section(expense_templates, periods, as_of)
-    transfer_section = _build_section(transfer_templates, periods, as_of)
+    income_section = _build_section(income_templates, calendar, as_of)
+    expense_section = _build_section(expense_templates, calendar, as_of)
+    transfer_section = _build_section(transfer_templates, calendar, as_of)
     band = _build_band(
         income_section.subtotal,
         expense_section.subtotal,

@@ -31,11 +31,12 @@ from app.services import (
     recurrence_engine,
     recurring_view,
 )
+from app.services.generation_schedule import GenerationSchedule
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.recurrence import pattern_choices
+from app.services.recurrence import calendar_for, pattern_choices
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
@@ -298,12 +299,11 @@ def _load_recurring_view(user_id):
         user_id,
     )
     transfer_templates = _load_active_transfer_templates(user_id)
-    periods = pay_period_service.get_all_periods(user_id)
     return recurring_view.build_view(
         income_templates=income_templates,
         expense_templates=expense_templates,
         transfer_templates=transfer_templates,
-        periods=periods,
+        calendar=calendar_for(user_id),
         as_of=date.today(),
     )
 
@@ -490,9 +490,10 @@ def create_template():
     if rule:
         scenario = get_baseline_scenario(current_user.id)
         if scenario:
-            periods = pay_period_service.get_all_periods(current_user.id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id,
+                template,
+                GenerationSchedule.for_user(current_user.id),
+                scenario.id,
             )
 
     db.session.commit()
@@ -783,9 +784,11 @@ def unarchive_template(template_id):
     if template.recurrence_rule:
         scenario = get_baseline_scenario(current_user.id)
         if scenario:
-            periods = pay_period_service.get_all_periods(current_user.id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id, effective_from=date.today(),
+                template,
+                GenerationSchedule.for_user(current_user.id),
+                scenario.id,
+                effective_from=date.today(),
             )
 
     conflict = commit_or_handle_stale(StaleConflictContext(

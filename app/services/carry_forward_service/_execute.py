@@ -195,7 +195,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
         # session for batch atomicity.
         for txn in ctx.envelope_txns:
             _settle_source_and_roll_leftover(
-                txn, ctx.target_period, scenario_id,
+                txn, ctx.target_period, scenario_id, ctx.schedule,
             )
             count += 1
 
@@ -249,7 +249,8 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
     return count
 
 
-def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id):
+def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id,
+                                    schedule):
     """Settle an envelope source row and roll its leftover into the target.
 
     Implements the envelope branch of Option F (see
@@ -299,6 +300,9 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id):
             transaction in the source period.  Partitioning in
             ``carry_forward_unpaid`` guarantees the preconditions.
         target_period: The PayPeriod object for the target period.
+        schedule: The request's
+            :class:`~app.services.generation_schedule.GenerationSchedule`
+            (``ctx.schedule``), passed through to the target-row resolution.
             Passed pre-fetched to avoid a redundant lookup; the
             caller already validated ownership.
         scenario_id: The scenario the source row belongs to.  Used in
@@ -341,6 +345,7 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id):
     if leftover > 0:
         target_row = _resolve_or_create_target_row(
             source_txn, target_period, scenario_id, recurrence_engine,
+            schedule,
         )
         target_row.estimated_amount = (
             target_row.estimated_amount + leftover
@@ -351,7 +356,7 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id):
 
 
 def _resolve_or_create_target_row(source_txn, target_period,
-                                  scenario_id, recurrence_engine):
+                                  scenario_id, recurrence_engine, schedule):
     """Return the destination row that receives *source_txn*'s leftover.
 
     Thin switch over ``_classify_leftover_target`` (the single source of
@@ -384,6 +389,11 @@ def _resolve_or_create_target_row(source_txn, target_period,
         recurrence_engine: The recurrence-engine module (passed in to
             avoid a circular import at module top), used for the
             ``GENERATE`` branch's ``generate_for_template`` call.
+        schedule: The request's
+            :class:`~app.services.generation_schedule.GenerationSchedule`
+            (``ctx.schedule``) -- the owner's whole pay-period schedule with
+            its write window narrowed to *target_period*.  Threaded rather
+            than built here because this runs once per envelope row.
 
     Returns:
         The Transaction row to bump.
@@ -392,7 +402,7 @@ def _resolve_or_create_target_row(source_txn, target_period,
         ValidationError: On the ``AMBIGUOUS`` corrupt-state guard.
     """
     resolution = _classify_leftover_target(
-        source_txn, target_period, scenario_id,
+        source_txn, target_period, scenario_id, schedule,
     )
 
     if resolution.kind is _TargetKind.AMBIGUOUS:
@@ -408,8 +418,14 @@ def _resolve_or_create_target_row(source_txn, target_period,
         return resolution.row
 
     if resolution.kind is _TargetKind.GENERATE:
+        # The window is this ONE period; the schedule the rule is read
+        # against is the owner's whole one (plan step R4b-1).  Handing the
+        # single period over as both -- which this did until R4b-1 -- made a
+        # ``Monthly First`` rule see one month holding one payday and answer
+        # "fires here" for any period at all, so the row this branch created
+        # was a duplicate the correct engine never names.
         created = recurrence_engine.generate_for_template(
-            source_txn.template, [target_period], scenario_id,
+            source_txn.template, schedule, scenario_id,
         )
         generated = next(
             (t for t in created if t.pay_period_id == target_period.id),

@@ -182,6 +182,31 @@ class RecurrenceCadenceUnsupported(ShekelError):
         self.period_end = period_end
 
 
+class RecurrenceWindowError(ShekelError):
+    """A generate pass was handed a write window its owner's schedule lacks.
+
+    A broken invariant rather than user input.
+    :class:`~app.services.generation_schedule.GenerationSchedule` loads the
+    owner's whole schedule itself and takes only the WINDOW from its caller
+    (plan step R4b), so the two can disagree in exactly two ways, and both are
+    bugs:
+
+    * the caller paired one user's template with another user's pay period --
+      every path already ownership-checks before reaching generation, so this
+      is a route-layer hole or a probe;
+    * the caller passed an UNSAVED period, which has no id to match against a
+      schedule read back from the database.  The repopulation paths flush
+      before populating (``pay_period_service.generate_pay_periods``), so an
+      unsaved period here means a caller skipped that.
+
+    Raised rather than skipped because both alternatives are silent: a window
+    period the schedule does not contain simply matches nothing, and the pass
+    would report "generated 0 rows" for a template whose rule fires every
+    paycheck.  A recurring bill that quietly stops being generated is exactly
+    the failure this arc exists to make loud.
+    """
+
+
 class RecurrenceConflict(ShekelError):
     """Recurrence regeneration found overridden or deleted transactions.
 
