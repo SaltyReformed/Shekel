@@ -31,7 +31,8 @@ from app.models.transfer_template import TransferTemplate
 from app.services import account_service, recurring_view
 from app.services.obligations_aggregator import committed_monthly
 from app.services.recurrence import PeriodCalendar
-from app.services.recurrence_engine import compute_due_date, match_periods
+from app.services.recurrence import rule_occurrences
+from app.services.recurrence_engine import compute_due_date
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
 
@@ -314,9 +315,9 @@ class TestNonRecurringRows:
         """A rule-less definition emits no 'unknown pattern' warning.
 
         ``_next_occurrence`` returns on the rule-less branch before reaching
-        ``match_periods``, which logs that warning for any pattern it has no
+        the reverse matcher, which logged that warning for any pattern it had no
         branch for.  Until plan step R2e-3 a second guard was needed beside it
-        for the ``Once`` pattern, which ``match_periods`` also had no branch
+        for the ``Once`` pattern, which the matcher also had no branch
         for -- so a one-time definition logged it on EVERY render without one.
         """
         once = _create_expense(seed_user, None, Decimal("999.00"), name="OneTime")
@@ -500,7 +501,14 @@ class TestNextDates:
         )
         next_date = view.expenses.rows[0].next_date
         # Independent engine recomputation of the contract.
-        matched = match_periods(rule, _calendar(seed_periods_today), today)
+        matched = [
+            placement.period
+            for placement in rule_occurrences(
+                rule, _calendar(seed_periods_today),
+            )
+            if placement.period is not None
+            and placement.period.end_date >= today
+        ]
         expected = next(
             compute_due_date(rule, p)
             for p in matched

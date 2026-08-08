@@ -3,7 +3,7 @@ Shekel Budget App -- Transfer Recurrence Engine
 
 Parallel to recurrence_engine.py but generates Transfer records instead
 of Transaction records.  The model-agnostic halves of the two engines
-(the gating + pattern-matching preamble via
+(the gating + occurrence-matching preamble via
 ``recurrence_engine.resolve_generation_plan``, the per-period skip
 predicate, the regenerate fetch/partition, and the cross-user audit
 logging) are shared through that module and
@@ -18,17 +18,17 @@ Key differences from transaction recurrence:
 """
 
 import logging
-from collections import defaultdict
 
 from app.extensions import db
 from app.models.transfer import Transfer
 from app.services._recurrence_common import (
     check_scenario_ownership,
+    existing_rows_refusing_repeats,
     log_resource_access_denied,
     partition_regeneration_rows,
     regeneration_bound,
     query_rows_from_effective_date,
-    refuse_unstorable_repeats,
+    report_schedule_gaps,
     should_skip_period,
 )
 from app.services.recurrence_engine import compute_due_date, resolve_generation_plan
@@ -61,8 +61,8 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     Returns:
         List of newly created Transfer objects.
     """
-    # Resolve the shared gating + period-matching preamble (cross-user
-    # defense, rule-present gating, the pattern match against the OWNER's
+    # Resolve the shared gating + occurrence-matching preamble (cross-user
+    # defense, rule-present gating, the occurrence walk against the OWNER's
     # schedule, and the narrowing to this pass's window) via the transaction
     # engine's helper -- the transfer engine is a deliberate parallel and must
     # apply the rule identically.  A None result means generate nothing.  See
@@ -74,18 +74,25 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     if plan is None:
         return []
 
-    existing = _get_existing_map(template.id, scenario_id, plan.matching_periods)
+    # The transaction engine makes the identical call, and for the identical
+    # reason: the WRITE path names a hole in the owner's schedule, the
+    # read-only predictor does not.  See
+    # ``_recurrence_common.report_schedule_gaps``.
+    report_schedule_gaps(logger, template, scenario_id, plan.gaps)
 
-    # Refuse a paycheck this pass would write into TWICE before writing
-    # anything -- ``idx_transfers_template_period_scenario`` holds one row per
-    # (template, period, scenario), and forward generation legitimately names a
-    # paycheck more than once at a cadence of 30 days or more.  The
-    # transaction engine applies the identical guard; see
-    # ``_recurrence_common.refuse_unstorable_repeats``.
-    refuse_unstorable_repeats(template, plan.matching_periods, existing)
+    # What is already there, and the refusal of a paycheck this pass would
+    # write into TWICE -- ``idx_transfers_template_period_scenario`` holds one
+    # row per (template, period, scenario), and forward generation legitimately
+    # names a paycheck more than once at a cadence of 30 days or more.  The
+    # transaction engine makes the identical call; see
+    # ``_recurrence_common.existing_rows_refusing_repeats``.
+    existing = existing_rows_refusing_repeats(
+        Transfer, Transfer.transfer_template_id,
+        template, scenario_id, plan.placements,
+    )
 
     created = []
-    for period in plan.matching_periods:
+    for period in (row.period for row in plan.placements):
         existing_xfers = existing.get(period.id, [])
 
         # Skip periods that already hold a template-linked transfer
@@ -295,24 +302,3 @@ def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
             skipped_count=skipped_count,
             new_amount=str(new_amount) if new_amount is not None else None,
         )
-
-
-def _get_existing_map(template_id, scenario_id, periods):
-    """Build a dict of period_id → [Transfer, ...] for existing template entries."""
-    period_ids = [p.id for p in periods]
-    if not period_ids:
-        return {}
-
-    existing = (
-        db.session.query(Transfer)
-        .filter(
-            Transfer.transfer_template_id == template_id,
-            Transfer.scenario_id == scenario_id,
-            Transfer.pay_period_id.in_(period_ids),
-        )
-        .all()
-    )
-    result = defaultdict(list)
-    for xfer in existing:
-        result[xfer.pay_period_id].append(xfer)
-    return result

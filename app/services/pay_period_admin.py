@@ -771,7 +771,7 @@ def _repoint_recurrence_rules(rule_ids: list[int], first_period) -> None:
     **Re-authored rather than bulk-updated, and that is what re-phases them.**
     This used to be one ``query.update()`` writing ``start_period_id`` and a
     hardcoded ``offset_periods = 0``.  The zero was load-bearing for
-    EVERY_N_PERIODS -- ``match_periods`` fires where
+    EVERY_N_PERIODS -- the occurrence engine's PERIOD-unit walk fires where
     ``(period_index - offset_periods) % interval_n == 0``, so re-pointing the
     start without re-phasing would fire the rule on the wrong periods -- but it
     was a hand-maintained copy of a derivation that lives in

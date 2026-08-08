@@ -54,6 +54,7 @@ from app.services.recurrence import (
     RecurrenceResolutionError,
     RecurrenceSpec,
     SchedulePeriod,
+    occurrence_placements,
     resolve,
 )
 
@@ -322,7 +323,7 @@ class TestCalendarFamily:
     def test_a_rule_naming_no_day_or_month_takes_the_engines_own_default(self):
         """``or 1`` is mirrored, not re-invented.
 
-        ``match_periods`` coerces a malformed calendar rule with
+        The reverse matcher coerced a malformed calendar rule with
         ``rule.month_of_year or 1`` / ``rule.day_of_month or 1``
         (``recurrence_engine.py:504-518``), so an annual rule carrying neither
         fires on 1 January.  The resolver reproduces that rather than choosing
@@ -446,6 +447,181 @@ class TestFirstOfMonthFamily:
         )
 
         assert resolved.anchor_date == date(2027, 1, 1)
+
+
+@pytest.mark.usefixtures("app")
+class TestTheHorizonDependentFirstOfMonthAnchor:
+    """Plan ledger row D10, measured at plan step R4b-2 rather than asserted.
+
+    ``_first_of_month_anchor`` answers by SCANNING the schedule's own months
+    for the first one whose OWN first paycheck clears the bound.  Past the last
+    materialised payday there is no month left to inspect, so it falls back to
+    "the 1st of the month after the bound" -- and that answer can MOVE when the
+    schedule extends and the month turns out to hold a payday after all.  The
+    derivation's docstring has always said so; nothing measured what it costs.
+
+    What it costs is nothing, and these tests are the measurement:
+
+    1. the fallback's answer really is horizon-dependent (first test);
+    2. the fallback's answer is always strictly AFTER the schedule's last
+       payday (second test), so under the ``PERIOD_STARTING_ON_OR_AFTER``
+       placement this pattern uses no occurrence derived from it can be placed
+       -- there is no paycheck opening on or after it;
+    3. therefore generation writes nothing either way (third test).
+
+    Argued as well as measured: the fallback runs only when EVERY period with
+    ``start_date >= effective`` sits in a month whose earliest payday precedes
+    *effective*.  A period in a month LATER than *effective*'s cannot satisfy
+    that -- every start in a later month is past the bound -- so any such
+    period is in *effective*'s own month, and the 1st of the NEXT month is past
+    it.  A brute-force sweep of 3,390,012 ``(schedule, bound)`` pairs across
+    cadences 1..365 reached the fallback 1,935,097 times and found no
+    exception.
+
+    **The finding becomes real at plan step R7c**, which turns ``anchor_date``
+    into an authored NOT NULL column.  A derivation whose answer depends on how
+    far the schedule happens to reach is harmless while it is recomputed on
+    every read AND unreachable; frozen into a column by one backfill it becomes
+    a stored value that was merely right on the day it was written, which is
+    why the plan's ledger row for D10 names R7c as its owner.
+    """
+
+    #: A bound that takes the FALLBACK branch at every schedule length this
+    #: file builds.  The 61-period schedule's last payday is 2028-07-13, so
+    #: nothing opens on or after this date and the scan loop always exhausts.
+    _BOUND = date(2028, 8, 1)
+
+    def _anchor(self, count: int) -> date:
+        """Resolve the same rule against a schedule of *count* periods."""
+        return resolve(
+            spec_for(
+                RecurrencePatternEnum.MONTHLY_FIRST, start_date=self._BOUND,
+            ),
+            build_calendar(count=count),
+        ).anchor_date
+
+    def test_extending_the_schedule_moves_the_anchor_a_month_earlier(self):
+        """The same unchanged rule anchors differently once August 2028 exists.
+
+        61 periods end at payday 2028-07-13, so August 2028 holds no payday the
+        scan can see: the fallback answers the 1st of the month AFTER the
+        2028-08-01 bound, 2028-09-01.  Extend to 80 periods (last payday
+        2029-04-05) and August's first payday 2028-08-10 is materialised; it
+        clears the bound, so the scan answers August itself.  A month earlier,
+        from the same rule and the same bound -- that IS D10.
+        """
+        early = self._anchor(61)
+        later = self._anchor(80)
+
+        assert early == date(2028, 9, 1)
+        assert later == date(2028, 8, 1)
+        assert later < early, "D10 is not reproducing -- the anchor did not move"
+
+    def _took_the_fallback(self, calendar, effective):
+        """True when ``_first_of_month_anchor``'s scan loop exhausts.
+
+        Re-stating the loop's exit condition rather than reaching into the
+        function: the test is about WHICH branch answered, and a test that
+        cannot tell is a test that cannot say its sweep reached anything.
+        """
+        for period in calendar.periods:
+            if period.start_date < effective:
+                continue
+            earliest = calendar.earliest_start_in_month(
+                period.start_date.year, period.start_date.month,
+            )
+            if earliest is not None and earliest >= effective:
+                return False
+        return True
+
+    def test_the_fallback_anchor_is_always_past_the_last_payday(self):
+        """Whatever the fallback answers, no paycheck opens on or after it.
+
+        **Swept across the whole schedule span, not just past its end**, and a
+        neutral review is why.  The first cut bounded every case at
+        ``last_payday + 1``, where no period satisfies ``start >= effective`` at
+        all -- so the fallback was always its trivial shape and
+        ``_next_month_first(last_payday + 1) > last_payday`` was arithmetic
+        rather than a measurement.  The shape that matters is a bound INSIDE
+        the schedule with periods after it, every one of them in a month whose
+        own first payday precedes the bound; the counter below asserts the
+        sweep reaches it, so this cannot silently narrow again.
+        """
+        interesting = 0
+        for cadence in (1, 7, 14, 30, 45, 90, 180):
+            calendar = build_calendar(cadence_days=cadence)
+            first = calendar.periods[0].start_date
+            last_payday = calendar.periods[-1].start_date
+            span = (calendar.horizon() - first).days
+            for offset in range(-5, span + 40):
+                effective = first + timedelta(days=offset)
+                if not self._took_the_fallback(calendar, effective):
+                    continue
+                if any(
+                    period.start_date >= effective
+                    for period in calendar.periods
+                ):
+                    interesting += 1
+                anchor = resolve(
+                    spec_for(
+                        RecurrencePatternEnum.MONTHLY_FIRST,
+                        start_date=effective,
+                    ),
+                    calendar,
+                ).anchor_date
+                assert anchor > last_payday, (
+                    f"cadence {cadence}, bound {effective}: anchored {anchor}, "
+                    f"on or before the last payday {last_payday} -- an "
+                    f"occurrence from it could then be placed, and D10 would "
+                    f"be a live defect"
+                )
+                assert calendar.period_starting_on_or_after(anchor) is None
+        assert interesting > 0, (
+            "every swept bound fell past the schedule's last payday, so the "
+            "fallback's non-trivial shape was never reached and this proved "
+            "only arithmetic"
+        )
+
+    def test_no_occurrence_from_the_fallback_can_be_placed(self):
+        """The consequence, stated where generation actually reads it.
+
+        ``occurrence_placements`` is what the generation seam consumes, so this
+        is the form of the claim that bounds the defect: every occurrence such
+        a rule names is either never emitted (the anchor is past the horizon)
+        or emitted with ``period=None``.  Either way generation writes nothing,
+        so the horizon-dependent anchor cannot change a row.
+
+        **The positive control is the point.**  At a short cadence the anchor
+        lands past the horizon and NOTHING is emitted, which would make an
+        ``all(...)`` assertion vacuously true for every case; the counter below
+        proves at least one swept schedule really does emit occurrences and
+        fail to place all of them.  That case is also the baseline's
+        ``horizon_bound.long_cadence.monthly_first`` shape.
+        """
+        emitted_somewhere = 0
+        for cadence in (1, 7, 14, 30, 45, 90, 180):
+            for count in (1, 3, 12, _PERIOD_COUNT):
+                calendar = build_calendar(cadence_days=cadence, count=count)
+                bound = calendar.periods[-1].start_date + timedelta(days=1)
+                resolved = resolve(
+                    spec_for(
+                        RecurrencePatternEnum.MONTHLY_FIRST, start_date=bound,
+                    ),
+                    calendar,
+                )
+                placements = occurrence_placements(resolved, calendar)
+                emitted_somewhere += len(placements)
+                assert all(
+                    placement.period is None for placement in placements
+                ), (
+                    f"cadence {cadence}, {count} periods: a fallback-anchored "
+                    f"occurrence was PLACED, so the horizon-dependent anchor "
+                    f"can reach a generated row"
+                )
+        assert emitted_somewhere > 0, (
+            "no swept schedule emitted an occurrence at all, so the "
+            "all-unplaced assertion above proved nothing"
+        )
 
 
 @pytest.mark.usefixtures("app")

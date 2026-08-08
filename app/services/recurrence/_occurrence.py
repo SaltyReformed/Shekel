@@ -6,15 +6,16 @@ from its first occurrence; :func:`place` carries one occurrence DATE onto the
 pay period the row lives in; :func:`occurrence_placements` composes the two.
 
 **This is what generation is.**  Plan step R3 built it parallel and unread;
-plan step R4a made ``app.services.recurrence_engine.match_periods`` a thin
-adapter over it, so every pay period the application generates a row into is
-selected here.  Plan step R4b moves the readers off the adapter and onto the
-``(occurrence, period)`` pairs themselves.
+plan step R4a made ``recurrence_engine.match_periods`` a thin adapter over it,
+so every pay period the application generates a row into is selected here; and
+plan step R4b-2 deleted that adapter, so every reader now takes the
+``(occurrence, period)`` pairs themselves through
+:func:`~app.services.recurrence.rule_occurrences`.
 
 Why forward, and what that fixed
 --------------------------------
 
-``match_periods`` used to be a REVERSE mapping: it scanned every candidate pay
+Selection used to be a REVERSE mapping: it scanned every candidate pay
 period and asked whether that period contained the rule's target day, through
 five near-identical ``_match_*`` helpers.  Each of them inspected only the
 months of a period's two ENDPOINTS, so a period spanning more than two months
@@ -96,8 +97,8 @@ emitted.
 fall in a schedule gap and are never placed.  "Stop after twelve" is a
 property of the rule, not of how many rows the schedule happened to host.
 
-The window, and what ``None`` means (finding **D7**)
------------------------------------------------------
+The window, and the THREE answers a placement can give (finding **D7**)
+-----------------------------------------------------------------------
 
 Pay periods are NOT contiguous by construction.
 ``pay_period_service._reject_overlapping_batch`` rejects overlaps, not gaps,
@@ -105,12 +106,29 @@ and registration bootstraps a 14-day period 0 that a later real schedule may
 start after -- so a date can belong to no period at all, and :func:`place`
 answers ``None`` rather than assuming one.
 
+**``None`` is two different answers, and conflating them is a defect this step
+had and a neutral review caught.**  One is a schedule GAP: the day is inside
+the span the schedule covers and no period holds it, so the obligation is owed
+and permanently homeless (ledger row D7; closing the writer that permits it is
+finding F-10).  The other is "not yet": the schedule has not reached that day.
+That second answer is ordinary, and on a perfectly healthy CONTIGUOUS schedule
+it happens constantly -- under ``PERIOD_STARTING_ON_OR_AFTER`` an occurrence
+dated after the LAST PAYDAY has no paycheck to defer onto even though
+:meth:`PeriodCalendar.period_containing` finds the day covered, which is
+roughly one biweekly schedule in three (measured: any schedule whose last
+period straddles a month boundary).  Reporting that as a corrupt schedule
+would drown the real signal in false alarms.
+
+:class:`OccurrencePlacement` therefore carries a :class:`PlacementOutcome`
+rather than leaving the caller to infer which answer it got.  The distinction
+is a question about the SCHEDULE, not about the placement rule -- "is this day
+inside the covered span with no period on it" -- so it is derived here, once,
+from the calendar that answered.
+
 :func:`occurrence_placements` generates through the schedule's HORIZON by
-default, because that is the last day a placement can succeed: an occurrence
-after it is not dropped, it is outside the window that was asked for.  A
+default, because that is the last day a placement can succeed at all.  A
 caller that passes a later ``through`` gets those occurrences back explicitly,
-each carrying ``period=None``.  So under the default window ``period is None``
-means a schedule GAP, and under a wider one it also means past the horizon.
+each carrying ``period=None`` and ``BEYOND_THE_SCHEDULE``.
 
 Several occurrences in ONE paycheck, and why they are not collapsed
 -------------------------------------------------------------------
@@ -156,6 +174,7 @@ paycheck that may fall after it.  Plan step R8 adds it.
 Pure: no Flask, no ORM, no clock, no database.
 """
 import calendar as calendar_module
+import enum
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -197,22 +216,83 @@ class RecurrenceGenerationError(ShekelError):
     """
 
 
+class PlacementOutcome(enum.Enum):
+    """Which of three answers a placement gave for one occurrence.
+
+    **Not a ``ref`` table** -- it names an outcome of a pure computation, not a
+    row a user authors, so it lives here rather than in
+    :mod:`app.enums`, whose contract is a 1:1 mapping onto ``ref`` rows.
+
+    It exists because ``period is None`` was TWO answers wearing one shape, and
+    a neutral review of plan step R4b-2 measured what that cost: generation had
+    started logging every unplaced occurrence as a corrupt schedule, and on 43%
+    of biweekly schedule openings a healthy, fully contiguous schedule produces
+    one.  A signal that fires on a third to a half of healthy schedules is not
+    a signal, and it would have buried the one case it was built to surface.
+
+    Members:
+        PLACED: The occurrence has a pay period.
+        SCHEDULE_GAP: The occurrence falls inside the span the schedule covers
+            and NO period holds that day.  The obligation is owed and has
+            nowhere to live, permanently -- extending the schedule does not
+            help, because the hole is behind its horizon.  Plan ledger row
+            **D7**; the writer that permits a gapped batch is finding F-10.
+        BEYOND_THE_SCHEDULE: The schedule has not reached the occurrence yet.
+            Ordinary, and the answer
+            :meth:`PeriodCalendar.period_starting_on_or_after` calls "not yet
+            rather than never": under that placement an occurrence dated after
+            the LAST PAYDAY has no paycheck to defer onto even while the day
+            itself is inside the covered span.  The next schedule extend places
+            it.
+    """
+
+    PLACED = "placed"
+    SCHEDULE_GAP = "schedule_gap"
+    BEYOND_THE_SCHEDULE = "beyond_the_schedule"
+
+
 @dataclass(frozen=True)
 class OccurrencePlacement:
-    """One occurrence of a rule, and the pay period it lands in.
+    """One occurrence of a rule, the pay period it lands in, and why not.
 
     Attributes:
         occurrence: The date the cadence names.  For the ``PERIOD`` unit this
             is the paycheck's own payday; see the module docstring.
-        period: The pay period the row lives in, or ``None`` when the schedule
-            covers no such period -- a date in a gap, or (only when the caller
-            widened the window past the horizon) a date the schedule has not
-            reached yet.  ``None`` is a real answer, not an error: see finding
-            D7.
+        period: The pay period the row lives in, or ``None``.  ``None`` is a
+            real answer, not an error: see finding D7 and *outcome*.
+        outcome: WHICH answer this is -- see :class:`PlacementOutcome`.
+            Carried rather than left to the caller to infer, because the two
+            ``None`` answers have opposite dispositions (one is an operator
+            alert, the other is every schedule's ordinary tail) and inferring
+            needs the calendar, which only this module still holds.
     """
 
     occurrence: date
     period: SchedulePeriod | None
+    outcome: PlacementOutcome
+
+    def __post_init__(self) -> None:
+        """Refuse a value whose outcome and period disagree.
+
+        The pair is one fact stated twice, so a value carrying
+        ``PLACED`` with no period -- or a period with a reason it was not
+        placed -- is unconstructible rather than merely unexpected.  This
+        project has been burned by a docstring guarantee that the generated
+        ``__init__`` did not enforce (plan step R4b-1's ``GenerationSchedule``,
+        found by adversarial review), so the invariant is a check.
+
+        Raises:
+            RecurrenceGenerationError: When exactly one of *period* and
+                ``outcome is PLACED`` is set.
+        """
+        if (self.outcome is PlacementOutcome.PLACED) != (self.period is not None):
+            raise RecurrenceGenerationError(
+                f"occurrence {self.occurrence} carries outcome "
+                f"{self.outcome.value!r} beside period {self.period!r}: an "
+                f"outcome of PLACED means a period and every other outcome "
+                f"means none.  A value that disagrees with itself would let a "
+                f"caller filter on one field and read the other."
+            )
 
 
 def _week_walk(anchor: date, interval_n: int) -> Iterator[date]:
@@ -479,19 +559,19 @@ def occurrences(
     the opening side for the calendar units; ledger row D6 is the same
     asymmetry seen from the schema.
 
-    **There is no LOWER window argument, and the adapter takes one.**
-    ``match_periods`` takes an ``effective_from``, and the production paths
-    that state one narrow generation to a window the RULE does not state: both
-    unarchive paths, both regenerate paths, ``period_population``'s batch
-    boundary, the preview's display choice, and ``recurring_view``'s ``as_of``.
-    The paths that state NOTHING pass ``None`` since plan step R4b-1 -- the
-    template create path, ``generate_transfers_for_all_periods`` and
-    ``can_generate_in_period`` -- because the two defaults
-    ``resolve_generation_plan`` used to apply were already inside the
-    anchor.  That is a per-call display/regeneration boundary rather
-    than a property of the recurrence, and conflating the two is how defect D2
-    happened -- so it stays out of here, and plan step R4a's adapter filters
-    the placements it gets back on the placed period's ``end_date``, which is
+    **There is no LOWER window argument, and each CALLER that has one applies
+    it.**  The production paths that state a lower bound narrow generation to a
+    window the RULE does not state: both unarchive paths, both regenerate
+    paths, ``period_population``'s batch boundary, the preview's display
+    choice, and ``recurring_view``'s ``as_of``.  The paths that state NOTHING
+    pass ``None`` since plan step R4b-1 -- the template create path,
+    ``generate_transfers_for_all_periods`` and ``can_generate_in_period`` --
+    because the two defaults ``resolve_generation_plan`` used to apply were
+    already inside the anchor.  That is a per-call display / regeneration
+    boundary rather than a property of the recurrence, and conflating the two
+    is how defect D2 happened -- so it stays out of here.  Plan step R4a's
+    adapter applied it for its callers; plan step R4b-2 deleted the adapter,
+    and each caller now filters on the placed period's ``end_date``, which is
     the same predicate the reverse matcher applied to its candidate list.
 
     Refuses its impossible-to-honour inputs EAGERLY rather than on the first
@@ -559,16 +639,25 @@ def occurrence_placements(
 ) -> tuple[OccurrencePlacement, ...]:
     """Return every occurrence in the window, paired with its pay period.
 
-    The composition ``recurrence_engine.match_periods`` answers from since
-    plan step R4a, and the one plan step R4b moves generation itself onto: one
-    forward walk, one placement per occurrence, and the pairs reported as
-    generated.  Materialised rather than lazy because every caller reads the
-    result more than once.
+    The composition every reader of the table answers from, through
+    :func:`~app.services.recurrence.rule_occurrences`: one forward walk, one
+    placement per occurrence, and the pairs reported as generated.  Plan step
+    R4a routed period selection here; plan step R4b-2 moved generation itself
+    onto the pairs.  Materialised rather than lazy because every caller reads
+    the result more than once.
 
     **Duplicated periods are reported, not collapsed.**  At a cadence longer
     than a month several occurrences legitimately land in one paycheck, and
     which row the user then owes is a generation decision -- see the module
     docstring.
+
+    **Each unplaced occurrence says WHY** (:class:`PlacementOutcome`), and the
+    derivation is here because it needs the calendar: a day the schedule COVERS
+    but seats in no period is a hole (``SCHEDULE_GAP``), while a day the
+    schedule has not reached is ordinary (``BEYOND_THE_SCHEDULE``).  Deriving
+    it from the calendar rather than from ``resolved.placement`` keeps the
+    answer true for a placement rule this step does not know about -- plan step
+    R8 adds a third.
 
     Args:
         resolved: The recurrence's two-axis meaning.
@@ -576,7 +665,7 @@ def occurrence_placements(
         through: The last day to generate through.  ``None`` (the default)
             means the schedule's horizon, which is the last day a placement
             can succeed at all; pass a later date to see the occurrences
-            beyond it, each carrying ``period=None``.
+            beyond it, each carrying ``BEYOND_THE_SCHEDULE``.
 
     Returns:
         One :class:`OccurrencePlacement` per occurrence, ascending by date.
@@ -595,15 +684,39 @@ def occurrence_placements(
     horizon = calendar.horizon()
     if horizon is None:
         return ()
+    opening = calendar.opening_bound()
     window_end = horizon if through is None else through
+
+    def placement_for(occurrence: date) -> OccurrencePlacement:
+        """Pair one occurrence with its period, and say why when there is none."""
+        period = search(occurrence)
+        if period is not None:
+            outcome = PlacementOutcome.PLACED
+        elif (
+            opening <= occurrence <= horizon
+            and calendar.period_containing(occurrence) is None
+        ):
+            # Inside the covered span and seated in no period: a HOLE.  The
+            # test is over the schedule rather than over which placement rule
+            # was used, because the fact is about the schedule -- and it is
+            # what separates the one alert worth raising from the ordinary
+            # "the schedule has not got there yet".
+            outcome = PlacementOutcome.SCHEDULE_GAP
+        else:
+            outcome = PlacementOutcome.BEYOND_THE_SCHEDULE
+        return OccurrencePlacement(
+            occurrence=occurrence, period=period, outcome=outcome,
+        )
+
     return tuple(
-        OccurrencePlacement(occurrence=occurrence, period=search(occurrence))
+        placement_for(occurrence)
         for occurrence in occurrences(resolved, calendar, through=window_end)
     )
 
 
 __all__ = [
     "OccurrencePlacement",
+    "PlacementOutcome",
     "RecurrenceGenerationError",
     "occurrence_placements",
     "occurrences",

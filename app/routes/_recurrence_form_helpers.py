@@ -406,7 +406,7 @@ def update_recurrence_rule_from_form(
     # still SUBMITS, so the submitted value lands on a Quarterly rule's column
     # -- where it means nothing and nobody reads it.  ``interval_n`` carries
     # one meaning only, "repeat every N pay PERIODS", consulted by
-    # ``match_periods`` in its EVERY_N_PERIODS branch, by
+    # the occurrence engine's PERIOD-unit walk, by
     # ``savings_goal_service.amount_to_monthly`` under the same condition, and
     # by ``_recurrence_macros.html`` inside the same branch.  The interval of
     # a MONTH- or YEAR-unit recurrence is a different fact, derived from the

@@ -5,11 +5,14 @@ Tests the auto-generation of transactions from templates with
 recurrence rules (§4.7) and the state machine behavior (§4.8).
 """
 
+import logging
+
 import pytest
 from datetime import date, timedelta
 from decimal import Decimal
 
 from app.extensions import db
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
@@ -18,8 +21,12 @@ from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
 from app.services import pay_period_service, recurrence_engine
 from app.services.recurrence import RecurrenceResolutionError
-from app.services.recurrence import PeriodCalendar
-from app.services.recurrence_engine import match_periods
+from app.services.recurrence import (
+    PeriodCalendar,
+    PlacementOutcome,
+    placed_periods,
+    rule_occurrences,
+)
 from app.exceptions import (
     RecurrenceCadenceUnsupported,
     RecurrenceConflict,
@@ -41,7 +48,7 @@ _PATTERN_NAME_TO_ENUM = {e.value: e for e in RecurrencePatternEnum}
 #: ``FakePeriod`` schedule carries no ``user_id``, and
 #: ``app.services.recurrence.resolve`` REFUSES a rule paired with another
 #: user's schedule -- so one constant is what keeps the two halves agreeing.
-#: Until plan step R4b-1 no constant was needed: ``match_periods`` built the
+#: Until plan step R4b-1 no constant was needed: period selection built the
 #: calendar from ``rule.user_id`` itself, so the owner check compared a value
 #: against itself and could not fail.
 _MATCH_USER_ID = 1
@@ -53,7 +60,7 @@ def build_rule(pattern_name="Every Period", interval_n=1,
                due_day_of_month=None):
     """Build a REAL, unsaved ``RecurrenceRule`` for the pure matcher tests.
 
-    ``match_periods`` and ``compute_due_date`` are pure functions of a rule's
+    ``rule_occurrences`` and ``compute_due_date`` are pure functions of a rule's
     columns, so they need no database -- but they DO need the real column
     surface.  This used to be a hand-rolled ``FakeRule`` stub, which is the
     anti-pattern finding B-17 names: a test double that mirrors the model by
@@ -233,7 +240,7 @@ class TestRecurrenceGeneration:
         spelling had its own guard in ``resolve_generation_plan``.  Asserting
         the rule-less path is what still has a guard to protect -- the same
         assertion against a ``Once``-by-name rule would now pass through
-        ``match_periods``' unmodelled-pattern default instead, proving nothing
+        the retired matcher's unmodelled-pattern default instead, proving nothing
         about the branch it was written for.
         """
         with app.app_context():
@@ -341,7 +348,8 @@ class TestRecurrenceGeneration:
 
 # --- Pure Pattern Matching Tests ---------------------------------------------
 #
-# These exercise the PUBLIC ``match_periods`` rather than the five ``_match_*``
+# These exercise the PUBLIC producer (``rule_occurrences``, and before plan
+# step R4b-2 the ``match_periods`` adapter) rather than the five ``_match_*``
 # helpers plan step R4a deleted with the reverse matcher.  The behaviour each
 # class asserts is unchanged and is what production reads; what changed is that
 # the assertion now runs against the function every caller actually calls,
@@ -351,7 +359,7 @@ class TestRecurrenceGeneration:
 def _calendar(periods):
     """Return the resolver's view of a ``FakePeriod`` schedule.
 
-    ``match_periods`` takes the OWNER's schedule as a
+    Period selection takes the OWNER's schedule as a
     :class:`~app.services.recurrence.PeriodCalendar` since plan step R4b-1,
     rather than building one from whatever candidate list it was handed.
     Named once here so each pattern test states the rule and nothing else.
@@ -364,6 +372,40 @@ def _calendar(periods):
         :data:`_MATCH_USER_ID`.
     """
     return PeriodCalendar.from_pay_periods(periods, _MATCH_USER_ID)
+
+
+def _matched_periods(rule, calendar, effective_from):
+    """Return the pay periods *rule* fires in, at or after *effective_from*.
+
+    **The contract the retired ``recurrence_engine.match_periods`` adapter
+    had**, expressed over the two PRODUCTION functions that replaced it at plan
+    step R4b-2 -- :func:`~app.services.recurrence.rule_occurrences` and
+    :func:`~app.services.recurrence.placed_periods`.  It composes them rather
+    than reimplementing the filter, deliberately: a helper that re-stated the
+    predicate would let the 26 assertions below keep passing while production
+    drifted, which is the shape a neutral review flagged in this step's first
+    draft.
+
+    Every assertion below is about which PERIODS a rule fires in, which is the
+    question the adapter answered, so porting them onto this projection keeps
+    each test asserting what it was written to assert.  Occurrence DATES are
+    pinned separately, by ``tests/test_services/test_recurrence_occurrence.py``,
+    and the projection's own bound semantics by
+    :class:`TestThePlacedPeriodsBound`.
+
+    Args:
+        rule: The unsaved rule from :func:`build_rule`.
+        calendar: The OWNER's whole schedule, from :func:`_calendar`.
+        effective_from: Drop periods ENDING before this date; ``None`` applies
+            no bound.
+
+    Returns:
+        The matched :class:`~app.services.recurrence.SchedulePeriod` values,
+        ascending by occurrence date, one entry per occurrence.
+    """
+    return placed_periods(
+        rule_occurrences(rule, calendar), ending_on_or_after=effective_from,
+    )
 
 
 def _matches(rule, periods):
@@ -382,11 +424,11 @@ def _matches(rule, periods):
         The matched :class:`~app.services.recurrence.SchedulePeriod` values,
         ascending by occurrence date.
     """
-    return match_periods(rule, _calendar(periods), None)
+    return _matched_periods(rule, _calendar(periods), None)
 
 
 class TestMatchMonthly:
-    """The Monthly pattern, through the public ``match_periods``."""
+    """The Monthly pattern, through the public producer."""
 
     def test_monthly_day_15(self, biweekly_periods):
         """Finds the period containing the 15th of each month."""
@@ -453,7 +495,7 @@ class TestMatchMonthly:
 
 
 class TestMatchMonthlyFirst:
-    """The Monthly First pattern, through the public ``match_periods``."""
+    """The Monthly First pattern, through the public producer."""
 
     def test_picks_first_period_starting_in_each_month(self, biweekly_periods):
         """One period per calendar month, the earliest starting in that month."""
@@ -484,7 +526,7 @@ class TestMatchMonthlyFirst:
 
 
 class TestMatchQuarterly:
-    """The Quarterly pattern, through the public ``match_periods``."""
+    """The Quarterly pattern, through the public producer."""
 
     def test_quarterly_jan_start(self, biweekly_periods):
         """start_month=1 targets Jan, Apr, Jul, Oct."""
@@ -527,7 +569,7 @@ class TestMatchQuarterly:
 
 
 class TestMatchSemiAnnual:
-    """The Semi-Annual pattern, through the public ``match_periods``."""
+    """The Semi-Annual pattern, through the public producer."""
 
     def test_semi_annual_jan_start(self, biweekly_periods):
         """start_month=1 targets Jan and Jul."""
@@ -569,7 +611,7 @@ class TestMatchSemiAnnual:
 
 
 class TestMatchAnnual:
-    """The Annual pattern, through the public ``match_periods``."""
+    """The Annual pattern, through the public producer."""
 
     def test_annual_one_per_year(self, biweekly_periods):
         """One match per calendar year on a specific month/day."""
@@ -603,7 +645,7 @@ class TestMatchAnnual:
 
 
 class TestMatchPeriodsEdgeCases:
-    """Edge case tests for match_periods() -- pure function, no DB."""
+    """Edge case tests for _matched_periods() -- pure function, no DB."""
 
     def test_effective_from_filters_earlier_periods(self, biweekly_periods):
         """Only periods on/after effective_from are candidates."""
@@ -611,7 +653,7 @@ class TestMatchPeriodsEdgeCases:
         # Use the 4th period's start_date as effective_from.
         effective_from = biweekly_periods[3].start_date
 
-        matched = match_periods(rule, _calendar(biweekly_periods),
+        matched = _matched_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         assert len(matched) == 26 - 3  # Periods 3-25.
@@ -639,7 +681,7 @@ class TestMatchPeriodsEdgeCases:
         effective_from = biweekly_periods[0].start_date
 
         with pytest.raises(RecurrenceResolutionError, match="99999"):
-            match_periods(rule, _calendar(biweekly_periods), effective_from)
+            _matched_periods(rule, _calendar(biweekly_periods), effective_from)
 
 
 class TestTheEveryNPeriodsPhase:
@@ -680,7 +722,7 @@ class TestTheEveryNPeriodsPhase:
             start_period_id=biweekly_periods[4].id,
         )
 
-        matched = match_periods(
+        matched = _matched_periods(
             rule, _calendar(biweekly_periods), biweekly_periods[0].start_date,
         )
 
@@ -709,21 +751,21 @@ class TestTheEveryNPeriodsPhase:
             start_period_id=biweekly_periods[4].id,
         )
 
-        matched = match_periods(rule, _calendar(window), window[0].start_date)
+        matched = _matched_periods(rule, _calendar(window), window[0].start_date)
 
         # Phase 1 of 3: indices 7, 10, 13, ... -- the STORED column's cadence.
         assert [p.period_index for p in matched] == [7, 10, 13, 16, 19, 22, 25]
 
 
 class TestMatchPeriodsFull:
-    """Integration tests for match_periods() dispatch -- pure, no DB."""
+    """Integration tests for _matched_periods() dispatch -- pure, no DB."""
 
     def test_every_period_returns_all_candidates(self, biweekly_periods):
         """every_period returns all periods after effective_from filtering."""
         rule = build_rule(pattern_name="Every Period")
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, _calendar(biweekly_periods),
+        matched = _matched_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         assert len(matched) == 26
@@ -732,14 +774,14 @@ class TestMatchPeriodsFull:
         """Empty periods list produces an empty result."""
         rule = build_rule(pattern_name="Every Period")
 
-        matched = match_periods(rule, _calendar([]),
+        matched = _matched_periods(rule, _calendar([]),
                                  date(2026, 1, 1))
 
         assert matched == []
 
 
 class TestMatchPeriodsEdgeCaseSafety:
-    """Behavior of match_periods on values the DB CHECK constraints forbid.
+    """Behaviour of period selection on values the DB CHECKs forbid.
 
     These values are prevented at the storage tier but could reach the
     service via FakeRule objects, direct calls, or an unflushed in-memory
@@ -786,7 +828,7 @@ class TestMatchPeriodsEdgeCaseSafety:
             offset_periods=0,
         )
         with pytest.raises(RecurrenceResolutionError, match="interval_n"):
-            match_periods(
+            _matched_periods(
                 rule, _calendar(biweekly_periods),
                 biweekly_periods[0].start_date,
             )
@@ -807,7 +849,7 @@ class TestMatchPeriodsEdgeCaseSafety:
             offset_periods=0,
         )
         with pytest.raises(TypeError):
-            match_periods(
+            _matched_periods(
                 rule, _calendar(biweekly_periods),
                 biweekly_periods[0].start_date,
             )
@@ -823,7 +865,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         Three dispositions became one at plan step R4a.  ``_match_monthly``
         clamped with ``min(day, last_day)``, so 32 was silently identical to
         31; a NEGATIVE day reached ``date(y, m, -5)`` as a bare
-        ``ValueError``; and ``match_periods`` mapped 0 onto 1 through
+        ``ValueError``; and the retired matcher mapped 0 onto 1 through
         ``rule.day_of_month or 1``, which read an impossible day as an absent
         one.  ``ck_recurrence_rules_dom`` bounds the column to ``NULL OR
         1..31`` and ``_author`` writes the authored value verbatim, so a 0
@@ -834,7 +876,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         rule = build_rule(pattern_name="Monthly", day_of_month=day)
 
         with pytest.raises(RecurrenceResolutionError, match="day_of_month"):
-            match_periods(
+            _matched_periods(
                 rule, _calendar(biweekly_periods),
                 biweekly_periods[0].start_date,
             )
@@ -856,10 +898,10 @@ class TestMatchPeriodsEdgeCaseSafety:
         )
         effective = biweekly_periods[0].start_date
 
-        matched_none = match_periods(
+        matched_none = _matched_periods(
             rule_none, _calendar(biweekly_periods), effective,
         )
-        matched_one = match_periods(
+        matched_one = _matched_periods(
             rule_one, _calendar(biweekly_periods), effective,
         )
         assert (
@@ -901,11 +943,11 @@ class TestMatchPeriodsEdgeCaseSafety:
             day_of_month=15,
         )
 
-        matched_null = match_periods(
+        matched_null = _matched_periods(
             rule_null,
             _calendar(biweekly_periods), effective,
         )
-        matched_one = match_periods(
+        matched_one = _matched_periods(
             rule_one,
             _calendar(biweekly_periods), effective,
         )
@@ -949,7 +991,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         )
 
         with pytest.raises(RecurrenceResolutionError, match="month_of_year"):
-            match_periods(
+            _matched_periods(
                 rule, _calendar(biweekly_periods),
                 biweekly_periods[0].start_date,
             )
@@ -1044,7 +1086,7 @@ class TestGenerateForTemplate:
             # The premise, asserted rather than assumed: without this the test
             # would pass vacuously if the engine ever stopped duplicating, and
             # the guard would be a gate over nothing.
-            matched = match_periods(
+            matched = _matched_periods(
                 template.recurrence_rule, _calendar(long_periods),
                 long_periods[0].start_date,
             )
@@ -1060,10 +1102,38 @@ class TestGenerateForTemplate:
                     template, GenerationSchedule.for_periods(template.user_id, long_periods), seed_user["scenario"].id,
                 )
 
-            # Named, not generic: the definition, the paycheck, the count.
+            # Named, not generic: the definition, the paycheck, and since plan
+            # step R4b-2 every occurrence DATE -- which is what a user needs to
+            # decide what to change.  The expected dates are DERIVED from the
+            # paycheck's own span rather than typed as literals, so this
+            # asserts the fact the refusal is about (a monthly bill is owed on
+            # every 15th the paycheck covers) instead of three figures that
+            # would still pass if the fixture's start date moved.
+            paycheck = long_periods[0]
+            expected_dates = tuple(
+                day
+                for day in (
+                    date(year, month, 15)
+                    for year in range(
+                        paycheck.start_date.year, paycheck.end_date.year + 1,
+                    )
+                    for month in range(1, 13)
+                )
+                if paycheck.start_date <= day <= paycheck.end_date
+            )
+            assert len(expected_dates) == 3, (
+                "a 90-day paycheck must cover the 15th of three months, or this "
+                "fixture no "
+                "longer exercises the repeat"
+            )
             assert excinfo.value.template_name == "Test Recurring"
+            assert excinfo.value.occurrence_dates == expected_dates
             assert excinfo.value.occurrence_count == 3
-            assert excinfo.value.period_start == long_periods[0].start_date
+            assert excinfo.value.period_start == paycheck.start_date
+            # The message carries them too -- the card and the log both read
+            # from this exception, so an unnamed date would reach neither.
+            for day in expected_dates:
+                assert day.isoformat() in str(excinfo.value)
             # And nothing was written -- the refusal runs before the first add.
             assert db.session.query(Transaction).filter_by(
                 template_id=template.id,
@@ -1183,6 +1253,511 @@ class TestGenerateForTemplate:
                     if p.start_date <= target <= p.end_date:
                         unique_months.add((dt.year, dt.month))
             assert len(created) == len(unique_months)
+
+
+class TestThePlacedPeriodsBound:
+    """``ending_on_or_after`` bounds a period's END, never its START.
+
+    **The predicate three production surfaces share** -- the Recurring
+    surface's next-date column, the form's occurrence preview, and this
+    module's own ported assertions all reach it through
+    :func:`~app.services.recurrence.placed_periods`, and the generation seam
+    applies the identical comparison to its ``effective_from``.  Nothing
+    asserted it: a neutral review mutated the comparison to ``start_date`` in
+    all four places and 3,714 tests stayed green, because the only test that
+    passed a bound passed a PERIOD BOUNDARY, where the two readings select
+    identically.
+
+    The distinction is real money.  A bound falling INSIDE a period means "from
+    here forward", and the period the user is standing in still holds rows they
+    are owed -- ``regenerate_for_template`` sweeps and rewrites from exactly
+    such a date.  Reading it against the period's START would drop the current
+    paycheck from the rewrite while the sweep had already deleted its rows.
+    """
+
+    def _monthly_placements(self, periods):
+        """Placements of a day-15 monthly rule over *periods*."""
+        return rule_occurrences(
+            build_rule(pattern_name="Monthly", day_of_month=15),
+            _calendar(periods),
+        )
+
+    def test_a_bound_inside_a_period_keeps_that_period(self, biweekly_periods):
+        """The straddling period survives -- the whole point of ``end_date``.
+
+        Under a ``start_date`` reading it would be dropped, which is what makes
+        this case, and not a boundary case, the one worth asserting.
+        """
+        placements = self._monthly_placements(biweekly_periods)
+        placed = [p.period for p in placements if p.period is not None]
+        straddled = placed[3]
+        # Strictly inside: after the period opens, before it closes.
+        bound = straddled.start_date + timedelta(days=1)
+        assert bound < straddled.end_date, "the fixture gave no interior day"
+
+        kept = placed_periods(placements, ending_on_or_after=bound)
+
+        assert straddled in kept, (
+            "a period the bound falls INSIDE must be kept: the bound means "
+            "'from here forward', and this paycheck is still ahead of the user"
+        )
+        # And it is the FIRST kept period -- everything before it is dropped.
+        assert kept[0] == straddled
+        assert all(period.end_date >= bound for period in kept)
+
+    def test_a_bound_one_day_past_a_period_drops_it(self, biweekly_periods):
+        """The complement, so the bound is shown to bound something.
+
+        Without this the assertion above would pass for a function that
+        filtered nothing at all.
+        """
+        placements = self._monthly_placements(biweekly_periods)
+        placed = [p.period for p in placements if p.period is not None]
+        straddled = placed[3]
+        bound = straddled.end_date + timedelta(days=1)
+
+        kept = placed_periods(placements, ending_on_or_after=bound)
+
+        assert straddled not in kept
+        assert len(kept) == len(placed) - 4
+
+    def test_no_bound_keeps_every_placed_period(self, biweekly_periods):
+        """``None`` applies no bound -- the default every read surface uses."""
+        placements = self._monthly_placements(biweekly_periods)
+
+        assert placed_periods(placements) == [
+            p.period for p in placements if p.period is not None
+        ]
+
+    def test_the_generation_seam_applies_the_same_bound(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``effective_from`` bounds the period's END in the seam too.
+
+        The seam keeps its own copy of the comparison -- it walks the pairs to
+        build ``PlannedOccurrence`` values and to collect the gaps, so it cannot
+        take the shared projection -- which is exactly why the copy needs its
+        own assertion rather than inheriting the three above.
+        """
+        with app.app_context():
+            template = self._make_template(seed_user)
+            schedule = GenerationSchedule.for_user(template.user_id)
+            straddled = seed_periods[3]
+            bound = straddled.start_date + timedelta(days=1)
+            assert bound < straddled.end_date
+
+            plan = recurrence_engine.resolve_generation_plan(
+                template, schedule, seed_user["scenario"].id, bound,
+                block_message="test",
+            )
+
+            kept = [row.period.id for row in plan.placements]
+            assert straddled.id in kept, (
+                "the seam dropped the period its bound falls inside"
+            )
+            assert seed_periods[2].id not in kept
+
+    def _make_template(self, seed_user):
+        """A day-15 monthly expense template for this owner."""
+        pattern = (
+            db.session.query(RecurrencePattern)
+            .filter_by(name="Monthly")
+            .one()
+        )
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=pattern.id,
+            interval_n=1,
+            offset_periods=0,
+            day_of_month=15,
+        )
+        db.session.add(rule)
+        db.session.flush()
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Car Payment"].id,
+            recurrence_rule_id=rule.id,
+            transaction_type_id=expense_type.id,
+            name="Bounded Bill",
+            default_amount=Decimal("100.00"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        db.session.refresh(template)
+        return template
+
+
+class TestAnOccurrenceInAScheduleGap:
+    """A bill owed on a day no pay period covers: logged, skipped, not lost.
+
+    **Plan ledger row D7, ruled 2026-08-08 and built at plan step R4b-2.**  Pay
+    periods are not contiguous by construction: the only bound
+    ``pay_period_service._reject_overlapping_batch`` applies is that a new
+    batch must start AFTER the latest existing ``end_date``, so a batch
+    starting later than that leaves a calendar hole.  The first test below
+    builds the hole through the REAL writer rather than by hand-inserting rows,
+    because "can this state exist?" is the premise the whole finding rests on
+    -- production has no gap today (all 61 periods contiguous, measured
+    2026-08-08), so a hand-built one would prove nothing about what the
+    application PERMITS.  Closing that writer is finding F-10.
+
+    **A hole is not the same as "the schedule has not got there yet"**, and the
+    class ends with the control that says so.  Two neutral reviews of this
+    step's first draft measured it reporting the second as the first: under
+    ``PERIOD_STARTING_ON_OR_AFTER`` an occurrence dated after the LAST PAYDAY
+    has no paycheck to defer onto even on a perfectly contiguous schedule, and
+    that is 43% of biweekly schedule openings.  The answer now says which it is
+    (:class:`~app.services.recurrence.PlacementOutcome`).
+    """
+
+    #: Days after the seed schedule's last covered day that the second batch
+    #: opens.  Large enough that a whole calendar month (June 2026) falls in
+    #: the hole, so a monthly rule has exactly one occurrence with nowhere to
+    #: live and the assertions below are about that one date.
+    _GAP_DAYS = 43
+
+    #: The rule's scheduling day, and therefore the day every occurrence and
+    #: every generated ``due_date`` falls on.
+    _DAY_OF_MONTH = 15
+
+    def _schedule_with_a_gap(self, seed_user, seed_periods):
+        """Append a second batch that leaves a hole, through the real writer.
+
+        Returns:
+            ``(later_periods, gap_start, gap_end)`` -- the appended batch and
+            the inclusive span of days no period covers.
+        """
+        gap_start = seed_periods[-1].end_date + timedelta(days=1)
+        later_start = seed_periods[-1].end_date + timedelta(days=self._GAP_DAYS)
+        later = pay_period_service.generate_pay_periods(
+            user_id=seed_user["user"].id,
+            start_date=later_start,
+            num_periods=6,
+            cadence_days=14,
+        )
+        db.session.flush()
+        return later, gap_start, later_start - timedelta(days=1)
+
+    def _days_between(self, first, last):
+        """Every ``_DAY_OF_MONTH`` in ``first..last``, inclusive, ascending."""
+        return [
+            date(year, month, self._DAY_OF_MONTH)
+            for year in range(first.year, last.year + 1)
+            for month in range(1, 13)
+            if first <= date(year, month, self._DAY_OF_MONTH) <= last
+        ]
+
+    def test_the_writer_still_accepts_a_gapped_batch(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The premise: a gapped schedule is a state the app can reach.
+
+        Asserted rather than assumed, and over the WHOLE hole rather than its
+        first day -- a schedule covering the middle of the span would satisfy a
+        single-day check while leaving the tests below measuring nothing.  If
+        ``_reject_overlapping_batch`` is ever tightened to refuse gaps (finding
+        F-10), this goes red and says so, instead of the two below quietly
+        passing over an unreachable branch.
+        """
+        with app.app_context():
+            later, gap_start, gap_end = self._schedule_with_a_gap(
+                seed_user, seed_periods,
+            )
+            assert gap_start <= gap_end, "the fixture built no hole"
+            assert later[0].start_date == gap_end + timedelta(days=1)
+
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            day = gap_start
+            while day <= gap_end:
+                assert not any(
+                    period.start_date <= day <= period.end_date
+                    for period in periods
+                ), f"{day} is inside the hole but a pay period covers it"
+                day += timedelta(days=1)
+
+    def test_only_the_occurrence_in_the_gap_is_skipped(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The bill in the hole gets no row; every OTHER occurrence still does.
+
+        The count is derived from the schedule rather than typed, and it is
+        load-bearing: with only ``assert created`` a pass that generated one row
+        out of eight would look identical to a correct one.  A neutral review
+        built exactly that mutant and this class did not notice.
+
+        The alternatives to skipping are worse and are why this is a skip:
+        writing the row into a neighbouring paycheck would put real money in a
+        period whose span does not contain it, and raising would make one hole
+        block every generate pass for every definition -- the schedule extend
+        that could repair it included.
+        """
+        with app.app_context():
+            _later, gap_start, gap_end = self._schedule_with_a_gap(
+                seed_user, seed_periods,
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=self._DAY_OF_MONTH,
+            )
+            schedule = GenerationSchedule.for_user(template.user_id)
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+
+            # What the rule NAMES: every 15th from the schedule's opening
+            # through its horizon.  Derived here from the same two facts the
+            # engine derives it from, so a fixture change moves both together.
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            named = self._days_between(
+                periods[0].start_date, periods[-1].end_date,
+            )
+            in_gap = [day for day in named if gap_start <= day <= gap_end]
+            assert len(in_gap) == 1, (
+                f"the fixture must put exactly one {self._DAY_OF_MONTH}th in "
+                f"the hole {gap_start}..{gap_end}, got {in_gap}"
+            )
+
+            # Exactly the named occurrences, less the homeless one.
+            assert len(created) == len(named) - 1
+            assert {txn.due_date for txn in created} == set(named) - set(in_gap)
+            for txn in created:
+                period = db.session.get(PayPeriod, txn.pay_period_id)
+                assert period.start_date <= txn.due_date <= period.end_date
+
+    def test_the_plan_reports_the_gap_and_omits_it_from_the_placements(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The seam's own answer: named in ``gaps``, absent from ``placements``.
+
+        Asserted where it is OBSERVABLE.  Checking only that no generated row
+        carries the missing date proves nothing here -- ``compute_due_date``
+        derives a row's month from its period's two ENDPOINTS, and no period in
+        this fixture has an endpoint in the gap month, so no row could carry
+        that date however badly placement broke.  The plan is where the fact
+        lives, so the plan is what this reads.
+        """
+        with app.app_context():
+            _later, gap_start, gap_end = self._schedule_with_a_gap(
+                seed_user, seed_periods,
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=self._DAY_OF_MONTH,
+            )
+            schedule = GenerationSchedule.for_user(template.user_id)
+            plan = recurrence_engine.resolve_generation_plan(
+                template, schedule, seed_user["scenario"].id, None,
+                block_message="test",
+            )
+
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            named = self._days_between(
+                periods[0].start_date, periods[-1].end_date,
+            )
+            missing = [day for day in named if gap_start <= day <= gap_end]
+
+            assert plan.gaps == tuple(missing)
+            # And the pairs carry the OTHER occurrence dates, in order --
+            # the one place a non-repeating pass observes the occurrence at all.
+            assert [row.occurrence for row in plan.placements] == [
+                day for day in named if day not in set(missing)
+            ]
+
+    def test_the_skipped_occurrence_is_logged_by_its_date(
+        self, app, db, seed_user, seed_periods, caplog,
+    ):
+        """Skipping is not dropping: the event names the date that is owed.
+
+        The whole difference between this and the reverse matcher, which never
+        looked for the occurrence and so could not report it.  WARNING because
+        the obligation is real and has no paycheck to live in -- an operator
+        needs to see it.
+        """
+        with app.app_context():
+            _later, gap_start, gap_end = self._schedule_with_a_gap(
+                seed_user, seed_periods,
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=self._DAY_OF_MONTH,
+            )
+            with caplog.at_level(
+                logging.WARNING, logger="app.services.recurrence_engine",
+            ):
+                recurrence_engine.generate_for_template(
+                    template,
+                    GenerationSchedule.for_user(template.user_id),
+                    seed_user["scenario"].id,
+                )
+
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            missing = [
+                day
+                for day in self._days_between(
+                    periods[0].start_date, periods[-1].end_date,
+                )
+                if gap_start <= day <= gap_end
+            ]
+            unplaced = [
+                record for record in caplog.records
+                if getattr(record, "event", None)
+                == "recurrence_occurrence_unplaced"
+            ]
+            assert len(unplaced) == 1, (
+                f"expected exactly one unplaced-occurrence event, saw "
+                f"{[getattr(r, 'event', None) for r in caplog.records]}"
+            )
+            record = unplaced[0]
+            assert record.levelno == logging.WARNING
+            assert record.occurrences == [day.isoformat() for day in missing]
+            assert record.template_id == template.id
+            assert record.user_id == template.user_id
+
+    def test_a_read_only_prediction_reports_nothing(
+        self, app, db, seed_user, seed_periods, caplog,
+    ):
+        """``can_generate_in_period`` predicts; it does not raise the alert.
+
+        It runs ONCE PER ENVELOPE ROW on the carry-forward path, so reporting
+        from the shared preamble would emit N identical operator alerts for one
+        request -- from a function whose contract is that predicting has no
+        side effect.  The plan still CARRIES the gap; only the write path says
+        so.
+        """
+        with app.app_context():
+            later, _gap_start, _gap_end = self._schedule_with_a_gap(
+                seed_user, seed_periods,
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=self._DAY_OF_MONTH,
+            )
+            schedule = GenerationSchedule.for_user(template.user_id)
+            with caplog.at_level(
+                logging.WARNING, logger="app.services.recurrence_engine",
+            ):
+                predicted = recurrence_engine.can_generate_in_period(
+                    template, later[0], seed_user["scenario"].id,
+                    schedule=schedule,
+                )
+
+            assert predicted is True, (
+                "the prediction must be exercised for its silence to mean "
+                "anything"
+            )
+            assert [
+                record for record in caplog.records
+                if getattr(record, "event", None)
+                == "recurrence_occurrence_unplaced"
+            ] == []
+
+    def test_a_contiguous_schedule_past_its_last_payday_logs_nothing(
+        self, app, db, seed_user, seed_periods, caplog,
+    ):
+        """The control that matters: "not yet" is not a gap.
+
+        A ``Monthly First`` rule places on the first paycheck STARTING on or
+        after the 1st of each month, so an occurrence after the last payday has
+        nothing to defer onto -- and the schedule below is CONTIGUOUS, built by
+        the real writer, with its final period straddling a month boundary so
+        that case is reached.  This step's first draft reported it as a
+        corrupt schedule; two neutral reviews measured that at 43% of biweekly
+        schedule openings, and this is the case that goes red if it returns.
+
+        A ``Monthly`` (CONTAINING_DATE) rule cannot exercise it -- the first
+        draft's control used one, which is why the defect survived a green
+        suite.
+        """
+        with app.app_context():
+            # One more period, CONTIGUOUS with the seed batch, chosen so the
+            # last period spans 2026-05-22..2026-06-04 -- across a month
+            # boundary, so the 1st of June falls after the last payday while
+            # still inside the schedule's covered span.
+            tail = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=seed_periods[-1].end_date + timedelta(days=1),
+                num_periods=1,
+                cadence_days=14,
+            )
+            db.session.flush()
+            last = tail[-1]
+            assert last.start_date.month != last.end_date.month, (
+                "the control needs a final period straddling a month boundary"
+            )
+
+            template = self._make_template_with_rule(seed_user, "Monthly First")
+            schedule = GenerationSchedule.for_user(template.user_id)
+            plan = recurrence_engine.resolve_generation_plan(
+                template, schedule, seed_user["scenario"].id, None,
+                block_message="test",
+            )
+            # The premise: the rule really does name an occurrence with no
+            # paycheck to defer onto.  Without this the silence below could
+            # simply mean nothing was unplaceable.
+            unplaceable = [
+                placement
+                for placement in rule_occurrences(
+                    template.recurrence_rule, schedule.calendar,
+                )
+                if placement.period is None
+            ]
+            assert len(unplaceable) == 1, (
+                f"the control must exercise an unplaceable occurrence, got "
+                f"{[p.occurrence for p in unplaceable]}"
+            )
+            assert unplaceable[0].outcome is PlacementOutcome.BEYOND_THE_SCHEDULE
+
+            with caplog.at_level(
+                logging.WARNING, logger="app.services.recurrence_engine",
+            ):
+                created = recurrence_engine.generate_for_template(
+                    template, schedule, seed_user["scenario"].id,
+                )
+
+            assert plan.gaps == ()
+            assert created, "the control generated nothing to be a control over"
+            assert [
+                record for record in caplog.records
+                if getattr(record, "event", None)
+                == "recurrence_occurrence_unplaced"
+            ] == []
+
+    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+        """Helper: create a template + recurrence rule."""
+        pattern = (
+            db.session.query(RecurrencePattern)
+            .filter_by(name=pattern_name)
+            .one()
+        )
+        expense_type = (
+            db.session.query(TransactionType)
+            .filter_by(name="Expense")
+            .one()
+        )
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=pattern.id,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            offset_periods=rule_kwargs.get("offset_periods", 0),
+            day_of_month=rule_kwargs.get("day_of_month"),
+            month_of_year=rule_kwargs.get("month_of_year"),
+            end_date=rule_kwargs.get("end_date"),
+        )
+        db.session.add(rule)
+        db.session.flush()
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Car Payment"].id,
+            recurrence_rule_id=rule.id,
+            transaction_type_id=expense_type.id,
+            name="Gap Bill",
+            default_amount=Decimal("100.00"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        db.session.refresh(template)
+        return template
 
 
 class TestRegenerateForTemplate:
@@ -2280,7 +2855,7 @@ class TestEndDate:
         rule = build_rule(pattern_name="Every Period", end_date=end)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, _calendar(biweekly_periods),
+        matched = _matched_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         assert len(matched) == 5
@@ -2292,7 +2867,7 @@ class TestEndDate:
         rule = build_rule(pattern_name="Every Period", end_date=None)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, _calendar(biweekly_periods),
+        matched = _matched_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         assert len(matched) == 26
@@ -2304,7 +2879,7 @@ class TestEndDate:
                         end_date=date(2026, 3, 31))
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, _calendar(biweekly_periods),
+        matched = _matched_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         # Should get Jan, Feb, Mar only.
@@ -2318,7 +2893,7 @@ class TestEndDate:
                         end_date=date(2025, 12, 31))
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, _calendar(biweekly_periods),
+        matched = _matched_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         assert matched == []
@@ -2330,7 +2905,7 @@ class TestEndDate:
         end = biweekly_periods[10].start_date
         rule = build_rule(pattern_name="Every Period", end_date=end)
 
-        matched = match_periods(rule, _calendar(biweekly_periods),
+        matched = _matched_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         # Periods 5 through 10 inclusive.
@@ -2346,10 +2921,10 @@ class TestEndDate:
                         end_date=target_period.start_date)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, _calendar(biweekly_periods),
+        matched = _matched_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
-        # ``match_periods`` answers in the resolver's own ``SchedulePeriod``
+        # ``rule_occurrences`` answers in the resolver's own ``SchedulePeriod``
         # values since plan step R4b-1, so identity against the fixture's
         # ``FakePeriod`` no longer holds; the schedule ordinal is the stable
         # identity either way.
@@ -2363,7 +2938,7 @@ class TestEndDate:
                         offset_periods=0, end_date=end)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, _calendar(biweekly_periods),
+        matched = _matched_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
         # Periods 0, 3, 6, 9 (index % 3 == 0 and start_date <= end).

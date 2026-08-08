@@ -38,13 +38,17 @@ What this package offers
 * :func:`author_rule` / :func:`reauthor_rule` / :func:`build_transient_rule`
   -- the ORM-facing door.  A caller states what it AUTHORS
   (:class:`RecurrenceSpec`), never a column.
-* :func:`recurrence_spec` -- the inverse, so a caller owning ONE fact about an
-  existing rule reads the spec back, replaces that fact with
-  ``dataclasses.replace``, and re-authors, rather than setting a column.
 * :func:`occurrences` / :func:`place` / :func:`occurrence_placements` -- the
-  forward occurrence engine (plan step R3), AUTHORITATIVE since plan step R4a:
-  ``app.services.recurrence_engine.match_periods`` is a thin adapter over it,
+  forward occurrence engine (plan step R3), AUTHORITATIVE since plan step R4a,
   so every pay period the application generates a row into is selected here.
+  An occurrence with no pay period says WHICH of the two "no period" answers
+  it is (:class:`PlacementOutcome`).
+* :func:`recurrence_spec` / :func:`rule_occurrences` / :func:`placed_periods`
+  -- the READ door, symmetric with the write door: a rule's authored state
+  back out, every ``(occurrence, pay period)`` pair it names against the
+  owner's schedule, and the projection three surfaces take of that.  Since
+  plan step R4b-2 the generation seam, the Recurring surface, the form preview
+  and the frozen baseline all answer from one call.
 
 What lives where
 ----------------
@@ -58,18 +62,26 @@ What lives where
   searches bisect over that order.
 * ``_resolution`` -- :class:`RecurrenceSpec`, :class:`ResolvedRecurrence` and
   :func:`resolve`, the pure derivation.
-* ``_authoring`` -- the ORM-facing door: load the schedule, refuse the
-  unresolvable, write the authored spec.
+* ``_authoring`` -- the WRITE door: load the schedule, refuse the
+  unresolvable, write the authored spec.  The only module here that holds a
+  session.
 * ``_occurrence`` -- the forward occurrence engine: walk the cadence, place
   each occurrence on a pay period.  Consumes :class:`ResolvedRecurrence`.
+* ``_reading`` -- the READ door: a stored rule's authored state, its
+  occurrences, and the projection onto periods.  Its own module rather than a
+  line in ``_authoring`` because reading is not writing -- and because
+  ``_authoring`` carries the session while nothing here needs one -- and
+  rather than a line in ``_occurrence`` because that module is pure by
+  contract and this one takes an ORM row.
 * ``_vocabulary`` -- which patterns the application MODELS, and what they are
   called: the set every form surface offers and every door validates against,
   so a ``ref`` row the enum does not name can be neither offered nor accepted
   (plan step R2e-2).
 
-Plan step R3 built the forward occurrence engine here and step R4a pointed
-``match_periods`` at it, gated by ``tests/oracles/recurrence_baseline.txt``;
-step R4b moves generation itself onto the ``(occurrence, period)`` pairs.
+Plan step R3 built the forward occurrence engine here, step R4a pointed the
+old ``match_periods`` adapter at it (gated by
+``tests/oracles/recurrence_baseline.txt``), and step R4b-2 deleted that adapter
+and moved generation itself onto the ``(occurrence, period)`` pairs.
 When step R7c moves the form onto the two-axis vocabulary,
 :class:`RecurrenceSpec`'s fields change and :func:`resolve` shrinks to almost
 nothing -- nothing above the door does.
@@ -79,7 +91,6 @@ from app.services.recurrence._authoring import (
     build_transient_rule,
     calendar_for,
     reauthor_rule,
-    recurrence_spec,
 )
 from app.services.recurrence._calendar import (
     PeriodCalendar,
@@ -88,10 +99,16 @@ from app.services.recurrence._calendar import (
 )
 from app.services.recurrence._occurrence import (
     OccurrencePlacement,
+    PlacementOutcome,
     RecurrenceGenerationError,
     occurrence_placements,
     occurrences,
     place,
+)
+from app.services.recurrence._reading import (
+    placed_periods,
+    recurrence_spec,
+    rule_occurrences,
 )
 from app.services.recurrence._resolution import (
     RecurrenceResolutionError,
@@ -115,6 +132,7 @@ __all__ = [
     "OccurrencePlacement",
     "PatternChoice",
     "PeriodCalendar",
+    "PlacementOutcome",
     "RecurrenceGenerationError",
     "RecurrenceResolutionError",
     "RecurrenceScheduleError",
@@ -131,7 +149,9 @@ __all__ = [
     "pattern_choices_for",
     "pattern_labels_by_name",
     "place",
+    "placed_periods",
     "reauthor_rule",
     "recurrence_spec",
     "resolve",
+    "rule_occurrences",
 ]

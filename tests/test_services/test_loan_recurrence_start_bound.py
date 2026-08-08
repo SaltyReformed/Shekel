@@ -299,7 +299,7 @@ class TestNoPaymentGeneratesBeforeTheLoan:
         2026-02-01 / 03-01 / 04-01 against a 2026-04-15 closing).
 
         NEGATIVE CONTROL: drop the ``rule.start_date`` filter from
-        ``recurrence_engine.match_periods`` and this goes red with those three.
+        ``recurrence.rule_occurrences`` and this goes red with those three.
         """
         acct = _upcoming_mortgage(seed_user, db.session, seed_periods)
         checking = seed_user["account"]
@@ -367,11 +367,11 @@ class TestNoPaymentGeneratesBeforeTheLoan:
         ``effective_from``, which suppresses the rule's ``start_period_id``
         entirely -- so a bound expressed there would be silently discarded and
         the phantom installments would come back on the next template edit.
-        ``start_date`` is filtered in ``match_periods`` instead, which no caller
+        ``start_date`` is filtered in the occurrence walk instead, which no caller
         can bypass.
 
         NEGATIVE CONTROL: move the ``start_date`` filter out of
-        ``match_periods`` and into ``resolve_generation_plan``'s
+        the occurrence walk and into ``resolve_generation_plan``'s
         ``effective_from`` defaulting and this goes red.
         """
         acct = _upcoming_mortgage(seed_user, db.session, seed_periods)

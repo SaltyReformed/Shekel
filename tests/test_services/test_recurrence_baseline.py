@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from app.services import recurrence_engine
+from app.services.recurrence import _reading
 from tests.oracles import recurrence_baseline
 
 #: The committed snapshot.  Lives beside the harness that writes it.
@@ -178,19 +179,29 @@ class TestBaselineFiringControls:
         )
 
     def test_a_changed_matcher_moves_the_blob(self, monkeypatch):
-        """Dropping one matched period from every rule changes the capture."""
+        """Dropping one occurrence from every rule changes the capture.
+
+        Patches the DEFINITION site
+        (``app.services.recurrence._reading.rule_occurrences``), not the
+        package's re-export of it.  A neutral review of plan step R4b-2 caught
+        the difference: the oracle reaches the producer through the same alias,
+        so patching the alias would have proved only that the harness reads the
+        attribute it reads.  Patching where the function is DEFINED proves the
+        harness resolves the real implementation at call time.  Plan step R4b-2
+        moved the target: ``recurrence_engine.match_periods`` is deleted.
+        """
         before = recurrence_baseline.capture_baseline()
-        real_match = recurrence_engine.match_periods
+        real_occurrences = _reading.rule_occurrences
 
-        def one_fewer(rule, periods, effective_from):
-            return real_match(rule, periods, effective_from)[1:]
+        def one_fewer(rule, calendar):
+            return real_occurrences(rule, calendar)[1:]
 
-        monkeypatch.setattr(recurrence_engine, "match_periods", one_fewer)
+        monkeypatch.setattr(_reading, "rule_occurrences", one_fewer)
         after = recurrence_baseline.capture_baseline()
 
         assert after != before, (
-            "the harness did not see a changed match_periods -- it is blind "
-            "to the code it exists to freeze"
+            "the harness did not see a changed rule_occurrences -- it is "
+            "blind to the code it exists to freeze"
         )
 
     def test_the_capture_is_stable_across_runs(self):

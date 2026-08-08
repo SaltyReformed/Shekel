@@ -9,6 +9,11 @@
   swaps only 2xx responses and a bare status would leave the user pressing a
   button that silently does nothing.
 
+  Context: template_name (str), occurrence_dates (tuple[date], ascending, at
+  least two), period_start / period_end (date).  The DATES are listed rather
+  than counted because a count alone does not tell the user which repeat to
+  act on; generation has carried them since plan step R4b-2.
+
   It carries no repair BUTTON, and that is honest: both repairs are the user's
   own decisions -- shorten the pay cadence, or change how often the definition
   repeats -- so the card links to each surface rather than acting for them.
@@ -28,10 +33,15 @@
         </h3>
         <p class="mt-3">
           <strong>{{ template_name }}</strong> falls
-          <strong>{{ occurrence_count }}</strong> times inside the single pay
-          period {{ period_start.strftime('%b %d, %Y') }} to
-          {{ period_end.strftime('%b %d, %Y') }}.
+          <strong>{{ occurrence_dates | length }}</strong> times inside the
+          single pay period {{ period_start.strftime('%b %d, %Y') }} to
+          {{ period_end.strftime('%b %d, %Y') }}:
         </p>
+        <ul>
+          {% for occurrence in occurrence_dates %}
+          <li>{{ occurrence.strftime('%b %d, %Y') }}</li>
+          {% endfor %}
+        </ul>
         <p>
           Shekel budgets one row per recurring definition per paycheck, so it
           cannot hold those separately yet. Nothing was changed.

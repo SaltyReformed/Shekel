@@ -142,34 +142,38 @@ class RecurrenceCadenceUnsupported(ShekelError):
     failure mode plan step X-v's ruling R-BW catalogued for
     :class:`BaselineMissingError`.
 
-    **It names the paycheck and the COUNT, not the individual dates**, and the
-    narrowing is deliberate rather than an omission.  The developer's ruling
-    said "naming the dates"; at plan step R4a the engines still answer in
-    PERIODS -- ``match_periods`` returns the pay period per occurrence and
-    discards the occurrence itself -- so the dates are not available to name
-    without calling the occurrence engine a second time, which would be a
-    second producer of one answer.  Plan step R4b threads the
-    ``(occurrence, period)`` pairs through generation; the dates join the
-    message there.  What is here is already actionable: which definition,
-    which paycheck, and how many times it falls inside it.
+    **It names the individual DATES, and plan step R4b-2 is what made them
+    available.**  The developer's ruling (2026-08-08) said "naming the dates";
+    at plan step R4a the engines still answered in PERIODS -- the adapter
+    returned one pay period per occurrence and discarded the occurrence itself
+    -- so a count was all that could be stated without calling the occurrence
+    engine a second time, which would have been a second producer of one
+    answer.  Generation now carries the ``(occurrence, period)`` pairs, so the
+    dates come from the same walk that found the collision.
+    :attr:`occurrence_count` is DERIVED from them rather than passed beside
+    them, because a count and its own list are one fact.
 
     Args:
         template_name: The recurring definition that cannot be generated.
-        occurrence_count: How many times it falls inside the one paycheck.
+        occurrence_dates: Every occurrence date that falls inside the one
+            paycheck, ascending -- as generation walked them.  At least two,
+            or there would be nothing to refuse.
         period_start: The paycheck's own payday.
         period_end: The last day the paycheck covers.
 
     Attributes:
         template_name: As above.
-        occurrence_count: As above.
+        occurrence_dates: As above, as a tuple.
         period_start: As above.
         period_end: As above.
     """
 
-    def __init__(self, template_name, occurrence_count, period_start, period_end):
+    def __init__(self, template_name, occurrence_dates, period_start, period_end):
         """Build the message from the facts a user needs to act on."""
+        dates = tuple(occurrence_dates)
+        listed = ", ".join(day.isoformat() for day in dates)
         super().__init__(
-            f"'{template_name}' falls {occurrence_count} times inside the "
+            f"'{template_name}' falls {len(dates)} times ({listed}) inside the "
             f"single pay period {period_start.isoformat()} to "
             f"{period_end.isoformat()}. Shekel budgets one row per recurring "
             f"definition per paycheck, so it cannot yet hold them separately. "
@@ -177,9 +181,18 @@ class RecurrenceCadenceUnsupported(ShekelError):
             f"repeats."
         )
         self.template_name = template_name
-        self.occurrence_count = occurrence_count
+        self.occurrence_dates = dates
         self.period_start = period_start
         self.period_end = period_end
+
+    @property
+    def occurrence_count(self) -> int:
+        """How many times the definition falls inside the one paycheck.
+
+        Derived from :attr:`occurrence_dates` rather than stored beside it:
+        the two are one fact, and a stored count is a cache of its own list.
+        """
+        return len(self.occurrence_dates)
 
 
 class RecurrenceWindowError(ShekelError):

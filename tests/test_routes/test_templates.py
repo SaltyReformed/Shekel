@@ -1159,7 +1159,7 @@ class TestPreviewRecurrence:
         It was a 500 before plan step R2c-1, and the cause is worth keeping:
         the route hand-built a transient rule, and a SQLAlchemy column default
         is applied at INSERT rather than at instantiation -- so
-        ``offset_periods`` stayed ``None`` and ``match_periods`` computed
+        ``offset_periods`` stayed ``None`` and period selection computed
         ``period_index - None``.  Routing the preview through the authoring
         seam fixed it incidentally, because resolution always emits an int.
         """

@@ -1,9 +1,9 @@
 """The recurrence engine's frozen behaviour baseline (plan step R1).
 
 The gate every later step of ``docs/plans/implementation_plan_recurrence_redesign.md``
-is measured against.  R3 built a new occurrence engine and R4a cut
-``match_periods`` over to it; this module is what proved the cutover moved
-nothing it did not mean to move, and what holds R4b onward to the same
+is measured against.  R3 built a new occurrence engine and R4a cut the
+``match_periods`` adapter over to it; this module is what proved the cutover
+moved nothing it did not mean to move, and what holds R4b onward to the same
 standard.
 
 **The snapshot was re-frozen at plan step R4a** (+122 / -4 lines over exactly
@@ -14,12 +14,14 @@ is a record of what shipped, not of what was replaced.
 **What it captures.**  For each rule SHAPE, the exact answer the engine gives
 to the only two questions it is asked in production:
 
-* :func:`app.services.recurrence_engine.match_periods` -- which pay periods
-  does this rule fire in?
+* :func:`app.services.recurrence.rule_occurrences` -- which pay periods does
+  this rule fire in?  (Plan step R4b-2 replaced ``match_periods`` with it; the
+  capture keeps taking the PERIOD half, and dropping an unplaced occurrence
+  here is what the deleted adapter did for it, so the blob is unmoved.)
 * :func:`app.services.recurrence_engine.compute_due_date` -- what date does the
   generated row carry?
 
-Both are the module's public surface (their docstrings say so) and both are
+Both are their module's public surface (their docstrings say so) and both are
 pure functions of a rule's columns plus a period list, so the baseline needs no
 database rows -- only an app context, for ``ref_cache`` to resolve a pattern
 enum to its integer id.
@@ -73,16 +75,19 @@ from app.enums import RecurrencePatternEnum
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.recurrence import PeriodCalendar, RecurrenceSpec
-# Imported as a MODULE, not as two names.  ``from ... import match_periods``
-# would bind the function at import time, and a negative control that patches
-# ``app.services.recurrence_engine.match_periods`` -- the source module, which
-# is the testing standards' preferred patch target -- would then not be seen
-# here.  A harness that cannot see the code under test is the failure mode the
-# balance arc's verification standard names ("Ask of every harness: can it SEE
-# the code under test?", plan Section 7.2), so the indirection is load-bearing:
-# it is what makes the firing controls in
-# ``tests/test_services/test_recurrence_baseline.py`` real.
+# Both imported as MODULES, not as names, and the recurrence producer is
+# imported from its DEFINITION site (``_reading``) rather than through the
+# package's re-export.  ``from ... import rule_occurrences`` would bind the
+# function at import time; reaching it through the package alias would make the
+# firing control in ``tests/test_services/test_recurrence_baseline.py`` prove
+# only that this module reads the attribute it reads.  Patching the definition
+# site is the testing standards' preferred target and is what makes the control
+# say something -- a harness that cannot SEE the code under test is the failure
+# mode the balance arc's verification standard names (plan Section 7.2).
+# ``_reading`` is package-private to ``app/`` (the W9910 checker runs on
+# ``pylint app/``); a test naming it is naming the thing it is testing.
 from app.services import recurrence_engine
+from app.services.recurrence import _reading
 
 #: The baseline schedule's first payday.  A literal, and a LEAP year, so
 #: February 29 clamping is covered rather than assumed.
@@ -232,7 +237,7 @@ def build_shape_rule(shape: RuleShape) -> RecurrenceRule:
     """
     return RecurrenceRule(
         # The owner is STATED, and until plan step R4b-1 it did not need to
-        # be: ``match_periods`` built the calendar from ``rule.user_id``, so
+        # be: period selection built the calendar from ``rule.user_id``, so
         # the resolver's owner check compared a value against itself.  The
         # calendar is an argument now, so the rule has to name the same owner
         # the schedule does -- which is that check finally doing its job.
@@ -272,11 +277,11 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
     Both are built from the SAME shape, which is the whole point: a parallel
     run that fed the two engines differently would prove nothing.
 
-    ``start_period_id`` is deliberately left unset.  The baseline calls
-    ``match_periods`` with ``effective_from`` defaulted to the first period's
-    start (``capture_shape``), and ``resolve`` reaches the identical bound
-    through ``PeriodCalendar.opening_bound()`` -- so a start period here would
-    add a bound the captured answers were never measured under.
+    ``start_period_id`` is deliberately left unset.  The baseline captures with
+    no lower window bound (``capture_shape``), and ``resolve`` reaches the
+    schedule's opening through ``PeriodCalendar.opening_bound()`` -- so a start
+    period here would add a bound the captured answers were never measured
+    under.
 
     Requires an app context: ``pattern_id`` resolves through
     :func:`app.ref_cache.recurrence_pattern_id`.
@@ -493,6 +498,58 @@ Both bounds are UNBYPASSABLE by a caller's ``effective_from`` -- the property
         ))
 
 
+def _add_horizon_bound_shapes(acc: _ShapeAccumulator) -> None:
+    """``Monthly First`` rules whose opening bound is past the last payday.
+
+    **Plan ledger row D10, added at plan step R4b-2.**  That pattern's anchor is
+    derived by SCANNING the schedule's own months for the first one whose own
+    first paycheck clears the bound; past the last payday there is no month left
+    to inspect, so ``_resolution._first_of_month_anchor`` falls back to "the 1st
+    of the month after the bound".  The fallback's answer is HORIZON-DEPENDENT:
+    extending the schedule can move it a month earlier.  No shape reached that
+    branch, so the re-freeze at plan step R4a gated an unmeasured code path --
+    a hole in a baseline is not a smaller baseline, it is a green gate over
+    behaviour nobody looked at.
+
+    Both shapes capture ``(none)``, and that is all a blob keyed on PERIODS
+    can say: a rule bounded past the last payday generates NOTHING.  It is
+    deliberately NOT the gate on the anchor itself -- a neutral review measured
+    two one-month mutants of the fallback leaving these lines unmoved, which is
+    D10's own failure direction.  What gates the anchor is
+    ``tests/test_services/test_recurrence_occurrence.py``'s
+    ``_EXPECTED_UNPLACED``, which these shapes FEED and which names every
+    unplaced occurrence date exactly.  The two are not redundant, because they
+    reach ``(none)`` differently:
+
+    * ``biweekly`` (bound 2027-01-05, last payday 2026-12-28, horizon
+      2027-01-10) -- the fallback anchors 2027-02-01, past the horizon, so the
+      walk emits no occurrence at all;
+    * ``long_cadence`` (bound 2026-10-01, last payday 2026-09-17, horizon
+      2026-12-15) -- the fallback anchors 2026-11-01, INSIDE the horizon, so
+      two occurrences are emitted and both fail to place, because
+      ``PERIOD_STARTING_ON_OR_AFTER`` needs a paycheck opening on or after them
+      and the schedule has none.  It is the only shape whose lines are
+      dropped ENTIRELY by ``placed_periods``; two others
+      (``monthly_first``, ``long_cadence.monthly_first``) lose one occurrence
+      each the same way.
+
+    ``tests/test_services/test_recurrence_resolution.py`` carries the
+    measurement of the horizon dependence itself, which a blob keyed on
+    periods cannot express.
+    """
+    acc.add(RuleShape(
+        "horizon_bound.monthly_first",
+        RecurrencePatternEnum.MONTHLY_FIRST,
+        start_date=date(2027, 1, 5),
+    ))
+    acc.add(RuleShape(
+        "horizon_bound.long_cadence.monthly_first",
+        RecurrencePatternEnum.MONTHLY_FIRST,
+        start_date=date(2026, 10, 1),
+        long_cadence=True,
+    ))
+
+
 def _add_long_cadence_shapes(acc: _ShapeAccumulator) -> None:
     """The shapes that expose defect D3, captured against a 90-day schedule.
 
@@ -582,6 +639,7 @@ def build_shapes() -> list[RuleShape]:
     _add_calendar_cycle_shapes(acc)
     _add_due_day_shapes(acc)
     _add_bound_shapes(acc)
+    _add_horizon_bound_shapes(acc)
     _add_long_cadence_shapes(acc)
     return sorted(acc.shapes, key=lambda shape: shape.label)
 
@@ -589,10 +647,10 @@ def build_shapes() -> list[RuleShape]:
 def capture_shape(shape: RuleShape, periods: list[PayPeriod]) -> list[str]:
     """Return the blob lines for one shape.
 
-    Calls the engine's two public entry points exactly as
-    ``generate_for_template`` does: ``match_periods`` with ``effective_from``
-    defaulted to the first period's start (the engine's own fallback when no
-    caller supplies one), then ``compute_due_date`` per matched period.
+    Calls the two public entry points exactly as ``generate_for_template``
+    does: :func:`~app.services.recurrence.rule_occurrences` over the whole
+    schedule with no lower window bound, then ``compute_due_date`` per placed
+    period.
 
     A shape that matches nothing emits one ``(none)`` line rather than
     disappearing.  A shape that vanished silently would be indistinguishable in
@@ -619,14 +677,20 @@ def capture_shape(shape: RuleShape, periods: list[PayPeriod]) -> list[str]:
     rule = build_shape_rule(shape)
     # The whole schedule, as plan step R4b-1 made explicit: the baseline has
     # always captured against the FULL period list, so building the calendar
-    # from the same list is the same measurement.  ``effective_from`` is now
-    # ``None`` rather than the first period's start, and the two are equal by
-    # construction -- the anchor's own floor is
-    # ``PeriodCalendar.opening_bound()``, so no walk can emit an occurrence
-    # placed before it.  That equality is what keeps the blob byte-identical
-    # across this step, and the blob is what proves it.
-    matched = recurrence_engine.match_periods(
-        rule, build_shape_calendar(periods), None,
+    # from the same list is the same measurement.  There is no lower window
+    # bound -- the anchor's own floor is ``PeriodCalendar.opening_bound()``, so
+    # no walk can emit an occurrence placed before it.
+    #
+    # **Unplaced occurrences are dropped by ``placed_periods`` since plan step
+    # R4b-2**, where the retired ``match_periods`` adapter dropped them, which
+    # is why the blob did not move across that step.  They are NOT rare even on
+    # the contiguous schedules this module builds: three shapes have one --
+    # ``PERIOD_STARTING_ON_OR_AFTER`` cannot defer an occurrence dated after
+    # the last payday onto anything.  A blob keyed on PERIODS cannot record
+    # them, so ``tests/test_services/test_recurrence_occurrence.py``'s
+    # ``_EXPECTED_UNPLACED`` names each one exactly and is what gates them.
+    matched = _reading.placed_periods(
+        _reading.rule_occurrences(rule, build_shape_calendar(periods)),
     )
     if not matched:
         return [f"{shape.label} (none)"]

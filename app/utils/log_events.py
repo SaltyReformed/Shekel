@@ -381,6 +381,18 @@ EVT_RECURRENCE_CONFLICTS_RESOLVED = _register(
     "recurrence_conflicts_resolved", BUSINESS,
     "User resolved override/delete conflicts after a regeneration.",
 )
+EVT_RECURRENCE_OCCURRENCE_UNPLACED = _register(
+    "recurrence_occurrence_unplaced", BUSINESS,
+    "A recurring definition falls on a date the owner's pay schedule covers "
+    "with NO pay period, so the occurrence was logged and skipped (plan ledger "
+    "row D7, developer ruling 2026-08-08).  The obligation is real and has no "
+    "paycheck to live in.  Reachable because "
+    "pay_period_service._reject_overlapping_batch rejects overlapping batches "
+    "and not GAPPED ones; finding F-10 owns closing the writer.  Production "
+    "has no gap (all 61 periods contiguous, measured 2026-08-08), so every "
+    "occurrence of this event names a schedule that needs repairing -- alert "
+    "on it.",
+)
 EVT_RECURRENCE_RULE_NOT_EXCLUSIVE = _register(
     "recurrence_rule_not_exclusive", BUSINESS,
     "A template cleared its recurrence, but the rule row was not exclusively "

@@ -168,8 +168,9 @@ def register_error_handlers(app):
         Args:
             error: The raised
                 :class:`~app.exceptions.RecurrenceCadenceUnsupported`, carrying
-                the definition's name, how many times it falls inside the
-                paycheck, and that paycheck's span.
+                the definition's name, every occurrence date that falls inside
+                the paycheck (plan step R4b-2 gave generation the dates), and
+                that paycheck's span.
 
         Returns:
             The rendered card, at 200 for an HTMX request and 409 otherwise.
@@ -181,6 +182,7 @@ def register_error_handlers(app):
             user_id=getattr(current_user, "id", None),
             template_name=error.template_name,
             occurrence_count=error.occurrence_count,
+            occurrences=[day.isoformat() for day in error.occurrence_dates],
             period_start=error.period_start.isoformat(),
             period_end=error.period_end.isoformat(),
             path=request.path,
@@ -189,7 +191,7 @@ def register_error_handlers(app):
         page = render_template(
             "errors/recurrence_cadence.html",
             template_name=error.template_name,
-            occurrence_count=error.occurrence_count,
+            occurrence_dates=error.occurrence_dates,
             period_start=error.period_start,
             period_end=error.period_end,
         )

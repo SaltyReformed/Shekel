@@ -6,7 +6,7 @@ rules, state machine behavior, regeneration, and conflict resolution.
 """
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -22,8 +22,11 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern, AccountType, TransactionType
 from app import ref_cache
 from app.enums import StatusEnum
-from app.services import transfer_recurrence
-from app.exceptions import RecurrenceConflict
+from app.services import pay_period_service, transfer_recurrence
+from app.exceptions import (
+    RecurrenceCadenceUnsupported,
+    RecurrenceConflict,
+)
 from app.services import account_service
 from app.utils.log_events import EVT_TRANSFER_HARD_DELETED
 from app.services.generation_schedule import GenerationSchedule
@@ -280,6 +283,133 @@ class TestTransferGeneration:
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             assert len(second_run) == 0
+
+
+class TestTransferGenerationSharesTheOccurrencePairs:
+    """The transfer engine's half of plan step R4b-2, driven rather than assumed.
+
+    Both engines take their ``(occurrence, pay period)`` pairs from the one
+    shared preamble (``recurrence_engine.resolve_generation_plan``) and their
+    pre-write step from the one shared helper
+    (``_recurrence_common.existing_rows_refusing_repeats``), so the BEHAVIOUR
+    cannot drift.  The COVERAGE could: a neutral review found the repeat
+    refusal exercised only on the transaction side, which would let a
+    transfer-specific regression -- the wrong FK column handed to the shared
+    query, say -- ship green.  These drive the transfer path to the same two
+    places.
+    """
+
+    def test_a_transfer_repeating_inside_one_paycheck_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``idx_transfers_template_period_scenario`` is the twin index.
+
+        At a 90-day cadence a monthly transfer legitimately falls inside one
+        paycheck three times, and ``budget.transfers`` holds one row per
+        ``(template, period, scenario)``.  Writing them would raise an
+        ``IntegrityError`` naming nothing and roll back the enclosing
+        transaction -- a schedule extend among them.  The refusal names the
+        definition, the paycheck and every occurrence DATE (plan ledger row
+        D19, dates since plan step R4b-2).
+        """
+        with app.app_context():
+            long_periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=seed_periods[-1].end_date + timedelta(days=1),
+                num_periods=4,
+                cadence_days=90,
+            )
+            db.session.flush()
+            template = TestTransferGeneration()._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=15,
+            )
+
+            with pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
+                transfer_recurrence.generate_for_template(
+                    template,
+                    GenerationSchedule.for_periods(
+                        template.user_id, long_periods,
+                    ),
+                    seed_user["scenario"].id,
+                )
+
+            paycheck = long_periods[0]
+            expected = tuple(
+                day
+                for day in (
+                    date(year, month, 15)
+                    for year in range(
+                        paycheck.start_date.year, paycheck.end_date.year + 1,
+                    )
+                    for month in range(1, 13)
+                )
+                if paycheck.start_date <= day <= paycheck.end_date
+            )
+            assert len(expected) == 3, (
+                "a 90-day paycheck must cover the 15th of three months, or this "
+                "fixture no "
+                "longer exercises the repeat"
+            )
+            assert excinfo.value.template_name == "Test Transfer"
+            assert excinfo.value.occurrence_dates == expected
+            # And nothing was written -- not the transfer, not its shadows.
+            assert db.session.query(Transfer).filter_by(
+                transfer_template_id=template.id,
+            ).count() == 0
+
+    def test_a_transfer_occurrence_in_a_schedule_gap_is_logged_and_skipped(
+        self, app, db, seed_user, seed_periods, caplog,
+    ):
+        """The gap report reaches the transfer engine too (plan ledger row D7).
+
+        Emitted from the transfer engine's own logger, so an operator filtering
+        by module sees it where the pass ran rather than under the transaction
+        engine that owns the shared preamble.
+        """
+        with app.app_context():
+            gap_start = seed_periods[-1].end_date + timedelta(days=1)
+            later_start = seed_periods[-1].end_date + timedelta(days=43)
+            pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=later_start,
+                num_periods=6,
+                cadence_days=14,
+            )
+            db.session.flush()
+            gap_end = later_start - timedelta(days=1)
+            template = TestTransferGeneration()._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=15,
+            )
+
+            with caplog.at_level(
+                logging.WARNING, logger="app.services.transfer_recurrence",
+            ):
+                created = transfer_recurrence.generate_for_template(
+                    template,
+                    GenerationSchedule.for_user(template.user_id),
+                    seed_user["scenario"].id,
+                )
+
+            missing = [
+                date(year, month, 15)
+                for year in range(gap_start.year, gap_end.year + 1)
+                for month in range(1, 13)
+                if gap_start <= date(year, month, 15) <= gap_end
+            ]
+            assert len(missing) == 1, "the fixture built no homeless occurrence"
+            unplaced = [
+                record for record in caplog.records
+                if getattr(record, "event", None)
+                == "recurrence_occurrence_unplaced"
+            ]
+            assert len(unplaced) == 1
+            assert unplaced[0].name == "app.services.transfer_recurrence"
+            assert unplaced[0].occurrences == [
+                day.isoformat() for day in missing
+            ]
+            # Every other occurrence still generated a transfer.
+            assert created
+            assert missing[0] not in {xfer.due_date for xfer in created}
 
 
 class TestTransferRegeneration:

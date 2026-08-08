@@ -28,7 +28,7 @@ from markupsafe import Markup
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
-from app.services import pay_period_service, recurrence_engine
+from app.services import pay_period_service
 from app.services.recurrence import (
     PeriodCalendar,
     RecurrenceResolutionError,
@@ -36,6 +36,8 @@ from app.services.recurrence import (
     SchedulePeriod,
     build_transient_rule,
     modelled_pattern,
+    placed_periods,
+    rule_occurrences,
 )
 
 logger = logging.getLogger(__name__)
@@ -119,9 +121,9 @@ def build_preview_rule(
     caller now validates the submitted id against what the application MODELS,
     which needs no row, and the row it used to fetch was written onto the
     transient rule's ``pattern`` relationship for a reader that does not
-    exist -- ``recurrence_engine.match_periods`` dispatches on the
-    ``pattern_id`` argument it is passed separately, and the transient rule is
-    discarded immediately afterwards.
+    exist -- resolution reads the ``pattern_id`` COLUMN
+    (``app.services.recurrence.resolve``), never the relationship, and the
+    transient rule is discarded immediately afterwards.
 
     Args:
         pattern_id: The ``ref.recurrence_patterns`` id being previewed,
@@ -155,8 +157,8 @@ def render_preview_html(
         preview_periods: The matched
             :class:`~app.services.recurrence.SchedulePeriod` values to list --
             the resolver's own view of a pay period, which is what
-            ``match_periods`` answers in since plan step R4b-1.  Only the two
-            dates are rendered, so the fragment is unchanged.
+            :func:`~app.services.recurrence.rule_occurrences` answers in.  Only
+            the two dates are rendered.
 
     Returns:
         The fragment markup.
@@ -249,8 +251,16 @@ def recurrence_preview_fragment() -> str:
         # save would (plan step R4b-1).
         calendar = PeriodCalendar.from_pay_periods(periods, current_user.id)
         rule = build_preview_rule(pattern_id, start_period, calendar)
-        matching = recurrence_engine.match_periods(
-            rule, calendar, effective_from,
+        # ``effective_from`` is this ROUTE's display choice, made above --
+        # "show me the next five from here" -- never the rule's opening bound,
+        # which is its anchor.  The retired ``match_periods`` adapter applied
+        # the bound for its callers, which is how a caller's window came to
+        # look like a property of the recurrence (defect D2); the PROJECTION is
+        # still shared, so this surface and the generation seam cannot come to
+        # disagree about which periods a rule fires in.
+        matching = placed_periods(
+            rule_occurrences(rule, calendar),
+            ending_on_or_after=effective_from,
         )
     except RecurrenceResolutionError as exc:
         # The submitted arguments do not name a recurrence this application

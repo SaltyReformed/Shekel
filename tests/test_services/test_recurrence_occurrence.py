@@ -3,18 +3,19 @@
 ``app.services.recurrence.occurrences`` walks a rule's cadence forward and
 ``place`` carries each occurrence onto a pay period.  Plan step R3 built both
 parallel and unread; plan step R4a made
-``recurrence_engine.match_periods`` a thin adapter over them, so every pay
+``recurrence_engine.match_periods`` a thin adapter over them (plan step R4b-2
+replaced it with ``recurrence.rule_occurrences``), so every pay
 period the application generates a row into is now selected here.
 
 **What :class:`TestTheParallelRun` asserts changed at R4a, and the change is
 the step.**  It used to drive the NEW engine through
-``tests/oracles/recurrence_baseline.py``'s 428 shapes and compare against a
+``tests/oracles/recurrence_baseline.py``'s shapes and compare against a
 snapshot frozen from the OLD one, with 12 shapes declared to diverge.  The
 cutover made the forward engine the engine, the snapshot was re-frozen from it
 (+122 / -4 lines over exactly those 12 shapes), and the old-versus-new
 comparison now lives in that commit's diff.  What the class asserts now:
 
-* **the snapshot is what the engine answers, for all 428 shapes.**  Not a
+* **the snapshot is what the engine answers, for all 430 shapes.**  Not a
   tautology -- the snapshot goes through the adapter (ORM-row mapping, the
   ``effective_from`` floor, occurrence ordering including repeats) and this
   side drives ``resolve`` / ``occurrence_placements`` directly, so equal lists
@@ -140,15 +141,40 @@ _LONG_CADENCE_DIVERGENCES: dict[
 #: snapshot records PERIODS, so an occurrence that places nowhere has no line
 #: in it and simply vanishes from an index-to-index diff -- a neutral review
 #: demonstrated a mutant that emits one unplaceable occurrence per rule and
-#: left every test in this file green.  Both entries are real and both are
-#: ``PERIOD_STARTING_ON_OR_AFTER``: an occurrence dated after the last PAYDAY
-#: has no paycheck to defer onto, even when it is still inside the schedule's
-#: covered span.  The biweekly schedule's last payday is 2026-12-28 against a
-#: horizon of 2027-01-10, so January 2027's occurrence is emitted and unplaced.
+#: left every test in this file green.  All THREE entries are real and all
+#: three are ``PERIOD_STARTING_ON_OR_AFTER``: an occurrence dated after the last
+#: PAYDAY has no paycheck to defer onto, even when it is still inside the
+#: schedule's covered span.  The biweekly schedule's last payday is 2026-12-28
+#: against a horizon of 2027-01-10, so January 2027's occurrence is emitted and
+#: unplaced.
+#:
+#: **Every one of them is ``BEYOND_THE_SCHEDULE``, not ``SCHEDULE_GAP``**, and
+#: the distinction is plan step R4b-2's (:class:`PlacementOutcome`).  Both
+#: baseline schedules are contiguous, so no hole exists to fall in; conflating
+#: the two is what made generation's first draft report a healthy schedule as
+#: corrupt.
 _EXPECTED_UNPLACED: dict[str, list[date]] = {
     "monthly_first": [date(2027, 1, 1)],
     "long_cadence.monthly_first": [
         date(2026, 10, 1), date(2026, 11, 1), date(2026, 12, 1),
+    ],
+    # Plan step R4b-2's ledger row D10 shape: a ``Monthly First`` rule bounded
+    # 2026-10-01, past the long schedule's last payday 2026-09-17.  The anchor
+    # comes from ``_first_of_month_anchor``'s FALLBACK, which always answers a
+    # date after the last payday -- so under
+    # ``PERIOD_STARTING_ON_OR_AFTER`` no paycheck can host either occurrence,
+    # and the horizon-dependent anchor cannot reach a generated row.  The
+    # measurement is in
+    # ``test_recurrence_resolution.TestTheHorizonDependentFirstOfMonthAnchor``.
+    #
+    # **This dict, not the two ``(none)`` blob lines, is what gates the D10
+    # shapes.**  A blob keyed on PERIODS cannot record an occurrence that has
+    # none, so ``(none)`` says only "generated nothing" and is insensitive to
+    # the anchor moving by a month -- which is D10's own failure direction.
+    # Measured by a neutral review: two one-month mutants of the fallback left
+    # the blob unmoved and turned the assertion over this dict RED.
+    "horizon_bound.long_cadence.monthly_first": [
+        date(2026, 11, 1), date(2026, 12, 1),
     ],
 }
 
@@ -175,7 +201,7 @@ def resolved_value(
     ``max_occurrences`` and the business-day shift all wait on plan step R8.
     Stating the value here is what lets those be tested before their author
     exists; the shapes ``resolve`` CAN produce are covered by the parallel run
-    against all 423 of them.
+    against every one of them.
 
     Args:
         unit: The cadence unit.
@@ -416,7 +442,7 @@ class TestTheParallelRun:
     """The shipped engine against the snapshot and an independent oracle."""
 
     def test_the_snapshot_records_exactly_what_the_engine_answers(self):
-        """All 428 shapes: the committed blob IS the forward engine's answer.
+        """All 430 shapes: the committed blob IS the forward engine's answer.
 
         **This assertion changed meaning at plan step R4a, and the change is
         the step.**  It used to compare the new engine against a snapshot
@@ -429,7 +455,7 @@ class TestTheParallelRun:
 
         What it asserts now is not tautological, and the difference is the
         adapter: the snapshot is captured through
-        ``recurrence_engine.match_periods``, which maps ``SchedulePeriod``
+        ``recurrence.rule_occurrences``, whose callers map ``SchedulePeriod``
         values back to the caller's own period rows, applies the per-call
         ``effective_from`` floor, and preserves occurrence order including
         repeats.  This side drives ``resolve`` and ``occurrence_placements``
@@ -442,7 +468,7 @@ class TestTheParallelRun:
         assert set(new) == set(committed), (
             "the shape set moved between the snapshot and this run"
         )
-        assert len(committed) == 428, f"{len(committed)} shapes captured"
+        assert len(committed) == 430, f"{len(committed)} shapes captured"
         for label in sorted(committed):
             assert new[label] == committed[label], (
                 f"{label}: forward engine answers {new[label]}, the committed "
@@ -466,7 +492,7 @@ class TestTheParallelRun:
         """No ``bounds.*`` shape emits an occurrence outside its own window.
 
         Ruling R-R6's property, stated over the whole family rather than over
-        the four members that happened to move.  ``match_periods`` used to
+        the four members that happened to move.  The reverse matcher used to
         bound PERIODS -- ``end_date`` against a period's START and
         ``start_date`` against its END -- so a period straddling the bound was
         admitted and generated a row whose own occurrence date lay outside the
@@ -685,18 +711,26 @@ class TestTheParallelRun:
                 continue
             emitted = occurrence_placements(resolved, calendar)
             if not emitted:
-                # Only ``bounds.window.inverted``: its end date precedes its
-                # anchor, so the rule fires nowhere.  Counted, not skipped
+                # Two shapes, both deliberate.  ``bounds.window.inverted``'s
+                # end date precedes its anchor, so the rule fires nowhere;
+                # ``horizon_bound.monthly_first`` is bounded past the biweekly
+                # schedule's last payday, so the fallback anchor (2027-02-01)
+                # lands past the horizon and the walk emits nothing at all --
+                # plan ledger row D10's shape on the SHORT cadence, where its
+                # long-cadence twin instead emits two occurrences that fail to
+                # place (:data:`_EXPECTED_UNPLACED`).  Counted, not skipped
                 # silently -- a threshold plus a silent skip lets a shape that
                 # quietly stops emitting hide.
                 skipped.append(shape.label)
                 continue
             assert emitted[0].occurrence == resolved.anchor_date, shape.label
             checked += 1
-        assert skipped == ["bounds.window.inverted"], skipped
-        # 428 captured shapes less the 38 pay-period-space ones, less the one
-        # inverted-window shape that fires nowhere.
-        assert checked == 389, f"{checked} calendar-unit shapes checked"
+        assert skipped == [
+            "bounds.window.inverted", "horizon_bound.monthly_first",
+        ], skipped
+        # 430 captured shapes less the 38 pay-period-space ones, less the two
+        # above that fire nowhere.
+        assert checked == 390, f"{checked} calendar-unit shapes checked"
 
     def test_a_period_units_first_occurrence_is_a_payday(self):
         """A pay-period-space rule fires on paydays, not on its bound.
@@ -851,7 +885,7 @@ class TestThePeriodUnit:
         The loan case (plan step C9a): ``loan_recurrence_sync`` stamps the
         first contractual installment onto ``start_date``, and a loan whose
         first installment falls mid-period bills in THAT period, not the next.
-        ``match_periods`` gets this right today (``p.end_date >= bound``) and
+        The reverse matcher got this right (``p.end_date >= bound``) and
         the forward engine has to keep it -- so the anchor is a BOUND here and
         the occurrence is the paycheck's own opening day, never the bound.
         """
@@ -1302,7 +1336,7 @@ class TestScheduleGapsAndTheHorizon:
     def test_an_occurrence_in_a_gap_is_reported_rather_than_dropped(self):
         """The composition names the hole instead of hiding it.
 
-        ``match_periods`` returns only periods, so an occurrence with nowhere
+        Its callers project onto periods, so an occurrence with nowhere
         to live simply never appears -- indistinguishable from a rule that
         does not fire.  Here it appears with ``period=None``, which is what
         lets plan step R4 log a schedule hole instead of losing a bill.

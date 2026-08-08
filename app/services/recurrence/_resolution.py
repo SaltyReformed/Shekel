@@ -51,7 +51,8 @@ The four derivations
    caller's display / regeneration boundary and nothing else, and ``None``
    means it stated none.  The equivalence was measured, not argued: identical
    answers for all 46 live production rules over all 61 periods, and a
-   byte-identical ``tests/oracles/recurrence_baseline.txt`` over 428 shapes.
+   byte-identical ``tests/oracles/recurrence_baseline.txt`` over the 428
+   shapes it then held (430 since plan step R4b-2 added D10's).
 
 2. **A pay-period-space rule** (Every Period / Every N Periods) anchors on the effective
    start ITSELF, not on a period boundary.  ``anchor_date`` is the occurrence

@@ -552,7 +552,7 @@ class TestTheResolvedIntervalComesFromThePattern:
     """A calendar pattern names its own interval; the column cannot override it.
 
     ``budget.recurrence_rules.interval_n`` keeps its single original meaning
-    -- "repeat every N pay periods", read only in ``match_periods``'
+    -- "repeat every N pay periods", read only in the occurrence engine's
     ``EVERY_N_PERIODS`` branch -- and the two-axis interval is derived from
     the pattern.  That separation is what makes the form's hidden input
     harmless.

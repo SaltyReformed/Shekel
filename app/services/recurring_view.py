@@ -24,11 +24,13 @@ money path that could disagree with the first.
 Next dates are engine-backed
 ----------------------------
 The next occurrence is the date the recurrence engine itself would assign
-to the next generated instance: ``recurrence_engine.match_periods`` picks
-the matching pay periods and ``recurrence_engine.compute_due_date`` gives
-the instance's due date, so a row's "next date" cannot disagree with the
-grid cell it points at.  This retires the ``/obligations`` approximation
-(``_next_occurrence``) the audit flagged.
+to the next generated instance: ``recurrence.rule_occurrences`` walks the
+rule's cadence and places each occurrence on a pay period -- the SAME call
+the generation seam makes since plan step R4b-2 -- and
+``recurrence_engine.compute_due_date`` gives the instance's due date, so a
+row's "next date" cannot disagree with the grid cell it points at.  This
+retires the ``/obligations`` approximation (``_next_occurrence``) the audit
+flagged.
 
 **It takes the owner's whole schedule as a ``PeriodCalendar``**, not a list
 of pay periods (plan step R4b-1).  A recurrence's first occurrence is measured
@@ -63,8 +65,12 @@ from app.services.obligations_aggregator import (
     RecurringTemplate,
     template_monthly_or_none,
 )
-from app.services.recurrence import PeriodCalendar
-from app.services.recurrence_engine import compute_due_date, match_periods
+from app.services.recurrence import (
+    PeriodCalendar,
+    placed_periods,
+    rule_occurrences,
+)
+from app.services.recurrence_engine import compute_due_date
 from app.utils.money import (
     MONTHS_PER_YEAR,
     PAY_PERIODS_PER_YEAR,
@@ -217,18 +223,26 @@ def _next_occurrence(
 ) -> date | None:
     """Engine-backed date of the next occurrence on or after ``as_of``.
 
-    Uses the same public recurrence-engine helpers that generate the grid
-    instances: ``match_periods`` selects the pay periods the rule fires in,
-    and ``compute_due_date`` gives the due date the generated instance would
-    carry.  Returns the first such due date on or after ``as_of`` (the
-    current period can match with a due date already past, so the search
-    advances to the next matching period), or ``None`` when no matching
-    period has a due date on or after ``as_of`` -- no rule, or an expired
-    rule whose remaining candidate periods are all in the past.
-    Otherwise this tracks the engine exactly: if the engine would still
+    Uses the same producers that generate the grid instances:
+    :func:`~app.services.recurrence.rule_occurrences` walks the rule's cadence
+    and places each occurrence on a pay period, and ``compute_due_date`` gives
+    the due date the generated instance would carry.  Returns the first such
+    due date on or after ``as_of`` (the current period can match with a due
+    date already past, so the search advances to the next matching period), or
+    ``None`` when no matching period has a due date on or after ``as_of`` -- no
+    rule, or an expired rule whose remaining candidate periods are all in the
+    past.  Otherwise this tracks the engine exactly: if the engine would still
     generate a future instance (e.g. an expired rule whose final period
     straddles ``as_of``), that instance's date is reported, matching the
     grid cell it points at.
+
+    **``as_of`` is this surface's own display boundary, not the rule's** -- the
+    rule's opening bound is its anchor, and putting a caller's window inside the
+    producer is what defect D2 was.  So the bound is stated here and the
+    PROJECTION is shared (:func:`~app.services.recurrence.placed_periods`),
+    which is the same split the retired ``match_periods`` adapter fused: it
+    both filtered and bounded, so a caller's window looked like a property of
+    the recurrence.
 
     **The rule-less branch is the whole "does not recur" case** since plan
     step R2e-3.  A second guard used to sit beside it for the ``Once``
@@ -237,8 +251,8 @@ def _next_occurrence(
     every render.  With the pattern retired, no such rule exists to guard.
 
     **This is now a fail-CLOSED read**, and plan step R4a is what changed it.
-    ``match_periods`` used to log a warning and answer ``[]`` for a rule it
-    could not read; it now raises
+    The retired matcher used to log a warning and answer ``[]`` for a rule it
+    could not read; the resolution seam now raises
     :class:`~app.services.recurrence.RecurrenceResolutionError` (an unmodelled
     pattern, an interval below 1, a day or month outside its column's domain),
     so ONE such rule takes the whole Recurring surface to a 500 rather than
@@ -257,7 +271,9 @@ def _next_occurrence(
     rule = getattr(template, "recurrence_rule", None)
     if rule is None:
         return None
-    for period in match_periods(rule, calendar, as_of):
+    for period in placed_periods(
+        rule_occurrences(rule, calendar), ending_on_or_after=as_of,
+    ):
         due = compute_due_date(rule, period)
         if due >= as_of:
             return due

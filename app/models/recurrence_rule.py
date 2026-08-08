@@ -19,8 +19,8 @@ Those four values become columns -- authored, NOT NULL, from one backfill, in
 the same transaction that drops the closed-set columns they were derived from
 -- at plan step R7c, where the recurrence form starts collecting them.
 
-What READS this table today: ``recurrence_engine.match_periods``, which since
-plan step R4a reads the row WHOLE -- it builds a ``RecurrenceSpec`` from every
+What READS this table today: ``app.services.recurrence.rule_occurrences``,
+which since plan step R4a reads the row WHOLE -- it builds a ``RecurrenceSpec`` from every
 authored column and hands it to ``app.services.recurrence.resolve``.  There is
 no per-pattern dispatch and no branch: ``interval_n`` is read (and refused when
 below 1) for every pattern, ``day_of_month`` / ``month_of_year`` are read for

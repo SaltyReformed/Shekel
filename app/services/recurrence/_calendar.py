@@ -3,8 +3,8 @@ Shekel Budget App -- The pay-period schedule, as the resolver reads it
 
 A recurrence rule's first occurrence is not a property of the rule alone: it
 is measured against the owner's pay-period schedule.
-``recurrence_engine.match_periods`` is handed that schedule as ORM rows and
-converts it here (:meth:`PeriodCalendar.from_pay_periods`); the resolver
+Every caller is handed that schedule as ORM rows and converts it here
+(:meth:`PeriodCalendar.from_pay_periods`); the resolver
 (:mod:`app.services.recurrence._resolution`) and the occurrence engine see
 only the frozen value objects, so both are pure functions of two values and
 can be exercised at exact dates without a database.
@@ -115,12 +115,12 @@ class PeriodCalendar:
     here is what lets :func:`~app.services.recurrence.resolve` check it.
 
     **The check is vacuous on the generation path and that is worth stating.**
-    ``recurrence_engine.match_periods`` builds the calendar with
-    ``rule.user_id``, so it compares the rule's owner against itself.  The
-    guard still bites where it was written for -- the two call sites above,
-    which pass an owner they derived elsewhere -- and the generation path is
-    protected instead by every caller querying periods for the template's own
-    user.  A reader must not mistake this for a check on that path.
+    :class:`~app.services.generation_schedule.GenerationSchedule` builds the
+    calendar for the user it loaded the schedule for, and every generate pass
+    is entered with the template's own owner, so on that path the guard
+    compares a value against itself.  It still bites where it was written for
+    -- the two call sites above, which pass an owner they derived elsewhere.
+    A reader must not mistake this for a check on the generation path.
 
     Attributes:
         user_id: The user whose schedule this is.

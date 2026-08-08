@@ -162,7 +162,7 @@ class TestRecurrenceRuleRangeConstraints:
         Both columns are NOT NULL with a server_default (1 / 0) plus the
         model's Python ``default=``, so a rule constructed without setting
         them lands a real integer once persisted -- never NULL.  The
-        recurrence engine (``match_periods`` EVERY_N_PERIODS branch), the
+        recurrence engine (the PERIOD-unit occurrence walk), the
         obligations frequency label, and
         ``savings_goal_service.amount_to_monthly`` read these directly --
         ``interval_n`` as a modulus / division divisor -- with NO

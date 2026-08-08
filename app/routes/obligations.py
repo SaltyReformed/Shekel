@@ -9,7 +9,7 @@ subtotals, computed by the same canonical ``obligations_aggregator``
 card is dropped: the dashboard's end-balance chart and the grid footer own
 that question, and the projection duplicated them.  Its approximate
 next-occurrence dates are superseded by the engine-backed dates the unified
-surface derives from ``recurrence_engine.match_periods``.
+surface derives from ``app.services.recurrence.rule_occurrences``.
 
 This module keeps the ``/obligations`` URL alive as a redirect so old
 bookmarks and links land on the surface that replaced it.

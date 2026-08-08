@@ -651,7 +651,7 @@ class TestTheFormsIntervalCannotChangeACalendarCadence:
 
     Plan step R2d removed the second meaning rather than guarding it.  The
     column carries only "repeat every N pay PERIODS" again, read by
-    ``match_periods`` in its ``EVERY_N_PERIODS`` branch; the interval of a
+    the PERIOD-unit occurrence walk; the interval of a
     MONTH- or YEAR-unit recurrence is derived from the PATTERN and stored
     nowhere.  So the assertions below are about the resolved cadence, not the
     column: whatever the form submits, a Quarterly rule recurs every 3 months.
