@@ -2,22 +2,21 @@
 
 ## Where this stands
 
-**Plan of record** for replacing the closed 8-name recurrence pattern set with a two-axis model, and
-for untangling the cash-date / installment-date collision. R1-R4 ARCHIVED.
-
-**R1-R2e IS IN PRODUCTION** (PR #84, 2026-08-07; prod runs `d4a71f6e30bb`).
-**R3, R4a, R4b-1 and R4b-2 are BUILT on `dev`, not yet PR'd.** R4 is COMPLETE.
+**Plan of record** for the two-axis recurrence model and the cash-date / installment-date split.
+R1-R4 ARCHIVED. **R1 THROUGH R4b-2 IS IN PRODUCTION** (PR #85, merge `5c33b462`, 2026-08-08; head
+`a3f8b1c40d92`, image `fa78960ae77b`, healthy in 15s, no rollback). Rehearsed on a restored prod
+copy first: the migration answered **3 / 0 / 1** there and again live, the trigger gate held at 42,
+and prod's post-deploy figures equal the rehearsal's exactly. The evidence is in PR #85.
 
 **Two rulings taken 2026-08-08 RESPECIFY R5, R6 and R7c**, both in the Rulings table. **R-R12**: a
 generated row carries three dates in three places (`occurs_on`, `pay_period_id`, `due_on`) and
 `compute_due_date` is DELETED -- R5's "the column holds the cash date" premise is measured FALSE
 (see D4). **R-R13**: `anchor_date` SPLITS into `starts_on` + `nominal_day` before R7c freezes it.
 
-**Do these in order.** (1) **Open the PR for R3-R4b-2** -- four unshipped leaves carrying the arc's
-largest behaviour change; `dev` green at 322 recurrence tests, `pylint app/` 10.00. (2) **R-F1**,
-the only carried finding with a live failure mode, and it lands during a DEPLOY. (3) **R-F10**,
-which deletes a fence and closes the balance arc's N-128 with it. Then R7a. **Also live:** R-F6,
-R-F7, R-F12, R-F13.
+**Do these in order.** (1) **R-F1**, the only carried finding with a live failure mode, and it lands
+during a DEPLOY -- which this arc has now exercised twice. (2) **R-F10**, which deletes a fence and
+closes the balance arc's N-128 with it. Then R7a; R5 and R6 wait on the balance arc (section 0).
+**Also live:** R-F6, R-F7, R-F12, R-F13.
 
 **Section 4 is the steps, 5 the ledger, 7 the gate rules. REPLACE this section; never append.**
 
