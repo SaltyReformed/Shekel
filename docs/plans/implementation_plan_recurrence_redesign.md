@@ -495,6 +495,18 @@ the Half-A part of R9); Half B = R5, R6 (see section 0).
 is logged and skipped (**D7**). R4a's D19 refusal upgrades here from "the paycheck and the count" to
 the occurrence DATES, which generation finally carries. **D10** gets the baseline shape that pins a
 `Monthly First` rule bounded past the horizon, then a surface says so.
+
+**What R4b-1 leaves binding it**, so this step does not rediscover them.
+`GenerationPlan.matching_periods` is the field whose shape changes, and `_get_existing_map`,
+`should_skip_period` and `refuse_unstorable_repeats` all consume it -- the last of those is what
+needs the DATES, so its signature and both engines' call sites move together.
+`RecurrenceConflictKind.regenerate_fn` is a STORED callable, so any signature change moves both kind
+tables and the generic invocation in one commit. The window intersection
+(`period.period_id in schedule.write_periods`) must survive the reshape: drop it and an extend
+re-walks every historical period. And the R1 oracle CANNOT see this step: it captures periods, and
+`compute_due_date` dates a repeated row from its PERIOD (**D18**), so repeats are byte-identical in
+the blob -- expect it not to move, and pin the occurrences in
+`tests/test_services/test_recurrence_occurrence.py` instead.
 **This step needs its own review pass.**
 
 - [ ] **R5 -- Row columns.**
@@ -749,16 +761,16 @@ F-1 to F-3 in their R-F step entries -- so a row is a pointer, never a second co
 
 D2-D7 are defects in the code the redesign replaces; D8-D12 are findings about the arc's OWN work;
 F-1 to F-3 and F-6 were found while building it and are NOT part of it, which is why their steps sit
-in the carried block at the end of section 4. F-4 and F-5 are pay-period features section 4a
-surfaced -- they have no step because they need a ruling first, which is what `operator` means here.
-**D1 left this table at R2c-1, D14/D15 at R2e-1, D13/D16 at R2e-3, D9 at R3, D3/D5 at R4a, and
-D22/D25 at R4b-1**; each measurement lives with the step that closed it -- the historical archive
-for D1, `4d99c9d4` for D14/D15, `eef43eef` for D13/D16, `4b5c577b` for D9, `1836a928` for D3/D5, and
-`b4538d25` for D22/D25. **F-8 and F-9** were found by R2e-3's review; **D18-D21** were found while
-building R3; **D23, D24 and F-10** while building R4a, and **D25** while building R4b-1, which
-closed it.
+in the carried block at the end of section 4. F-11 was surfaced while measuring D25 and predates
+this arc. F-4 and F-5 are pay-period features section 4a surfaced -- they have no step because they
+need a ruling first, which is what `operator` means here. **D1 left this table at R2c-1, D14/D15 at
+R2e-1, D13/D16 at R2e-3, D9 at R3, D3/D5 at R4a, and D22/D25 at R4b-1**; each measurement lives with
+the step that closed it -- the historical archive for D1, `4d99c9d4` for D14/D15, `eef43eef` for
+D13/D16, `4b5c577b` for D9, `1836a928` for D3/D5, and `b4538d25` for D22/D25. **F-8 and F-9** were
+found by R2e-3's review; **D18-D21** were found while building R3; **D23, D24 and F-10** while
+building R4a, and **D25** while building R4b-1, which closed it.
 
-**The ledger stands at 24 rows.**
+**The ledger stands at 25 rows.**
 
 | id | finding (one line) | worst measured | status | owned by |
 |---|---|---|---|---|
@@ -784,6 +796,7 @@ closed it.
 | F-10 | pay periods may be generated with a GAP: `_reject_overlapping_batch` requires a new batch to start AFTER the latest `end_date`, so `latest_end + 5 days` is accepted | none on production (all 61 periods contiguous, measured 2026-08-08), but a bill occurring in the hole is owed and has no paycheck to live in -- which is D7's cause rather than its symptom | OPEN | R-F10 (developer ruling first: refuse a gapped batch, or bridge it?) |
 | F-8 | a deploy's auto-rollback cannot survive a migration: the PREVIOUS image's Alembic tree cannot resolve a DB stamped by the new one, and `init_database.py` runs `command.upgrade(cfg, "head")` unguarded at entrypoint step 3 | probed on the R2e-3 revision: `CommandError: Can't locate revision identified by 'd4a71f6e30bb'` -- so every migration-bearing release rolls back into a dead container, and `docs/runbook.md` does not cover it | OPEN | operator (guard the upgrade and fall back, or accept it and document the restore-from-backup recovery?) |
 | F-9 | a transfer create with no baseline scenario reports success having materialised nothing -- the outcome the adjacent missing-period branch was just made to refuse | none: every owner gets a baseline at registration, so it is unreachable; both create paths (`_materialize_one_time_transfer` and `generate_transfers_for_all_periods`) share the shape | OPEN | operator (refuse both paths, or leave the broken-setup state to the baseline repair handler?) |
+| F-11 | the grid's inline amount editor pre-fills from the STORED `estimated_amount` while the cell renders the LIVE recomputed one, and saving sets `is_override` -- the flag that excludes the row from that recompute | none today (all 61 salary rows agree after R4b-1's migration), and re-arms whenever a profile / calibration / tax / code change invalidates the cache without firing a regeneration, which is the exact situation `income_service.live_projected_net` exists for. The user is then shown one number in the cell and a different one on clicking it, and accepting the editor's value freezes the stale figure into the projection permanently. Verified by reading `_transaction_cell.html:39`, `_transaction_quick_edit.html:25`, `transactions/forms.py:48` and `transactions/mutations.py:295`; NOT driven through the UI. Surfaced while measuring D25, and not part of it -- the mismatch predates this arc | OPEN | operator (pre-fill the editor with the live figure so what you see is what you edit, or stop setting `is_override` when the submitted amount is unchanged?) |
 | F-4 | `pay_periods` stores NOMINAL paydays; a holiday/weekend shift for the pay SCHEDULE is unmodelled | Josh's 1 Jan 2026 payday was really paid 31 Dec 2025 | OPEN | operator (scope it as its own task, or rule it out?) |
 | F-5 | a 27-paycheck year is a real budgeting event and no surface names one | one extra $500 Groceries + one extra $2,473.38 paycheck | OPEN | operator (build the surfacing, or leave it?) |
 
