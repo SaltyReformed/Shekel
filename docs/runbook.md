@@ -81,7 +81,8 @@ also `docs/runbook_secrets.md`.
 
 | Script | Purpose | Usage |
 |--------|---------|-------|
-| `scripts/deploy.sh` | Deploy new version with rollback | `./scripts/deploy.sh [--skip-pull] [--skip-backup]` |
+| `shekel-deploy` | **Production deploy** (digest-pinned GHCR image + cosign) | `shekel-deploy [sha256:... ] [--dry-run] [--no-verify]` |
+| `scripts/deploy.sh` | Self-hosted **source-build** deploy (NOT the production path) | `./scripts/deploy.sh [--skip-pull] [--skip-backup]` |
 | `scripts/backup.sh` | Create database backup | `./scripts/backup.sh [--no-nas] [--local-dir DIR]` |
 | `scripts/restore.sh` | Restore database from backup | `./scripts/restore.sh <backup_file>` |
 | `scripts/verify_backup.sh` | Verify backup integrity | `./scripts/verify_backup.sh <backup_file>` |
@@ -119,6 +120,59 @@ Crontab entries (replace `/opt/shekel` with your actual path):
 ## 2. Deployment
 
 ### 2.1 Deploying a New Version
+
+**There are two deploy paths, and only one of them is production.** Pick by how the image is
+produced, not by which script you remember.
+
+| | Production (maintainer) | Self-hosted source build |
+|---|---|---|
+| Script | `shekel-deploy` | `scripts/deploy.sh` |
+| Canonical source | `deploy/shekel-deploy.sh` in the repo, symlinked to `/opt/docker/scripts/` | `scripts/deploy.sh` |
+| Stack | `/opt/docker/shekel` (hardened, digest-pinned) | `/opt/shekel` (`docker-compose.yml` + `docker-compose.build.yml`) |
+| Image | `ghcr.io/saltyreformed/shekel@sha256:...`, cosign-verified | built locally from the working tree |
+| Rollback | digest revert, **refused for a migration-bearing release** (2.3) | `:previous` image tag |
+
+`scripts/deploy.sh` **refuses to run when `/opt/docker/shekel` exists** (`--force-self-hosted`
+overrides): running it on the maintainer's host would replace the pinned, hardened container with an
+unpinned locally-built one. If you are the maintainer, you want `shekel-deploy`; 2.1.2 below is for
+self-hosted installs that build from source.
+
+#### 2.1.1 Production deploy (`shekel-deploy`)
+
+```bash
+shekel-deploy                  # pull :latest, deploy if the digest is new
+shekel-deploy sha256:abc...    # deploy one specific digest
+shekel-deploy --dry-run        # resolve, verify, report the pre-flight, change nothing
+```
+
+**What it does (in order):**
+
+1. Resolves the target digest (pulls `:latest`, or takes an explicit `sha256:...`). No-ops if it
+   already matches the current pin.
+2. `cosign verify` against the keyless OIDC identity of `.github/workflows/docker-publish.yml`.
+   Aborts if `cosign` is missing; `--no-verify` is for emergencies only.
+3. **Migration pre-flight.** Lists `migrations/versions` in *both* images and reports the revisions
+   the target adds. A non-empty set means the release is **migration-bearing**, which changes the
+   failure path (2.3). `--dry-run` reports this without deploying.
+4. **`pg_dump -Fc` of the whole database** into `~/shekel-backups/` (override with
+   `SHEKEL_BACKUP_DIR`), written to a `.part` file and renamed only after `pg_restore -l` reads a
+   table of contents back out of it. **No dump, no deploy** -- a dump failure aborts *before* the
+   pin is touched.
+5. Rewrites `SHEKEL_IMAGE_DIGEST` in `/opt/docker/shekel/.env` and `docker compose up -d app`.
+   Migrations run inside the container, at entrypoint step 3.
+6. Polls the container healthcheck for up to 4 minutes; ntfy ping either way.
+
+**The canonical copy is `deploy/shekel-deploy.sh` in this repo**, and
+`/opt/docker/scripts/shekel-deploy.sh` is a symlink to it. That means
+**the checked-out working tree is what rolls production** -- check out the revision you intend to
+deploy from before running it. Install or repair the link with:
+
+```bash
+sudo ln -sfn /home/josh/projects/Shekel/deploy/shekel-deploy.sh \
+             /opt/docker/scripts/shekel-deploy.sh
+```
+
+#### 2.1.2 Self-hosted source-build deploy (`scripts/deploy.sh`)
 
 The deploy script automates the full deployment workflow with automatic rollback on failure.
 
@@ -180,8 +234,41 @@ curl -s http://localhost/health
 
 ### 2.3 Rolling Back
 
-**Automatic rollback:** The deploy script automatically rolls back if the health check fails after
-restart. No manual action is needed.
+#### A migration-bearing production release CANNOT be rolled back by re-pinning
+
+**Read this before reaching for a rollback.** Migrations run at entrypoint step 3, *before* the
+health check. So by the time a production deploy is judged unhealthy, the database may already be
+stamped at a revision the previously-pinned image's Alembic tree does not contain. That image then
+dies at step 3 as well -- reproduced as `CommandError: Can't locate revision identified by ...` --
+so re-pinning turns one dead container into two.
+
+`shekel-deploy` therefore **refuses to re-pin** when its pre-flight found new migrations. It leaves
+the pin at the new digest deliberately, prints the revisions the release added, and names the
+pre-deploy dump plus the exact restore sequence. Recovery is:
+
+```bash
+cd /opt/docker/shekel
+docker compose stop app
+
+# Restore the dump shekel-deploy named in its output.
+docker exec -i shekel-prod-db pg_restore -U shekel_user \
+    -d shekel --clean --if-exists <'/home/josh/shekel-backups/shekel_prod_predeploy_<digest>_<ts>.dump'
+
+# Only now put the pin back.
+sed -i 's|^SHEKEL_IMAGE_DIGEST=.*|SHEKEL_IMAGE_DIGEST=<old-digest>|' /opt/docker/shekel/.env
+docker compose up -d app
+```
+
+**Read `docker logs shekel-prod-app` first.** A health failure that never reached the migration step
+needs no restore at all -- only the pin. The refusal is fail-closed because the two cases are not
+distinguishable from the exit status, not because a restore is always required.
+
+For a release with **no** new migrations -- 6 of the last 10 are pure digest reverts -- the
+automatic rollback is unchanged and still correct.
+
+**Automatic rollback:** For a self-hosted source build, `scripts/deploy.sh` automatically rolls back
+if the health check fails after restart. No manual action is needed. For production, see the
+migration rule above.
 
 **Manual rollback** (if the deploy script was not used or rollback failed):
 
