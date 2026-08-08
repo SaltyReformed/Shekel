@@ -3,21 +3,20 @@
 ## Where this stands
 
 **Plan of record** for the two-axis recurrence model and the cash-date / installment-date split.
-R1-R4 ARCHIVED. **R1 THROUGH R4b-2 IS IN PRODUCTION** (PR #85, merge `5c33b462`, 2026-08-08; head
-`a3f8b1c40d92`). The rehearsal evidence is in PR #85.
+R1-R4 ARCHIVED. **R1-R4b-2 IS IN PRODUCTION** (PR #85, merge `5c33b462`, head `a3f8b1c40d92`).
 
-**R-F1 is on `dev`, not pushed** (`44b25ad3`, migration `c7f3a9d1e864`): the five `ref` identity
-sequences that sat behind their data are back in step. It makes the next release MIGRATION-BEARING,
-and the developer ruled 2026-08-08 that **R-F8 ships FIRST and R-F1 rides with it** -- one PR
-carrying both.
+**Two carried findings sit on `dev`, unpushed, and ship together in ONE PR** (ruled 2026-08-08).
+**R-F1** (`44b25ad3`, migration `c7f3a9d1e864`) puts the five lagging `ref` identity sequences back
+in step, which makes the release MIGRATION-BEARING -- so **R-F8** (`8aeae48e`) goes with it: such a
+deploy now dumps first and REFUSES the rollback that cannot work. Its symlink install is last.
 
 **Two rulings taken 2026-08-08 RESPECIFY R5, R6 and R7c**, both in the Rulings table. **R-R12**: a
 generated row carries three dates in three places (`occurs_on`, `pay_period_id`, `due_on`) and
 `compute_due_date` is DELETED -- R5's "the column holds the cash date" premise is measured FALSE
 (see D4). **R-R13**: `anchor_date` SPLITS into `starts_on` + `nominal_day` before R7c freezes it.
 
-**Do these in order: R-F8** (in flight)**, R-F10** (deletes a fence, closes N-128)**, R7a.** R5 and
-R6 wait on the balance arc (section 0). **Also live:** R-F6, R-F7, R-F12, R-F13.
+**Then R-F10** (deletes a fence, closes N-128)**, then R7a.** R5 and R6 wait on the balance arc
+(section 0). **Also live:** R-F6, R-F7, R-F12, R-F13.
 
 **Section 4 is the steps, 5 the ledger, 7 the gate rules. REPLACE this section; never append.**
 
@@ -621,30 +620,12 @@ used to propose cannot fix it -- see R-R7. Deleting the 3 existing rows rides in
 the cleanup and its cause are reviewed together; that makes the migration destructive, so it carries
 the `Review:` line and a downgrade that refuses with the literal SQL.
 
-- [ ] **R-F8 -- the deploy's safety net stops lying** (findings F-8 and F-14, ruling R-R14).
-
-**Do it before the next migration-bearing release**; 4 of the last 10 carried one. Migrations run at
-entrypoint step 3, BEFORE the health check, so a failed deploy strands the database where the
-previously-pinned image cannot follow and that image dies at step 3 too -- the rollback turns one
-dead container into two.
-
-**Four deliverables, in order.** (1) **DONE, `2e63e4f9`** -- the script is in the repo at
-`deploy/shekel-deploy.sh` and byte-identical to the host copy, so `shellcheck` and `shfmt` now see
-the one path that rolls production (finding F-14, and why F-8 survived).
-**Install mode ruled 2026-08-08: SYMLINK** `/opt/docker/scripts/shekel-deploy.sh` at the repo copy,
-so drift is structurally impossible; the accepted cost is that the checked-out tree IS the live
-deploy path, so the link is made LAST, after (2)-(4) are committed. (2) An unconditional
-`pg_dump -Fc` before the pin is rewritten; no dump, no deploy. (3) A pre-flight comparing the two
-images' migration revision sets, which STATES that rollback is backup-only when that set is
-non-empty. (4) A failure path that, for such a release, does not re-pin at all but names the dump
-and the restore command. `docs/runbook.md` is corrected with them -- it documents
-`scripts/deploy.sh` and a `:previous` tag, not the tooling in use.
-
-**Two things it must NOT do**, both ruled: the no-migration rollback STAYS (correct, and 6 of the
-last 10 releases were pure digest reverts), and `init_database.py` keeps RAISING rather than booting
-against an unresolvable revision. **Its negative control is the point**: plant a failing health
-check on a migration-bearing deploy against a restored clone and watch the script refuse and name
-the dump.
+- [x] **R-F8 -- the deploy's safety net stops lying (F-8, F-14, R-R14).** `2e63e4f9`, `8aeae48e`:
+      migration pre-flight, unconditional `pg_dump -Fc` before the pin moves, and no re-pin for a
+      migration-bearing release; runbook forked; `test_shekel_deploy_safety.py` holds the ORDER in
+      CI, and an 18-assertion control drove the real script against a throwaway stack.
+      **Still to do: the SYMLINK install** -- deliberately last, because it makes the checked-out
+      tree the live deploy path.
 
 - [ ] **R-F2 -- Tighten the ref-seed parity scan's statement boundary** (finding F-2).
 
@@ -783,7 +764,7 @@ D14/D15, `eef43eef` for D13/D16, `4b5c577b` for D9, `1836a928` for D3/D5, `b4538
 and `75346625` for D7. **F-8 and F-9** were found by R2e-3's review; **D18-D21** were found while
 building R3; **D23, D24 and F-10** while building R4a, and **D25** while building R4b-1.
 
-**The ledger stands at 28 rows.**
+**The ledger stands at 26 rows.**
 
 | id | finding (one line) | worst measured | status | owned by |
 |---|---|---|---|---|
@@ -809,8 +790,6 @@ building R3; **D23, D24 and F-10** while building R4a, and **D25** while buildin
 | F-12 | THREE implementations of "which pay period contains this date": `recurrence/_calendar.py:263` (bisect, `None` in a gap), `balance_at/_cash_periods.py:310` (bisect, `None`, returns an id), `loan_ledger/_visible.py:117` (linear scan, falls back to the latest period ENDING before the target). Two are byte-similar; the third's fallback is what the other two deliberately refuse | `$0.00` today -- every caller is correct for the question it asks. The cost is that "which paycheck is this in" has three answers, and the balance arc's X-l needs a fourth ("answer any date, past the horizon") | OPEN, found 2026-08-08 | R-F12 |
 | F-13 | three holes in the arc's OWN gate: `OccurrencePlacement(` is constructed in exactly ONE place in the repository and never in `tests/`, so R4b-2's `__post_init__` invariant has no negative control; `.outcome` is asserted ONCE in the whole suite (`test_recurrence_engine.py:1708`, a well-built control for the healthy-schedule false alarm, but `SCHEDULE_GAP` is never asserted as a member and `test_recurrence_occurrence.py` asserts only `period is None`); and `SHEKEL_UPDATE_RECURRENCE_BASELINE` turns the 430-shape gate into a `pytest.skip` (`test_recurrence_baseline.py:56`) with nothing asserting the variable is unset | `$0.00` today. R8 adds a second `OccurrencePlacement` producer, which is when the missing control starts mattering | OPEN, found 2026-08-08 | R-F13 |
 | F-10 | pay periods may be generated with a GAP: `_reject_overlapping_batch` requires a new batch to start AFTER the latest `end_date`, so `latest_end + 5 days` is accepted | none on production (all 61 periods contiguous, measured 2026-08-08), but a bill occurring in the hole is owed and has no paycheck to live in -- which is D7's cause rather than its symptom, and the SAME defect as the balance arc's **N-128** (`-$140.63` on the gapped clone), which neither plan recorded until 2026-08-08. Closing it makes `PlacementOutcome.SCHEDULE_GAP`, `GenerationPlan.gaps` and `report_schedule_gaps` unconstructible | OPEN | R-F10 (developer ruling first: refuse a gapped batch, or bridge it?) |
-| F-8 | a deploy's auto-rollback cannot survive a migration: the PREVIOUS image's Alembic tree cannot resolve a DB stamped by the new one, and `init_database.py` runs `command.upgrade(cfg, "head")` unguarded at entrypoint step 3 | probed on the R2e-3 revision: `CommandError: Can't locate revision identified by 'd4a71f6e30bb'` -- so every migration-bearing release rolls back into a dead container, and `docs/runbook.md` does not cover it | OPEN, RULED 2026-08-08 (R-R14). REPRODUCED on the live revision, and worse than this row said: the rollback is GUARANTEED to fail for a migration-bearing release, not merely unreliable | R-F8 |
-| F-14 | the deploy script is NOT in the repository: `shekel-deploy` is a symlink to `/opt/docker/scripts/shekel-deploy.sh`, so the one path that rolls production is untracked, unreviewed, and outside all 13 of the polyglot gate's linters -- `shellcheck` and `shfmt` run on every `*.sh` in the tree and have never seen it | `$0.00` directly, and it is WHY F-8 survived: nobody could review a rollback nobody could read. It also takes no pre-deploy backup, which is why today's ship needed a manual one | OPEN, found 2026-08-08 | R-F8 (which brings it into `deploy/` under the shell gates before changing it) |
 | F-9 | a transfer create with no baseline scenario reports success having materialised nothing -- the outcome the adjacent missing-period branch was just made to refuse | none: every owner gets a baseline at registration, so it is unreachable; both create paths (`_materialize_one_time_transfer` and `generate_transfers_for_all_periods`) share the shape | OPEN | operator (refuse both paths, or leave the broken-setup state to the baseline repair handler?) |
 | F-11 | the grid's inline amount editor pre-fills from the STORED `estimated_amount` while the cell renders the LIVE recomputed one, and saving sets `is_override` -- the flag that excludes the row from that recompute | none today (all 61 salary rows agree after R4b-1's migration), and re-arms whenever a profile / calibration / tax / code change invalidates the cache without firing a regeneration, which is the exact situation `income_service.live_projected_net` exists for. The user is then shown one number in the cell and a different one on clicking it, and accepting the editor's value freezes the stale figure into the projection permanently. Verified by reading `_transaction_cell.html:39`, `_transaction_quick_edit.html:25`, `transactions/forms.py:48` and `transactions/mutations.py:295`; NOT driven through the UI. Surfaced while measuring D25, and not part of it -- the mismatch predates this arc | OPEN | operator (pre-fill the editor with the live figure so what you see is what you edit, or stop setting `is_override` when the submitted amount is unchanged?) |
 | F-4 | `pay_periods` stores NOMINAL paydays; a holiday/weekend shift for the pay SCHEDULE is unmodelled | Josh's 1 Jan 2026 payday was really paid 31 Dec 2025 | OPEN | operator (scope it as its own task, or rule it out?) |
