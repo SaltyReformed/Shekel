@@ -260,7 +260,7 @@ outside the schedule (one `operator`, two `developer-decision`). Measured, not a
 | 6 | **the read-path residue** -- X-y, X-i1, X-i2, X-j, X-k, X-l, X-m, X-n, X-e, X-p, X-ab, X-ac | Nothing blocks on it and its footprint is disjoint from the write path (tag `xd-attempt-1-parked-n155`'s 30 `app/` files against tag `xx-attempt-1-held-rde`'s 26: **zero overlap**, measured) | 50-70 h |
 | 7 | **the gate and vocabulary residue** -- X-ag, X-ah, X-al | Shares files with nothing; interleaves anywhere | 11-15 h |
 | 8 | **E2 and G** | Runs LAST by ruling; G2 must not begin before the boundary it rests on is proven | 28-44 h |
-| 9 | **the recurrence redesign** (own document) -- **NOT part of this arc** | Its **Half A** (`R1`-`R4`, `R7`-`R8`) overlaps every live block by ONE file (`_recurrence_common.py`, against the `xd-attempt-1-parked-n155` tag), so it interleaves anywhere and pauses nothing. Its **Half B** (`R5`/`R6`) overlaps **4 of 4** of X-an's surfaces and is the SAME trace, so it ships WITH X-an and after X-f4 | own document; not measured against this arc's history |
+| 9 | **the recurrence redesign** (own document) -- **NOT part of this arc** | Its **Half A** (`R1`-`R4`, `R7`-`R8`) overlaps every live block by ONE file (`_recurrence_common.py`, against the `xd-attempt-1-parked-n155` tag), so it interleaves anywhere and pauses nothing. Its **Half B is NOT one unit**, corrected 2026-08-08: **`R6` ships WITH X-an** (it overlaps 4 of 4 of X-an's surfaces and is the same loan-date trace), while **`R5` waits on X-f4**, three steps later with X-f3 between them. `R5` also collides with **X-k**; see that step | own document; not measured against this arc's history |
 
 **Three blocks leave this document and keep only their row here**:
 `docs/plans/implementation_plan_bank_import.md` (X-f6, not yet written), the existing
@@ -580,7 +580,12 @@ live step or a live finding still reads against them.
   closes **N-18**, **N-19**, **N-23**, **N-24**. **Ruling R-AP, taken AGAINST the recommendation**:
   they stay in this ledger and get a step. The ground the recommendation rested on SURVIVES as the
   step's scoping rule -- X-k touches the recurrence engine and the transfer write door and NOT the
-  seam, so it shares no file with any other remaining step and must not grow into one. **Root:
+  seam, so it must not grow into one. **The "shares no file with any other remaining step" half is
+  FALSE, corrected 2026-08-08**: the recurrence redesign's `R5` edits `recurrence_engine.py` and
+  `transfer_service.py`, both of them X-k's. Block 9's one-file overlap was measured against the two
+  parked TAGS and never against this step. **Sequence X-k AFTER `R5`**, which deletes
+  `compute_due_date` and re-keys the generation index; rebasing X-k over that is cheaper than the
+  reverse, and X-k's own root is untouched by it. **Root:
   `RecurrenceRule.end_date` is a stored derived value never reconciled against what was actually
   GENERATED**, and the write door's refusals have no consistent batch contract: one refused loan
   payment rolls back an entire carry-forward batch, and three generation call sites have no
@@ -588,7 +593,15 @@ live step or a live finding still reads against them.
   is on a balance screen: a shadow generated past a bound that later moves EARLIER keeps its
   checking-side expense leg.
 * [ ] **X-l** `feat(periods): the pay calendar answers any date` -- closes **N-82**, **N-128**, and
-  **N-79**'s surviving far half. **Root, and it is this arc's own disease on the other axis: the pay
+  **N-79**'s surviving far half. **The value type this needs already EXISTS** (noted 2026-08-08):
+  the recurrence arc built `app.services.recurrence.PeriodCalendar`, a frozen schedule whose
+  ordering invariant is CHECKED in `__post_init__` and which already answers `opening_bound`,
+  `horizon`, `period_containing`, `period_starting_on_or_after` and `earliest_start_in_month`.
+  **The app now holds THREE implementations of "which pay period contains this date"** -- that
+  one, `balance_at/_cash_periods.py:310` (a byte-similar bisect) and
+  `loan_ledger/_visible.py:117` (a linear scan whose fallback the other two deliberately
+  refuse). That is the recurrence arc's finding **F-12**, owned there by step **R-F12**, and
+  the two steps must be SEQUENCED TOGETHER or the fourth answer gets built here. **Root, and it is this arc's own disease on the other axis: the pay
   calendar is a PARTIAL function.** `get_all_periods` returns the MATERIALIZED rows and nothing
   else, so past the last row every consumer improvises and the improvisations disagree -- precisely
   the shape Section 1 describes and Section 3 deletes with a total fold. Measured: past the horizon
@@ -752,10 +765,10 @@ record of what was measured.
 | FU-3 | Standing overpayment resolves at TODAY for any as-of: `_resolution.py:294` reads the CURRENT template row with no as-of, inside a pass the context pins | latent | OPEN, re-verified 2026-07-27 | X-i2 |
 | N-96 | `balance_at.interest_by_period_for_account` is a public seam entry with ZERO `app/` callers, and `__init__.py` states as fact that two screens read it | a seam entry no screen can reach, documented as one two screens read | OPEN, AST-verified 2026-07-27 | X-e |
 | N-97 | `app/utils/dates.py:314` cites `balance_resolver.daily_cash_balance_series` as a live consumer of `attribution_date`; that producer was deleted at X-c2b3. The rule it states is still true | a present-tense claim naming a producer deleted a month earlier | OPEN, reported not fixed | X-p |
-| N-18 | The recurrence bound and what was GENERATED can disagree, in both directions: `match_periods` neither backfills nor prunes | bound 1 `2026-04-01` vs bound 2 `2026-03-01` | OPEN, ruled to X-k (R-AP) | X-k |
+| N-18 | The recurrence bound and what was GENERATED can disagree, in both directions: nothing backfills or prunes when `RecurrenceRule.end_date` moves | bound 1 `2026-04-01` vs bound 2 `2026-03-01` | OPEN, ruled to X-k (R-AP). **Its citation named `match_periods`, which the recurrence arc DELETED at R4b-2 (`75346625`)** -- the N-97 shape, one arc over, corrected 2026-08-08. The defect survives the deletion (a stored bound nothing reconciles), but the measurement predates the forward engine, so X-k must RE-MEASURE it rather than carry it | X-k |
 | N-19 | A RETIRED loan's recurrence bound does not exclude the CURRENT pay period (`period.start_date <= end_date` still matches) | -- | OPEN, ruled to X-k | X-k |
 | N-23 | A refused loan payment fails an entire carry-forward batch | whole batch lost | OPEN; batch semantics ruled at X-k's trace, not folded into a prune commit | X-k |
-| N-24 | Three generation call sites have no `ValidationError` handler, so a refused write 500s | 500 on pay-period extend and on unarchive | OPEN, ruled to X-k | X-k |
+| N-24 | Three generation call sites have no `ValidationError` handler, so a refused write 500s | 500 on pay-period extend and on unarchive | OPEN, ruled to X-k. **Its ANSWER already exists and X-k should adopt rather than re-invent it** (noted 2026-08-08): the recurrence arc hit the identical problem at R4a and solved it with ONE application-level handler (`RecurrenceCadenceUnsupported`, `app/error_handlers.py:134`) on the `BaselineMissingError` / R-BW pattern, precisely because eleven call sites deciding separately is the failure R-BW catalogued. Per-call-site handlers are the shape to avoid | X-k |
 | N-25 | A real runtime import cycle was invisible to `cyclic-import`, because a TYPE-ONLY import of the same module excluded the edge for every import of it | a cycle plus an inverted dependency, gate-green | instance closed (`8285fcad`); the CLASS is an upstream limitation with no shared root here | developer-decision (dated 2026-07-27) |
 | N-33 | 13 cross-package private-NAME imports: four route modules import 13 private names from `app.utils.account_validation`, so the names lie about their visibility | -- | OPEN, ruled to E2-0, which asks the same question one level down | E2-0 / E2-n (R-AO) |
 | N-35 | The statement tier `ledger_report_service` is not W9909-scoped, so a public balance-at-T born there would be unguarded | a balance-at-T outside the seam with every gate green | recorded, NOT fixed; the false absolute claim was corrected in-commit | E2-0 |
@@ -787,7 +800,7 @@ record of what was measured.
 | N-123 | The pay-calendar WRITER refuses every payday from `today+1` to `today+13` and leaves a permanent hole on every one after `today+14` | `$0.00` on both databases today; `$3,228.55` the moment a hole exists | OPEN | X-ad |
 | N-124 | The forward rolling top-up backfills HISTORY: a lapsed schedule generates past periods and populates them | `$0.00` in balance terms; the generated rows are Projected | OPEN | X-ad |
 | N-127 | The interior calendar hole has NO working repair, and X-x as written points every refusal at it | `$0.00` in figures; X-x would convert wrong numbers into a dead end | OPEN | X-ad |
-| N-128 | A pay-period hole breaks R-K's reconciliation identity, and it is in the FOLD, not above it | `-$140.63` on the gapped clone | OPEN; X-ad stops new holes reaching it | X-l |
+| N-128 | A pay-period hole breaks R-K's reconciliation identity, and it is in the FOLD, not above it | `-$140.63` on the gapped clone | OPEN; X-ad stops new holes reaching it. **Its CAUSE is the recurrence arc's finding F-10** -- `pay_period_service._reject_overlapping_batch` refuses an OVERLAPPING batch and not a GAPPED one, so `latest_end + 5 days` is accepted. One defect recorded in two plans, matched 2026-08-08; closing F-10 closes this row's generator and makes `PlacementOutcome.SCHEDULE_GAP` unconstructible with it | X-l |
 | N-129 | Converting a page to "raise" silently blinds every test whose fixture calendar does not cover today, including security controls | 84 unique node ids fire the precondition; ~80 controls blinded | OPEN, measured with an instrumented full run | X-x |
 | N-125 | The salary cockpit is the SEVENTH answer to "no pay period covers today" | `$0.00` -- an empty page rather than a wrong number | OPEN, measured at X-x2 and deliberately not widened into | X-x |
 | N-126 | A public contribution producer has no caller in `app/`, and its whole body is a fabrication the trace was about to fix | `$0.00`: no `app/` path reaches it | OPEN, found by the call-graph pass | X-x |
