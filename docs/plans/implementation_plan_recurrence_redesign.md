@@ -37,6 +37,8 @@ Taken 2026-08-05 (developer):
 | **Anchor day vs month-end clamp** | **`anchor_date` + a 0..1 `recurrence_month_anchors` subtype. See R-R3** |
 | **`Once` rules** | **Retired at R2e, BEFORE the new engine and the cutover. R-R4 / R-R11, archived** |
 | **R2 sequencing** | **R2a (vocabulary) -> R2b (subtypes) -> R2c-1 (the door) -> R2d (stop storing the derivation). All DONE** |
+| **R4 sequencing** | **THREE leaves: R4a (answer forward) -> R4b-1 (answer against the owner) -> R4b-2 (the pairs). Split 2026-08-08 so every money change lands in one reviewable leaf** |
+| **The wrong stored paycheck** | **Corrected by the R4b-1 migration to the value a whole-schedule calculation gives, targeted by the defect's signature. Ruled 2026-08-08; see D25's measurement** |
 | **Bound semantics** | **Occurrence-bounded, not period-bounded. The four frozen shapes moved at R4a. See R-R6** |
 | **Orphaned rules** | **NOT deleted in R2b; they ship with the fix for the leak that makes them. See R-R7** |
 | **Monthly First anchor** | **The 1st of the first month whose OWN first paycheck clears the bound. See R-R6** |
@@ -479,19 +481,12 @@ the Half-A part of R9); Half B = R5, R6 (see section 0).
       domain check bind the AUTHORED value. **Binds R4b:** the refusal names the paycheck and the
       count, not the dates -- generation does not carry occurrences until R4b does.
 
-- [ ] **R4b-1 -- the rule resolves against the OWNER's schedule.**
-
-**R4b split into TWO leaves 2026-08-08**, after measuring the first turned up a second live money
-defect with the same root cause. `app/services/generation_schedule.py`'s `GenerationSchedule`
-separates the two facts one `periods` argument carried: the schedule a rule is RESOLVED against (the
-owner's, loaded by the value's own constructors) and the window a pass WRITES into (the caller's).
-Closes **D22**, **D25** and **D2**; carries the migration that deletes the 3 duplicate rows and
-corrects the one wrong stored paycheck -- destructive, so it takes the `Review:` line and a
-downgrade that refuses with the literal SQL. Two adversarial reviews changed it: an N+1 in
-carry-forward (0 -> 12 schedule reads per preview, 24 per execute), a regenerate sweep bounded by
-the schedule while writing into the window, a `GenerationSchedule` whose stated guarantee the code
-did not enforce, and -- the lesson -- a "verified red" claim for D2 that a lossy test port had
-faked.
+- [x] **R4b-1 -- the rule resolves against the OWNER's schedule.** `b4538d25` --
+      `GenerationSchedule` separates the schedule a rule is RESOLVED against (the owner's, loaded by
+      the value's own constructors) from the window a pass WRITES into. **D22, D25 and D2 closed**;
+      the migration deleted the 3 duplicate rows and corrected the one wrong stored paycheck. Two
+      adversarial reviews found an N+1, a mis-bounded regenerate sweep, an unenforced guarantee, an
+      over-broad DELETE, and a "verified red" claim a lossy test port had faked.
 
 - [ ] **R4b-2 -- generation moves onto the occurrence pairs.**
 
@@ -756,13 +751,14 @@ D2-D7 are defects in the code the redesign replaces; D8-D12 are findings about t
 F-1 to F-3 and F-6 were found while building it and are NOT part of it, which is why their steps sit
 in the carried block at the end of section 4. F-4 and F-5 are pay-period features section 4a
 surfaced -- they have no step because they need a ruling first, which is what `operator` means here.
-**D1 left this table at R2c-1, D14/D15 at R2e-1, D13/D16 at R2e-3, D9 at R3, and D3/D5 at R4a**;
-each measurement lives with the step that closed it -- the historical archive for D1, `4d99c9d4` for
-D14/D15, `eef43eef` for D13/D16, `4b5c577b` for D9, and `1836a928` for D3/D5. **F-8 and F-9** were
-found by R2e-3's review; **D18-D21** were found while building R3; **D22, D23, D24 and F-10** while
-building R4a, and none of the eight is part of the step that found it.
+**D1 left this table at R2c-1, D14/D15 at R2e-1, D13/D16 at R2e-3, D9 at R3, D3/D5 at R4a, and
+D22/D25 at R4b-1**; each measurement lives with the step that closed it -- the historical archive
+for D1, `4d99c9d4` for D14/D15, `eef43eef` for D13/D16, `4b5c577b` for D9, `1836a928` for D3/D5, and
+`b4538d25` for D22/D25. **F-8 and F-9** were found by R2e-3's review; **D18-D21** were found while
+building R3; **D23, D24 and F-10** while building R4a, and **D25** while building R4b-1, which
+closed it.
 
-**The ledger stands at 26 rows.**
+**The ledger stands at 24 rows.**
 
 | id | finding (one line) | worst measured | status | owned by |
 |---|---|---|---|---|
@@ -783,10 +779,8 @@ building R4a, and none of the eight is part of the step that found it.
 | D11 | two branches of `_first_of_month_anchor` are unreachable, and one comments a case that cannot execute | none -- both are dead; proven by argument and by a 243,018-case sweep in which neither was ever taken | OPEN | R-F7 |
 | D12 | `ref_cache.recurrence_unit_id` / `period_placement_id` / `business_day_shift_id` have ZERO callers in `app/` since R2d made `resolve()` return enum members | none -- they are correct and tested; the risk is a dead-code sweep DELETING them before their first consumer exists | OPEN | R7c (its backfill maps enums back to ids) |
 | D17 | `RecurrenceRule.pattern` is `lazy="joined"`, so every rule load eager-joins `ref.recurrence_patterns` for a relationship whose only reader is the `recurrence_cell` macro's else-branch | none -- one join per rule load | OPEN | R7a (deletes that branch, the labels dict and `pattern_labels_by_name` together, so the join goes with them) |
-| D22 | a `Monthly First` rule generated a DUPLICATE row for a month already covered, every time the schedule was extended into it | **live on production**: template 3 `Phone Allowance` carries 3 spurious projected rows (2 in 2028-03, 3 in 2028-06) at $39.54 each -- $118.62 over-budgeted and growing by ~$39.54 on roughly every other extend. `_match_monthly_first` picks "the first period whose start falls in each month" from the CANDIDATE list, and the extend path hands it only the new periods; it is the one matcher with no containment test, so it is the one that is window-dependent. Measured 2026-08-08 against `shekel-prod-db`, with each duplicate's `created_at` matching a separate extend | CLOSED at R4b-1 -- the rule resolves against the owner's schedule and the migration deleted the 3 rows | R4b-1 |
 | D23 | the recurrence write door refuses 3 of the table's 7 CHECK constraints; the other four reach the flush as an unhandled `IntegrityError` naming neither field nor value | none today -- every live writer is schema-validated. R4a added `ck_recurrence_rules_dom` and `ck_recurrence_rules_moy` to the door (they were forced: deleting `_match_annual` removed the only thing refusing month 13); `due_dom`, `valid_offset`, `positive_max_occurrences` and `single_end_bound` are not mirrored | OPEN | R7b (the form rewrite that gives `max_occurrences` its first writer, so it owns both bound CHECKs) |
 | D24 | an `Every N Periods` rule's phase is READ from the start period when the schedule handed in contains it, and from the stored `offset_periods` column when it does not | none -- the write door has DERIVED the column from the start period on every write since R2c-1 (defect D1's fix), so the two can disagree only on a row written before that and never re-authored: zero on production, and all 46 live rules carry `interval_n = 1` where the phase is inert (measured 2026-08-08). Found by adversarial review of R4a, which is where the READ started agreeing with the write; the path-dependence is real -- the extend path hands over only the new periods, so it takes the column while create / regenerate take the derivation | OPEN | R7c (drops the column, so the authored anchor must carry the phase by construction -- the same requirement D21 states from the anchor's side) |
-| D25 | the paycheck calculator read the caller's WINDOW as its `all_periods`, so third-paycheck detection, the first-paycheck-of-month deductions, the annual rounding reconciliation, the FICA wage-base cumulative and a deduction's annual cap all answered from 1-3 periods instead of 61 | transaction 2756 (2028-06-29, the third paycheck of June 2028) STORED at $2,814.45 where the whole schedule gives $3,316.90. Never displayed -- the balance fold and the grid cell both recompute salary income live (`income_service.live_projected_net`), measured on an unmigrated clone -- but the grid's inline amount editor pre-fills from the stored column and saving it sets `is_override`, the flag that DISABLES that recompute, so the wrong figure was one click from becoming the projection | CLOSED at R4b-1 -- `_get_transaction_amount` takes the owner's whole schedule, and the migration corrected the row | R4b-1 |
 | F-10 | pay periods may be generated with a GAP: `_reject_overlapping_batch` requires a new batch to start AFTER the latest `end_date`, so `latest_end + 5 days` is accepted | none on production (all 61 periods contiguous, measured 2026-08-08), but a bill occurring in the hole is owed and has no paycheck to live in -- which is D7's cause rather than its symptom | OPEN | R-F10 (developer ruling first: refuse a gapped batch, or bridge it?) |
 | F-8 | a deploy's auto-rollback cannot survive a migration: the PREVIOUS image's Alembic tree cannot resolve a DB stamped by the new one, and `init_database.py` runs `command.upgrade(cfg, "head")` unguarded at entrypoint step 3 | probed on the R2e-3 revision: `CommandError: Can't locate revision identified by 'd4a71f6e30bb'` -- so every migration-bearing release rolls back into a dead container, and `docs/runbook.md` does not cover it | OPEN | operator (guard the upgrade and fall back, or accept it and document the restore-from-backup recovery?) |
 | F-9 | a transfer create with no baseline scenario reports success having materialised nothing -- the outcome the adjacent missing-period branch was just made to refuse | none: every owner gets a baseline at registration, so it is unreachable; both create paths (`_materialize_one_time_transfer` and `generate_transfers_for_all_periods`) share the shape | OPEN | operator (refuse both paths, or leave the broken-setup state to the baseline repair handler?) |
