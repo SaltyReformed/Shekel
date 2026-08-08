@@ -4,19 +4,20 @@
 
 **Plan of record** for the two-axis recurrence model and the cash-date / installment-date split.
 R1-R4 ARCHIVED. **R1 THROUGH R4b-2 IS IN PRODUCTION** (PR #85, merge `5c33b462`, 2026-08-08; head
-`a3f8b1c40d92`, image `fa78960ae77b`, healthy in 15s, no rollback). Rehearsed on a restored prod
-copy first: the migration answered **3 / 0 / 1** there and again live, the trigger gate held at 42,
-and prod's post-deploy figures equal the rehearsal's exactly. The evidence is in PR #85.
+`a3f8b1c40d92`). The rehearsal evidence is in PR #85.
+
+**R-F1 is on `dev`, not pushed** (`44b25ad3`, migration `c7f3a9d1e864`): the five `ref` identity
+sequences that sat behind their data are back in step. It makes the next release MIGRATION-BEARING,
+and the developer ruled 2026-08-08 that **R-F8 ships FIRST and R-F1 rides with it** -- one PR
+carrying both.
 
 **Two rulings taken 2026-08-08 RESPECIFY R5, R6 and R7c**, both in the Rulings table. **R-R12**: a
 generated row carries three dates in three places (`occurs_on`, `pay_period_id`, `due_on`) and
 `compute_due_date` is DELETED -- R5's "the column holds the cash date" premise is measured FALSE
 (see D4). **R-R13**: `anchor_date` SPLITS into `starts_on` + `nominal_day` before R7c freezes it.
 
-**Do these in order.** (1) **R-F1**, the only carried finding with a live failure mode, and it lands
-during a DEPLOY -- which this arc has now exercised twice. (2) **R-F10**, which deletes a fence and
-closes the balance arc's N-128 with it. Then R7a; R5 and R6 wait on the balance arc (section 0).
-**Also live:** R-F6, R-F7, R-F12, R-F13.
+**Do these in order: R-F8** (in flight)**, R-F10** (deletes a fence, closes N-128)**, R7a.** R5 and
+R6 wait on the balance arc (section 0). **Also live:** R-F6, R-F7, R-F12, R-F13.
 
 **Section 4 is the steps, 5 the ledger, 7 the gate rules. REPLACE this section; never append.**
 
@@ -602,35 +603,12 @@ promised something else. They get steps here so they are scheduled rather than r
 gap. Do not fold them into a recurrence migration -- an unrelated fix riding in a schema migration
 is unreviewable.
 
-- [ ] **R-F1 -- Re-sync the five lagging `ref` identity sequences** (finding F-1).
-
-**Do this one first**: it is the only carried finding with a live failure mode, and the failure
-lands during a DEPLOY. Measured 2026-08-05 against `shekel-prod-db` (and identically on the dev
-clone): `goal_modes` (max id 2, next value 1), `income_units` (2/1), `user_roles` (2/1),
-`compounding_frequencies` (3/1), `employer_contribution_types` (3/1). Their migrations seeded
-literal ids (`INSERT INTO ref.goal_modes (id, name) VALUES (1, 'Fixed'), ...`, e.g. `1dc0e7a1b9e4`),
-which does not advance the sequence. Latent today because `ref_seeds.seed_reference_data` only
-INSERTs a MISSING row and none is missing; it bites the first time anyone adds a value to one of
-those five enums, when the id-less INSERT asks for id 1, collides on the primary key, and
-`scripts/seed_ref_tables.py` aborts mid-deploy.
-
-One migration, one statement per table, over `goal_modes`, `income_units`, `user_roles`,
-`compounding_frequencies`, `employer_contribution_types`:
-
-```sql
-SELECT setval(pg_get_serial_sequence('ref.goal_modes', 'id'),
-              GREATEST((SELECT max(id) FROM ref.goal_modes), 1));
-```
-
-`GREATEST` so the statement can never move a sequence BACKWARDS -- it must be safe on a database
-where the sequence is already correct (every environment is at a different point). `downgrade`
-raises `NotImplementedError`: reverting means re-introducing the defect, and the rules require the
-refusal to carry both the reason and the literal SQL to do it by hand anyway.
-
-The test is the generalisation, not a copy: widen `TestIdentitySequenceInStep`
-(`tests/test_models/test_recurrence_ref_tables_migration.py`) from the three R2a tables to **every**
-table in the `ref` schema, discovered by query. That covers the five, and covers ref tables not yet
-written. It belongs in its own file once it stops being about recurrence.
+- [x] **R-F1 -- the lagging `ref` identity sequences are in step (F-1).** `44b25ad3`, migration
+      `c7f3a9d1e864`, on `dev`. A census of every serial sequence in all five application schemas
+      found exactly the five. **Two corrections to the spec it replaced**: the drafted
+      `GREATEST(max(id), 1)` takes the greatest against a literal floor rather than the sequence's
+      own position, so it would LOWER a sequence sitting ahead of its data; and the repair cannot
+      live in `ref_seeds` -- `setval` needs UPDATE, which the app role measurably lacks.
 
 - [ ] **R-F6 -- Close the recurrence-rule leak, then delete what leaked** (finding F-6).
 
@@ -650,9 +628,12 @@ entrypoint step 3, BEFORE the health check, so a failed deploy strands the datab
 previously-pinned image cannot follow and that image dies at step 3 too -- the rollback turns one
 dead container into two.
 
-**Four deliverables, in order.** (1) Bring the script into the repo (`deploy/shekel-deploy.sh`,
-installed by symlink): `shellcheck` and `shfmt` already gate every `*.sh` in the tree and this one
-has never been through either, which is finding F-14 and is why F-8 survived. (2) An unconditional
+**Four deliverables, in order.** (1) **DONE, `2e63e4f9`** -- the script is in the repo at
+`deploy/shekel-deploy.sh` and byte-identical to the host copy, so `shellcheck` and `shfmt` now see
+the one path that rolls production (finding F-14, and why F-8 survived).
+**Install mode ruled 2026-08-08: SYMLINK** `/opt/docker/scripts/shekel-deploy.sh` at the repo copy,
+so drift is structurally impossible; the accepted cost is that the checked-out tree IS the live
+deploy path, so the link is made LAST, after (2)-(4) are committed. (2) An unconditional
 `pg_dump -Fc` before the pin is rewritten; no dump, no deploy. (3) A pre-flight comparing the two
 images' migration revision sets, which STATES that rollback is backup-only when that set is
 non-empty. (4) A failure path that, for such a release, does not re-pin at all but names the dump
@@ -802,14 +783,13 @@ D14/D15, `eef43eef` for D13/D16, `4b5c577b` for D9, `1836a928` for D3/D5, `b4538
 and `75346625` for D7. **F-8 and F-9** were found by R2e-3's review; **D18-D21** were found while
 building R3; **D23, D24 and F-10** while building R4a, and **D25** while building R4b-1.
 
-**The ledger stands at 29 rows.**
+**The ledger stands at 28 rows.**
 
 | id | finding (one line) | worst measured | status | owned by |
 |---|---|---|---|---|
 | D2 | an edit ignores the chosen "First paycheck": `effective_from` overrides `start_period_id` | 4 rows materialised in excluded periods | OPEN, NARROWED at R4b-1 -- the bound is no longer bypassable by a caller's window, because the start period is looked up in the OWNER's schedule; what survives is the FIELD, which R7b deletes | R7b (the form rewrite that retires `start_period_id`) |
 | D4 | a loan's cash date and contractual installment date cannot differ | $0 -- labels only (payoff date, schedule rows, history) | OPEN | R6 |
 | D6 | folding `start_date` into `anchor_date` is lossy for PERIOD-unit rules | the loan origination bound stops being an exact date | OPEN, NARROWED TWICE -- R-R8 made an anchor a date, and R2d made it COMPUTED, so the "a rebuild strands the anchor" half is dead: there is no stored anchor to strand, and `_repoint_recurrence_rules` narrowed back to the rules the wipe actually nulled | R9 (re-check before dropping `start_date`) |
-| F-1 | five `ref` identity sequences sit behind their data, on production | the next value added to those enums aborts a DEPLOY | OPEN | R-F1 |
 | F-2 | the ref-seed parity scan's last `INSERT` body runs to end-of-file | none today; a literal quoted below the seed would pass | OPEN | R-F2 |
 | F-3 | `ref` tables use auto-named constraints while the database rule says name them | none -- the names are never referenced | OPEN | R-F3 (developer ruling first) |
 | F-6 | a hard-deleted template leaves its recurrence rule behind forever | 3 orphaned rules on production today (was 5; R2e-3 deleted 2 of them) | OPEN | R-F6 |
