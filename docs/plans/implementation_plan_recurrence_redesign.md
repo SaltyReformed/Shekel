@@ -620,12 +620,12 @@ used to propose cannot fix it -- see R-R7. Deleting the 3 existing rows rides in
 the cleanup and its cause are reviewed together; that makes the migration destructive, so it carries
 the `Review:` line and a downgrade that refuses with the literal SQL.
 
-- [x] **R-F8 -- the deploy's safety net stops lying (F-8, F-14, R-R14).** `2e63e4f9`, `8aeae48e`:
-      migration pre-flight, unconditional `pg_dump -Fc` before the pin moves, and no re-pin for a
-      migration-bearing release; runbook forked; `test_shekel_deploy_safety.py` holds the ORDER in
-      CI, and an 18-assertion control drove the real script against a throwaway stack.
-      **Still to do: the SYMLINK install** -- deliberately last, because it makes the checked-out
-      tree the live deploy path.
+- [x] **R-F8 -- the deploy's safety net stops lying (F-8, F-14, R-R14).** `2e63e4f9`, `8aeae48e`,
+      `398c332c`. The pre-flight asks whether an image can resolve the revision the database is
+      STAMPED at; "does the release add migrations" was directional and read a DOWNGRADE as safe,
+      reproducing F-8. Dump-first, full-decode readback, behavioural gate.
+      **Still to do: the SYMLINK install** -- last by design, and until it happens the host runs a
+      stale hand-copy, which the script now reports at startup rather than asserting otherwise.
 
 - [ ] **R-F2 -- Tighten the ref-seed parity scan's statement boundary** (finding F-2).
 
