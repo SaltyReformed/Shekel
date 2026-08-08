@@ -3,7 +3,7 @@ Shekel Budget App -- Transfer Recurrence Engine
 
 Parallel to recurrence_engine.py but generates Transfer records instead
 of Transaction records.  The model-agnostic halves of the two engines
-(the gating + pattern-matching preamble via
+(the gating + occurrence-matching preamble via
 ``recurrence_engine.resolve_generation_plan``, the per-period skip
 predicate, the regenerate fetch/partition, and the cross-user audit
 logging) are shared through that module and
@@ -18,15 +18,17 @@ Key differences from transaction recurrence:
 """
 
 import logging
-from collections import defaultdict
 
 from app.extensions import db
 from app.models.transfer import Transfer
 from app.services._recurrence_common import (
     check_scenario_ownership,
+    existing_rows_refusing_repeats,
     log_resource_access_denied,
     partition_regeneration_rows,
+    regeneration_bound,
     query_rows_from_effective_date,
+    report_schedule_gaps,
     should_skip_period,
 )
 from app.services.recurrence_engine import compute_due_date, resolve_generation_plan
@@ -43,36 +45,54 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
-def generate_for_template(template, periods, scenario_id, effective_from=None):
-    """Generate transfers for a template across the given pay periods.
+def generate_for_template(template, schedule, scenario_id, effective_from=None):
+    """Generate transfers for a template across a pay-period window.
 
     Args:
         template:       A TransferTemplate with a loaded recurrence_rule.
-        periods:        List of PayPeriod objects to consider (ordered by index).
+        schedule:       The owner's
+                        :class:`~app.services.generation_schedule.GenerationSchedule`
+                        -- their whole pay-period schedule plus the window this
+                        pass may write into.
         scenario_id:    The scenario to generate into.
-        effective_from: Optional date -- only generate for periods starting on or
-                        after this date.
+        effective_from: Optional date -- only generate for periods ending on or
+                        after this date.  ``None`` applies no lower bound.
 
     Returns:
         List of newly created Transfer objects.
     """
-    # Resolve the shared gating + period-matching preamble (cross-user
-    # defense, rule-present gating, effective_from defaulting, pattern
-    # match) via the transaction engine's helper -- the transfer engine
-    # is a deliberate parallel and must apply the rule identically.  A
-    # None result means generate nothing.  See
+    # Resolve the shared gating + occurrence-matching preamble (cross-user
+    # defense, rule-present gating, the occurrence walk against the OWNER's
+    # schedule, and the narrowing to this pass's window) via the transaction
+    # engine's helper -- the transfer engine is a deliberate parallel and must
+    # apply the rule identically.  A None result means generate nothing.  See
     # recurrence_engine.resolve_generation_plan.
     plan = resolve_generation_plan(
-        template, periods, scenario_id, effective_from,
+        template, schedule, scenario_id, effective_from,
         block_message="Blocked cross-user transfer recurrence generation",
     )
     if plan is None:
         return []
 
-    existing = _get_existing_map(template.id, scenario_id, plan.matching_periods)
+    # The transaction engine makes the identical call, and for the identical
+    # reason: the WRITE path names a hole in the owner's schedule, the
+    # read-only predictor does not.  See
+    # ``_recurrence_common.report_schedule_gaps``.
+    report_schedule_gaps(logger, template, scenario_id, plan.gaps)
+
+    # What is already there, and the refusal of a paycheck this pass would
+    # write into TWICE -- ``idx_transfers_template_period_scenario`` holds one
+    # row per (template, period, scenario), and forward generation legitimately
+    # names a paycheck more than once at a cadence of 30 days or more.  The
+    # transaction engine makes the identical call; see
+    # ``_recurrence_common.existing_rows_refusing_repeats``.
+    existing = existing_rows_refusing_repeats(
+        Transfer, Transfer.transfer_template_id,
+        template, scenario_id, plan.placements,
+    )
 
     created = []
-    for period in plan.matching_periods:
+    for period in (row.period for row in plan.placements):
         existing_xfers = existing.get(period.id, [])
 
         # Skip periods that already hold a template-linked transfer
@@ -121,14 +141,20 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
     return created
 
 
-def regenerate_for_template(template, periods, scenario_id, effective_from=None):
+def regenerate_for_template(template, schedule, scenario_id, effective_from=None):
     """Delete non-overridden auto-generated transfers and regenerate.
 
     Args:
         template:       The updated TransferTemplate.
-        periods:        List of PayPeriod objects.
+        schedule:       The owner's
+                        :class:`~app.services.generation_schedule.GenerationSchedule`.
         scenario_id:    The target scenario.
-        effective_from: Date from which to regenerate (default: first period).
+        effective_from: Date from which to regenerate (default: the WRITE
+                        WINDOW's first payday).  The delete sweep needs a
+                        concrete date to bound ``pay_periods.end_date``
+                        against, and it must be the same bound the
+                        regeneration writes within -- see
+                        ``recurrence_engine.regenerate_for_template``.
 
     Returns:
         List of newly created Transfer objects.
@@ -143,8 +169,7 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
     ):
         return []
 
-    if effective_from is None and periods:
-        effective_from = periods[0].start_date
+    effective_from = regeneration_bound(schedule, effective_from)
 
     # Find all existing template-linked transfers on or after effective_from,
     # then partition them into conflicts vs rows safe to delete and regenerate.
@@ -165,7 +190,9 @@ def regenerate_for_template(template, periods, scenario_id, effective_from=None)
         transfer_service.delete_transfer(xfer.id, template.user_id, soft=False)
     db.session.flush()
 
-    created = generate_for_template(template, periods, scenario_id, effective_from)
+    created = generate_for_template(
+        template, schedule, scenario_id, effective_from,
+    )
 
     # Pylint: ``duplicate-code`` -- regenerate audit-log + conflict-raise
     # tail.  This is the parallel twin of
@@ -275,24 +302,3 @@ def resolve_conflicts(transfer_ids, action, user_id, new_amount=None):
             skipped_count=skipped_count,
             new_amount=str(new_amount) if new_amount is not None else None,
         )
-
-
-def _get_existing_map(template_id, scenario_id, periods):
-    """Build a dict of period_id → [Transfer, ...] for existing template entries."""
-    period_ids = [p.id for p in periods]
-    if not period_ids:
-        return {}
-
-    existing = (
-        db.session.query(Transfer)
-        .filter(
-            Transfer.transfer_template_id == template_id,
-            Transfer.scenario_id == scenario_id,
-            Transfer.pay_period_id.in_(period_ids),
-        )
-        .all()
-    )
-    result = defaultdict(list)
-    for xfer in existing:
-        result[xfer.pay_period_id].append(xfer)
-    return result

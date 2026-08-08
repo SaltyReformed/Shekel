@@ -52,10 +52,16 @@ diff mean anything.
         .venv/bin/python tests/manual/verify_savings_producers.py after.json
     diff before.json after.json
 
-Run it against BOTH databases (``shekel`` is the dev runtime clone,
-``shekel_f3_final`` the prod-shape one), before AND after, and use
-``git worktree`` for the HEAD side -- never ``git checkout``, which reverts the
-working tree and discards the change under test.
+Run it before AND after, and use ``git worktree`` for the HEAD side -- never
+``git checkout``, which reverts the working tree and discards the change under
+test.
+
+This used to say to run it against BOTH ``shekel`` and ``shekel_f3_final``,
+which carried different account sets.  **They converged** (measured 2026-08-07:
+identical nine accounts, one transaction apart) -- ``shekel`` was re-cloned from
+production and ``shekel_f3_final`` refreshed from it.  See
+``verify_balance_baseline.py`` for why a genuinely DIFFERENT second dataset is
+still worth building when a step is data-shape-sensitive.
 
 It answers "did anything move", never "is the answer right": two figures
 identical here can both be wrong (finding N-69).  A step's PROOF is its firing

@@ -258,7 +258,7 @@ def test_server_default_fills_omitted_recurrence_integers(db, seed_user):
     """A raw INSERT omitting interval_n / offset_periods gets 1 / 0.
 
     These two recurrence integers are logic-bearing divisors
-    (``interval_n`` is the modulus in ``recurrence_engine.match_periods``;
+    (``interval_n`` is the modulus in the PERIOD-unit occurrence walk;
     ``offset_periods`` shifts the cycle), and their CHECK constraints
     (``interval_n > 0`` / ``offset_periods >= 0``) treat a NULL operand
     as satisfied, so before this migration a raw INSERT could land a

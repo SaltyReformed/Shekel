@@ -24,11 +24,20 @@ money path that could disagree with the first.
 Next dates are engine-backed
 ----------------------------
 The next occurrence is the date the recurrence engine itself would assign
-to the next generated instance: ``recurrence_engine.match_periods`` picks
-the matching pay periods and ``recurrence_engine.compute_due_date`` gives
-the instance's due date, so a row's "next date" cannot disagree with the
-grid cell it points at.  This retires the ``/obligations`` approximation
-(``_next_occurrence``) the audit flagged.
+to the next generated instance: ``recurrence.rule_occurrences`` walks the
+rule's cadence and places each occurrence on a pay period -- the SAME call
+the generation seam makes since plan step R4b-2 -- and
+``recurrence_engine.compute_due_date`` gives the instance's due date, so a
+row's "next date" cannot disagree with the grid cell it points at.  This
+retires the ``/obligations`` approximation (``_next_occurrence``) the audit
+flagged.
+
+**It takes the owner's whole schedule as a ``PeriodCalendar``**, not a list
+of pay periods (plan step R4b-1).  A recurrence's first occurrence is measured
+against the owner's schedule, so the value this surface passes has to BE that
+schedule; taking ORM rows and rebuilding the calendar per row would be a second
+producer of one answer, and taking a subset would date a row from a schedule
+its owner does not have.
 
 What appears vs what totals
 ---------------------------
@@ -42,9 +51,10 @@ total (matching the retired /obligations kernel exactly).
 
 Boundary discipline (``CLAUDE.md`` Architecture): no Flask imports; inputs
 are already-loaded ORM template lists (or any duck-typed equivalent, as the
-tests build with ``types.SimpleNamespace``) plus the user's pay periods and
-an ``as_of`` date; output is a frozen dataclass tree of ``Decimal`` /
-``date``.  All money math is ``Decimal``; the route/template only display.
+tests build with ``types.SimpleNamespace``) plus the user's pay-period
+schedule as a ``PeriodCalendar`` and an ``as_of`` date; output is a frozen
+dataclass tree of ``Decimal`` / ``date``.  All money math is ``Decimal``; the
+route/template only display.
 """
 
 from dataclasses import dataclass
@@ -55,7 +65,12 @@ from app.services.obligations_aggregator import (
     RecurringTemplate,
     template_monthly_or_none,
 )
-from app.services.recurrence_engine import compute_due_date, match_periods
+from app.services.recurrence import (
+    PeriodCalendar,
+    placed_periods,
+    rule_occurrences,
+)
+from app.services.recurrence_engine import compute_due_date
 from app.utils.money import (
     MONTHS_PER_YEAR,
     PAY_PERIODS_PER_YEAR,
@@ -204,33 +219,61 @@ def _share_pct(
 
 
 def _next_occurrence(
-    template: RecurringTemplate, periods: list, as_of: date,
+    template: RecurringTemplate, calendar: PeriodCalendar, as_of: date,
 ) -> date | None:
     """Engine-backed date of the next occurrence on or after ``as_of``.
 
-    Uses the same public recurrence-engine helpers that generate the grid
-    instances: ``match_periods`` selects the pay periods the rule fires in,
-    and ``compute_due_date`` gives the due date the generated instance would
-    carry.  Returns the first such due date on or after ``as_of`` (the
-    current period can match with a due date already past, so the search
-    advances to the next matching period), or ``None`` when no matching
-    period has a due date on or after ``as_of`` -- no rule, or an expired
-    rule whose remaining candidate periods are all in the past.
-    Otherwise this tracks the engine exactly: if the engine would still
+    Uses the same producers that generate the grid instances:
+    :func:`~app.services.recurrence.rule_occurrences` walks the rule's cadence
+    and places each occurrence on a pay period, and ``compute_due_date`` gives
+    the due date the generated instance would carry.  Returns the first such
+    due date on or after ``as_of`` (the current period can match with a due
+    date already past, so the search advances to the next matching period), or
+    ``None`` when no matching period has a due date on or after ``as_of`` -- no
+    rule, or an expired rule whose remaining candidate periods are all in the
+    past.  Otherwise this tracks the engine exactly: if the engine would still
     generate a future instance (e.g. an expired rule whose final period
     straddles ``as_of``), that instance's date is reported, matching the
     grid cell it points at.
 
+    **``as_of`` is this surface's own display boundary, not the rule's** -- the
+    rule's opening bound is its anchor, and putting a caller's window inside the
+    producer is what defect D2 was.  So the bound is stated here and the
+    PROJECTION is shared (:func:`~app.services.recurrence.placed_periods`),
+    which is the same split the retired ``match_periods`` adapter fused: it
+    both filtered and bounded, so a caller's window looked like a property of
+    the recurrence.
+
     **The rule-less branch is the whole "does not recur" case** since plan
     step R2e-3.  A second guard used to sit beside it for the ``Once``
-    pattern, which ``match_periods`` has no branch for: without it a
+    pattern, which the reverse matcher had no branch for: without it a
     one-time definition emitted a spurious "unknown pattern" warning on
     every render.  With the pattern retired, no such rule exists to guard.
+
+    **This is now a fail-CLOSED read**, and plan step R4a is what changed it.
+    The retired matcher used to log a warning and answer ``[]`` for a rule it
+    could not read; the resolution seam now raises
+    :class:`~app.services.recurrence.RecurrenceResolutionError` (an unmodelled
+    pattern, an interval below 1, a day or month outside its column's domain),
+    so ONE such rule takes the whole Recurring surface to a 500 rather than
+    rendering the other definitions beside a silently blank cell.  The
+    overlapping-schedule refusal (``RecurrenceScheduleError``) moved with the
+    calendar at plan step R4b-1: it is raised where the calendar is BUILT, so
+    the route now meets it before this producer runs.  Every one of those is
+    a state the CHECK constraints and the write door already refuse, and the
+    project's disposition for a broken invariant is the loud one -- but the
+    contract is stated rather than discovered.
+
+    Raises:
+        RecurrenceResolutionError: When the rule names a cadence this
+            application cannot derive.
     """
     rule = getattr(template, "recurrence_rule", None)
     if rule is None:
         return None
-    for period in match_periods(rule, rule.pattern_id, periods, as_of):
+    for period in placed_periods(
+        rule_occurrences(rule, calendar), ending_on_or_after=as_of,
+    ):
         due = compute_due_date(rule, period)
         if due >= as_of:
             return due
@@ -238,7 +281,7 @@ def _next_occurrence(
 
 
 def _build_section(
-    templates: list[RecurringTemplate], periods: list, as_of: date,
+    templates: list[RecurringTemplate], calendar: PeriodCalendar, as_of: date,
 ) -> RecurringSection:
     """Build one kind-grouped section: its rows and both-units subtotal.
 
@@ -263,7 +306,7 @@ def _build_section(
         RecurringRow(
             template=template,
             equivalent=_unit_pair(monthly_full),
-            next_date=_next_occurrence(template, periods, as_of),
+            next_date=_next_occurrence(template, calendar, as_of),
             share_pct=_share_pct(monthly_full, section_total_full),
         )
         for template, monthly_full in monthly_by_template
@@ -322,7 +365,7 @@ def build_view(
     income_templates: list[RecurringTemplate],
     expense_templates: list[RecurringTemplate],
     transfer_templates: list[RecurringTemplate],
-    periods: list,
+    calendar: PeriodCalendar,
     as_of: date,
 ) -> RecurringView:
     """Produce the unified Recurring surface's full display model.
@@ -334,8 +377,9 @@ def build_view(
             ``TransactionTemplate`` rows.
         transfer_templates: The user's active recurring ``TransferTemplate``
             rows.
-        periods: All the user's ``PayPeriod`` rows, for engine-backed next
-            dates (``match_periods`` seeds and filters against the full set).
+        calendar: The owner's whole pay-period schedule
+            (:class:`~app.services.recurrence.PeriodCalendar`), which the
+            engine-backed next dates are measured against.
         as_of: Reference date -- "now" for the expired-rule filter and the
             next-occurrence search.  Callers pass ``date.today()``.
 
@@ -345,9 +389,9 @@ def build_view(
         both-units subtotal.  Every figure is a ``Decimal`` rounded to
         cents; the caller only displays.
     """
-    income_section = _build_section(income_templates, periods, as_of)
-    expense_section = _build_section(expense_templates, periods, as_of)
-    transfer_section = _build_section(transfer_templates, periods, as_of)
+    income_section = _build_section(income_templates, calendar, as_of)
+    expense_section = _build_section(expense_templates, calendar, as_of)
+    transfer_section = _build_section(transfer_templates, calendar, as_of)
     band = _build_band(
         income_section.subtotal,
         expense_section.subtotal,

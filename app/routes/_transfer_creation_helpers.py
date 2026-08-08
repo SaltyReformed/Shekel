@@ -43,7 +43,8 @@ from app.models.account import Account
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transfer_template import TransferTemplate
 from app.routes._redirect_target import RedirectTarget
-from app.services import pay_period_service, transfer_recurrence
+from app.services import transfer_recurrence
+from app.services.generation_schedule import GenerationSchedule
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import get_or_404
 
@@ -223,7 +224,7 @@ def generate_transfers_for_all_periods(
 ) -> None:
     """Seed a template's Transfer instances across the user's pay periods.
 
-    The shared ``resolve baseline scenario -> load all periods ->
+    The shared ``resolve baseline scenario -> load the owner's schedule ->
     transfer_recurrence.generate_for_template`` idiom used by the
     investment / loan / transfers create paths (and the unarchive
     restore path).  A no-op when the user has no baseline scenario yet,
@@ -241,9 +242,11 @@ def generate_transfers_for_all_periods(
     """
     scenario = get_baseline_scenario(current_user.id)
     if scenario:
-        periods = pay_period_service.get_all_periods(current_user.id)
         transfer_recurrence.generate_for_template(
-            template, periods, scenario.id, effective_from=effective_from,
+            template,
+            GenerationSchedule.for_user(current_user.id),
+            scenario.id,
+            effective_from=effective_from,
         )
 
 

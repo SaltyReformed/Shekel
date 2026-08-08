@@ -4053,3 +4053,156 @@ def linked_ledger_total(account_id):
         .all()
     )
     return sum((amount for (amount,) in rows), Decimal("0.00"))
+
+
+def _tax_config_models():
+    """Return the session and the ``ref`` / tax models the seeders below need.
+
+    Imported lazily, like every other helper in this module: importing the ORM
+    at module scope would make this file unimportable outside an app context.
+
+    Returns:
+        ``(db, {name: model})`` for the four tax tables and the two ``ref``
+        lookups the seeders resolve by name.
+    """
+    # Pylint: ``import-outside-toplevel`` -- deferred, like every other
+    # helper in this module: importing the ORM at module scope would bind the
+    # mappers before the test app configures them, so this file would be
+    # unimportable outside an app context.
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    # Pylint: ``import-outside-toplevel`` -- deferred; see above.
+    from app.models.ref import (  # pylint: disable=import-outside-toplevel
+        FilingStatus,
+        TaxType,
+    )
+    # Pylint: ``import-outside-toplevel`` -- deferred; see above.
+    from app.models.tax_config import (  # pylint: disable=import-outside-toplevel
+        FicaConfig,
+        StateTaxConfig,
+        TaxBracket,
+        TaxBracketSet,
+    )
+
+    return db, {
+        "FilingStatus": FilingStatus,
+        "TaxType": TaxType,
+        "FicaConfig": FicaConfig,
+        "StateTaxConfig": StateTaxConfig,
+        "TaxBracket": TaxBracket,
+        "TaxBracketSet": TaxBracketSet,
+    }
+
+
+# --- Tax configuration -------------------------------------------------------
+#
+# The three rows ``paycheck_calculator.calculate_paycheck`` needs before it can
+# answer at all: a federal bracket set, a state config and a FICA config.  They
+# lived as private helpers inside ``tests/test_routes/test_salary.py`` until
+# plan step R4b-1, whose own tests need a REAL paycheck computed through
+# generation; copying them would have made a financial fixture exist twice.
+# Values match the shipped seeds closely enough to be recognisable and are
+# otherwise arbitrary -- the assertions that use them compute their expected
+# figures from these same rows.
+
+def seed_state_tax_config(user_id, rate, tax_year=2026, state_code="NC"):
+    """Create a flat state tax config for testing.
+
+    Args:
+        user_id: The owning user's ID.
+        rate: Decimal flat rate in decimal form (e.g. 0.0399).
+        tax_year: Tax year for the config.
+        state_code: Two-letter state code.
+
+    Returns:
+        StateTaxConfig: The created config.
+    """
+    db, models = _tax_config_models()
+    flat_type = db.session.query(models["TaxType"]).filter_by(name="flat").one()
+    # T-P5: state configs are filing-status-keyed.  These net-biweekly tests
+    # all use single-filer profiles, so the config carries the single status
+    # (matching the withholding path's filing-status-scoped lookup).
+    single_status = (
+        db.session.query(models["FilingStatus"]).filter_by(name="single").one()
+    )
+    config = models["StateTaxConfig"](
+        user_id=user_id,
+        state_code=state_code,
+        tax_year=tax_year,
+        tax_type_id=flat_type.id,
+        filing_status_id=single_status.id,
+        flat_rate=rate,
+        standard_deduction=Decimal("25500.00"),
+    )
+    db.session.add(config)
+    db.session.flush()
+    return config
+
+
+def seed_fica_config(user_id, tax_year=2026):
+    """Create a standard FICA config for testing.
+
+    Returns:
+        FicaConfig: The created config.
+    """
+    db, models = _tax_config_models()
+    config = models["FicaConfig"](
+        user_id=user_id,
+        tax_year=tax_year,
+        ss_rate=Decimal("0.0620"),
+        ss_wage_base=Decimal("176100.00"),
+        medicare_rate=Decimal("0.0145"),
+        medicare_surtax_rate=Decimal("0.0090"),
+        medicare_surtax_threshold=Decimal("200000.00"),
+    )
+    db.session.add(config)
+    db.session.flush()
+    return config
+
+
+def seed_tax_bracket_set(user_id, tax_year=2026):
+    """Create a bracket set with sample brackets for testing.
+
+    Seeds a 'single' filing status bracket set with two brackets so
+    that the federal brackets section renders with visible data.
+
+    Args:
+        user_id: The owning user's ID.
+        tax_year: Tax year for the bracket set.
+
+    Returns:
+        TaxBracketSet: The created bracket set with two brackets.
+    """
+    db, models = _tax_config_models()
+    filing_status = (
+        db.session.query(models["FilingStatus"]).filter_by(name="single").one()
+    )
+    bracket_set = models["TaxBracketSet"](
+        user_id=user_id,
+        filing_status_id=filing_status.id,
+        tax_year=tax_year,
+        standard_deduction=Decimal("14600.00"),
+        child_credit_amount=Decimal("2000.00"),
+        other_dependent_credit_amount=Decimal("500.00"),
+    )
+    db.session.add(bracket_set)
+    db.session.flush()
+
+    brackets = [
+        models["TaxBracket"](
+            bracket_set_id=bracket_set.id,
+            min_income=Decimal("0.00"),
+            max_income=Decimal("11600.00"),
+            rate=Decimal("0.1000"),
+            sort_order=1,
+        ),
+        models["TaxBracket"](
+            bracket_set_id=bracket_set.id,
+            min_income=Decimal("11600.00"),
+            max_income=Decimal("47150.00"),
+            rate=Decimal("0.1200"),
+            sort_order=2,
+        ),
+    ]
+    db.session.add_all(brackets)
+    db.session.flush()
+    return bracket_set

@@ -21,6 +21,7 @@ from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import transfer_recurrence
+from app.services.generation_schedule import GenerationSchedule
 from app.services.recurrence_engine import generate_for_template
 from app.services.scenario_resolver import get_baseline_scenario
 
@@ -42,14 +43,30 @@ def populate_periods_from_active_templates(user_id, periods, effective_from=None
     retried extend / top-up creates nothing and cannot violate the
     ``(template, period, scenario)`` unique partial index.
 
+    **This is the caller plan step R4b-1 was written for.**  ``periods`` is
+    the newly created batch, and until R4b-1 it was handed to each engine as
+    BOTH the schedule the rule was resolved against and the window to write
+    into -- so every extend re-read every rule as though the owner's pay
+    history began at the new batch.  It produced duplicate ``Monthly First``
+    rows and stored a third paycheck $502.45 low on production; the
+    measurements live in
+    :class:`~app.services.generation_schedule.GenerationSchedule`.  The
+    schedule is now loaded ONCE here, from the owner, and ``periods`` states
+    only the window.
+
+    **Loaded once rather than per template**, which is why it is built here
+    and not inside the engines: this loop runs both engines over every active
+    definition the user has, and a per-template lookup would be the same read
+    repeated N times for one answer.
+
     Args:
         user_id: The owning user's id.
-        periods: The PayPeriod objects to populate (ordered by index).
-            An empty list is a no-op.
+        periods: The PayPeriod objects to populate (ordered by index).  Must
+            already be flushed.  An empty list is a no-op.
         effective_from: Boundary date forwarded to each engine; defaults
-            to the first period's ``start_date`` so generation is scoped
-            to exactly these periods regardless of a rule's own start
-            period.
+            to the first period's ``start_date``.  Redundant with the window
+            for a contiguous batch, and kept because the top-up path may pass
+            a later one.
 
     Returns:
         The number of template-linked records created (transactions plus
@@ -65,6 +82,7 @@ def populate_periods_from_active_templates(user_id, periods, effective_from=None
     boundary = (
         effective_from if effective_from is not None else periods[0].start_date
     )
+    schedule = GenerationSchedule.for_periods(user_id, periods)
 
     created = 0
     txn_templates = (
@@ -74,7 +92,7 @@ def populate_periods_from_active_templates(user_id, periods, effective_from=None
     )
     for template in txn_templates:
         created += len(generate_for_template(
-            template, periods, scenario.id, effective_from=boundary,
+            template, schedule, scenario.id, effective_from=boundary,
         ))
 
     transfer_templates = (
@@ -84,7 +102,7 @@ def populate_periods_from_active_templates(user_id, periods, effective_from=None
     )
     for template in transfer_templates:
         created += len(transfer_recurrence.generate_for_template(
-            template, periods, scenario.id, effective_from=boundary,
+            template, schedule, scenario.id, effective_from=boundary,
         ))
 
     return created

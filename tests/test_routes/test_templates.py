@@ -13,6 +13,8 @@ Tests for transaction template CRUD and recurrence preview:
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app.enums import RecurrencePatternEnum
 from app.extensions import db
 from app.models.account import Account
@@ -27,6 +29,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services import account_service
+from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import create_loan_account
 
 
@@ -92,7 +95,7 @@ def _future_override_txn(seed_user, template, amount="1500.00"):
     from app.services import recurrence_engine, pay_period_service
     scenario = seed_user["scenario"]
     periods = pay_period_service.get_all_periods(seed_user["user"].id)
-    recurrence_engine.generate_for_template(template, periods, scenario.id)
+    recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
     db.session.flush()
     txn = (
         db.session.query(Transaction)
@@ -614,7 +617,7 @@ class TestTemplateUpdate:
             )
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
             db.session.flush()
             txn = (
                 db.session.query(Transaction)
@@ -662,7 +665,7 @@ class TestTemplateUpdate:
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
             )
             db.session.commit()
 
@@ -711,7 +714,7 @@ class TestTemplateUpdate:
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
             )
             db.session.flush()
 
@@ -747,7 +750,7 @@ class TestTemplateUpdate:
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
             )
             db.session.commit()
 
@@ -797,7 +800,7 @@ class TestGridRowKeyBuilder:
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
             )
             db.session.flush()
 
@@ -902,7 +905,7 @@ class TestTemplateArchive:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
             db.session.commit()
 
             txn_count = db.session.query(Transaction).filter_by(
@@ -967,7 +970,7 @@ class TestTemplateUnarchive:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
             db.session.commit()
 
             # Archive via the archive route.
@@ -1064,6 +1067,78 @@ class TestPreviewRecurrence:
             assert resp.status_code == 200
             assert b"No preview" in resp.data
 
+    @pytest.mark.parametrize(
+        ("pattern_name", "query"),
+        [
+            # Live 500s before plan step R4a: the first two raised
+            # ``ValueError`` out of the matcher it deleted, the third out of
+            # the authoring seam.
+            ("Annual", "month_of_year=13&day_of_month=15"),
+            ("Monthly", "day_of_month=-5"),
+            ("Every N Periods", "interval_n=0"),
+            # Worse than a crash: 200 with a silently clamped or modulo-wrapped
+            # date the user never named.
+            ("Quarterly", "month_of_year=99&day_of_month=15"),
+            ("Monthly", "day_of_month=32"),
+            ("Monthly", "day_of_month=0"),
+        ],
+    )
+    def test_preview_refuses_out_of_domain_arguments_without_a_500(
+        self, app, auth_client, seed_user, seed_periods_today,
+        pattern_name, query,
+    ):
+        """Unbounded query args answer a muted line, never a stack trace.
+
+        This endpoint reads ``interval_n`` / ``day_of_month`` /
+        ``month_of_year`` straight from ``request.args``.  The two form
+        schemas bound them (``Range(min=1, max=31)`` / ``(1, 12)``) and the
+        columns carry ``ck_recurrence_rules_dom`` /
+        ``ck_recurrence_rules_moy`` / ``ck_recurrence_rules_positive_interval``
+        -- but nothing bounded THIS path, and it is reachable by anyone signed
+        in.  Three were measured as live 500s and three answered 200 with a
+        date the rule never named; the comments above say which is which.
+        Plan step R4a's resolution door refuses all six by mirroring the
+        columns' own domains.
+        """
+        with app.app_context():
+            pattern = db.session.query(RecurrencePattern).filter_by(
+                name=pattern_name
+            ).one()
+            resp = auth_client.get(
+                f"/templates/preview-recurrence"
+                f"?recurrence_pattern={pattern.id}&{query}"
+            )
+
+            assert resp.status_code == 200, (
+                f"{pattern_name} with {query} answered {resp.status_code}"
+            )
+            assert b"No preview for this pattern" in resp.data
+
+    def test_preview_ignores_an_unparseable_end_date(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """``?end_date=garbage`` previews the unbounded rule, it does not 500.
+
+        The one unvalidated argument the resolution door cannot refuse:
+        ``date.fromisoformat`` runs BEFORE the seam, so its ``ValueError``
+        never reaches ``RecurrenceResolutionError``.  A neutral review of plan
+        step R4a found it after the route's docstring had already claimed the
+        whole class was closed.  An unparseable bound is dropped rather than
+        refused -- see ``_recurrence_preview._submitted_end_date``.
+        """
+        with app.app_context():
+            pattern = db.session.query(RecurrencePattern).filter_by(
+                name="Monthly"
+            ).one()
+            resp = auth_client.get(
+                f"/templates/preview-recurrence"
+                f"?recurrence_pattern={pattern.id}&day_of_month=15"
+                f"&end_date=garbage"
+            )
+
+            assert resp.status_code == 200
+            assert b"occurrences" in resp.data
+
     def test_preview_every_period(self, app, auth_client, seed_user, seed_periods_today):
         """Preview for every_period pattern returns occurrence list."""
         with app.app_context():
@@ -1084,7 +1159,7 @@ class TestPreviewRecurrence:
         It was a 500 before plan step R2c-1, and the cause is worth keeping:
         the route hand-built a transient rule, and a SQLAlchemy column default
         is applied at INSERT rather than at instantiation -- so
-        ``offset_periods`` stayed ``None`` and ``match_periods`` computed
+        ``offset_periods`` stayed ``None`` and period selection computed
         ``period_index - None``.  Routing the preview through the authoring
         seam fixed it incidentally, because resolution always emits an int.
         """
@@ -1478,7 +1553,7 @@ class TestTemplateHardDelete:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
             db.session.commit()
 
             template_id = template.id
@@ -1525,7 +1600,7 @@ class TestTemplateHardDelete:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
             db.session.commit()
 
             # Mark one transaction as Paid.
@@ -1573,7 +1648,7 @@ class TestTemplateHardDelete:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
             db.session.commit()
 
             # Mark one transaction as Paid.
@@ -1607,7 +1682,7 @@ class TestTemplateHardDelete:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
             db.session.commit()
 
             # Pre-archive via route (soft-deletes projected txns).
@@ -1862,7 +1937,7 @@ class TestTemplateHardDelete:
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
             periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, periods_list, scenario.id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
             db.session.commit()
 
             resp = auth_client.post(

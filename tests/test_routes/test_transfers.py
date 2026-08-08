@@ -27,6 +27,7 @@ from app.services import transfer_service
 from app.services.auth_service import hash_password
 from app.services import account_service
 from app.utils.dates import display_today
+from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     create_loan_account,
     field_is_disabled,
@@ -526,7 +527,7 @@ class TestTemplateUpdate:
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             transfer_recurrence.generate_for_template(
-                template, periods, scenario.id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
             )
             db.session.flush()
             xfer = (
@@ -577,7 +578,7 @@ class TestTemplateUpdate:
             scenario = seed_user["scenario"]
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             transfer_recurrence.generate_for_template(
-                template, periods, scenario.id,
+                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
             )
             db.session.flush()
             xfer = (

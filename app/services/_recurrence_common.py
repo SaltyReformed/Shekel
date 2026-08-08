@@ -11,17 +11,29 @@ place, where the two cannot drift:
 
   - the cross-user ownership defense (:func:`check_scenario_ownership`),
   - the per-period skip predicate (:func:`should_skip_period`),
+  - the generate row fetch + repeat refusal
+    (:func:`existing_rows_refusing_repeats`, over
+    :func:`existing_rows_by_period` and :func:`refuse_unstorable_repeats`),
+  - the pay-schedule gap report (:func:`report_schedule_gaps`),
   - the regenerate row-partition (:func:`partition_regeneration_rows`),
+  - the regenerate sweep bound (:func:`regeneration_bound`),
   - the regenerate row fetch (:func:`query_rows_from_effective_date`),
   - the cross-user audit ``log_event(...)`` blocks (the ``log_*`` helpers
     below).
 
+What both engines TAKE rather than share -- the owner's pay-period schedule
+and the window one pass writes into -- is
+:class:`~app.services.generation_schedule.GenerationSchedule`, and it lives in
+its own public module because the route layer constructs it too.  This module
+is package-private (``shekel-private-module-import``), so a type a route must
+name cannot live here.
+
 The model-specific halves -- constructing a ``Transaction`` vs routing
 a ``Transfer`` through ``transfer_service`` for shadow atomicity -- stay
-in their respective engines.  The pattern-matching preamble that needs
-``recurrence_engine.match_periods`` lives there too
-(``resolve_generation_plan``), since hoisting it here would create an
-import cycle.
+in their respective engines.  The occurrence-matching preamble
+(``resolve_generation_plan``) lives in ``recurrence_engine`` too, since
+hoisting it here would create an import cycle -- the transfer engine imports
+that module for it.
 
 Keeping the audit-trail event names, message strings, and keyword
 fields in one place is load-bearing for two reasons:
@@ -44,7 +56,9 @@ event constant, category, and keyword shape, not to add behaviour.
 """
 
 import logging
+from collections import defaultdict
 
+from app.exceptions import RecurrenceCadenceUnsupported
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
@@ -53,6 +67,7 @@ from app.utils.log_events import (
     BUSINESS,
     EVT_ACCESS_DENIED_CROSS_USER,
     EVT_CROSS_USER_BLOCKED,
+    EVT_RECURRENCE_OCCURRENCE_UNPLACED,
     log_event,
 )
 
@@ -217,6 +232,109 @@ def should_skip_period(existing_rows: list) -> bool:
     return False
 
 
+def refuse_unstorable_repeats(template, placements, existing) -> None:
+    """Refuse when one paycheck must host this template's row more than once.
+
+    Shared by both engines' ``generate_for_template``, because the storage
+    limit is a property of the two UNIQUE indexes rather than of either model:
+    ``idx_transactions_template_period_scenario`` and
+    ``idx_transfers_template_period_scenario`` are both keyed on
+    ``(template, pay_period, scenario)``.
+
+    **Plan step R4a made this reachable, which is why it exists here rather
+    than at R4b with the rest of the generation cutover.**  The reverse matcher
+    it replaced deduplicated: ``_match_monthly_first`` kept one period per
+    calendar month and ``_match_monthly`` one per ``(year, month)``, so a
+    repeat could only come from the ONE shape whose two endpoint months
+    collided.  Forward generation emits every occurrence the cadence names, so
+    at a cadence of 30 days or more a monthly bill repeats a paycheck as a
+    matter of course.  Measured against the deleted matcher, 12 periods from
+    2026-01-01: ``Monthly First`` returned no repeat at ANY cadence and now
+    returns 11 repeated periods at 90 days.  Letting those reach the flush
+    turns a silent under-generation into an ``IntegrityError`` that rolls back
+    the whole enclosing transaction -- ``pay_period_admin.extend_pay_periods``
+    among them, which would leave the owner unable to extend their schedule at
+    all.
+
+    **Checked AFTER the per-period skip, and that is load-bearing.**  A
+    paycheck that already holds a row for this template is skipped by
+    :func:`should_skip_period`, so no second row is attempted and there is
+    nothing to refuse; testing before the skip would make an already-populated
+    schedule permanently unextendable.  Checked BEFORE any row is created, so
+    the refusal never leaves a half-written pass behind.
+
+    **It names the occurrence DATES since plan step R4b-2**, which is when
+    generation started carrying them.  At R4a the engines answered in PERIODS
+    and discarded the occurrence, so the refusal could state only how MANY
+    times a definition fell inside the paycheck -- the developer's ruling asked
+    for the dates, and naming them would have meant walking the cadence a
+    second time.  ``resolve_generation_plan`` now hands over
+    ``(occurrence, period)`` pairs, so the dates come from the same walk that
+    found the collision.
+
+    Args:
+        template: The (Transaction|Transfer)Template being generated.
+        placements: The occurrences the rule fires on inside this pass's write
+            window (``recurrence_engine.PlannedOccurrence`` values, one per
+            occurrence), whose ``period`` may therefore repeat.
+        existing: ``{pay_period_id: [row, ...]}`` for this template and
+            scenario, as :func:`existing_rows_by_period` returns it.
+
+    Raises:
+        RecurrenceCadenceUnsupported: When a period this pass would WRITE into
+            appears more than once.  Names the template, the paycheck and
+            every occurrence date that lands in it.
+    """
+    seen: dict[int, list] = {}
+    for placement in placements:
+        seen.setdefault(placement.period.id, []).append(placement)
+    for period_id, repeats in seen.items():
+        if len(repeats) < 2 or should_skip_period(existing.get(period_id, [])):
+            continue
+        period = repeats[0].period
+        raise RecurrenceCadenceUnsupported(
+            template_name=template.name,
+            occurrence_dates=[repeat.occurrence for repeat in repeats],
+            period_start=period.start_date,
+            period_end=period.end_date,
+        )
+
+
+def regeneration_bound(schedule, effective_from):
+    """Return the date a regenerate pass sweeps and rewrites from.
+
+    Shared by both engines' ``regenerate_for_template`` because it is one
+    decision, not two that happen to agree: the DELETE sweep is an SQL bound on
+    ``pay_periods.end_date``, so "no lower bound" has to become a concrete date
+    -- and it must be the same date the regeneration writes within.
+
+    **The date is the WRITE WINDOW's opening, not the schedule's.**  Taking the
+    schedule's opening instead would delete every non-override template row
+    from the owner's first payday forward while regenerating only inside the
+    window, destroying rows nothing would recreate.  No route reaches that
+    today (both callers pass a whole-schedule window, where the two coincide),
+    which is why the asymmetry is closed here rather than left to be found with
+    a narrow window (plan step R4b-1, adversarial review).
+
+    Args:
+        schedule: The pass's
+            :class:`~app.services.generation_schedule.GenerationSchedule`.
+        effective_from: The caller's explicit bound, or ``None``.
+
+    Returns:
+        *effective_from* when the caller stated one; else the earliest payday
+        in the write window; else ``None``, for a window with no periods at
+        all, where the sweep has nothing to bound and nothing to delete.
+    """
+    if effective_from is not None:
+        return effective_from
+    if not schedule.write_periods:
+        return None
+    return min(
+        period.start_date for period in schedule.write_periods.values()
+    )
+
+
 def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:
     """Partition existing rows for the regenerate state machine.
 
@@ -264,6 +382,168 @@ def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:
         # Auto-generated, unmodified -- safe to delete and regenerate.
         to_delete.append(row)
     return overridden_ids, deleted_ids, to_delete
+
+
+def report_schedule_gaps(logger: logging.Logger, template, scenario_id, gaps):
+    """Log every occurrence the owner's schedule has NO pay period for.
+
+    **Plan ledger row D7, and the developer's 2026-08-08 ruling: log the gap,
+    skip it.**  Pay periods are not contiguous by construction --
+    ``pay_period_service._reject_overlapping_batch`` refuses an OVERLAPPING
+    batch and not a GAPPED one, and registration bootstraps a 14-day period 0
+    that a later real schedule can start after -- so a date can belong to no
+    period at all.  The obligation is real and has nowhere to live, and
+    extending the schedule cannot help: the hole is behind its horizon.
+
+    The three alternatives were weighed and are worse.  RAISING would make one
+    hole block every generate pass for every definition, including the
+    schedule-extend that might repair it.  Writing the row into an adjacent
+    period would put real money in a paycheck whose span does not contain it --
+    a silent misplacement, which is the failure
+    ``PeriodCalendar.period_containing`` refuses by answering ``None``.  And
+    dropping it silently is what the reverse matcher did, which is how the hole
+    stayed unmeasured for the length of this arc.
+
+    **Only a true hole reaches here**, and that distinction cost a review.  The
+    first draft reported every occurrence with no period, which on a perfectly
+    CONTIGUOUS schedule is the ordinary tail: under
+    ``PERIOD_STARTING_ON_OR_AFTER`` an occurrence dated after the last payday
+    has no paycheck to defer onto, and two neutral reviews measured that at 43%
+    of biweekly schedule openings.  An alert that fires on half of healthy
+    schedules buries the one case it exists to surface, so the answer now says
+    which it is (:class:`~app.services.recurrence.PlacementOutcome`) and this
+    reports one of them.
+
+    **Called from the WRITE path only.**  ``resolve_generation_plan`` collects
+    the dates and does not log them, because the read-only predictor
+    ``recurrence_engine.can_generate_in_period`` shares that call and runs ONCE
+    PER ENVELOPE ROW on the carry-forward path -- so reporting there would emit
+    N identical operator alerts for one request, from a function whose contract
+    is that predicting has no side effect.
+
+    Args:
+        logger: The calling engine's module logger, so the event is attributed
+            to ``recurrence_engine`` or ``transfer_recurrence`` as the rest of
+            that engine's events are.
+        template: The (Transaction|Transfer)Template being generated.
+        scenario_id: The scenario the pass targets.
+        gaps: The occurrence dates with no pay period, ascending
+            (``GenerationPlan.gaps``).  Empty is the normal case and emits
+            nothing.
+    """
+    if not gaps:
+        return
+    log_event(
+        logger, logging.WARNING, EVT_RECURRENCE_OCCURRENCE_UNPLACED, BUSINESS,
+        "Recurrence occurrence falls in a pay-schedule gap; skipped",
+        user_id=template.user_id,
+        template_id=template.id,
+        scenario_id=scenario_id,
+        occurrences=[day.isoformat() for day in gaps],
+    )
+
+
+def existing_rows_refusing_repeats(
+    model, template_fk_col, template, scenario_id, placements,
+) -> dict[int, list]:
+    """Fetch what is already in this pass's periods, refusing an unstorable pass.
+
+    The two steps every generate pass runs between resolving its plan and
+    writing its first row, in one call because their ORDER is load-bearing and
+    was previously upheld by convention in two engines: the repeat refusal
+    consults the fetched rows (a paycheck that already holds a row for this
+    template is SKIPPED, so there is no second row to refuse), and it must run
+    before any row is created so a refusal never leaves half a pass behind.
+    Fusing them makes both facts unbreakable rather than remembered.
+
+    Plan step R4b-2 hoisted this: reshaping the plan onto ``(occurrence,
+    period)`` pairs made the two engines' copies of the block identical enough
+    for pylint's ``duplicate-code`` to see what a reader always could.
+
+    Args:
+        model: The mapped class to query (``Transaction`` or ``Transfer``).
+        template_fk_col: That model's template foreign-key column object.
+        template: The (Transaction|Transfer)Template being generated -- read
+            for its id here and for its NAME by the refusal.
+        scenario_id: The scenario primary key to match.
+        placements: This pass's ``recurrence_engine.PlannedOccurrence`` values,
+            one per occurrence, whose ``period`` may therefore repeat.
+
+    Returns:
+        ``{pay_period_id: [row, ...]}``, as :func:`existing_rows_by_period`
+        returns it.
+
+    Raises:
+        RecurrenceCadenceUnsupported: See :func:`refuse_unstorable_repeats`.
+    """
+    existing = existing_rows_by_period(
+        model, template_fk_col, template.id, scenario_id,
+        [placement.period.id for placement in placements],
+    )
+    refuse_unstorable_repeats(template, placements, existing)
+    return existing
+
+
+def existing_rows_by_period(
+    model,
+    template_fk_col,
+    template_id: int,
+    scenario_id: int,
+    period_ids,
+) -> dict[int, list]:
+    """Group this template's existing rows in *period_ids* by pay period.
+
+    Shared by both recurrence engines' ``generate_for_template``, which each
+    carried a byte-similar copy of it until plan step R4b-2 -- the exact
+    duplication this module exists to hold, and the parameterisation is the one
+    :func:`query_rows_from_effective_date` already established for the sibling
+    query: the model class and the template foreign-key column, and nothing
+    else, differ between the two engines.
+
+    Fetches EVERY row, including soft-deleted and immutable ones, because the
+    caller's skip predicate (:func:`should_skip_period`) treats any existing row
+    as "do not generate": a row per period would let a soft-deleted row hide
+    behind a live one, so the value is a LIST per period rather than a row.
+
+    Takes pay-period IDS rather than rows because ids are all it ever read, and
+    since plan step R4b-2 the generate path holds ``(occurrence, period)`` pairs
+    rather than a period list -- so asking for rows would make every caller
+    unwrap one shape into another for a value this query reduces to ids anyway.
+    A repeated id is harmless: ``IN`` is a set test, and a paycheck a rule names
+    twice is refused by :func:`refuse_unstorable_repeats` before any row is
+    written.
+
+    Args:
+        model: The mapped class to query (``Transaction`` or ``Transfer``).
+        template_fk_col: That model's template foreign-key column object
+            (``Transaction.template_id`` or ``Transfer.transfer_template_id``).
+        template_id: The template primary key to match.
+        scenario_id: The scenario primary key to match.
+        period_ids: The ``budget.pay_periods.id`` values to look in.  Empty
+            short-circuits without a query.
+
+    Returns:
+        ``{pay_period_id: [row, ...]}``, absent for a period holding no row.
+    """
+    ids = list(period_ids)
+    if not ids:
+        return {}
+    rows = (
+        db.session.query(model)
+        .filter(
+            template_fk_col == template_id,
+            model.scenario_id == scenario_id,
+            model.pay_period_id.in_(ids),
+        )
+        .all()
+    )
+    grouped: dict[int, list] = defaultdict(list)
+    for row in rows:
+        grouped[row.pay_period_id].append(row)
+    # A plain dict, not the defaultdict: the documented contract is that a
+    # period holding no row is ABSENT, and a defaultdict would silently create
+    # one for the next caller that indexes instead of ``.get``.
+    return dict(grouped)
 
 
 def query_rows_from_effective_date(

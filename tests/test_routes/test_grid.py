@@ -29,6 +29,7 @@ from app.services import (
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.services.balance_at import BalanceContext
 from app.utils.dates import display_today
+from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
     append_balance_assertion,
@@ -1923,7 +1924,7 @@ class TestAccountIdColumn:
         scenario = data["scenario"]
 
         created = recurrence_engine.generate_for_template(
-            template, periods, scenario.id
+            template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id
         )
 
         assert len(created) > 0

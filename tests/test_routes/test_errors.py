@@ -1,13 +1,104 @@
 """Tests for custom error pages and production configuration."""
 
 import logging
+from datetime import date
 
 import pytest
 from flask import abort
 
 from app import create_app
 from app.config import BaseConfig, ProdConfig
+from app.exceptions import RecurrenceCadenceUnsupported
 from app.utils.log_events import ACCESS, EVT_RATE_LIMIT_EXCEEDED
+
+
+class TestTheRecurrenceCadenceCard:
+    """The ONE answer to "this definition repeats inside one paycheck".
+
+    Plan ledger row D19's handler, and the card it renders.  Nothing rendered
+    it until a neutral review of plan step R4b-2 pointed that out: the only
+    coverage was of the exception's own fields, so the handler could have been
+    passing a context key the template does not read and the page would have
+    said "falls  times" over an empty list, silently, at 409.  That risk was
+    live -- R4b-2 changed the context from a COUNT to the occurrence DATES.
+
+    Driven through ``app.errorhandler`` with a route that raises, rather than
+    by calling ``render_template`` directly: the handler's own two decisions
+    (the status code, and the 200-for-HTMX branch htmx needs to swap at all)
+    are the half a template test cannot see.
+    """
+
+    #: The dates the card must name, in the order generation walked them.
+    _OCCURRENCES = (date(2026, 7, 15), date(2026, 8, 15), date(2026, 9, 15))
+    _PERIOD_START = date(2026, 7, 3)
+    _PERIOD_END = date(2026, 9, 30)
+
+    def _render(self, app, headers=None):
+        """Drive the REAL handler for this exception and return its response.
+
+        Through ``app.handle_user_exception``, which is what Flask itself
+        calls: it looks the handler up in the same registry
+        ``@app.errorhandler`` wrote it to, so the handler, the template and the
+        status code are all the shipped ones.
+
+        Registering a throwaway ROUTE that raises was the obvious shape and is
+        wrong here -- the ``app`` fixture is shared, and Flask refuses a
+        ``route`` call on an app that has already served a request, so the two
+        tests below passed alone and errored in the full suite.  A request
+        CONTEXT mutates nothing.
+
+        Args:
+            app: The application fixture.
+            headers: Request headers, for the HX-Request branch.
+
+        Returns:
+            The :class:`flask.Response`.
+        """
+        error = RecurrenceCadenceUnsupported(
+            template_name="Rent",
+            occurrence_dates=self._OCCURRENCES,
+            period_start=self._PERIOD_START,
+            period_end=self._PERIOD_END,
+        )
+        with app.test_request_context("/-cadence", headers=headers or {}):
+            return app.make_response(app.handle_user_exception(error))
+
+    def test_it_answers_409_and_names_every_occurrence(self, app):
+        """A full page request gets 409 Conflict with each date listed.
+
+        409 because the request is well-formed and the stored schedule cannot
+        host it.  Each date appears in the card: a count alone does not tell
+        the user which repeat to act on, which is why plan step R4b-2 threaded
+        the occurrences through generation in the first place.
+        """
+        response = self._render(app)
+
+        assert response.status_code == 409
+        html = response.data.decode()
+        assert "Rent" in html
+        assert str(len(self._OCCURRENCES)) in html
+        for occurrence in self._OCCURRENCES:
+            assert occurrence.strftime("%b %d, %Y") in html, (
+                f"the card does not name {occurrence}, so the user cannot see "
+                f"which repeat to change"
+            )
+        assert self._PERIOD_START.strftime("%b %d, %Y") in html
+        assert self._PERIOD_END.strftime("%b %d, %Y") in html
+        # Both repairs are the user's own decisions, so the card links to each
+        # surface rather than offering a button that acts for them.
+        assert "/settings" in html
+        assert "Nothing was changed" in html
+
+    def test_an_htmx_request_gets_200_so_the_swap_happens(self, app):
+        """htmx swaps only 2xx, so an honest 4xx would show the user nothing.
+
+        The same card, as a fragment.  Without this branch a user who pressed a
+        button would watch it do nothing at all.
+        """
+        response = self._render(app, headers={"HX-Request": "true"})
+
+        assert response.status_code == 200
+        assert "Rent" in response.data.decode()
 
 
 class TestErrorPages:

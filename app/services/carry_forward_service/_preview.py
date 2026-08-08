@@ -223,7 +223,9 @@ def preview_carry_forward(
     # actionable failure cases in front of the user.
     for txn in ctx.envelope_txns:
         plans.append(
-            _build_envelope_plan(txn, ctx.target_period, scenario_id),
+            _build_envelope_plan(
+                txn, ctx.target_period, scenario_id, ctx.schedule,
+            ),
         )
 
     for txn in ctx.discrete_txns:
@@ -243,7 +245,8 @@ def preview_carry_forward(
     )
 
 
-def _build_envelope_plan(source_txn, target_period, scenario_id):
+def _build_envelope_plan(source_txn, target_period, scenario_id,
+                         schedule):
     """Compute the envelope-rollover plan for *source_txn*.
 
     Shares the destination decision with the mutating path through
@@ -269,7 +272,7 @@ def _build_envelope_plan(source_txn, target_period, scenario_id):
         Decimal("0"), source_txn.estimated_amount - entries_sum,
     )
     target_fields = _resolve_envelope_target_fields(
-        source_txn, target_period, scenario_id, leftover,
+        source_txn, target_period, scenario_id, leftover, schedule,
     )
     return CarryForwardPlan(
         transaction=source_txn,
@@ -281,7 +284,7 @@ def _build_envelope_plan(source_txn, target_period, scenario_id):
 
 
 def _resolve_envelope_target_fields(source_txn, target_period,
-                                    scenario_id, leftover):
+                                    scenario_id, leftover, schedule):
     """Decide the target-row half of an envelope plan.
 
     Returns a dict of ``CarryForwardPlan`` fields covering the
@@ -315,7 +318,7 @@ def _resolve_envelope_target_fields(source_txn, target_period,
         return {}
 
     resolution = _classify_leftover_target(
-        source_txn, target_period, scenario_id,
+        source_txn, target_period, scenario_id, schedule,
     )
 
     if resolution.kind is _TargetKind.AMBIGUOUS:

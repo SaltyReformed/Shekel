@@ -36,6 +36,7 @@ from app.services import (
 )
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
+from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import override_anchor, settle_instant_on
 
 
@@ -67,7 +68,7 @@ class TestSalaryToGrid:
 
             # Generate income transactions across all 10 periods.
             txns = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.commit()
 
@@ -105,7 +106,7 @@ class TestTemplateRecurrenceToGrid:
             db.session.flush()
 
             txns = recurrence_engine.generate_for_template(
-                template, seed_periods, seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.commit()
 

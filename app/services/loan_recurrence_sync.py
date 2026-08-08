@@ -90,14 +90,16 @@ def recurrence_end_date(
       schedule row for a retired loan WITH history and its ``origination_date``
       for one without -- two dates for one state; *as_of* is ONE rule.)
 
-      **This bounds generation from the NEXT period, not from today.**
-      ``recurrence_engine.match_periods`` admits a period when
-      ``period.start_date <= end_date``, so the CURRENT period -- which started
-      before today -- still matches, and only ``should_skip_period`` (an existing
-      row) stops a further payment being generated into it for a loan that owes
-      nothing.  A bound that excluded the current period outright would have to be
-      that period's start minus a day, which is a different fix; recorded as
-      **N-19** rather than smuggled in here.  Note also that a retired loan whose
+      **This bounds the OCCURRENCE, and plan step R4a is what changed that.**
+      ``end_date`` used to bound PERIODS -- a period was admitted when
+      ``period.start_date <= end_date``, so the CURRENT period, which started
+      before *as_of*, still matched and only ``should_skip_period`` stopped a
+      further payment being generated into it for a loan that owes nothing.
+      Forward generation stops at the first occurrence past the bound, so a
+      retired loan's next installment is simply never emitted: finding **N-19**
+      (a bound that excluded the current period outright would have to be that
+      period's start minus a day) is closed by the model rather than by a
+      different bound.  Note also that a retired loan whose
       payoff-affecting mutations span days rewrites this to each new day, so
       "idempotent" is idempotent WITHIN a day.
     * **Never pays off** (``None`` and NOT retired -- negative amortization, or an

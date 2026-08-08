@@ -31,23 +31,19 @@ from app.services import (
     recurrence_engine,
     recurring_view,
 )
+from app.services.generation_schedule import GenerationSchedule
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.recurrence import PeriodCalendar, modelled_pattern, pattern_choices
+from app.services.recurrence import calendar_for, pattern_choices
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     StaleConflictContext,
     commit_or_handle_stale,
 )
-from app.routes._recurrence_preview import (
-    PREVIEW_OCCURRENCE_LIMIT,
-    build_preview_rule,
-    owned_preview_start_period,
-    render_preview_html,
-)
+from app.routes._recurrence_preview import recurrence_preview_fragment
 from app.routes._recurrence_conflict_chooser import (
     PreEditTemplateState,
     RecurrenceConflictKind,
@@ -303,12 +299,11 @@ def _load_recurring_view(user_id):
         user_id,
     )
     transfer_templates = _load_active_transfer_templates(user_id)
-    periods = pay_period_service.get_all_periods(user_id)
     return recurring_view.build_view(
         income_templates=income_templates,
         expense_templates=expense_templates,
         transfer_templates=transfer_templates,
-        periods=periods,
+        calendar=calendar_for(user_id),
         as_of=date.today(),
     )
 
@@ -495,9 +490,10 @@ def create_template():
     if rule:
         scenario = get_baseline_scenario(current_user.id)
         if scenario:
-            periods = pay_period_service.get_all_periods(current_user.id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id,
+                template,
+                GenerationSchedule.for_user(current_user.id),
+                scenario.id,
             )
 
     db.session.commit()
@@ -788,9 +784,11 @@ def unarchive_template(template_id):
     if template.recurrence_rule:
         scenario = get_baseline_scenario(current_user.id)
         if scenario:
-            periods = pay_period_service.get_all_periods(current_user.id)
             recurrence_engine.generate_for_template(
-                template, periods, scenario.id, effective_from=date.today(),
+                template,
+                GenerationSchedule.for_user(current_user.id),
+                scenario.id,
+                effective_from=date.today(),
             )
 
     conflict = commit_or_handle_stale(StaleConflictContext(
@@ -922,54 +920,12 @@ def hard_delete_template(template_id):
 @login_required
 @require_owner
 def preview_recurrence():
-    """HTMX partial: show next 5 occurrences for a recurrence pattern.
+    """HTMX partial: show the next 5 occurrences for a recurrence pattern.
 
-    The submitted pattern is checked against what the application MODELS
-    (plan step R2e-2).  It used to be checked against the ``ref`` table, and
-    the two are not the same set: a row ``RecurrencePatternEnum`` does not name
-    passes a table lookup and then raises inside the authoring seam
-    ``build_preview_rule`` goes through, which nothing here catches -- so the
-    preview would 500 on the same input the picker refuses to offer.
-
-    An ABSENT pattern is the form's "does not repeat" option, which has no
-    occurrences to preview.  A second guard used to sit beside it for the
-    ``Once`` pattern that meant the same thing; plan step R2e-3 retired it, so
-    the empty submission is the only non-recurring input left.
+    Routing only.  The fragment is built by
+    :func:`app.routes._recurrence_preview.recurrence_preview_fragment`, beside
+    the three helpers it composes -- the endpoint is kind-agnostic (both the
+    transaction-template and transfer-template forms point at it), so its body
+    does not belong in the transaction-template CRUD module.
     """
-    pattern_id = request.args.get("recurrence_pattern", type=int)
-    if not pattern_id:
-        return "<small class='text-muted'>No preview for this pattern</small>"
-
-    if modelled_pattern(pattern_id) is None:
-        return "<small class='text-muted'>Unknown pattern</small>"
-
-    periods = pay_period_service.get_all_periods(current_user.id)
-    if not periods:
-        return "<small class='text-muted'>No pay periods generated yet</small>"
-
-    # The schedule is resolved BEFORE the rule: the authoring seam measures a
-    # rule's first occurrence against it, so an empty schedule is refused
-    # rather than anchored against nothing.  Built from the periods already
-    # loaded, so this adds no query.
-    start_period = owned_preview_start_period()
-    rule = build_preview_rule(
-        pattern_id, start_period,
-        PeriodCalendar.from_pay_periods(periods, current_user.id),
-    )
-
-    # ``effective_from`` is a DISPLAY choice -- "show me the next five from
-    # here" -- and so still the route's, not the rule's: the rule's own
-    # opening bound is its anchor.
-    if start_period is not None:
-        effective_from = start_period.start_date
-    else:
-        current_period = pay_period_service.get_current_period(current_user.id)
-        effective_from = current_period.start_date if current_period else periods[0].start_date
-
-    matching = recurrence_engine.match_periods(rule, pattern_id, periods, effective_from)
-    preview_periods = matching[:PREVIEW_OCCURRENCE_LIMIT]
-
-    if not preview_periods:
-        return "<small class='text-muted'>No matching periods found</small>"
-
-    return render_preview_html(preview_periods)
+    return recurrence_preview_fragment()

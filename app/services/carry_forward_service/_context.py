@@ -18,17 +18,26 @@ from app.exceptions import NotFoundError
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.services.generation_schedule import GenerationSchedule
 from app.utils.balance_predicates import is_projected_clause
 
 
 @dataclass(frozen=True)
-class _CarryForwardContext:
+class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
     """Internal: validated periods + partitioned source rows.
 
     Built by ``_build_carry_forward_context``; consumed by both
     ``carry_forward_unpaid`` and ``preview_carry_forward`` so the two
     paths see exactly the same partition (DRY: the partition logic
     lives once).
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- these eight ARE one
+    carry-forward request: the two validated periods, who and which scenario
+    they belong to, the three-way partition of the rows to move, and the
+    pay-period schedule the envelope branch resolves against.  Splitting them
+    would put one request's facts in two objects both paths must then keep in
+    step, which is the coupling this value exists to remove.  Mirrors the
+    :class:`~app.services.recurrence.ResolvedRecurrence` precedent.
     """
 
     source_period: object  # PayPeriod
@@ -38,6 +47,12 @@ class _CarryForwardContext:
     shadow_txns: List[Transaction]
     envelope_txns: List[Transaction]
     discrete_txns: List[Transaction]
+    # The owner's pay-period schedule, its write window narrowed to the ONE
+    # target period, resolved once for the whole request (plan step R4b-1).
+    # Every envelope row asks the recurrence engine the same question about
+    # the same target, and building this per row would repeat the schedule
+    # query -- and the forward occurrence walk -- once per row.
+    schedule: object  # GenerationSchedule
 
 
 def _build_carry_forward_context(source_period_id, target_period_id,
@@ -74,6 +89,13 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     if target is None or target.user_id != user_id:
         raise NotFoundError(f"Target pay period {target_period_id} not found.")
 
+    # ONE schedule for the whole request, its window narrowed to the target
+    # period the envelope rollovers write into (plan step R4b-1).  Every
+    # envelope row asks the recurrence engine the same question about the same
+    # target; building this per row would repeat the schedule query and the
+    # forward occurrence walk once per row.
+    schedule = GenerationSchedule.for_periods(user_id, [target])
+
     if source_period_id == target_period_id:
         return _CarryForwardContext(
             source_period=source,
@@ -83,6 +105,7 @@ def _build_carry_forward_context(source_period_id, target_period_id,
             shadow_txns=[],
             envelope_txns=[],
             discrete_txns=[],
+            schedule=schedule,
         )
 
     # Routed through ``is_projected_clause`` (D6-09 / MED-02) so the
@@ -127,6 +150,7 @@ def _build_carry_forward_context(source_period_id, target_period_id,
         shadow_txns=shadow_txns,
         envelope_txns=envelope_txns,
         discrete_txns=discrete_txns,
+        schedule=schedule,
     )
 
 
@@ -210,7 +234,8 @@ class _TargetResolution:
     base: Optional[Decimal] = None
 
 
-def _classify_leftover_target(source_txn, target_period, scenario_id):
+def _classify_leftover_target(source_txn, target_period, scenario_id,
+                              schedule):
     """Decide where an envelope leftover lands in the destination period.
 
     Pure read-only classification shared by ``carry_forward_unpaid``
@@ -244,6 +269,10 @@ def _classify_leftover_target(source_txn, target_period, scenario_id):
         target_period: The destination PayPeriod.
         scenario_id: Scenario filter for the lookup and the
             recurrence-engine prediction.
+        schedule: The request's
+            :class:`~app.services.generation_schedule.GenerationSchedule`
+            (``ctx.schedule``), threaded so the prediction resolves against the
+            owner's schedule without re-reading it once per envelope row.
 
     Returns:
         _TargetResolution describing the destination decision.
@@ -270,6 +299,7 @@ def _classify_leftover_target(source_txn, target_period, scenario_id):
             and source_txn.template is not None
             and recurrence_engine.can_generate_in_period(
                 source_txn.template, target_period, scenario_id,
+                schedule=schedule,
             )):
         return _TargetResolution(
             _TargetKind.GENERATE, base=source_txn.template.default_amount,

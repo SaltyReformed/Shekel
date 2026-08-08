@@ -47,6 +47,7 @@ from app.services import (
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.services import account_service
+from app.services.generation_schedule import GenerationSchedule
 from app.utils.log_events import (
     ACCESS,
     BUSINESS,
@@ -704,7 +705,7 @@ class TestRecurrenceEngineLogging:
             "app.services.recurrence_engine",
         ) as cap:
             created = recurrence_engine.generate_for_template(
-                _recurrence_setup, seed_periods[:3],
+                _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:3]),
                 seed_user["scenario"].id,
             )
 
@@ -719,13 +720,13 @@ class TestRecurrenceEngineLogging:
         """regenerate_for_template emits ``recurrence_regenerated``."""
         with app.app_context():
             recurrence_engine.generate_for_template(
-                _recurrence_setup, seed_periods[:3],
+                _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:3]),
                 seed_user["scenario"].id,
             )
             db.session.commit()
             with _LogCapture("app.services.recurrence_engine") as cap:
                 recurrence_engine.regenerate_for_template(
-                    _recurrence_setup, seed_periods[:3],
+                    _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:3]),
                     seed_user["scenario"].id,
                 )
 
@@ -742,7 +743,7 @@ class TestRecurrenceEngineLogging:
             "app.services.recurrence_engine",
         ) as cap:
             created = recurrence_engine.generate_for_template(
-                _recurrence_setup, seed_periods[:1],
+                _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:1]),
                 seed_second_user["scenario"].id,
             )
 
@@ -914,7 +915,7 @@ class TestTransferRecurrenceLogging:
             "app.services.transfer_recurrence",
         ) as cap:
             created = transfer_recurrence.generate_for_template(
-                template, seed_periods[:2], td["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), td["scenario"].id,
             )
 
         assert len(created) == 2

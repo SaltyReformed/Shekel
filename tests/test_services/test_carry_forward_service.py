@@ -44,6 +44,7 @@ from app.services import (
 )
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
+from app.services.generation_schedule import GenerationSchedule
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
@@ -1084,7 +1085,7 @@ class TestCarryForwardOverrideSibling:
             # Initial generation populates rule-generated rows for
             # periods 0 and 1.
             recurrence_engine.generate_for_template(
-                template, seed_periods[:2], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1111,7 +1112,7 @@ class TestCarryForwardOverrideSibling:
             # Re-running the engine must NOT add a third row -- the
             # override sibling signals the period is handled.
             recurrence_engine.generate_for_template(
-                template, seed_periods[:2], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1276,7 +1277,7 @@ class TestCarryForwardOverrideSiblingTransfers:
             # Initial generation: rule-generated transfers in periods 0
             # and 1.
             transfer_recurrence.generate_for_template(
-                template, seed_periods[:2], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1301,7 +1302,7 @@ class TestCarryForwardOverrideSiblingTransfers:
 
             # Re-run transfer recurrence -- must not add a third row.
             transfer_recurrence.generate_for_template(
-                template, seed_periods[:2], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -2638,7 +2639,7 @@ class TestCarryForwardEnvelopeRecurrenceSkip:
             # is_immutable status; the bumped canonical in period 1
             # has is_override=True.  Both trigger skip clauses.
             recurrence_engine.generate_for_template(
-                template, seed_periods[:2], seed_user["scenario"].id,
+                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
             )
             db.session.flush()
 

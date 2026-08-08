@@ -130,7 +130,7 @@ class RecurrenceMonthAnchor(db.Model):
     to hold that is not already in the row (plan step R2d).  From R7c the
     resolved nominal day is ``month_anchor.nominal_day if month_anchor else
     anchor_date.day``, clamped per occurrence month exactly as
-    ``recurrence_engine._match_monthly`` clamps ``day_of_month`` today.
+    ``app.services.recurrence._months.clamped_day`` clamps ``day_of_month``.
 
     Attributes:
         nominal_day: The day the user meant, 29-31.  Below 29 no month can

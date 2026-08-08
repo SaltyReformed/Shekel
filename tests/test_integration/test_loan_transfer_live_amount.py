@@ -30,6 +30,7 @@ from app.services import (
     transfer_recurrence,
 )
 from app.services.rate_period_engine import monthly_due_date
+from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     add_escrow_line,
     create_loan_account,
@@ -127,7 +128,7 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.commit()
 
@@ -184,7 +185,7 @@ def test_non_derived_transfer_has_no_live_override(
         template.settings.derive_from_loan = False
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.commit()
 
@@ -214,7 +215,7 @@ def test_derived_transfer_due_date_matches_loan_due_date(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         created = transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.commit()
 
@@ -267,7 +268,7 @@ def test_derived_override_is_per_shadow_date_aware(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         # Append a second version on the SAME line: 400/mo effective 2026-03-15.
         db.session.add(EscrowComponentVersion(
@@ -321,7 +322,7 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.add(EscrowComponentVersion(
             line_id=escrow.line_id,
@@ -393,7 +394,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.commit()
 
@@ -467,7 +468,7 @@ def test_settled_loan_payment_freeze_is_one_shot(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.commit()
 
@@ -563,7 +564,7 @@ def test_derived_override_includes_standing_extra(
         template.settings.extra_principal = Decimal("100.00")
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.commit()
 
@@ -593,7 +594,7 @@ def test_manual_payment_with_extra_gets_base_plus_extra(
         template.default_amount = Decimal("1499.10")
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.commit()
 
@@ -627,7 +628,7 @@ def test_manual_extra_keys_to_recurring_base_not_a_typed_actual(
         template.default_amount = Decimal("1499.10")
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.commit()
 
@@ -672,7 +673,7 @@ def test_manual_payment_without_extra_gets_no_override(
         template.default_amount = Decimal("1499.10")
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.commit()
 
@@ -705,7 +706,7 @@ def test_settling_with_extra_lands_the_extra_in_principal(
         template.settings.extra_principal = Decimal("100.00")
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.commit()
 
@@ -760,7 +761,7 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         template.default_amount = Decimal("1499.10")
         db.session.flush()
         transfer_recurrence.generate_for_template(
-            template, seed_periods, scenario_id,
+            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
         )
         db.session.commit()
 

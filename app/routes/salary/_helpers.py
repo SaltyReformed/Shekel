@@ -34,6 +34,7 @@ from app.services import (
     pay_period_service,
     recurrence_engine,
 )
+from app.services.generation_schedule import GenerationSchedule
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
 from app.schemas.validation import (
@@ -133,7 +134,10 @@ def _regenerate_salary_transactions(profile):
     if not scenario:
         return
 
-    periods = pay_period_service.get_all_periods(current_user.id)
+    # One load of the owner's schedule serves both the paycheck recompute
+    # below and the regeneration's own resolution (plan step R4b-1).
+    schedule = GenerationSchedule.for_user(current_user.id)
+    periods = list(schedule.periods)
     tax_configs = load_tax_configs(current_user.id, profile)
 
     # Update the template's default_amount to the current net pay
@@ -148,7 +152,7 @@ def _regenerate_salary_transactions(profile):
     # Regenerate transactions
     try:
         recurrence_engine.regenerate_for_template(
-            profile.template, periods, scenario.id,
+            profile.template, schedule, scenario.id,
             effective_from=date.today(),
         )
     except RecurrenceConflict as e:
@@ -194,6 +198,9 @@ def _compute_total_pre_tax(profile):
     current_period = pay_period_service.get_current_period(current_user.id)
     if not current_period:
         return Decimal("0")
+    # A plain schedule read: this helper recomputes ONE paycheck and
+    # regenerates nothing, so it needs the period list the calculator reads as
+    # ``all_periods`` and none of the rest of a GenerationSchedule.
     periods = pay_period_service.get_all_periods(current_user.id)
     tax_configs = load_tax_configs(current_user.id, profile)
     pay_breakdown = paycheck_calculator.calculate_paycheck(

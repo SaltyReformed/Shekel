@@ -12,7 +12,7 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.tax_config import FicaConfig, StateTaxConfig, TaxBracket, TaxBracketSet
+from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.calibration_override import CalibrationOverride
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
@@ -24,14 +24,21 @@ from app.models.scenario import Scenario
 from app.models.category import Category
 from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
-    RaiseType, RecurrencePattern, TaxType, TransactionType,
+    RaiseType, RecurrencePattern, TransactionType,
 )
 from app.services.auth_service import hash_password
 
 import pytest
 from app.services import account_service
+from app.services.generation_schedule import GenerationSchedule
 
-from tests._test_helpers import create_loan_account, freeze_today
+from tests._test_helpers import (
+    create_loan_account,
+    freeze_today,
+    seed_fica_config,
+    seed_state_tax_config,
+    seed_tax_bracket_set,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1751,7 +1758,7 @@ class TestTaxConfigLayout:
     def test_federal_brackets_collapsed_by_default(self, app, auth_client, seed_user):
         """Federal brackets card body starts collapsed (no 'show' class)."""
         with app.app_context():
-            _seed_brackets(seed_user["user"].id)
+            seed_tax_bracket_set(seed_user["user"].id)
             db.session.commit()
 
             response = auth_client.get("/settings?section=tax")
@@ -1763,7 +1770,7 @@ class TestTaxConfigLayout:
     def test_federal_brackets_content_present_in_dom(self, app, auth_client, seed_user):
         """Bracket data is in the DOM even though the section is collapsed."""
         with app.app_context():
-            _seed_brackets(seed_user["user"].id)
+            seed_tax_bracket_set(seed_user["user"].id)
             db.session.commit()
 
             response = auth_client.get("/settings?section=tax")
@@ -1798,7 +1805,7 @@ class TestTaxConfigLayout:
         """FICA form POSTs to the correct endpoint after section reorder."""
         with app.app_context():
             # FICA form only renders when fica_configs is non-empty.
-            _seed_fica(seed_user["user"].id)
+            seed_fica_config(seed_user["user"].id)
             db.session.commit()
 
             response = auth_client.get("/settings?section=tax")
@@ -1809,8 +1816,8 @@ class TestTaxConfigLayout:
     def test_tax_config_no_nested_forms(self, app, auth_client, seed_user):
         """No form tags are nested inside other form tags after the reorder."""
         with app.app_context():
-            _seed_state_tax(seed_user["user"].id, Decimal("0.0399"))
-            _seed_fica(seed_user["user"].id)
+            seed_state_tax_config(seed_user["user"].id, Decimal("0.0399"))
+            seed_fica_config(seed_user["user"].id)
             db.session.commit()
 
             response = auth_client.get("/settings?section=tax")
@@ -1842,8 +1849,8 @@ class TestTaxConfigLayout:
     def test_multiple_tax_years_most_recent_expanded(self, app, auth_client, seed_user):
         """With multiple tax years, the most recent is expanded, older collapsed."""
         with app.app_context():
-            _seed_brackets(seed_user["user"].id, tax_year=2025)
-            _seed_brackets(seed_user["user"].id, tax_year=2026)
+            seed_tax_bracket_set(seed_user["user"].id, tax_year=2025)
+            seed_tax_bracket_set(seed_user["user"].id, tax_year=2026)
             db.session.commit()
 
             response = auth_client.get("/settings?section=tax")
@@ -2124,105 +2131,6 @@ class TestSalaryNegativePaths:
 # ── Net Biweekly Mismatch Fixes (section 3.3) ────────────────────────
 
 
-def _seed_state_tax(user_id, rate, tax_year=2026, state_code="NC"):
-    """Create a flat state tax config for testing.
-
-    Args:
-        user_id: The owning user's ID.
-        rate: Decimal flat rate in decimal form (e.g. 0.0399).
-        tax_year: Tax year for the config.
-        state_code: Two-letter state code.
-
-    Returns:
-        StateTaxConfig: The created config.
-    """
-    flat_type = db.session.query(TaxType).filter_by(name="flat").one()
-    # T-P5: state configs are filing-status-keyed.  These net-biweekly tests
-    # all use single-filer profiles, so the config carries the single status
-    # (matching the withholding path's filing-status-scoped lookup).
-    single_status = (
-        db.session.query(FilingStatus).filter_by(name="single").one()
-    )
-    config = StateTaxConfig(
-        user_id=user_id,
-        state_code=state_code,
-        tax_year=tax_year,
-        tax_type_id=flat_type.id,
-        filing_status_id=single_status.id,
-        flat_rate=rate,
-        standard_deduction=Decimal("25500.00"),
-    )
-    db.session.add(config)
-    db.session.flush()
-    return config
-
-
-def _seed_fica(user_id, tax_year=2026):
-    """Create a standard FICA config for testing.
-
-    Returns:
-        FicaConfig: The created config.
-    """
-    config = FicaConfig(
-        user_id=user_id,
-        tax_year=tax_year,
-        ss_rate=Decimal("0.0620"),
-        ss_wage_base=Decimal("176100.00"),
-        medicare_rate=Decimal("0.0145"),
-        medicare_surtax_rate=Decimal("0.0090"),
-        medicare_surtax_threshold=Decimal("200000.00"),
-    )
-    db.session.add(config)
-    db.session.flush()
-    return config
-
-
-def _seed_brackets(user_id, tax_year=2026):
-    """Create a bracket set with sample brackets for testing.
-
-    Seeds a 'single' filing status bracket set with two brackets so
-    that the federal brackets section renders with visible data.
-
-    Args:
-        user_id: The owning user's ID.
-        tax_year: Tax year for the bracket set.
-
-    Returns:
-        TaxBracketSet: The created bracket set with two brackets.
-    """
-    filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
-    bracket_set = TaxBracketSet(
-        user_id=user_id,
-        filing_status_id=filing_status.id,
-        tax_year=tax_year,
-        standard_deduction=Decimal("14600.00"),
-        child_credit_amount=Decimal("2000.00"),
-        other_dependent_credit_amount=Decimal("500.00"),
-    )
-    db.session.add(bracket_set)
-    db.session.flush()
-
-    brackets = [
-        TaxBracket(
-            bracket_set_id=bracket_set.id,
-            min_income=Decimal("0.00"),
-            max_income=Decimal("11600.00"),
-            rate=Decimal("0.1000"),
-            sort_order=1,
-        ),
-        TaxBracket(
-            bracket_set_id=bracket_set.id,
-            min_income=Decimal("11600.00"),
-            max_income=Decimal("47150.00"),
-            rate=Decimal("0.1200"),
-            sort_order=2,
-        ),
-    ]
-    db.session.add_all(brackets)
-    db.session.flush()
-    return bracket_set
-
-
 class TestNetBiweeklyMismatchFixes:
     """Tests for the three root causes of net biweekly mismatch (section 3.3).
 
@@ -2245,8 +2153,8 @@ class TestNetBiweeklyMismatchFixes:
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            _seed_state_tax(user.id, Decimal("0.0399"))
-            _seed_fica(user.id)
+            seed_state_tax_config(user.id, Decimal("0.0399"))
+            seed_fica_config(user.id)
             db.session.commit()
 
             # Grab a projected salary transaction's amount before the change.
@@ -2299,8 +2207,8 @@ class TestNetBiweeklyMismatchFixes:
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            _seed_state_tax(user.id, Decimal("0.0399"))
-            _seed_fica(user.id)
+            seed_state_tax_config(user.id, Decimal("0.0399"))
+            seed_fica_config(user.id)
             db.session.commit()
 
             txn_before = (
@@ -2369,8 +2277,8 @@ class TestNetBiweeklyMismatchFixes:
         """
         with app.app_context():
             user = seed_user["user"]
-            _seed_state_tax(user.id, Decimal("0.0399"))
-            _seed_fica(user.id)
+            seed_state_tax_config(user.id, Decimal("0.0399"))
+            seed_fica_config(user.id)
             db.session.commit()
 
             filing_status = db.session.query(FilingStatus).filter_by(
@@ -2456,8 +2364,8 @@ class TestNetBiweeklyMismatchFixes:
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            _seed_state_tax(user.id, Decimal("0.0399"), tax_year=2026)
-            _seed_fica(user.id, tax_year=2026)
+            seed_state_tax_config(user.id, Decimal("0.0399"), tax_year=2026)
+            seed_fica_config(user.id, tax_year=2026)
             db.session.commit()
 
             # Regenerate transactions via the recurrence engine so that
@@ -2465,7 +2373,7 @@ class TestNetBiweeklyMismatchFixes:
             from app.services import recurrence_engine, pay_period_service
             periods = pay_period_service.get_all_periods(user.id)
             recurrence_engine.regenerate_for_template(
-                profile.template, periods, seed_user["scenario"].id,
+                profile.template, GenerationSchedule.for_periods(profile.template.user_id, periods), seed_user["scenario"].id,
             )
             db.session.commit()
 
@@ -2533,8 +2441,8 @@ class TestCalibration:
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            _seed_state_tax(user.id, Decimal("0.0399"))
-            _seed_fica(user.id)
+            seed_state_tax_config(user.id, Decimal("0.0399"))
+            seed_fica_config(user.id)
             db.session.commit()
 
             # Step 1: Preview -- derive rates.
@@ -2643,8 +2551,8 @@ class TestCalibration:
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            _seed_state_tax(user.id, Decimal("0.0399"))
-            _seed_fica(user.id)
+            seed_state_tax_config(user.id, Decimal("0.0399"))
+            seed_fica_config(user.id)
             db.session.commit()
 
             # Get a transaction amount before calibration.
@@ -2681,7 +2589,7 @@ class TestCalibration:
             periods = pay_period_service.get_all_periods(user.id)
             try:
                 recurrence_engine.regenerate_for_template(
-                    profile.template, periods, seed_user["scenario"].id,
+                    profile.template, GenerationSchedule.for_periods(profile.template.user_id, periods), seed_user["scenario"].id,
                 )
             except Exception:
                 pass
@@ -2710,8 +2618,8 @@ class TestCalibration:
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            _seed_state_tax(user.id, Decimal("0.0399"))
-            _seed_fica(user.id)
+            seed_state_tax_config(user.id, Decimal("0.0399"))
+            seed_fica_config(user.id)
             db.session.commit()
 
             # First calibration.
@@ -3139,8 +3047,8 @@ class TestCalibrationServerDerivedSnapshot:
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            _seed_state_tax(user.id, Decimal("0.0399"))
-            _seed_fica(user.id)
+            seed_state_tax_config(user.id, Decimal("0.0399"))
+            seed_fica_config(user.id)
             db.session.commit()
 
             resp = self._post_confirm(auth_client, profile.id)
@@ -3273,8 +3181,8 @@ class TestCalibrationServerDerivedSnapshot:
         with app.app_context():
             user = seed_user["user"]
             profile = _create_profile(seed_user)
-            _seed_state_tax(user.id, Decimal("0.0399"))
-            _seed_fica(user.id)
+            seed_state_tax_config(user.id, Decimal("0.0399"))
+            seed_fica_config(user.id)
             db.session.commit()
 
             resp = self._post_confirm(auth_client, profile.id)

@@ -39,7 +39,7 @@ from flask_login import current_user
 
 from app.exceptions import RecurrenceConflict
 from app.extensions import db
-from app.services import pay_period_service
+from app.services.generation_schedule import GenerationSchedule
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.digit_strings import parse_row_id
 
@@ -165,7 +165,12 @@ class RecurrenceConflictKind:
         amount_attr: The row's amount column name (``"estimated_amount"`` /
             ``"amount"``).
         regenerate_fn: The kind's ``regenerate_for_template(template,
-            periods, scenario_id, effective_from=...)`` callable.
+            schedule, scenario_id, effective_from=...)`` callable, where
+            ``schedule`` is a
+            :class:`~app.services.generation_schedule.GenerationSchedule`.
+            Both engines' functions are stored here rather than called by
+            name, so their shared signature moves in one commit or not at
+            all.
         resolve_fn: The kind's ``resolve_conflicts(ids, action, user_id,
             new_amount=...)`` callable.
         update_endpoint: The kind's update-route endpoint, resolved with the
@@ -335,8 +340,9 @@ def regenerate_or_conflict_chooser(
 
     Shared by the transaction-template and transfer-template update routes
     (each passes its own :class:`RecurrenceConflictKind`).  Loads the
-    baseline scenario and pay periods, then regenerates the non-overridden
-    future instances via ``kind.regenerate_fn``.  When the edit collides with
+    baseline scenario and the owner's whole pay-period schedule, then
+    regenerates the non-overridden future instances via
+    ``kind.regenerate_fn``.  When the edit collides with
     hand-edited (override / soft-deleted) upcoming instances the regeneration
     raises; the branch then depends on the submit and on whether this edit is
     a real per-instance AMOUNT change (the chooser only offers a keep-vs-use
@@ -425,11 +431,11 @@ def regenerate_or_conflict_chooser(
         return None
     if template.recurrence_rule is None and not before.had_recurrence_rule:
         return None
-    periods = pay_period_service.get_all_periods(current_user.id)
+    schedule = GenerationSchedule.for_user(current_user.id)
     decisions = parse_conflict_decisions(request.form)
     try:
         kind.regenerate_fn(
-            template, periods, scenario.id, effective_from=effective_from,
+            template, schedule, scenario.id, effective_from=effective_from,
         )
     except RecurrenceConflict as conflict:
         if decisions is not None:

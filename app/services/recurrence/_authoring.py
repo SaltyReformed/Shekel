@@ -20,11 +20,11 @@ The shape that leaves nothing for a writer to get half-right:
 
 **A partial change is expressed as a whole one.**  The three in-place writers
 do not set a field; they read the rule's authored state back with
-:func:`recurrence_spec`, change the one fact they own with
-``dataclasses.replace``, and re-author.  So "the loan's payment day moved" is
-stated as a new spec, and because the rule's first occurrence is DERIVED from
-``day_of_month`` rather than stored beside it (plan step R2d), the two cannot
-come to disagree at all.
+:func:`~app.services.recurrence.recurrence_spec` -- the READ door's, in
+``_reading`` -- change the one fact they own with ``dataclasses.replace``, and
+re-author.  So "the loan's payment day moved" is stated as a new spec, and
+because the rule's first occurrence is DERIVED from ``day_of_month`` rather
+than stored beside it (plan step R2d), the two cannot come to disagree at all.
 
 Flask-isolated (plain values in, no ``request`` / ``session`` reads) and it
 never commits: writes flush into the caller's transaction, which owns the
@@ -102,38 +102,6 @@ def _author(
     rule.start_date = spec.start_date
     rule.end_date = spec.end_date
     rule.max_occurrences = spec.max_occurrences
-
-
-def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:
-    """Read a rule's authored state back out as a spec.
-
-    The inverse of authoring, and what makes a partial change expressible
-    without a partial write: a caller that owns ONE fact about a rule reads
-    the spec, replaces that fact, and re-authors the whole value.
-
-    Args:
-        rule: The rule to read.
-
-    Returns:
-        The :class:`~app.services.recurrence.RecurrenceSpec` that authored it.
-        Round-trips exactly -- resolution ignores ``interval_n`` for every
-        pattern but ``Every N Periods`` (where the stored value IS the
-        authored one), and re-derives ``offset_periods`` from the start period
-        whenever the rule names one.
-    """
-    return RecurrenceSpec(
-        user_id=rule.user_id,
-        pattern_id=rule.pattern_id,
-        interval_n=rule.interval_n,
-        offset_periods=rule.offset_periods,
-        day_of_month=rule.day_of_month,
-        due_day_of_month=rule.due_day_of_month,
-        month_of_year=rule.month_of_year,
-        start_period_id=rule.start_period_id,
-        start_date=rule.start_date,
-        end_date=rule.end_date,
-        max_occurrences=rule.max_occurrences,
-    )
 
 
 def build_transient_rule(

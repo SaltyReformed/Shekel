@@ -30,11 +30,31 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service, recurring_view
 from app.services.obligations_aggregator import committed_monthly
-from app.services.recurrence_engine import compute_due_date, match_periods
+from app.services.recurrence import PeriodCalendar
+from app.services.recurrence import rule_occurrences
+from app.services.recurrence_engine import compute_due_date
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _calendar(periods):
+    """Return the owner's schedule as the resolver reads it.
+
+    ``recurring_view.build_view`` takes a
+    :class:`~app.services.recurrence.PeriodCalendar` rather than a period list
+    since plan step R4b-1: a recurrence's next date is measured against the
+    OWNER's schedule, so the surface has to be handed that schedule rather
+    than rebuild one per row.
+
+    Args:
+        periods: The owner's pay periods, in ``period_index`` order.
+
+    Returns:
+        The :class:`~app.services.recurrence.PeriodCalendar` for their owner.
+    """
+    return PeriodCalendar.from_pay_periods(periods, periods[0].user_id)
 
 
 def _create_rule(seed_user, pattern_enum, *, interval_n=1,
@@ -130,7 +150,7 @@ class TestUnitEquivalents:
         tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
 
         view = recurring_view.build_view(
-            [], [tmpl], [], seed_periods_today, date.today(),
+            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
         )
         row = view.expenses.rows[0]
         # 100 * 26 / 12 = 216.6667 -> 216.67
@@ -155,7 +175,7 @@ class TestUnitEquivalents:
         tmpl = _create_expense(seed_user, rule, Decimal("500.00"))
 
         view = recurring_view.build_view(
-            [], [tmpl], [], seed_periods_today, date.today(),
+            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
         )
         row = view.expenses.rows[0]
         expected_pp = round_money(
@@ -175,7 +195,7 @@ class TestUnitEquivalents:
         tmpl = _create_expense(seed_user, rule, Decimal("1200.00"))
 
         view = recurring_view.build_view(
-            [], [tmpl], [], seed_periods_today, date.today(),
+            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
         )
         row = view.expenses.rows[0]
         expected_pp = round_money(Decimal("1200") / PAY_PERIODS_PER_YEAR)
@@ -207,7 +227,7 @@ class TestSubtotals:
         as_of = date.today()
 
         view = recurring_view.build_view(
-            [], [e1, e2], [], seed_periods_today, as_of,
+            [], [e1, e2], [], _calendar(seed_periods_today), as_of,
         )
         assert view.expenses.subtotal.monthly == Decimal("716.67")
         assert view.expenses.subtotal.monthly == committed_monthly(
@@ -231,7 +251,7 @@ class TestSubtotals:
         e2 = _create_expense(seed_user, rule_mo, Decimal("500.00"), name="B")
 
         view = recurring_view.build_view(
-            [], [e1, e2], [], seed_periods_today, date.today(),
+            [], [e1, e2], [], _calendar(seed_periods_today), date.today(),
         )
         full_monthly = (
             Decimal("100") * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
@@ -246,7 +266,7 @@ class TestSubtotals:
     def test_empty_section_subtotal_is_zero(self, seed_user, seed_periods_today):
         """A section with no templates subtotals to $0.00 in both units."""
         view = recurring_view.build_view(
-            [], [], [], seed_periods_today, date.today(),
+            [], [], [], _calendar(seed_periods_today), date.today(),
         )
         assert view.expenses.rows == ()
         assert view.expenses.subtotal.monthly == Decimal("0.00")
@@ -276,7 +296,7 @@ class TestNonRecurringRows:
         real = _create_expense(seed_user, recurring, Decimal("100.00"), name="Real")
 
         view = recurring_view.build_view(
-            [], [once, real], [], seed_periods_today, date.today(),
+            [], [once, real], [], _calendar(seed_periods_today), date.today(),
         )
         names = {row.template.name: row for row in view.expenses.rows}
         assert "OneTime" in names, "one-time definition must still be listed"
@@ -295,16 +315,16 @@ class TestNonRecurringRows:
         """A rule-less definition emits no 'unknown pattern' warning.
 
         ``_next_occurrence`` returns on the rule-less branch before reaching
-        ``match_periods``, which logs that warning for any pattern it has no
+        the reverse matcher, which logged that warning for any pattern it had no
         branch for.  Until plan step R2e-3 a second guard was needed beside it
-        for the ``Once`` pattern, which ``match_periods`` also had no branch
+        for the ``Once`` pattern, which the matcher also had no branch
         for -- so a one-time definition logged it on EVERY render without one.
         """
         once = _create_expense(seed_user, None, Decimal("999.00"), name="OneTime")
 
         with caplog.at_level(logging.WARNING):
             recurring_view.build_view(
-                [], [once], [], seed_periods_today, date.today(),
+                [], [once], [], _calendar(seed_periods_today), date.today(),
             )
         assert "Unknown recurrence pattern" not in caplog.text
 
@@ -313,7 +333,7 @@ class TestNonRecurringRows:
         tmpl = _create_expense(seed_user, None, Decimal("42.00"), name="NoRule")
 
         view = recurring_view.build_view(
-            [], [tmpl], [], seed_periods_today, date.today(),
+            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
         )
         row = view.expenses.rows[0]
         assert row.template.name == "NoRule"
@@ -333,7 +353,7 @@ class TestNonRecurringRows:
         tmpl = _create_expense(seed_user, rule, Decimal("1500.00"), name="Expired")
 
         view = recurring_view.build_view(
-            [], [tmpl], [], seed_periods_today, date.today(),
+            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
         )
         row = view.expenses.rows[0]
         assert row.template.name == "Expired"
@@ -370,7 +390,7 @@ class TestSummaryBand:
         )
 
         view = recurring_view.build_view(
-            [income], [expense], [transfer], seed_periods_today, date.today(),
+            [income], [expense], [transfer], _calendar(seed_periods_today), date.today(),
         )
         band = view.band
         assert band.income.monthly == Decimal("3250.00")
@@ -389,7 +409,7 @@ class TestSummaryBand:
         expense = _create_expense(seed_user, rule, Decimal("100.00"))
 
         view = recurring_view.build_view(
-            [], [expense], [], seed_periods_today, date.today(),
+            [], [expense], [], _calendar(seed_periods_today), date.today(),
         )
         assert view.band.expenses_pct_of_income is None
         assert view.band.income.monthly == Decimal("0.00")
@@ -397,7 +417,7 @@ class TestSummaryBand:
     def test_empty_band(self, seed_user, seed_periods_today):
         """No definitions: every band figure is $0.00 and the pct is None."""
         view = recurring_view.build_view(
-            [], [], [], seed_periods_today, date.today(),
+            [], [], [], _calendar(seed_periods_today), date.today(),
         )
         assert view.band.net.monthly == Decimal("0.00")
         assert view.band.net.per_paycheck == Decimal("0.00")
@@ -428,7 +448,7 @@ class TestSharesAndOrdering:
             [],
             _load_expenses(seed_user),
             [],
-            seed_periods_today,
+            _calendar(seed_periods_today),
             date.today(),
         )
         by_name = {row.template.name: row for row in view.expenses.rows}
@@ -451,7 +471,7 @@ class TestSharesAndOrdering:
         _create_expense(seed_user, None, Decimal("999.00"), name="Once")
 
         view = recurring_view.build_view(
-            [], _load_expenses(seed_user), [], seed_periods_today, date.today(),
+            [], _load_expenses(seed_user), [], _calendar(seed_periods_today), date.today(),
         )
         order = [row.template.name for row in view.expenses.rows]
         assert order == ["High", "Mid", "Low", "Once"]
@@ -477,11 +497,18 @@ class TestNextDates:
         tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
 
         view = recurring_view.build_view(
-            [], [tmpl], [], seed_periods_today, today,
+            [], [tmpl], [], _calendar(seed_periods_today), today,
         )
         next_date = view.expenses.rows[0].next_date
         # Independent engine recomputation of the contract.
-        matched = match_periods(rule, rule.pattern_id, seed_periods_today, today)
+        matched = [
+            placement.period
+            for placement in rule_occurrences(
+                rule, _calendar(seed_periods_today),
+            )
+            if placement.period is not None
+            and placement.period.end_date >= today
+        ]
         expected = next(
             compute_due_date(rule, p)
             for p in matched
@@ -502,7 +529,7 @@ class TestNextDates:
         tmpl = _create_expense(seed_user, rule, Decimal("50.00"))
 
         view = recurring_view.build_view(
-            [], [tmpl], [], seed_periods_today, today,
+            [], [tmpl], [], _calendar(seed_periods_today), today,
         )
         next_date = view.expenses.rows[0].next_date
         assert next_date is not None

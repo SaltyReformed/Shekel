@@ -19,12 +19,13 @@ import logging
 from flask import render_template, request
 from flask_login import current_user
 
-from app.exceptions import BaselineMissingError
+from app.exceptions import BaselineMissingError, RecurrenceCadenceUnsupported
 from app.extensions import db
 from app.utils.log_events import (
     ACCESS,
     ERROR,
     EVT_BASELINE_MISSING,
+    EVT_RECURRENCE_CADENCE_UNSUPPORTED,
     EVT_RATE_LIMIT_EXCEEDED,
     log_event,
 )
@@ -129,6 +130,74 @@ def register_error_handlers(app):
         """
         db.session.rollback()
         return render_template("errors/500.html"), 500
+
+    @app.errorhandler(RecurrenceCadenceUnsupported)
+    def recurrence_cadence_unsupported(error):
+        """Answer "one paycheck must hold this row twice" -- once, for the app.
+
+        THE disposition for plan ledger row D19 (developer ruling 2026-08-08).
+        A monthly bill is owed monthly whatever the pay cadence, so at a
+        cadence of 30 days or more several of its occurrences fall inside one
+        paycheck -- and ``idx_transactions_template_period_scenario`` (with its
+        transfer twin) holds exactly one row per ``(template, pay period,
+        scenario)``.  Generation refuses rather than writing the first and
+        silently under-budgeting the rest, or writing both and raising an
+        ``IntegrityError`` that names nothing and rolls back whatever
+        transaction it was inside -- a pay-schedule extend among them.
+
+        **One handler rather than eleven call sites.**  Generation is reachable
+        from template create / update / unarchive, transfer create, salary
+        profile create and regenerate, carry-forward, and the extend /
+        regenerate / reset schedule operations.  Each deciding for itself is
+        the failure ruling R-BW catalogued for
+        :class:`~app.exceptions.BaselineMissingError`, and the answer is the
+        same shape: decide once, here.
+
+        **Status 200 for an HTMX request, 409 otherwise**, and the reason is
+        htmx rather than precedent: htmx swaps only 2xx responses, so an honest
+        4xx would leave a user who pressed a button looking at an unchanged
+        page.  A full request gets 409 Conflict, which is what this is -- the
+        request is well-formed and the stored schedule cannot host it.
+
+        The rollback matches the other handlers': the refusal is raised
+        mid-transaction, after the caller may have flushed rows of its own
+        (``templates.create_template`` flushes the template before generating),
+        so the session must not carry that work into the error page's own
+        context-processor queries.
+
+        Args:
+            error: The raised
+                :class:`~app.exceptions.RecurrenceCadenceUnsupported`, carrying
+                the definition's name, every occurrence date that falls inside
+                the paycheck (plan step R4b-2 gave generation the dates), and
+                that paycheck's span.
+
+        Returns:
+            The rendered card, at 200 for an HTMX request and 409 otherwise.
+        """
+        db.session.rollback()
+        log_event(
+            _LOGGER, logging.ERROR, EVT_RECURRENCE_CADENCE_UNSUPPORTED, ERROR,
+            "Generation refused: a recurrence repeats inside one pay period",
+            user_id=getattr(current_user, "id", None),
+            template_name=error.template_name,
+            occurrence_count=error.occurrence_count,
+            occurrences=[day.isoformat() for day in error.occurrence_dates],
+            period_start=error.period_start.isoformat(),
+            period_end=error.period_end.isoformat(),
+            path=request.path,
+            method=request.method,
+        )
+        page = render_template(
+            "errors/recurrence_cadence.html",
+            template_name=error.template_name,
+            occurrence_dates=error.occurrence_dates,
+            period_start=error.period_start,
+            period_end=error.period_end,
+        )
+        if request.headers.get("HX-Request"):
+            return page
+        return page, 409
 
     @app.errorhandler(BaselineMissingError)
     def baseline_missing(error):
