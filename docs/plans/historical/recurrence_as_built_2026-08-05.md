@@ -1,4 +1,4 @@
-# Recurrence redesign -- as built (through R2b)
+# Recurrence redesign -- as built (through R3)
 
 Archived under section 7 rule 5 of `docs/plans/implementation_plan_recurrence_redesign.md`: a
 completed span leaves the live plan and becomes one line per step -- its id, its commit, and what it
@@ -15,6 +15,10 @@ truth; a planning document only needs to say which commit to read.
 | **R2b** -- the anchor subtypes and the count bound | `86b9eaa3`, amended by `1e5e3430` | Both anchor subtype tables, `max_occurrences` and its two bound CHECKs, by migration `c8f2b6a41d93`. **It also added four two-axis columns and backfilled all 50 rules; R2d withdrew both**, so the migration as it stands writes no data at all |
 | **R2c-1** -- the write door | `2fca91bc` | `app/services/recurrence/`: a caller states what it AUTHORS, one pure function resolves it, one writer assigns the columns. Five construction sites and four in-place writers routed through it. Closed defect **D1** -- an amount-only edit no longer re-phases "every N paychecks" |
 | **R2d** -- the derived half stops being stored | `1e5e3430` | The four two-axis columns removed and computed on demand instead; steps R2c-2 and R2c-3 deleted with them. See ruling **R-R10** |
+| **R2e-1** -- clearing a recurrence clears it | `4d99c9d4` | The null option both edit forms already offered was a silent no-op that then REGENERATED from the rule it was asked to stop (**D14**), and through it a loan payment could be made one-time and silently lose the standing overpayment the balance seam threads (**D15**). The clear branch deletes the rule; a loan payment is refused at the door |
+| **R2e-2** -- the picker offers what the app MODELS | `a465e9fa`, `fcea8b3c` | Every recurrence surface reads `RecurrencePatternEnum` and the submission check is the SCHEMA's, so the surviving `ref` row is unreachable. `pattern_choices_for` keeps an unmodelled STORED pattern selected -- without it an edit form silently defaults to the destructive clear (measured) |
+| **R2e-3** -- `Once` is retired | `eef43eef`, `867c3854` | The enum member, the four suppression guards, the preview guard and the picker entry gone; migration `d4a71f6e30bb` detached 2 templates and deleted 4 rules. Closed **D13** and **D16**. A review found the rule-less shape had no edit story -- an edit never reached its Transfer, $500 vs $700 -- so it also propagates; `transfers/_instances.py` is that split |
+| **R3** -- the forward occurrence engine | `4b5c577b` | `occurrences` / `place` / `occurrence_placements`, parallel and unread; the month walk moved to `_months.py` so the anchor IS its first element. 416 of 428 oracle shapes reproduce the blob; all 46 live prod rules agree. Closed **D9**; exposed **D18-D21** |
 
 ## What these steps bind on later ones
 
@@ -102,3 +106,24 @@ needs the derivation IN a migration.** The copy is not eliminated, it is made si
 destroyed with its inputs in the same transaction. Measured against the 50 live rules, 49 anchors
 need only `GREATEST(schedule opening, start_date, start_period.start)` -- Postgres `GREATEST` skips
 NULLs, so that is the `_effective_start` maximum exactly -- and one (`Monthly First`) needs a scan.
+
+## What R2e and R3 bind on later steps
+
+- **`Once`'s `ref.recurrence_patterns` row SURVIVES to R9** (ruling R-R11). The NEW image does not
+  need it -- `ref_cache.init` iterates the RUNNING image's enum and a surplus row is invisible --
+  but the PREVIOUS one does, and cannot self-heal: `scripts/seed_ref_tables.py` calls plain
+  `create_app()`, so `ref_cache.init` raises BEFORE the upsert. Deleting the row would leave the
+  auto-rollback image unable to boot, on exactly the deploy where the net is needed. Ruling R-R4 is
+  why the retirement ran at R2e rather than R9: `Once` resolved to EXACTLY the `Every Period` value,
+  so a consumer holding only a `ResolvedRecurrence` could not tell them apart and R7c's downgrade
+  could not round-trip. Pinned by `TestDeliberateRefSeedSurplus`.
+- **A rule-less TRANSFER template still materialises ONE Transfer** (unlike a rule-less TRANSACTION
+  template, which generates nothing), so it needs both halves: `materialize_initial_transfers` on
+  create and `propagate_to_non_repeating_transfers` on edit. An ACCOUNT change is refused, scoped to
+  "a live Transfer exists". `app/routes/transfers/_instances.py` is the split.
+- **R3's engine reads `offset_periods` for the PERIOD unit's phase**, and R7c drops that column --
+  see the live plan's ledger row D21 for why an anchor-derived phase is not equivalent.
+- **The R1 oracle's long-cadence builder must cover every pattern whose matcher reads a period's
+  ENDPOINT months.** It covered `MONTHLY` and `QUARTERLY` only, so `MONTHLY_FIRST`, `SEMI_ANNUAL`
+  and `ANNUAL` were unmeasured at any cadence but the developer's. R3 added them; the rule is
+  written into `_add_long_cadence_shapes`' docstring so the next pattern inherits it.
