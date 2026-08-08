@@ -2,7 +2,7 @@
 # REGENERATE: SHEKEL_UPDATE_RECURRENCE_BASELINE=1 ./scripts/test.sh tests/test_services/test_recurrence_baseline.py
 # biweekly schedule: 2024-01-01 cadence=14 periods=79 (2024-01-01..2027-01-10)
 # long schedule:     2024-01-01 cadence=90 periods=12 (2024-01-01..2026-12-15)
-# shapes: 423
+# shapes: 428
 annual.moy01.dom01 idx=000 period=2024-01-01..2024-01-14 due=2024-01-01
 annual.moy01.dom01 idx=026 period=2024-12-30..2025-01-12 due=2025-01-01
 annual.moy01.dom01 idx=052 period=2025-12-29..2026-01-11 due=2026-01-01
@@ -5587,6 +5587,12 @@ every_period idx=075 period=2026-11-16..2026-11-29 due=2026-11-16
 every_period idx=076 period=2026-11-30..2026-12-13 due=2026-11-30
 every_period idx=077 period=2026-12-14..2026-12-27 due=2026-12-14
 every_period idx=078 period=2026-12-28..2027-01-10 due=2026-12-28
+long_cadence.annual.moy01.dom01 idx=000 period=2024-01-01..2024-03-30 due=2024-01-01
+long_cadence.annual.moy01.dom01 idx=004 period=2024-12-26..2025-03-25 due=2025-03-01
+long_cadence.annual.moy01.dom01 idx=008 period=2025-12-21..2026-03-20 due=2026-03-01
+long_cadence.annual.moy01.dom15 idx=000 period=2024-01-01..2024-03-30 due=2024-01-15
+long_cadence.annual.moy01.dom15 idx=004 period=2024-12-26..2025-03-25 due=2025-03-15
+long_cadence.annual.moy01.dom15 idx=008 period=2025-12-21..2026-03-20 due=2026-03-15
 long_cadence.every_period idx=000 period=2024-01-01..2024-03-30 due=2024-01-01
 long_cadence.every_period idx=001 period=2024-03-31..2024-06-28 due=2024-03-31
 long_cadence.every_period idx=002 period=2024-06-29..2024-09-26 due=2024-06-29
@@ -5637,8 +5643,22 @@ long_cadence.monthly.dom31 idx=008 period=2025-12-21..2026-03-20 due=2025-12-31
 long_cadence.monthly.dom31 idx=009 period=2026-03-21..2026-06-18 due=2026-03-31
 long_cadence.monthly.dom31 idx=010 period=2026-06-19..2026-09-16 due=2026-06-30
 long_cadence.monthly.dom31 idx=011 period=2026-09-17..2026-12-15 due=2026-09-30
+long_cadence.monthly_first idx=000 period=2024-01-01..2024-03-30 due=2024-01-01
+long_cadence.monthly_first idx=001 period=2024-03-31..2024-06-28 due=2024-03-31
+long_cadence.monthly_first idx=002 period=2024-06-29..2024-09-26 due=2024-06-29
+long_cadence.monthly_first idx=003 period=2024-09-27..2024-12-25 due=2024-09-27
+long_cadence.monthly_first idx=004 period=2024-12-26..2025-03-25 due=2024-12-26
+long_cadence.monthly_first idx=005 period=2025-03-26..2025-06-23 due=2025-03-26
+long_cadence.monthly_first idx=006 period=2025-06-24..2025-09-21 due=2025-06-24
+long_cadence.monthly_first idx=007 period=2025-09-22..2025-12-20 due=2025-09-22
+long_cadence.monthly_first idx=008 period=2025-12-21..2026-03-20 due=2025-12-21
+long_cadence.monthly_first idx=009 period=2026-03-21..2026-06-18 due=2026-03-21
+long_cadence.monthly_first idx=010 period=2026-06-19..2026-09-16 due=2026-06-19
+long_cadence.monthly_first idx=011 period=2026-09-17..2026-12-15 due=2026-09-17
 long_cadence.quarterly.moy01.dom01 idx=000 period=2024-01-01..2024-03-30 due=2024-01-01
 long_cadence.quarterly.moy01.dom15 idx=000 period=2024-01-01..2024-03-30 due=2024-01-15
+long_cadence.semi_annual.moy01.dom01 idx=000 period=2024-01-01..2024-03-30 due=2024-01-01
+long_cadence.semi_annual.moy01.dom15 idx=000 period=2024-01-01..2024-03-30 due=2024-01-15
 monthly.dom01 idx=000 period=2024-01-01..2024-01-14 due=2024-01-01
 monthly.dom01 idx=002 period=2024-01-29..2024-02-11 due=2024-02-01
 monthly.dom01 idx=004 period=2024-02-26..2024-03-10 due=2024-03-01

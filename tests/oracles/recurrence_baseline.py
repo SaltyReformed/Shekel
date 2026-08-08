@@ -59,6 +59,7 @@ the identity for every day below 28.  ``MONTHLY`` sweeps all 31 days anyway,
 because there the day IS the whole rule.
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -66,6 +67,7 @@ from app import ref_cache
 from app.enums import RecurrencePatternEnum
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
+from app.services.recurrence import PeriodCalendar, RecurrenceSpec
 # Imported as a MODULE, not as two names.  ``from ... import match_periods``
 # would bind the function at import time, and a negative control that patches
 # ``app.services.recurrence_engine.match_periods`` -- the source module, which
@@ -228,6 +230,147 @@ def build_shape_rule(shape: RuleShape) -> RecurrenceRule:
     )
 
 
+#: The owner every spec and calendar this module builds names.  The baseline's
+#: pay periods are unsaved and carry no ``user_id``, and
+#: ``app.services.recurrence.resolve`` REFUSES a spec paired with another
+#: user's schedule -- so one constant is what keeps the two halves agreeing.
+SHAPE_USER_ID: int = 1
+
+#: Parses one captured blob line back into its label, period index and due
+#: date.  Written beside :func:`capture_shape`, which produces the format, so
+#: the two cannot drift; :func:`parse_baseline_rows` is what plan step R3's
+#: parallel run reads the committed snapshot with.
+_BLOB_LINE = re.compile(
+    r"^(?P<label>\S+) idx=(?P<index>\d+) "
+    r"period=\S+ due=(?P<due>\d{4}-\d{2}-\d{2})$"
+)
+
+#: Matches the line a shape that fires nowhere emits.
+_BLOB_NONE_LINE = re.compile(r"^(?P<label>\S+) \(none\)$")
+
+
+def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
+    """Return the authored spec for *shape*.
+
+    The two-axis sibling of :func:`build_shape_rule`: that one builds what the
+    OLD engine reads (a :class:`~app.models.recurrence_rule.RecurrenceRule`),
+    this one builds what the new engine's producer reads (a
+    :class:`~app.services.recurrence.RecurrenceSpec`, which
+    ``app.services.recurrence.resolve`` turns into the two-axis meaning).
+    Both are built from the SAME shape, which is the whole point: a parallel
+    run that fed the two engines differently would prove nothing.
+
+    ``start_period_id`` is deliberately left unset.  The baseline calls
+    ``match_periods`` with ``effective_from`` defaulted to the first period's
+    start (``capture_shape``), and ``resolve`` reaches the identical bound
+    through ``PeriodCalendar.opening_bound()`` -- so a start period here would
+    add a bound the captured answers were never measured under.
+
+    Requires an app context: ``pattern_id`` resolves through
+    :func:`app.ref_cache.recurrence_pattern_id`.
+
+    Args:
+        shape: The configuration to build.
+
+    Returns:
+        The :class:`~app.services.recurrence.RecurrenceSpec`.
+    """
+    return RecurrenceSpec(
+        user_id=SHAPE_USER_ID,
+        pattern_id=ref_cache.recurrence_pattern_id(shape.pattern),
+        interval_n=shape.interval_n,
+        offset_periods=shape.offset_periods,
+        day_of_month=shape.day_of_month,
+        due_day_of_month=shape.due_day_of_month,
+        month_of_year=shape.month_of_year,
+        start_date=shape.start_date,
+        end_date=shape.end_date,
+    )
+
+
+def build_shape_calendar(periods: list[PayPeriod]) -> PeriodCalendar:
+    """Return the resolver's view of one of this module's schedules.
+
+    Args:
+        periods: A schedule from :func:`build_schedule`.
+
+    Returns:
+        The :class:`~app.services.recurrence.PeriodCalendar` for
+        :data:`SHAPE_USER_ID`.
+    """
+    return PeriodCalendar.from_pay_periods(periods, SHAPE_USER_ID)
+
+
+def parse_baseline_rows(blob: str) -> dict[str, list[tuple[int, date]]]:
+    """Return ``{shape label: [(period_index, due date), ...]}`` from a blob.
+
+    The inverse of :func:`capture_shape`, for plan step R3's parallel run: the
+    committed snapshot is what the OLD engine answers, and this is how the new
+    engine's answer is compared against it.
+
+    **The ``due=`` half is parsed even though R3 does not generate due dates**,
+    and it earns its place: for a ``MONTHLY`` shape the due date IS the
+    occurrence date, so it is what lets a test check that a row the forward
+    engine stops generating was dated outside its own rule's window -- against
+    the snapshot rather than against a literal somebody typed.
+
+    A shape that fires nowhere parses to an EMPTY list rather than being
+    absent, so "matched nothing" and "was never captured" stay distinguishable
+    on this side of the format too.
+
+    Args:
+        blob: A baseline snapshot, from the committed file or from
+            :func:`capture_baseline`.
+
+    Returns:
+        One entry per shape, its matched rows in captured order.
+
+    Raises:
+        ValueError: When a non-comment line matches neither form.  A blob this
+            cannot read is a format change, and reading it partially would
+            silently shrink the comparison.
+    """
+    parsed: dict[str, list[tuple[int, date]]] = {}
+    for line in blob.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        match = _BLOB_LINE.match(line)
+        if match is not None:
+            parsed.setdefault(match["label"], []).append(
+                (int(match["index"]), date.fromisoformat(match["due"])),
+            )
+            continue
+        none_match = _BLOB_NONE_LINE.match(line)
+        if none_match is None:
+            raise ValueError(
+                f"unparseable baseline line {line!r}: it is neither an "
+                f"'<label> idx=NNN period=... due=...' occurrence nor a "
+                f"'<label> (none)'.  The blob format changed and "
+                f"parse_baseline_rows was not updated."
+            )
+        parsed.setdefault(none_match["label"], [])
+    return parsed
+
+
+def parse_baseline(blob: str) -> dict[str, list[int]]:
+    """Return ``{shape label: [period_index, ...]}`` from a captured blob.
+
+    The period-index projection of :func:`parse_baseline_rows`, derived from
+    it rather than parsed a second time so the two readings of one format
+    cannot disagree.
+
+    Args:
+        blob: A baseline snapshot.
+
+    Returns:
+        One entry per shape, its matched period indices in captured order.
+    """
+    return {
+        label: [index for index, _due in rows]
+        for label, rows in parse_baseline_rows(blob).items()
+    }
+
+
 def _add_period_space_shapes(acc: _ShapeAccumulator) -> None:
     """Every shape of the two pay-period-space patterns.
 
@@ -339,11 +482,40 @@ def _add_bound_shapes(acc: _ShapeAccumulator) -> None:
 def _add_long_cadence_shapes(acc: _ShapeAccumulator) -> None:
     """The shapes that expose defect D3, captured against a 90-day schedule.
 
-    ``_match_monthly`` and ``_match_specific_months`` read only a period's
-    ``start_date`` and ``end_date`` months, so a period spanning four months
-    can match at most two of them.  These shapes freeze that behaviour -- WRONG
-    but current -- so R4's forward-placement rewrite changes exactly these
-    lines and no others.
+    ``_match_monthly``, ``_match_specific_months`` and ``_match_annual`` read
+    only a period's ``start_date`` and ``end_date`` months, so a period
+    spanning four months can match at most two of them.  These shapes freeze
+    that behaviour -- WRONG but current -- so R4's forward-placement rewrite
+    changes exactly these lines and no others.
+
+    **Every pattern whose matcher reads endpoints is covered here, and that is
+    a rule rather than a selection.**  The first cut of this builder covered
+    ``MONTHLY`` and ``QUARTERLY`` only, and the gap was not free: plan step
+    R3's parallel run reproduced 414 of 423 shapes and could say nothing at
+    all about ``MONTHLY_FIRST``, ``SEMI_ANNUAL`` or ``ANNUAL`` at a long
+    cadence, because no shape asked.  ``MONTHLY_FIRST`` turned out to be the
+    one that matters -- its occurrences DEFER onto the next paycheck rather
+    than landing in a containing one, so several months collapse onto one
+    paycheck (see the plan's ledger).  A hole in a baseline is not a smaller
+    baseline; it is a green gate over an unmeasured behaviour.
+
+    ``EVERY_PERIOD`` is captured too, as the control: pay-period-space
+    matchers read no months at all, so it must NOT move at any cadence.
+
+    **The added shapes paid for themselves immediately.**  ``ANNUAL``'s period
+    selection agrees at 90 days -- ``_match_annual`` dedupes by YEAR, which is
+    total at this cadence -- but its captured ``due=`` column does not:
+
+    ```text
+    long_cadence.annual.moy01.dom01 idx=004 ... due=2025-03-01
+    ```
+
+    A January annual rule dated 1 March.  ``compute_due_date`` picks its base
+    month by asking which of a period's two ENDPOINT months contains the
+    ``day_of_month`` target and never consults ``month_of_year``, so at a
+    cadence where the firing month is neither endpoint it dates the row in the
+    wrong month entirely.  Latent at 14 days, where the firing month always is
+    an endpoint.  Frozen here as it behaves; plan step R5 owns it.
     """
     for day in (1, 15, 31):
         acc.add(RuleShape(
@@ -352,14 +524,25 @@ def _add_long_cadence_shapes(acc: _ShapeAccumulator) -> None:
             day_of_month=day,
             long_cadence=True,
         ))
-    for day in (1, 15):
-        acc.add(RuleShape(
-            f"long_cadence.quarterly.moy01.dom{day:02d}",
-            RecurrencePatternEnum.QUARTERLY,
-            month_of_year=1,
-            day_of_month=day,
-            long_cadence=True,
-        ))
+    cycles = (
+        ("quarterly", RecurrencePatternEnum.QUARTERLY),
+        ("semi_annual", RecurrencePatternEnum.SEMI_ANNUAL),
+        ("annual", RecurrencePatternEnum.ANNUAL),
+    )
+    for name, pattern in cycles:
+        for day in (1, 15):
+            acc.add(RuleShape(
+                f"long_cadence.{name}.moy01.dom{day:02d}",
+                pattern,
+                month_of_year=1,
+                day_of_month=day,
+                long_cadence=True,
+            ))
+    acc.add(RuleShape(
+        "long_cadence.monthly_first",
+        RecurrencePatternEnum.MONTHLY_FIRST,
+        long_cadence=True,
+    ))
     acc.add(RuleShape(
         "long_cadence.every_period",
         RecurrencePatternEnum.EVERY_PERIOD,

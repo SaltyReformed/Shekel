@@ -105,6 +105,7 @@ raise.
 import calendar as calendar_module
 from dataclasses import dataclass
 from datetime import date
+from itertools import islice
 
 from app.enums import (
     BusinessDayShiftEnum,
@@ -114,6 +115,11 @@ from app.enums import (
 )
 from app.exceptions import ShekelError
 from app.services.recurrence._calendar import PeriodCalendar, SchedulePeriod
+from app.services.recurrence._months import (
+    MONTHS_PER_YEAR,
+    month_ordinal,
+    walk_months,
+)
 from app.services.recurrence._vocabulary import modelled_pattern
 
 
@@ -175,9 +181,17 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
             two-axis reading: 3 for Quarterly, 6 for Semi-Annual, the
             authored count for ``Every N Periods``, 1 elsewhere.
         unit: The cadence unit *interval_n* counts.
-        anchor_date: The FIRST occurrence -- the rule's phase, day and opening
-            bound in one value.  Occurrences are this date plus multiples of
-            *interval_n* units, so nothing before it can be generated.
+        anchor_date: The rule's phase, day and opening bound in one value.
+            For the calendar units it IS the first occurrence, and occurrences
+            are this date plus multiples of *interval_n* units.  **For the
+            PERIOD unit it is the BOUND rather than the first occurrence**
+            (ruling R-R8): a pay-period-space rule targets paychecks, and the
+            first one it fires on is the paycheck that bound falls IN, whose
+            payday is earlier than the bound whenever the bound is mid-period.
+            That is deliberate -- it is where the cash leaves, and it is what
+            lets a loan whose first installment falls mid-period bill in that
+            period (plan step C9a).  Ledger row D6 is the same asymmetry seen
+            from the schema.
         placement: How an occurrence DATE maps onto the pay period a row lives
             in.  The axis today's Monthly and Monthly First patterns differ
             on.
@@ -303,9 +317,6 @@ _DEFAULT_MONTH_OF_YEAR = 1
 #: cycle later), so anything beyond this is a broken derivation, not a slow
 #: one -- it raises instead of spinning.
 _MAX_MONTH_PROBES = 4
-
-#: Months in a year, for the absolute month-ordinal arithmetic.
-_MONTHS_PER_YEAR = 12
 
 
 @dataclass(frozen=True)
@@ -461,19 +472,20 @@ def _calendar_anchor(
             :data:`_MAX_MONTH_PROBES` cycles, which is a derivation bug rather
             than a data one -- two candidates always suffice.
     """
-    start_ordinal = effective.year * _MONTHS_PER_YEAR + (effective.month - 1)
+    start_ordinal = month_ordinal(effective)
     target_residue = (base_month - 1) % month_step
-    ordinal = start_ordinal + (
+    aligned = start_ordinal + (
         (target_residue - start_ordinal % month_step) % month_step
     )
-    for _probe in range(_MAX_MONTH_PROBES):
-        year, month_index = divmod(ordinal, _MONTHS_PER_YEAR)
-        month = month_index + 1
-        day = min(nominal_day, calendar_module.monthrange(year, month)[1])
-        candidate = date(year, month, day)
+    # The SAME walk plan step R3's engine generates occurrences with
+    # (``app.services.recurrence._months``), seeded at this rule's residue
+    # class -- so the anchor is provably that sequence's first element on or
+    # after the bound, rather than a second implementation that agrees today.
+    for candidate in islice(
+        walk_months(aligned, nominal_day, month_step), _MAX_MONTH_PROBES,
+    ):
         if candidate >= effective:
             return candidate
-        ordinal += month_step
     raise RecurrenceResolutionError(
         f"no calendar anchor found within {_MAX_MONTH_PROBES} cycles of "
         f"{effective} for month_step={month_step} base_month={base_month} "
@@ -491,7 +503,7 @@ def _next_month_first(day: date) -> date:
     Returns:
         The 1st of the following month, rolling the year at December.
     """
-    if day.month == _MONTHS_PER_YEAR:
+    if day.month == MONTHS_PER_YEAR:
         return date(day.year + 1, 1, 1)
     return date(day.year, day.month + 1, 1)
 
