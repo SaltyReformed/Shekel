@@ -2,11 +2,11 @@
 
 ## Where this stands
 
-**C1 IS DONE** (`f9d148fe`, branch `feat/pay-calendar`); nothing else has shipped. This arc was
-opened 2026-08-08 out of the recurrence arc's **F-10**, after the ruling below established that F-10
-is not a missing check but a missing normalization. That arc's **R-F10** and **R-F12** stay live
-there and are ticked by **C5** and **C2** here; the balance arc's **N-128** and **X-l** are the same
-defect from the third side.
+**C1 IS IN PRODUCTION** (`f9d148fe`, PR #87); nothing else has shipped. This arc was opened
+2026-08-08 out of the recurrence arc's **F-10**, after the ruling below established that F-10 is not
+a missing check but a missing normalization. That arc's **R-F10** and **R-F12** stay live there and
+are ticked by **C5** and **C2** here; the balance arc's **N-128** and **X-l** are the same defect
+from the third side.
 
 **NEXT = C2**, which starts with a ruling and not a keystroke (section 3, "What is NOT decided yet")
 and **ships as ONE commit with the balance arc's X-l** -- both build the same total calendar, and
@@ -14,10 +14,10 @@ building it twice is the defect C2 exists to remove.
 **Nothing here blocks the recurrence arc's Half A** (R7a, R7b, R7c, R8), which touches no file this
 arc edits.
 
-C1's neutral review took two rulings (in the table below), corrected two of this document's own
-claims, and opened **P15** and **P16** -- owned by C3 and C5, the steps that delete the last thing
-standing between each and a silent loss.
-**C3 also collides with the balance arc's X-ad: section 0.**
+C1's neutral review corrected two of this document's own claims and opened **P15** and **P16**.
+**Both forks are now RULED (2026-08-09).** P3/N-123 went to the balance arc's **X-ad** (delete the
+bootstrap payday; ask for the payday LAST paid on), so that row is `balance:N-123` and C3 no longer
+owns it. P16 went to **C5**: make `should_skip_period` occurrence-aware -- which needs a migration.
 
 **Section 4 is the steps; findings, the step index and the rules are the shared registries.**
 

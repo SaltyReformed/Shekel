@@ -3,9 +3,9 @@
 ## Where this stands
 
 **Plan of record** for the two-axis recurrence model and the cash-date / installment-date split.
-R1-R4 ARCHIVED. **R1-R4b-2, R-F1 and R-F8 ARE IN PRODUCTION** (PRs #85 / #86, head `c7f3a9d1e864`).
+R1-R4 ARCHIVED. **R1-R4b-2, R-F1, R-F8 and R7a-1 ARE IN PRODUCTION** (PRs #85 / #86 / #87).
 
-**R7a-1 IS DONE on `dev`, UNPUSHED**: the Recurrence column is one function over `(interval, unit)`
+**R7a-1 IS IN PRODUCTION** (PR #87): the Recurrence column is one function over `(interval, unit)`
 and D17 is closed. **R7a is TWO leaves** and this was the first; the plan's single entry was also
 measured wrong in three ways, all corrected in R7a-2's entry.
 
