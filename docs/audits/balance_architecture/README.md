@@ -26,21 +26,23 @@ flight, what is next -- and POINTS at the detail rather than carrying it. It is 
 session, never appended to, and the gate caps it; rule 8 says where each kind of content goes
 instead.
 
-**As of 2026-08-05.** Re-measure production from `docker inspect shekel-prod-app` and branch state
-from `git status -sb` when you edit this.
+**As of 2026-08-08, re-measured.** Production from `docker inspect shekel-prod-app`, the stamp from
+`alembic_version`, branch state from `git status -sb`, the baseline from a full run. Do the same
+when you edit this: the previous revision was 3 days and TWO production deploys stale, and the
+staleness was invisible because nothing here is a predicate.
 
 | | | detail |
 |---|---|---|
 | **just landed** | **The whole X-f1 cluster is IN PRODUCTION** -- PR #82 -> #83, merge `8d812662`, image `2ab54855937b`, migration head **`b5e3d9c1a7f2`**. Fourteen leaves. A settle carries the day its money moved, an assertion is (account, day, balance) written at one door, and the back-dated acknowledgement reaches all five surfaces | `archive/…2026-08-04.md` Section 1a |
 | **how it was proven** | Rehearsed on a restored copy of prod BEFORE deploying: migrations clean, the backfill proven row by row (**999/999** accounted -- 150 dated from `paid_at`, 8 from the period-start fallback, 841 left NULL, 0 unexpected), and the seam harness **byte-identical**, positive-controlled at 1,674 lines from one cent. Post-deploy prod re-measured byte-identical against the same baseline | Section 7.2 |
-| **in flight** | nothing. `dev` and `main` are both at `8d812662`; **no feature branches exist** | -- |
+| **in flight** | nothing OF THIS ARC. `dev` is at `35cdf863`, `main` at `25f495ef`, **no feature branches exist**. Production has moved TWICE since this arc last shipped, both from the recurrence arc: PR #85 (`5c33b462`) then PR #86 (`25f495ef`), so prod runs image `3438ac41aa78` at head **`c7f3a9d1e864`**, not `b5e3d9c1a7f2` | -- |
 | **blocked on you** | **two design questions X-f2 owns**: **N-204** (the acknowledgement is keyed on "was the day the boundary", not "did the figure change", so an ordinary re-confirm writes a row and says nothing) and **N-205** (nothing durable records an assertion anywhere in the UI) | Section 6 |
 | **next** | **X-an** -> X-f2 -> **X-f3** (moves money, own PR) -> X-f4 -> X-f5 -> X-f6. Block 2 (**X-ad then X-x, ONE PR**) is now UNGATED and can run in parallel | Section 5.0 |
-| **complementary arc** | **The RECURRENCE redesign is NOT part of this arc and does not pause it.** Its Half A is disjoint and starts whenever; its **Half B (`R5`/`R6`) is the same trace as X-an** and ships with it | `docs/plans/implementation_plan_recurrence_redesign.md`, and X-an / X-f4 in Section 5 |
+| **complementary arcs** | TWO, neither part of this arc and neither pausing it. **RECURRENCE**: Half A is disjoint and starts whenever; **Half B is not one unit** -- `R6` is the same trace as X-an and ships WITH it, `R5` waits on X-f4. **PAY CALENDAR** (opened 2026-08-08, block 10): `budget.pay_periods` stores the payday and derives `end_date` / `period_index`. **Its `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md`, and blocks 9 / 10 |
 | **why this shape** | the anchor half was redesigned from scratch by ruling **R-EB**; R-EQ designed the duplicate rule that had only ever been re-keyed, R-ER put the day rule in the module that owns what an assertion is, X-f1e1 deleted the second DOOR, X-f1e2 the second WRITER, X-f1e3 the mount that was destroying its own message | Section 3.3, and R-EB / R-EQ / R-ER / R-ES / R-ET in Section 4 |
 | **the live lesson** | **a response can destroy its own message**, and the tests could not see it: deleting either of the two attributes the feature hangs on left the whole suite green, measured by an adversarial review | Section 8's first three bullets |
 | **the ledger** | **93 rows**. X-f1e3 closed N-199 and opened N-203..N-206; **N-173 re-pointed to X-f6**, because X-f1 shipped the mechanism and its backfill improved no stored date | Section 6 |
-| **resuming cold** | Branch from `dev` (= `main` = `8d812662`). The test template is **already at `b5e3d9c1a7f2`**, the repo head -- VERIFIED against `alembic_version`, not assumed; rebuild only if you add a migration. Baseline **7,868** green under both clock zones. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x). Prod restore point: `~/shekel-backups/shekel_prod_predeploy_20260805_092421.dump` -- **the deploy was forward-only**, so that dump is the only way back | Section 7.2 |
+| **resuming cold** | Branch from `dev`, which is AHEAD of `main` (`25f495ef`) by DOCUMENTS ONLY -- the pay-calendar arc's plan (`35cdf863`) and this re-measure. No application code differs. The repo head is **`c7f3a9d1e864`** and the test template is already stamped at it -- VERIFIED by reading `alembic_version` in `shekel_test_template`, not assumed; rebuild only if you add a migration. Baseline **8,258** green (`./scripts/test.sh`, 173 s, 2026-08-08); the 7,868 this row used to claim predated PRs #85 / #86. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x). This row used to name one hand-made prod restore point; **the recurrence arc's R-F8 made every deploy dump unconditionally**, so `~/shekel-backups/` now holds one per release and the deploy REFUSES a rollback its image cannot resolve | Section 7.2 |
 
 Section 5 is the work that remains, Section 6 every open defect with an owner, Section 4 the
 rulings that govern them, and `archive/` what already shipped.
@@ -246,28 +248,32 @@ Section 5 entry restates it inline (rule 5).
 
 **A SCHEDULE, and every position is forced by a stated fact rather than a preference.** A block
 starts when its gate clears, not when the block above finishes. The phase headings below group the
-same steps by SUBJECT; this groups them by TIME. **The blocks PARTITION Section 6**: all 88 open
+same steps by SUBJECT; this groups them by TIME. **The blocks PARTITION Section 6**: all 93 open
 findings are owned by a step in exactly ONE block, save the three the closed owner vocabulary sends
-outside the schedule (one `operator`, two `developer-decision`). Measured, not asserted.
+outside the schedule (one `operator`, two `developer-decision`). Measured, not asserted -- and the
+number **read 88 against a 93-row table until 2026-08-08**, drift the gate could not see because it
+grades the "stands at N rows" sentence in Section 6 and not a prose count here.
 
 | # | block | the fact that forces its position | cost |
 |---|---|---|---|
 | 1 | **the anchor half** -- X-an, X-f2, **X-f3**, X-f4, X-f5 (X-f1 COMPLETE, archived) | The only remaining work that moves a figure the developer reads: **N-171**'s `$15,065.08` gross / `-$1,495.10` net stays invisible on the income statement until X-f3, which is its OWN PR and MOVES MONEY | 28-35 h |
 | 2 | **X-ad then X-x, shipped as ONE PR** | **Its gate CLEARED 2026-08-05** when the X-f1 cluster reached production (`8d812662`), so this block can start now and runs in parallel with the rest of block 1. `accounts.current_anchor_period_id` is GONE rather than going, which is the fact X-ad's trace turns on. X-x is HELD behind X-ad (**R-DE**) and its 2026-07-31 build is a REFERENCE tag, not a branch | 12-16 h |
-| 3 | **the posting restructure** -- X-ai-a/b/c/g, X-d re-land, X-ai-s, X-aj2, X-am, X-ak | **X-ai-s is HELD pending X-f3**; X-d is PARKED on **N-155**, whose fix is X-ai's placement; X-ak carries **N-193**, a reproducible unhandled 500 on a money route. **29 of Section 6's 88 rows live here** -- a third of the whole ledger (X-ai 13, X-ak 9, X-aj2 4, X-aj 1, X-d 1, X-am 1) | 31-42 h |
+| 3 | **the posting restructure** -- X-ai-a/b/c/g, X-d re-land, X-ai-s, X-aj2, X-am, X-ak | **X-ai-s is HELD pending X-f3**; X-d is PARKED on **N-155**, whose fix is X-ai's placement; X-ak carries **N-193**, a reproducible unhandled 500 on a money route. **29 of Section 6's 93 rows live here** -- a third of the whole ledger (X-ai 13, X-ak 9, X-aj2 4, X-aj 1, X-d 1, X-am 1) | 31-42 h |
 | 4 | **the credit-card arc** (own document) | `CC1b`'s fold is specified against the reset semantics **R-EB deletes at X-f3**, and `CC3b` derives a settle from `paid_at`, **deleted at X-f1b**. Earliest correct start is after X-f4 and X-am | 74-104 h |
 | 5 | **X-f6, the bank import** (own document) | Consumes X-f2's outstanding set and X-f3's residual path (**R-EB**). After block 4 so ONE matching rule covers checking and card rows rather than being widened into them later | 22-31 h |
-| 6 | **the read-path residue** -- X-y, X-i1, X-i2, X-j, X-k, X-l, X-m, X-n, X-e, X-p, X-ab, X-ac | Nothing blocks on it and its footprint is disjoint from the write path (tag `xd-attempt-1-parked-n155`'s 30 `app/` files against tag `xx-attempt-1-held-rde`'s 26: **zero overlap**, measured) | 50-70 h |
+| 6 | **the read-path residue** -- X-y, X-i1, X-i2, X-j, X-k, **X-l**, X-m, X-n, X-e, X-p, X-ab, X-ac | Nothing blocks on it and its footprint is disjoint from the write path (tag `xd-attempt-1-parked-n155`'s 30 `app/` files against tag `xx-attempt-1-held-rde`'s 26: **zero overlap**, measured). **UNGATED, which is what lets `X-l` run early** -- and it must, because it is block 10's `C2` and recurrence `R-F12` as well. `X-k` is the one member with an order: it follows `R5`, which waits on X-f4 | 50-70 h |
 | 7 | **the gate and vocabulary residue** -- X-ag, X-ah, X-al | Shares files with nothing; interleaves anywhere | 11-15 h |
 | 8 | **E2 and G** | Runs LAST by ruling; G2 must not begin before the boundary it rests on is proven | 28-44 h |
 | 9 | **the recurrence redesign** (own document) -- **NOT part of this arc** | Its **Half A** (`R1`-`R4`, `R7`-`R8`) overlaps every live block by ONE file (`_recurrence_common.py`, against the `xd-attempt-1-parked-n155` tag), so it interleaves anywhere and pauses nothing. Its **Half B is NOT one unit**, corrected 2026-08-08: **`R6` ships WITH X-an** (it overlaps 4 of 4 of X-an's surfaces and is the same loan-date trace), while **`R5` waits on X-f4**, three steps later with X-f3 between them. `R5` also collides with **X-k**; see that step | own document; not measured against this arc's history |
+| 10 | **the pay calendar** (own document) -- **NOT part of this arc** | Opened 2026-08-08 out of the recurrence arc's F-10: `budget.pay_periods` stores the payday and DERIVES `end_date` / `period_index`, so a gap, an overlap and an index out of date order all stop being expressible. **Its `C2` IS this arc's `X-l`** (block 6) and also recurrence `R-F12` -- one commit, three names, and whoever builds it must satisfy all three specs, including this arc's N-82 / N-128 / N-79-far and `C2`'s own P14 (a calendar may not be constructed from a partial window; the sibling shape is measured in-repo at `$150,000.00`). `C1` is an oracle with zero coupling and interleaves anywhere; `C3` shares only a DERIVATION with recurrence `R7c`, no file. **Owns no Section 6 row and never will** | own document; not measured against this arc's history |
 
-**Three blocks leave this document and keep only their row here**:
+**Four blocks leave this document and keep only their row here**:
 `docs/plans/implementation_plan_bank_import.md` (X-f6, not yet written), the existing
-`docs/plans/implementation_plan_credit_card.md`, and
-`docs/plans/implementation_plan_recurrence_redesign.md` (block 9). The first two are FEATURES
-consuming this arc's output; the third is a SEPARATE ARC that merely shares files with two of this
-one's steps. None is a correctness fix inside this arc, so rule 1 is not weakened. **Block 9 owns no
+`docs/plans/implementation_plan_credit_card.md`,
+`docs/plans/implementation_plan_recurrence_redesign.md` (block 9) and
+`docs/plans/implementation_plan_pay_calendar.md` (block 10). The first two are FEATURES
+consuming this arc's output; the last two are SEPARATE ARCS, one sharing files with two of this
+one's steps and one sharing a whole STEP with it (`C2` = `X-l`). None is a correctness fix inside this arc, so rule 1 is not weakened. **Block 9 owns no
 Section 6 row and never will** -- a recurrence defect is a row in its own plan, which is what keeps
 the partition claim above true. **The card plan's ratified sequencing is
 DISCHARGED, not pending, and its order must never be re-read as a live gate**: every balance-arc
@@ -601,7 +607,15 @@ live step or a live finding still reads against them.
   one, `balance_at/_cash_periods.py:310` (a byte-similar bisect) and
   `loan_ledger/_visible.py:117` (a linear scan whose fallback the other two deliberately
   refuse). That is the recurrence arc's finding **F-12**, owned there by step **R-F12**, and
-  the two steps must be SEQUENCED TOGETHER or the fourth answer gets built here. **Root, and it is this arc's own disease on the other axis: the pay
+  the two steps must be SEQUENCED TOGETHER or the fourth answer gets built here.
+  **Since 2026-08-08 it is THREE steps, not two: this step IS the pay-calendar arc's `C2`**
+  (`docs/plans/implementation_plan_pay_calendar.md`), which supplies the total function this row
+  asks for by DERIVING the calendar from the paydays. Whoever builds it satisfies all three specs,
+  and `C2` adds one this row did not have -- **row P14: the calendar may not be constructed from a
+  partial window**, or the last period in that window reports a different end than the same period
+  reports elsewhere. `PeriodCalendar.from_pay_periods` and `_cash_periods._PeriodSpans.of` both
+  accept one today, and the sibling shape is already measured in-repo at `$150,000.00`
+  (`loan_ledger/_visible.py:78-95`). **Root, and it is this arc's own disease on the other axis: the pay
   calendar is a PARTIAL function.** `get_all_periods` returns the MATERIALIZED rows and nothing
   else, so past the last row every consumer improvises and the improvisations disagree -- precisely
   the shape Section 1 describes and Section 3 deletes with a total fold. Measured: past the horizon
