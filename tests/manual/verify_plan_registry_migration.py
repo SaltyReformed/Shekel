@@ -53,6 +53,30 @@ ORIGINALS = {
     "pay_calendar": "docs/plans/implementation_plan_pay_calendar.md",
     "credit_card": "docs/plans/implementation_plan_credit_card.md",
 }
+
+#: Rows MERGED after the migration, as ``{absorbed: survivor}``.
+#:
+#: The migration itself made NONE: two rows worded differently cannot be
+#: combined mechanically, so each of these is a reviewed semantic edit made
+#: after the row TEXT and the OWNER column were compared side by side.
+#:
+#: **Declaring them here is what keeps this a proof.**  To a byte-comparison a
+#: merge and a silent loss are the same event -- a row that was there is not --
+#: so an undeclared merge would either turn this script red forever, or, if the
+#: comparison were relaxed to tolerate an absence, make it blind to the very
+#: loss it exists to catch.  For a DECLARED merge three things are still
+#: required: the absorbed row is GONE, its survivor is PRESENT, and the
+#: survivor still CITES the absorbed key -- so a commit message, code comment
+#: or as-built record naming the old id still resolves to a live row.
+#:
+#: The survivor is never a free choice.  ``_registry.owner_violations``
+#: resolves an owner WITHIN the row's arc, so the merged row must sit in the
+#: arc whose step closes it.
+MERGES = {
+    ("recurrence", "F-12"): ("pay_calendar", "P6"),
+    ("recurrence", "F-10"): ("pay_calendar", "P2"),
+    ("balance", "N-123"): ("pay_calendar", "P3"),
+}
 LEDGER_HEADER = "| id | finding (one line) | worst measured | status | owned by |"
 LEDGER_HEADER_ALT = "| id | finding (one line) | worst measured | status | closed by |"
 CHECKBOX_RX = re.compile(
@@ -116,6 +140,37 @@ def _registry_rows(path, columns: int) -> list[list[str]]:
     return rows
 
 
+def merge_problems(rows: dict[tuple[str, str], list[str]]) -> list[str]:
+    """Check every DECLARED merge actually happened and orphaned no citation.
+
+    Args:
+        rows: Every ``ledger.md`` row, keyed ``(arc, id)``.
+
+    Returns:
+        One message per merge that was not made, lost its survivor, or dropped
+        the absorbed id from the survivor's ``also`` column.
+    """
+    problems = []
+    for absorbed, survivor in sorted(MERGES.items()):
+        absorbed_key = f"{absorbed[0]}:{absorbed[1]}"
+        if absorbed in rows:
+            problems.append(
+                f"MERGE NOT MADE: {absorbed_key} is still its own row",
+            )
+        if survivor not in rows:
+            problems.append(
+                f"MERGE LOST ITS SURVIVOR: {absorbed_key} was merged into "
+                f"{survivor[0]}:{survivor[1]}, which is not in ledger.md",
+            )
+        elif absorbed_key not in " | ".join(rows[survivor]):
+            problems.append(
+                f"MERGE ORPHANED A CITATION: {survivor[0]}:{survivor[1]} no "
+                f"longer names {absorbed_key}, so every commit message and "
+                f"as-built record citing that id resolves to nothing",
+            )
+    return problems
+
+
 def ledger_problems() -> list[str]:
     """Compare every original ledger row against ``ledger.md``, cell by cell."""
     was = {
@@ -123,21 +178,34 @@ def ledger_problems() -> list[str]:
         for arc, rel in ORIGINALS.items()
         for row in ledger_by_header(original(rel))
     }
-    now = {
-        (cells[0], unescape(cells[1])): (
-            unescape(cells[1]), cells[3], cells[4], cells[5], cells[6]
-        )
+    rows = {
+        (cells[0], unescape(cells[1])): cells
         for cells in _registry_rows(PLANS / "ledger.md", 7)
     }
-    problems = []
-    if len(was) != len(now):
+    now = {
+        key: (unescape(cells[1]), cells[3], cells[4], cells[5], cells[6])
+        for key, cells in rows.items()
+    }
+    problems = merge_problems(rows)
+    if len(was) - len(MERGES) != len(now):
         problems.append(
-            f"LEDGER COUNT: {len(was)} rows in the originals, {len(now)} in ledger.md",
+            f"LEDGER COUNT: {len(was)} rows in the originals and "
+            f"{len(MERGES)} declared merges, but {len(now)} in ledger.md",
         )
-    problems += [f"LEDGER DROPPED: {a}:{i}" for a, i in sorted(set(was) - set(now))]
+    # An absorbed row is EXPECTED to be absent; anything else absent is a loss.
+    problems += [
+        f"LEDGER DROPPED: {a}:{i}"
+        for a, i in sorted(set(was) - set(now) - set(MERGES))
+    ]
     problems += [f"LEDGER INVENTED: {a}:{i}" for a, i in sorted(set(now) - set(was))]
     fields = ("id", "finding", "worst measured", "status", "owner")
+    survivors = set(MERGES.values())
     for key in sorted(set(was) & set(now)):
+        if key in survivors:
+            # A survivor's cells are two rows combined, so byte-identity is
+            # deliberately broken.  What still holds for it is checked above:
+            # it exists, and it names the id it absorbed.
+            continue
         for field, before, after in zip(fields, was[key], now[key]):
             if before != after:
                 problems.append(
@@ -196,19 +264,24 @@ def main() -> int:
     """Report the verdict, and with ``--control`` prove the check can fail."""
     if "--control" in sys.argv:
         print("NEGATIVE CONTROL: planting one mutation in each generated file\n")
-        for name, old, new in (
-            ("ledger.md", "| balance | FU-3 |", "| balance | FU-9 |"),
-            ("steps.md", "| pay_calendar | C1 |", "| pay_calendar | C9 |"),
+        for name, old, new, needle in (
+            ("ledger.md", "| balance | FU-3 |", "| balance | FU-9 |", "FU-"),
+            ("steps.md", "| pay_calendar | C1 |", "| pay_calendar | C9 |", "C9"),
+            # The merge arm needs its own control: the two checks above compare
+            # ids, and a merge is the one edit that legitimately removes one.
+            # Dropping the absorbed id from the survivor's ``also`` column is
+            # how a merge silently orphans every citation of the old id.
+            ("ledger.md", "| pay_calendar | P6 | = recurrence:F-12 |",
+             "| pay_calendar | P6 | -- |", "ORPHANED"),
         ):
             path = PLANS / name
             backup = path.read_text()
             assert old in backup, f"control anchor missing in {name}"
             path.write_text(backup.replace(old, new, 1))
-            fired = [p for p in check() if "FU-9" in p or "C9" in p
-                     or "FU-3" in p or "C1" in p]
+            fired = [p for p in check() if needle in p or "C1" in p]
             path.write_text(backup)
             verdict = "FIRED" if fired else "*** DID NOT FIRE ***"
-            print(f"  {name:11} mutate {old.strip()} -> {new.strip()}: {verdict}")
+            print(f"  {name:11} mutate {old.strip()[:46]} -> ...: {verdict}")
             for line in fired[:2]:
                 print(f"      {line.splitlines()[0]}")
         print()
@@ -221,7 +294,12 @@ def main() -> int:
         return 1
     print("LOSSLESSNESS: PASSED")
     print("  every ledger row in all four originals appears in ledger.md with")
-    print("  byte-identical id / finding / worst-measured / status / owner cells")
+    print("  byte-identical id / finding / worst-measured / status / owner cells,")
+    print(f"  EXCEPT the {len(MERGES)} declared merges below, whose survivors are two")
+    print("  rows combined and are therefore checked differently: present, and")
+    print("  still citing the id they absorbed")
+    for absorbed, survivor in sorted(MERGES.items()):
+        print(f"    {absorbed[0]}:{absorbed[1]:7} -> {survivor[0]}:{survivor[1]}")
     print("  every checkbox in all four originals appears in steps.md with its")
     print("  tick state and its first line unchanged")
     print("  no row invented, none dropped, stated count agrees with the table")

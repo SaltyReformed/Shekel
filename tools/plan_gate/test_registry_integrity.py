@@ -241,9 +241,10 @@ class TestTheKeyIsTheArcAndTheId:
         cases fail through DIFFERENT arms, and a reader who assumes one arm
         covers both would delete the wrong one.
         """
+        before = len(registry.ledger_rows())
         line = _row("ledger", "| balance | N-128 |")
         stage("ledger", line, _with_cell(line, 0, ""))
-        assert len(registry.ledger_rows()) == 137
+        assert len(registry.ledger_rows()) == before - 1, "the row must vanish"
         problem = registry.stated_count_violation()
         assert problem is not None and "rule 3" in problem, problem
 
@@ -331,9 +332,10 @@ class TestTheParserSurvivesTheShapesTheRealFilesUse:
         vanishes, and rule 3's count is the only thing standing between that
         and a finding nobody sees again.
         """
+        before = len(registry.ledger_rows())
         line = _row("ledger", "| balance | N-128 |")
         stage("ledger", line, _with_cell(line, 3, "an unescaped X | Y pipe"))
-        assert len(registry.ledger_rows()) == 137
+        assert len(registry.ledger_rows()) == before - 1, "the row must vanish"
         problem = registry.stated_count_violation()
         assert problem is not None and "rule 3" in problem, problem
 

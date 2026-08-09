@@ -105,12 +105,19 @@ to avoid.
 
 ## The two relations in `ledger.md`, and why conflating them deletes work
 
-- **`= arc:id`** -- the SAME claim recorded in another arc's ledger. A merge CANDIDATE, not a merge:
-  two rows worded differently cannot be combined mechanically, so the merge is a reviewed edit.
+- **`= arc:id`** -- the SAME claim, recorded in another arc's ledger and MERGED into the row that
+  carries the relation. Two rows worded differently cannot be combined mechanically, so each merge
+  is a reviewed edit, and the absorbed id stays in the `also` column because the commit messages
+  citing it cannot be edited.
 - **`~ arc:id`** -- a DISTINCT finding sharing a root cause, usually cause and symptom, usually with
   **different owners and different closing steps**.
 
 Five rows were claimed by their own documents to be "the same defect". Three survived a side-by-side
-read of the row text and the owner column; two were cause and symptom. Merging those two would have
-collapsed two steps that each owe something into one owner. **Never take a document's prose claim
-that two rows are the same defect -- compare the text and the owners.**
+read of the row text and the owner column and were merged on 2026-08-09; two were cause and symptom
+and were not. Merging those two would have collapsed two steps that each owe something into one
+owner. **Never take a document's prose claim that two rows are the same defect -- compare the text
+and the owners.**
+
+**A merged row sits in the arc whose step closes it**, because rule 1 resolves an owner within the
+row's own arc. Where that step is not yet decided the owner is `developer-decision` and the fork is
+recorded in `steps.md`: naming either remedy would decide it.
