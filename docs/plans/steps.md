@@ -10,7 +10,7 @@ scheduled as one commit by all three documents. Before this table that identity 
 files with nothing reconciling it, and the `P3` / `N-123` collision went unnoticed from April to
 2026-08-09.
 
-**92 steps, 82 open.**
+**94 steps, 83 open.**
 
 | arc | id | aliases | step | state | commit | blocked by |
 |---|---|---|---|---|---|---|
@@ -19,7 +19,9 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | balance | X-aj1 | -- | **X-aj1** the status seam merge, in three commits (`1688f508` R-DR's extraction, `63514efc` | SHIPPED | `1688f508` | -- |
 | balance | X-f | -- | **X-f** `feat(transactions): the app records when money moved` -- the DECOMPOSED parent, | open | -- | -- |
 | balance | X-f1 | -- | **X-f1** `feat(transactions): a settle carries the day the money moved` -- absorbs **S2-b**. | SHIPPED | -- | -- |
-| balance | X-an | -- | **X-an** `fix(loan): a payment is history from the day its money moved` -- closes **N-187**. | open | -- | -- |
+| balance | X-an | -- | **X-an** `fix(loan): a payment is history from the day its money moved` -- the DECOMPOSED parent. | open | -- | -- |
+| balance | X-an-a | -- | **X-an-a** the CUT: the replay/projection boundary moves onto `settled_on`, through ONE predicate. Closes **N-187** | SHIPPED | `3d3f0ef5` | -- |
+| balance | X-an-b | -- | **X-an-b** the anchor TIE-BREAK: `id` on every ordering. Closes **N-196**, widened to FOUR sites | open | -- | -- |
 | balance | X-f2 | -- | **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half. The | open | -- | -- |
 | balance | X-f3 | -- | **X-f3** `feat(cash): the ledger is sum-of-postings and the residual is classified` -- **THE | open | -- | -- |
 | balance | X-f4 | -- | **X-f4** `refactor(cash): delete what the cutover orphans` -- `ReconciledThrough` and its 78 | open | -- | -- |
@@ -66,7 +68,7 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | recurrence | R1-R3 | -- | **R1-R3 -- oracle, vocabulary, subtypes, write door, `Once` gone, forward engine.** `4b5c577b` | SHIPPED | `4b5c577b` | -- |
 | recurrence | R4a | -- | **R4a, R4b-1, R4b-2 -- the forward cutover.** `1836a928`, `b4538d25`, `75346625`, archived | SHIPPED | `1836a928` | -- |
 | recurrence | R5 | -- | **R5 -- a generated row carries THREE dates, in three places.** | open | -- | balance:X-f4 |
-| recurrence | R6 | -- | **R6 -- Delete `payment_day`; one installment accessor.** | open | -- | balance:X-an (ships WITH it) |
+| recurrence | R6 | -- | **R6 -- Delete `payment_day`; one installment accessor.** | open | -- | recurrence:R5 (it READS `due_on`; "ships WITH balance:X-an" was unsatisfiable -- see section 0) |
 | recurrence | R7a-1 | -- | **R7a-1 -- the Recurrence cell is one function over `(interval, unit)`.** `6fed14af`, on | SHIPPED | `6fed14af` | -- |
 | recurrence | R7a-2 | -- | **R7a-2 -- the monthly equivalent becomes one function over the same pair.** | open | -- | -- |
 | recurrence | R7b | -- | **R7b -- bounds and the form.** | open | -- | -- |

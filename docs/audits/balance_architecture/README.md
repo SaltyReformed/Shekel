@@ -33,15 +33,15 @@ staleness was invisible because nothing here is a predicate.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **The whole X-f1 cluster is IN PRODUCTION** -- PR #82 -> #83, merge `8d812662`, image `2ab54855937b`, migration head **`b5e3d9c1a7f2`**. Fourteen leaves. A settle carries the day its money moved, an assertion is (account, day, balance) written at one door, and the back-dated acknowledgement reaches all five surfaces | `archive/…2026-08-04.md` Section 1a |
-| **how it was proven** | Rehearsed on a restored copy of prod BEFORE deploying: migrations clean, the backfill proven row by row (**999/999** accounted -- 150 dated from `paid_at`, 8 from the period-start fallback, 841 left NULL, 0 unexpected), and the seam harness **byte-identical**, positive-controlled at 1,674 lines from one cent. Post-deploy prod re-measured byte-identical against the same baseline | Section 7.2 |
+| **just landed** | **X-an-a**, on a branch off `dev`, not yet PR'd: the loan resolver's replay/projection cut moves off the pay period onto the day the money moved, and `PaymentRecord.is_confirmed` stops being stored. Before it, the whole **X-f1 cluster** reached production (PR #82 -> #83, merge `8d812662`, migration head **`b5e3d9c1a7f2`**, fourteen leaves) | Section 5, `archive/…2026-08-04.md` Section 1a |
+| **how it was proven** | **The exhaustive harness was BLIND to X-an-a by construction and saying so is the lesson**: it reads at the seam's default `as_of` plus six fixed dates, while the change moves an answer only on the days between a pay period opening and its payment's cash leaving -- windows of 1 to 12 days. It came back byte-identical (9 accounts, 427 grid cells, 5,978 daily points) and proved nothing about the step. A per-DAY probe over the loans' whole recorded span is what measured it | Section 7.2 |
 | **in flight** | nothing OF THIS ARC. **Neither the live branch state nor what production runs is recorded here, and neither may be** -- read them from `git branch -vv` and `docker inspect shekel-prod-app --format '{{.Image}}'`. This row asserted "no feature branches exist" on 2026-08-08 while block 10's `C1` was being built on `feat/pay-calendar`, and it then stored a prod image digest that a deploy falsified on 2026-08-09 -- twice over, a volatile value beside no reconciler, which is this arc's own root cause worn as a signpost. The migration head is **`c7f3a9d1e864`**; nothing since has added one | -- |
-| **blocked on you** | **two design questions X-f2 owns**: **N-204** (the acknowledgement is keyed on "was the day the boundary", not "did the figure change", so an ordinary re-confirm writes a row and says nothing) and **N-205** (nothing durable records an assertion anywhere in the UI) | Section 6 |
-| **next** | **X-an** -> X-f2 -> **X-f3** (moves money, own PR) -> X-f4 -> X-f5 -> X-f6. Block 2 (**X-ad then X-x, ONE PR**) runs in parallel and its fork is RULED (2026-08-09, for **X-ad**): DELETE the registration bootstrap payday, and registration asks for the payday last paid on. `N-123` absorbed pay-calendar `P3`, so X-ad owns one row, not two | Section 5.0 |
-| **complementary arcs** | TWO, neither part of this arc and neither pausing it. **RECURRENCE**: Half A is disjoint and starts whenever; **Half B is not one unit** -- `R6` is the same trace as X-an and ships WITH it, `R5` waits on X-f4. **PAY CALENDAR** (opened 2026-08-08, block 10): `budget.pay_periods` stores the payday and derives `end_date` / `period_index`. **Its `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md`, and blocks 9 / 10 |
+| **blocked on you** | **three.** Two design questions X-f2 owns -- **N-204** (the acknowledgement is keyed on "was the day the boundary", not "did the figure change", so an ordinary re-confirm writes a row and says nothing) and **N-205** (nothing durable records an assertion anywhere in the UI). And one SEQUENCING ruling, new at X-an-a: `R6` cannot ship with X-an because it reads a column `R5` creates behind X-f4 | `../../plans/ledger.md`, X-an's entry |
+| **next** | **X-an-b** (the anchor tie-break, N-196 widened to four sites) -> X-f2 -> **X-f3** (moves money, own PR) -> X-f4 -> X-f5 -> X-f6. Block 2 (**X-ad then X-x, ONE PR**) runs in parallel and its fork is RULED (2026-08-09, for **X-ad**): DELETE the registration bootstrap payday, and registration asks for the payday last paid on. `N-123` absorbed pay-calendar `P3`, so X-ad owns one row, not two | Section 5.0 |
+| **complementary arcs** | TWO, neither part of this arc and neither pausing it. **RECURRENCE**: Half A is disjoint and starts whenever; **Half B is not one unit, and "`R6` ships WITH X-an" is now known unsatisfiable** -- `R6` reads `due_on`, `R5` creates it, `R5` waits on X-f4. A `developer-decision` is owed; see X-an's entry. **PAY CALENDAR** (opened 2026-08-08, block 10): `budget.pay_periods` stores the payday and derives `end_date` / `period_index`. **Its `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md`, and blocks 9 / 10 |
 | **why this shape** | the anchor half was redesigned from scratch by ruling **R-EB**; R-EQ designed the duplicate rule that had only ever been re-keyed, R-ER put the day rule in the module that owns what an assertion is, X-f1e1 deleted the second DOOR, X-f1e2 the second WRITER, X-f1e3 the mount that was destroying its own message | Section 3.3, and R-EB / R-EQ / R-ER / R-ES / R-ET in Section 4 |
-| **the live lesson** | **a response can destroy its own message**, and the tests could not see it: deleting either of the two attributes the feature hangs on left the whole suite green, measured by an adversarial review | Section 8's first three bullets |
-| **the ledger** | **93 rows**. X-f1e3 closed N-199 and opened N-203..N-206; **N-173 re-pointed to X-f6**, because X-f1 shipped the mechanism and its backfill improved no stored date | Section 6 |
+| **the live lesson** | **a baseline that samples cannot see a change that lives in a window.** X-an-a's exhaustive harness run was byte-identical and its per-day probe found a `$1,910.95` installment missing from a real schedule for 12 days. Ask which AXIS the oracle does not vary before reading its silence as proof | Section 8 |
+| **the ledger** | **93 rows**, flat across X-an-a: it closed **N-187** and opened **N-207** (the replay resolves against the loan's LATEST anchor whatever date the read asks about). It also WIDENED two rows rather than opening more -- **N-196** from two tie-break sites to four, **N-36** with the input domain its rate key just gained | `../../plans/ledger.md` |
 | **resuming cold** | Branch from `dev`. Whether it is ahead of `main`, and whether by documents or by code, is a MEASUREMENT (`git log --oneline origin/main..dev`) and this row no longer claims it -- the previous revision said "DOCUMENTS ONLY" and block 10's `C1` shipped `app/services/pay_calendar/` into that gap. The repo head is **`c7f3a9d1e864`** and the test template is already stamped at it -- VERIFIED by reading `alembic_version` in `shekel_test_template`, not assumed; rebuild only if you add a migration. Baseline **8,431** green (`./scripts/test.sh`, 183 s, 2026-08-09, measured on the merged `feat/pay-calendar` state); the 8,258 this row used to claim predated R7a-1 and C1. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x). This row used to name one hand-made prod restore point; **the recurrence arc's R-F8 made every deploy dump unconditionally**, so `~/shekel-backups/` now holds one per release and the deploy REFUSES a rollback its image cannot resolve | Section 7.2 |
 
 Section 5 is the work that remains and Section 4 the rulings that govern it; `archive/` is what
@@ -334,28 +334,37 @@ live step or a live finding still reads against them.
   on re-entry, which is what stops archiving a payment from re-dating its money. **X-f2** puts the
   STATEMENT date there instead of the stamp, and **X-an** keys the loan resolver's history cut on the
   stored day.
-* [ ] **X-an** `fix(loan): a payment is history from the day its money moved` -- closes **N-187**.
-  Ruling **R-EK**, sequenced immediately behind X-f1 because X-f1 is what gives the app a stored,
-  user-correctable day to key on. **The resolver's replay/projection cut is the last place in the
-  loan half that PROXIES the day the money moved**: `is_confirmed_payment_eligible` bounds on
-  `period_start <= as_of` while the posted ledger dates the same payment from `settled_on`. The step
-  moves the CUT onto `settled_on` for a CONFIRMED payment, so both producers share ONE definition of
-  "already happened" and the parallel run can assert at every boundary again. A PROJECTED payment
-  keeps the pay-period start: its cash has not moved, so the pay period IS the plan. It DELETES a
-  proxy rather than adding a guard, and it does not make the resolver read the ledger. Its trace
-  owes: the complement at `_build_monthly_override:174` must move with the cut, or replay and
-  projection stop being exact complements.
-  **THE RECURRENCE REDESIGN'S HALF B SHIPS WITH THIS STEP** -- `R5` / `R6` of
-  `docs/plans/implementation_plan_recurrence_redesign.md` (its section 0). They are this step seen
-  from the other side: this one asks which date decides a payment ALREADY HAPPENED, `R6` asks which
-  date IS the contractual installment, and both rewrite the neighbourhood of
-  `loan_loaders.loan_payment_due_date` / `rate_period_engine.monthly_due_date`. `R6` DELETES
-  `loan_params.payment_day`, the argument this step's fallback path reads. Measured 2026-08-05:
-  **4 of 4** of this step's surfaces (`loan_ledger/_events.py`, `loan_loaders.py`,
-  `loan_resolver/_payoff.py`, `rate_period_engine.py`) sit in that plan's `R5`+`R6` file set.
-  Tracing them apart means tracing the loan half's date semantics twice. **Its own trace is owed
-  BEFORE either lands**: `payment_day` is set to the CASH day on the live Van Loan while every loan
-  surface reads it as the INSTALLMENT day, which is why the two dates cannot differ today.
+- [ ] **X-an** `fix(loan): a payment is history from the day its money moved` -- the DECOMPOSED
+  parent (ruling **R-EK**). Two leaves: **X-an-a** the CUT, **X-an-b** the anchor TIE-BREAK. It ticks
+  with the last of them.
+  **THE RECURRENCE REDESIGN'S `R6` CANNOT SHIP WITH IT, and that pointer is now a live
+  contradiction**: `R6`'s own specification derives the installment "over the rule plus `due_on`",
+  `due_on` is created by `R5`, and `R5` is gated on **X-f4** -- three steps behind X-an with X-f3
+  between them. The file-overlap argument (4 of 4 surfaces) is real and unchanged; what it supports
+  is tracing them together, not shipping them together. `developer-decision` owed: re-point `R6`
+  behind `R5`, or narrow it to the half that needs no `due_on`.
+* [x] **X-an-a** `fix(loan): a payment is history from the day its money moved` -- `3d3f0ef5`. Closes
+  **N-187**. `is_confirmed_payment_eligible` bounded on `period_start <= as_of` while the fold dates
+  the same payment from `settled_on`; the cut moves onto the settled day, through ONE
+  `app.utils.dates.has_settled_by` both halves of the resolver's partition call.
+  `PaymentRecord.is_confirmed` stops being stored and becomes `settled_on is not None`.
+  **Two claims it deleted rather than kept**: the replay's halves are NOT exact complements (a
+  payment an anchor subsumes, or one past a payoff, is in neither -- correctly), and the genesis walk
+  never called `is_confirmed_payment_eligible` at all. Measured on the prod clone, every day of a
+  306-day span: no balance moved anywhere, and the loan SCHEDULE gained back an installment on 34
+  (loan, day) pairs -- a **$1,910.95** mortgage payment in neither the confirmed history nor the plan
+  for 12 days, with the page naming the FOLLOWING month as next due.
+* [ ] **X-an-b** `fix(loan): one anchor tie-break, read and write` -- closes **N-196**, which two
+  adversarial reviews WIDENED from two sites to four. The third is the one X-an-a's own thesis
+  implicates: `loan_ledger.merge_anchor_and_payment_events` stable-sorts anchors on
+  `(anchor_date, created_at)` and the walk takes the LAST of a tie, while
+  `loan_resolver.select_latest_anchor` takes `max(...)`, the FIRST -- over a list
+  `loan_loaders.load_loan_anchor_facts` returns with no `ORDER BY`. So on a full tie carrying two
+  different balances the walk and the resolver are GUARANTEED to pick opposite rows, and which row
+  each picks is whatever PostgreSQL returned. The fourth is `models/loan_anchor_event.py`'s backref
+  order, which has no live reader but which `select_latest_anchor`'s docstring claims to mirror. The
+  fix is the `id` term on every ordering, which needs `LoanAnchorFact` to carry the stored row id
+  (`None` for the synthesized origination, whose `datetime.min` can never tie).
 * [ ] **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half. The
   outstanding set covers TRANSACTIONS as well as entries (`_outstanding_scope`'s transaction twin,
   `entry_service.py:819`), ticking stamps the STATEMENT date rather than `now()` on the `settled_on` R-M split out, and the
