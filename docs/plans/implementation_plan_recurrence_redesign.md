@@ -862,12 +862,12 @@ and labelling a discipline as one is the failure being guarded against.
    opened three updated the rows and not the prose about them.
 4. **The whole file is capped at 900 lines**, and the cap is a FORCING FUNCTION, not a ceiling sized
    to fit the work. The arithmetic says so plainly: the document stood at 747 with eight steps
-   unspecified (R2e, R3-R9), and specifying each at the ~45 lines R2b's took would have added
-   ~293 -- landing at ~1,021, well over. **That gap is deliberate and rule 7 is what closes it.** A
-   step that ships surrenders its specification: R2e and R3 occupied 39 lines between them and left
-   as a 4-line pointer, which is what brought the file back under the cap the day R3 shipped. At
-   roughly 35 lines returned per ship against ~45 spent per specification, the file breathes rather
-   than grows. **Raising the cap is not the answer when it binds.**
+   unspecified (R2e, R3-R9), and specifying each at the ~45 lines R2b's took would have added ~293
+   -- landing at ~1,021, well over. **That gap is deliberate and rule 7 is what closes it.** A step
+   that ships surrenders its specification: R2e and R3 occupied 39 lines between them and left as a
+   4-line pointer, which is what brought the file back under the cap the day R3 shipped. At roughly
+   35 lines returned per ship against ~45 spent per specification, the file breathes rather than
+   grows. **Raising the cap is not the answer when it binds.**
 5. **The only legal way back under the cap is to archive a COMPLETED span** to
    `docs/plans/historical/recurrence_as_built_<date>.md`, condensed to one line per step: its id,
    its commit and what it closed. Never trim a live step's specification to fit. Shrink the record

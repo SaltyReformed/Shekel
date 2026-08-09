@@ -226,8 +226,8 @@ selects which rows are destroyed, and it survives a round trip through the brows
 only because nothing renumbers today.
 **Identity is `id`; `period_index` is an ordinal, and the form must key on the former.** Found by
 adversarial review 2026-08-08, against this document's own (false) claim that the index is never a
-wire key. `period_index` is also persisted outside the table in `system.audit_log`'s whole-row
-jsonb -- 9 rows on production carry it.
+wire key. `period_index` is also persisted outside the table in `system.audit_log`'s whole-row jsonb
+-- 9 rows on production carry it.
 
 ### P14 -- the derivation is window-dependent where the stored column was not
 
