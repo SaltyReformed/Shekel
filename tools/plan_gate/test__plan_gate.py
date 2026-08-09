@@ -1,42 +1,44 @@
-"""The parser's own negative controls, run once against a synthetic document.
+"""The shared machinery's negative controls, run against a synthetic document.
 
 Every arm in ``_plan_gate`` is shown here to BITE on a planted defect.  A guard
 whose control does not fire is not a guard, and the balance arc paid three
 hand-passes in two days to learn that a ledger rule which is not a predicate is
 not a rule.
 
-**These controls live here, not in the per-document gate files, because they
-test the PARSER and the parser is now shared.**  Before this file existed the
-two gates carried 21 same-named controls between them, 220 identical lines,
-and five ``R0801`` duplicate-code clusters -- and most of those controls
-touched nothing document-specific: a line-cap boundary check feeds
-``"x\\n" * N`` and never reads a heading.  A third document adopting the gate
-would have copied them all again.
+**These controls live here, not in the per-document gate file, because they
+test machinery that is SHARED.**  What stays with a document is what is
+genuinely its own: its caps, its headings, and any control whose defect is
+shaped by its own structure.  Those are in ``test_arc_documents.py``.
 
-What stays with a document is what is genuinely ITS: the premise floors (is
-the parser reading the real file at all), the live-spelling arm (does the
-count pattern match the real sentence), the section-bounding arm (do this
-document's headings carve out the right regions), and any control whose defect
-is shaped by that document's own structure.
+**The ledger arms are gone, and their controls went with them.**  This module
+once parsed a findings ledger for every document; the findings now live in one
+``docs/plans/ledger.md`` graded by ``_registry``, so ``parse_ledger``,
+``parse_steps``, ``stated_count_violation`` and ``owner_violations`` were
+deleted rather than left tested-with-no-caller.  What survived that deletion is
+the owner GRAMMAR, which ``_registry`` imports rather than re-implements -- so
+its controls survived too, retargeted at the primitives themselves.  A control
+pointed at a function no live gate calls proves the parser reads what it wrote.
 
-The synthetic :data:`SPEC` deliberately uses neither real document's headings
-or ids, so nothing here can pass by accident because it happened to match a
-live file.
+The synthetic :data:`SPEC` deliberately uses no real document's headings or
+ids, so nothing here can pass by accident because it happened to match a live
+file.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
 
 from _plan_gate import (
+    CONVENTIONS_DOC,
+    LEDGER_DOC,
+    OWNER_RX,
     PlanSpec,
-    STATED_COUNT_RX,
     arc_state_violation,
     line_count_violation,
-    owner_violations,
-    stated_count_violation,
+    split_owners,
     step_entries,
     ticked_entry_violations,
 )
@@ -46,25 +48,16 @@ _MAX_ARC_STATE_LINES = 6
 _MAX_TICKED_ENTRY_LINES = 4
 
 #: A document that exists nowhere.  ``path`` is never read: every function
-#: under test takes the document TEXT, and only the live per-document gates
-#: call ``SPEC.read()``.  Pointing it at a real file would let a control pass
+#: under test takes the document TEXT, and only the live per-document gate
+#: calls ``SPEC.read()``.  Pointing it at a real file would let a control pass
 #: because that file happened to satisfy it.
 SPEC = PlanSpec(
     path=Path("/nonexistent/synthetic-plan.md"),
     steps_heading="## S.",
     steps_label="Section S",
-    ledger_heading="## L.",
-    ledger_label="Section L",
-    ledger_columns=5,
-    owner_rule="Section R rule 1",
-    ship_rule="Rule 2",
     line_cap=_MAX_LINES,
-    line_cap_rule="Section R rule 4",
-    archive_rule="rule 5",
-    stated_count_rx=STATED_COUNT_RX,
     arc_state_heading="## Orientation",
     arc_state_cap=_MAX_ARC_STATE_LINES,
-    rules_label="Section R",
     ticked_entry_cap=_MAX_TICKED_ENTRY_LINES,
 )
 
@@ -80,19 +73,7 @@ the signpost
 - [ ] **P-b** the live one
 * [ ] **P-b1 THE LEAF** a decomposed leaf, live
 
-## L. The findings ledger
-
-**The ledger stands at 5 rows.**
-
-| id | finding (one line) | worst measured | status | owned by |
-|---|---|---|---|---|
-| N-1 | a thing | -- | OPEN | P-b |
-| N-2 | a thing with a `Decimal \\| None` pipe | -- | OPEN | P-b1 (annotated) |
-| N-3 | two halves | -- | OPEN | P-b (display) / P-b1 (cache) |
-| FU-1 | an operator question | -- | OPEN | operator (unchanged) |
-| N-4 | a taken fork | -- | OPEN | developer-decision (dated 2026-07-27) |
-
-## Z. Something after the ledger
+## Z. Something after the steps
 """
 
 
@@ -101,180 +82,48 @@ class TestThePremise:
 
     def test_the_clean_document_passes_every_arm(self):
         """No arm fires on the unmodified synthetic document."""
-        assert not owner_violations(DOC, SPEC)
-        assert stated_count_violation(DOC, SPEC) is None
         assert arc_state_violation(DOC, SPEC) is None
         assert line_count_violation(DOC, SPEC) is None
         assert not ticked_entry_violations(DOC, SPEC)
 
 
-class TestTheOwnerArmFires:
-    """Every way an owner can fail to answer "who closes this?"."""
+class TestTheOwnerGrammar:
+    """The primitive ``_registry`` imports rather than re-implements.
 
-    def test_an_owner_that_has_shipped_is_caught(self):
-        """The class that went unnoticed for weeks, three times."""
-        broken = DOC.replace("| OPEN | P-b |", "| OPEN | P-a |")
-        violations = owner_violations(broken, SPEC)
-        assert len(violations) == 1, violations
-        assert "N-1" in violations[0] and "SHIPPED" in violations[0]
-
-    def test_an_owner_naming_no_step_is_caught(self):
-        """An id that is not a checkbox cannot answer "did its owner ship?"."""
-        broken = DOC.replace("| OPEN | P-b |", "| OPEN | P-zz |")
-        violations = owner_violations(broken, SPEC)
-        assert len(violations) == 1, violations
-        assert "'P-zz'" in violations[0] and "TICKABLE" in violations[0]
-
-    def test_a_prose_owner_is_refused(self):
-        """"Own commit", "folded in" and their siblings all mean nobody."""
-        broken = DOC.replace("| OPEN | P-b |", "| OPEN | own commit |")
-        violations = owner_violations(broken, SPEC)
-        assert len(violations) == 1, violations
-        assert "not an owner" in violations[0]
-
-    def test_an_empty_owner_cell_is_caught(self):
-        """A row with no owner is unfinished work, not a recorded finding."""
-        broken = DOC.replace("| OPEN | P-b |", "| OPEN |  |")
-        violations = owner_violations(broken, SPEC)
-        assert len(violations) == 1, violations
-        assert "no owner at all" in violations[0]
-
-    def test_one_bad_half_of_a_two_owner_cell_is_caught(self):
-        """Both halves of ``A / B`` must be live, not just the first."""
-        broken = DOC.replace(
-            "P-b (display) / P-b1 (cache)", "P-b (display) / P-a (cache)",
-        )
-        violations = owner_violations(broken, SPEC)
-        assert len(violations) == 1, violations
-        assert "N-3" in violations[0] and "SHIPPED" in violations[0]
-
-    def test_a_bare_vocabulary_word_is_refused(self):
-        """``operator`` states its question and ``developer-decision`` is dated."""
-        bare = DOC.replace("operator (unchanged)", "operator")
-        violations = owner_violations(bare, SPEC)
-        assert len(violations) == 1, violations
-        assert "carries no annotation" in violations[0]
-
-        undated = DOC.replace(
-            "developer-decision (dated 2026-07-27)",
-            "developer-decision (the fork)",
-        )
-        violations = owner_violations(undated, SPEC)
-        assert len(violations) == 1, violations
-        assert "is not DATED" in violations[0]
+    ``_registry.owner_violations`` is the live predicate and its own controls
+    are in ``test_registry_integrity.py``, staged against the real ledger.
+    What is pinned HERE is the grammar itself: the two measured false positives
+    that would make a correct owner cell report as broken, and a gate that
+    cries wolf is uninstalled rather than fixed.
+    """
 
     def test_a_slash_inside_an_annotation_is_not_a_second_owner(self):
         """``P-b (display / cache)`` is ONE annotated owner, not two broken ones.
 
         The split is taken at parenthesis depth zero.  A plain
-        ``cell.split(" / ")`` reports two grammar violations on a cell that is
-        fine -- a gate that cries wolf gets uninstalled, not fixed.
+        ``cell.split(" / ")`` tears this cell in half and reports two grammar
+        violations on a cell that is fine.
         """
-        annotated = DOC.replace("| OPEN | P-b |", "| OPEN | P-b (display / cache) |")
-        assert not owner_violations(annotated, SPEC)
+        assert split_owners("P-b (display / cache)") == ["P-b (display / cache)"]
 
+    def test_a_genuine_two_owner_cell_still_splits(self):
+        """Depth-zero splitting must not cost the split it exists to allow."""
+        assert split_owners("X-j (display) / X-e (cache)") == [
+            "X-j (display)", "X-e (cache)",
+        ]
 
-class TestTheSilentParseHolesAreClosed:
-    """Three ways the gate could pass while seeing nothing.
+    def test_an_annotated_id_parses_to_the_id(self):
+        """The id is parsed OUT of the cell, not scanned for anywhere in it.
 
-    None is caught by a premise floor: each keeps the parsed counts plausible,
-    which is exactly what makes them dangerous.
-    """
-
-    def test_an_unescaped_pipe_is_reported_as_a_split_row(self):
-        """A broken row fails as a broken ROW, not as a mystery owner.
-
-        The distinction is the whole reason the parser splits on unescaped
-        pipes: a real ledger carries ``Decimal \\| None`` inside a cell, and a
-        parser blind to the escape would report that correct row as having the
-        wrong owner.
+        Scanning would try to validate the ``N-73`` inside this annotation,
+        which names a FINDING and never a step.
         """
-        broken = DOC.replace(r"`Decimal \| None`", "`Decimal | None`")
-        with pytest.raises(AssertionError) as caught:
-            owner_violations(broken, SPEC)
-        assert "6 cells" in str(caught.value) and "N-2" in str(caught.value)
+        match = OWNER_RX.match("X-e (widened 2026-07-27; see also N-73)")
+        assert match is not None and match.group("owner") == "X-e"
 
-    def test_a_row_with_an_empty_id_cell_is_still_graded(self):
-        """An empty id cell must not be mistaken for the delimiter row.
-
-        ``set("") <= {"-", ":"}`` is ``True``, so a bare subset test drops the
-        row and never reads its owner.
-        """
-        broken = DOC.replace("| N-1 | a thing |", "|  | a thing |")
-        broken = broken.replace("| OPEN | P-b |", "| OPEN | P-a |")
-        violations = owner_violations(broken, SPEC)
-        assert len(violations) == 1, violations
-        assert "SHIPPED" in violations[0], violations
-
-    def test_a_duplicate_checkbox_id_is_refused(self):
-        """A step re-listed in the steps section would silently un-tick itself.
-
-        The last occurrence wins, so re-listing a SHIPPED step as unticked
-        blinds the arm this gate exists for.  It must fail as a duplicate, not
-        pass as a live owner.
-        """
-        broken = DOC.replace(
-            "* [ ] **P-b1 THE LEAF** a decomposed leaf, live",
-            "* [ ] **P-b1 THE LEAF** a decomposed leaf, live\n"
-            "- [ ] **P-a** re-listed in a later summary",
-        )
-        with pytest.raises(AssertionError) as caught:
-            owner_violations(broken, SPEC)
-        assert "'P-a'" in str(caught.value)
-        assert "more than one checkbox" in str(caught.value)
-
-    def test_a_fence_cannot_truncate_the_steps_section(self):
-        """A ``##`` line inside a code sample must not end the steps section.
-
-        Both live documents carry fenced diagrams inside their steps sections.
-        Without fence-blanking every step after the fence vanishes, and the
-        rows owning them fail accusing the LEDGER of naming a non-checkbox -- a
-        true failure with a false diagnosis, which is worse than no gate.
-        """
-        broken = DOC.replace(
-            "* [ ] **P-b1 THE LEAF** a decomposed leaf, live",
-            "* [ ] **P-b1 THE LEAF** a decomposed leaf, live\n\n"
-            "```text\n## sample heading inside a fence\n```",
-        )
-        assert not owner_violations(broken, SPEC)
-
-
-class TestTheCountArmFires:
-    """The ledger's stated size matches the table it describes."""
-
-    def test_a_stated_count_that_is_wrong_is_caught(self):
-        """Present-and-correct passes, present-and-wrong fires, absent passes.
-
-        **Both punctuations are exercised, and that is not decoration.** A live
-        document closes the bold AFTER the full stop (``**... 41 rows.**``);
-        the first draft of this arm required ``rows**``, matched that file
-        nowhere, and therefore reported a planted 38-against-41 as clean.
-        """
-        for sentence in ("5 rows", "5 rows."):
-            correct = DOC.replace(
-                "**The ledger stands at 5 rows.**",
-                f"**The ledger stands at {sentence}**",
-            )
-            assert stated_count_violation(correct, SPEC) is None, sentence
-
-            wrong = correct.replace(f"stands at {sentence}", "stands at 38 rows")
-            violation = stated_count_violation(wrong, SPEC)
-            assert violation is not None, sentence
-            assert "38" in violation and "5" in violation
-
-        silent = DOC.replace("**The ledger stands at 5 rows.**\n\n", "")
-        assert stated_count_violation(silent, SPEC) is None
-
-    def test_a_row_added_without_updating_the_sentence_is_caught(self):
-        """The live drift: rows change, the prose about them does not."""
-        grown = DOC.replace(
-            "| N-4 | a taken fork | -- | OPEN | developer-decision (dated 2026-07-27) |",
-            "| N-4 | a taken fork | -- | OPEN | developer-decision (dated 2026-07-27) |\n"
-            "| N-5 | a new one | -- | OPEN | P-b |",
-        )
-        violation = stated_count_violation(grown, SPEC)
-        assert violation is not None
-        assert "5 rows and the table carries 6" in violation
+    def test_prose_is_not_an_owner(self):
+        """"Own commit", "folded in" and their siblings all mean nobody."""
+        assert OWNER_RX.match("own commit") is None
 
 
 class TestTheCapArmsFire:
@@ -309,7 +158,12 @@ class TestTheCapArmsFire:
         violation = arc_state_violation(over, SPEC)
         assert violation is not None
         assert "REPLACED" in violation
-        assert "Section L" in violation and "Section R" in violation
+        # The relocation advice must name places that EXIST.  These were
+        # per-document label fields until the registries merged; a message
+        # still sending a reader to "Section 6" would send them to a section
+        # whose contents moved.
+        assert LEDGER_DOC in violation and CONVENTIONS_DOC in violation
+        assert SPEC.steps_label in violation
 
     def test_a_missing_orientation_section_is_not_a_silent_pass(self):
         """Deleting the section must fail loudly, not read as "within cap"."""
@@ -343,7 +197,7 @@ class TestTheTickedEntryArmFires:
     def test_a_hex_identifier_that_is_not_the_commit_cannot_stand_in(self):
         """An Alembic revision id is 12 hex characters and is NOT a commit.
 
-        This is the arm's sharpest edge: both documents cite migration
+        This is the arm's sharpest edge: the live documents cite migration
         revisions, which satisfy a naive "contains a hash" test.  Requiring the
         hash to be the FIRST backticked token is what separates them.
         """
@@ -393,8 +247,6 @@ class TestTheTickedEntryArmFires:
         README's spec records the measurement (``X-f1``: 18 lines, no hash)
         that keeps it off there rather than silently skipping.
         """
-        import dataclasses  # pylint: disable=import-outside-toplevel
-
         off = dataclasses.replace(SPEC, ticked_entry_cap=None)
         broken = DOC.replace(
             "- [x] **P-a -- the shipped one.** `a1b2c3d` -- what it did, in one sentence.",
@@ -409,7 +261,7 @@ class TestStepEntryBounding:
     def test_a_sub_heading_ends_an_entry(self):
         """Without this, the last step before a group heading absorbs the group.
 
-        Both live documents group steps under ``###`` headings, so a step
+        The live documents group steps under ``###`` headings, so a step
         sitting immediately above one would otherwise be measured as far longer
         than it is -- and the ticked-entry cap would fire on prose that is not
         its own.
@@ -428,3 +280,34 @@ class TestStepEntryBounding:
         entries = step_entries(DOC, SPEC)
         assert [step for step, _, _ in entries] == ["P-a", "P-b", "P-b1"]
         assert [ticked for _, ticked, _ in entries] == [True, False, False]
+
+    def test_a_fence_cannot_truncate_the_steps_section(self):
+        """A ``##`` line inside a code sample must not end the steps section.
+
+        The live documents carry fenced diagrams inside their steps sections.
+        Without fence-blanking, every step after the fence vanishes and the
+        ticked-entry arm silently grades a document it stopped reading -- a
+        pass that proves nothing, which is worse than a failure.
+        """
+        fenced = DOC.replace(
+            "* [ ] **P-b1 THE LEAF** a decomposed leaf, live",
+            "```text\n## sample heading inside a fence\n```\n\n"
+            "* [ ] **P-b1 THE LEAF** a decomposed leaf, live",
+        )
+        assert [step for step, _, _ in step_entries(fenced, SPEC)] == [
+            "P-a", "P-b", "P-b1",
+        ]
+
+    def test_a_checkbox_inside_a_fence_is_not_a_step(self):
+        """A code sample is an illustration, not a record.
+
+        Blanking rather than ignoring is what makes this true: an unblanked
+        ``- [ ]`` inside a fenced example would be indexed as a real step, and
+        rule 12 would then demand an index row for a step nobody wrote.
+        """
+        illustrated = DOC.replace(
+            "## Z. Something after the steps",
+            "```text\n- [ ] **P-zz** an example of the grammar\n```\n\n"
+            "## Z. Something after the steps",
+        )
+        assert "P-zz" not in [step for step, _, _ in step_entries(illustrated, SPEC)]

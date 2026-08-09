@@ -39,6 +39,26 @@ def _stage(tmp_path, monkeypatch):
     return _apply
 
 
+@pytest.fixture(name="stage_arc")
+def _stage_arc(tmp_path, monkeypatch):
+    """Return a helper that mutates an ARC DOCUMENT copy and re-points the map.
+
+    Separate from ``stage`` because ``ARC_DOCS`` is a dict rather than a module
+    attribute, and because the defects it plants are in the SPECIFICATIONS
+    rather than in a registry table.
+    """
+
+    def _apply(arc: str, old: str, new: str) -> None:
+        source = registry.ARC_DOCS[arc]
+        text = source.read_text()
+        assert old in text, f"control anchor {old!r} is not in the real {arc} doc"
+        target = tmp_path / source.name
+        target.write_text(text.replace(old, new, 1))
+        monkeypatch.setitem(registry.ARC_DOCS, arc, target)
+
+    return _apply
+
+
 def _row(which: str, prefix: str) -> str:
     """Return the one live row of *which* registry starting with *prefix*."""
     source = {"ledger": registry.LEDGER, "steps": registry.STEPS}[which]
@@ -138,6 +158,51 @@ class TestEveryFindingNamesALiveOwner:
         problems = registry.owner_violations()
         assert any("SHIPPED" in p and "rule 2" in p for p in problems), problems
 
+    def test_the_control_fires_on_a_prose_owner(self, stage):
+        """"Own commit", "folded in" and their siblings all mean nobody.
+
+        The grammar arm.  Its control lived against the deleted per-document
+        parser; the behaviour lives here, so the control does too.
+        """
+        line = _row("ledger", "| balance | N-128 |")
+        stage("ledger", line, _with_cell(line, -1, "own commit"))
+        problems = registry.owner_violations()
+        assert any("owner grammar" in p for p in problems), problems
+
+    def test_the_control_fires_on_one_bad_half_of_a_two_owner_cell(self, stage):
+        """BOTH halves of ``A / B`` must be live, not just the first.
+
+        The row is real: ``balance:N-33`` is owned by ``E2-0 / E2-n (R-AO)``
+        because its two halves close at different levels.  A gate that stopped
+        at the first half would grade the commoner cell and miss the other.
+        """
+        line = _row("ledger", "| balance | N-33 |")
+        assert " / " in line, "the anchor row no longer has a two-owner cell"
+        stage("ledger", line, _with_cell(line, -1, "E2-0 / X-nonexistent"))
+        problems = registry.owner_violations()
+        assert any("X-nonexistent" in p and "names no step" in p for p in problems), (
+            problems
+        )
+
+    def test_the_control_fires_on_a_bare_vocabulary_word(self, stage):
+        """``operator`` states its question and ``developer-decision`` is dated.
+
+        Both halves are what make the value an answer rather than a shrug.  A
+        bare ``operator`` is indistinguishable from the "someone will get to
+        it" values rule 1 retired by name.
+        """
+        line = _row("ledger", "| recurrence | F-4 |")
+        stage("ledger", line, _with_cell(line, -1, "operator"))
+        problems = registry.owner_violations()
+        assert any("must state the question" in p for p in problems), problems
+
+    def test_the_control_fires_on_an_undated_developer_decision(self, stage):
+        """A fork with no date cannot be told from a fork nobody has taken."""
+        line = _row("ledger", "| balance | N-25 |")
+        stage("ledger", line, _with_cell(line, -1, "developer-decision (the fork)"))
+        problems = registry.owner_violations()
+        assert any("must carry the date" in p for p in problems), problems
+
 
 class TestTheKeyIsTheArcAndTheId:
     """conventions.md rule 10 -- the D4 problem, as a predicate."""
@@ -152,6 +217,35 @@ class TestTheKeyIsTheArcAndTheId:
         stage("ledger", line, line + "\n" + line)
         problems = registry.unique_key_violations()
         assert any("duplicate key" in p for p in problems), problems
+
+    def test_the_control_fires_on_an_empty_id_cell(self, stage):
+        """A row whose id is blank has no key, and nothing else could see it.
+
+        **This is the one silent hole the other arms do not backstop.**  An
+        empty ARC cell is the FIRST cell, so ``_rows`` drops the row, the table
+        shrinks and rule 3's count arm reports it (the control below).  An
+        empty ID is the SECOND cell: the row parses, the count still agrees,
+        and the key silently becomes ``balance:`` -- every later predicate then
+        grades a finding that has no name.  Measured before this arm existed:
+        138 rows in, 138 rows out, every arm SILENT.
+        """
+        line = _row("ledger", "| balance | N-128 |")
+        stage("ledger", line, _with_cell(line, 1, ""))
+        problems = registry.unique_key_violations()
+        assert any("empty arc or id" in p for p in problems), problems
+
+    def test_an_empty_arc_cell_is_caught_by_the_count_arm(self, stage):
+        """The row vanishes instead, so rule 3 is what reports it.
+
+        Recorded as a control rather than as prose because the two empty-cell
+        cases fail through DIFFERENT arms, and a reader who assumes one arm
+        covers both would delete the wrong one.
+        """
+        line = _row("ledger", "| balance | N-128 |")
+        stage("ledger", line, _with_cell(line, 0, ""))
+        assert len(registry.ledger_rows()) == 137
+        problem = registry.stated_count_violation()
+        assert problem is not None and "rule 3" in problem, problem
 
 
 class TestAnIdentityClassSharesOneTickState:
@@ -229,11 +323,55 @@ class TestTheParserSurvivesTheShapesTheRealFilesUse:
         rows = {row.key: row for row in registry.ledger_rows()}
         assert "balance:N-73" not in rows or "|" in rows["balance:N-73"].finding
 
+    def test_an_unescaped_pipe_does_not_pass_silently(self, stage):
+        """The false-negative direction of the arm above.
+
+        ``_rows`` SKIPS a row of the wrong width rather than asserting on it,
+        which is what lets one table hold two shapes.  The row therefore
+        vanishes, and rule 3's count is the only thing standing between that
+        and a finding nobody sees again.
+        """
+        line = _row("ledger", "| balance | N-128 |")
+        stage("ledger", line, _with_cell(line, 3, "an unescaped X | Y pipe"))
+        assert len(registry.ledger_rows()) == 137
+        problem = registry.stated_count_violation()
+        assert problem is not None and "rule 3" in problem, problem
+
     def test_a_fenced_heading_does_not_truncate_a_checkbox_scan(self):
         """A ``##`` inside a fence must not end the steps scan."""
         # credit_card's steps section contains fenced blocks; if fencing were
         # mishandled the scan would stop early and lose its later phases.
         assert "CC5b" in registry.arc_checkboxes("credit_card")
+
+    def test_a_duplicate_checkbox_does_not_silently_un_tick_a_shipped_step(
+        self, stage_arc,
+    ):
+        """The LAST checkbox wins, so re-listing a shipped step un-ticks it.
+
+        These documents re-parent and re-list steps routinely, so the collision
+        is one edit away.  ``arc_checkboxes`` does not refuse the duplicate --
+        **rule 12 catches it instead**, because the document then disagrees
+        with ``steps.md`` about a step that has SHIPPED.  Recorded as a control
+        because "another arm covers it" is a claim, and an uncontrolled claim
+        about a gate is how this corpus got here.
+        """
+        assert registry.arc_checkboxes("pay_calendar")["C1"] is True
+        line = [
+            ln for ln in registry.ARC_DOCS["pay_calendar"].read_text().splitlines()
+            if ln.startswith("- [x] **C1 ")
+        ]
+        assert len(line) == 1, f"C1's entry matched {len(line)} lines, expected 1"
+
+        stage_arc(
+            "pay_calendar",
+            line[0],
+            line[0] + "\n- [ ] **C1** re-listed in a later summary",
+        )
+        assert registry.arc_checkboxes("pay_calendar")["C1"] is False, (
+            "the premise: the last checkbox wins, so the shipped step reads unticked"
+        )
+        problems = registry.index_agreement_violations()
+        assert any("C1" in p and "SHIPPED in steps.md" in p for p in problems), problems
 
     def test_conventions_still_states_every_rule_the_gate_cites(self):
         """A rule cited in a failure message must exist in the file it cites."""

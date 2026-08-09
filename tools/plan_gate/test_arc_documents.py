@@ -14,12 +14,12 @@ What is still per-document, and therefore still graded here:
   commit hash.
 
 The specs reuse :class:`_plan_gate.PlanSpec` rather than growing a second
-shape.  Its ``ledger_*`` and ``stated_count_rx`` fields are INERT here -- the
-ledger they described has moved -- and only the four functions that never read
-them are called: ``line_count_violation``, ``arc_state_violation``,
-``ticked_entry_violations`` and ``step_entries``.  They are given each
-document's real pointer-section heading so a message still cites something a
-reader can find.
+shape.  It now carries ONLY what these four functions read --
+``line_count_violation``, ``arc_state_violation``, ``ticked_entry_violations``
+and ``step_entries``.  Its ledger fields were briefly kept and marked inert
+after the findings moved to ``ledger.md``; they have since been deleted, along
+with the three rule-citation fields every spec below set to the same string now
+that there is one ``conventions.md``.
 """
 from __future__ import annotations
 
@@ -27,7 +27,6 @@ import pytest
 
 import _registry as registry
 from _plan_gate import (
-    STATED_COUNT_RX,
     PlanSpec,
     arc_state_violation,
     line_count_violation,
@@ -65,62 +64,37 @@ SPECS = {
     "balance": PlanSpec(
         path=registry.ARC_DOCS["balance"],
         steps_heading="## 5.", steps_label="Section 5",
-        ledger_heading="## 6.", ledger_label="Section 6 (now ledger.md)",
-        ledger_columns=7,
-        owner_rule="conventions.md rule 1", ship_rule="conventions.md rule 2",
-        line_cap=CAPS["balance"], line_cap_rule="conventions.md rule 4",
-        archive_rule="conventions.md rule 5",
-        stated_count_rx=STATED_COUNT_RX,
+        line_cap=CAPS["balance"],
         arc_state_heading="## Where the arc stands",
         arc_state_cap=SIGNPOST_CAPS["balance"],
-        rules_label="conventions.md",
         ticked_entry_cap=TICKED_CAPS["balance"],
     ),
     "recurrence": PlanSpec(
         path=registry.ARC_DOCS["recurrence"],
         steps_heading="## 4.", steps_label="section 4",
-        ledger_heading="## 5.", ledger_label="section 5 (now ledger.md)",
-        ledger_columns=7,
-        owner_rule="conventions.md rule 1", ship_rule="conventions.md rule 2",
-        line_cap=CAPS["recurrence"], line_cap_rule="conventions.md rule 4",
-        archive_rule="conventions.md rule 5",
-        stated_count_rx=STATED_COUNT_RX,
+        line_cap=CAPS["recurrence"],
         arc_state_heading="## Where this stands",
         arc_state_cap=SIGNPOST_CAPS["recurrence"],
-        rules_label="conventions.md",
         ticked_entry_cap=TICKED_CAPS["recurrence"],
     ),
     "pay_calendar": PlanSpec(
         path=registry.ARC_DOCS["pay_calendar"],
         steps_heading="## 4.", steps_label="section 4",
-        ledger_heading="## 5.", ledger_label="section 5 (now ledger.md)",
-        ledger_columns=7,
-        owner_rule="conventions.md rule 1", ship_rule="conventions.md rule 2",
-        line_cap=CAPS["pay_calendar"], line_cap_rule="conventions.md rule 4",
-        archive_rule="conventions.md rule 5",
-        stated_count_rx=STATED_COUNT_RX,
+        line_cap=CAPS["pay_calendar"],
         arc_state_heading="## Where this stands",
         arc_state_cap=SIGNPOST_CAPS["pay_calendar"],
-        rules_label="conventions.md",
         ticked_entry_cap=TICKED_CAPS["pay_calendar"],
     ),
     "credit_card": PlanSpec(
         path=registry.ARC_DOCS["credit_card"],
         steps_heading="## The steps", steps_label="The steps",
-        ledger_heading="## Consumer inventory",
-        ledger_label="no ledger of its own (see ledger.md)",
-        ledger_columns=7,
-        owner_rule="conventions.md rule 1", ship_rule="conventions.md rule 2",
-        line_cap=CAPS["credit_card"], line_cap_rule="conventions.md rule 4",
-        archive_rule="conventions.md rule 5",
-        stated_count_rx=STATED_COUNT_RX,
+        line_cap=CAPS["credit_card"],
         # This document has never had an orientation section.  It is graded for
         # its CAP and its ticked entries, not for a signpost it does not carry --
         # inventing one so the parametrization is uniform would be a gate
         # grading a section nobody wrote.
         arc_state_heading="## Context",
         arc_state_cap=40,
-        rules_label="conventions.md",
         ticked_entry_cap=TICKED_CAPS["credit_card"],
     ),
 }

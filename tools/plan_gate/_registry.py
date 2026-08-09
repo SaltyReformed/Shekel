@@ -13,10 +13,13 @@ Three registries are graded here:
 ``docs/plans/steps.md``        every step, one line each, plus the unruled forks
 ``docs/plans/conventions.md``  the rules, one copy
 
-The owner grammar is NOT re-implemented: :func:`_plan_gate.split_owners` and
-``OWNER_RX`` carry five false-positive fixes each measured against a real
-ledger, and a second copy of that grammar would be the very defect this
-restructure removes.
+Neither the owner grammar nor the checkbox grammar is re-implemented:
+:func:`_plan_gate.split_owners`, ``OWNER_RX`` and ``CHECKBOX_RX`` carry
+false-positive fixes measured against a real ledger, and a second copy of
+either would be the very defect this restructure removes.  Rule 12 reconciles
+this module's reading of a checkbox against the ticked-entry arm's, so two
+grammars would let the index and the specifications disagree about what a
+checkbox even is.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from _plan_gate import (
+    CHECKBOX_RX,
     NON_STEP_OWNERS,
     OWNER_RX,
     split_owners,
@@ -52,19 +56,6 @@ ARC_DOCS = {
     "pay_calendar": PLANS / "implementation_plan_pay_calendar.md",
     "credit_card": PLANS / "implementation_plan_credit_card.md",
 }
-
-#: Heading prefix bounding each arc document's steps section.  ``None`` means
-#: the section runs to the next ``##`` heading of any name.
-ARC_STEPS_HEADING = {
-    "balance": "## 5.",
-    "recurrence": "## 4.",
-    "pay_calendar": "## 4.",
-    "credit_card": "## The steps",
-}
-
-CHECKBOX_RX = re.compile(
-    r"^\s*[-*]\s*\[(?P<tick>[ xX])\]\s*\*\*(?P<step>[A-Za-z0-9][A-Za-z0-9-]*)\b",
-)
 
 
 @dataclass(frozen=True)
@@ -264,14 +255,29 @@ def owner_violations() -> list[str]:
 
 
 def unique_key_violations() -> list[str]:
-    """Rule 10: ``(arc, id)`` is unique across the corpus."""
+    """Rule 10: ``(arc, id)`` is a WHOLE key, and it is unique across the corpus.
+
+    **A blank half is checked before uniqueness, and that ordering is the
+    point.**  ``_rows`` drops a row whose FIRST cell is empty, so an empty
+    ``arc`` costs a row and the rule 3 count arm reports it.  An empty ``ident``
+    is in the second cell: the row parses, the table still holds 138 rows, the
+    stated count still agrees, and the row's key silently becomes ``balance:``.
+    Every other predicate then grades a finding that has no name -- and a
+    finding nobody can cite is a finding nobody closes.
+    """
     problems: list[str] = []
-    for label, keys in (
-        ("ledger.md", [row.key for row in ledger_rows()]),
-        ("steps.md", [row.key for row in step_rows()]),
+    for label, rows in (
+        ("ledger.md", [(row.arc, row.ident, row.key) for row in ledger_rows()]),
+        ("steps.md", [(row.arc, row.ident, row.key) for row in step_rows()]),
     ):
         seen: set[str] = set()
-        for key in keys:
+        for arc, ident, key in rows:
+            if not arc.strip() or not ident.strip():
+                problems.append(
+                    f"{label}: row {key!r} has an empty arc or id.  The key is "
+                    f"(arc, id) and BOTH halves are required "
+                    f"(conventions.md rule 10)",
+                )
             if key in seen:
                 problems.append(
                     f"{label}: duplicate key {key!r}.  The key is (arc, id) and it "
