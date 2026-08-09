@@ -99,9 +99,9 @@ spreadsheet that grew a real interface; the forward, period-by-period view is th
   hurts.
 - **D2.** Invalid status transitions surface as raw 400s with no pre-hint about what is allowed.
   **RULED 2026-07-11: SCHEDULED, both halves** - rides session 4 of
-  `docs/plans/implementation_plan_ui_closeout.md`: the invalid-transition 400/422 paths return
-  designed error fragments under the marker-header convention ruled there, AND the action card
-  disables transitions the current status does not allow (allowed-transition map exposed to the
+  `docs/plans/historical/implementation_plan_ui_closeout.md`: the invalid-transition 400/422 paths
+  return designed error fragments under the marker-header convention ruled there, AND the action
+  card disables transitions the current status does not allow (allowed-transition map exposed to the
   template). **FIXED 2026-07-11** (session 4, commits f9cb3166 / 58aab29d fragments + 858029e2
   pre-hint; as-built detail at items 4 and 7 of the closeout plan). Also tightened the Paid / Mark
   Paid button predicates to projected-only, closing the documented Credit/Cancelled dead affordance

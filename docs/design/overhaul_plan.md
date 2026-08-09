@@ -130,7 +130,7 @@ unhelpful (developer's verdict), so the work crosses into `dashboard_service.py`
   schema/route).
 - D1/D2 (grid audit, noted-not-prioritized): period-nav simplification; friendlier
   invalid-status-transition errors. RULED 2026-07-11: D1 dropped, D2 scheduled (both halves) -- see
-  `grid_audit.md` D1/D2 and `../plans/implementation_plan_ui_closeout.md` session 4.
+  `grid_audit.md` D1/D2 and `../plans/historical/implementation_plan_ui_closeout.md` session 4.
 - After the grid PR merges: run `/update-docs` so `../progress.md` and the README reflect the
   overhaul.
 

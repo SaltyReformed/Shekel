@@ -3,7 +3,7 @@
 Covers :func:`contractual_schedule_from_origination` -- the pure from-origination
 contractual amortization the property equity chart's (a) contractual
 back-projection reads to fill a tracking-start loan's pre-tracking debt line
-(``docs/plans/implementation_plan_property_equity_chart_rebuild.md``, commit 1).
+(``docs/plans/historical/implementation_plan_property_equity_chart_rebuild.md``, commit 1).
 """
 
 from datetime import date
