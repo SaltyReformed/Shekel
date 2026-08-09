@@ -298,17 +298,15 @@ commit messages, in code comments and in Section 6's owner column, and the gate 
 to grade those owners. A DECOMPOSED parent ticks with the last of its leaves.
 
 **Shipped steps are one line each in `archive/phase_x_as_built_2026-08-04.md`** (Section 1 through
-X-f1b, Section 1a for the X-f1 cluster) and are not repeated here. The three below stay because a
-live step or a live finding still reads against them.
+X-f1b, Section 1a for the X-f1 cluster) and are not repeated here. The three below are one line each
+for the same reason, and no longer carry what they OPENED: those are rows in `../../plans/ledger.md`
+with their own text and owners, so restating them here was the registry duplicated back in.
 
-* [x] **X-ae** `fix(app): a submitted digit string is parsed, not predicated` -- PR #79, merge
-  `a778703f`. Closed N-136, N-140, N-141, N-143; opened **N-139** (X-ag) and **N-142** (X-ah).
-* [x] **X-af** `test(periods): the fixtures build their window on the USER's clock` -- PR #77,
-  merge `dbee3812`. Test-only; closed the merge-gate half of N-137 and opened **N-138**.
-* [x] **X-aj1** the status seam merge, in three commits (`1688f508` R-DR's extraction, `63514efc`
-  R-DN's merge, `1e75d0ce` R-DO's refusal + R-DS's restore half) -- PR #80, merge `dde107f6`.
-  Closed **N-146**; opened **N-149**..**N-152**. `transfer_service.py` lands at 987/1000, which is
-  the headroom X-d needs and which **N-152** says is not a solution.
+* [x] **X-ae** `a778703f` (PR #79) a submitted digit string is parsed, not predicated.
+* [x] **X-af** `dbee3812` (PR #77) the period fixtures build their window on the USER's clock.
+* [x] **X-aj1** `dde107f6` (PR #80) one status seam, in three commits (`1688f508` / `63514efc` /
+  `1e75d0ce`; rulings R-DR / R-DN / R-DO / R-DS). It left `transfer_service.py` at 987/1000 -- the
+  headroom X-d needs, and what **N-152** says is not a solution.
 ### Phase X -- the anchor half (ruling R-EB; runs FIRST)
 
 - [ ] **X-f** `feat(transactions): the app records when money moved` -- the DECOMPOSED parent,
@@ -317,23 +315,16 @@ live step or a live finding still reads against them.
   It ticks with the last of them.
 
 * [x] **X-f1** `feat(transactions): a settle carries the day the money moved` -- absorbs **S2-b**.
-  **COMPLETE: all fourteen leaves shipped, and the whole cluster is CONDENSED into
-  `archive/phase_x_as_built_2026-08-04.md` Section 1a** (rule 5), one row per leaf with its verified
-  hash and what it closed. `transactions.settled_on` REPLACES `paid_at`, the day is editable on both
-  doors, an assertion is (account, day, balance) written at ONE door, and the back-dated
-  acknowledgement reaches every surface. **It did NOT close N-173** -- the backfill was the deleted
-  derivation verbatim, so no stored date improved; that row re-points to **X-f6**, which is what the
-  arc's own Section 1 point 5 always said makes the dates true.
-  **Two things it established stay LIVE here, because later steps read against them** (rule 5):
-  **(a) a row is settled if and only if it carries a settle day** -- enforced STRUCTURALLY, not by a
-  fence, because `status_seam.apply_status_change` is the single door that writes `status_id` and it
-  writes the day in the same call. A `CHECK` cannot express it (the predicate lives in `ref.statuses`
-  and a constraint cannot join). A reader that finds a settled row with no day FAILS LOUD rather than
-  falling back, because silently dropping such a row from the fold is silent money loss.
-  **(b) the seam's stamping rule**: `display_today()` on FIRST entry to the settled band, PRESERVED
-  on re-entry, which is what stops archiving a payment from re-dating its money. **X-f2** puts the
-  STATEMENT date there instead of the stamp, and **X-an** keys the loan resolver's history cut on the
-  stored day.
+  **COMPLETE at fourteen leaves, CONDENSED into `archive/phase_x_as_built_2026-08-04.md` Section 1a**
+  (rule 5). It did NOT close **N-173**, which re-points to **X-f6**.
+  **ONE thing it established stays LIVE here, because X-f2 and X-f3 read against it** (rule 5):
+  **a row is settled if and only if it carries a settle day** -- structural, not a fence, because
+  `status_seam.apply_status_change` is the single door that writes `status_id` and writes the day in
+  the same call; a `CHECK` cannot express it (the predicate lives in `ref.statuses` and a constraint
+  cannot join); and a reader finding a settled row with no day FAILS LOUD, because silently dropping
+  it from the fold is silent money loss.
+  Its **(b)**, the seam's stamping rule, MOVED to X-f2's entry -- the step that reads it. X-an-a
+  consumed the other half of that pair.
 - [ ] **X-an** `fix(loan): a payment is history from the day its money moved` -- the DECOMPOSED
   parent (ruling **R-EK**). Two leaves: **X-an-a** the CUT, **X-an-b** the anchor TIE-BREAK. It ticks
   with the last of them.
@@ -343,17 +334,12 @@ live step or a live finding still reads against them.
   between them. The file-overlap argument (4 of 4 surfaces) is real and unchanged; what it supports
   is tracing them together, not shipping them together. `developer-decision` owed: re-point `R6`
   behind `R5`, or narrow it to the half that needs no `due_on`.
-* [x] **X-an-a** `fix(loan): a payment is history from the day its money moved` -- `3d3f0ef5`. Closes
-  **N-187**. `is_confirmed_payment_eligible` bounded on `period_start <= as_of` while the fold dates
-  the same payment from `settled_on`; the cut moves onto the settled day, through ONE
-  `app.utils.dates.has_settled_by` both halves of the resolver's partition call.
-  `PaymentRecord.is_confirmed` stops being stored and becomes `settled_on is not None`.
-  **Two claims it deleted rather than kept**: the replay's halves are NOT exact complements (a
-  payment an anchor subsumes, or one past a payoff, is in neither -- correctly), and the genesis walk
-  never called `is_confirmed_payment_eligible` at all. Measured on the prod clone, every day of a
-  306-day span: no balance moved anywhere, and the loan SCHEDULE gained back an installment on 34
-  (loan, day) pairs -- a **$1,910.95** mortgage payment in neither the confirmed history nor the plan
-  for 12 days, with the page naming the FOLLOWING month as next due.
+* [x] **X-an-a** `3d3f0ef5` a payment is history from the day its money moved. Closes **N-187**: the
+  replay/projection cut moves off `period_start` onto `settled_on`, through ONE
+  `app.utils.dates.has_settled_by` both halves call, and `PaymentRecord.is_confirmed` stops being
+  stored beside the day. Measured per-DAY on the prod clone (`tests/manual/verify_loan_daily_figures.py`,
+  `d0adf188`): no balance moved, and a **$1,910.95** installment came back into the schedule it had
+  been missing from for 12 days. **Fixture dates CONFIRMED by the developer 2026-08-09** (rule 5).
 * [ ] **X-an-b** `fix(loan): one anchor tie-break, read and write` -- closes **N-196**, which two
   adversarial reviews WIDENED from two sites to four. The third is the one X-an-a's own thesis
   implicates: `loan_ledger.merge_anchor_and_payment_events` stable-sorts anchors on
@@ -363,14 +349,39 @@ live step or a live finding still reads against them.
   different balances the walk and the resolver are GUARANTEED to pick opposite rows, and which row
   each picks is whatever PostgreSQL returned. The fourth is `models/loan_anchor_event.py`'s backref
   order, which has no live reader but which `select_latest_anchor`'s docstring claims to mirror. The
-  fix is the `id` term on every ordering, which needs `LoanAnchorFact` to carry the stored row id
-  (`None` for the synthesized origination, whose `datetime.min` can never tie).
+  fix is the `id` term on every ordering, which needs `LoanAnchorFact` to carry the stored row id.
+  **ONE leaf, and the surface is traced rather than estimated** (2026-08-09): `LoanAnchorFact(` is
+  constructed in 2 places, both `loan_loaders.py`; 3 orderings change and the 4th
+  (`_governing_loan_anchor`) is already correct, so only its docstring moves; the downstream sorts in
+  `dated_deltas` and `_confirmed_view` are STABLE and inherit the walk's order, so they need nothing;
+  `FakeAnchorEvent` is one test dataclass whose 13 constructions are all keyword, so a defaulted
+  field costs nothing; and no fixture holds a full tie, so no existing answer moves. **There is also
+  no design to invent: the CASH ledger already keys `(observed_on, created_at, id)` at 8 sites** --
+  `cash_ledger/_events.py`, `_facts.py`, `_walk.py`, `account.py`, `anchor_service.py`,
+  `_asset_fold.py`, `dashboard_service.py`, `account_posting_service/_anchors.py`. The loan side is
+  the only gap, and this is it closing.
+  **Two decisions the leaf owes, neither of them a second leaf.** (a) The SENTINEL: the synthesized
+  origination has no stored row, and `None` in a tuple key is not orderable against an `int`. It
+  survives today only because that fact carries `datetime.min` and can never tie in `app/` -- but a
+  fixture can construct the tie and get a `TypeError`, so pick a sortable sentinel or a key function
+  rather than leaving `None` in the tuple. (b) The DUCK-TYPING: `select_latest_anchor` documents that
+  duck-typed fixtures work, and reading `.id` tightens that. Making `LoanAnchorFact` the REQUIRED
+  type is the from-scratch answer and deletes an affordance only tests use -- **keep it out of this
+  leaf**; it is a different subject (typing the resolver's input) and its own candidate step.
+  Its measurement is cheap: production carries no full tie (the two shared `created_at` values pair
+  with DIFFERENT `anchor_date`s), so the figure is `$0.00` by construction, and the firing control is
+  a constructed tie proving the walk and the resolver now name the same row.
 * [ ] **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half. The
   outstanding set covers TRANSACTIONS as well as entries (`_outstanding_scope`'s transaction twin,
-  `entry_service.py:819`), ticking stamps the STATEMENT date rather than `now()` on the `settled_on` R-M split out, and the
-  form shows
-  the difference before it is saved. **No figure moves**: this records facts and changes no
-  producer. The developer's existing workflow already IS this loop; only the recording changes.
+  `entry_service.py:819`), ticking stamps the STATEMENT date on the `settled_on` R-M split out, and
+  the form shows the difference before it is saved. **No figure moves**: this records facts and
+  changes no producer. The developer's existing workflow already IS this loop; only the recording
+  changes.
+  **The rule it replaces, carried here from X-f1 because this is the step that reads it** (rule 5's
+  "no live sentence may depend on an archived one"): the seam stamps `display_today()` on FIRST entry
+  to the settled band and PRESERVES the day on re-entry, which is what stops archiving a payment from
+  re-dating its money. X-f2 puts the STATEMENT date there instead of the stamp. X-f1's other half of
+  the pair -- keying the loan resolver's history cut on the stored day -- was consumed by X-an-a.
 * [ ] **X-f3** `feat(cash): the ledger is sum-of-postings and the residual is classified` -- **THE
   CUTOVER. MOVES MONEY. OWN PR, NO BACKLOG.** The assertion stops resetting the ledger
   (`cash_ledger/_walk.py:300`), `balance(T)` becomes `opening equity + SUM(postings <= T)`, and the
