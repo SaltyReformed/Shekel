@@ -267,18 +267,18 @@ class TestTheArmsSeeThisDocument:
         """A wrong count in a copy of the real text is reported.
 
         The spelling assertion above proves the sentence is found; this proves
-        the comparison behind it is live against these 15 rows.
+        the comparison behind it is live against these 16 rows.
         """
         text = SPEC.read()
         mutated = text.replace(
+            "**The ledger stands at 16 rows.**",
             "**The ledger stands at 15 rows.**",
-            "**The ledger stands at 14 rows.**",
         )
         assert mutated != text, (
             "the count sentence is not spelled the way this control expects"
         )
         assert stated_count_violation(mutated, SPEC) is not None, (
-            "a stated count of 14 against 15 rows was not reported"
+            "a stated count of 15 against 16 rows was not reported"
         )
 
     def test_the_line_cap_can_actually_be_reached(self):
