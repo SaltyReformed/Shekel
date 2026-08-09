@@ -1373,9 +1373,15 @@ class TestRecordLoanTrackingStart:
         and this is why.  A ``tracking_start`` is by definition the earliest
         anchor, so once any ``user_trueup`` is recorded the latest row of ANY
         source is that true-up -- and comparing against it would let a
-        double-submitted opening append a second ``tracking_start``, which
-        ``loan_loaders._opening_anchor_fact`` reads as the loan's opening
-        whatever else was recorded later.
+        double-submitted opening append a second ``tracking_start``, silently
+        duplicating the assertion the operator meant to record once.
+
+        *The reason stated here used to be that
+        ``loan_loaders._opening_anchor_fact`` reads a tracking-start as the
+        loan's opening whatever else was recorded later.  That function was
+        deleted at step C1 and origination is the opening ALWAYS; the test is
+        unchanged because the per-source scoping is right either way (plan step
+        X-an-b).*
         """
         with app.app_context():
             account = _make_loan_account(seed_user)

@@ -958,15 +958,15 @@ def record_loan_tracking_start(
 
     The mid-life-import opening flow: the operator started tracking an
     already-amortizing loan and asserts its real balance as of a date at/before
-    the first recorded payment.  Recorded through this chokepoint, the
-    ``tracking_start`` event becomes the loan's confirmed-ledger OPENING
-    (:func:`app.services.loan_loaders._opening_anchor_fact` synthesizes the
-    ``is_opening`` anchor from it in place of the origination), so the genesis
-    ledger opens at the recent known balance -- no fictional
-    origination-to-tracking-start plateau, and every recorded payment accrues
-    interest on the correct balance.  The origination fields on
-    :class:`LoanParams` are untouched; they still drive the amortization
-    schedule / projection.
+    the first recorded payment.  It is an ordinary ``is_opening=False`` balance
+    ASSERTION that RESETS the genesis walk's running balance at its own date
+    (:func:`app.services.loan_loaders.load_loan_anchor_facts`); the origination
+    fields on :class:`LoanParams` are untouched.  *It is NOT the loan's OPENING,
+    and this said it was until plan step X-an-b*, citing
+    ``loan_loaders._opening_anchor_fact`` -- deleted by step C1 along with the
+    behaviour.  Origination is the opening ALWAYS: opening at a mid-life
+    tracking-start read the loan out of existence for its whole pre-tracking
+    window (finding B-11).
 
     Shares the append + all-scenario re-sync + duplicate rule of
     :func:`apply_loan_anchor_true_up` via :func:`_append_loan_anchor_and_sync`;
