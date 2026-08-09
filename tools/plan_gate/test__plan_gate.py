@@ -101,11 +101,11 @@ class TestThePremise:
 
     def test_the_clean_document_passes_every_arm(self):
         """No arm fires on the unmodified synthetic document."""
-        assert owner_violations(DOC, SPEC) == []
+        assert not owner_violations(DOC, SPEC)
         assert stated_count_violation(DOC, SPEC) is None
         assert arc_state_violation(DOC, SPEC) is None
         assert line_count_violation(DOC, SPEC) is None
-        assert ticked_entry_violations(DOC, SPEC) == []
+        assert not ticked_entry_violations(DOC, SPEC)
 
 
 class TestTheOwnerArmFires:
@@ -171,7 +171,7 @@ class TestTheOwnerArmFires:
         fine -- a gate that cries wolf gets uninstalled, not fixed.
         """
         annotated = DOC.replace("| OPEN | P-b |", "| OPEN | P-b (display / cache) |")
-        assert owner_violations(annotated, SPEC) == []
+        assert not owner_violations(annotated, SPEC)
 
 
 class TestTheSilentParseHolesAreClosed:
@@ -236,7 +236,7 @@ class TestTheSilentParseHolesAreClosed:
             "* [ ] **P-b1 THE LEAF** a decomposed leaf, live\n\n"
             "```text\n## sample heading inside a fence\n```",
         )
-        assert owner_violations(broken, SPEC) == []
+        assert not owner_violations(broken, SPEC)
 
 
 class TestTheCountArmFires:
@@ -362,7 +362,7 @@ class TestTheTickedEntryArmFires:
             "- [x] **P-a -- the shipped one.** `a1b2c3d` -- what it did.\n"
             + "still describing it\n" * (_MAX_TICKED_ENTRY_LINES - 1),
         )
-        assert ticked_entry_violations(at_cap, SPEC) == []
+        assert not ticked_entry_violations(at_cap, SPEC)
 
         over = DOC.replace(
             "- [x] **P-a -- the shipped one.** `a1b2c3d` -- what it did, in one sentence.",
@@ -384,7 +384,7 @@ class TestTheTickedEntryArmFires:
             "- [ ] **P-b** the live one",
             "- [ ] **P-b** the live one\n" + "specification line\n" * 40,
         )
-        assert ticked_entry_violations(long_live_step, SPEC) == []
+        assert not ticked_entry_violations(long_live_step, SPEC)
 
     def test_the_arm_is_off_when_no_cap_is_set(self):
         """``ticked_entry_cap=None`` means the document has not adopted the rule.
@@ -400,7 +400,7 @@ class TestTheTickedEntryArmFires:
             "- [x] **P-a -- the shipped one.** `a1b2c3d` -- what it did, in one sentence.",
             "- [x] **P-a -- the shipped one.** no hash at all, and\n" + "long\n" * 30,
         )
-        assert ticked_entry_violations(broken, off) == []
+        assert not ticked_entry_violations(broken, off)
 
 
 class TestStepEntryBounding:

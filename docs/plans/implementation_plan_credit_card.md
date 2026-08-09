@@ -1,11 +1,19 @@
 # Credit card arc: the plan of record
 
-**Status: APPROVED 2026-07-19. Not started -- gated on the ratified sequencing below.**
+**Status: APPROVED 2026-07-19. Not started.**
 
-This is the live planning document and ledger for the credit-card arc. When a step ships, tick its
-box and append the commit hash (the balance arc's ledger discipline, applied to THIS arc). The
-balance architecture README's no-new-docs rule is scoped to that arc; this arc's amendments happen
-HERE.
+**The "Ratified sequencing" section below is DISCHARGED, not a live gate, and must never be re-read
+as one.** Every balance-arc step it names has SHIPPED -- `C8`/`C9`, `D1`-`D3` and old `X1`-`X3` all
+resolve in archived records, and old `X4` survives as `X-e`. What actually blocks this arc is NEWER
+than that 2026-07-19 ruling: **ruling R-EB**, because `CC1b`'s fold is specified against the reset
+semantics R-EB deletes at `X-f3`, and `CC3b` derives a settle from `paid_at`, deleted at `X-f1b`.
+The earliest correct start is after `X-f4` and `X-am` (`../audits/balance_architecture/README.md`,
+Section 5.0 block 4). That correction lived only in the balance README until 2026-08-09, so this
+document told a reader the opposite of the truth.
+
+**This arc's findings live in `ledger.md` and its steps are indexed in `steps.md`**, the shared
+registries for every arc; it is graded by the same `conventions.md`. What stays HERE is the argument
+-- the context, the locked rulings, the architecture and each step's specification.
 
 ## Context
 

@@ -102,21 +102,25 @@ repos:
         pass_filenames: false
         args: [tools/pylint/tests, -c, /dev/null, -q]
 
-      # The planning documents' findings ledgers: every finding names a LIVE
-      # owner, the stated row count matches the table, the file is under its
-      # line cap, and the orientation section is still an orientation.  Three
-      # documents are graded, each by its own spec over the shared parser in
-      # tools/plan_gate/_plan_gate.py:
-      #   docs/audits/balance_architecture/README.md      (Section 9 rules)
-      #   docs/plans/implementation_plan_recurrence_redesign.md (section 7)
-      #   docs/plans/implementation_plan_pay_calendar.md        (section 7)
+      # The planning REGISTRIES and the four arc documents.  Every finding
+      # names a LIVE owner, the stated row count matches the table, every
+      # document is under its line cap, each orientation section is still an
+      # orientation, an identity class shares one tick state, and an UNRULED
+      # FORK refuses a tick on either competing remedy.
+      #   docs/plans/ledger.md       every finding, every arc, one table
+      #   docs/plans/steps.md        every step + the unruled forks
+      #   docs/plans/conventions.md  the rules, one copy
+      #   the four arc documents     argument, rulings, step specifications
+      # The registries were split out of the four documents on 2026-08-09
+      # because a cross-arc fact stored 2-3 times in prose has no reconciler:
+      # C2 == X-l == R-F12 is one step under three names, and P3 == N-123 is
+      # one defect whose two arcs answered it OPPOSITELY for months.
       # It runs HERE, at commit time, because the rules it enforces rot between
       # pull requests -- this repo opens them at the end of an arc, and three
       # hand-passes in two days each found rows naming a step that had already
-      # shipped.  Scoped to the three plan documents and the gate directory, so
-      # EDITING A LEDGER is what triggers it.  Database-free by construction
-      # (it lives outside tests/, so no autouse db fixture), which is what lets
-      # it be a commit-time hook at all: 46 tests in 0.06s.
+      # shipped.  Scoped so EDITING A REGISTRY OR AN ARC DOCUMENT is what
+      # triggers it.  Database-free by construction (it lives outside tests/,
+      # so no autouse db fixture), which is what lets it be a commit-time hook.
       - id: shekel-plan-ledger-gate
         name: plan ledger integrity (every finding has a live owner)
         entry: pytest
@@ -124,7 +128,7 @@ repos:
         # One line on purpose: a YAML folded scalar joins its lines with a
         # SPACE, which would put a space inside the alternation and stop the
         # pattern matching either document.
-        files: ^(docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|docs/plans/implementation_plan_pay_calendar\.md|tools/plan_gate/.*\.py)$
+        files: ^(docs/plans/ledger\.md|docs/plans/steps\.md|docs/plans/conventions\.md|docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|docs/plans/implementation_plan_pay_calendar\.md|docs/plans/implementation_plan_credit_card\.md|tools/plan_gate/.*\.py)$
         pass_filenames: false
         args: [tools/plan_gate, -c, /dev/null, -q]
 

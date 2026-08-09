@@ -72,7 +72,7 @@ _UNESCAPED_PIPE_RX = re.compile(r"(?<!\\)\|")
 #: One owner: an id or vocabulary word, optionally annotated in parentheses.
 #: The annotation may itself contain a parenthesised aside, which the inner
 #: alternation allows without turning the whole thing into a wildcard.
-_OWNER_RX = re.compile(
+OWNER_RX = re.compile(
     r"^(?P<owner>[A-Za-z0-9][A-Za-z0-9-]*)"
     r"(?: \((?P<note>[^()]*(?:\([^()]*\)[^()]*)*)\))?$",
 )
@@ -212,7 +212,7 @@ def _blank_fenced_regions(text: str) -> str:
     return "\n".join(out)
 
 
-def _split_owners(cell: str) -> list[str]:
+def split_owners(cell: str) -> list[str]:
     """Split an owner cell on ``" / "`` at parenthesis depth zero.
 
     A plain ``cell.split(" / ")`` tears ``X-b (display / cache)`` into
@@ -524,8 +524,8 @@ def owner_violations(text: str, spec: PlanSpec) -> list[str]:
                 f"{finding}: no owner at all ({spec.owner_rule})"
             )
             continue
-        for part in _split_owners(cell):
-            match = _OWNER_RX.match(part)
+        for part in split_owners(cell):
+            match = OWNER_RX.match(part)
             if match is None:
                 violations.append(
                     f"{finding}: owner {part!r} is not an owner -- "
