@@ -581,7 +581,10 @@ need only the `_effective_start` maximum (Postgres `GREATEST` skips NULLs, so it
 exactly), and one `Monthly First` rule needs a lateral scan. Prove it before it ships the way this
 arc has twice: drive the migration's own function against `resolve()` over all 430 oracle shapes,
 not the 46 live rows. **D10, D12, D21 and D24 all close here.**
-**This step needs its own review pass.**
+**Do not quietly retain `offset_periods`**: it is a stored derivative of `period_index`, so once
+that ordinal is DERIVED an inserted payday re-phases every `Every N Periods` rule. Dropping it here
+IS the whole remedy for the pay-calendar arc's row **P11** (inert today, `interval_n = 1` on all
+46). **This step needs its own review pass.**
 
 - [ ] **R8 -- Add-ons.**
 
@@ -687,12 +690,10 @@ calls it yet. What is left HERE is the recurrence-side consequence and it ships 
 **C5**: `PlacementOutcome.SCHEDULE_GAP`, `GenerationPlan.gaps`,
 `_recurrence_common.report_schedule_gaps` and its two call sites (`recurrence_engine.py:309`,
 `transfer_recurrence.py:81`) all describe a state the model can no longer produce.
-**The state goes; the LOSS does not, and that narrowing was taken 2026-08-09** as that arc's row
-**P16**. A hole is ABSORBED rather than eliminated -- the preceding period runs on -- so a
-fortnightly schedule can hold a 28-day period, and `should_skip_period` (`:196-232`) returns `True`
-on the FIRST template-linked row in a period on every branch: one monthly bill where two are owed.
-These deletions are today the only thing REPORTING those days, so do not tick this box before P16's
-ruling is taken. Deletion-only, so the 430-shape baseline must stay byte-identical.
+**The state goes; the LOSS does not** (that arc's row **P16**, 2026-08-09): a hole is ABSORBED, not
+eliminated, so a 28-day period appears and `should_skip_period` (`:196-232`) bills one monthly where
+two are owed. These deletions are the only thing reporting it -- do not tick before P16 is ruled.
+Deletion-only, so the 430-shape baseline must stay byte-identical.
 **Tick this box with C5's commit.**
 
 - [ ] **R-F12 -- One `PeriodCalendar`, not three period-containing searches** (finding F-12).
@@ -861,12 +862,12 @@ and labelling a discipline as one is the failure being guarded against.
    opened three updated the rows and not the prose about them.
 4. **The whole file is capped at 900 lines**, and the cap is a FORCING FUNCTION, not a ceiling sized
    to fit the work. The arithmetic says so plainly: the document stood at 747 with eight steps
-   unspecified (R2e, R3-R9), and specifying each at the ~45 lines R2b's took would have added ~293
-   -- landing at ~1,021, well over. **That gap is deliberate and rule 7 is what closes it.** A step
-   that ships surrenders its specification: R2e and R3 occupied 39 lines between them and left as a
-   4-line pointer, which is what brought the file back under the cap the day R3 shipped. At roughly
-   35 lines returned per ship against ~45 spent per specification, the file breathes rather than
-   grows. **Raising the cap is not the answer when it binds.**
+   unspecified (R2e, R3-R9), and specifying each at the ~45 lines R2b's took would have added
+   ~293 -- landing at ~1,021, well over. **That gap is deliberate and rule 7 is what closes it.** A
+   step that ships surrenders its specification: R2e and R3 occupied 39 lines between them and left
+   as a 4-line pointer, which is what brought the file back under the cap the day R3 shipped. At
+   roughly 35 lines returned per ship against ~45 spent per specification, the file breathes rather
+   than grows. **Raising the cap is not the answer when it binds.**
 5. **The only legal way back under the cap is to archive a COMPLETED span** to
    `docs/plans/historical/recurrence_as_built_<date>.md`, condensed to one line per step: its id,
    its commit and what it closed. Never trim a live step's specification to fit. Shrink the record
