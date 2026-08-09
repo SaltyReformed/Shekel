@@ -104,15 +104,16 @@ repos:
 
       # The planning documents' findings ledgers: every finding names a LIVE
       # owner, the stated row count matches the table, the file is under its
-      # line cap, and the orientation section is still an orientation.  Two
+      # line cap, and the orientation section is still an orientation.  Three
       # documents are graded, each by its own spec over the shared parser in
       # tools/plan_gate/_plan_gate.py:
       #   docs/audits/balance_architecture/README.md      (Section 9 rules)
       #   docs/plans/implementation_plan_recurrence_redesign.md (section 7)
+      #   docs/plans/implementation_plan_pay_calendar.md        (section 7)
       # It runs HERE, at commit time, because the rules it enforces rot between
       # pull requests -- this repo opens them at the end of an arc, and three
       # hand-passes in two days each found rows naming a step that had already
-      # shipped.  Scoped to the two plan documents and the gate directory, so
+      # shipped.  Scoped to the three plan documents and the gate directory, so
       # EDITING A LEDGER is what triggers it.  Database-free by construction
       # (it lives outside tests/, so no autouse db fixture), which is what lets
       # it be a commit-time hook at all: 46 tests in 0.06s.
@@ -123,7 +124,7 @@ repos:
         # One line on purpose: a YAML folded scalar joins its lines with a
         # SPACE, which would put a space inside the alternation and stop the
         # pattern matching either document.
-        files: ^(docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|tools/plan_gate/.*\.py)$
+        files: ^(docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|docs/plans/implementation_plan_pay_calendar\.md|tools/plan_gate/.*\.py)$
         pass_filenames: false
         args: [tools/plan_gate, -c, /dev/null, -q]
 
