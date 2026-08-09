@@ -27,7 +27,6 @@ from app.services.recurrence import (
     modelled_pattern,
     pattern_choices,
     pattern_choices_for,
-    pattern_labels_by_name,
 )
 
 
@@ -184,16 +183,25 @@ class TestAnUnmodelledRowIsInvisible:
             assert db.session.get(RecurrencePattern, unmodelled_id) is not None
             assert modelled_pattern(unmodelled_id) is None
 
-    def test_it_carries_no_label_either(self, app):
-        """The name-keyed label projection omits the unmodelled row.
+    def test_it_is_not_offered_by_the_picker_either(self, app):
+        """The picker's options omit the unmodelled row.
 
-        The projection is derived from the same table the picker reads, so
-        there is no second list that could still name it.
+        Driven by the ENUM rather than by the table, so a ``ref`` row the
+        application does not model can be neither offered nor labelled.  This
+        was asserted against a second, name-keyed projection of the same table
+        until plan step R7a deleted it -- the only consumer was the
+        ``recurrence_cell`` macro's fallback branch, and the display label is
+        now a function of what a recurrence MEANS
+        (:func:`app.services.recurrence.describe`), not of a ``ref`` name.
         """
         with app.app_context():
-            _insert_unmodelled_pattern(name="Every Blue Moon")
+            unmodelled_id = _insert_unmodelled_pattern(name="Every Blue Moon")
 
-            assert "Every Blue Moon" not in pattern_labels_by_name()
+            labels = {choice.label for choice in pattern_choices()}
+            ids = {choice.pattern_id for choice in pattern_choices()}
+
+            assert "Every Blue Moon" not in labels
+            assert unmodelled_id not in ids
 
 
 class TestPatternChoicesFor:
@@ -245,44 +253,3 @@ class TestPatternChoicesFor:
 
             assert choices[-1].label == UNAVAILABLE_PATTERN_LABEL
             assert "Every Blue Moon" not in {c.label for c in choices}
-
-
-class TestPatternLabelsByName:
-    """The name-keyed projection is derived, not a second copy."""
-
-    def test_its_keys_are_the_modelled_patterns_ref_names(self, app):
-        """Keys equal ``member.value``, which equals the row's ``name``.
-
-        ``ref_cache.init`` already requires that equality; asserting it
-        against the live rows is what makes the projection safe for the
-        ``recurrence_cell`` macro, whose only key is a persisted rule's
-        ``pattern.name``.
-        """
-        with app.app_context():
-            labels = pattern_labels_by_name()
-            names_by_id = {
-                row.id: row.name
-                for row in db.session.query(RecurrencePattern).all()
-            }
-
-            assert set(labels) == {
-                names_by_id[ref_cache.recurrence_pattern_id(member)]
-                for member in RecurrencePatternEnum
-            }
-
-    def test_its_values_are_the_pickers_own_labels(self, app):
-        """The two spellings of one label table agree, member for member.
-
-        The context processor used to declare its own copy of these eight
-        strings; a divergence there would have shown the user one label on the
-        form and another on the Recurring list.
-        """
-        with app.app_context():
-            labels = pattern_labels_by_name()
-            by_id = {c.pattern_id: c.label for c in pattern_choices()}
-
-            for member in RecurrencePatternEnum:
-                assert (
-                    labels[member.value]
-                    == by_id[ref_cache.recurrence_pattern_id(member)]
-                )

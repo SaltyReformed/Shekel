@@ -30,8 +30,16 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service, recurring_view
 from app.services.obligations_aggregator import committed_monthly
-from app.services.recurrence import PeriodCalendar
+from app.services.recurrence import (
+    PeriodCalendar,
+    RecurrenceResolutionError,
+    read_rule,
+)
 from app.services.recurrence import rule_occurrences
+# Imported as a MODULE so the firing controls below patch the names the
+# read door resolves at CALL time.  Patching this file's own imported
+# names would leave the composition calling the real ones.
+from app.services.recurrence import _reading
 from app.services.recurrence_engine import compute_due_date
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
@@ -558,3 +566,304 @@ def _load_expenses(seed_user):
         .order_by(TransactionTemplate.name)
         .all()
     )
+
+
+# ── The cadence phrase, and the ONE read it comes from (plan step R7a) ─
+
+
+class TestTheRecurrenceDescription:
+    """Every row carries how it repeats, produced here rather than in Jinja."""
+
+    def test_an_active_row_carries_its_worded_cadence(
+        self, seed_user, seed_periods_today,
+    ):
+        """The producer answers the phrase the cell renders.
+
+        Until plan step R7a the Recurrence column was eight Jinja branches
+        reading ``pattern_id`` / ``day_of_month`` / ``month_of_year`` off the
+        rule -- columns plan step R7c drops.  The phrase is a function of what
+        the recurrence MEANS against the owner's schedule, which a template
+        holds neither of.
+        """
+        rule = _create_rule(
+            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=22,
+        )
+        tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
+
+        view = recurring_view.build_view(
+            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
+        )
+
+        assert view.expenses.rows[0].recurrence.cadence == "Monthly (day 22)"
+
+    def test_a_rule_less_row_carries_none(self, seed_user, seed_periods_today):
+        """"Does not repeat" is ``recurrence_rule_id IS NULL`` since R2e-3.
+
+        ``None`` rather than a phrase, so the cell's "One-time" wording is a
+        display decision and the producer states absence honestly.
+        """
+        tmpl = _create_expense(seed_user, None, Decimal("100.00"))
+
+        view = recurring_view.build_view(
+            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
+        )
+
+        assert view.expenses.rows[0].recurrence is None
+
+    def test_the_end_date_reaches_the_row_as_a_date(
+        self, seed_user, seed_periods_today,
+    ):
+        """The closing bound is carried, unformatted, for the cell's own line."""
+        end = date.today() + timedelta(days=400)
+        rule = _create_rule(
+            seed_user, RecurrencePatternEnum.MONTHLY,
+            day_of_month=22, end_date=end,
+        )
+        tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
+
+        view = recurring_view.build_view(
+            [], [tmpl], [], _calendar(seed_periods_today), date.today(),
+        )
+
+        assert view.expenses.rows[0].recurrence.until == end
+
+    def test_a_transfer_row_carries_one_too(
+        self, seed_user, seed_periods_today,
+    ):
+        """The transfers section takes the same producer, not a second one."""
+        savings = _create_savings(seed_user)
+        rule = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        tmpl = _create_transfer(seed_user, rule, Decimal("50.00"), savings)
+
+        view = recurring_view.build_view(
+            [], [], [tmpl], _calendar(seed_periods_today), date.today(),
+        )
+
+        assert view.transfers.rows[0].recurrence.cadence == "Every paycheck"
+
+    def test_each_rule_is_RESOLVED_exactly_once_per_build(
+        self, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The phrase and the next date are two questions about ONE read.
+
+        ``read_rule`` returns the resolved meaning and the placements
+        together, so a row costs one ``resolve``.  Composing the two steps at
+        the call site instead would resolve twice per row -- a second
+        resolution point in one request.
+
+        Patched at the DEFINITION site the composition calls
+        (``_reading.resolve``), not at this module's imported name: patching a
+        re-export proves only that the harness reads what it reads.
+        """
+        rule = _create_rule(
+            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=22,
+        )
+        expense = _create_expense(seed_user, rule, Decimal("100.00"))
+        income_rule = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        income = _create_income(seed_user, income_rule, Decimal("2000.00"))
+
+        calls = []
+        real_resolve = _reading.resolve
+
+        def counting_resolve(spec, calendar):
+            calls.append(spec.pattern_id)
+            return real_resolve(spec, calendar)
+
+        monkeypatch.setattr(_reading, "resolve", counting_resolve)
+
+        view = recurring_view.build_view(
+            [income], [expense], [], _calendar(seed_periods_today),
+            date.today(),
+        )
+
+        # The control must be shown to FIRE: if the patch missed, ``calls`` is
+        # empty and "exactly two" would pass for the wrong reason.
+        assert view.expenses.rows[0].recurrence is not None
+        assert view.income.rows[0].recurrence is not None
+        assert len(calls) == 2, (
+            f"two rule-bearing definitions resolved {len(calls)} times; each "
+            f"must be read once per build"
+        )
+
+
+class TestTheArchivedDrawer:
+    """Archived definitions get a producer, not raw ORM handed to Jinja."""
+
+    def test_an_archived_row_carries_its_worded_cadence(
+        self, seed_user, seed_periods_today,
+    ):
+        """The drawer shows how a definition repeated before it was archived."""
+        rule = _create_rule(
+            seed_user, RecurrencePatternEnum.ANNUAL,
+            day_of_month=1, month_of_year=11,
+        )
+        tmpl = _create_expense(seed_user, rule, Decimal("400.00"))
+        tmpl.is_active = False
+        db.session.flush()
+
+        rows = recurring_view.build_archived_rows(
+            [tmpl], _calendar(seed_periods_today),
+        )
+
+        assert len(rows) == 1
+        assert rows[0].template is tmpl
+        assert rows[0].recurrence.cadence == "Yearly (Nov 1)"
+
+    def test_a_rule_less_archived_row_carries_none(
+        self, seed_user, seed_periods_today,
+    ):
+        """A non-repeating archived definition reads "One-time" in the cell."""
+        tmpl = _create_expense(seed_user, None, Decimal("400.00"))
+        tmpl.is_active = False
+        db.session.flush()
+
+        rows = recurring_view.build_archived_rows(
+            [tmpl], _calendar(seed_periods_today),
+        )
+
+        assert rows[0].recurrence is None
+
+    def test_it_preserves_the_callers_order(
+        self, seed_user, seed_periods_today,
+    ):
+        """The drawer's own sort is the route's; the producer does not re-sort.
+
+        Unlike the active sections, which apply the locked cost-descending
+        default -- archived rows have no cost to sort by.
+        """
+        first = _create_expense(seed_user, None, Decimal("1.00"), name="Zed")
+        second = _create_expense(seed_user, None, Decimal("900.00"), name="Abe")
+        for tmpl in (first, second):
+            tmpl.is_active = False
+        db.session.flush()
+
+        rows = recurring_view.build_archived_rows(
+            [first, second], _calendar(seed_periods_today),
+        )
+
+        assert [row.template.name for row in rows] == ["Zed", "Abe"]
+
+    def test_it_walks_no_occurrences(
+        self, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """An archived definition generates nothing, so nothing is placed.
+
+        It needs the cadence and not where rows land, so it takes the read
+        door's FIRST step alone.  Computing placements and discarding them is
+        the defect ledger row D26 names, one surface over.
+        """
+        rule = _create_rule(
+            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=9,
+        )
+        tmpl = _create_expense(seed_user, rule, Decimal("50.00"))
+        tmpl.is_active = False
+        db.session.flush()
+
+        def fail_if_called(*_args, **_kwargs):
+            raise AssertionError(
+                "the archived drawer walked occurrences it does not render"
+            )
+
+        monkeypatch.setattr(_reading, "occurrence_placements", fail_if_called)
+
+        rows = recurring_view.build_archived_rows(
+            [tmpl], _calendar(seed_periods_today),
+        )
+
+        assert rows[0].recurrence.cadence == "Monthly (day 9)"
+
+
+class TestNoneMeansDoesNotRepeat:
+    """One sentinel, one meaning, on the value the cell reads.
+
+    ``recurrence is None`` renders "One-time".  ``resolved_recurrence`` also
+    answers ``None`` for an owner with no pay periods, and letting the two
+    share a sentinel would report a quarterly bill as a one-off -- on the
+    surface whose whole job is to say how definitions repeat.  The empty
+    schedule is unreachable through any application path (registration
+    bootstraps period 0, ``truncate_pay_periods`` keeps index 0 by its schema
+    bound, ``reset_pay_periods`` deletes and regenerates in one transaction),
+    so it is refused rather than worded.
+    """
+
+    def test_an_empty_schedule_refuses_rather_than_reading_one_time(
+        self, seed_user, seed_periods_today,
+    ):
+        """A repeating definition is never described as non-repeating."""
+        rule = _create_rule(
+            seed_user, RecurrencePatternEnum.QUARTERLY,
+            day_of_month=2, month_of_year=3,
+        )
+        tmpl = _create_expense(seed_user, rule, Decimal("60.00"))
+        empty = PeriodCalendar(user_id=seed_user["user"].id, periods=())
+
+        with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
+            recurring_view.build_view([], [tmpl], [], empty, date.today())
+
+    def test_the_archived_drawer_refuses_it_too(
+        self, seed_user, seed_periods_today,
+    ):
+        """Both row kinds reach the same discriminator."""
+        rule = _create_rule(
+            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=9,
+        )
+        tmpl = _create_expense(seed_user, rule, Decimal("25.00"))
+        tmpl.is_active = False
+        db.session.flush()
+        empty = PeriodCalendar(user_id=seed_user["user"].id, periods=())
+
+        with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
+            recurring_view.build_archived_rows([tmpl], empty)
+
+    def test_a_rule_less_definition_still_answers_none(
+        self, seed_user, seed_periods_today,
+    ):
+        """The control: the sentinel still means what it is supposed to.
+
+        Without this, "raise whenever the resolution is absent" would pass the
+        two cases above while breaking the only state ``None`` may describe.
+        """
+        tmpl = _create_expense(seed_user, None, Decimal("25.00"))
+        empty = PeriodCalendar(user_id=seed_user["user"].id, periods=())
+
+        view = recurring_view.build_view([], [tmpl], [], empty, date.today())
+
+        assert view.expenses.rows[0].recurrence is None
+        assert recurring_view.build_archived_rows(
+            [tmpl], empty,
+        )[0].recurrence is None
+
+
+class TestTheValuesCannotDisagree:
+    """The pairs are checked, not merely documented."""
+
+    def test_a_prepared_row_refuses_a_rule_without_its_reading(
+        self, seed_user, seed_periods_today,
+    ):
+        """A docstring guarantee the generated ``__init__`` does not enforce
+        is what ``OccurrencePlacement.__post_init__`` exists to stop repeating.
+        """
+        rule = _create_rule(
+            seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+        )
+        tmpl = _create_expense(seed_user, rule, Decimal("10.00"))
+
+        with pytest.raises(ValueError, match="rule and its reading"):
+            recurring_view._PreparedRow(
+                template=tmpl, monthly_full=None, rule=rule, reading=None,
+            )
+
+    def test_a_prepared_row_refuses_a_reading_without_its_rule(
+        self, seed_user, seed_periods_today,
+    ):
+        """The other direction, so the check is a biconditional not a guard."""
+        rule = _create_rule(
+            seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+        )
+        tmpl = _create_expense(seed_user, rule, Decimal("10.00"))
+        reading = read_rule(rule, _calendar(seed_periods_today))
+
+        with pytest.raises(ValueError, match="rule and its reading"):
+            recurring_view._PreparedRow(
+                template=tmpl, monthly_full=None, rule=None, reading=reading,
+            )

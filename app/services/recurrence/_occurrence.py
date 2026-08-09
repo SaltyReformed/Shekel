@@ -385,15 +385,25 @@ def _unbounded(
         return _period_walk(resolved, calendar)
     if unit is RecurrenceUnitEnum.WEEK:
         return _week_walk(resolved.anchor_date, resolved.interval_n)
-    # The day the rule MEANS, which is the anchor's own day unless the anchor
-    # month was too short to hold it -- April has no 31st, so a day-31 rule
-    # anchored there carries anchor_date 2026-04-30 and nominal_day 31
-    # (ruling R-R3).  ``is None``, not truthiness: the domain is 29-31, but a
-    # falsy-day bug here would silently re-clamp every later month.
-    nominal_day = (
-        resolved.anchor_date.day if resolved.nominal_day is None
-        else resolved.nominal_day
-    )
+    # The day the rule MEANS, read through the ONE accessor that joins the
+    # anchor's day to ``nominal_day`` (plan step R7a).  It was open-coded here
+    # until the display describer needed the same join: two copies of "which of
+    # these two fields holds the day" is how a rule comes to fire on the 31st
+    # and read as the 30th.  It answers ``None`` for a unit that does not fire
+    # on a day of the month, which after the two returns above means a unit
+    # this engine has no walk for -- so ONE refusal covers both, and neither
+    # ``walk_months`` nor ``clamped_day`` is ever handed a ``None`` to fail on
+    # three frames down with a bare ``TypeError``.
+    month_day = resolved.day_of_month
+    if month_day is None:
+        raise RecurrenceGenerationError(
+            f"recurrence unit {unit!r} has no occurrence walk: it is neither "
+            f"PERIOD nor WEEK and it names no day of the month.  Every member "
+            f"of RecurrenceUnitEnum must have a walk -- returning nothing "
+            f"would read as a rule that never fires -- and walking a "
+            f"day-of-month cadence without a day would fire it on a "
+            f"fabricated one."
+        )
     # The SAME walk ``_resolution._calendar_anchor`` derives the anchor with
     # (``app.services.recurrence._months``), seeded at the anchor's own month
     # -- so the first date this yields IS the anchor, by construction rather
@@ -402,15 +412,21 @@ def _unbounded(
     # clamping is the month clamp and cannot diverge from it.
     start = month_ordinal(resolved.anchor_date)
     if unit is RecurrenceUnitEnum.MONTH:
-        return walk_months(start, nominal_day, resolved.interval_n)
+        return walk_months(start, month_day, resolved.interval_n)
     if unit is RecurrenceUnitEnum.YEAR:
         return walk_months(
-            start, nominal_day, resolved.interval_n * MONTHS_PER_YEAR,
+            start, month_day, resolved.interval_n * MONTHS_PER_YEAR,
         )
+    # A unit that DOES name a day of the month but has no stride here: the
+    # sibling of the refusal above, reached by adding a member to
+    # ``_resolution._DAY_OF_MONTH_UNITS`` without giving it a walk.  Two
+    # refusals because the two half-finished edits are different, and each
+    # names which one happened.
     raise RecurrenceGenerationError(
-        f"recurrence unit {unit!r} has no occurrence walk.  Every member of "
-        f"RecurrenceUnitEnum must have one: returning nothing instead would "
-        f"read as a rule that never fires."
+        f"recurrence unit {unit!r} names a day of the month but has no "
+        f"occurrence walk.  Every member of RecurrenceUnitEnum must have "
+        f"one: returning nothing instead would read as a rule that never "
+        f"fires."
     )
 
 

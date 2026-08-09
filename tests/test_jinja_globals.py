@@ -10,12 +10,49 @@ at request time.
 
 # pylint: disable=import-outside-toplevel
 
+import pathlib
+import re
+
 from app import ref_cache
 from app.enums import (
     CalcMethodEnum, DeductionTimingEnum, GoalModeEnum, IncomeUnitEnum,
-    RecurrencePatternEnum,
 )
 from app.jinja_globals import _REF_ID_GLOBALS, register_ref_id_globals
+
+_TEMPLATE_ROOT = pathlib.Path(__file__).resolve().parent.parent.joinpath(
+    "app", "templates",
+)
+_REC_GLOBAL_PATTERN = re.compile(r"\bREC_[A-Z0-9_]+\b")
+#: Jinja comments, stripped before the scan: a ``{# ... REC_ANNUAL ... #}``
+#: block is documentation, not a read, and counting it would let a global with
+#: no live reader satisfy the equality below.
+_JINJA_COMMENT = re.compile(r"\{#.*?#\}", re.DOTALL)
+
+
+def _rec_globals_referenced_by_templates() -> set[str]:
+    """Return every ``REC_*`` name any template actually reads.
+
+    Scanned from the templates rather than mirrored, so this set and the
+    registered set are two INDEPENDENT enumerations of one fact and asserting
+    them equal catches drift in either direction: a global a template reads but
+    nothing registers (Jinja is not configured with ``StrictUndefined``, so
+    ``rr.pattern_id == REC_ANNUAL`` would evaluate silently False and a yearly
+    bill would take the wrong branch), and a global nothing reads (dead
+    apparatus a later reader would take for a live contract).
+
+    Deriving the expected set from ``RecurrencePatternEnum`` is what this
+    replaced, and plan step R7a is why: with the ``recurrence_cell`` macro's
+    per-pattern branches gone, two members legitimately have no global, so an
+    enum-derived assertion would have demanded that dead code be kept.
+
+    Returns:
+        The ``REC_*`` identifiers appearing anywhere under ``app/templates``.
+    """
+    found: set[str] = set()
+    for path in _TEMPLATE_ROOT.rglob("*.html"):
+        source = _JINJA_COMMENT.sub("", path.read_text(encoding="utf-8"))
+        found.update(_REC_GLOBAL_PATTERN.findall(source))
+    return found
 
 
 def test_register_ref_id_globals_populates_previously_missing_entries(app):
@@ -93,21 +130,21 @@ def test_register_ref_id_globals_is_idempotent(app):
         # DELETED.  Two pins restore that, and neither is hand-maintained:
         #
         #   * the total, which changes only on a deliberate edit here;
-        #   * per-enum coverage for the recurrence patterns, the one group a
-        #     step has actually narrowed (plan step R2e-3 removed ``ONCE``
-        #     from both the enum and the table).  Jinja is not configured
-        #     with ``StrictUndefined``, so a dropped ``REC_*`` would make
-        #     ``rr.pattern_id == REC_ANNUAL`` in ``_recurrence_macros.html``
-        #     evaluate silently False and a yearly bill fall through to the
-        #     name-string fallback.
-        assert len(registered_keys) == 48, (
+        #   * exact coverage for the recurrence patterns, the one group steps
+        #     have actually narrowed -- R2e-3 removed ``ONCE`` from the enum,
+        #     and R7a removed two more globals with the ``recurrence_cell``
+        #     macro's per-pattern branches.
+        assert len(registered_keys) == 46, (
             "the ID-derived globals changed count -- update this number "
             "deliberately, and check the template that reads the new or "
             "removed constant"
         )
-        assert {
-            f"REC_{member.name}" for member in RecurrencePatternEnum
-        } <= registered_keys, "a recurrence pattern has no REC_* global"
+        assert _rec_globals_referenced_by_templates() == {
+            key for key in registered_keys if key.startswith("REC_")
+        }, (
+            "the REC_* globals registered and the REC_* globals the templates "
+            "read have diverged"
+        )
 
         for key in registered_keys:
             assert key in first, f"first pass missing {key}"

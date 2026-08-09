@@ -188,6 +188,100 @@ def months_between(start: date, end: date) -> int:
     return (end.year - start.year) * 12 + (end.month - start.month)
 
 
+#: English month names, indexed by ``month_number - 1``.
+#:
+#: The source of truth for the ``month_name`` Jinja filter and for
+#: :func:`app.services.recurrence.describe`.  They lived in
+#: :mod:`app.jinja_filters` until plan step R7a, which needed the same names in
+#: a SERVICE -- the recurrence describer builds a cadence phrase like
+#: ``"Quarterly (Apr 21)"`` -- and a service must not import the template
+#: filter module, which reaches back into ``app.services``.  Copying the table
+#: instead would put two spellings of one list in the codebase, so it moved
+#: down here and both readers take it from one place.
+#:
+#: **It is not yet the only month-name producer in the application**, and
+#: saying so would be a claim nobody had measured: ``routes/analytics.py``,
+#: ``routes/analytics_view.py`` and
+#: ``services/ledger_report_service/_income_statement.py`` still name months
+#: through :mod:`calendar` and ``strftime``.  Converting them is its own task
+#: (recurrence plan finding F-15); this table does not pretend they are gone.
+#:
+#: Spelled out rather than read from :mod:`calendar`, deliberately: that
+#: module's names follow the process LOCALE, so a container started under a
+#: non-English locale would render a different month name than the one every
+#: test asserts -- which is exactly what those three surfaces do today.
+_MONTH_NAMES_FULL: tuple[str, ...] = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+_MONTH_NAMES_ABBR: tuple[str, ...] = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+
+#: English weekday names, indexed by :meth:`datetime.date.weekday` (0 = Monday).
+#:
+#: Spelled out for the same reason as the month names above, and the reason is
+#: not hypothetical here: ``f"{a_date:%A}"`` delegates to the platform
+#: ``strftime`` and follows ``LC_TIME``, which ``deploy/`` pins nowhere -- it
+#: pins ``TZ`` only.  A container started with ``LANG=de_DE.UTF-8`` would render
+#: a weekly recurrence as ``Weekly (Donnerstags)`` beside months still in
+#: English, and the test asserting ``Weekly (Thursdays)`` would fail on the
+#: environment rather than on the code.
+_WEEKDAY_NAMES: tuple[str, ...] = (
+    "Monday", "Tuesday", "Wednesday", "Thursday",
+    "Friday", "Saturday", "Sunday",
+)
+
+
+def weekday_name(value: date) -> str:
+    """Return *value*'s English weekday name (``"Thursday"``).
+
+    Locale-independent by construction: indexed off
+    :meth:`datetime.date.weekday` rather than formatted with ``%A``, so the
+    name a surface renders does not depend on the process ``LC_TIME``.
+
+    Args:
+        value: Any date.
+
+    Returns:
+        The English weekday name.
+    """
+    return _WEEKDAY_NAMES[value.weekday()]
+
+
+def month_name(value: int | None, abbr: bool = False) -> str:
+    """Map a 1-12 month number to its English name (``1`` -> ``"January"``).
+
+    Single source for the month-name lookups that used to be duplicated as
+    per-template ``month_names`` dicts (polyglot audit TPLB/TPL-07).  Pass
+    ``abbr=True`` for the three-letter form (``"Jan"``) used by the list
+    views; the default full name (``"January"``) matches the form selects.
+
+    Registered as the ``month_name`` Jinja filter by
+    :func:`app.jinja_filters.register_template_filters`, and called directly by
+    :func:`app.services.recurrence.describe`, which builds a cadence phrase in
+    a service rather than in a template.  Defined HERE so those two readers
+    cannot come to name March two different things.
+
+    Args:
+        value: A month number in ``1..12``, or ``None``.
+        abbr: ``True`` for the abbreviated name, ``False`` for the full
+            name.
+
+    Returns:
+        The month name, or ``""`` for ``None`` or an out-of-range number.
+    """
+    if value is None:
+        return ""
+    index = int(value)
+    if not 1 <= index <= len(_MONTH_NAMES_FULL):
+        return ""
+    names = _MONTH_NAMES_ABBR if abbr else _MONTH_NAMES_FULL
+    return names[index - 1]
+
+
 def attribution_date(
     preferred: date | None, period_start: date, period_end: date,
 ) -> date:

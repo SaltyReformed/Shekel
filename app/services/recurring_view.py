@@ -21,16 +21,25 @@ PAY_PERIODS_PER_YEAR`` (12 / 26).  The toggle therefore only re-expresses
 the same committed figure in a different unit; it never opens a second
 money path that could disagree with the first.
 
-Next dates are engine-backed
-----------------------------
+Next dates are engine-backed, and the cadence phrase comes from the same read
+-----------------------------------------------------------------------------
 The next occurrence is the date the recurrence engine itself would assign
-to the next generated instance: ``recurrence.rule_occurrences`` walks the
-rule's cadence and places each occurrence on a pay period -- the SAME call
-the generation seam makes since plan step R4b-2 -- and
+to the next generated instance: ``recurrence.read_rule`` walks the
+rule's cadence and places each occurrence on a pay period -- the SAME
+composition the generation seam makes since plan step R4b-2 -- and
 ``recurrence_engine.compute_due_date`` gives the instance's due date, so a
 row's "next date" cannot disagree with the grid cell it points at.  This
 retires the ``/obligations`` approximation (``_next_occurrence``) the audit
 flagged.
+
+**The Recurrence column is produced here too** (plan step R7a).  It was eight
+Jinja branches over the closed ``pattern_id`` set until then;
+``recurrence.describe`` words it from the two-axis meaning instead, so the
+column survives plan step R7c dropping the columns those branches read.  Each
+rule is read ONCE per render -- ``read_rule`` returns the meaning and the
+placements together -- because the phrase and the next date are two questions
+about one reading, and resolving twice would be a second resolution point in
+one request.
 
 **It takes the owner's whole schedule as a ``PeriodCalendar``**, not a list
 of pay periods (plan step R4b-1).  A recurrence's first occurrence is measured
@@ -61,14 +70,22 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
+from app.models.recurrence_rule import RecurrenceRule
 from app.services.obligations_aggregator import (
     RecurringTemplate,
     template_monthly_or_none,
+    template_rule,
 )
 from app.services.recurrence import (
     PeriodCalendar,
+    RecurrenceDescription,
+    RecurrenceResolutionError,
+    ResolvedRecurrence,
+    RuleReading,
+    describe,
     placed_periods,
-    rule_occurrences,
+    read_rule,
+    resolved_recurrence,
 )
 from app.services.recurrence_engine import compute_due_date
 from app.utils.money import (
@@ -111,12 +128,18 @@ class RecurringRow:
     Attributes:
         template: The ORM template (``TransactionTemplate`` or
             ``TransferTemplate``) this row renders.  Carried whole so the
-            template layer can read its name, badges, category / accounts,
-            recurrence rule (for the shared ``recurrence_cell`` macro), and
+            template layer can read its name, badges, category / accounts, and
             the edit / archive / delete action links -- none of which the
             producer recomputes.
         equivalent: The monthly + per-paycheck commitment (:class:`UnitPair`),
             both ``None`` for a non-recurring definition.
+        recurrence: How the definition repeats, in display terms
+            (:class:`~app.services.recurrence.RecurrenceDescription`), or
+            ``None`` when it does not repeat -- which is
+            ``recurrence_rule_id IS NULL`` since plan step R2e-3.  Produced
+            here rather than in the template (plan step R7a): the phrase is a
+            function of what the recurrence MEANS against the owner's
+            schedule, and a template holds neither.
         next_date: The engine-assigned due date of the next occurrence on
             or after ``as_of``, or ``None`` when the definition has no
             future recurring occurrence (no rule, or expired).
@@ -128,8 +151,31 @@ class RecurringRow:
 
     template: RecurringTemplate
     equivalent: UnitPair
+    recurrence: RecurrenceDescription | None
     next_date: date | None
     share_pct: Decimal | None
+
+
+@dataclass(frozen=True)
+class ArchivedRow:
+    """One archived recurring definition, for the collapsed Archived drawer.
+
+    Archived definitions carry no monthly equivalent, no next date and no
+    share -- they are inactive and excluded from every total -- so they are a
+    different value from :class:`RecurringRow` rather than one with four fields
+    permanently ``None``.  What they DO carry is how they repeated, which the
+    drawer shows so an archived definition can be recognised before it is
+    unarchived or permanently deleted.
+
+    Attributes:
+        template: The ORM template, carried whole for its name, kind, amount
+            and action links.
+        recurrence: How it repeats, or ``None`` for a non-repeating
+            definition.
+    """
+
+    template: RecurringTemplate
+    recurrence: RecurrenceDescription | None
 
 
 @dataclass(frozen=True)
@@ -219,22 +265,21 @@ def _share_pct(
 
 
 def _next_occurrence(
-    template: RecurringTemplate, calendar: PeriodCalendar, as_of: date,
+    rule: RecurrenceRule, reading: RuleReading, as_of: date,
 ) -> date | None:
     """Engine-backed date of the next occurrence on or after ``as_of``.
 
-    Uses the same producers that generate the grid instances:
-    :func:`~app.services.recurrence.rule_occurrences` walks the rule's cadence
-    and places each occurrence on a pay period, and ``compute_due_date`` gives
-    the due date the generated instance would carry.  Returns the first such
-    due date on or after ``as_of`` (the current period can match with a due
-    date already past, so the search advances to the next matching period), or
-    ``None`` when no matching period has a due date on or after ``as_of`` -- no
-    rule, or an expired rule whose remaining candidate periods are all in the
-    past.  Otherwise this tracks the engine exactly: if the engine would still
-    generate a future instance (e.g. an expired rule whose final period
-    straddles ``as_of``), that instance's date is reported, matching the
-    grid cell it points at.
+    Reads the placements :func:`~app.services.recurrence.read_rule` already
+    produced for this row -- the same walk that generates the grid instances --
+    and ``compute_due_date`` gives the due date the generated instance would
+    carry.  Returns the first such due date on or after ``as_of`` (the current
+    period can match with a due date already past, so the search advances to
+    the next matching period), or ``None`` when no matching period has a due
+    date on or after ``as_of`` -- an expired rule whose remaining candidate
+    periods are all in the past.  Otherwise this tracks the engine exactly: if
+    the engine would still generate a future instance (e.g. an expired rule
+    whose final period straddles ``as_of``), that instance's date is reported,
+    matching the grid cell it points at.
 
     **``as_of`` is this surface's own display boundary, not the rule's** -- the
     rule's opening bound is its anchor, and putting a caller's window inside the
@@ -244,40 +289,159 @@ def _next_occurrence(
     both filtered and bounded, so a caller's window looked like a property of
     the recurrence.
 
-    **The rule-less branch is the whole "does not recur" case** since plan
-    step R2e-3.  A second guard used to sit beside it for the ``Once``
-    pattern, which the reverse matcher had no branch for: without it a
-    one-time definition emitted a spurious "unknown pattern" warning on
-    every render.  With the pattern retired, no such rule exists to guard.
+    Args:
+        rule: The definition's recurrence rule, for the due-date derivation.
+        reading: What :func:`~app.services.recurrence.read_rule` already
+            resolved and placed for this row.  Taken rather than re-walked so
+            the page resolves each rule ONCE: the description and this date
+            are two questions about one reading.
+        as_of: The surface's display boundary.
 
-    **This is now a fail-CLOSED read**, and plan step R4a is what changed it.
-    The retired matcher used to log a warning and answer ``[]`` for a rule it
-    could not read; the resolution seam now raises
-    :class:`~app.services.recurrence.RecurrenceResolutionError` (an unmodelled
-    pattern, an interval below 1, a day or month outside its column's domain),
-    so ONE such rule takes the whole Recurring surface to a 500 rather than
-    rendering the other definitions beside a silently blank cell.  The
-    overlapping-schedule refusal (``RecurrenceScheduleError``) moved with the
-    calendar at plan step R4b-1: it is raised where the calendar is BUILT, so
-    the route now meets it before this producer runs.  Every one of those is
-    a state the CHECK constraints and the write door already refuse, and the
-    project's disposition for a broken invariant is the loud one -- but the
-    contract is stated rather than discovered.
-
-    Raises:
-        RecurrenceResolutionError: When the rule names a cadence this
-            application cannot derive.
+    Returns:
+        The next occurrence's due date, or ``None``.
     """
-    rule = getattr(template, "recurrence_rule", None)
-    if rule is None:
-        return None
     for period in placed_periods(
-        rule_occurrences(rule, calendar), ending_on_or_after=as_of,
+        reading.placements, ending_on_or_after=as_of,
     ):
         due = compute_due_date(rule, period)
         if due >= as_of:
             return due
     return None
+
+
+@dataclass(frozen=True)
+class _PreparedRow:
+    """One template with everything the two row passes need, computed once.
+
+    Rows are built in two passes -- the section's committed total has to exist
+    before any row's share of it can -- and this is what the first pass hands
+    the second.  It exists so the second pass re-derives nothing: resolving a
+    rule twice per render is what plan step R7a's read door was restructured to
+    prevent.
+
+    Attributes:
+        template: The ORM template.
+        monthly_full: Its unquantized monthly equivalent, or ``None`` when it
+            is not a recurring commitment.
+        rule: Its recurrence rule, or ``None`` when the definition does not
+            repeat.
+        reading: That rule read against the owner's schedule, or ``None``
+            exactly when *rule* is -- the two are set and cleared together, so
+            a row cannot be described from a reading of a rule it does not
+            have.
+    """
+
+    template: RecurringTemplate
+    monthly_full: Decimal | None
+    rule: RecurrenceRule | None
+    reading: RuleReading | None
+
+    @property
+    def resolved(self) -> ResolvedRecurrence | None:
+        """The row's two-axis meaning, or ``None`` when it does not repeat."""
+        return None if self.reading is None else self.reading.resolved
+
+    def __post_init__(self) -> None:
+        """Refuse a rule without its reading, or a reading without its rule.
+
+        A check rather than a docstring guarantee, matching
+        :class:`~app.services.recurrence.OccurrencePlacement`: the pair is one
+        fact stated twice, so the second pass can test ONE of them and the
+        two-condition guard that would otherwise be needed is a fence for a
+        state the value should not permit.
+
+        Raises:
+            ValueError: When exactly one of *rule* and *reading* is set.
+        """
+        if (self.rule is None) != (self.reading is None):
+            raise ValueError(
+                f"prepared row for {self.template!r} carries rule="
+                f"{self.rule!r} beside reading={self.reading!r}: a definition "
+                f"has a rule and its reading together or neither, and a pair "
+                f"that disagrees would describe a cadence the row does not "
+                f"have."
+            )
+
+
+def _described(
+    rule: RecurrenceRule | None, resolved: ResolvedRecurrence | None,
+) -> RecurrenceDescription | None:
+    """Turn a resolved recurrence into a row's description, or ``None``.
+
+    **The ONE place this surface words a cadence.**  Both row kinds reach it:
+    the active sections from the reading they already hold, the Archived
+    drawer from a meaning-only resolve.  Written once because the two differ
+    in how they OBTAIN the resolved value and not at all in what they do with
+    it -- and a display contract expressed twice is one a later change updates
+    once.
+
+    **``None`` out means "does not repeat" and nothing else**, which is why
+    the RULE is the discriminator rather than the resolved value.  They are
+    not the same question: ``resolved_recurrence`` also answers ``None`` for
+    an owner with no pay periods, and mapping that onto the same ``None``
+    would render a quarterly bill as "One-time" -- a repeating commitment
+    reported as a one-off, on the surface whose job is to say how things
+    repeat.  An empty schedule is a broken invariant rather than a state to
+    word: registration bootstraps a period, ``truncate_pay_periods`` keeps
+    index 0 by its own schema bound, and ``reset_pay_periods`` deletes and
+    regenerates inside one transaction, so no committed state has none.  It
+    is refused here for the same reason :func:`_build_section` refuses every
+    other broken invariant -- loudly.
+
+    Args:
+        rule: The definition's recurrence rule, or ``None`` when it does not
+            repeat.
+        resolved: What that rule MEANS, or ``None`` when there was no rule to
+            resolve or no schedule to resolve it against.
+
+    Returns:
+        The :class:`~app.services.recurrence.RecurrenceDescription`, or
+        ``None`` for a definition that does not repeat.
+
+    Raises:
+        RecurrenceResolutionError: When *rule* is present and *resolved* is
+            not, which is an owner with no pay periods.
+    """
+    if rule is None:
+        return None
+    if resolved is None:
+        raise RecurrenceResolutionError(
+            f"recurrence rule {rule.id!r} could not be resolved against its "
+            f"owner's schedule, which holds no pay periods.  Registration "
+            f"bootstraps one, so this is a broken invariant; describing it as "
+            f"a non-repeating definition would report a recurring commitment "
+            f"as a one-off."
+        )
+    return describe(resolved)
+
+
+def _resolved_meaning(
+    rule: RecurrenceRule | None, calendar: PeriodCalendar,
+) -> ResolvedRecurrence | None:
+    """Resolve *rule*'s cadence without walking a single occurrence.
+
+    The Archived drawer's read: it shows how a definition repeated and never
+    where its rows land.
+
+    Takes the RULE rather than the template so the drawer reads it once, the
+    way :func:`_build_section` does -- asking the same question from two frames
+    is the shape this step spent the rest of its diff removing.
+
+    Args:
+        rule: The definition's recurrence rule, or ``None``.
+        calendar: The owner's whole pay-period schedule.
+
+    Returns:
+        The resolved meaning, or ``None`` when the definition has no rule.
+
+    Raises:
+        RecurrenceResolutionError: When the rule names a cadence this
+            application cannot derive.  See :func:`_build_section` for why this
+            surface fails loud.
+    """
+    if rule is None:
+        return None
+    return resolved_recurrence(rule, calendar)
 
 
 def _build_section(
@@ -293,23 +457,56 @@ def _build_section(
     the caller's incoming order among equals.  The subtotal rounds the
     full-precision total once, so it equals ``committed_monthly`` for the
     section by construction.
+
+    **Each rule is READ once** (plan step R7a).  A row's cadence phrase and its
+    next date are two questions about one reading, so the first pass takes
+    :func:`~app.services.recurrence.read_rule` -- the single resolve-then-place
+    composition -- and the second pass derives both from what it returned.
+
+    **This is a fail-CLOSED read**, and plan step R4a is what changed it.  The
+    retired matcher used to log a warning and answer ``[]`` for a rule it could
+    not read; the resolution seam now raises
+    :class:`~app.services.recurrence.RecurrenceResolutionError` (an unmodelled
+    pattern, an interval below 1, a day or month outside its column's domain),
+    so ONE such rule takes the whole Recurring surface to a 500 rather than
+    rendering the other definitions beside a silently blank cell.  The
+    overlapping-schedule refusal (``RecurrenceScheduleError``) moved with the
+    calendar at plan step R4b-1: it is raised where the calendar is BUILT, so
+    the route meets it before this producer runs.  Every one of those is a
+    state the CHECK constraints and the write door already refuse, and the
+    project's disposition for a broken invariant is the loud one -- but the
+    contract is stated rather than discovered.
+
+    Raises:
+        RecurrenceResolutionError: When a rule names a cadence this application
+            cannot derive.
     """
-    monthly_by_template = []
+    prepared: list[_PreparedRow] = []
     section_total_full = Decimal("0")
     for template in templates:
         monthly_full = template_monthly_or_none(template, as_of)
-        monthly_by_template.append((template, monthly_full))
+        rule = template_rule(template)
+        prepared.append(_PreparedRow(
+            template=template,
+            monthly_full=monthly_full,
+            rule=rule,
+            reading=None if rule is None else read_rule(rule, calendar),
+        ))
         if monthly_full is not None:
             section_total_full += monthly_full
 
     rows = [
         RecurringRow(
-            template=template,
-            equivalent=_unit_pair(monthly_full),
-            next_date=_next_occurrence(template, calendar, as_of),
-            share_pct=_share_pct(monthly_full, section_total_full),
+            template=item.template,
+            equivalent=_unit_pair(item.monthly_full),
+            recurrence=_described(item.rule, item.resolved),
+            next_date=(
+                None if item.reading is None
+                else _next_occurrence(item.rule, item.reading, as_of)
+            ),
+            share_pct=_share_pct(item.monthly_full, section_total_full),
         )
-        for template, monthly_full in monthly_by_template
+        for item in prepared
     ]
     rows.sort(
         key=lambda row: (
@@ -403,3 +600,47 @@ def build_view(
         transfers=transfer_section,
         band=band,
     )
+
+
+def build_archived_rows(
+    templates: list[RecurringTemplate], calendar: PeriodCalendar,
+) -> tuple[ArchivedRow, ...]:
+    """Shape the Archived drawer's rows for one template kind.
+
+    A second entry point rather than a fourth section of :func:`build_view`,
+    because the two answer different callers: the drawer renders only on the
+    full page, while ``build_view`` is rebuilt on every Monthly /
+    Per-paycheck toggle, and folding archived definitions into it would load
+    and resolve them on a request that never shows them.
+
+    It exists at all because the drawer's Recurrence column used to be raw ORM
+    handed to a template that computed the phrase itself.  Since plan step R7a
+    the phrase is a function of what a recurrence MEANS against the owner's
+    schedule, which a template cannot ask -- so the drawer gets a producer like
+    the active sections have.
+
+    Only the description is resolved: an archived definition generates nothing,
+    so its occurrences are never walked.
+
+    Args:
+        templates: The user's archived templates of one kind, in the order the
+            drawer shows them.
+        calendar: The owner's whole pay-period schedule.
+
+    Returns:
+        One :class:`ArchivedRow` per template, in the given order.
+
+    Raises:
+        RecurrenceResolutionError: When a rule names a cadence this application
+            cannot derive -- the same fail-closed disposition the active
+            sections have carried since plan step R4a; see
+            :func:`_build_section`.
+    """
+    rows = []
+    for template in templates:
+        rule = template_rule(template)
+        rows.append(ArchivedRow(
+            template=template,
+            recurrence=_described(rule, _resolved_meaning(rule, calendar)),
+        ))
+    return tuple(rows)
