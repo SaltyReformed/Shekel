@@ -43,12 +43,17 @@ What this package offers
   so every pay period the application generates a row into is selected here.
   An occurrence with no pay period says WHICH of the two "no period" answers
   it is (:class:`PlacementOutcome`).
-* :func:`recurrence_spec` / :func:`rule_occurrences` / :func:`placed_periods`
-  -- the READ door, symmetric with the write door: a rule's authored state
-  back out, every ``(occurrence, pay period)`` pair it names against the
-  owner's schedule, and the projection three surfaces take of that.  Since
-  plan step R4b-2 the generation seam, the Recurring surface, the form preview
-  and the frozen baseline all answer from one call.
+* :func:`recurrence_spec` / :func:`read_rule` / :func:`resolved_recurrence` /
+  :func:`rule_occurrences` / :func:`placed_periods` -- the READ door,
+  symmetric with the write door: a rule's authored state back out, the one
+  resolve-then-place composition, each of its halves alone, and the projection
+  three surfaces take of the second.  Since plan step R4b-2 the generation
+  seam, the Recurring surface, the form preview and the frozen baseline all
+  answer from one call.
+* :func:`describe` -- what a recurrence's cadence is CALLED, one function over
+  ``(interval_n, unit)`` (plan step R7a).  It replaced eight hand-written
+  template branches keyed on the closed pattern set, so a cadence nothing
+  authors yet already reads correctly.
 
 What lives where
 ----------------
@@ -73,10 +78,15 @@ What lives where
   ``_authoring`` carries the session while nothing here needs one -- and
   rather than a line in ``_occurrence`` because that module is pure by
   contract and this one takes an ORM row.
-* ``_vocabulary`` -- which patterns the application MODELS, and what they are
-  called: the set every form surface offers and every door validates against,
-  so a ``ref`` row the enum does not name can be neither offered nor accepted
-  (plan step R2e-2).
+* ``_vocabulary`` -- which patterns the application MODELS, and what the
+  PICKER calls them: the set every form surface offers and every door
+  validates against, so a ``ref`` row the enum does not name can be neither
+  offered nor accepted (plan step R2e-2).
+* ``_describe`` -- what a RESOLVED recurrence is called on a display surface.
+  Its own module rather than a line in ``_vocabulary`` because the two are
+  keyed on different things: the picker's labels are per closed-set pattern
+  and die with the form at plan step R7b, while this one is a function of the
+  two-axis meaning and is what survives.
 
 Plan step R3 built the forward occurrence engine here, step R4a pointed the
 old ``match_periods`` adapter at it (gated by
@@ -97,6 +107,11 @@ from app.services.recurrence._calendar import (
     RecurrenceScheduleError,
     SchedulePeriod,
 )
+from app.services.recurrence._describe import (
+    RecurrenceDescription,
+    RecurrenceDescriptionError,
+    describe,
+)
 from app.services.recurrence._occurrence import (
     OccurrencePlacement,
     PlacementOutcome,
@@ -106,8 +121,11 @@ from app.services.recurrence._occurrence import (
     place,
 )
 from app.services.recurrence._reading import (
+    RuleReading,
     placed_periods,
+    read_rule,
     recurrence_spec,
+    resolved_recurrence,
     rule_occurrences,
 )
 from app.services.recurrence._resolution import (
@@ -123,7 +141,6 @@ from app.services.recurrence._vocabulary import (
     modelled_pattern,
     pattern_choices,
     pattern_choices_for,
-    pattern_labels_by_name,
 )
 
 __all__ = [
@@ -133,25 +150,30 @@ __all__ = [
     "PatternChoice",
     "PeriodCalendar",
     "PlacementOutcome",
+    "RecurrenceDescription",
+    "RecurrenceDescriptionError",
     "RecurrenceGenerationError",
     "RecurrenceResolutionError",
     "RecurrenceScheduleError",
     "RecurrenceSpec",
     "ResolvedRecurrence",
+    "RuleReading",
     "SchedulePeriod",
     "author_rule",
     "build_transient_rule",
     "calendar_for",
+    "describe",
     "modelled_pattern",
     "occurrence_placements",
     "occurrences",
     "pattern_choices",
     "pattern_choices_for",
-    "pattern_labels_by_name",
     "place",
     "placed_periods",
+    "read_rule",
     "reauthor_rule",
     "recurrence_spec",
     "resolve",
+    "resolved_recurrence",
     "rule_occurrences",
 ]

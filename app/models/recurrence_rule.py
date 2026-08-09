@@ -167,7 +167,18 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
     max_occurrences = db.Column(db.Integer, nullable=True)
 
     # Relationships
-    pattern = db.relationship("RecurrencePattern", lazy="joined")
+    #
+    # **``pattern`` is GONE** (plan step R7a, ledger row D17).  It was
+    # ``lazy="joined"``, so every rule load eager-joined
+    # ``ref.recurrence_patterns`` for a single reader: the ``recurrence_cell``
+    # macro's fallback branch, which titled the row's ``name`` for a pattern
+    # the application does not model.  The Recurring surface now words a
+    # recurrence from what it MEANS
+    # (:func:`app.services.recurrence.describe`), so the branch, the join and
+    # the last ``.name``-for-display coupling on this table left together.
+    # ``pattern_id`` stays -- it is what a form still authors, until step R7c
+    # replaces it with ``unit_id`` / ``interval_n`` -- and is resolved to its
+    # enum member through ``ref_cache``, never through a relationship.
     start_period = db.relationship("PayPeriod", lazy="joined")
     # The two 0-or-1 subtypes.  ``uselist=False`` because the UNIQUE
     # constraint on each child's ``recurrence_rule_id`` makes at most one

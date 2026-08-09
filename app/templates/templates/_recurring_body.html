@@ -17,7 +17,7 @@
 
    Self-contained imports so the standalone render has them too. #}
 {% from "_money_macros.html" import money %}
-{% from "_recurrence_macros.html" import recurrence_cell with context %}
+{% from "_recurrence_macros.html" import recurrence_cell %}
 
 {# ---- Local render helpers. The producer passed both units in; these only
    pick the active one and format it. No money math here. ---- #}
@@ -129,7 +129,7 @@ data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
           </td>
           <td>{{ t.category.display_name if t.category else '--' }}</td>
           <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
-          <td>{{ recurrence_cell(t) }}</td>
+          <td>{{ recurrence_cell(row.recurrence) }}</td>
           <td class="text-end">
             <span class="font-mono">{{ equiv(row.equivalent, show_pp) }}</span>
             {{ share_bar(row.share_pct) }}
@@ -185,7 +185,7 @@ data-sort-next="{{ row.next_date.isoformat() if row.next_date else '' }}"
             {{ t.to_account.name if t.to_account else '--' }}
           </td>
           <td class="text-end font-mono">{{ money(t.default_amount) }}</td>
-          <td>{{ recurrence_cell(t) }}</td>
+          <td>{{ recurrence_cell(row.recurrence) }}</td>
           <td class="text-end">
             <span class="font-mono">{{ equiv(row.equivalent, show_pp) }}</span>
             {{ share_bar(row.share_pct) }}

@@ -88,11 +88,19 @@ _REF_ID_GLOBALS: tuple[tuple[Callable[[Enum], int], dict[str, Enum]], ...] = (
         "ACCT_TYPE_BROKERAGE": AcctTypeEnum.BROKERAGE,
         "ACCT_TYPE_529": AcctTypeEnum.PLAN_529,
     }),
+    # The recurrence patterns the recurrence FORM still branches on, and only
+    # those.  ``REC_EVERY_PERIOD`` and ``REC_MONTHLY_FIRST`` left at plan step
+    # R7a with the ``recurrence_cell`` macro's per-pattern branches: those two
+    # had no other reader, and a registered global no template references is a
+    # constant defending nothing.  The five below drive
+    # ``_recurrence_fields.html``'s show / hide data attributes and its
+    # interval prefill, and they go when plan step R7b rewrites that form onto
+    # the two-axis vocabulary.  ``tests/test_jinja_globals.py`` pins this set
+    # against the templates themselves, so neither a dropped global nor a dead
+    # one can pass unnoticed.
     (ref_cache.recurrence_pattern_id, {
-        "REC_EVERY_PERIOD": RecurrencePatternEnum.EVERY_PERIOD,
         "REC_EVERY_N_PERIODS": RecurrencePatternEnum.EVERY_N_PERIODS,
         "REC_MONTHLY": RecurrencePatternEnum.MONTHLY,
-        "REC_MONTHLY_FIRST": RecurrencePatternEnum.MONTHLY_FIRST,
         "REC_QUARTERLY": RecurrencePatternEnum.QUARTERLY,
         "REC_SEMI_ANNUAL": RecurrencePatternEnum.SEMI_ANNUAL,
         "REC_ANNUAL": RecurrencePatternEnum.ANNUAL,

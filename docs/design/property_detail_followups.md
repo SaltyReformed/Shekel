@@ -14,7 +14,7 @@ double-resolution DRY item is retained as D1. All findings live in
 1 `247f8321` + 2 `4e6e63c2`); the reproductions below are now the passing regression tests in
 `tests/test_routes/test_property.py`. The rebuild is NOT yet PR'd/shipped -- 2 owed tests + the
 Fable visual (commit 5) remain. Live status, commit ledger, and the owed-test recipe:
-`docs/plans/implementation_plan_property_equity_chart_rebuild.md`.
+`docs/plans/historical/implementation_plan_property_equity_chart_rebuild.md`.
 
 ## Root cause shared by H1-H3
 
@@ -244,7 +244,7 @@ to land the fix, cheapest to most-correct:
 **Decision (2026-07-12): Option 3, with H2 ruled as (a) contractual back-projection.** Full
 implementation plan (data contract, per-loan five-region debt series, date-keyed value, resolve-once
 purity, shared-primitive generalization, test plan, sequencing):
-`docs/plans/implementation_plan_property_equity_chart_rebuild.md`.
+`docs/plans/historical/implementation_plan_property_equity_chart_rebuild.md`.
 
 ## Scratch mockup retention (developer instruction, 2026-07-12)
 

@@ -107,6 +107,30 @@ Escape hatches:
   (e.g. when running against a staging cluster on a different port).
 - Wrapper is a no-op when the container does not exist, so CI (which spins up its own postgres
   service) is unaffected.
+- **The restart is SKIPPED, loudly, when another run is using the container.** It terminates every
+  backend, so performing it while a second checkout's suite is live kills that run with
+  `server closed the connection unexpectedly` -- measured 2026-08-08 as 208 setup errors, which read
+  exactly like a code regression at the point where they surface. The wrapper asks
+  `pg_stat_activity` for live `%test%` connections first. The restart is shared-memory hygiene, not
+  a correctness gate, so skipping it costs drift and nothing else.
+
+### Two checkouts against one cluster
+
+A worktree or second clone sharing `shekel-dev-test-db` needs BOTH halves isolated, and each has its
+own environment variable (read from the environment, or from `.env` via the wrapper):
+
+- `TEST_TEMPLATE_DATABASE=<name>` -- what the run clones FROM. Set it when the checkout's migration
+  head differs from the other's, and build it with
+  `TEST_TEMPLATE_DATABASE=<name> python scripts/build_test_template.py`.
+- `TEST_DB_PREFIX=<name>` -- what the run clones INTO. The per-worker databases are
+  `{prefix}_{worker_id}`, default prefix `shekel_test`. Without it
+  **both checkouts default to `-n 12` and both claim `shekel_test_gw0..gw11`**; the loser dies with
+  `DuplicateDatabase: database "shekel_test_gwN" already exists`, en masse, at fixture setup.
+
+Tell the two failure signatures apart: `DuplicateDatabase` is a worker-name collision
+(`TEST_DB_PREFIX`), `server closed the connection unexpectedly` is someone restarting the container
+mid-run (the guard above). Setting `PYTEST_XDIST_WORKER` by hand isolates a serial `-n 0` run but
+NOT `-n 12`, where xdist overwrites it per worker.
 
 **Why not just VACUUM the shared catalogs from a pytest sessionstart hook?** Tried; does not help.
 See "Cause" above. The fragmentation is in PG shared memory, not on-disk pages.

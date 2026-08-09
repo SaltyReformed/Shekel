@@ -59,6 +59,29 @@ from app.utils.money import round_money
 RecurringTemplate = Union[TransactionTemplate, TransferTemplate]
 
 
+def template_rule(template: RecurringTemplate):
+    """Return *template*'s recurrence rule, or ``None`` when it does not repeat.
+
+    The one accessor for "does this definition repeat", beside the
+    ``RecurringTemplate`` type both readers duck-type over.  ``getattr`` rather
+    than attribute access because the test fixtures build templates as
+    ``types.SimpleNamespace``; "does not repeat" is ``recurrence_rule_id IS
+    NULL`` on both ORM kinds since plan step R2e-3.
+
+    Lives here rather than in ``recurring_view`` because this module owns the
+    shared filter's step 1 and was already performing the same read inline --
+    two spellings of one question in modules that import each other.
+
+    Args:
+        template: A ``TransactionTemplate`` or ``TransferTemplate`` (or any
+            object exposing ``recurrence_rule``).
+
+    Returns:
+        The ``RecurrenceRule``, or ``None``.
+    """
+    return getattr(template, "recurrence_rule", None)
+
+
 def template_monthly_or_none(
     template: RecurringTemplate,
     as_of: date,
@@ -91,7 +114,7 @@ def template_monthly_or_none(
         rules. ``None`` means "do not include this template in any
         monthly-equivalent total."
     """
-    rule = getattr(template, "recurrence_rule", None)
+    rule = template_rule(template)
     if rule is None:
         return None
 

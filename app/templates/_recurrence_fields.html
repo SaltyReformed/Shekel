@@ -23,12 +23,14 @@
 
    The REC_* pattern ids in the data-* attributes are Jinja globals, registered
    by register_ref_id_globals in app/jinja_globals.py, so they resolve whether
-   or not the importing form uses `with context`.  The pattern select itself
-   needs nothing from the context: since plan step R2e-2 its options arrive as
-   (pattern_id, label) pairs from app.services.recurrence.pattern_choices, so
-   the label lookup that used to read the recurrence_pattern_labels context
-   variable is gone.  recurrence_form.js drives the show / hide + live preview
-   off the element ids emitted here. #}
+   or not the importing form uses `with context`.  This form is now their ONLY
+   reader: plan step R7a deleted the recurrence_cell macro's per-pattern
+   branches and the two globals nothing else named, and plan step R7b deletes
+   the remaining five with this form.  The pattern select needs nothing from
+   the context either: since plan step R2e-2 its options arrive as
+   (pattern_id, label) pairs from app.services.recurrence.pattern_choices.
+   recurrence_form.js drives the show / hide + live preview off the element ids
+   emitted here. #}
 
 
 {# The pattern <select>.  ``choices`` is the ordered PatternChoice tuple the

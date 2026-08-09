@@ -15,7 +15,6 @@ from decimal import Decimal
 
 import pytest
 
-from app.enums import RecurrencePatternEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -2226,119 +2225,124 @@ class TestEnvelopeIncomeRejection:
 class TestRecurrenceCellLock:
     """C7 source-level locks for the ``recurrence_cell`` macro.
 
-    Guards CLAUDE.md "Reference Tables -- IDs for logic, strings for
-    display only" against silent regression.  The macro historically
-    compared ``rr.pattern.name`` strings (via an intermediate ``pname``
-    set variable) to drive eight elif branches.  Commit 7 of the
-    mobile-followup plan (F-8) rewired the comparisons onto integer
-    pattern IDs sourced from the ``REC_*`` Jinja globals registered by
-    ``app.jinja_globals.register_ref_id_globals``.
+    The macro's whole history is a template computing what a service should
+    have.  It first compared ``rr.pattern.name`` strings through an
+    intermediate ``pname`` variable; the mobile-followup commit 7 (F-8) rewired
+    those onto the ``REC_*`` integer id globals; the polyglot cleanup
+    (TPLB/TPL-07) merged two byte-identical copies into one shared macro.  Each
+    fixed the spelling and left the shape.
 
-    The polyglot cleanup (TPLB/TPL-07) then consolidated the two
-    byte-identical copies that lived in
-    ``app/templates/templates/list.html`` and
-    ``app/templates/transfers/list.html`` into one shared macro at
-    ``app/templates/_recurrence_macros.html``, which both list
-    templates now import.  These tests therefore lock the single
-    source of truth: no ``.name ==`` or ``pname ==`` substrings (the
-    comparison patterns the rewrite eliminated), every recurrence
-    pattern enum member has a matching ``REC_*`` comparison so a
-    future "added a new pattern but forgot to wire the branch"
-    regression fails the lock instead of silently falling through to
-    the else branch, and both list templates still import the shared
-    macro so the consolidation cannot silently regress into a divergent
-    re-inlined copy.
+    **Plan step R7a removed the shape.**  The phrase is produced by
+    ``app.services.recurrence.describe`` from what a recurrence MEANS -- one
+    function over ``(interval_n, unit)`` -- and the macro receives it already
+    worded.  So the lock is no longer "compare ids, not names"; it is that the
+    macro reads NOTHING but its argument.  That is what keeps it alive through
+    plan step R7c, which drops every column the old branches read.
     """
 
-    _MACRO_PATHS = (
+    _MACRO_PATH = ("app", "templates", "_recurrence_macros.html")
+
+    # Every site that renders the cell: the two active sections of the
+    # swappable body, and the Archived drawer on the full page.  The former
+    # transfers/list.html was retired when /transfers folded into /templates.
+    _RENDER_SITE_PATHS = (
+        ("templates/list.html", ("app", "templates", "templates", "list.html")),
         (
-            "_recurrence_macros.html",
-            ("app", "templates", "_recurrence_macros.html"),
+            "templates/_recurring_body.html",
+            ("app", "templates", "templates", "_recurring_body.html"),
         ),
     )
 
-    # The unified Recurring surface (Loop B) is the single list template
-    # that renders recurrence descriptions; the former transfers/list.html
-    # was retired when /transfers folded into /templates.
-    _LIST_TEMPLATE_PATHS = (
-        ("templates/list.html", ("app", "templates", "templates", "list.html")),
+    # Identifiers whose presence in the macro BODY would mean the template had
+    # started reading the recurrence rule again, paired with what each one
+    # costs.  ``pattern`` covers ``pattern_id``, ``pattern.name`` and the
+    # ``REC_*`` comparisons in one.
+    _FORBIDDEN_IN_BODY = (
+        ("pattern", "the closed pattern set, which plan step R7c drops"),
+        ("day_of_month", "a rule column, which plan step R7c drops"),
+        ("month_of_year", "a rule column, which plan step R7c drops"),
+        ("interval_n", "a rule column the describer already reads"),
+        ("recurrence_rule", "the rule itself; the macro takes a description"),
+        (".name", "a ref-table name string used for display"),
     )
 
-    # Derived from the enum rather than mirrored: plan step R2e-3 deleted
-    # ``ONCE`` from both, and a hand-written copy would have had to be edited
-    # in step -- which is what this class exists to make unnecessary.
-    _EXPECTED_REC_CONSTANTS = tuple(
-        f"REC_{member.name}" for member in RecurrencePatternEnum
-    )
-
-    def _read_macro_source(self, parts):
+    def _read_template_source(self, parts):
         """Return the contents of a template file under ``app/templates``."""
         import pathlib  # pylint: disable=import-outside-toplevel
 
         path = pathlib.Path(__file__).resolve().parents[2].joinpath(*parts)
         return path.read_text(encoding="utf-8")
 
-    def test_no_string_name_comparisons_in_recurrence_cells(self):
-        """Both macros must not equality-compare against pattern.name strings.
+    def _macro_body(self):
+        """Return the ``recurrence_cell`` macro's body, without its comment.
 
-        Locks the F-8 rewrite: each macro previously did
-        ``{% set pname = rr.pattern.name %}`` then compared
-        ``pname == 'Every Period'`` etc.  Both substrings must be
-        absent post-commit; comparisons drive off ``rr.pattern_id``.
+        Scoped to the body deliberately: the file's leading ``{# ... #}`` block
+        NAMES the identifiers the body must not contain, because explaining
+        what was removed is the point of it.  A whole-file scan would therefore
+        fail on its own documentation, and the usual fix -- deleting the
+        explanation -- is the wrong one.
         """
-        for label, parts in self._MACRO_PATHS:
-            src = self._read_macro_source(parts)
+        src = self._read_template_source(self._MACRO_PATH)
+        start = src.index("{% macro recurrence_cell(")
+        end = src.index("{% endmacro %}", start)
+        return src[start:end]
 
-            assert ".name ==" not in src, (
-                f"{label} must not compare against pattern.name "
-                "strings; use the REC_* integer ID globals instead."
+    def test_the_extractor_finds_the_real_macro_body(self):
+        """The body scan is not vacuous.
+
+        Without this, a mis-sliced extractor would return an empty string and
+        every forbidden-identifier assertion below would pass while checking
+        nothing -- the exact failure mode this arc's reviews keep finding in
+        controls that were never shown to fire.
+        """
+        body = self._macro_body()
+
+        assert "description.cadence" in body, (
+            "the extracted body does not contain the phrase the macro renders; "
+            "the slice bounds are wrong, so the locks below check nothing"
+        )
+        assert "One-time" in body, (
+            "the extracted body does not contain the rule-less branch"
+        )
+
+    def test_the_macro_reads_nothing_but_its_argument(self):
+        """The cell displays a produced value; it does not compute one.
+
+        Locks plan step R7a.  Any of these identifiers reappearing means the
+        template has gone back to deriving the phrase from the rule's columns
+        -- which is both the "templates display, never compute" violation and
+        a surface that breaks the moment plan step R7c drops those columns.
+        """
+        body = self._macro_body()
+
+        for identifier, why in self._FORBIDDEN_IN_BODY:
+            assert identifier not in body, (
+                f"the recurrence_cell macro body reads {identifier!r} "
+                f"({why}); it must render only the RecurrenceDescription it "
+                "is passed"
             )
-            assert "pname ==" not in src, (
-                f"{label} must not compare against the pname "
-                "intermediate variable; use rr.pattern_id == REC_* "
-                "instead."
-            )
 
-    def test_recurrence_cells_use_rec_id_globals(self):
-        """Every RecurrencePatternEnum member maps to a REC_* lookup.
+    def test_every_render_site_imports_the_shared_macro(self):
+        """All four cells come from one macro, imported without context.
 
-        Positive complement of the no-strings lock: confirms the
-        rewrite did NOT collapse branches by removing comparisons
-        outright.  Each enum member must appear as a
-        ``rr.pattern_id == REC_<MEMBER>`` comparison in each macro;
-        a future refactor that drops one branch fails this test.
+        The macro lives once in ``_recurrence_macros.html``; locking the import
+        keeps a render site from re-inlining a private copy that could diverge.
+        ``with context`` is deliberately ABSENT: it was required while the
+        else-branch read the ``recurrence_pattern_labels`` context processor,
+        and plan step R7a deleted both, so the macro now reads nothing from the
+        render context at all.
         """
-        for label, parts in self._MACRO_PATHS:
-            src = self._read_macro_source(parts)
-
-            for constant in self._EXPECTED_REC_CONSTANTS:
-                assert f"rr.pattern_id == {constant}" in src, (
-                    f"{label} recurrence_cell macro must compare "
-                    f"rr.pattern_id against {constant}; missing "
-                    "branch would silently fall through to the else "
-                    "fallback."
-                )
-
-    def test_list_templates_import_shared_recurrence_macro(self):
-        """The unified list template imports the consolidated macro (TPLB/TPL-07).
-
-        The recurrence_cell macro lives once in ``_recurrence_macros.html``.
-        Locking the import ensures the unified Recurring list does not
-        re-inline a private copy that could diverge from the single source
-        the two tests above guard.  The
-        ``with context`` clause is required: the macro's else-branch
-        fallback reads ``recurrence_pattern_labels``, an
-        ``@app.context_processor`` variable invisible to a context-less
-        import.
-        """
-        for label, parts in self._LIST_TEMPLATE_PATHS:
-            src = self._read_macro_source(parts)
+        for label, parts in self._RENDER_SITE_PATHS:
+            src = self._read_template_source(parts)
 
             assert (
-                'from "_recurrence_macros.html" import recurrence_cell '
-                "with context" in src
+                'from "_recurrence_macros.html" import recurrence_cell' in src
             ), (
                 f"{label} must import recurrence_cell from "
-                "_recurrence_macros.html with context, not define its "
-                "own copy."
+                "_recurrence_macros.html, not define its own copy."
+            )
+            assert "import recurrence_cell with context" not in src, (
+                f"{label} imports recurrence_cell with context; the macro "
+                "reads nothing from the context since plan step R7a, and the "
+                "clause would hide a re-introduced context dependency."
             )

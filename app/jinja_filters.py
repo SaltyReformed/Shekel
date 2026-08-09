@@ -21,21 +21,7 @@ from decimal import Decimal
 from flask import Flask
 
 from app.services.salary_cockpit_service import clean_raise_label
-from app.utils.dates import to_display_tz
-
-# English month names, indexed by ``month_number - 1``.  The single
-# source of truth for the per-template ``month_names`` dicts that used to
-# be hand-maintained in six templates plus an inline list (polyglot audit
-# TPLB/TPL-07): the ``month_name`` filter reads these so callers no longer
-# define their own.
-_MONTH_NAMES_FULL: tuple[str, ...] = (
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-)
-_MONTH_NAMES_ABBR: tuple[str, ...] = (
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-)
+from app.utils.dates import month_name, to_display_tz
 
 # Months in a year -- named so the year conversion is not a bare literal.
 _MONTHS_PER_YEAR = 12
@@ -139,31 +125,6 @@ def months_to_years(months: int | None, digits: int = 1) -> int | float | str:
     if digits == 0:
         return int(years)
     return years
-
-
-def month_name(value: int | None, abbr: bool = False) -> str:
-    """Map a 1-12 month number to its English name (``1`` -> ``"January"``).
-
-    Single source for the month-name lookups that used to be duplicated as
-    per-template ``month_names`` dicts (polyglot audit TPLB/TPL-07).  Pass
-    ``abbr=True`` for the three-letter form (``"Jan"``) used by the list
-    views; the default full name (``"January"``) matches the form selects.
-
-    Args:
-        value: A month number in ``1..12``, or ``None``.
-        abbr: ``True`` for the abbreviated name, ``False`` for the full
-            name.
-
-    Returns:
-        The month name, or ``""`` for ``None`` or an out-of-range number.
-    """
-    if value is None:
-        return ""
-    index = int(value)
-    if not 1 <= index <= _MONTHS_PER_YEAR:
-        return ""
-    names = _MONTH_NAMES_ABBR if abbr else _MONTH_NAMES_FULL
-    return names[index - 1]
 
 
 def raise_label(value: str | None) -> str:

@@ -325,7 +325,7 @@ def contractual_schedule_from_origination(
 
     The property equity chart's pre-tracking debt line (the (a) contractual
     back-projection,
-    ``docs/plans/implementation_plan_property_equity_chart_rebuild.md``): a
+    ``docs/plans/historical/implementation_plan_property_equity_chart_rebuild.md``): a
     mid-life-imported loan's confirmed ledger opens at its ``tracking_start``, so
     :func:`resolve_loan_bundle`'s schedule begins there and the
     origination-to-tracking-start months are absent.  This producer supplies

@@ -14,6 +14,7 @@ and ownership isolation holds.  The producer's arithmetic is locked
 separately in ``tests/test_services/test_recurring_view.py``.
 """
 
+from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
@@ -24,6 +25,10 @@ from app.models.ref import AccountType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
+from app.utils.dates import month_name
+
+#: Named so the cycle arithmetic below is not a bare literal.
+MONTHS_IN_YEAR = 12
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -330,3 +335,213 @@ class TestUnifiedIDOR:
         html = auth_client.get("/templates").data.decode()
         assert "My Rent" in html
         assert "Their Rent" not in html
+
+
+# ── The rendered Recurrence cell (plan step R7a) ──────────────────────
+
+
+class TestTheRenderedRecurrenceCell:
+    """The Recurrence column's WORDS, on the page, for each cadence shape.
+
+    The cell had no rendered-content coverage at all before plan step R7a: the
+    only assertion anywhere was the rule-less "One-time" case above, so eight
+    Jinja branches reading four rule columns were held up by nothing.  These
+    drive the real route and read the real HTML.
+    """
+
+    def _row_markup(self, html, name):
+        """Return the markup of the row whose definition is *name*.
+
+        Scoped to the row rather than the document: a page-wide substring
+        would pass on any other cell that happened to say the same thing.
+        """
+        assert name in html, f"{name} is not on the page"
+        return html[html.index(name):][:1200]
+
+    def test_an_every_paycheck_definition_reads_every_paycheck(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The paycheck-space cadence names no calendar day."""
+        user = seed_user["user"]
+        _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
+             _rule(user, RecurrencePatternEnum.EVERY_PERIOD), "100.00",
+             type_enum=TxnTypeEnum.EXPENSE, name="Electric")
+        db.session.commit()
+
+        html = auth_client.get("/templates").data.decode()
+
+        assert "Every paycheck" in self._row_markup(html, "Electric")
+
+    def test_a_monthly_definition_names_its_day(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A rule that fires every month is distinguished only by its day."""
+        user = seed_user["user"]
+        _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
+             _rule(user, RecurrencePatternEnum.MONTHLY, day_of_month=22),
+             "100.00", type_enum=TxnTypeEnum.EXPENSE, name="Van Payment")
+        db.session.commit()
+
+        html = auth_client.get("/templates").data.decode()
+
+        assert "Monthly (day 22)" in self._row_markup(html, "Van Payment")
+
+    def test_a_monthly_first_definition_names_the_paycheck(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A deferring placement is named, and its implied day 1 is not."""
+        user = seed_user["user"]
+        _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
+             _rule(user, RecurrencePatternEnum.MONTHLY_FIRST), "100.00",
+             type_enum=TxnTypeEnum.EXPENSE, name="Phone Allowance")
+        db.session.commit()
+
+        html = auth_client.get("/templates").data.decode()
+        row = self._row_markup(html, "Phone Allowance")
+
+        assert "Monthly (first paycheck)" in row
+        assert "day 1" not in row
+
+    def test_a_quarterly_definition_now_names_its_day_too(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The uniform shape, ruled 2026-08-08.
+
+        The old cell showed a quarterly rule's month and never its day, while
+        showing a yearly rule both -- three branches written independently.
+        One function has no room for that difference.
+        """
+        user = seed_user["user"]
+        rule = _rule(user, RecurrencePatternEnum.QUARTERLY, day_of_month=21)
+        rule.month_of_year = seed_periods_today[0].start_date.month
+        db.session.flush()
+        _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
+             rule, "60.00", type_enum=TxnTypeEnum.EXPENSE, name="Mint Mobile")
+        db.session.commit()
+
+        html = auth_client.get("/templates").data.decode()
+        row = self._row_markup(html, "Mint Mobile")
+
+        assert "Quarterly (" in row
+        assert " 21)" in row, "the quarterly cell must name its day"
+
+    def test_a_quarterly_definition_authored_before_the_schedule_names_its_first(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The shape that MOVED on production, pinned end to end.
+
+        Anchor Disposal is quarterly, authored March, day 2, on a schedule
+        opening 2026-03-26 -- so its first occurrence is 2 June and the old
+        cell said "starting Mar", a month already behind the schedule.  The
+        sibling test above deliberately authors a month the schedule COVERS,
+        which is the case that did not move; without this one the whole
+        user-visible regression risk of plan step R7a-1 is untested.
+
+        Built by authoring a month a full cycle BEFORE the schedule opens, so
+        the assertion holds whatever day of the year the suite runs on: the
+        first occurrence is then always a LATER member of the same quarterly
+        cycle, never the authored month.
+        """
+        user = seed_user["user"]
+        opening = seed_periods_today[0].start_date
+        # Three months back is one full quarterly cycle: the SAME residue class
+        # mod 3, so the rule's months are unchanged, but the named month is
+        # strictly behind the schedule and can host no row.  Plain modular
+        # arithmetic rather than a date library the project does not depend on.
+        authored_month = (opening.month - 3 - 1) % MONTHS_IN_YEAR + 1
+        rule = _rule(user, RecurrencePatternEnum.QUARTERLY, day_of_month=2)
+        rule.month_of_year = authored_month
+        db.session.flush()
+        _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
+             rule, "45.00", type_enum=TxnTypeEnum.EXPENSE,
+             name="Anchor Disposal")
+        db.session.commit()
+
+        html = auth_client.get("/templates").data.decode()
+        row = self._row_markup(html, "Anchor Disposal")
+
+        # An INDEPENDENT forward walk of the same cycle, in the test: start a
+        # year before the schedule and step three months until a date lands on
+        # or after the opening.  Asserting the exact expected string rather
+        # than "not the authored month" is what makes this fire -- a negative
+        # is satisfied by any wrong month, and a mutant naming the month one
+        # cycle back passed it.
+        ordinal = (opening.year - 1) * MONTHS_IN_YEAR + (authored_month - 1)
+        while True:
+            year, month_index = divmod(ordinal, MONTHS_IN_YEAR)
+            first_occurrence = date(year, month_index + 1, 2)
+            if first_occurrence >= opening:
+                break
+            ordinal += 3
+        expected = (
+            f"Quarterly ({month_name(first_occurrence.month, abbr=True)} 2)"
+        )
+
+        assert expected in row, (
+            f"the cell must name the first occurrence {first_occurrence}; the "
+            f"authored month is "
+            f"{month_name(authored_month, abbr=True)}, which is behind the "
+            f"schedule opening {opening} and hosts no row"
+        )
+
+    def test_an_end_date_renders_as_its_own_muted_line(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The closing bound is a separate line, not folded into the phrase."""
+        from datetime import timedelta  # pylint: disable=import-outside-toplevel
+
+        user = seed_user["user"]
+        rule = _rule(user, RecurrencePatternEnum.MONTHLY, day_of_month=1)
+        end = seed_periods_today[0].start_date + timedelta(days=800)
+        rule.end_date = end
+        db.session.flush()
+        _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
+             rule, "1500.00", type_enum=TxnTypeEnum.EXPENSE, name="Mortgage")
+        db.session.commit()
+
+        html = auth_client.get("/templates").data.decode()
+        row = self._row_markup(html, "Mortgage")
+
+        assert "Monthly (day 1)" in row
+        assert f"until {end.strftime('%b %d, %Y')}" in row
+
+    def test_an_archived_definition_still_shows_how_it_repeated(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The Archived drawer's cell comes from the producer too.
+
+        It bypassed the producer entirely before plan step R7a -- raw ORM rows
+        handed to a template that computed the phrase itself -- so this row is
+        the one the label rewrite could most easily have dropped.
+        """
+        user = seed_user["user"]
+        tmpl = _txn(
+            user, seed_user["account"], seed_user["categories"]["Rent"],
+            _rule(user, RecurrencePatternEnum.MONTHLY, day_of_month=9),
+            "25.00", type_enum=TxnTypeEnum.EXPENSE, name="Retired Streaming",
+        )
+        tmpl.is_active = False
+        db.session.commit()
+
+        html = auth_client.get("/templates").data.decode()
+        row = self._row_markup(html, "Retired Streaming")
+
+        assert "Archived (1)" in html
+        assert "Monthly (day 9)" in row
+
+    def test_an_archived_one_time_definition_reads_one_time(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The drawer's rule-less branch, which has no producer answer at all."""
+        user = seed_user["user"]
+        tmpl = _txn(
+            user, seed_user["account"], seed_user["categories"]["Rent"],
+            None, "25.00", type_enum=TxnTypeEnum.EXPENSE,
+            name="Retired One Off",
+        )
+        tmpl.is_active = False
+        db.session.commit()
+
+        html = auth_client.get("/templates").data.decode()
+
+        assert "One-time" in self._row_markup(html, "Retired One Off")

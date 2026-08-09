@@ -1,7 +1,7 @@
 # Implementation Plan: UI Overhaul + Polish Pass Closeout
 
 Combined remaining-work list for the Fable 5 UI/UX overhaul (`docs/design/overhaul_plan.md`) and the
-UI/UX polish pass (`docs/plans/implementation_plan_ui_ux_polish.md` plus its register at
+UI/UX polish pass (`docs/plans/historical/implementation_plan_ui_ux_polish.md` plus its register at
 `docs/design/ui_ux_polish_audit.md`). Written 2026-07-11 from both docs cross-checked against dev
 git history; where a doc and the code disagreed, the code won. The polish register remains the SoT
 for finding details and rulings; this plan governs only what is left and in what order.
