@@ -77,7 +77,7 @@ from app.services.recurrence import (
 # would leave ``occurrence_placements`` calling the real ones, making a control
 # that passes prove nothing -- the same reasoning
 # ``tests/oracles/recurrence_baseline.py`` records for the old engine.
-from app.services.recurrence import _occurrence
+from app.services.recurrence import _occurrence, _resolution
 from tests.oracles import recurrence_baseline
 from tests.test_services.test_recurrence_resolution import build_calendar
 
@@ -1458,6 +1458,36 @@ class TestRefusals:
 
         with pytest.raises(RecurrenceGenerationError, match="no occurrence walk"):
             occurrences(not_a_unit, calendar, through=date(2026, 12, 31))
+
+    def test_a_unit_that_names_a_day_but_has_no_stride_is_refused(self, monkeypatch):
+        """The sibling refusal, and the reason there are two (plan step R7a).
+
+        A member added to ``_resolution._DAY_OF_MONTH_UNITS`` without a walk
+        here reaches ``walk_months`` with a real day and no stride.  Before the
+        two refusals were separated it reached ``clamped_day`` with ``None``
+        and died on a bare ``TypeError`` three frames down, which is not this
+        package's idea of failing loud.  Both halves of the half-finished edit
+        are now named, and each is shown to fire: this one by giving the
+        hypothetical unit a day, the one above by withholding it.
+        """
+        calendar = build_calendar()
+        fortnight = object()
+        monkeypatch.setattr(
+            _resolution, "_DAY_OF_MONTH_UNITS",
+            (*_resolution._DAY_OF_MONTH_UNITS, fortnight),
+        )
+        value = resolved_value(
+            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+        )
+        no_stride = ResolvedRecurrence(**{**vars(value), "unit": fortnight})
+
+        assert no_stride.day_of_month == 15, (
+            "the control must reach the SECOND refusal, not the first"
+        )
+        with pytest.raises(
+            RecurrenceGenerationError, match="names a day of the month but",
+        ):
+            occurrences(no_stride, calendar, through=date(2026, 12, 31))
 
     def test_a_placement_with_no_rule_is_refused(self):
         """Same reasoning on the placement axis."""

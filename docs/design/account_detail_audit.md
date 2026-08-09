@@ -384,9 +384,9 @@ live-verified via `tests/manual/shoot.py`; then the scratch mockup is deleted.
 The Loop B build contract above was DATA-superseded before Fable shipped. Three correctness defects
 (H1 paid-off fallback unreachable, H2 front-aligned multi-loan merge, H3 fabricated past values)
 plus a double-resolution DRY issue were reproduced against the real producers and closed by a full
-rebuild: `docs/plans/implementation_plan_property_equity_chart_rebuild.md`. The producer is now PURE
-and reasons on a CALENDAR-DATE axis anchored at `today`, so the JSON contract changed from the
-pinned version above:
+rebuild: `docs/plans/historical/implementation_plan_property_equity_chart_rebuild.md`. The producer
+is now PURE and reasons on a CALENDAR-DATE axis anchored at `today`, so the JSON contract changed
+from the pinned version above:
 
 - `current_index` -> **`today_index`** (the month containing today: the value flat/compound split
   and the Today marker). It is NOT the confirmed/projected boundary -- recorded history can end

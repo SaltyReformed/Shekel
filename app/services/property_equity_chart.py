@@ -5,7 +5,7 @@ Builds the market-value / secured-debt / equity monthly series the property
 detail band chart draws (``docs/design/account_detail_audit.md``, "Property
 equity chart" + the 2026-07-11 Loop A lock, direction A "stacked shares"), on
 a CALENDAR-DATE axis anchored at ``today`` -- the date-anchored rebuild
-(``docs/plans/implementation_plan_property_equity_chart_rebuild.md``) that
+(``docs/plans/historical/implementation_plan_property_equity_chart_rebuild.md``) that
 replaces the index-space producer whose three correctness defects (H1 paid-off
 fallback unreachable, H2 front-aligned merge, H3 fabricated past values) are
 registered in ``docs/design/property_detail_followups.md``.

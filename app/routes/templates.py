@@ -258,13 +258,23 @@ def _load_active_transfer_templates(user_id):
     )
 
 
-def _load_archived_templates(user_id):
-    """Load the user's archived transaction and transfer templates.
+def _load_archived_rows(user_id, calendar):
+    """Shape the Archived drawer's rows for both template kinds.
 
-    Returns ``(archived_transactions, archived_transfers)``; the unified
-    page renders both under one collapsed Archived section with Unarchive
-    actions.  Archived rows carry no monthly equivalent (they are inactive
-    and excluded from every total), so they bypass the producer.
+    Returns ``(archived_transactions, archived_transfers)`` as
+    ``recurring_view.ArchivedRow`` tuples; the unified page renders both under
+    one collapsed Archived section with Unarchive actions.  Archived rows carry
+    no monthly equivalent, no next date and no share -- they are inactive and
+    excluded from every total -- but they DO carry how the definition repeated,
+    which since plan step R7a is a producer's answer rather than a phrase a
+    template assembles from the rule's columns.
+
+    Args:
+        user_id: The owner.
+        calendar: The owner's pay-period schedule, built once by the caller and
+            shared with the active-section producer -- the cadence phrase is
+            measured against it, and building a second copy for the drawer
+            would be a second resolution point in one request.
     """
     archived_transactions = (
         db.session.query(TransactionTemplate)
@@ -284,16 +294,25 @@ def _load_archived_templates(user_id):
         .order_by(TransferTemplate.sort_order, TransferTemplate.name)
         .all()
     )
-    return archived_transactions, archived_transfers
+    return (
+        recurring_view.build_archived_rows(archived_transactions, calendar),
+        recurring_view.build_archived_rows(archived_transfers, calendar),
+    )
 
 
-def _load_recurring_view(user_id):
+def _load_recurring_view(user_id, calendar):
     """Build the unified Recurring display model for a user.
 
     Shared by the full-page ``list_templates`` render and the
     ``set_unit_preference`` HTMX toggle, so both paths produce identical
     figures from one code path.  The toggle only re-picks which unit the
     template displays; it does not open a second money path.
+
+    Args:
+        user_id: The owner.
+        calendar: The owner's pay-period schedule, taken as an argument rather
+            than built here so the full-page render shares ONE with the
+            Archived drawer.
     """
     income_templates, expense_templates = _load_active_transaction_templates(
         user_id,
@@ -303,7 +322,7 @@ def _load_recurring_view(user_id):
         income_templates=income_templates,
         expense_templates=expense_templates,
         transfer_templates=transfer_templates,
-        calendar=calendar_for(user_id),
+        calendar=calendar,
         as_of=date.today(),
     )
 
@@ -324,8 +343,13 @@ def list_templates():
     toggle shows first, read from the user's stored preference.
     """
     user_id = current_user.id
-    view = _load_recurring_view(user_id)
-    archived_transactions, archived_transfers = _load_archived_templates(user_id)
+    # ONE schedule for the whole page: the active sections measure every
+    # cadence and next date against it, and so does the Archived drawer.
+    calendar = calendar_for(user_id)
+    view = _load_recurring_view(user_id, calendar)
+    archived_transactions, archived_transfers = _load_archived_rows(
+        user_id, calendar,
+    )
 
     settings = current_user.settings
     show_per_paycheck = bool(settings and settings.recurring_show_per_paycheck)
@@ -375,7 +399,11 @@ def set_unit_preference():
     if request.headers.get("HX-Request"):
         settings = current_user.settings
         show_per_paycheck = bool(settings and settings.recurring_show_per_paycheck)
-        view = _load_recurring_view(current_user.id)
+        # The toggle re-renders the body only; the Archived drawer is not part
+        # of the swapped fragment, so this path needs no rows for it.
+        view = _load_recurring_view(
+            current_user.id, calendar_for(current_user.id),
+        )
         return render_template(
             "templates/_recurring_body.html",
             view=view,

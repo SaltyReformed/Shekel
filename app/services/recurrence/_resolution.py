@@ -222,7 +222,10 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
             itself, which is every rule whose day is 1-28 and every rule that
             does not fire on a day of the month at all.  Presence is the
             discriminator (ruling R-R3), and it is what stops a month-end rule
-            from decaying to the 30th forever.
+            from decaying to the 30th forever.  **Read it through
+            :attr:`day_of_month`**, never directly: the day a rule MEANS is the
+            two fields taken together, and open-coding that join is how a
+            second answer starts.
     """
 
     offset_periods: int
@@ -234,6 +237,35 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
     end_date: date | None
     max_occurrences: int | None
     nominal_day: int | None
+
+    @property
+    def day_of_month(self) -> int | None:
+        """Return the day of the month this recurrence fires on.
+
+        The ONE reader of the ``(anchor_date, nominal_day)`` pair, which is one
+        fact stored in two fields: the anchor holds the day unless its own
+        month was too short to hold it, in which case :attr:`nominal_day` holds
+        what the rule meant and the anchor holds the clamp (ruling R-R3).  The
+        occurrence walk and the display describer both need that day, and
+        writing the join twice is how the same rule comes to fire on the 31st
+        and read as the 30th.
+
+        ``is None``, not truthiness: :attr:`nominal_day`'s domain is 29-31, but
+        a falsy-day bug here would silently re-clamp every later month.
+
+        Returns:
+            The day 1-31 the rule means, month-end clamped per month by the
+            walk itself -- or ``None`` for a unit that does not fire on a day
+            of the month (:data:`_DAY_OF_MONTH_UNITS`).  ``None`` is absence
+            rather than a missing value: a paycheck-space or weekly rule has no
+            day-of-month to name, and answering the anchor's own day would
+            invent a coordinate the cadence never uses.
+        """
+        if self.unit not in _DAY_OF_MONTH_UNITS:
+            return None
+        if self.nominal_day is None:
+            return self.anchor_date.day
+        return self.nominal_day
 
 
 #: Families of anchor derivation.  Three, because the anchor is measured in
@@ -316,9 +348,15 @@ _PATTERN_DERIVATIONS: dict[RecurrencePatternEnum, _PatternDerivation] = {
     ),
 }
 
-#: The units whose anchor day can be month-end clamped, and therefore the only
-#: ones that can need a ``recurrence_month_anchors`` row.
-_CLAMPABLE_UNITS = (RecurrenceUnitEnum.MONTH, RecurrenceUnitEnum.YEAR)
+#: The units that fire on a DAY OF THE MONTH, and therefore the only ones whose
+#: anchor day can be month-end clamped.
+#:
+#: Named for what it decides rather than for the clamp: it answers both
+#: :attr:`ResolvedRecurrence.day_of_month` ("does this cadence have such a day
+#: at all") and :func:`_month_anchor_day` ("can that day have been clamped").
+#: The clamp is a consequence of firing on a day of the month, not a separate
+#: property, so one constant is honest for both readers.
+_DAY_OF_MONTH_UNITS = (RecurrenceUnitEnum.MONTH, RecurrenceUnitEnum.YEAR)
 
 #: The reverse matcher's coercion of a rule that names no day / month
 #: (``rule.day_of_month or 1`` / ``rule.month_of_year or 1``), mirrored rather
@@ -697,7 +735,7 @@ def _month_anchor_day(
     Returns:
         The nominal day when the anchor month clamped it, else ``None``.
     """
-    if unit not in _CLAMPABLE_UNITS or nominal_day is None:
+    if unit not in _DAY_OF_MONTH_UNITS or nominal_day is None:
         return None
     last_day = calendar_module.monthrange(anchor.year, anchor.month)[1]
     if anchor.day == last_day and nominal_day > anchor.day:

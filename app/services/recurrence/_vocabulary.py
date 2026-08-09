@@ -27,19 +27,21 @@ accepted, and not previewed.  "Does not recur" is
 ``recurrence_rule_id IS NULL`` on either template kind, so no pattern has to
 mean it.
 
-**The display label sits beside the membership answer because the two CONVERGE**
--- not because separating them would let them drift.  Both are keyed by
-:class:`~app.enums.RecurrencePatternEnum`, which IS the single list, and it is
-that keying rather than this file that makes a member without a label a
-``KeyError`` instead of a blank option.  What co-location buys is plan step
-R7a, which replaces :data:`_PATTERN_LABELS` with one function over
-``(interval, unit)``: from there the label is a function OF the resolution
-vocabulary, so a split today would only have to be re-merged.  Writing that
-function became POSSIBLE at R2e-3 -- while ``Once`` existed,
-``_resolution._PATTERN_DERIVATIONS`` gave it and ``Every Period``
-byte-identical two-axis values, so no derivation could tell "One-time" from
-"Every paycheck".  It is R7a's work, not this module's, and until then an
-enum-keyed table is the honest shape.
+**The PICKER's label sits beside the membership answer because the two
+CONVERGE** -- not because separating them would let them drift.  Both are keyed
+by :class:`~app.enums.RecurrencePatternEnum`, which IS the single list, and it
+is that keying rather than this file that makes a member without a label a
+``KeyError`` instead of a blank option.
+
+**The DISPLAY label left at plan step R7a**, and the two were never one table:
+:func:`app.services.recurrence.describe` words a RESOLVED recurrence over
+``(interval_n, unit)``, which is what survives plan step R7c, while
+:data:`_PATTERN_LABELS` words the closed-set option a form still POSTS, which
+dies with that form at plan step R7b.  R7a deleted this module's
+``pattern_labels_by_name`` -- a name-keyed projection whose only consumer was
+the ``recurrence_cell`` macro's fallback branch -- together with the branch.
+Until the picker authors the two-axis vocabulary, an enum-keyed table of what
+the OPTIONS are called is the honest shape.
 
 Pure: no Flask, no ORM, no clock.  The ``ref`` ids come from
 :mod:`app.ref_cache`, the project's IDs-for-logic seam.
@@ -58,7 +60,13 @@ from dataclasses import dataclass
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
 
-#: What each modelled pattern is CALLED on a form.
+#: What each modelled pattern is CALLED on the form's ``<select>``.
+#:
+#: The PICKER's copy, not the display label: a saved definition's recurrence is
+#: worded by :func:`app.services.recurrence.describe` from what it MEANS, which
+#: is why "Monthly (specific day)" is an option here and no cell anywhere says
+#: it.  Both die at plan step R7b, when the form starts authoring
+#: ``(interval, unit)`` directly.
 #:
 #: Keyed by enum member rather than by the ``ref`` row's ``name`` so the set of
 #: patterns and the set of labels cannot drift apart: :func:`pattern_choices`
@@ -252,29 +260,6 @@ def pattern_choices_for(pattern_id: int | None) -> tuple[PatternChoice, ...]:
     )
 
 
-def pattern_labels_by_name() -> dict[str, str]:
-    """Return the pattern labels keyed by ``ref.recurrence_patterns.name``.
-
-    The name-keyed projection of :data:`_PATTERN_LABELS`, for the
-    ``recurrence_pattern_labels`` context processor
-    (:func:`app.create_app`).  Its one remaining consumer is the else-branch
-    fallback of the ``recurrence_cell`` macro, which holds a PERSISTED rule's
-    ``pattern.name`` and no id -- so a name key is what it can look up.  The
-    picker no longer reads it: :func:`pattern_choices` carries the label with
-    the id it belongs to.
-
-    Derived rather than declared a second time so the two spellings of one
-    label table cannot disagree.  Plan step R7a deletes both the macro branch
-    and this projection.
-
-    Returns:
-        ``{ref row name: label}`` for every modelled pattern.  The key is
-        ``member.value``, which ``ref_cache.init`` already requires to equal
-        the row's ``name``.
-    """
-    return {member.value: label for member, label in _PATTERN_LABELS.items()}
-
-
 __all__ = [
     "UNAVAILABLE_PATTERN_LABEL",
     "UNAVAILABLE_PATTERN_MESSAGE",
@@ -282,5 +267,4 @@ __all__ = [
     "modelled_pattern",
     "pattern_choices",
     "pattern_choices_for",
-    "pattern_labels_by_name",
 ]

@@ -970,14 +970,15 @@ and brand (Steel Ink ink band, silver coin marks, Besley 700 wordmark).
 ### A.25 UI/UX Polish Pass -- COMPLETE July 2026
 
 A cross-page polish pass over the rebuilt app (register: `docs/design/ui_ux_polish_audit.md`; plans:
-`docs/plans/implementation_plan_ui_ux_polish.md`, `docs/plans/implementation_plan_ui_closeout.md`).
-Waves 0-2 fixed the screenshot instrument, the WCAG AA token skins, and the grid column contract;
-sessions S1-S16 delivered the credit-violet token split, the Graphite dark ladder, the Besley
-wordmark, the D12 chart ramp policy, and the dashboard, grid, accounts, spending, statements, and
-settings restructures; the closeout sessions added designed error fragments, status pre-hints, the
-quick-create name field, app-wide breadcrumb removal with back buttons, the D14 click-to-edit anchor
-idiom, and PWA manifest versioning. Shipped to production through PRs #61-#63 (July 7-13). Residue
-is listed in the UI/UX section.
+`docs/plans/historical/implementation_plan_ui_ux_polish.md`,
+`docs/plans/historical/implementation_plan_ui_closeout.md`). Waves 0-2 fixed the screenshot
+instrument, the WCAG AA token skins, and the grid column contract; sessions S1-S16 delivered the
+credit-violet token split, the Graphite dark ladder, the Besley wordmark, the D12 chart ramp policy,
+and the dashboard, grid, accounts, spending, statements, and settings restructures; the closeout
+sessions added designed error fragments, status pre-hints, the quick-create name field, app-wide
+breadcrumb removal with back buttons, the D14 click-to-edit anchor idiom, and PWA manifest
+versioning. Shipped to production through PRs #61-#63 (July 7-13). Residue is listed in the UI/UX
+section.
 
 ### A.26 Test Isolation and Tooling Hardening -- COMPLETE July 2026
 

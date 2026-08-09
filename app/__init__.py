@@ -315,28 +315,6 @@ def _register_context_processors(app):
             return {"COMPANION_ROLE_ID": None}
 
     @app.context_processor
-    def inject_recurrence_labels():
-        """Inject recurrence pattern labels into all template contexts.
-
-        Derived from the one label table
-        (``app.services.recurrence.pattern_labels_by_name``) rather than
-        declared a second time here, so the picker's copy and this one cannot
-        drift apart (plan step R2e-2).  Its only remaining consumer is the
-        else-branch fallback of the ``recurrence_cell`` macro, which holds a
-        persisted rule's ``pattern.name`` and no id; the pattern picker now
-        receives its labels beside the ids they belong to.  Plan step R7a
-        deletes both.
-        """
-        # Pylint: ``import-outside-toplevel`` -- deferred for the same
-        # app-factory reason as the ref_cache import above: the service package
-        # reaches ``app.ref_cache``, which must not be imported while the
-        # ``app`` package itself is still initializing.
-        from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
-            pattern_labels_by_name,
-        )
-        return {"recurrence_pattern_labels": pattern_labels_by_name()}
-
-    @app.context_processor
     def inject_security_event_banner():
         """Compute whether the security-event "was this you?" banner renders.
 

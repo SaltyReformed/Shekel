@@ -3,16 +3,28 @@ Shekel Budget App -- Reading a stored recurrence rule (plan step R4b-2)
 
 The door a written recurrence is READ through, symmetric with
 :mod:`app.services.recurrence._authoring`, which is the door one is written
-through.  Two functions and one projection:
+through.  One composition and its projections:
 
 * :func:`recurrence_spec` -- a rule row's authored state, back out as the
   :class:`~app.services.recurrence.RecurrenceSpec` that authored it.  The write
   door's partial-change idiom is built on it (read the spec, replace one fact
   with ``dataclasses.replace``, re-author the whole value), which is why it is
   a READ living beside the other reads rather than inside the writer.
-* :func:`rule_occurrences` -- every ``(occurrence, pay period)`` pair the rule
-  names against the owner's schedule.
+* :func:`read_rule` -- **THE composition**: resolve the row against the
+  owner's schedule, then walk and place its occurrences, keeping BOTH halves.
+* :func:`resolved_recurrence` -- the first half alone, for a caller that wants
+  what the rule MEANS and not where its rows land.
+* :func:`rule_occurrences` -- the second half alone, the shape three surfaces
+  and the frozen baseline have always taken.
 * :func:`placed_periods` -- the projection three surfaces take of that answer.
+
+**One caller needs both halves, and that is why :func:`read_rule` exists**
+(plan step R7a).  The Recurring surface resolves every rule to date its "Next"
+column and now also to describe its cadence; composing the two steps at the
+call site would put the resolve-then-place sequence in two places, so the
+composition lives here once and the page takes the value whole.  Nothing is
+computed and discarded: a caller that wants only the meaning
+(:func:`resolved_recurrence`) never walks an occurrence.
 
 Four surfaces ask :func:`rule_occurrences` the same question, and they must not
 be able to disagree:
@@ -47,6 +59,7 @@ owner's schedule arrives as a
 holds.
 """
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import date
 
 from app.models.recurrence_rule import RecurrenceRule
@@ -55,7 +68,55 @@ from app.services.recurrence._occurrence import (
     OccurrencePlacement,
     occurrence_placements,
 )
-from app.services.recurrence._resolution import RecurrenceSpec, resolve
+from app.services.recurrence._resolution import (
+    RecurrenceResolutionError,
+    RecurrenceSpec,
+    ResolvedRecurrence,
+    resolve,
+)
+
+
+@dataclass(frozen=True)
+class RuleReading:
+    """One stored rule, read against its owner's schedule.
+
+    Both halves of :func:`read_rule`'s answer, held together so a caller that
+    needs each of them asks once.
+
+    Attributes:
+        resolved: What the rule MEANS on the two axes, or ``None`` when the
+            owner has no pay periods -- see :func:`resolved_recurrence` for why
+            that one refusal is answered rather than raised.
+        placements: Every ``(occurrence, pay period)`` pair the rule names
+            through the schedule's horizon; empty when *resolved* is ``None``,
+            because a schedule with no periods can host nothing.
+    """
+
+    resolved: ResolvedRecurrence | None
+    placements: tuple[OccurrencePlacement, ...]
+
+    def __post_init__(self) -> None:
+        """Refuse a value whose two halves disagree.
+
+        A rule that could not be resolved named no occurrence, so placements
+        without a meaning is a value that contradicts itself.  A check rather
+        than a docstring guarantee, for the reason
+        :class:`~app.services.recurrence.OccurrencePlacement` records in its
+        own: this project has been burned by an invariant the generated
+        ``__init__`` did not enforce.
+
+        Raises:
+            RecurrenceResolutionError: When there are placements but no
+                resolved meaning.
+        """
+        if self.resolved is None and self.placements:
+            raise RecurrenceResolutionError(
+                f"a rule reading carries {len(self.placements)} placement(s) "
+                f"with no resolved meaning.  A recurrence that could not be "
+                f"resolved names no occurrence, so the pair disagrees with "
+                f"itself and a caller filtering on one field would read the "
+                f"other."
+            )
 
 
 def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:
@@ -90,15 +151,90 @@ def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:
     )
 
 
+def resolved_recurrence(
+    rule: RecurrenceRule, calendar: PeriodCalendar,
+) -> ResolvedRecurrence | None:
+    """Return what *rule* MEANS against its owner's schedule.
+
+    The first of :func:`read_rule`'s two steps, exposed on its own for the
+    callers that want the cadence and not its rows -- the Recurring surface's
+    archived drawer describes every archived definition and places none.
+
+    Composes the two readers in the module docstring's order: the rule's
+    authored state (:func:`recurrence_spec`, the same reader the write door's
+    partial-change idiom uses), resolved against the owner's schedule.
+
+    **This is where the empty-schedule refusal is answered rather than
+    raised**, and only this one.
+    :func:`~app.services.recurrence.resolve` refuses an owner with no pay
+    periods -- rightly, since registration bootstraps one and an owner with
+    none is a broken invariant -- but the Recurring surface renders every
+    definition a user has, and taking a whole page to a 500 for a state no
+    rule of THIS rule's is wrong about would be the fence rather than the fix.
+    The other four refusals ``resolve`` makes are about the rule ITSELF and
+    must not be swallowed with it, which is why this is a guard on one
+    condition rather than a short-circuit before the call.  Finding F-10's
+    ruling is what closes the question of whether an empty schedule should
+    exist at all.
+
+    Args:
+        rule: The stored (or transient) recurrence rule.
+        calendar: The OWNER's WHOLE pay-period schedule, which the rule's first
+            occurrence is measured against.
+
+    Returns:
+        The :class:`~app.services.recurrence.ResolvedRecurrence`, or ``None``
+        when the owner's schedule holds no pay periods.
+
+    Raises:
+        RecurrenceResolutionError: When the rule cannot be resolved against
+            *calendar* -- an unmodelled pattern, a non-positive interval, a
+            day / month outside its column's domain, or a rule paired with
+            another user's schedule.
+    """
+    if not calendar.periods:
+        return None
+    return resolve(recurrence_spec(rule), calendar)
+
+
+def read_rule(
+    rule: RecurrenceRule, calendar: PeriodCalendar,
+) -> RuleReading:
+    """Read *rule* against its owner's schedule, keeping both halves.
+
+    **The composition, held in one place** (plan step R7a): resolve, then walk
+    the cadence forward and place each occurrence.  A caller that needs the
+    meaning AND the placements -- the Recurring surface, which describes each
+    definition's cadence and dates its next occurrence -- takes this rather
+    than performing the two steps itself, so the sequence exists once.
+
+    Args:
+        rule: The stored (or transient) recurrence rule.
+        calendar: The OWNER's WHOLE pay-period schedule.
+
+    Returns:
+        The :class:`RuleReading`.
+
+    Raises:
+        RecurrenceResolutionError: See :func:`resolved_recurrence`.
+        RecurrenceGenerationError: See :func:`rule_occurrences`.
+    """
+    resolved = resolved_recurrence(rule, calendar)
+    if resolved is None:
+        return RuleReading(resolved=None, placements=())
+    return RuleReading(
+        resolved=resolved,
+        placements=occurrence_placements(resolved, calendar),
+    )
+
+
 def rule_occurrences(
     rule: RecurrenceRule, calendar: PeriodCalendar,
 ) -> tuple[OccurrencePlacement, ...]:
     """Return every occurrence *rule* names, each with the pay period it lands in.
 
-    Composes the three steps in the module docstring's order: read the rule's
-    authored state (:func:`recurrence_spec`, the same reader the write door's
-    partial-change idiom uses), resolve it against the owner's schedule, then
-    walk the cadence forward and place each occurrence.
+    The placement half of :func:`read_rule`, and the shape the generation seam,
+    the form preview and the frozen baseline have taken since plan step R4b-2.
 
     **The rule's own window is applied, and a caller cannot bypass it.**
     ``start_date`` binds through the anchor
@@ -152,29 +288,15 @@ def rule_occurrences(
             another user's schedule.  The reverse matcher answered ``[]`` for
             the first of those and ``ValueError`` for the third; both now name
             the offending value.  **An EMPTY schedule is the one refusal this
-            re-raises as an empty answer** -- see below.
+            answers as an empty tuple** -- see :func:`resolved_recurrence`,
+            which holds that guard.
         RecurrenceGenerationError: When the resolved value names something the
             occurrence engine cannot walk -- a business-day shift (plan step R8
             is its first author) or a placement with no rule.  Unreachable from
             any value ``resolve`` can produce today, and stated so a later step
             that makes it reachable finds the contract written down.
     """
-    # An empty schedule has no period to match and no anchor to measure.
-    # ``resolve`` refuses it -- rightly, since registration bootstraps a period
-    # and an owner with none is a broken invariant -- but the Recurring surface
-    # renders every definition a user has, and taking a whole page to a 500 for
-    # a state no rule of THIS rule's is wrong about would be the fence rather
-    # than the fix.  Refused HERE and only here: the other four refusals
-    # ``resolve`` makes are about the rule itself and must not be swallowed
-    # with it, which is why this is a guard on one condition rather than a
-    # short-circuit before the call.  Finding F-10's ruling is what closes the
-    # question of whether an empty schedule should exist at all.
-    if not calendar.periods:
-        return ()
-
-    return occurrence_placements(
-        resolve(recurrence_spec(rule), calendar), calendar,
-    )
+    return read_rule(rule, calendar).placements
 
 
 def placed_periods(
@@ -218,4 +340,11 @@ def placed_periods(
     ]
 
 
-__all__ = ["placed_periods", "recurrence_spec", "rule_occurrences"]
+__all__ = [
+    "RuleReading",
+    "placed_periods",
+    "read_rule",
+    "recurrence_spec",
+    "resolved_recurrence",
+    "rule_occurrences",
+]

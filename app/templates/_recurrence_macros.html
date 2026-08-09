@@ -1,46 +1,44 @@
-{# Shared recurrence-description macro (polyglot audit TPLB/TPL-07).
+{# Shared recurrence-description cell (plan step R7a).
 
-   Single source for the recurrence_cell column that templates/list.html
-   and transfers/list.html previously each defined verbatim.  Import WITH
-   CONTEXT -- the else-branch fallback reads ``recurrence_pattern_labels``,
-   which is an @app.context_processor variable rather than a jinja global
-   and is otherwise invisible to an imported macro:
+   Single source for the Recurrence column that the unified Recurring
+   surface renders in four places: the income, expense and transfer
+   sections of templates/_recurring_body.html, and the Archived drawer in
+   templates/list.html.
 
-     {% from "_recurrence_macros.html" import recurrence_cell with context %}
+   IT DISPLAYS AND NEVER COMPUTES.  Until plan step R7a this macro held
+   eight branches keyed on ``rr.pattern_id`` that read ``day_of_month`` /
+   ``month_of_year`` off the rule -- the closed-set columns step R7c drops --
+   plus an else-branch that titled ``rr.pattern.name`` for a pattern the
+   application does not model.  That branch was the last .name-for-display
+   coupling on the table and the only reader of the eager-joined ``pattern``
+   relationship (plan ledger row D17); both went with it.
 
-   Pattern matching uses the REC_* integer globals (app.jinja_globals),
-   per the project's "IDs for logic, strings for display only" rule, and
-   month names come from the ``month_name`` filter (app.jinja_filters), so
-   this macro needs no per-template month_names dict.  The else branch is the
-   fallback for a pattern row with no matching REC_* constant -- the surviving
-   ``Once`` row (plan step R2e-3) or a future one -- and it reads
-   ``rr.pattern.name`` for display only.  A rule-less definition takes the
-   outer else and reads "One-time": that is what "does not repeat" IS on both
-   template kinds since R2e-3. #}
-{% macro recurrence_cell(t) %}
-{% if t.recurrence_rule %}
-  {% set rr = t.recurrence_rule %}
-  {% if rr.pattern_id == REC_EVERY_PERIOD %}
-    Every paycheck
-  {% elif rr.pattern_id == REC_EVERY_N_PERIODS %}
-    Every {{ rr.interval_n }} paychecks
-  {% elif rr.pattern_id == REC_MONTHLY and rr.day_of_month %}
-    Monthly (day {{ rr.day_of_month }})
-  {% elif rr.pattern_id == REC_MONTHLY_FIRST %}
-    Monthly (first paycheck)
-  {% elif rr.pattern_id == REC_QUARTERLY %}
-    Quarterly{% if rr.month_of_year %} (starting {{ rr.month_of_year|month_name(abbr=true) }}){% endif %}
-  {% elif rr.pattern_id == REC_SEMI_ANNUAL %}
-    Every 6 months{% if rr.month_of_year %} (starting {{ rr.month_of_year|month_name(abbr=true) }}){% endif %}
-  {% elif rr.pattern_id == REC_ANNUAL %}
-    Yearly{% if rr.month_of_year %} ({{ rr.month_of_year|month_name(abbr=true) }}{% if rr.day_of_month %} {{ rr.day_of_month }}{% endif %}){% endif %}
-  {% else %}
-    {{ recurrence_pattern_labels.get(rr.pattern.name, rr.pattern.name|replace('_', ' ')|title) }}
-  {% endif %}
-  {% if rr.end_date %}
-    <br><small class="text-muted">until {{ rr.end_date.strftime('%b %d, %Y') }}</small>
-  {% endif %}
-{% else %}
+   The phrase now arrives already worded from
+   app.services.recurrence.describe, which is one function over
+   (interval_n, unit) -- so a cadence nothing can author yet ("Every 2
+   months", "Weekly") already reads correctly.  Imported WITHOUT context:
+   this macro reads nothing but its argument.
+
+     {% from "_recurrence_macros.html" import recurrence_cell %}
+
+   ``description`` is a RecurrenceDescription, or none for a definition that
+   does not repeat -- which is ``recurrence_rule_id IS NULL`` on both
+   template kinds since plan step R2e-3, and reads "One-time".
+
+   Both bounds are rendered.  They are mutually exclusive
+   (ck_recurrence_rules_single_end_bound) and plan step R8 is the first
+   author of the count bound, but a bound the row states and the cell omits
+   would be the surface lying about when a commitment stops. #}
+{% macro recurrence_cell(description) %}
+{% if description is none %}
   <span class="text-muted">One-time</span>
+{% else %}
+  {{ description.cadence }}
+  {% if description.until is not none %}
+    <br><small class="text-muted">until {{ description.until.strftime('%b %d, %Y') }}</small>
+  {% endif %}
+  {% if description.after_occurrences is not none %}
+    <br><small class="text-muted">for {{ description.after_occurrences }} occurrences</small>
+  {% endif %}
 {% endif %}
 {% endmacro %}
