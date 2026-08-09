@@ -35,11 +35,14 @@ from _plan_gate import (
 )
 
 #: Each cap is the document's live-content floor plus room to work, NOT a
-#: ceiling sized to fit today's file.  They came DOWN when the registries left:
-#: balance 1,200 -> 1,000 against 952 lines, recurrence 900 -> 850 against 806,
-#: pay-calendar 560 -> 500 against 449.  Lowering them is the point -- the space
-#: the duplication occupied must not silently become room to duplicate again.
-#: conventions.md rule 4: raising a cap is never the answer when it binds.
+#: ceiling sized to fit today's file.  They all came DOWN when the registries
+#: left: balance 1,200 -> 1,000, recurrence 900 -> 850, pay-calendar 560 -> 500,
+#: and credit-card was capped at 400 for the first time.  Lowering them is the
+#: point -- the space the duplication occupied must not silently become room to
+#: duplicate again.  conventions.md rule 4: raising a cap is never the answer
+#: when it binds.  No line count is quoted here: the three that were went stale
+#: within two commits, and `test_the_cap_still_has_headroom` measures the live
+#: files anyway.
 CAPS = {
     "balance": 1000,
     "recurrence": 850,
@@ -51,8 +54,18 @@ CAPS = {
 #: as an append-only log before it was capped at all.
 SIGNPOST_CAPS = {"balance": 30, "recurrence": 20, "pay_calendar": 20}
 
-#: A SHIPPED step's entry cap (rule 7).  ``None`` where a document has never
-#: ticked a step, so no entry exists to grade.
+#: A SHIPPED step's entry cap (rule 7).
+#:
+#: **``None`` for balance is a KNOWN HOLE, not an absence of subject.**  That
+#: justification used to read "where a document has never ticked a step, so no
+#: entry exists to grade", and it is false: the balance README has four ticked
+#: steps (X-ae, X-af, X-aj1, X-f1) and turning the arm on reports five live
+#: violations -- all four open with prose instead of their commit hash, and
+#: X-f1's entry runs 18 lines against the 6 every other arc obeys.  Closing it
+#: needs each step's real commit, which is the author's `git log` and not a
+#: guess, so it is left OFF and stated rather than left off and explained away.
+#: conventions.md:8 lists rule 7 as a PREDICATE; for this one document it is
+#: not one.
 TICKED_CAPS = {
     "balance": None,
     "recurrence": 6,

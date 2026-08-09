@@ -86,7 +86,7 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | pay_calendar | C2 | balance:X-l / recurrence:R-F12 | **C2 -- one calendar value answers every "which period" question.** | open | -- | -- |
 | pay_calendar | C3 | -- | **C3 -- the writer writes paydays, forward-only.** | open | -- | -- |
 | pay_calendar | C4 | -- | **C4 -- drop the derived columns.** | open | -- | -- |
-| pay_calendar | C5 | recurrence:R-F10 (ticked by it) | **C5 -- delete what is now unconstructible.** | open | -- | pay_calendar:P16 ruling |
+| pay_calendar | C5 | recurrence:R-F10 (ticked by it) | **C5 -- delete what is now unconstructible.** | open | -- | -- |
 | pay_calendar | C6 | -- | **C6 -- a payday may be inserted mid-schedule.** | open | -- | -- |
 | credit_card | CC0a | -- | **CC0a** `feat(ref): account types carry a revolving-credit kind` -- migration adds | open | -- | -- |
 | credit_card | CC0b | -- | **CC0b** `feat(cards): budget.credit_card_params satellite` -- model + migration as specced in | open | -- | -- |
@@ -98,7 +98,7 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | credit_card | CC2b | -- | **CC2b** `feat(cards): the finance charge folds the daily balance` -- | open | -- | -- |
 | credit_card | CC2c | -- | **CC2c** `feat(cards): card APR history rides rate_history` -- card-gated write route + schema | open | -- | -- |
 | credit_card | CC3a | -- | **CC3a** `feat(cards): charge-to-card (additive)` -- migration: | open | -- | -- |
-| credit_card | CC3b | -- | **CC3b** | open | -- | balance:X-f1b (shipped) |
+| credit_card | CC3b | -- | **CC3b** | open | -- | balance:X-f1 (shipped; absorbed the X-f1b leaf this once named) |
 | credit_card | CC3c | -- | **CC3c** `feat(cards)!: envelope split tender + renames` -- rewrite `entry_credit_workflow.py` | open | -- | -- |
 | credit_card | CC3d | -- | **CC3d** `feat(cards): the card refuses what it cannot model` -- reject transfers OUT of the | open | -- | -- |
 | credit_card | CC4a | -- | **CC4a** `feat(cards): card_payment_settings` -- 1:1 `transfer_template_id` | open | -- | -- |
@@ -107,13 +107,15 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | credit_card | CC5a | -- | **CC5a** `feat(cards): rewards accrue as a derived figure` -- the | open | -- | -- |
 | credit_card | CC5b | -- | **CC5b** `feat(cards): redemptions -- manual + auto-redeem threshold` -- manual route (settled | open | -- | -- |
 
-## Unruled forks
+## Cross-arc forks
 
 **Two steps in different arcs that are competing remedies for ONE defect.** Whichever ships first
-decides for both, so the gate REFUSES a tick on either while `ruled` is empty. This is the predicate
-that would have caught `P3` / `N-123`, where one arc's ruling deletes what the other's keeps.
+decides for both, so the gate REFUSES a tick on either until `ruled` NAMES one of the competing
+remedies. This is the predicate that would have caught `P3` / `N-123`, where one arc's ruling
+deletes what the other's keeps. A ruled fork's defect row is owned by the remedy that won, and the
+gate checks that too: a ruling nobody re-points is a ruling that decided nothing.
 
 | defect | competing remedies | ruled |
 |---|---|---|
-| pay_calendar:P3 = balance:N-123 | balance:X-ad (R-DB: DELETE the bootstrap payday) **vs** pay_calendar:C3 (KEEP it, beside the real payday) | **NOT YET RULED** |
-| pay_calendar:P16 | pay_calendar:C5 (make should_skip_period occurrence-aware) **vs** pay_calendar:C3 (refuse an over-long period at the writer) | **NOT YET RULED** |
+| pay_calendar:P3 = balance:N-123 | balance:X-ad (R-DB: DELETE the bootstrap payday) **vs** pay_calendar:C3 (KEEP it, beside the real payday) | **balance:X-ad**, 2026-08-09 -- delete it, and registration asks for the LAST payday, not the next |
+| pay_calendar:P16 | pay_calendar:C5 (make should_skip_period occurrence-aware) **vs** pay_calendar:C3 (refuse an over-long period at the writer) | **pay_calendar:C5**, 2026-08-09 -- occurrence-aware; the writer option would refuse legitimate monthly schedules |

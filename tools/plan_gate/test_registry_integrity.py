@@ -17,6 +17,7 @@ a synthetic fixture would prove only that the parser reads what it wrote.
 """
 from __future__ import annotations
 
+import pathlib
 import re
 
 import pytest
@@ -99,7 +100,7 @@ class TestThePremiseThatAnythingIsBeingRead:
         assert registry.LEDGER.exists(), "docs/plans/ledger.md is missing"
         assert registry.STEPS.exists(), "docs/plans/steps.md is missing"
         assert registry.CONVENTIONS.exists(), "docs/plans/conventions.md is missing"
-        # Floors far under the live counts (138 findings, 92 steps), so they
+        # Floors far under the live counts, so they
         # catch a parser that has stopped seeing rows without becoming a second
         # place the true numbers are written down.
         assert len(registry.ledger_rows()) >= 100
@@ -179,6 +180,23 @@ class TestEveryFindingNamesALiveOwner:
         line = _row("ledger", "| balance | N-33 |")
         assert " / " in line, "the anchor row no longer has a two-owner cell"
         stage("ledger", line, _with_cell(line, -1, "E2-0 / X-nonexistent"))
+        problems = registry.owner_violations()
+        assert any("X-nonexistent" in p and "names no step" in p for p in problems), (
+            problems
+        )
+
+    def test_the_control_fires_on_the_first_half_too(self, stage):
+        """The mirror of the control above, and it is not decoration.
+
+        Planting the defect only in the second half proves the gate does not
+        stop at the first -- and passes just as happily if the gate grades ONLY
+        the last. An adversarial review neutered ``owner_violations`` to
+        ``split_owners(cell)[-1:]`` and all 79 tests stayed green, which would
+        have hidden every defect in a first half: ``P2``'s ``C3 (the writer)``
+        and ``N-33``'s ``E2-0``, in both cases the half that ships first.
+        """
+        line = _row("ledger", "| balance | N-33 |")
+        stage("ledger", line, _with_cell(line, -1, "X-nonexistent / E2-n (R-AO)"))
         problems = registry.owner_violations()
         assert any("X-nonexistent" in p and "names no step" in p for p in problems), (
             problems
@@ -270,25 +288,109 @@ class TestAnIdentityClassSharesOneTickState:
         assert any("ONE step under two names" in p for p in problems), problems
 
 
-class TestAnUnruledForkRefusesBothRemedies:
-    """conventions.md rule 11, second half -- the P3 / N-123 collision."""
+class TestAForkBindsItsRemediesAndItsDefectRow:
+    """conventions.md rule 11, second half -- the P3 / N-123 collision.
 
-    def test_no_unruled_fork_has_a_shipped_remedy(self):
-        """No unruled fork has a shipped remedy."""
+    **The controls STAGE an unruled fork rather than requiring the live corpus
+    to hold one.**  Both live forks were ruled on 2026-08-09, so a control that
+    asserted "an unruled fork exists" would now be red -- and the tempting way
+    to green it is to relax the assertion, which is how a predicate quietly
+    stops being tested.  Staging the state proves the arm whether or not the
+    developer happens to have an open fork today.
+    """
+
+    def test_no_fork_is_violated_in_the_live_corpus(self):
+        """No fork has a premature tick, a dead defect row, or a stale owner."""
         assert not registry.fork_violations()
 
-    def test_the_live_corpus_contains_an_unruled_fork(self):
-        """The live corpus contains an unruled fork."""
-        unruled = [f for f in registry.forks() if not f.is_ruled]
-        assert unruled, "the rule has no subject, so the clean case proves nothing"
-        assert any("balance:X-ad" in f.remedy_keys() for f in unruled)
+    def test_the_live_corpus_actually_contains_forks_to_grade(self):
+        """A rule with no subject in the corpus is untested by the clean case."""
+        found = registry.forks()
+        assert found, "no fork at all -- rule 11's second half grades nothing"
+        assert all(f.winner for f in found), (
+            "every live fork is expected to be RULED as of 2026-08-09"
+        )
 
     def test_the_control_fires_when_a_remedy_ships_before_the_ruling(self, stage):
-        """The control fires when a remedy ships before the ruling."""
+        """Whichever remedy ships first decides for both arcs."""
+        ruling = _row("steps", "| pay_calendar:P3 = balance:N-123 |")
+        stage("steps", ruling, _with_cell(ruling, -1, "**NOT YET RULED**"))
         line = _row("steps", "| balance | X-ad |")
         stage("steps", line, _with_cell(line, 4, "SHIPPED"))
         problems = registry.fork_violations()
         assert any("NOT YET RULED" in p for p in problems), problems
+
+    @pytest.mark.parametrize("word", ["TBD", "pending", "?", "not yet ruled"])
+    def test_a_non_ruling_word_does_not_count_as_a_ruling(self, stage, word):
+        """Only NAMING a remedy is a ruling.
+
+        The predicate used to read "is the cell non-empty and not the exact
+        phrase NOT YET RULED", so every one of these words made ``is_ruled``
+        True -- and a True makes the whole fork arm skip.  This is the rule
+        that exists BECAUSE P3 / N-123 went unnoticed from April to 2026-08-09.
+        """
+        ruling = _row("steps", "| pay_calendar:P3 = balance:N-123 |")
+        stage("steps", ruling, _with_cell(ruling, -1, word))
+        line = _row("steps", "| balance | X-ad |")
+        stage("steps", line, _with_cell(line, 4, "SHIPPED"))
+        problems = registry.fork_violations()
+        assert any("NOT YET RULED" in p for p in problems), (word, problems)
+
+    def test_the_control_fires_when_a_ruled_fork_leaves_its_row_unpointed(self, stage):
+        """A ruling nobody re-points is a ruling that decided nothing.
+
+        Rule 2 re-points a row when its owner ships, but it only fires on a row
+        that NAMES a step -- and an open fork's row names ``developer-decision``
+        by design.  Without this arm the row could keep pointing at a decision
+        already taken, indefinitely, with every other gate green.
+        """
+        line = _row("ledger", "| balance | N-123 |")
+        stage("ledger", line, _with_cell(line, -1, "developer-decision (2026-08-09)"))
+        problems = registry.fork_violations()
+        assert any("RULED for balance:X-ad" in p for p in problems), problems
+
+    def test_the_control_fires_when_the_defect_names_no_live_row(self, stage):
+        """A fork about a row that does not exist decides nothing."""
+        ruling = _row("steps", "| pay_calendar:P16 |")
+        stage("steps", ruling, _with_cell(ruling, 0, "pay_calendar:P999"))
+        problems = registry.fork_violations()
+        assert any("names no live ledger.md row" in p for p in problems), problems
+
+
+class TestTheTwoAlsoRelationsMeanOppositeThings:
+    """`= arc:id` was MERGED into this row; `~ arc:id` must NOT be merged.
+
+    Both registries give this distinction a section headed "why conflating them
+    deletes work", and until an adversarial review asked, no predicate read the
+    column at all -- rewriting every `=` as `~` changed nothing anywhere.
+    """
+
+    def test_every_relation_resolves_the_right_way(self):
+        """Every relation resolves the right way."""
+        assert not registry.also_violations()
+
+    def test_the_live_corpus_contains_both_relations(self):
+        """Neither half of the arm is vacuous."""
+        cells = " ".join(row.also for row in registry.ledger_rows())
+        assert "= " in cells and "~ " in cells
+
+    def test_the_control_fires_when_a_merged_target_is_still_live(self, stage):
+        """`=` says the target was absorbed, so it must not still be a row."""
+        line = _row("ledger", "| balance | N-128 |")
+        stage("ledger", line, _with_cell(line, 2, "= pay_calendar:P2"))
+        problems = registry.also_violations()
+        assert any("still its own live row" in p for p in problems), problems
+
+    def test_the_control_fires_on_a_distinct_relation_naming_nothing(self, stage):
+        """`~` says the target is a live, DISTINCT finding, so it must exist.
+
+        The live instance this catches: after the 2026-08-09 merges, N-128's
+        cell still named `recurrence:F-10`, a row that no longer existed.
+        """
+        line = _row("ledger", "| balance | N-128 |")
+        stage("ledger", line, _with_cell(line, 2, "~ recurrence:F-10"))
+        problems = registry.also_violations()
+        assert any("names no live row" in p for p in problems), problems
 
 
 class TestTheIndexAndTheSpecificationsAgree:
@@ -376,9 +478,35 @@ class TestTheParserSurvivesTheShapesTheRealFilesUse:
         assert any("C1" in p and "SHIPPED in steps.md" in p for p in problems), problems
 
     def test_conventions_still_states_every_rule_the_gate_cites(self):
-        """A rule cited in a failure message must exist in the file it cites."""
-        text = registry.CONVENTIONS.read_text()
-        numbered = re.findall(r"^(\d{1,2})\. \*\*", text, re.MULTILINE)
-        assert [int(n) for n in numbered] == list(range(1, 13)), (
-            f"conventions.md numbers its rules {numbered}, expected 1..12"
+        """A rule cited in a failure message must exist in the file it cites.
+
+        **This reads the citations, not a hard-coded count.**  It asserted only
+        that ``conventions.md`` numbers its own rules 1..12, which an
+        adversarial review showed is a different claim entirely: making a gate
+        message cite a rule number in the forties passed, and adding a
+        legitimate 13th rule failed while changing no citation.  Both
+        directions were backwards -- blind to the failure it names, and loud
+        about a non-failure.
+
+        The scan covers this file too, so an EXAMPLE citation written here is a
+        real one as far as the check is concerned.  That is the correct
+        behaviour and not worth an exemption: a docstring that cites a rule is
+        making the same promise a message does.
+        """
+        numbers = {
+            int(n)
+            for n in re.findall(
+                r"^(\d{1,2})\. \*\*", registry.CONVENTIONS.read_text(), re.MULTILINE,
+            )
+        }
+        assert numbers, "conventions.md numbers no rules at all"
+        cited: dict[int, set[str]] = {}
+        for module in sorted(pathlib.Path(__file__).parent.glob("*.py")):
+            for found in re.findall(r"conventions\.md rule (\d{1,2})", module.read_text()):
+                cited.setdefault(int(found), set()).add(module.name)
+        assert cited, "no gate module cites a rule -- the messages name nothing"
+        missing = {n: sorted(files) for n, files in cited.items() if n not in numbers}
+        assert not missing, (
+            f"the gate cites rules conventions.md does not state: {missing}. "
+            f"conventions.md states {sorted(numbers)}"
         )

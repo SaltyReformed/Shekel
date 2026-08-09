@@ -122,15 +122,43 @@ class Fork:
     def is_ruled(self) -> bool:
         """Whether the developer has decided which remedy wins.
 
-        An EMPTY cell counts as unruled, not as ruled: the failure mode this
-        guards is a fork nobody has answered, and a blank is exactly what that
-        looks like.
+        **A fork is ruled only when the cell NAMES one of its own remedies.**
+        The test used to be ``"NOT YET RULED" not in ruled and ruled.strip()``,
+        which read the exact house spelling as unruled and every other way of
+        saying the same thing as RULED: an adversarial review measured ``TBD``,
+        ``pending``, ``?`` and even lowercase ``not yet ruled`` all returning
+        True, and a True here makes :func:`fork_violations` skip the fork
+        entirely -- so both competing remedies become tickable.  That is rule
+        11, the predicate that exists BECAUSE ``P3`` / ``N-123`` went unnoticed
+        from April to 2026-08-09.
+
+        Naming a remedy is also the only spelling a later reader can act on,
+        and it is what :func:`Fork.winner` needs to check the defect row was
+        re-pointed.
         """
-        return "NOT YET RULED" not in self.ruled and bool(self.ruled.strip())
+        return self.winner is not None
+
+    @property
+    def winner(self) -> str | None:
+        """The ``arc:id`` of the remedy that won, or ``None`` while unruled."""
+        for key in self.remedy_keys():
+            if key in self.ruled:
+                return key
+        return None
 
     def remedy_keys(self) -> list[str]:
         """Every ``arc:id`` named as a competing remedy."""
         return re.findall(r"\b([a-z_]+:[A-Za-z0-9][A-Za-z0-9-]*)", self.remedies)
+
+    def defect_keys(self) -> list[str]:
+        """Every ``arc:id`` the defect cell names.
+
+        More than one where the same defect was recorded in two arcs' ledgers
+        (``pay_calendar:P3 = balance:N-123``).  After those rows are merged only
+        ONE of them is still live, which is why the predicate asks for at least
+        one live row rather than for all of them.
+        """
+        return re.findall(r"\b([a-z_]+:[A-Za-z0-9][A-Za-z0-9-]*)", self.defect)
 
 
 def _rows(text: str, columns: int) -> list[list[str]]:
@@ -310,12 +338,27 @@ def alias_violations() -> list[str]:
 
 
 def fork_violations() -> list[str]:
-    """Rule 11, second half: an UNRULED fork refuses a tick on either remedy."""
+    """Rule 11, second half: a fork binds its remedies AND its defect row.
+
+    Three arms, because a fork that only guards ticks stops guarding anything
+    the moment it is ruled -- and a ruling nobody acts on is the state this
+    registry exists to make visible:
+
+    1. while UNRULED, neither competing remedy may be ticked;
+    2. the defect cell must name at least one LIVE ledger row (only one stays
+       live once the two arcs' rows are merged);
+    3. once RULED, that row is OWNED by the remedy that won.
+
+    Arm 3 is the one an adversarial review found missing: ``P3`` / ``N-123``
+    carried ``developer-decision`` while the fork was open, and rule 2 -- which
+    re-points a row when its owner ships -- never fires on a row that names no
+    step.  So the row could have kept pointing at a decision that had been
+    taken, indefinitely, with every gate green.
+    """
     steps = {row.key: row for row in step_rows()}
+    ledger = {row.key: row for row in ledger_rows()}
     problems: list[str] = []
     for fork in forks():
-        if fork.is_ruled:
-            continue
         for key in fork.remedy_keys():
             step = steps.get(key)
             if step is None:
@@ -323,12 +366,78 @@ def fork_violations() -> list[str]:
                     f"fork {fork.defect!r}: remedy {key!r} names no step in "
                     f"steps.md (conventions.md rule 11)",
                 )
-            elif step.shipped:
+            elif step.shipped and not fork.is_ruled:
                 problems.append(
                     f"fork {fork.defect!r} is NOT YET RULED but its remedy {key} "
                     f"is already SHIPPED.  Whichever ships first decides for both "
                     f"arcs, so it may not ship before the ruling is recorded "
                     f"(conventions.md rule 11)",
+                )
+        live = [key for key in fork.defect_keys() if key in ledger]
+        if not live:
+            problems.append(
+                f"fork {fork.defect!r}: its defect names no live ledger.md row "
+                f"({fork.defect_keys()}).  A fork about nothing decides nothing "
+                f"(conventions.md rule 11)",
+            )
+            continue
+        if fork.winner is None:
+            continue
+        arc, ident = fork.winner.split(":", 1)
+        for key in live:
+            row = ledger[key]
+            owners = [OWNER_RX.match(p) for p in split_owners(row.owner.strip())]
+            named = {m.group("owner") for m in owners if m}
+            if row.arc != arc or ident not in named:
+                problems.append(
+                    f"fork {fork.defect!r} was RULED for {fork.winner}, but its "
+                    f"defect row {key} is owned by {row.owner!r} in arc "
+                    f"{row.arc!r}.  A ruled fork's row names the remedy that "
+                    f"WON -- and since rule 1 resolves an owner within the row's "
+                    f"own arc, the row belongs in {arc!r} "
+                    f"(conventions.md rule 11)",
+                )
+    return problems
+
+
+def also_violations() -> list[str]:
+    """The ``also`` column's two relations mean opposite things, and are checked.
+
+    ``ledger.md`` and ``conventions.md`` both give this distinction a section
+    headed "why conflating them deletes work", and until an adversarial review
+    asked, both were prose that no predicate read:
+
+    * ``= arc:id`` -- the same claim, MERGED into this row, so the target must
+      NOT still be a live row;
+    * ``~ arc:id`` -- a distinct finding sharing a root cause, which must NOT be
+      merged, so the target must still BE a live row.
+
+    Rewriting all three ``=`` relations as ``~`` was measured to change nothing
+    anywhere.  The stale reference this arm catches is not hypothetical either:
+    after the 2026-08-09 merges ``N-128``'s cell still named ``recurrence:F-10``,
+    a row that no longer existed, and it was found by reading rather than by a
+    gate.
+    """
+    live = {row.key for row in ledger_rows()}
+    problems: list[str] = []
+    for row in ledger_rows():
+        cell = row.also.strip()
+        if cell == "--":
+            continue
+        for relation, key in re.findall(
+            r"([=~])\s*([a-z_]+:[A-Za-z0-9][A-Za-z0-9-]*)", cell,
+        ):
+            if relation == "=" and key in live:
+                problems.append(
+                    f"{row.key}: `also` says '= {key}', which means MERGED into "
+                    f"this row -- but {key} is still its own live row "
+                    f"(ledger.md's two relations)",
+                )
+            if relation == "~" and key not in live:
+                problems.append(
+                    f"{row.key}: `also` says '~ {key}', a DISTINCT finding that "
+                    f"must not be merged -- but {key} names no live row "
+                    f"(ledger.md's two relations)",
                 )
     return problems
 

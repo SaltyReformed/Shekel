@@ -94,16 +94,26 @@ to avoid.
     different findings -- `loan_arc_as_built_2026-07-26.md:564`,
     `implementation_plan_posting_ledger_loan_payments.md:353` and the recurrence arc's live row.
 
-11. **An identity class shares a tick state, and an unruled fork refuses both.** `C2`, `X-l` and
-    `R-F12` are ONE step under three names; ticking one without the others is a failure. Where two
-    steps in different arcs are COMPETING remedies for one defect, the gate refuses a tick on either
-    while the fork is unruled -- whichever ships first decides for both, and `P3` / `N-123` went
-    unnoticed from April to 2026-08-09 for want of exactly this.
+11. **An identity class shares a tick state, and a fork binds both its remedies and its row.** `C2`,
+    `X-l` and `R-F12` are ONE step under three names; ticking one without the others is a failure.
+    Where two steps in different arcs are COMPETING remedies for one defect, the gate refuses a tick
+    on either while the fork is unruled -- whichever ships first decides for both, and `P3` /
+    `N-123` went unnoticed from April to 2026-08-09 for want of exactly this.
+    **A fork is RULED only when its `ruled` cell NAMES one of its own remedies**, because every
+    other spelling of "nobody has answered yet" -- `TBD`, `pending`, `?` -- used to read as ruled
+    and turned the whole arm off. And **a ruled fork's defect row is owned by the remedy that won**:
+    rule 2 re-points a row when its owner ships, but it cannot fire on a row owned by
+    `developer-decision`, which is what an open fork's row carries. Since rule 1 resolves an owner
+    within the row's own arc, ruling a fork can MOVE its row to the winner's arc.
 
 12. **`steps.md` and the arc documents agree in both directions.** An index row with no
     specification in its arc document, and a specification with no index row, are both failures.
 
 ## The two relations in `ledger.md`, and why conflating them deletes work
+
+**This distinction is a PREDICATE, not prose.** It was prose until 2026-08-09, and rewriting every
+`=` as `~` was then measured to change nothing anywhere -- while `N-128` sat pointing at
+`recurrence:F-10`, a row a merge had already removed.
 
 - **`= arc:id`** -- the SAME claim, recorded in another arc's ledger and MERGED into the row that
   carries the relation. Two rows worded differently cannot be combined mechanically, so each merge
