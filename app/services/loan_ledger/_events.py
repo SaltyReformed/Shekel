@@ -103,15 +103,32 @@ def merge_anchor_and_payment_events(
     **This is CONTRACT time, not cash time.**  A payment is ordered by the
     installment it satisfies (its DUE date), never by when its cash settled, so a
     late or out-of-order settlement can never reorder installments or re-split one
-    (ruling R-A).  Ties within a type break deterministically -- anchors by
-    ``created_at`` (mirroring the resolver's latest-anchor rule; the synthesized
-    origination fact carries the earliest possible instant), payments by their
-    caller-supplied ``(pay_period.start_date, id)`` order -- preserved by a stable
-    sort of the payments-then-anchors concatenation.
+    (ruling R-A).
+
+    **BOTH inputs arrive PRE-ORDERED by their own loader, and this function adds
+    no TIE-BREAK WITHIN A TYPE** (plan step X-an-b, closing finding N-196; the
+    same shape finding N-133 / R1 ruled on the cash side).  It still owns the two
+    ordering rules above -- the contract-time re-key of payments onto their DUE
+    dates, and the tag that sorts a payment before an anchor sharing a date --
+    and those are its own.  What it no longer owns is which of two anchors comes
+    first.  A stable sort of the payments-then-anchors concatenation on
+    ``(governing_date, tag)`` preserves each loader's key within a shared date --
+    anchors keep
+    :func:`~app.services.loan_loaders.load_loan_anchor_facts`' ``(anchor_date,
+    created_at, event_id)``, payments keep
+    :func:`~app.services.loan_loaders.settled_income_shadows`' ``(pay_period.start_date,
+    id)``.  This re-sorted the anchors on ``(anchor_date, created_at)`` until
+    X-an-b, which was a SECOND statement of a rule the loader is now the one home
+    of, and an incomplete one: ``created_at`` is evaluated at TRANSACTION START,
+    so two anchors written together shared an instant, the re-sort left them in
+    whatever order PostgreSQL returned, and the walk reset on the LAST of the tie
+    while the resolver's ``max()`` seeded from the FIRST.
 
     Args:
         anchor_facts: The loan's :class:`~app.services.loan_loaders.LoanAnchorFact`
-            list (any order; sorted here).
+            list, PRE-ORDERED by ``(anchor_date, created_at, event_id)``
+            (:func:`~app.services.loan_loaders.load_loan_anchor_facts`, which is
+            where that order is decided).
         shadows: The settled income shadows, PRE-SORTED by
             ``(pay_period.start_date, id)``
             (:func:`~app.services.loan_loaders.settled_income_shadows`).
@@ -124,10 +141,6 @@ def merge_anchor_and_payment_events(
         :class:`~app.services.loan_loaders.LoanAnchorFact` when ``is_anchor``,
         else a settled income :class:`~app.models.transaction.Transaction`.
     """
-    anchors = sorted(
-        anchor_facts,
-        key=lambda anchor: (anchor.anchor_date, anchor.created_at),
-    )
     # Payment tag 0 sorts before anchor tag 1 on an equal date, so a payment due
     # on an anchor's date is walked (and then overwritten) before the reset.  A
     # stable sort of [payments..., anchors...] keeps each type's pre-sorted order
@@ -136,7 +149,7 @@ def merge_anchor_and_payment_events(
         (loan_loaders.loan_payment_due_date(shadow, payment_day), 0, shadow)
         for shadow in shadows
     ] + [
-        (anchor.anchor_date, 1, anchor) for anchor in anchors
+        (anchor.anchor_date, 1, anchor) for anchor in anchor_facts
     ]
     events.sort(key=lambda event: (event[0], event[1]))
     return [(event_date, tag == 1, item) for event_date, tag, item in events]

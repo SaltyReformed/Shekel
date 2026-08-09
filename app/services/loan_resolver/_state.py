@@ -201,7 +201,9 @@ def resolve_loan(
 
     Algorithm (see the package docstring for the full rationale):
 
-    1. Pick the latest anchor by ``(anchor_date, created_at)`` DESC.
+    1. Pick the governing anchor -- the greatest under
+       :func:`app.utils.dates.anchor_chronology_key`, i.e. ``(anchor_date,
+       created_at, event_id)`` DESC (:func:`._periods.select_latest_anchor`).
     2. Generate the schedule via :func:`._payoff.compute_payoff_scenarios`
        with the FULL payment list and the standing ``extra_principal``
        (``extra_monthly=0``: the payoff lever's what-if extra is not part of

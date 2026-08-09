@@ -101,10 +101,26 @@ class Account(
 
     # Relationships
     account_type = db.relationship("AccountType", lazy="joined")
+    # **This collection carries NO ``order_by``, deliberately** (plan step
+    # X-an-b, found by that step's census of every ``created_at`` ordering in
+    # ``app/``).  It held ``created_at DESC`` -- the RECORDING instant, with no
+    # ``observed_on`` term at all, which is the key
+    # :mod:`app.services.cash_ledger` replaced at plan step 2 precisely because
+    # a user-supplied business date and a recording instant can order
+    # differently: that confusion cost production ``$4,001.42`` of
+    # double-subtracted payments and once tagged a ``$1,307.66`` true-up as the
+    # account's OPENING (``cash_ledger/_events.py``).  It carried no ``id``
+    # either, so it was not total.  Zero readers in ``app/``, ``tests/`` or
+    # ``scripts/``, so no figure moved -- it was a wrong rule sitting beside two
+    # correct statements of the same question, which is what makes it worth
+    # deleting rather than correcting.  **The cash anchor order is
+    # :func:`app.services.cash_ledger.cash_anchor_facts`** (ascending) and
+    # :func:`app.services.cash_ledger.resolve_anchor` (its exact reverse), both
+    # ``(observed_on, created_at, id)``; ask them.  The loan twin went the same
+    # way in the same step (``models/loan_anchor_event.py``).
     anchor_history = db.relationship(
         "AccountAnchorHistory",
         back_populates="account",
-        order_by="AccountAnchorHistory.created_at.desc()",
         cascade="all, delete-orphan",
     )
     # Self-referential collateral link.  ``remote_side`` marks the

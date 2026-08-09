@@ -87,11 +87,13 @@ class FakeLoanParams:
 
 @dataclass
 class FakeAnchorEvent:
-    """Minimal duck-type for LoanAnchorEvent.
+    """Minimal duck-type for a :class:`LoanAnchorFact`.
 
-    ``created_at`` defaults to a deterministic timestamp so the
-    resolver's ``(anchor_date, created_at)`` ordering is stable in
-    tests that exercise the latest-anchor pick.
+    Carries the three terms of the resolver's chronology key
+    (:func:`app.services.loan_resolver.select_latest_anchor`).  ``created_at``
+    and ``event_id`` both default to a deterministic value so the latest-anchor
+    pick is stable in every test that does not care about a tie; a test that
+    DOES construct one sets them explicitly.
     """
 
     anchor_date: date
@@ -99,6 +101,7 @@ class FakeAnchorEvent:
     created_at: datetime = field(
         default_factory=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
     )
+    event_id: int = 0
 
 
 def _arm_400k_params() -> FakeLoanParams:

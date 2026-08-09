@@ -10,6 +10,7 @@ stack.
 """
 import calendar
 from datetime import date, datetime, timezone
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 # Single source of truth for the timezone the UI presents instants in.
@@ -165,6 +166,87 @@ def has_settled_by(settled_on: date | None, as_of: date) -> bool:
         ``True`` iff *settled_on* is a day at or before *as_of*.
     """
     return settled_on is not None and settled_on <= as_of
+
+
+class DatedAssertion(Protocol):
+    """The three fields a loan anchor's chronological position is built from.
+
+    A structural type, not a base class: it names what
+    :func:`anchor_chronology_key` reads without forcing its callers onto a
+    concrete class.  The production value is
+    :class:`app.services.loan_loaders.LoanAnchorFact`, which this module must
+    not import (it would give a stdlib-only module a runtime edge to the model
+    layer -- the same purity argument :func:`has_settled_by` makes above).
+
+    Attributes:
+        anchor_date: The civil day the balance was asserted FOR -- the business
+            date, and the first term.
+        created_at: The instant the assertion was RECORDED, aware-UTC.
+        event_id: The stored ``budget.loan_anchor_events.id``.
+    """
+
+    anchor_date: date
+    created_at: datetime
+    event_id: int
+
+
+def anchor_chronology_key(
+    anchor: DatedAssertion,
+) -> tuple[date, datetime, int]:
+    """Return a loan anchor's position in its loan's ONE chronology.
+
+    **The single definition of "which of a loan's balance assertions is later",
+    written once and called by both consumers that must agree on it** (plan step
+    X-an-b, closing finding **N-196**):
+
+    * :func:`app.services.loan_loaders.load_loan_anchor_facts` sorts its facts by
+      this, so the list every reader receives is already in chronological order;
+    * :func:`app.services.loan_resolver.select_latest_anchor` takes the ``max()``
+      of it, so the resolver seeds from the greatest whatever order it is handed.
+
+    They must name the SAME row -- the walk resets the running balance at each
+    anchor in turn, so the last one it sees decides the posted balance, while the
+    resolver's seeds the replayed one.  Before this function they were two inline
+    tuples, and the tuples had drifted: neither carried the row id, and
+    ``max()`` returns the FIRST maximal element where the walk applies the LAST,
+    so a tie named opposite rows.
+
+    **It lives HERE for the reason :func:`has_settled_by` does, one step
+    earlier in the same arc.**  Its two callers cannot share a module: the
+    resolver is a runtime model-free leaf (``loan_resolver/_periods.py`` takes a
+    ``TYPE_CHECKING``-only import to stay one) and ``loan_loaders`` imports
+    models and ``db`` while declaring itself a leaf that imports "never another
+    loan service".  So neither can import the other, and a key spelled in both
+    would be two statements kept in step by hope.  This module is stdlib-only
+    and both already depend on it.
+
+    **All three terms, and why none is optional.**  ``anchor_date`` is the
+    business day the assertion is ABOUT.  ``created_at`` orders two assertions
+    about one business day, so the last one recorded is that day's closing
+    balance -- and the synthesized origination fact carries the earliest possible
+    instant, so a true-up asserted ON the origination date still outranks it.
+    ``event_id`` makes the key TOTAL: ``created_at`` is
+    ``server_default=func.now()``, which PostgreSQL evaluates at TRANSACTION
+    START, so every row written in one transaction shares an instant --
+    ``shekel-prod-db`` carries four such rows today, and they escape a tie only
+    because no two of them share an ``anchor_date``.  The higher id wins, which
+    is the rule the write door
+    (:func:`app.services.anchor_service._governing_loan_anchor`) and both cash
+    orderings already apply.
+
+    Pure: three attribute reads and a tuple, no I/O and no clock.
+
+    Args:
+        anchor: Any :class:`DatedAssertion` -- an object exposing
+            ``anchor_date``, ``created_at`` and ``event_id``.  Takes the OBJECT
+            rather than the three values because its callers pass it as a
+            ``key=`` function, which is the point: a caller that unpacked the
+            fields itself would be free to reassemble them differently.
+
+    Returns:
+        The ``(anchor_date, created_at, event_id)`` tuple, ascending-comparable.
+    """
+    return (anchor.anchor_date, anchor.created_at, anchor.event_id)
 
 
 def utc_instant(instant: datetime) -> datetime:
