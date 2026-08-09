@@ -39,7 +39,7 @@ def confirmed_shadows_through(
     scenario_id: int,
     as_of: date,
 ) -> list[Transaction]:
-    """Return the settled shadows whose pay period has begun by ``as_of``.
+    """Return the settled shadows whose CASH had moved by ``as_of``.
 
     The DISPLAY subset of
     :func:`~app.services.loan_loaders.settled_income_shadows`: the payments the

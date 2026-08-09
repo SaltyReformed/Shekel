@@ -14,6 +14,7 @@ Every monetary expectation carries the arithmetic in a comment so a
 future reader can verify the assertion by hand.
 """
 
+import dataclasses
 import inspect
 import io
 import pathlib
@@ -39,7 +40,9 @@ from app.services.loan_resolver import (
     resolve_loan,
     resolve_periods,
 )
+from app.services.loan_resolver._payoff import _build_monthly_override
 from app.services.loan_resolver._periods import _replay_from_anchor
+from app.utils.dates import has_settled_by
 from app.services.rate_period_engine import monthly_due_date
 from app.utils.dates import add_months
 from app.utils.money import round_money
@@ -363,8 +366,8 @@ def test_confirmed_payment_reduces_balance():
     payment = PaymentRecord(
         payment_date=date(2026, 2, 15),
         due_date=monthly_due_date(date(2026, 2, 15), 1),
+        settled_on=date(2026, 2, 15),
         amount=Decimal("1888.36"),
-        is_confirmed=True,
     )
 
     inputs = LoanInputs(params, [anchor], [payment], _rate_feed(params))
@@ -393,8 +396,8 @@ def test_projected_payment_not_replayed():
     projected = PaymentRecord(
         payment_date=date(2026, 2, 15),
         due_date=monthly_due_date(date(2026, 2, 15), 1),
+        settled_on=None,
         amount=Decimal("1888.36"),
-        is_confirmed=False,
     )
 
     inputs = LoanInputs(params, [anchor], [projected], _rate_feed(params))
@@ -431,8 +434,8 @@ def test_projected_overpayment_routes_into_the_forward_schedule():
     projected_overpay = PaymentRecord(
         payment_date=date(2026, 3, 1),
         due_date=monthly_due_date(date(2026, 3, 1), 1),
+        settled_on=None,
         amount=Decimal("2500.00"),
-        is_confirmed=False,
     )
 
     planned_inputs = LoanInputs(
@@ -485,9 +488,9 @@ def test_fixed_rate_replays_from_origination_anchor():
     )
     anchor = _origination_anchor(params)
     payments = [
-        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), date(2026, 2, 1), Decimal("1798.65")),
+        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), date(2026, 3, 1), Decimal("1798.65")),
+        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), date(2026, 4, 1), Decimal("1798.65")),
     ]
 
     inputs = LoanInputs(params, [anchor], payments, _rate_feed(params))
@@ -539,10 +542,10 @@ def test_anchor_trueup_resets_replay():
     )
     payments = [
         # Pre-trueup -- filtered out by the resolver.
-        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), date(2026, 2, 1), Decimal("1798.65")),
+        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), date(2026, 3, 1), Decimal("1798.65")),
         # Post-trueup -- replayed.
-        PaymentRecord(date(2026, 5, 1), monthly_due_date(date(2026, 5, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 5, 1), monthly_due_date(date(2026, 5, 1), 1), date(2026, 5, 1), Decimal("1798.65")),
     ]
 
     inputs = LoanInputs(
@@ -598,11 +601,11 @@ def test_payment_due_after_trueup_replays_though_pay_period_started_before():
     )
     payments = [
         # Already reflected in the trueup balance (due 04-01, 05-01).
-        PaymentRecord(date(2026, 3, 26), monthly_due_date(date(2026, 3, 26), 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 4, 23), monthly_due_date(date(2026, 4, 23), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 3, 26), monthly_due_date(date(2026, 3, 26), 1), date(2026, 3, 26), Decimal("1798.65")),
+        PaymentRecord(date(2026, 4, 23), monthly_due_date(date(2026, 4, 23), 1), date(2026, 4, 23), Decimal("1798.65")),
         # Keyed to its pay-period start 05-21; due 06-01, after the
         # 05-22 trueup -- must replay.
-        PaymentRecord(date(2026, 5, 21), monthly_due_date(date(2026, 5, 21), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 5, 21), monthly_due_date(date(2026, 5, 21), 1), date(2026, 5, 21), Decimal("1798.65")),
     ]
 
     inputs = LoanInputs(
@@ -1214,9 +1217,9 @@ def test_history_rows_marked_confirmed():
     )
     anchor = _origination_anchor(params)
     payments = [
-        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), date(2026, 2, 1), Decimal("1798.65")),
+        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), date(2026, 3, 1), Decimal("1798.65")),
+        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), date(2026, 4, 1), Decimal("1798.65")),
     ]
 
     state = resolve_loan(
@@ -1257,9 +1260,9 @@ def test_forward_rows_marked_unconfirmed():
     )
     anchor = _origination_anchor(params)
     payments = [
-        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), date(2026, 2, 1), Decimal("1798.65")),
+        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), date(2026, 3, 1), Decimal("1798.65")),
+        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), date(2026, 4, 1), Decimal("1798.65")),
     ]
 
     state = resolve_loan(
@@ -1324,10 +1327,10 @@ def _four_contractual_payments_jan_to_apr_2026() -> list[PaymentRecord]:
     regression scenario.
     """
     return [
-        PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1798.65"), True),
-        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), Decimal("1798.65"), True),
+        PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), date(2026, 1, 1), Decimal("1798.65")),
+        PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), date(2026, 2, 1), Decimal("1798.65")),
+        PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), date(2026, 3, 1), Decimal("1798.65")),
+        PaymentRecord(date(2026, 4, 1), monthly_due_date(date(2026, 4, 1), 1), date(2026, 4, 1), Decimal("1798.65")),
     ]
 
 
@@ -1470,9 +1473,9 @@ class TestComputePayoffScenarios:
         ]
         payments = [
             # Confirmed, keyed to its pay-period start 2026-05-21; due 06-01.
-            PaymentRecord(date(2026, 5, 21), monthly_due_date(date(2026, 5, 21), 1), Decimal("1798.65"), True),
+            PaymentRecord(date(2026, 5, 21), monthly_due_date(date(2026, 5, 21), 1), date(2026, 5, 21), Decimal("1798.65")),
             # Projected, keyed to pay-period start 2026-06-18; due 07-01.
-            PaymentRecord(date(2026, 6, 18), monthly_due_date(date(2026, 6, 18), 1), Decimal("1798.65"), False),
+            PaymentRecord(date(2026, 6, 18), monthly_due_date(date(2026, 6, 18), 1), None, Decimal("1798.65")),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -1537,7 +1540,7 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), Decimal("2000.00"), False),
+            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), None, Decimal("2000.00")),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -1569,7 +1572,7 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), Decimal("2000.00"), False),
+            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), None, Decimal("2000.00")),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -1605,7 +1608,7 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), Decimal("2000.00"), False),
+            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), None, Decimal("2000.00")),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -1672,7 +1675,7 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), Decimal("2000.00"), False),
+            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), None, Decimal("2000.00")),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -1949,7 +1952,7 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = _four_contractual_payments_jan_to_apr_2026() + [
-            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), Decimal("2000.00"), False),
+            PaymentRecord(date(2026, 6, 1), monthly_due_date(date(2026, 6, 1), 1), None, Decimal("2000.00")),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -2031,8 +2034,8 @@ class TestComputePayoffScenarios:
             created_at=datetime(2025, 12, 15, tzinfo=timezone.utc),
         )
         payments = [
-            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("2398.20"), True),
-            PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("2398.20"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), date(2026, 1, 1), Decimal("2398.20")),
+            PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), date(2026, 2, 1), Decimal("2398.20")),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -2090,8 +2093,8 @@ class TestComputePayoffScenarios:
         params = _fixed_rate_300k_params()
         anchor = _origination_anchor(params)
         payments = [
-            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1798.65"), True),
-            PaymentRecord(date(2026, 8, 1), monthly_due_date(date(2026, 8, 1), 1), Decimal("2500.00"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), date(2026, 1, 1), Decimal("1798.65")),
+            PaymentRecord(date(2026, 8, 1), monthly_due_date(date(2026, 8, 1), 1), date(2026, 8, 1), Decimal("2500.00")),
         ]
         scenarios = compute_payoff_scenarios(
             loan_inputs=LoanInputs(
@@ -2262,3 +2265,301 @@ class TestConfirmedLedgerView:
     # ``loan_payoff_date`` fold, so there is no second seeding path left to
     # diverge.  ``TestLoanRequiredExtraSeam`` grades the producer.
 
+
+
+class TestTheReplayProjectionCutIsTheSettledDay:
+    """Plan step **X-an** / finding **N-187**: one cut, on the day cash moved.
+
+    The resolver splits its payment feed on ONE predicate --
+    ``_replay_from_anchor`` takes what has happened, ``_build_monthly_override``
+    plans the rest -- so a payment is never in both halves.  (It CAN be in
+    neither; ``test_a_payment_an_anchor_subsumes_is_in_neither_half`` below is
+    the counter-example, and "exact complements" is what this deliberately is
+    not.)  Until X-an both sides asked whether the payment's PAY PERIOD had
+    begun, while the posted ledger that seeds the projection counted the same
+    payment from the day its cash moved (``loan_ledger.payment_visible_on``).
+    The two dates differ in both directions, and both failures move a figure the
+    developer reads:
+
+    * settled EARLY (before the paycheck period funding it opens): the ledger
+      had already paid the installment down and the resolver planned it again,
+      so the forward chart paid it twice;
+    * settled AFTER an evaluation date its period already covers (an ordinary
+      state for a read of a PAST date): history to the resolver, not to the
+      ledger, so it fell out of both the balance and the plan.
+
+    Measured on a $300,000 / 6% / 360-month loan whose 2026-08-01 installment is
+    funded by the pay period opening 2026-07-31 and whose cash left 2026-07-30:
+    read on 2026-07-30 the projected balance was $310.81 low the following
+    month, growing to $1,789.69 at the tail of the schedule.
+
+    **The two end-to-end tests do not grade the OVERRIDE half on their own, and
+    the two partition tests are not redundant with them.**  Under a half-fix
+    that moved ``replay_schedule`` onto the settle day and left
+    ``_build_monthly_override`` on the pay period, August is in BOTH halves --
+    but the stale ``(2026, 8)`` override key is never consumed, because the
+    forward slice starts in September, so both end-to-end tests stay green.
+    ``test_no_payment_is_replayed_and_planned_at_once`` is what fails there,
+    and it does so by calling ``_build_monthly_override`` directly.
+    """
+
+    PI = Decimal("1798.65")
+    PAY_PERIOD_STARTS = {
+        2: date(2026, 1, 23), 3: date(2026, 2, 20), 4: date(2026, 3, 20),
+        5: date(2026, 4, 17), 6: date(2026, 5, 15), 7: date(2026, 6, 26),
+        8: date(2026, 7, 31),
+    }
+    #: The August installment's cash left on 07-30, the day BEFORE the pay
+    #: period funding it opens.  Every other one settled on its own due date.
+    SETTLED_ON = {
+        2: date(2026, 2, 1), 3: date(2026, 3, 1), 4: date(2026, 4, 1),
+        5: date(2026, 5, 1), 6: date(2026, 6, 1), 7: date(2026, 7, 1),
+        8: date(2026, 7, 30),
+    }
+    AS_OF = date(2026, 7, 30)
+
+    def _params(self):
+        """$300k / 6% / 360mo from 2026-01-01, due on the 1st."""
+        return FakeLoanParams(
+            origination_date=date(2026, 1, 1),
+            term_months=360,
+            original_principal=Decimal("300000.00"),
+            interest_rate=Decimal("0.06"),
+            payment_day=1,
+        )
+
+    def _payments(self, through_month: int = 8):
+        """The Feb..*through_month* installments, all settled."""
+        return [
+            PaymentRecord(
+                payment_date=self.PAY_PERIOD_STARTS[month],
+                due_date=date(2026, month, 1),
+                settled_on=self.SETTLED_ON[month],
+                amount=self.PI,
+            )
+            for month in range(2, through_month + 1)
+        ]
+
+    def _ledger_view(self, payments_counted: int):
+        """The balance a sum-of-postings ledger reports after N payments.
+
+        Walked by hand at the loan's single rate period: each installment
+        accrues ``balance * 0.06 / 12`` and pays ``1798.65 - interest`` of
+        principal.  This is what the fold answers on 2026-07-30, where all
+        SEVEN payments have settled -- the August one that very day.
+        """
+        balance = Decimal("300000.00")
+        for _ in range(payments_counted):
+            interest = round_money(balance * Decimal("0.06") / Decimal("12"))
+            balance = round_money(balance - (self.PI - interest))
+        return ConfirmedLedgerView(balance=balance, history_rows=[])
+
+    def test_an_early_settled_payment_is_not_planned_again(self):
+        """The August installment is history, so the plan starts in September.
+
+        Its cash moved 2026-07-30 and the read is as of that day, so the ledger
+        seed already contains it.  The forward slice must therefore open at the
+        SEPTEMBER installment.  Reading the pay period instead (07-31, still
+        ahead of the read) left it in ``monthly_override``, so the committed
+        slice opened at 2026-08-01 and paid the installment a second time on a
+        balance that already reflected it.
+        """
+        params = self._params()
+        scenarios = compute_payoff_scenarios(
+            loan_inputs=LoanInputs(
+                params, [_origination_anchor(params)],
+                self._payments(), _rate_feed(params),
+            ),
+            extra_monthly=Decimal("0.00"),
+            as_of=self.AS_OF,
+            confirmed_view=self._ledger_view(7),
+        )
+        assert scenarios.committed_forward[0].payment_date == date(2026, 9, 1)
+
+    def test_the_projected_balance_is_not_one_installment_low(self):
+        """The figure the double count moved, pinned by hand.
+
+        Ledger balance on 2026-07-30 after seven installments is $297,877.84.
+        The first forward month is September: interest
+        ``round(297877.84 * 0.005) = 1,489.39``, principal
+        ``1798.65 - 1489.39 = 309.26``, leaving **297,568.58**.  With the
+        August installment re-planned the schedule reached that figure a month
+        early and then kept going, so every later month read one installment's
+        principal low -- $310.81 by October, $1,789.69 at the tail.
+        """
+        params = self._params()
+        view = self._ledger_view(7)
+        assert view.balance == Decimal("297877.84")
+
+        scenarios = compute_payoff_scenarios(
+            loan_inputs=LoanInputs(
+                params, [_origination_anchor(params)],
+                self._payments(), _rate_feed(params),
+            ),
+            extra_monthly=Decimal("0.00"),
+            as_of=self.AS_OF,
+            confirmed_view=view,
+        )
+        by_month = {
+            (row.payment_date.year, row.payment_date.month):
+                row.remaining_balance
+            for row in scenarios.committed_forward
+        }
+        assert (2026, 8) not in by_month
+        assert by_month[(2026, 9)] == Decimal("297568.58")
+        assert by_month[(2026, 10)] == Decimal("297257.77")
+
+    def test_a_payment_settled_after_as_of_is_still_planned(self):
+        """The LATE half: a past read must not spend money that had not left.
+
+        The same feed read as of 2026-07-29, one day BEFORE the August
+        installment's cash moved.  The ledger counts six payments there, and the
+        resolver must agree: the August installment is still a plan, so the
+        forward slice opens at 2026-08-01 **carrying that payment's own
+        amount**.
+
+        The August payment is given ``$2,200.00`` rather than the contractual
+        ``$1,798.65`` precisely so the assertion can SEE the override.  At the
+        contractual amount an overridden August row and a plain contractual one
+        are byte-identical, so asserting only the row's DATE would pass with an
+        empty override map and grade nothing but ``replay.next_pay_date``.
+
+        Six installments have settled by 2026-07-29, leaving ``$298,185.56``
+        (the ``_ledger_view(6)`` walk).  The August row is then:
+
+            interest  = 298185.56 * 0.005 = 1490.93  (HALF_UP from 1490.9278)
+            principal = 2200.00 - 1490.93 =  709.07
+            balance   = 298185.56 - 709.07 = 297,476.49
+
+        Without the override it would pay the contractual 1798.65, leaving
+        307.72 of principal and 297,877.84 -- which is what a regression here
+        would show.
+        """
+        params = self._params()
+        payments = [
+            dataclasses.replace(payment, amount=Decimal("2200.00"))
+            if payment.due_date == date(2026, 8, 1) else payment
+            for payment in self._payments()
+        ]
+        scenarios = compute_payoff_scenarios(
+            loan_inputs=LoanInputs(
+                params, [_origination_anchor(params)],
+                payments, _rate_feed(params),
+            ),
+            extra_monthly=Decimal("0.00"),
+            as_of=date(2026, 7, 29),
+            confirmed_view=self._ledger_view(6),
+        )
+        august = scenarios.committed_forward[0]
+        assert august.payment_date == date(2026, 8, 1)
+        # The PLANNED outlay, not the contractual P&I: the override is what
+        # this row is made of, and an empty map would give 1798.65 / 307.72.
+        assert august.payment == Decimal("2200.00")
+        assert august.principal == Decimal("709.07")
+        assert august.remaining_balance == Decimal("297476.49")
+
+    def _partition(self, as_of: date, anchors: list | None = None):
+        """Return ``(replayed_months, planned_months, settled_by_months)``.
+
+        The three sets the partition claim is about, read off the two call
+        sites and off the predicate itself, so the assertions below compare
+        what the code does against what the rule says rather than against a
+        second hand-maintained expectation.
+        """
+        params = self._params()
+        payments = self._payments()
+        periods = resolve_periods(params, _rate_feed(params))
+        anchor_events = (
+            [_origination_anchor(params)] if anchors is None else anchors
+        )
+        replayed = _replay_from_anchor(
+            LoanInputs(params, anchor_events, payments, _rate_feed(params)),
+            periods,
+            as_of,
+        ).rows
+        planned = _build_monthly_override(payments, as_of)
+        replayed_months = {
+            (row.payment_date.year, row.payment_date.month)
+            for row in replayed
+        }
+        settled_by_months = {
+            (p.due_date.year, p.due_date.month)
+            for p in payments
+            if has_settled_by(p.settled_on, as_of)
+        }
+        assert len(replayed_months) == len(replayed), (
+            "the replay produced two rows in one month, which the "
+            "biweekly redistribution exists to prevent"
+        )
+        return replayed_months, set(planned), settled_by_months
+
+    @pytest.mark.parametrize("as_of_day", list(range(25, 32)))
+    def test_no_payment_is_replayed_and_planned_at_once(self, as_of_day):
+        """The half that is a HARD invariant: never both, on every day.
+
+        A payment in both halves has its installment paid twice -- once inside
+        the ledger balance seeding the projection, once by the plan on top.
+        Swept across 2026-07-25..07-31, which brackets both the August
+        installment's settle day (07-30) and the pay period that used to decide
+        it (07-31), so the sweep crosses the seam whichever rule is in force.
+        """
+        replayed, planned, _ = self._partition(date(2026, 7, as_of_day))
+        assert replayed.isdisjoint(planned)
+
+    @pytest.mark.parametrize("as_of_day", list(range(25, 32)))
+    def test_the_two_halves_partition_the_SETTLED_BY_set(self, as_of_day):
+        """And the union is that set, not the whole feed -- the honest claim.
+
+        ``has_settled_by`` is the WHOLE split: what it answers ``False`` for is
+        planned, what it answers ``True`` for is a replay candidate.  Graded
+        against the predicate directly, so the two call sites cannot drift from
+        the rule without this failing.
+
+        On this fixture (one origination anchor, no payoff) every candidate does
+        replay, so the union is also the whole feed --
+        :meth:`test_a_payment_an_anchor_subsumes_is_in_neither_half` is the case
+        where it is NOT, and the two together are why the claim is stated as the
+        settled-by set rather than as a two-way complement.
+        """
+        replayed, planned, settled_by = self._partition(
+            date(2026, 7, as_of_day)
+        )
+        assert replayed == settled_by
+        assert replayed | planned == {
+            (2026, month) for month in range(2, 9)
+        }
+
+    def test_a_payment_an_anchor_subsumes_is_in_neither_half(self):
+        """The case the single-anchor fixture cannot ask about, stated as a rule.
+
+        A true-up asserts the balance owed on its own date, so every installment
+        due at or before it is ALREADY inside that figure.  The replay drops
+        those (``anchor_date < due_date``), and the plan must NOT take them back
+        -- planning an installment the anchor already contains would pay it
+        twice, the same defect from the other side.
+
+        So "exact complements" is false as an unqualified claim, and this is the
+        counter-example: with a true-up dated 2026-06-15, the February..June
+        installments are in neither half.  What IS invariant is the pair the two
+        tests above grade -- never both, and the union is the settled-by set
+        minus what the anchor (or a payoff) already accounts for.
+        """
+        params = self._params()
+        trueup = FakeAnchorEvent(
+            anchor_date=date(2026, 6, 15),
+            anchor_balance=Decimal("297900.00"),
+            created_at=datetime(2026, 6, 15, tzinfo=timezone.utc),
+        )
+        replayed, planned, settled_by = self._partition(
+            self.AS_OF, anchors=[_origination_anchor(params), trueup],
+        )
+        subsumed = {(2026, month) for month in range(2, 7)}
+
+        assert replayed.isdisjoint(planned), "never both, anchor or not"
+        assert subsumed & settled_by == subsumed, (
+            "pre-condition: all five installments HAD settled by the read"
+        )
+        assert subsumed.isdisjoint(replayed)
+        assert subsumed.isdisjoint(planned)
+        # Only the July and August installments survive the anchor bound.
+        assert replayed == {(2026, 7), (2026, 8)}

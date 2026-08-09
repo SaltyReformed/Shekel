@@ -2,6 +2,7 @@
 Tests for the amortization engine service.
 """
 
+import dataclasses
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -865,8 +866,8 @@ class TestPaymentRecordValidation:
             PaymentRecord(
                 payment_date=date(2026, 2, 15),
                 due_date=date(2026, 2, 15),
+                settled_on=date(2026, 2, 15),
                 amount=Decimal("-100.00"),
-                is_confirmed=True,
             )
 
     def test_float_amount_raises_type_error(self):
@@ -875,8 +876,8 @@ class TestPaymentRecordValidation:
             PaymentRecord(
                 payment_date=date(2026, 2, 15),
                 due_date=date(2026, 2, 15),
+                settled_on=date(2026, 2, 15),
                 amount=100.00,
-                is_confirmed=True,
             )
 
     def test_string_date_raises_type_error(self):
@@ -885,35 +886,69 @@ class TestPaymentRecordValidation:
             PaymentRecord(
                 payment_date="2026-02-15",
                 due_date=date(2026, 2, 15),
+                settled_on=date(2026, 2, 15),
                 amount=Decimal("100.00"),
-                is_confirmed=True,
             )
 
     def test_string_due_date_raises_type_error(self):
         """String due_date must be rejected -- only date instances accepted.
 
         ``due_date`` is the installment the payment satisfies, and it is a
-        SEPARATE fact from ``payment_date`` (the pay period the cash moved in),
-        so it carries the same construction-time type guard: a record that
-        conflated the two, or carried a stringly-typed date, would mis-key every
-        downstream due-month lookup.
+        SEPARATE fact from ``payment_date`` (the pay period funding it) and from
+        ``settled_on`` (the day its cash moved), so it carries the same
+        construction-time type guard: a record that conflated any two of them,
+        or carried a stringly-typed date, would mis-key every downstream
+        due-month lookup.
         """
         with pytest.raises(TypeError, match="due_date must be a date"):
             PaymentRecord(
                 payment_date=date(2026, 2, 15),
                 due_date="2026-03-01",
+                settled_on=date(2026, 2, 15),
                 amount=Decimal("100.00"),
-                is_confirmed=True,
             )
 
-    def test_int_confirmed_raises_type_error(self):
-        """Integer is_confirmed must be rejected -- only bool accepted."""
-        with pytest.raises(TypeError, match="is_confirmed must be a bool"):
+    def test_string_settled_on_raises_type_error(self):
+        """String settled_on must be rejected -- only a date or None accepted.
+
+        ``settled_on`` is the replay-vs-projection cut (plan step X-an), so a
+        stringly-typed one would compare against ``as_of`` by lexicographic
+        accident rather than by chronology.  ``None`` is the one non-date value
+        it accepts, and it means the payment has not settled.
+        """
+        with pytest.raises(
+            TypeError, match="settled_on must be a date or None",
+        ):
             PaymentRecord(
                 payment_date=date(2026, 2, 15),
                 due_date=date(2026, 2, 15),
+                settled_on="2026-02-15",
                 amount=Decimal("100.00"),
-                is_confirmed=1,
+            )
+
+    def test_bool_settled_on_raises_type_error(self):
+        """A bool settled_on must be rejected -- ``True`` is not a day.
+
+        ``settled_on is not None`` is what ``is_confirmed`` reads, so a ``bool``
+        reaching this field would report the record as confirmed and then fail
+        only deep inside the replay, where ``True <= as_of`` raises with no
+        mention of the record that produced it.
+
+        This is NOT the un-updated-caller case, and saying so was wrong: the
+        field order is ``(payment_date, due_date, settled_on, amount)``, so a
+        stale positional call written for the old ``(..., amount, is_confirmed)``
+        shape binds a ``Decimal`` here and fails on the ``amount`` guard, while a
+        stale keyword call fails on ``unexpected keyword argument 'is_confirmed'``.
+        The guard earns its place on the value, not on a migration path.
+        """
+        with pytest.raises(
+            TypeError, match="settled_on must be a date or None",
+        ):
+            PaymentRecord(
+                payment_date=date(2026, 2, 15),
+                due_date=date(2026, 2, 15),
+                settled_on=True,
+                amount=Decimal("100.00"),
             )
 
     def test_zero_amount_valid(self):
@@ -921,8 +956,8 @@ class TestPaymentRecordValidation:
         record = PaymentRecord(
             payment_date=date(2026, 2, 15),
             due_date=date(2026, 2, 15),
+            settled_on=None,
             amount=Decimal("0.00"),
-            is_confirmed=False,
         )
         assert record.amount == Decimal("0.00")
 
@@ -931,12 +966,38 @@ class TestPaymentRecordValidation:
         record = PaymentRecord(
             payment_date=date(2026, 2, 15),
             due_date=date(2026, 2, 15),
+            settled_on=date(2026, 2, 15),
             amount=Decimal("1500.00"),
-            is_confirmed=True,
         )
         assert record.payment_date == date(2026, 2, 15)
         assert record.amount == Decimal("1500.00")
         assert record.is_confirmed is True
+
+    def test_is_confirmed_is_derived_from_the_settle_day(self):
+        """``is_confirmed`` IS ``settled_on is not None`` -- never stored (X-an).
+
+        The two facts cannot disagree because there is only one of them: a
+        record carrying a day is confirmed, one carrying none is a plan, and
+        there is no third state to validate against.  Pinned so a future edit
+        that re-introduces the boolean has to delete this test to do it.
+        """
+        settled = PaymentRecord(
+            payment_date=date(2026, 2, 15),
+            due_date=date(2026, 3, 1),
+            settled_on=date(2026, 2, 28),
+            amount=Decimal("1500.00"),
+        )
+        projected = PaymentRecord(
+            payment_date=date(2026, 3, 15),
+            due_date=date(2026, 4, 1),
+            settled_on=None,
+            amount=Decimal("1500.00"),
+        )
+        assert settled.is_confirmed is True
+        assert projected.is_confirmed is False
+        assert "is_confirmed" not in {
+            f.name for f in dataclasses.fields(PaymentRecord)
+        }
 
 
 class TestRateChangeRecordValidation:

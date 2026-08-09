@@ -47,8 +47,8 @@ class LoanPaymentHistoryRow:
     payment read from the genesis ledger, carrying the ACTUAL cash paid and its
     real principal / interest / escrow split (the posted legs, not the schedule's
     contractual replay -- so an extra or short payment shows honestly).  Every
-    row is confirmed by construction (the producer bounds to payments whose pay
-    period has begun), so the table renders a Confirmed badge on each.
+    row is confirmed by construction (the producer bounds to payments whose CASH
+    had moved by ``as_of``), so the table renders a Confirmed badge on each.
 
     ``cash`` is the payment's full cash (the loan-side income shadow's
     ``effective_amount``); ``principal + interest + escrow`` equals it for an
@@ -151,8 +151,10 @@ def confirmed_loan_payment_history(
         loan_account_id: The loan account whose confirmed payments to read.
         scenario_id: The budget scenario to scope to.
         as_of: The display boundary; must be on or before ``date.today()``.  A
-            payment whose pay period has not begun by it is a forward projection,
-            excluded.
+            payment whose cash has not moved by it is a forward projection,
+            excluded (:func:`app.services.loan_ledger.confirmed_shadows_through`,
+            which bounds on the SETTLED day -- not the pay period, which this
+            said until plan step X-an corrected it).
 
     Returns:
         The chronological confirmed payment rows (possibly empty for a configured

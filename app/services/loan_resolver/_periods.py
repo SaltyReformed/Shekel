@@ -377,13 +377,22 @@ def _replay_from_anchor(
     each payment by its true monthly due date so a pay period that
     straddles a mid-period balance true-up is classified correctly.
 
+    The comprehension below filters on the SETTLE DAY rather than on
+    :attr:`~app.services.amortization_engine.PaymentRecord.is_confirmed`, and
+    they are the same predicate: ``is_confirmed`` IS ``settled_on is not None``
+    since plan step **X-an**, when it stopped being stored.  Binding the day in
+    the filter is what makes
+    :attr:`~app.services.rate_period_engine.ConfirmedPayment.settled_on`'s
+    non-``None`` type a property of the code rather than of a comment.
+
     Args:
         loan_inputs: The loan's loaded input bundle.  ``anchor_events``
             must be non-empty (the Commit-12 invariant).
         periods: The loan's ordered rate periods, built once by the
             caller via :func:`resolve_periods`.
-        as_of: Evaluation date; replay stops at the latest payment whose
-            pay period has begun by this date.
+        as_of: Evaluation date; replay stops at the latest payment whose CASH
+            had moved by it (plan step **X-an**; it was the pay period until
+            then, which is the funding basis, not the day the money left).
 
     Returns:
         The :class:`~app.services.rate_period_engine.ScheduleReplay` for
@@ -404,9 +413,10 @@ def _replay_from_anchor(
             ConfirmedPayment(
                 period_start=payment.payment_date,
                 due_date=payment.due_date,
+                settled_on=settled_on,
             )
             for payment in (loan_inputs.payments or [])
-            if payment.is_confirmed
+            if (settled_on := payment.settled_on) is not None
         ],
         payment_day=loan_inputs.loan_params.payment_day,
         as_of=as_of,

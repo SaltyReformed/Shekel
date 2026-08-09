@@ -457,15 +457,23 @@ def settled_income_shadows(
       (:func:`app.services.loan_ledger.walk_loan_ledger`), not a payment exclusion.
       A pre-anchor payment is split and posted (its principal effect is later
       subsumed by the anchor correction), never silently dropped.
-    * **No period-begun UPPER bound.**  Settlement is the confirming event: the
+    * **No has-happened-yet UPPER bound.**  Settlement is the confirming event: the
       Step-2 cash entry posts the moment a payment settles, so the split correction
       must post in the SAME moment or the loan-linked ledger holds raw cash with no
       interest / escrow backout from the payment's period start until the next loan
       write (the 2026-07-02 adversarial review's H2 -- demonstrated as a ~$1,636
-      understatement on the real Mortgage).  Both entries carry the payment's
-      ``pay_period_id``, so the READERS' period bound still keeps an early-settled
-      payment out of every displayed balance until its period begins -- posting
-      early changes when the fact is RECORDED, never when it is SHOWN.
+      understatement on the real Mortgage).  The READERS apply their own bound, so
+      posting early changes when the fact is RECORDED, never when it is SHOWN.
+
+      **That bound is the payment's SETTLED day, not its pay period, on every
+      reader** -- the fold's since step C2 (:func:`app.services.loan_ledger.payment_visible_on`),
+      the resolver's replay since plan step **X-an**.  This paragraph used to say
+      the readers' PERIOD bound kept an early-settled payment out of every
+      displayed balance until its period began, and finding **N-187** is that
+      sentence being false in both directions at once: an early-settled payment
+      IS shown from the day its cash moved, and the resolver was the one reader
+      still waiting for the period -- so it planned an installment the ledger had
+      already paid down.
 
     Sorted by pay-period start -- the app's canonical payment chronology
     (``get_payment_history`` orders identically) and the order the fold's running

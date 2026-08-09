@@ -37,9 +37,22 @@ not dropping, or (b) the drop including the escrow / interest
 portions.  Either case is a Commit-14-scope production fix per the
 plan's "Note for this commit" (CLAUDE.md rule 4) -- not a
 band-aid in the test.
+
+**Every balance here is read AT OR AFTER the day the money moved, and that
+matters since plan step X-an** (finding N-187).  ``mark-done`` stamps the
+shadow's ``settled_on`` with the user's today, and the resolver's
+replay-vs-projection cut is now that day -- the SAME day the balance seam
+counts the payment's principal from, which is the point of the step.  These
+tests used to read the balance on a fixed ``2026-03-01`` while the payment's
+cash moved on the day the suite ran, and they passed because the resolver cut
+on the payment's PAY PERIOD instead: the replay reported the reduction months
+before the money left, and the seam -- measured, on this exact fixture --
+reported ``$300,000.00`` on that date and ``$299,701.35`` only on the settle
+day.  The dates below are therefore derived from ``display_today()``, never
+written down; the hand-computed amounts are unchanged.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -53,12 +66,14 @@ from app.enums import (
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import (
+    balance_at,
     loan_loaders,
     loan_payment_service,
     loan_resolver,
     transfer_service,
 )
 from app.services.loan_resolver._periods import _replay_from_anchor
+from app.utils.dates import add_months, display_today
 from app.utils.money import round_money
 from tests._test_helpers import (
     add_escrow_line,
@@ -117,7 +132,29 @@ BALANCE_AFTER_3 = Decimal("299099.57")
 PRINCIPAL_PORTION_M1 = Decimal("298.65")
 
 
+
 # -- Helpers ----------------------------------------------------------------
+
+
+def _after_the_money_moved(months_later: int = 0) -> date:
+    """Return an evaluation date at or after the day ``mark-done`` records.
+
+    The settle door stamps ``settled_on`` with the OWNER's civil day
+    (``status_seam.apply_status_change`` -> ``display_today()``), and since plan
+    step X-an that day IS the resolver's replay cut -- the same day the balance
+    seam counts the payment's principal from.  So "after the payment" is a
+    function of the suite's own run day, never a written-down date: on any
+    earlier date the payment genuinely has not happened, and asserting a
+    reduction there would pin the divergence X-an removed.
+
+    Args:
+        months_later: Whole months to advance past that day.  ``0`` is the day
+            itself, which the cut includes (the bound is inclusive).
+
+    Returns:
+        The evaluation date.
+    """
+    return add_months(display_today(), months_later)
 
 
 def _create_mortgage(
@@ -327,7 +364,7 @@ class TestLoanPrincipalSettles:
             # broken setup from a working settle.
             balance_before = _resolve_balance(
                 ctx["mortgage_id"], ctx["loan_params"],
-                ctx["scenario_id"], date(2026, 3, 1),
+                ctx["scenario_id"], _after_the_money_moved(),
             )
             assert balance_before == ORIGINAL_PRINCIPAL, (
                 f"Expected anchor balance {ORIGINAL_PRINCIPAL} before "
@@ -366,7 +403,7 @@ class TestLoanPrincipalSettles:
 
             balance_after = _resolve_balance(
                 ctx["mortgage_id"], ctx["loan_params"],
-                ctx["scenario_id"], date(2026, 3, 1),
+                ctx["scenario_id"], _after_the_money_moved(),
             )
 
             # Primary symptom-#3 assertion: principal drops by exactly
@@ -463,7 +500,7 @@ class TestLoanPrincipalSettles:
 
             balance_after = _resolve_balance(
                 ctx["mortgage_id"], ctx["loan_params"],
-                ctx["scenario_id"], date(2026, 3, 1),
+                ctx["scenario_id"], _after_the_money_moved(),
             )
             assert balance_after == BALANCE_AFTER_1, (
                 f"E-01 violation: expected principal-only reduction to "
@@ -516,7 +553,7 @@ class TestLoanPrincipalSettles:
 
             balance = _resolve_balance(
                 ctx["mortgage_id"], ctx["loan_params"],
-                ctx["scenario_id"], date(2026, 3, 1),
+                ctx["scenario_id"], _after_the_money_moved(),
             )
             assert balance == ORIGINAL_PRINCIPAL, (
                 f"Projected transfer must not reduce principal; "
@@ -585,7 +622,7 @@ class TestLoanPrincipalSettles:
 
                 balance = _resolve_balance(
                     ctx["mortgage_id"], ctx["loan_params"],
-                    ctx["scenario_id"], date(2026, 5, 1),
+                    ctx["scenario_id"], _after_the_money_moved(),
                 )
                 assert balance == expected_balance, (
                     f"Cumulative settle through period {period_id}: "
@@ -603,19 +640,22 @@ class TestLoanPrincipalSettles:
 def test_resolved_balance_stable_across_future_as_of(  # noqa: D401
     app, auth_client, seed_user, seed_periods, db, as_of_offset_months,
 ):
-    """Symptom-#3 corollary: once a single transfer settles in period 3
-    (Feb 13), the resolved balance is the same for any ``as_of`` after
-    the payment regardless of how far into the future the consumer
-    asks.
+    """Symptom-#3 corollary: once a transfer settles, the resolved balance is
+    the same for any ``as_of`` after the money moved, regardless of how far
+    into the future the consumer asks.
 
     Pre-fix the displayed principal moved only when the user
     re-edited the form -- it would have read $300,000.00 on every
     surface for every ``as_of`` value.  Post-fix the balance reflects
-    the settle and stays at $299,701.35 for as_of in {Mar, Apr, May,
-    Aug} 2026 because no further payments have arrived.  Parametrising
+    the settle and stays at $299,701.35 one, two, three and six months
+    on, because no further payments have arrived.  Parametrising
     over multiple ``as_of`` proves the replay does not silently reset
     or drift when the resolver is called multiple times for the same
     underlying state.
+
+    The offsets run from the day the money MOVED, not from the payment's pay
+    period: before that day the payment has not happened, and the balance is
+    correctly still $300,000.00 (see the module docstring).
     """
     with app.app_context():
         checking = seed_user["account"]
@@ -643,12 +683,9 @@ def test_resolved_balance_stable_across_future_as_of(  # noqa: D401
         assert resp.status_code == 200
 
         db.session.expire_all()
-        # Compute the as_of from a fixed base month so the
-        # parametrisation does not depend on wall-clock time.
-        as_of_month = 2 + as_of_offset_months  # Feb base + offset.
-        as_of_year = 2026 + (as_of_month - 1) // 12
-        as_of_month = ((as_of_month - 1) % 12) + 1
-        as_of = date(as_of_year, as_of_month, 1)
+        # The base is the day the settle door recorded, so every offset lands
+        # after the money moved on whatever day the suite runs.
+        as_of = _after_the_money_moved(as_of_offset_months)
 
         balance = _resolve_balance(
             mortgage.id, loan_params, scenario.id, as_of,
@@ -656,4 +693,79 @@ def test_resolved_balance_stable_across_future_as_of(  # noqa: D401
         assert balance == BALANCE_AFTER_1, (
             f"Resolver drifted for as_of={as_of}: expected "
             f"{BALANCE_AFTER_1}, got {balance}."
+        )
+
+
+@pytest.mark.parametrize("days_before_settle", [1, 0])
+def test_the_replay_and_the_balance_seam_agree_on_what_has_happened(
+    app, auth_client, seed_user, seed_periods, db, days_before_settle,
+):
+    """Plan step **X-an** / finding **N-187**: ONE answer, two producers.
+
+    The oracle the step exists to restore, and the one no unit test can give:
+    the resolver's anchor replay and the ``balance_at`` seam -- the producer
+    every screen actually reads -- must classify a payment the same way on
+    every date.  They did not.  ``mark-done`` on a transfer budgeted to the
+    2026-02-13 pay period stamps the settle day with the suite's own today, and
+    the seam counts the principal from that day; the replay counted it from the
+    pay period, months earlier, so the two disagreed by exactly one
+    installment's principal on every date in between.
+
+    Parametrised across the seam itself: the day BEFORE the money moved (no
+    reduction, on both producers) and the day OF (the full $298.65, on both).
+    """
+    with app.app_context():
+        checking = seed_user["account"]
+        scenario = seed_user["scenario"]
+        user = seed_user["user"]
+        periods = seed_periods
+        category = seed_user["categories"]["Car Payment"]
+
+        mortgage, loan_params = _create_mortgage(seed_user, periods[0])
+        db.session.commit()
+
+        xfer = _create_piti_transfer(
+            user_id=user.id,
+            from_account_id=checking.id,
+            to_account_id=mortgage.id,
+            pay_period_id=periods[3].id,
+            scenario_id=scenario.id,
+            amount=CONTRACTUAL_PI,
+            category_id=category.id,
+        )
+        db.session.commit()
+
+        shadow_id = _income_shadow(xfer.id, mortgage.id).id
+        resp = auth_client.post(f"/transactions/{shadow_id}/mark-done")
+        assert resp.status_code == 200
+        db.session.expire_all()
+
+        cash_day = db.session.get(Transaction, shadow_id).settled_on
+        assert cash_day == display_today(), (
+            "Pre-condition: the settle door stamps the owner's civil day, "
+            f"which this test's dates are derived from; got {cash_day}."
+        )
+        as_of = cash_day - timedelta(days=days_before_settle)
+        expected = (
+            ORIGINAL_PRINCIPAL if days_before_settle else BALANCE_AFTER_1
+        )
+
+        replayed = _resolve_balance(
+            mortgage.id, loan_params, scenario.id, as_of,
+        )
+        ctx = balance_at.BalanceContext.build(user.id, as_of=as_of)
+        seam = balance_at.positions(mortgage, ctx, [as_of])[as_of]
+
+        assert replayed == expected, (
+            f"Replay at {as_of} (cash moved {cash_day}): expected "
+            f"{expected}, got {replayed}."
+        )
+        assert seam == expected, (
+            f"Seam at {as_of} (cash moved {cash_day}): expected "
+            f"{expected}, got {seam}."
+        )
+        assert replayed == seam, (
+            f"The two producers disagree at {as_of}: replay {replayed} vs "
+            f"seam {seam}.  They classify a payment by the same day since "
+            f"plan step X-an."
         )
