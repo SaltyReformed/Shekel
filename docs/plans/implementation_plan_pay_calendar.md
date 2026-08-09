@@ -2,18 +2,22 @@
 
 ## Where this stands
 
-**Nothing has shipped.** This arc was opened 2026-08-08 out of the recurrence arc's finding **F-10**
-(`implementation_plan_recurrence_redesign.md`), after the ruling below established that F-10 is not
-a missing check but a missing normalization. The recurrence arc's **R-F10** and **R-F12** stay live
+**C1 IS DONE** (`f9d148fe`, branch `feat/pay-calendar`); nothing else has shipped. This arc was
+opened 2026-08-08 out of the recurrence arc's **F-10**, after the ruling below established that F-10
+is not a missing check but a missing normalization. That arc's **R-F10** and **R-F12** stay live
 there and are ticked by **C5** and **C2** here; the balance arc's **N-128** and **X-l** are the same
-defect seen from the third side.
+defect from the third side.
 
-**NEXT = C1**, the derivation oracle: prove the value reproduces every stored column before anything
-reads it, writes it or drops it. C1 changes no schema, no behaviour and no caller.
-
+**NEXT = C2**, which starts with a ruling and not a keystroke (section 3, "What is NOT decided yet")
+and **ships as ONE commit with the balance arc's X-l** -- both build the same total calendar, and
+building it twice is the defect C2 exists to remove.
 **Nothing here blocks the recurrence arc's Half A** (R7a, R7b, R7c, R8), which touches no file this
-arc edits. **C2 must be sequenced WITH the balance arc's X-l** -- both build the same total
-calendar, and building it twice is the defect C2 exists to remove.
+arc edits.
+
+Two rulings were taken building C1, both in the table below: the projected last end is MARKED on the
+value, and a derived period CARRIES `period_id`. C1's neutral review corrected this document twice
+against source and production -- P4's check is WEEKLY, P12's route is not "unconditionally" -- and
+opened **P15**, owned by C3 because the guard C3 deletes is the only thing blocking it.
 
 **Section 4 is the steps, 5 the ledger, 7 the gate rules. REPLACE this section; never append.**
 
@@ -24,7 +28,8 @@ calendar, and building it twice is the defect C2 exists to remove.
 | **The pay-period model** | **NORMALIZE. `budget.pay_periods` stores the PAYDAY; `end_date` and `period_index` are derived by one producer and dropped from the table. Ruled 2026-08-08 (developer), option "store paydays only"** |
 | **A gapped or overlapping batch** | **Neither is refused, because neither is expressible once the derived columns are gone. The "refuse it" and "bridge it with a filler period" options were both weighed and rejected -- see section 6** |
 | **A payday inserted BETWEEN two existing ones** | **REFUSE when the period it splits is locked by the existing `pay_period_admin.classify_period_lock` (historical, settled, posted, or a recurrence anchor); otherwise insert and re-derive. Ruled 2026-08-08 (developer). No row may ever be left dated outside its own paycheck** |
-| **The last payday's period end** | Projected as `start_date + cadence_days - 1` from `budget.pay_schedule`. It is the ONLY derived end that is not `lead(paid_on) - 1`, and it is a projection stated as one |
+| **The last payday's period end** | Projected as `start_date + cadence_days - 1` from `budget.pay_schedule`. It is the ONLY derived end that is not `lead(paid_on) - 1`, and it is a projection stated as one -- `DerivedPeriod.end_is_projected`, ruled 2026-08-08 (developer), because a consumer holding one period out of its calendar cannot recompute it and a window VIEW must keep it |
+| **What a derived period carries** | **`period_id`, `int \| None`. Ruled 2026-08-08 (developer)**: `None` IS the marker for a period no foreign key can point at, which is the distinction `C2` must draw between "which paycheck does this row live in" and "which span does this day fall in". One value type for the arc, so C2 MOVES `SchedulePeriod` rather than merging two |
 | **Table and column names** | `budget.pay_periods.start_date` KEEPS both names. A period is identified one-to-one by the payday that opens it, `transactions.pay_period_id` reads correctly against it, and a rename is a four-FK migration that buys nothing. See section 6 |
 
 ---
@@ -92,7 +97,7 @@ Because the schema cannot make them agree, the application grew
 | `_reject_overlapping_batch` -- one-directional, which IS row P2 | `pay_period_service.py:87-130` |
 | `PeriodCalendar.__post_init__` -- the same property at the value boundary | `recurrence/_calendar.py:162-182` |
 | `_pp_assert_structure` -- the same property in the test suite | `tests/_test_helpers.py:3367-3395` |
-| `integrity_check` BA-03 / BA-04 -- the same property in nightly SQL | `scripts/integrity_check.py:353-376` |
+| `integrity_check` BA-03 / BA-04 -- the same property in weekly SQL | `scripts/integrity_check.py:353-376` |
 | `uq_pay_periods_user_index` + `ck_pay_periods_date_order` | the schema |
 
 Not one of them would exist under the normalized model, because none of them would have a subject.
@@ -159,7 +164,7 @@ Under the payday model the same input needs no code at all: insert `08-14` besid
 **That evaporation is the evidence the model is right** -- the special case had to exist only
 because two columns had to be kept honest.
 
-### P4 -- the nightly check has the same blind spot, plus an off-by-one
+### P4 -- the weekly check has the same blind spot, plus an off-by-one
 
 `integrity_check` BA-03 checks `period_index` gaps and BA-04 checks date overlaps;
 **no check exists for a date GAP**. BA-04 is also off by one: its predicate is
@@ -186,13 +191,15 @@ fix is a write-path invariant, not a data repair.
 
 ### P12 -- a no-op generate silently rewrites the cadence
 
-`routes/pay_periods.py:96-98` calls `upsert_schedule` UNCONDITIONALLY, after a
+`routes/pay_periods.py:96-98` calls `upsert_schedule` WITHOUT CONSULTING WHAT THE BATCH DID, after a
 `generate_pay_periods` that returns `[]` whenever every requested start already exists
 (`pay_period_service.py:178-185`, then `_reject_overlapping_batch`'s empty-batch early return at
-`:120-121`). So posting an existing payday with `cadence_days=1` writes zero rows, changes the
-stored cadence to 1, commits, and flashes "Generated 0 pay periods." It is a live defect today (the
-next extend continues at the wrong cadence); under the target model it is worse, because the cadence
-is an INPUT to the last period's derived end.
+`:120-121`). "Unconditionally" was C1's review correction: the route DOES return 422 first on a
+schema error (`:76-78`) and on the overlap guard (`:82-95`), so the reachable path is a
+`num_periods=1` post naming an existing payday -- `new_starts == []`, nothing is refused, nothing is
+written, the stored cadence changes, it commits and flashes "Generated 0 pay periods." A live defect
+today (the next extend continues at the wrong cadence); under the target model it is worse, because
+the cadence is an INPUT to the last period's derived end.
 
 ### P9 -- a legal schedule the CHECK forbids
 
@@ -211,13 +218,13 @@ selects which rows are destroyed, and it survives a round trip through the brows
 only because nothing renumbers today.
 **Identity is `id`; `period_index` is an ordinal, and the form must key on the former.** Found by
 adversarial review 2026-08-08, against this document's own (false) claim that the index is never a
-wire key. `period_index` is also persisted outside the table in `system.audit_log`'s whole-row jsonb
--- 9 rows on production carry it.
+wire key. `period_index` is also persisted outside the table in `system.audit_log`'s whole-row
+jsonb -- 9 rows on production carry it.
 
 ### P14 -- the derivation is window-dependent where the stored column was not
 
 `PeriodCalendar.from_pay_periods(pay_periods, user_id)` accepts ANY list, saved or not
-(`recurrence/_calendar.py:185-222`), and so does `_cash_periods._PeriodSpans.of(periods)` (`:295`).
+(`recurrence/_calendar.py:185-222`), and so does `_cash_periods._PeriodSpans.of(periods)` (`:296`).
 Derive `end_date` over a partial window and the LAST row of that window falls to the
 `start + cadence - 1` branch instead of `lead(start_date) - 1`, so
 **the same period reports a different end depending on which window asked** -- a disagreement a
@@ -319,17 +326,11 @@ ruling, and C2 inherits it.
 Each step is a leaf boundary: one commit, its own tests green, independently revertible.
 **Budget a neutral adversarial review pass and a fix pass into every one.**
 
-- [ ] **C1 -- the derivation exists and is proven equal to what is stored.**
-
-Build the producer that derives `(period_index, end_date)` from a user's ordered paydays plus the
-schedule cadence. **Nothing calls it yet**: no schema change, no behaviour change, no caller outside
-its own test. It is the oracle, and the discipline is the recurrence arc's R1, which is why that
-arc's cutovers were provable: drive BOTH the stored columns and the derivation over a streamed clone
-of production and diff leaf by leaf. Byte-identity over all 61 live rows is necessary and not
-sufficient -- **it must be paired with a perturbation control** (move one payday and require the
-harness to report the shifted indices and ends), or the equality proves only that the harness reads
-what it reads. Add a generated sweep over irregular schedules the live data cannot supply: a 1-day
-period, a 90-day period, a hole, an overlap, and a single-payday schedule.
+- [x] **C1 -- the derivation exists and is proven equal to what is stored.** `f9d148fe`,
+      `app/services/pay_calendar`. Byte-identical on 61 of 61 rows of both clones, with TWO
+      controls: a moved payday (31 shifted indices, 2 shifted ends) and a PROBE CADENCE, which the
+      first cut lacked -- a derivation projecting EVERY end reproduced the clone exactly and exited
+      0. Ten hand-computed irregular shapes; nothing in `app/` calls it. Opened **P15**.
 
 - [ ] **C2 -- one calendar value answers every "which period" question.**
 
@@ -400,14 +401,14 @@ can only check owners inside its own document -- what is shared is the defect, n
 **P12, P13 and P14 were found by adversarial review of this document's first draft**, 2026-08-08,
 each against a claim the draft made and got wrong.
 
-**The ledger stands at 14 rows.**
+**The ledger stands at 15 rows.**
 
 | id | finding (one line) | worst measured | status | owned by |
 |---|---|---|---|---|
 | P1 | `budget.pay_periods` stores two DERIVED columns (`end_date`, `period_index`) beside the fact they derive from, and nothing reconciles them -- the normalization failure every other row here is a face of | `-$140.63` via P2, the only one of its faces that has been priced | OPEN | C4 |
 | P2 | the writer accepts a batch that leaves a calendar hole: `_reject_overlapping_batch` refuses `min(new_starts) <= latest_end` and nothing refuses `latest_end + 5 days` | `-$140.63` on the gapped clone (balance N-128): `_cash_sums` and `_assertion_sums` drop a fact whose day no period places while `_period_balances` keeps it, so the reconciliation identity breaks. Production is contiguous today, so the exposure is the next form post | OPEN | C3 |
 | P3 | a new owner cannot enter their real first payday: the registration placeholder covers `[signup, signup+13]` and the overlap guard refuses every date inside it, so a biweekly owner's true next payday is always rejected | no money, total blockage: 13 of the 14 possible next-payday dates are refused, and the workaround is the destructive "Reset entire schedule" card | OPEN | C3 |
-| P4 | `integrity_check` has no DATE-gap check at all (BA-03 checks `period_index` gaps), and BA-04's overlap predicate is `p2.start_date < p1.end_date`, so two periods sharing exactly one boundary day are invisible to it | `$0.00` today -- production is clean. The check that would have caught P2 nightly does not exist, and the one that would have caught its mirror is off by one | OPEN, found 2026-08-08 | C4 |
+| P4 | `integrity_check` has no DATE-gap check at all (BA-03 checks `period_index` gaps), and BA-04's overlap predicate is `p2.start_date < p1.end_date`, so two periods sharing exactly one boundary day are invisible to it | `$0.00` today -- production is clean. The check that would have caught P2 (weekly, 3:30 AM Sunday) does not exist, and the one that would have caught its mirror is off by one | OPEN, found 2026-08-08 | C4 |
 | P5 | `_pp_assert_structure` asserts `cur.start_date > prev.end_date` and nothing about contiguity, so the invariant helper called after EVERY pay-period mutation test carries the write door's exact blind spot | `$0.00` -- but it means no existing test could have failed on a gapped write, which is why P2 survived to be found by reading rather than by the suite | OPEN, found 2026-08-08 | C4 |
 | P6 | THREE implementations of "which pay period contains this date": `recurrence/_calendar.py:263` (bisect, `None` in a gap), `balance_at/_cash_periods.py:310` (bisect, `None`, returns an id), `loan_ledger/_visible.py:117` (linear scan, falls back to the latest period ENDING before the target) | `$0.00` -- each is correct for the question it asks. The cost is that one question has three answers and the third's fallback is what the other two refuse | OPEN (= recurrence F-12) | C2 (developer ruling first: is the third a second QUESTION or a compensator?) |
 | P7 | the pay calendar is a PARTIAL function: `get_all_periods` returns the materialized rows and nothing else, so past the last payday every consumer improvises and the improvisations disagree | Empower `+$2,501.92` and Property `+$5,427.07` at six months out, where the modelled replay's ACCRUAL tier keeps running past the horizon while its CONTRIBUTION tier stops -- a half model with nothing on screen saying so (balance N-82 / X-l) | OPEN (= balance X-l root) | C2 |
@@ -418,6 +419,7 @@ each against a claim the draft made and got wrong.
 | P12 | `routes/pay_periods.py:96-98` calls `upsert_schedule` UNCONDITIONALLY, including when `generate_pay_periods` returned `[]` because every requested start already existed -- so a form post can rewrite the stored cadence while creating zero rows, and it commits and flashes success | live defect TODAY: the next extend and every rolling top-up continue at a cadence the user never applied to a period. Under the target model it is worse -- `cadence_days` is an INPUT to the last period's derived `end_date`, so a no-op post can move the schedule's horizon, `get_current_period` can start answering `None` to a user with 61 paydays, and C4/C5 will have removed the CHECK and the value-boundary refusal that would have caught it | OPEN, found by adversarial review 2026-08-08 | C3 |
 | P13 | `period_index` is the wire key of a DESTRUCTIVE form: the truncate card posts it as `keep_through_index` (`_pay_periods_manage.html:99-105`), the route echoes it into a re-submittable hidden payload on the discard-confirm 422 (`routes/pay_periods.py:152`), and `pay_period_admin.py:298` deletes every period above it. It is also persisted outside the table, in `system.audit_log`'s whole-row jsonb | `$0.00` today and ONLY because nothing renumbers: tail-append and tail-truncate are the sole writers. The moment any step can renumber, a `keep_through_index` read in an earlier request names a different period than the user reviewed, and the CASCADE takes its transactions, transfers (both shadows) and journal entries. `user_write_lock` cannot help -- the stale value came from a previous request | OPEN, found by adversarial review 2026-08-08 | C3 |
 | P14 | the derivation is window-dependent where the stored column was not: `PeriodCalendar.from_pay_periods` and `_cash_periods._PeriodSpans.of` both accept ANY list, and over a partial window the LAST row falls to the `start + cadence - 1` branch instead of `lead(start_date) - 1`, so one period reports two different ends depending on which window asked | `$150,000.00` for the sibling shape already measured in-repo: `loan_ledger/_visible.owner_pay_periods:78-95` records that folding a $100,000 true-up against a window missing its period moves the balance by that much, and names the grid's six-period window as the caller that reaches the balance seam with it | OPEN, found by adversarial review 2026-08-08 | C2 (the constructor stops accepting a partial list; a window becomes a VIEW) |
+| P15 | a derived end is NOT stable against a later write, which is the one way it differs from the column it replaces: a payday appended INSIDE the last period's projected span retroactively shortens that end. Measured at C1 -- paydays `[01-02, 01-16]` at cadence 14 end 01-29; append 01-28, LATER than every existing payday and so forward-only by this document's own definition, and the end moves back to 01-27. The ONLY append that moves nothing is exactly one cadence later, which is what `extend_pay_periods` does (`last.end_date + 1`); anything earlier shortens and anything later lengthens | not constructible today: `_reject_overlapping_batch` refuses it because it compares against the STORED end. **C3 deletes that guard** on the grounds that a hole and an overlap are both unexpressible by then -- they are, and this is neither. A row already dated into the vacated days is not orphaned (`utils/dates.attribution_date` clamps) but RENDERS on a different day on both surfaces built to agree, which is P10's damage through a door P10 does not cover | OPEN, found by adversarial review 2026-08-08 | C3 |
 
 ## 6. Alternatives considered and rejected
 
