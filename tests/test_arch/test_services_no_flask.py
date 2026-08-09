@@ -119,17 +119,33 @@ def _flask_import_violations(source: str, filename: str) -> list[str]:
 
 
 def _service_files() -> list[Path]:
-    """Every Python file directly under ``app/services/``.
+    """Every Python file anywhere under ``app/services/``.
 
     Includes ``__init__.py`` and leading-underscore private modules
     (e.g. ``_recurrence_common.py``) because the no-Flask boundary binds
-    the whole package, not just public names. ``glob`` skips
-    ``__pycache__`` because it does not match ``*.py``.
+    the whole package, not just public names.
+
+    **Recursive, and that is a fix rather than a detail.** This used
+    ``glob("*.py")`` -- top level only -- while thirteen service PACKAGES
+    had grown underneath it, so the gate covered 76 of 160 service
+    modules and a Flask import inside ``balance_at/``, ``cash_ledger/``,
+    ``loan_ledger/``, ``recurrence/`` or ``loan_resolver/`` was invisible
+    to it. That is the fail-OPEN shape the W9910 checker's own docstring
+    names: "a gate scoped by module identity, so creating a module is how
+    you escape it" -- here, creating a directory. Measured when the scan
+    was widened: 84 newly covered modules, zero violations, so the
+    tightening cost nothing and the hole was luck rather than discipline.
+
+    ``__pycache__`` is filtered explicitly because ``rglob`` descends into
+    it, where ``glob`` never did.
 
     Returns:
         Sorted list of absolute ``Path`` objects to every service module.
     """
-    return sorted(SERVICES_DIR.glob("*.py"))
+    return sorted(
+        path for path in SERVICES_DIR.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
 
 
 class TestNoFlaskImportsInServices:
@@ -148,6 +164,35 @@ class TestNoFlaskImportsInServices:
         files = _service_files()
         assert files, (
             f"expected at least one app/services/*.py file under {SERVICES_DIR}"
+        )
+
+    def test_the_scan_reaches_inside_service_packages(self) -> None:
+        """The boundary binds sub-packages too, and the scan must reach them.
+
+        Without this, reverting :func:`_service_files` to a top-level
+        ``glob`` would leave every other test in this module GREEN while
+        silently dropping thirteen packages -- the fail-open regression this
+        gate had already shipped once. Asserting that the scan reaches at
+        least as many modules as there are package ``__init__`` files, plus
+        the top level, makes the recursion itself the thing under test.
+        """
+        scanned = _service_files()
+        packages = [
+            path for path in SERVICES_DIR.iterdir()
+            if path.is_dir() and (path / "__init__.py").is_file()
+        ]
+        assert packages, (
+            f"expected app/services/ to hold at least one package with an "
+            f"__init__.py under {SERVICES_DIR}"
+        )
+        nested = [
+            path for path in scanned if path.parent != SERVICES_DIR
+        ]
+        assert len(nested) >= len(packages), (
+            f"the scan found {len(nested)} module(s) inside service packages "
+            f"but {len(packages)} package(s) exist -- _service_files() is not "
+            f"recursing, so the no-Flask boundary is unenforced inside "
+            f"{sorted(path.name for path in packages)}"
         )
 
     def test_no_flask_imports_in_services(self) -> None:

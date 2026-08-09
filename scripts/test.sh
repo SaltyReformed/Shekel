@@ -88,6 +88,20 @@ if [ -z "${TEST_TEMPLATE_DATABASE:-}" ] && [ -f "${_REPO_ROOT}/.env" ]; then
     unset _env_value
 fi
 
+# Pass TEST_DB_PREFIX through the same way.  It renames the PER-WORKER
+# databases (tests/conftest.py), and it is the other half of the same story:
+# TEST_TEMPLATE_DATABASE isolates what a run clones FROM, this isolates what
+# it clones INTO.  Without it two checkouts both claim
+# ``shekel_test_gw0``..``gw11`` -- both default to ``-n 12`` -- and the second
+# run dies in hundreds of setup errors that read like a code regression.
+if [ -z "${TEST_DB_PREFIX:-}" ] && [ -f "${_REPO_ROOT}/.env" ]; then
+    _env_value="$(grep -E '^TEST_DB_PREFIX=' "${_REPO_ROOT}/.env" | head -n1 | cut -d= -f2- || true)"
+    if [ -n "$_env_value" ]; then
+        export TEST_DB_PREFIX="$_env_value"
+    fi
+    unset _env_value
+fi
+
 # Derive TEST_ADMIN_DATABASE_URL from TEST_DATABASE_URL when the
 # admin URL is not explicitly set.  Both URLs share host, port and
 # credentials; only the trailing database name differs (the admin
@@ -109,6 +123,21 @@ elif ! command -v docker >/dev/null 2>&1; then
     echo "[test.sh] docker not on PATH -- skipping container restart" >&2
 elif ! docker inspect "$DB_CONTAINER" >/dev/null 2>&1; then
     echo "[test.sh] container $DB_CONTAINER does not exist -- skipping restart" >&2
+elif _live_test_backends="$(docker exec "$DB_CONTAINER" \
+    psql -U shekel_user -d postgres -tAc \
+    "SELECT count(*) FROM pg_stat_activity WHERE datname LIKE '%test%'" \
+    2>/dev/null)" && [ "${_live_test_backends:-0}" -gt 0 ]; then
+    # ANOTHER run is using this container.  The restart below terminates every
+    # backend, so performing it would kill that run mid-test with "server
+    # closed the connection unexpectedly" -- observed 2026-08-08, 208 setup
+    # errors in a second checkout's suite, and indistinguishable from a real
+    # regression at the point where it surfaces.  The restart is shared-memory
+    # HYGIENE, not a correctness gate (see the header), so skipping it costs a
+    # few seconds of drift and nothing else.  TEST_DB_PREFIX keeps the two
+    # runs' databases apart; this keeps them from killing each other's
+    # connections.
+    echo "[test.sh] $DB_CONTAINER has live test connections (another run) --" \
+        "skipping restart so it is not killed" >&2
 else
     docker restart "$DB_CONTAINER" >/dev/null
 

@@ -73,6 +73,16 @@ os.environ.setdefault(
 _TEST_TEMPLATE_DATABASE = os.environ.get(
     "TEST_TEMPLATE_DATABASE", "shekel_test_template",
 )
+# Prefix of the PER-WORKER database names.  The other half of the
+# parallel-checkout story above, and it was missing: the template could be
+# isolated but the worker databases could not, so two checkouts on one cluster
+# both claimed ``shekel_test_gw0``..``gw11`` (both default to ``-n 12``) and
+# the second invocation's CREATE DATABASE failed.  That is fail-loud by design
+# -- see the orphan-cleanup note in :func:`_bootstrap_worker_database` -- but
+# "loud" arrives as hundreds of setup errors spread across BOTH runs, which
+# reads as a code regression rather than as a collision.  Set
+# ``TEST_DB_PREFIX`` per checkout and the two never meet.
+_TEST_DATABASE_PREFIX = os.environ.get("TEST_DB_PREFIX", "shekel_test")
 # Default admin DSN (peer auth) -- overridable via env so CI and
 # developer laptops that need TCP + password can point at their own
 # admin DB without code change.  Must NOT be the template DB itself:
@@ -385,7 +395,7 @@ def _bootstrap_worker_database():
     # DROP+CREATE.  The PID-bearing form (legacy) leaked into the
     # cluster's DB list whenever a previous run crashed; orphan
     # cleanup below catches both forms.
-    db_name = f"shekel_test_{worker_id}"
+    db_name = f"{_TEST_DATABASE_PREFIX}_{worker_id}"
     admin_url = os.environ.get(
         "TEST_ADMIN_DATABASE_URL", _DEFAULT_ADMIN_URL
     )
