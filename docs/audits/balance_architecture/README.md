@@ -33,16 +33,16 @@ staleness was invisible because nothing here is a predicate.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-f2-a** (`397ce36e`), preceded by the module split it forced (`69b91a53`): the true-up form names what your RECORDS produce for the day it is about, what you typed, and the gap -- through `balance_at.records_balance_at`, which reads past the assertion RESET. Committed on `dev`, NOT PR'd. Before it, **X-an is COMPLETE and ARCHIVED** (`3d3f0ef5` + `549015c0`, merged to `dev`, NOT PR'd to `main`, so CI has graded neither leaf): the loan replay/projection cut moves onto `settled_on`, and a loan's anchors get ONE chronology key. Its two leaf specifications and its harness-blindness lesson moved to the archive under rule 5, which is what made room for **X-f2's decomposition** into **X-f2-a / -b / -c** on three developer rulings (**R-EU** / **R-EV** / **R-EW**, 2026-08-09) | Section 5, `archive/…2026-08-04.md` Section 1b |
-| **how it was measured** | X-f2-a's htmx trigger was verified in CHROMIUM against this repo's own vendored htmx, not reasoned about: 0 requests on form-open, 1 after typing, 0 more on blur, 1 more on a date change -- which is how the `keyup` + `change` pair's duplicate fold was found, `changed` being tracked per trigger spec. A saved dev session at `tests/manual/.dev_session_state.json` has EXPIRED, so the real app was not driven; re-run `save_dev_session.py` to do that. X-f2-c's scope is likewise not an estimate. Replayed over all 57 Checking assertions on `shekel-prod-db`: **34 days would have had something to tick -- 100 plain rows / $23,910.04, plus 8 transfer rows / $5,442.89** -- every one of them instead recorded on a click day later. Today's live offer set is 3 rows, all envelope-tracked through their TEMPLATE (`Transaction.tracks_purchases`, not the `is_envelope` column, which reads FALSE on all three) | Section 5.0, X-f2-c |
+| **just landed** | **X-f2-b** (`a41b5ebf` + `7f30057a` + `a004361d`): a balance assertion has a DURABLE home -- the Balance history card on the cash detail page, as-of / recorded / ledger / correction, the loan drift card's cash twin. Closed **N-204** and **N-206**; **N-205** survives narrowed. Before it **X-f2-a** (`397ce36e`, preceded by the split it forced, `69b91a53`) gave the true-up form its live difference, and **X-an is COMPLETE and ARCHIVED** (`3d3f0ef5` + `549015c0`) -- the archive under rule 5 is what made room for **X-f2's decomposition** into **X-f2-a / -b / -c** (**R-EU** / **R-EV** / **R-EW**, 2026-08-09) | Section 5, `archive/…2026-08-04.md` Section 1b |
+| **how it was measured** | **A JS visibility defect is structurally invisible to pytest, and X-f2-b's ack shipped one with 8,556 tests green**: `beforeend:` moved the toast outside the element the auto-show handler is scoped to, so it arrived in the DOM and stayed INVISIBLE -- caught only in Chromium, and `tests/manual/verify_anchor_ack.py` is that probe. Bootstrap's instance map is a `Map`, not a WeakMap: 5 expand-then-refresh cycles of the card retained **4,592 DOM nodes**, measured by CDP `Performance.getMetrics` with a forced GC. X-f2-c's scope is likewise not an estimate -- replayed over all 57 Checking assertions on `shekel-prod-db`: **34 days would have had something to tick, 100 rows / $23,910.04, of which 8 rows / $5,442.89 are transfer shadows**. Today's live offer set is 3 rows, all envelope-tracked through their TEMPLATE (`Transaction.tracks_purchases`, not the `is_envelope` column, which reads FALSE on all three) and all with ZERO outstanding purchases, so the widened panel's live value today is the envelope CLOSE tick, not bills | Section 5.0, X-f2-c |
 | **in flight** | nothing OF THIS ARC. **Neither the live branch state nor what production runs is recorded here, and neither may be** -- read them from `git branch -vv` and `docker inspect shekel-prod-app --format '{{.Image}}'`. This row asserted "no feature branches exist" on 2026-08-08 while block 10's `C1` was being built on `feat/pay-calendar`, and it then stored a prod image digest that a deploy falsified on 2026-08-09 -- twice over, a volatile value beside no reconciler, which is this arc's own root cause worn as a signpost. The migration head is **`c7f3a9d1e864`**; nothing since has added one | -- |
-| **blocked on you** | **one.** The SEQUENCING ruling opened at X-an-a: `R6` cannot ship with X-an because it reads a `due_on` that `R5` creates behind X-f4. X-f2's two design questions are RULED -- **R-EV** gives an assertion a durable home (**N-205**) and re-keys the acknowledgement off the boundary predicate (**N-204**) | `implementation_plan_recurrence_redesign.md` section 0 |
-| **next** | **X-f2-b** (the balance-history card; it needs NO new producer -- `walk_cash_ledger(...).anchor_corrections` already carries as-of / recorded / `balance_before` / `delta`) -> **X-f2-c** (moves money on a tick, own commit) -> **X-f3** (moves money, own PR) -> X-f4 -> X-f5 -> X-f6. Block 2 (**X-ad then X-x, ONE PR**) runs in parallel and its fork is RULED (2026-08-09, for **X-ad**): DELETE the registration bootstrap payday, and registration asks for the payday last paid on. `N-123` absorbed pay-calendar `P3`, so X-ad owns one row, not two | Section 5.0 |
+| **blocked on you** | **one.** The SEQUENCING ruling opened at X-an-a: `R6` cannot ship with X-an because it reads a `due_on` that `R5` creates behind X-f4. X-f2-c's four questions are RULED (2026-08-10): **N-205** re-points to X-j rather than widening X-f2-b, X-f2-b PRs to `dev` on its own, the settle rule MOVES to the service tier (**R-EX**), and X-f2-c decomposes into three leaves. One fork is DEFERRED to X-f2-c2 rather than open: whether a BILL's tick may correct its amount, which R-EW rejected for the envelope close and did not rule for a bill | `implementation_plan_recurrence_redesign.md` section 0 |
+| **next** | **X-f2-c**, DECOMPOSED into three leaves on the developer's 2026-08-10 ruling, each one session and one commit: **X-f2-c1** the module home + the kind gate the reconcile route is missing + purchases nested under their envelope (no money moves); **X-f2-c2** the transaction twin -- the envelope close tick and bills (MOVES MONEY); **X-f2-c3** transfer shadows with the loan-payment freeze (MOVES MONEY). Then **X-f3** (moves money, own PR) -> X-f4 -> X-f5 -> X-f6. Block 2 (**X-ad then X-x, ONE PR**) runs in parallel and its fork is RULED (2026-08-09, for **X-ad**): DELETE the registration bootstrap payday, and registration asks for the payday last paid on. `N-123` absorbed pay-calendar `P3`, so X-ad owns one row, not two | Section 5.0 |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it. **RECURRENCE**: Half A is disjoint and starts whenever; **Half B is not one unit, and "`R6` ships WITH X-an" is now known unsatisfiable** -- `R6` reads `due_on`, `R5` creates it, `R5` waits on X-f4. A `developer-decision` is owed; see X-an's entry. **PAY CALENDAR** (opened 2026-08-08, block 10): `budget.pay_periods` stores the payday and derives `end_date` / `period_index`. **Its `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md`, and blocks 9 / 10 |
 | **why this shape** | the anchor half was redesigned from scratch by ruling **R-EB**; R-EQ designed the duplicate rule that had only ever been re-keyed, R-ER put the day rule in the module that owns what an assertion is, X-f1e1 deleted the second DOOR, X-f1e2 the second WRITER, X-f1e3 the mount that was destroying its own message | Section 3.3, and R-EB / R-EQ / R-ER / R-ES / R-ET in Section 4 |
-| **the live lesson** | **a producer that is correct on the ordinary path can be inverted on the correcting one, and only the correcting path is worth testing.** X-f2-a first built its preview on `balance_at`, which is right the FIRST time a day is recorded and returns the user's own prior figure every time after -- because an assertion RESETS the walk. Five tests passed; not one asked about a day that already carried an assertion, the only axis the defect lives on. Measured on production Checking 2026-04-15 (three balances recorded in one day): `-$45.86` reported against `-$92.29` true. The answer was already public and already the LOAN card's -- `CashAnchorCorrection.balance_before`. **Ask what a producer says the second time.** | Section 8 |
-| **the ledger** | **99 rows**, +3 across X-f2-a: **N-212** five schema fields rounding money with BANKER'S rounding where W9904 forbids exactly that and cannot see it (the `.quantize()` is inside Marshmallow), **G2**'s. **N-213** the preview answers nothing for the six MODELLED account kinds, **X-j**'s. **N-214** a read that fires while you type shares one rate-limit ceiling with the save it precedes, `operator`'s. X-an-b's four: **N-208** a sixth non-total anchor ordering, in `scripts/integrity_check.py`, which an `app/`-scoped census could not see. **N-209** the suite CANNOT build the `created_at` tie production builds routinely (`_FrozenDbClock` increments on purpose), so the class was invisible to it. **N-210** two package exports with no out-of-package caller. **N-211** a real tie means two contradictory assertions for one day and nothing says so. **N-204 / N-205 / N-206 re-point from the X-f2 parent onto X-f2-b**, the leaf that closes them | `../../plans/ledger.md` |
-| **resuming cold** | Branch from `dev`. Whether it is ahead of `main`, and whether by documents or by code, is a MEASUREMENT (`git log --oneline origin/main..dev`) and this row no longer claims it -- the previous revision said "DOCUMENTS ONLY" and block 10's `C1` shipped `app/services/pay_calendar/` into that gap. The repo head is **`c7f3a9d1e864`** and the test template is already stamped at it -- VERIFIED by reading `alembic_version` in `shekel_test_template`, not assumed; rebuild only if you add a migration. Baseline **8,486** green (`./scripts/test.sh`, 191 s, 2026-08-09, re-measured on `dev` at the plan-gate merge `0b833783`); it read 8,469 before X-f2-a's 17 controls, 8,431 before X-an's two leaves, and 8,258 before R7a-1 and C1. The registries have their own gate, **111 green** (`pytest tools/plan_gate -c /dev/null -q`), and **what may start now is a QUERY over `steps.md`'s `blocked by` column, not the row order** -- see `docs/plans/conventions.md` rules 7 and 13. **The venv must be ACTIVE for `git commit`**: pre-commit hooks are `language: system` and the first attempt failed with `Executable pylint not found`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x). This row used to name one hand-made prod restore point; **the recurrence arc's R-F8 made every deploy dump unconditionally**, so `~/shekel-backups/` now holds one per release and the deploy REFUSES a rollback its image cannot resolve | Section 7.2 |
+| **the live lesson** | **a WORD is a rule, and two figures under one label on one page is a defect even when both figures are right.** X-f2-b's card published `recorded - balance_before` as "Difference" while the true-up preview one card up publishes `recorded - records_balance_at(day)` under the same word. They agree on every day carrying ONE assertion and diverge on the rest -- 3 of the real Checking account's ~50. Reproduced on a production clone, 2026-04-15, three balances recorded with no transaction between them: the card said `-$45.86` and the preview `-$92.29`, and the branch's own fixture has a case where the SIGN inverts. Neither figure moved; the column is `Correction` now. Both reviews that read the branch found this first, independently. **The predecessor lesson still stands and is Section 8's**: ask what a producer says the SECOND time | Section 8 |
+| **the ledger** | **98 balance rows** of the registry's 150, net +2 across X-f2-b: it CLOSED **N-204** (the acknowledgement was keyed on the boundary predicate, not on "did the figure change") and **N-206** (an out-of-band `true` swap destroyed a still-visible predecessor and leaked its Bootstrap instance), NARROWED **N-205** to the 16 assertions on kinds the cash page 404s and re-pointed it to **X-j**, and OPENED two. **N-215**: one rule about an assertion log is stated by two producers, and `balance_seam.py` rules the same COLUMN a NON-producer on the loan side and a balance-at-T on the cash side -- one of the two is wrong, `G1` / `E2-0`'s. **N-216**: the reconcile panel's two routes have no kind gate, `X-f2-c1`'s. X-f2-a's three (**N-212** banker's rounding W9904 cannot see, **N-213** the preview is silent on six MODELLED kinds, **N-214** a read sharing a rate-limit ceiling with the save it precedes) are unchanged | `../../plans/ledger.md` |
+| **resuming cold** | Branch from `dev`. Whether it is ahead of `main`, and whether by documents or by code, is a MEASUREMENT (`git log --oneline origin/main..dev`) and this row no longer claims it -- the previous revision said "DOCUMENTS ONLY" and block 10's `C1` shipped `app/services/pay_calendar/` into that gap. The repo head is **`c7f3a9d1e864`** and the test template is already stamped at it -- VERIFIED by reading `alembic_version` in `shekel_test_template`, not assumed; rebuild only if you add a migration. Baseline **8,598** green (`./scripts/test.sh`, 207 s, 2026-08-10, measured on `feat/x-f2-b` after merging `dev`); it read 8,558 before the pay-calendar arc's C2-b1 / C2-d merged in, 8,486 before X-f2-b's 72 controls, and 8,258 before R7a-1 and C1. The registries have their own gate, **111 green** (`pytest tools/plan_gate -c /dev/null -q`), and **what may start now is a QUERY over `steps.md`'s `blocked by` column, not the row order** -- see `docs/plans/conventions.md` rules 7 and 13. **The venv must be ACTIVE for `git commit`**: pre-commit hooks are `language: system` and the first attempt failed with `Executable pylint not found`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x). This row used to name one hand-made prod restore point; **the recurrence arc's R-F8 made every deploy dump unconditionally**, so `~/shekel-backups/` now holds one per release and the deploy REFUSES a rollback its image cannot resolve | Section 7.2 |
 
 Section 5 is the work that remains and Section 4 the rulings that govern it; `archive/` is what
 already shipped. **Every open defect is a row in `../../plans/ledger.md` whose `arc` reads
@@ -252,6 +252,7 @@ Section 5 entry restates it inline (rule 5).
 | **R-ET** | 2026-08-05 | **Feedback about a WRITE mounts where no refresh region owns it; a caption about STATE stays with its surface.** The two had shared one element, so the transient fact inherited the durable one's per-surface mounting and was destroyed by the durable one's own refresh. Corollary ruled at the same build: **an affordance that cannot succeed is DELETED, not given a nicer refusal** -- a loan's balance cell renders read-only rather than answering a designed error |
 | **R-EU** | 2026-08-09 | **The true-up form compares the LEDGER's balance for the day it names against what the user typed, live.** Not the last asserted balance -- that figure is already the box's prefill, and the difference that matters is the reconciliation gap the grid's Period timing / Book vs bank rows diagnose. Rejected: a static book figure with the subtraction left to the reader, and a JS-computed difference (money math in the browser) |
 | **R-EV** | 2026-08-09 | **An assertion gets a DURABLE home before its acknowledgement is re-keyed.** The loan page has listed every anchor with its drift since Commit 16 and the cash side lists none, so the fix for "nothing records that this landed" is the missing card, not a longer-lived toast. The 8s autohide STAYS as ruled at X-f1e3; what changes is that the toast stops being the only evidence |
+| **R-EX** | 2026-08-10 | **What settling a row MEANS is a service verb, and the reconcile tick calls the same one the grid's Mark Paid does.** The rule lives today in two route branches -- `mutations.py:552` (envelope-with-entries settles at sum(entries), everything else keeps its stored amount) and `_shadow_mutations.py:209` (a loan-payment shadow freezes the live payment-date amount first) -- and BOTH are load-bearing for the panel: production's `Kayla's Spending Money` carries no entries, so an unconditional `settle_from_entries` books `$0.00` against a `$100.00` estimate, and 2 of the 4 transfer shadows the replay offers are loan payments (`$1,910.95`, `$531.94`) where skipping the freeze restores the creation-time escrow. Rejected: the writer re-stating both branches (this arc's own root cause 1, on a money rule), and the tick calling the mark-done HTTP endpoints (one request per row, no atomicity, and no channel for the statement date) |
 | **R-EW** | 2026-08-09 | **The reconcile panel offers EVERYTHING the statement can settle, grouped by the thing it belongs to, and the two acts stay independent.** A purchase nests under its own envelope and ticking it settles that purchase ALONE; closing the envelope is a separate tick in the same block. Rejected: grouping by act-type (which separates a grocery purchase from the grocery envelope), a flat undifferentiated list, and an editable close amount (a second writer of `actual_amount` beside the entries that derive it) |
 | **R-ES** | 2026-08-05 | **`account_anchor_history.notes` is DELETED and the origination assertion goes through the SAME write door as every later one**, so the table has ONE writer. An assertion is (account, day, balance) and nothing else -- the sentence ruling R-EO already wrote into the model. Measured: no code in `app/` READS the column (AST census), 76 of 78 production rows are NULL, and it labels the origination on 2 of 9 accounts. It is a SECOND answer to a question the app already decides positionally (`CashAnchorFact.is_opening` -> `account_opening` / `account_trueup`), and the forensic trail it was nominally for is `system.audit_log`, which records every INSERT with the full row and the acting user. The loan twin's typed `source_id` STAYS: that one is read |
 
@@ -261,9 +262,9 @@ Section 5 entry restates it inline (rule 5).
 
 **A SCHEDULE, and every position is forced by a stated fact rather than a preference.** A block
 starts when its gate clears, not when the block above finishes. The phase headings below group the
-same steps by SUBJECT; this groups them by TIME. **The blocks PARTITION Section 6**: all 93 open
-findings are owned by a step in exactly ONE block, save the three the closed owner vocabulary sends
-outside the schedule (one `operator`, two `developer-decision`). Measured, not asserted -- and the
+same steps by SUBJECT; this groups them by TIME. **The blocks PARTITION Section 6**: all 98 open
+findings are owned by a step in exactly ONE block, save the five the closed owner vocabulary sends
+outside the schedule (two `operator`, three `developer-decision`). Measured, not asserted -- and the
 number **read 88 against a 93-row table until 2026-08-08**, drift the gate could not see because it
 grades the "stands at N rows" sentence in Section 6 and not a prose count here.
 
@@ -271,7 +272,7 @@ grades the "stands at N rows" sentence in Section 6 and not a prose count here.
 |---|---|---|---|
 | 1 | **the anchor half** -- X-an, X-f2, **X-f3**, X-f4, X-f5 (X-f1 COMPLETE, archived) | The only remaining work that moves a figure the developer reads: **N-171**'s `$15,065.08` gross / `-$1,495.10` net stays invisible on the income statement until X-f3, which is its OWN PR and MOVES MONEY | 28-35 h |
 | 2 | **X-ad then X-x, shipped as ONE PR** | **Its gate CLEARED 2026-08-05** when the X-f1 cluster reached production (`8d812662`), so this block can start now and runs in parallel with the rest of block 1. `accounts.current_anchor_period_id` is GONE rather than going, which is the fact X-ad's trace turns on. X-x is HELD behind X-ad (**R-DE**) and its 2026-07-31 build is a REFERENCE tag, not a branch | 12-16 h |
-| 3 | **the posting restructure** -- X-ai-a/b/c/g, X-d re-land, X-ai-s, X-aj2, X-am, X-ak | **X-ai-s is HELD pending X-f3**; X-d is PARKED on **N-155**, whose fix is X-ai's placement; X-ak carries **N-193**, a reproducible unhandled 500 on a money route. **29 of Section 6's 93 rows live here** -- a third of the whole ledger (X-ai 13, X-ak 9, X-aj2 4, X-aj 1, X-d 1, X-am 1) | 31-42 h |
+| 3 | **the posting restructure** -- X-ai-a/b/c/g, X-d re-land, X-ai-s, X-aj2, X-am, X-ak | **X-ai-s is HELD pending X-f3**; X-d is PARKED on **N-155**, whose fix is X-ai's placement; X-ak carries **N-193**, a reproducible unhandled 500 on a money route. **31 of Section 6's 98 rows live here** -- a third of the whole ledger (X-ai 13, X-ak 11, X-aj2 4, X-aj 1, X-d 1, X-am 1) | 31-42 h |
 | 4 | **the credit-card arc** (own document) | `CC1b`'s fold is specified against the reset semantics **R-EB deletes at X-f3**, and `CC3b` derives a settle from `paid_at`, **deleted at X-f1b**. Earliest correct start is after X-f4 and X-am | 74-104 h |
 | 5 | **X-f6, the bank import** (own document) | Consumes X-f2's outstanding set and X-f3's residual path (**R-EB**). After block 4 so ONE matching rule covers checking and card rows rather than being widened into them later | 22-31 h |
 | 6 | **the read-path residue** -- X-y, X-i1, X-i2, X-j, X-k, **X-l**, X-m, X-n, X-e, X-p, X-ab, X-ac | Nothing blocks on it and its footprint is disjoint from the write path (tag `xd-attempt-1-parked-n155`'s 30 `app/` files against tag `xx-attempt-1-held-rde`'s 26: **zero overlap**, measured). **UNGATED, which is what lets `X-l` run early** -- and it must, because it is block 10's `C2` and recurrence `R-F12` as well. `X-k` is the one member with an order: it follows `R5`, which waits on X-f4 | 50-70 h |
@@ -280,28 +281,22 @@ grades the "stands at N rows" sentence in Section 6 and not a prose count here.
 | 9 | **the recurrence redesign** (own document) -- **NOT part of this arc** | Its **Half A** (`R1`-`R4`, `R7`-`R8`) overlaps every live block by ONE file (`_recurrence_common.py`, against the `xd-attempt-1-parked-n155` tag), so it interleaves anywhere and pauses nothing. Its **Half B is NOT one unit**, corrected 2026-08-08: **`R6` ships WITH X-an** (it overlaps 4 of 4 of X-an's surfaces and is the same loan-date trace), while **`R5` waits on X-f4**, three steps later with X-f3 between them. `R5` also collides with **X-k**; see that step | own document; not measured against this arc's history |
 | 10 | **the pay calendar** (own document) -- **NOT part of this arc** | Opened 2026-08-08 out of the recurrence arc's F-10: `budget.pay_periods` stores the payday and DERIVES `end_date` / `period_index`, so a gap, an overlap and an index out of date order all stop being expressible. **Its `C2` IS this arc's `X-l`** (block 6) and also recurrence `R-F12` -- one commit, three names, and whoever builds it must satisfy all three specs, including this arc's N-82 / N-128 / N-79-far and `C2`'s own P14 (a calendar may not be constructed from a partial window; the sibling shape is measured in-repo at `$150,000.00`). `C1` **SHIPPED 2026-08-09** (`f9d148fe`, branch `feat/pay-calendar`, not yet PR'd): the derivation exists, byte-identical on all 61 live rows, and nothing calls it. `C3` shares only a DERIVATION with recurrence `R7c`, no file -- **but it COLLIDES with `X-ad`**: that arc's `P3` and this arc's `N-123` are ONE defect with OPPOSITE remedies, and the two documents did not say so until 2026-08-09 (see `X-ad`). **Owns no Section 6 row and never will** | own document; not measured against this arc's history |
 
-**Four blocks leave this document and keep only their row here**:
-`docs/plans/implementation_plan_bank_import.md` (X-f6, not yet written), the existing
-`docs/plans/implementation_plan_credit_card.md`,
-`docs/plans/implementation_plan_recurrence_redesign.md` (block 9) and
-`docs/plans/implementation_plan_pay_calendar.md` (block 10). The first two are FEATURES
-consuming this arc's output; the last two are SEPARATE ARCS, one sharing files with two of this
-one's steps and one sharing a whole STEP with it (`C2` = `X-l`). None is a correctness fix inside this arc, so rule 1 is not weakened. **Block 9 owns no
-Section 6 row and never will** -- a recurrence defect is a row in its own plan, which is what keeps
-the partition claim above true. **The card plan's ratified sequencing is
-DISCHARGED, not pending, and its order must never be re-read as a live gate**: every balance-arc
-step it names has SHIPPED -- `C8`/`C9`, `D1`-`D3` and old `X1`-`X3` all resolve in archived records
-(the last closed by X-c2b2), and old `X4` survives here as X-e. What blocks the card arc is NEW and
-post-dates that 2026-07-19 ruling: R-EB. The row above is the gate.
+**Four blocks leave this document and keep only their row here**: `implementation_plan_bank_import.md`
+(X-f6, not yet written), `implementation_plan_credit_card.md`,
+`implementation_plan_recurrence_redesign.md` (block 9) and `implementation_plan_pay_calendar.md`
+(block 10), all under `docs/plans/`. The first two are FEATURES consuming this arc's output; the last
+two are SEPARATE ARCS, one sharing files with two of this one's steps and one sharing a whole STEP
+(`C2` = `X-l`). None is a correctness fix inside this arc, so rule 1 is not weakened, and **blocks 9
+and 10 own no Section 6 row and never will**. **The card plan's 2026-07-19 sequencing is DISCHARGED,
+not pending, and must never be re-read as a live gate**: every balance-arc step it named has SHIPPED
+(old `X4` survives here as X-e). What blocks the card arc is R-EB, and the row above is the gate.
 
 **The costs are measured against this arc's own history, not estimated** -- X-a (`929b3a72`,
 07-25) to X-f1c4c (`5fc22bba`, 08-04) is **98 in-session hours over 10 working days** and ~55 steps.
-**They assume Section 6 stops growing, and it does not.** It grew 41 -> 104 between 07-27 and
-08-04, fell to **88** across the X-f1 tick pass and X-f1e1, and is back to **93**: the X-f1
-cluster's last three leaves closed 3 findings and opened 9. **The fall was not sustained.** Every
-one of the 9 came from an adversarial review rather than from the build, which is the cost of
-reviewing properly and is not a reason to review less -- but the cost estimates above assume a
-flat ledger and have never once seen one.
+**They assume Section 6 stops growing, and it does not**: 41 -> 104 between 07-27 and 08-04, down to
+**88** across the X-f1 tick pass, back to **98** after that cluster's last leaves (+9) and X-f2-a /
+X-f2-b (+5). Almost every one came from an adversarial review rather than from a build -- the cost of
+reviewing properly, and not a reason to review less.
 
 **How to read the step IDs.** A suffix is a DECOMPOSITION of the step before it, appended when a
 step splits. **IDs are append-only and nothing is renumbered for readability** -- they are cited in
@@ -326,52 +321,53 @@ with their own text and owners, so restating them here was the registry duplicat
   It ticks with the last of them.
 
 * [x] **X-f1** `8d812662` (PR #83) a settle carries the day the money moved; absorbs **S2-b**.
-  COMPLETE at fourteen leaves, CONDENSED into `archive/phase_x_as_built_2026-08-04.md` Section 1a.
-  Did NOT close **N-173**, which re-points to **X-f6**. The rule it established -- a row is settled
-  iff it carries a settle day -- is Section 3.1's, not this entry's, because X-f2 and X-f3 read
-  against it. Its **(b)** moved to X-f2's entry; X-an-a consumed the other half of that pair.
-* [x] **X-an** `3d3f0ef5` / `549015c0` a payment is history from the day its money moved (ruling
-  **R-EK**), the DECOMPOSED parent, COMPLETE at two leaves and **CONDENSED into
-  `archive/phase_x_as_built_2026-08-04.md` Section 1b** (rule 5), which is where the two leaves'
-  specifications and the harness-blindness lesson now live. Closed **N-187** and **N-196**; opened
-  **N-207**..**N-211**. The recurrence arc's `R6` re-points behind `R5`; that obligation is carried
-  by that arc's own document and by `steps.md`'s `blocked by` cell, not here.
+  COMPLETE at fourteen leaves, CONDENSED into `archive/…2026-08-04.md` Section 1a. Did NOT close
+  **N-173**, which re-points to **X-f6**. The rule it established is Section 3.1's, not this entry's.
+* [x] **X-an** `3d3f0ef5` / `549015c0` a payment is history from the day its money moved (**R-EK**),
+  the DECOMPOSED parent, COMPLETE at two leaves and CONDENSED into `archive/…2026-08-04.md`
+  Section 1b. Closed **N-187**, **N-196**; opened **N-207**..**N-211**.
 * [ ] **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half, the
-  DECOMPOSED parent (rulings **R-EU** / **R-EV** / **R-EW**, developer 2026-08-09). One session's
-  work is one leaf; it ticks with the last of them. **The developer's existing workflow already IS
-  this loop** -- read the bank, type the balance, tick what cleared -- and only the RECORDING
-  changes.
+  DECOMPOSED parent (**R-EU** / **R-EV** / **R-EW**, 2026-08-09). One session's work is one leaf; it
+  ticks with the last of them. **The developer's existing workflow already IS this loop** -- read the
+  bank, type the balance, tick what cleared -- and only the RECORDING changes.
   **The rule it replaces, carried here from X-f1 because this is the step that reads it** (rule 5's
   "no live sentence may depend on an archived one"): the seam stamps `display_today()` on FIRST entry
   to the settled band and PRESERVES the day on re-entry, which is what stops archiving a payment from
-  re-dating its money. X-f2-c puts the STATEMENT date there instead of the stamp. X-f1's other half
-  of the pair -- keying the loan resolver's history cut on the stored day -- was consumed by X-an-a.
-* [x] **X-f2-a** `397ce36e` the DIFFERENCE, before it is saved (**R-EU**), preceded by the module
-  split it forced (`69b91a53`). The anchor editor previews what the account's RECORDS produce for the
-  day the form names, what was typed, and the gap, through `balance_at.records_balance_at`.
-  Read-only, so no figure moves; the arithmetic and the sign's MEANING are decided in the route.
-  Scoped to accounts with no modelled tier. Opened **N-212**, **N-213**, **N-214**; the
-  correcting-path lesson is the signpost's and the measurements are the commit's.
-* [ ] **X-f2-b** the DURABLE record (**R-EV**). A Balance history card on the cash detail page --
-  as-of, recorded, ledger, difference -- the cash twin of the loan page's Balance anchors card,
-  which is the asymmetry **N-205** measures: an AST pass found NO read path from
-  `AccountAnchorHistory` into a template except the governing-assertion caption. **It needs NO new
-  producer**: `cash_ledger.walk_cash_ledger(...).anchor_corrections` already carries the card's four
-  columns (`observed_on`, the asserted balance, `balance_before`, `delta`) -- the same fields the loan
-  drift card renders. Closes **N-205**,
-  and with the record durable the acknowledgement re-keys onto "did the figure the user is looking
-  at change" rather than "was the submitted day the boundary" (**N-204**), and its mount stops
-  destroying a still-visible predecessor (**N-206**).
-* [ ] **X-f2-c** the OUTSTANDING SET, widened (**R-EW**). `_outstanding_scope`
-  (`entry_service.py:819`) gains a TRANSACTION twin, and the panel offers everything the statement
-  can settle: purchases NESTED under their own envelope, the envelope's own close tick inside that
-  block, and bills and transfer shadows in their own group. Ticking stamps the STATEMENT date. The
-  date bound is `attribution_date <= observed_on` -- the rule the calendar and the daily balance ramp
-  already share, applied in Python over an SQL superset bound, never restated in SQL. Measured on
-  production over all 57 assertion days: **34 days would have had something to tick, 100 plain rows
-  worth $23,910.04 plus 8 transfer rows worth $5,442.89**, every one of them later recorded on a
-  click day instead. This is **N-172**'s churn on the transaction side, and it MOVES MONEY on a
-  tick, so it is its own commit.
+  re-dating its money. X-f2-c2 puts the STATEMENT date there instead of the stamp.
+* [x] **X-f2-a** `397ce36e` the DIFFERENCE, before it is saved (**R-EU**). Opened **N-212**,
+  **N-213**, **N-214**. CONDENSED into `archive/phase_x_as_built_2026-08-04.md` Section 1c.
+* [x] **X-f2-b** `a41b5ebf` (+ `7f30057a`, `a004361d`) the DURABLE record (**R-EV**). Closed
+  **N-204**, **N-206**; opened **N-215**, **N-216**; **N-205** NARROWED to the 16 modelled-account
+  assertions this page 404s, re-pointed to **X-j**. CONDENSED into `archive/…2026-08-04.md` 1c.
+* [ ] **X-f2-c** the OUTSTANDING SET, widened (**R-EW**) -- the panel offers everything the statement
+  can settle, and ticking stamps the STATEMENT date. This is **N-172**'s churn on the transaction
+  side. Measured on production over all 57 assertion days: **34 days would have had something to
+  tick, 100 rows worth $23,910.04, OF WHICH 8 rows worth $5,442.89 are transfer shadows** -- so the
+  non-transfer half is **92 rows / $18,467.15**, and the replay's row set is "carries no purchase
+  entries", i.e. bills AND shadows. (It read "100 plain rows ... **plus** 8 transfer rows" until
+  2026-08-10, counting the shadows twice at $29,352.93; re-derived from `shekel-prod-db` then.)
+  The **DECOMPOSED parent** of three leaves (developer, 2026-08-10), one session and one commit
+  each, with the two that move money separated from the one that does not.
+  * [ ] **X-f2-c1** the MODULE HOME and the shape. `outstanding_purchases` / `record_settled_days` /
+    `_outstanding_scope` leave `entry_service` -- which stands at **991 of pylint's 1000-line
+    ceiling**, so the transaction twin cannot be added to it in any case (N-152 / N-156 / N-201's
+    class, a fourth time) -- and purchases NEST under their own envelope. Closes **N-216**, the kind
+    gate these two routes never had. No new row kind and no figure moves.
+  * [ ] **X-f2-c2** the TRANSACTION twin (**R-EX**): the envelope's own close tick and bills, settled
+    through a SERVICE verb the grid's Mark Paid shares, stamping `observed_on`. The date bound is
+    `attribution_date <= observed_on`, in Python over an SQL superset (`period.start_date <=
+    observed_on`, valid because the clamp guarantees `attribution_date >= period.start_date`) --
+    never restated in SQL. **That bound is exactly the OVERDUE set**: the plan clamps a row's landing
+    day up to `as_of + 1` (ruling R-G, `_cash_fold.py:512`), so a projected row whose attribution day
+    has passed is precisely one the projection is still holding forward. **One fork is open here and
+    is the developer's**: whether a BILL's tick may correct its amount. R-EW rejected an editable
+    close amount for the ENVELOPE (a second writer of `actual_amount` beside the entries that derive
+    it); a bill has no entries, so that reason does not transfer, and the alternative is settling at
+    the estimate and leaving the difference to X-f3's residual.
+  * [ ] **X-f2-c3** the TRANSFER shadows (**R-EX**), in their own group, settled through
+    `transfer_service.update_transfer` so both legs and the parent move together (Invariant 3) --
+    which means a tick on THIS account's panel also settles the leg on the other account, and the
+    copy must say so. Carries the loan-payment freeze.
 * [ ] **X-f3** `feat(cash): the ledger is sum-of-postings and the residual is classified` -- **THE
   CUTOVER. MOVES MONEY. OWN PR, NO BACKLOG.** The assertion stops resetting the ledger
   (`cash_ledger/_walk.py:300`), `balance(T)` becomes `opening equity + SUM(postings <= T)`, and the
@@ -838,6 +834,10 @@ against are `../../plans/conventions.md`.
 One line each; the evidence is in the commits of the step that paid for it.
 
 * **An argument a caller can get wrong is a defect, not a contract.**
+* **Ask what a producer says the SECOND time.** One correct on the ordinary path can be inverted on
+  the correcting one, and only the correcting path is worth a test (X-f2-a, `-$45.86` vs `-$92.29`).
+* **A JS visibility defect is invisible to pytest** -- drive it in a browser (X-f2-b: 8,556 green
+  over a toast that reached the DOM and never appeared).
 * **A DRY refactor of a PREDICATE can move money.** Two spellings that agree by reading are two
   answers until one is deleted.
 * **When two figures PARTITION a set, write both halves from ONE predicate**, or the boundary drifts

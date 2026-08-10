@@ -24,7 +24,7 @@ scheduled as one commit by all three documents. Before this table that identity 
 files with nothing reconciling it, and the `P3` / `N-123` collision went unnoticed from April to
 2026-08-09.
 
-**106 steps, 91 open.**
+**109 steps, 93 open.**
 
 | arc | id | aliases | step | state | commit | blocked by |
 |---|---|---|---|---|---|---|
@@ -36,8 +36,11 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | balance | X-an | -- | **X-an** `fix(loan): a payment is history from the day its money moved` -- the DECOMPOSED parent, COMPLETE at two leaves, condensed into `archive/…2026-08-04.md` Section 1b | SHIPPED | `549015c0` | -- |
 | balance | X-f2 | -- | **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half, the DECOMPOSED parent | open | -- | -- |
 | balance | X-f2-a | -- | **X-f2-a** the DIFFERENCE, before it is saved: the anchor form shows what the account's RECORDS produce for its day, what was typed, and the gap (**R-EU**). Read-only. Opened **N-212**, **N-213**, **N-214** | SHIPPED | `397ce36e` | -- |
-| balance | X-f2-b | -- | **X-f2-b** the DURABLE record: a Balance history card on the cash detail page, the loan card's cash twin (**R-EV**). Closes **N-205**, **N-204**, **N-206** | open | -- | balance:X-f2-a |
-| balance | X-f2-c | -- | **X-f2-c** the OUTSTANDING SET, widened to transactions, envelopes and transfers, grouped by envelope (**R-EW**). MOVES MONEY on a tick | open | -- | balance:X-f2-b |
+| balance | X-f2-b | -- | **X-f2-b** the DURABLE record: a Balance history card on the cash detail page, the loan card's cash twin (**R-EV**). Closed **N-204**, **N-206**; **N-205** narrowed to the modelled kinds and re-pointed to X-j | SHIPPED | `a41b5ebf` | balance:X-f2-a |
+| balance | X-f2-c | -- | **X-f2-c** the OUTSTANDING SET, widened to transactions, envelopes and transfers, grouped by envelope (**R-EW**) -- the DECOMPOSED parent, three leaves | open | -- | balance:X-f2-b |
+| balance | X-f2-c1 | -- | **X-f2-c1** the reconcile reader and writer get their own module home, the route gets the kind gate it never had, and purchases NEST under their envelope. No new row kind, no money moves | open | -- | balance:X-f2-b |
+| balance | X-f2-c2 | -- | **X-f2-c2** the TRANSACTION twin: the envelope's own close tick and bills, settled on the STATEMENT date through the service-tier settle verb (**R-EX**). MOVES MONEY | open | -- | balance:X-f2-c1 |
+| balance | X-f2-c3 | -- | **X-f2-c3** transfer shadows in their own group, settled through the transfer service with the loan-payment freeze (**R-EX**). MOVES MONEY | open | -- | balance:X-f2-c2 |
 | balance | X-f3 | -- | **X-f3** `feat(cash): the ledger is sum-of-postings and the residual is classified` -- **THE | open | -- | balance:X-f2 |
 | balance | X-f4 | -- | **X-f4** `refactor(cash): delete what the cutover orphans` -- `ReconciledThrough` and its 78 | open | -- | balance:X-f3 |
 | balance | X-f5 | -- | **X-f5** `fix(ledger): the opening equity account holds only the opening` -- one balanced | open | -- | balance:X-f4 |
