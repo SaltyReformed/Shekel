@@ -17,7 +17,8 @@ the second reads the first's output:
 
 **Why one lock and not two.**  A reconcile does not only read the account's
 ledger: it derives each correction's pay period from the OWNER'S CALENDAR
-(:func:`app.services.loan_ledger.resolve_anchor_pay_period`), and
+(:meth:`app.services.pay_calendar.PayCalendar.filing_period`, loaded through
+:func:`app.services._posting_reconcile.filing_calendar_for`), and
 ``journal_entries.pay_period_id`` is an ``ON DELETE CASCADE`` FK.  So a
 concurrent truncate can delete the very period a reconcile is filing under, and
 the correction it just wrote goes with it.  The consistency boundary of a

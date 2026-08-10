@@ -4,10 +4,15 @@ Plan step **C2-a** (``docs/plans/implementation_plan_pay_calendar.md`` section
 4), the first leaf of the step three arcs share -- it is also ``balance:X-l``
 and ``recurrence:R-F12``.
 
-**Nothing in ``app/`` calls this yet, and that is the leaf boundary.**  C1 built
-the derivation and proved it byte-identical against production's 61 paydays
-before anything read it; this builds the value and proves it the same way.  The
-five cutover leaves (C2-b..C2-f) then move one consumer package each.
+**The first consumer arrived at plan step C2-d**, and until then nothing in
+``app/`` called this at all -- that was C2-a's leaf boundary.  C1 built the
+derivation and proved it byte-identical against production's 61 paydays before
+anything read it; C2-a built the value and proved it the same way.  The cutover
+leaves then move one consumer package each, and **C2-d took the first**: both
+anchor-correction posting writers file every ledger entry's ``pay_period_id``
+through :meth:`PayCalendar.filing_period`.  ``C2-b2`` (the recurrence engine),
+``C2-c`` (the cash period view), ``C2-e`` (the projection axis) and ``C2-f``
+(``pay_period_service``'s readers) remain.
 
 Why the value exists at all: an AST census on 2026-08-10 found **SIX**
 implementations of "which pay period contains this date" in ``app/`` -- ledger
@@ -68,8 +73,10 @@ if it rules the column away.
 **P14**).  A period's end is its successor's payday, so deriving a calendar from
 a SLICE gives that slice's last row a cadence-projected end instead of a
 fact-dictated one -- the same period reporting two different ends depending on
-which window asked.  The sibling shape is measured in-repo at ``$150,000.00``
-(``loan_ledger/_visible.owner_pay_periods``).  Here a slice is a
+which window asked.  The sibling shape is measured at ``$150,000.00``
+(:func:`~._derive.derive_periods`, which holds it now: it was on
+``loan_ledger/_visible.owner_pay_periods``, deleted at plan step C2-d).  Here a
+slice is a
 :class:`PeriodWindow`, which is NOT a :class:`PayCalendar`, cannot be derived
 from, and carries the ends the whole calendar computed.
 
@@ -544,12 +551,54 @@ class PayCalendar:
         entries on production do -- a mortgage dated 2018-12-01 and a van loan
         2023-02-14, both years before the owner's first payday.
 
-        The rule is ONE clamp, not the three-branch chain
-        ``loan_ledger.resolve_anchor_pay_period`` spells today:
-        **the latest period starting on or before *day*, else the earliest**.
-        Proven equivalent to that chain over 1,800 (shape, day) pairs across
-        contiguous, gapped, two-hole, single-period, one-day and long-tail
-        schedules, 2026-08-10.
+        The rule is ONE clamp: **the latest period starting on or before *day*,
+        else the earliest**.  It replaced the three-branch chain
+        ``loan_ledger.find_period_containing_date`` composed with
+        ``resolve_anchor_pay_period`` -- containment, else the latest period
+        ENDING before the day, else the earliest -- which plan step **C2-d**
+        DELETED once both anchor-posting writers took this method.
+
+        **The equivalence to that chain has a PRECONDITION, and the first
+        statement of it here named only half.**  The two rules agree on every
+        schedule that is non-overlapping AND whose ``period_index`` order
+        matches its ``start_date`` order.  Drop the second half and they part
+        company on 800 of 872 probed days: the old chain reduced by INDEX (its
+        fallbacks took ``max(period_index)`` and its last resort ``periods[0]``)
+        while this reduces by DATE.  Both halves are held by
+        ``pay_period_service`` today -- the batch guard
+        ``_reject_overlapping_batch`` and the tail-append at ``max_index + 1``
+        -- and plan step **C3** deletes the first, which is safe only because
+        the chain that needed it dies here.  Where the two DO differ this one is
+        right: it searches a calendar whose index is DERIVED from date order, so
+        no stored ordinal can disagree with its own dates.
+
+        The proofs, each saying what it covers:
+        ``tests/test_services/test_pay_calendar_value.py`` grades this method
+        against a transcription of the chain over every shape a
+        :class:`PayCalendar` can HOLD, and separately over stored-style period
+        lists a calendar cannot express -- gapped, two-hole, overlapping, and
+        the index-order counterexample -- because derived periods TILE and so
+        cannot produce a hole to test with;
+        ``tests/manual/verify_filing_cutover.py`` re-runs both halves against a
+        real database and is where the cutover's production numbers come from.
+
+        **It never reads a period's END, and that is why C2-d could ship ahead
+        of the two steps that close the calendar's write doors.**  The other
+        four C2 cutovers wait on ``balance:X-ad`` and ``C3`` because a DERIVED
+        calendar absorbs a hole instead of reporting it (ledger row **P27**);
+        this one bisects on ``start_date`` through
+        :func:`latest_started_period` and so cannot tell a derived end from a
+        stored one.  A hole changes which period a day is INSIDE; it does not
+        change which period most recently OPENED.  *The METHOD is end-free; the
+        composition a caller reaches it through is not, and saying only the
+        first is how the exemption gets over-read.*
+        :func:`~._loader.calendar_for` resolves the cadence through
+        ``pay_schedule_service.resolve_cadence``, which for an owner with no
+        ``budget.pay_schedule`` row INFERS it from the last period's stored
+        length -- plan finding **P8**, and the state every freshly-registered
+        owner is in.  That moves no filing answer (only the last period's
+        derived end, which this never reads), but it does mean a value outside
+        1..365 would REFUSE the calendar rather than mis-file a record.
 
         **Always a MATERIALISED period**, and that is enforced rather than
         assumed.  A first cut searched all of :attr:`periods` and claimed the

@@ -251,8 +251,18 @@ def _period_id_at(axis: list, target: date) -> int | None:
     it (a *target* past the axis end resolves to the final period).  Kept
     local because the axis periods are
     :class:`~app.services.growth_engine.SyntheticPeriod` namedtuples, which
-    carry no ``period_index`` for the general
-    :func:`app.services.loan_ledger.find_period_containing_date`.
+    carry no ``period_index`` -- **the reason recorded here has always been
+    correct, and only the function it named is gone.**  That was
+    ``loan_ledger.find_period_containing_date``, which dereferenced
+    ``period.period_index`` on both branches and so would have raised
+    ``AttributeError`` on this axis; pay-calendar plan step **C2-d** deleted it.
+
+    This is the SEVENTH implementation of the question ledger row **P6**
+    counts, and plan step **C2-e** retires it together with the synthetic axis
+    it scans, onto
+    :meth:`app.services.pay_calendar.PayCalendar.filing_period` -- which is
+    this rule (the latest period opening on or before the day) with a clamp
+    where this answers ``None``.
 
     Args:
         axis: The chronological synthetic period axis.

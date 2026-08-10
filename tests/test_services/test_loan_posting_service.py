@@ -1792,9 +1792,17 @@ class TestLoanAnchorPeriodAttribution:
     anchor carries no stored ``pay_period_id`` -- ``budget.loan_anchor_events``
     has no such column and the origination is synthesized from ``LoanParams``
     -- so its period is DERIVED from its date through
-    ``resolve_anchor_pay_period``.  When no period CONTAINS the date it falls
-    back to the LATEST period ending on or before it (and to the earliest only
-    when the date precedes the whole schedule).
+    ``pay_calendar.PayCalendar.filing_period``.  When no period CONTAINS the
+    date it clamps to the LATEST period OPENING on or before it (and to the
+    earliest only when the date precedes the whole schedule).
+
+    *That rule was ``loan_ledger.resolve_anchor_pay_period`` until pay-calendar
+    plan step C2-d, whose fallback keyed on the latest period ENDING before the
+    date.  The two give the same answer on a schedule that is non-overlapping
+    AND whose ``period_index`` order matches its ``start_date`` order -- BOTH
+    halves, because the old chain reduced by index and this one by date -- which
+    is why nothing in this class had to change.  The precondition and its proofs
+    are stated at ``pay_calendar.PayCalendar.filing_period``.*
 
     That fallback is where the calendar and the ledger come apart.  A user
     whose schedule ends before their asserted anchor date gets the correction
@@ -2543,8 +2551,9 @@ class TestPrePeriodAnchor:
     Direct coverage for the ``entry_date`` reader bound (step C2's one clock).
     The shape that once needed a special rule: a journal entry carries its true
     civil ``entry_date`` AND a NOT NULL ``pay_period_id``, and when an anchor
-    predates every pay period the user has, ``resolve_anchor_pay_period`` is
-    FORCED to file it under the earliest period.  A reader bounding by the pay
+    predates every pay period the user has, the filing rule
+    (``pay_calendar.PayCalendar.filing_period``) is FORCED to clamp it into the
+    earliest period.  A reader bounding by the pay
     period believed that and reported a loan originated before the user's
     pay-period history as owing NOTHING for the whole span in between (the
     year-end summary turned that $0 into a NEGATIVE principal-paid figure).

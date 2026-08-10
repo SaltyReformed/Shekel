@@ -137,8 +137,14 @@ def derive_periods(
     is its successor's payday, so the LAST payday in whatever list arrives here
     falls to the cadence projection -- which means a partial list makes one
     period report a different end depending on which window asked (plan finding
-    P14; the sibling shape is measured in-repo at ``$150,000.00``,
-    ``loan_ledger/_visible.owner_pay_periods``).  This function cannot detect
+    P14).  **The sibling shape was measured at ``$150,000.00``**: folding a
+    ``$100,000.00`` loan true-up against the owner's whole calendar, versus
+    against a window that excluded the true-up's own period, moved the balance
+    by that much on the days between -- because with the containing period
+    absent the old locator missed and its fallback fired.  That measurement
+    lived on ``loan_ledger/_visible.owner_pay_periods``' docstring until plan
+    step C2-d deleted the function, and it is restated here rather than lost,
+    because it is the evidence for this paragraph.  This function cannot detect
     partiality -- a slice of paydays is indistinguishable from a short schedule
     -- so the guarantee has to be structural at the caller.  Plan step C2 makes
     it so: the calendar is built once from the complete set and a window becomes

@@ -269,14 +269,18 @@ class _PeriodSpans:
 
     The CASH clock's grouping key.  A day is answered by the period whose
     ``[start_date, end_date]`` span CONTAINS it, and by nothing otherwise -- no
-    nearest-period fallback, deliberately.  The seam's
-    :func:`~app.services.loan_ledger.find_period_containing_date` does fall back
-    to the latest period that ENDED before the target, which is right for the
-    question it answers (an anchor correction needs a home period, and
+    nearest-period fallback, deliberately.  The FILING rule
+    (:meth:`app.services.pay_calendar.PayCalendar.filing_period`) does clamp, to
+    the latest period that OPENED on or before the target, which is right for
+    the question it answers (an anchor correction needs a home period, and
     ``journal_entries.pay_period_id`` is NOT NULL) and wrong for this one: the
     identity this index serves reads a period's balance change as the steps
     inside its own span, so a step in a gap or past the horizon belongs to NO
-    column and must not be pulled into the previous one.
+    column and must not be pulled into the previous one.  The pay-calendar arc
+    names them as two distinct QUESTIONS on one value for exactly this reason,
+    and plan step C2-c retires this class onto
+    :meth:`~app.services.pay_calendar.PeriodWindow.containing`, which keeps the
+    window scoping this docstring argues for.
 
     Pay periods do not overlap -- the generator rejects a batch whose earliest
     start falls on or before the latest existing ``end_date``, because two

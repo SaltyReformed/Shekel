@@ -44,159 +44,38 @@ event on its own date closes that at the source: an anchor dated in the future i
 simply not yet visible, and the four ``origination_date`` guards that contained
 the leak are retired (N-10).
 
-Also here, and for the same reason, the CALENDAR those rules resolve against:
-:func:`owner_pay_periods` (the owner's period list) and
-:func:`find_period_containing_date` (which period a date falls in), the primitive
-:func:`resolve_anchor_pay_period` is built on.  The locator arrived at plan step
-D1b from ``account_projection``, an account-KIND classifier that had no business
-owning a chronology rule -- a COHESION correction (the primitive belongs with the
-rules built on it, and this module had been importing the classifier to reach its
-own), not the private-import smell Section 8 names; that import was public and
-ordinary.
+**The CALENDAR left this module at plan step C2-d, and with it the package's
+last query.**  Three names lived here -- ``owner_pay_periods`` (the owner's
+period list), ``find_period_containing_date`` (which period a date falls in)
+and ``resolve_anchor_pay_period`` (the three-branch chain the anchor-posting
+writers filed against, built on the other two).  Ruling **D5**'s one clock had
+already taken the FOLD off them -- an anchor counts from its own date and needs
+no calendar -- so the two posting writers were the only consumers left, and a
+chronology rule neither of them shares with anything in this package was being
+reached by an import from the CASH posting package into the LOAN package
+(finding **N-169**).  The 2026-08-10 pay-calendar ruling replaced the chain
+with one clamp on
+:meth:`app.services.pay_calendar.PayCalendar.filing_period`, both writers now
+take it through :func:`app.services._posting_reconcile.filing_calendar_for`,
+and all three names are deleted.
 
-**Chronology only.**  Every name here returns a ``date``, a ``PayPeriod``, or a
-list of them; none yields a balance-at-T, which is why all five are ruled
-non-producers of the balance fence.  (A returned ``PayPeriod`` is an ORM row, so
-money is reachable from it by relationship -- the ruling is that a period is not
-an account's balance, not that a figure is unreachable.  Claiming the stronger
-thing is how ``LoanState.current_balance`` shipped.)  No clock and no writes
-anywhere; :func:`owner_pay_periods` is the one function that queries (it loads
-the calendar), and the rest are pure.  An anchor's visible-on date no longer needs
-the owner's calendar at all -- it is the anchor's own date -- so the fold is
-total over the loan's facts without a period list.
+**Chronology only, and now PURE.**  The two names left here each return a
+``date``; neither yields a balance-at-T, which is why both are ruled
+non-producers of the balance fence.  No clock, no writes and -- since C2-d
+removed the one calendar query -- no database session anywhere in this package.
+That also retires a caveat this paragraph used to carry: a returned
+``PayPeriod`` was an ORM row, so money was reachable from it by relationship,
+and the fence ruling had to say that a period is not an account's balance
+rather than that a figure was unreachable.  Nothing here returns an ORM row any
+more, so the stronger claim is now true by construction -- which is the shape to
+prefer, because claiming it before it was true is how
+``LoanState.current_balance`` shipped.
 """
 
 from datetime import date
 
-from app.extensions import db
-from app.models.account import Account
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import settled_day
-
-
-def owner_pay_periods(account_id: int) -> list[PayPeriod]:
-    """Return the whole calendar of *account_id*'s owner, ascending.
-
-    EVERY pay period the owner has, ordered by ``period_index`` -- the one query
-    behind both consumers of :func:`resolve_anchor_pay_period`, so the fold and
-    the posting writer physically cannot be looking at different calendars.
-
-    **"All", not "a window", is the load-bearing word.**  An anchor's visible-on
-    date is derived from the period CONTAINING it, so a partial list silently
-    changes the answer: with the containing period absent,
-    :func:`find_period_containing_date` misses, the ``periods[0]`` fallback
-    fires, and the anchor lands on the wrong date.
-    Measured: folding a $100,000.00 true-up against the owner's full calendar
-    versus a window that excludes its period moves the balance by $150,000.00 on
-    the days between.  That is why neither consumer may pass its own list -- the
-    grid, whose period argument IS a six-period window
-    (:func:`app.routes.grid`), reaches the balance seam with exactly the shape
-    that would break it, and step C3 points the seam's AMORTIZING branch here.
-
-    Joins through the account rather than taking an owner id, so a caller cannot
-    pair one loan with another user's calendar.
-
-    Args:
-        account_id: The account whose owner's pay periods to load.
-
-    Returns:
-        The owner's pay periods, ascending by ``period_index``.  Empty only for a
-        missing account or an owner with no periods at all -- a broken invariant
-        each caller reports in its own terms.
-    """
-    return (
-        db.session.query(PayPeriod)
-        .join(Account, Account.user_id == PayPeriod.user_id)
-        .filter(Account.id == account_id)
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
-
-
-def find_period_containing_date(
-    periods: list[PayPeriod], target: date,
-) -> PayPeriod | None:
-    """Return the pay period whose interval contains *target*.
-
-    A period "contains" *target* when
-    ``period.start_date <= target <= period.end_date``.  When no period contains
-    *target* (the date falls in a gap or beyond the user's generated horizon),
-    falls back to the latest period whose ``end_date`` is on or before *target*;
-    if none exists either, returns ``None``.
-
-    The fallback preserves the period-END-keyed semantic when a target date sits
-    just past the last generated period: the user's last known balance at the
-    horizon is the natural answer, rather than nothing at all.
-
-    **Chronology, not balance.**  It answers WHICH PERIOD a date falls in and
-    knows nothing of accounts or money -- the primitive
-    :func:`resolve_anchor_pay_period` is built on, and the reason both live here.
-    It moved from ``account_projection`` at plan step D1b: its only two callers
-    are this module and the balance seam, so a kind CLASSIFIER was holding a
-    chronology primitive that the chronology module then had to import back.  A
-    cohesion correction, decided on where the rule BELONGS -- not on the
-    private-import smell of Section 8, which this ordinary public import was not.
-
-    Args:
-        periods: The owner's pay periods.  Order-independent -- the scan keys on
-            ``period_index``, not on list position.
-        target: The date to locate.
-
-    Returns:
-        The matching :class:`~app.models.pay_period.PayPeriod`, or ``None`` when
-        no period contains or precedes *target*.
-    """
-    containing = None
-    fallback = None
-    for period in periods:
-        if period.start_date <= target <= period.end_date:
-            if containing is None or period.period_index > containing.period_index:
-                containing = period
-        elif period.end_date < target:
-            if fallback is None or period.period_index > fallback.period_index:
-                fallback = period
-    return containing if containing is not None else fallback
-
-
-def resolve_anchor_pay_period(
-    periods: list[PayPeriod], target_date: date,
-) -> PayPeriod:
-    """Return the pay period an anchor correction dated *target_date* books in.
-
-    ``journal_entries.pay_period_id`` is NOT NULL, so an anchor correction needs a
-    period even though the anchor date can predate every period (an imported loan
-    whose origination is years before the app's first period).  Uses the period
-    CONTAINING *target_date*, falling back to the user's EARLIEST period when the
-    date precedes all of them -- so an opening is attributed to a real period and
-    the reader (which bounds by period start) counts it from the first period on.
-
-    **Two consumers, one rule.**  The posting WRITER
-    (:func:`app.services.loan_posting_service._anchors.reconcile_loan_anchor_corrections`)
-    calls it to choose an entry's ``pay_period_id``; :func:`anchor_visible_on`
-    calls it to reproduce that choice from SOURCE data, since an anchor's
-    visible-on date is derived from the period the writer filed it under.  Two
-    copies would let the fold and the posted ledger disagree about which day an
-    anchor lands on -- which is the entire question B2's oracle asks.  It lived
-    beside the writer until the fold became its second consumer.
-
-    Args:
-        periods: The owner's pay periods, ascending by ``period_index`` (non-empty;
-            the caller guarantees it).
-        target_date: The anchor's date.
-
-    Returns:
-        The containing :class:`~app.models.pay_period.PayPeriod`; else the LATEST
-        period ending before *target_date* (a date past the generated horizon
-        books in the last period, not the first); else -- only when the date
-        precedes every period -- the earliest.  **The middle case was missing
-        from this block** until a neutral claims audit read it against
-        :func:`find_period_containing_date`, which is where that fallback lives:
-        the summary above says "falling back to the user's EARLIEST period when
-        the date precedes all of them", which is true and is not the whole rule.
-    """
-    containing = find_period_containing_date(periods, target_date)
-    return containing if containing is not None else periods[0]
 
 
 def anchor_visible_on(anchor_date: date) -> date:
@@ -251,9 +130,13 @@ def payment_visible_on(shadow: Transaction) -> date:
     against which anchor.
 
     Args:
-        shadow: The settled loan-side income shadow (its ``pay_period`` must be
-            loaded; :func:`~app.services.loan_loaders.query_shadow_income`
-            eager-loads it).
+        shadow: The settled loan-side income shadow.  Only ``id`` and
+            ``settled_on`` are read.  *This said its ``pay_period`` "must be
+            loaded" until plan step C2-d read the body against the sentence* --
+            true while the NULL fallback dated a settle by its period's start,
+            and false since ruling R-EC made the day a stored column.  A
+            precondition a caller can satisfy needlessly is still a false
+            precondition.
 
     Returns:
         The date from which a balance read counts this payment's principal.
