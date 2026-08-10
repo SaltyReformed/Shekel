@@ -53,6 +53,10 @@ from app.services import (
     cash_ledger,
     pay_period_service,
 )
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -70,25 +74,6 @@ LOAN_ANCHOR_REFUSAL = (
     "A loan's balance is not a cash anchor. Record a balance true-up "
     "on the loan's own page instead."
 )
-
-
-def is_amortizing(account: Account) -> bool:
-    """Return True when *account* is an amortizing loan.
-
-    The route-layer twin of the loan package's ``_load_loan_account``
-    kind test (``account_type.has_amortization``, a boolean column --
-    never a type-name string).  Used to refuse the CASH anchor editor
-    for a loan; the service-layer backstop is
-    :class:`~app.services.anchor_service.AmortizingAccountAnchorError`.
-
-    PUBLIC because it has consumers in two modules -- this one and
-    :mod:`app.routes.accounts.difference`, which refuses to preview a save the
-    write door would reject.  It was ``_is_amortizing`` and would have been
-    imported across that boundary anyway, which is finding **N-33**'s shape: a
-    name whose underscore claims a visibility its call sites do not respect.
-    """
-    acct_type = account.account_type
-    return acct_type is not None and acct_type.has_amortization
 
 
 # ── Anchor Balance True-up (Grid) ─────────────────────────────────
@@ -217,9 +202,46 @@ class _AnchorSubmission:
     observed_on: date | None
 
 
+def _submitted_or_resolved_day(
+    submission: "_AnchorSubmission", anchor: "cash_ledger.AnchorPoint",
+) -> date:
+    """Return the civil day this submission asserted, blank date box included.
+
+    The acknowledgement names a day, and a blank date box carries none: the
+    write door resolves that to the user's today
+    (:func:`app.services.anchor_service.resolve_observation_day`), and this
+    route may not resolve it a SECOND time -- re-reading the clock here is a
+    second answer to "when is an assertion dated" that a midnight tick can make
+    disagree with the one that was stored.
+
+    So the blank case reads the day back off the assertion that GOVERNS after
+    the write, and that is exact rather than approximate.  A blank submission
+    is dated today, today is at or after every stored day (the write door
+    refuses a future one), so the row this request produced is the governing
+    one and its day is the day asserted.  It holds for ruling R-EQ's UNCHANGED
+    outcome too: nothing was written because the governing assertion already
+    carried that day and balance, so reading its day still answers with the
+    day submitted.
+
+    A SUPPLIED day is returned as given, because a back-dated assertion does
+    not govern and the governing row's day would name a different one.
+
+    Args:
+        submission: What the form asserted.
+        anchor: The assertion governing AFTER the write
+            (:func:`app.services.cash_ledger.resolve_anchor`).
+
+    Returns:
+        The civil day the acknowledgement should name.
+    """
+    if submission.observed_on is None:
+        return anchor.observed_on
+    return submission.observed_on
+
+
 def _true_up_success_response(
     account: Account, revert_context: str | None,
-    submission: _AnchorSubmission, governing_before: Decimal,
+    submission: _AnchorSubmission, governing_before: "Decimal | None",
     outcome: AnchorTrueUpOutcome,
 ) -> tuple[str, int, dict[str, str]]:
     """Compose the anchor true-up success response.
@@ -288,9 +310,11 @@ def _true_up_success_response(
             submission here means "suppress the safety check", and with one
             caller a default that can only ever be wrong is a footgun rather
             than a convenience.
-        governing_before: The balance ``resolve_anchor`` reported BEFORE the
-            write.  Read by the caller rather than here, because here is after
-            it and the comparison needs both sides.
+        governing_before: The balance that GOVERNED before the write, or
+            ``None`` for an account carrying no assertion at all.  Read by the
+            caller rather than here, because here is after the write and the
+            comparison needs both sides; ``None`` compares unequal to any
+            balance, so a first assertion falls through to "the cell changed".
         outcome: What the write door did.  It decides the acknowledgement's
             COPY, not whether it fires: under ruling R-EQ a submission matching
             the governing assertion writes nothing and is rolled back while
@@ -326,7 +350,7 @@ def _true_up_success_response(
             # the user's today, and the acknowledgement names the day the
             # balance is about rather than leaving it to be guessed from a
             # figure that did not move.
-            observed_on=submission.observed_on or anchor.observed_on,
+            observed_on=_submitted_or_resolved_day(submission, anchor),
             was_written=outcome is AnchorTrueUpOutcome.COMMITTED,
         )
     # ``None`` is the grid, and only the grid: every named surface re-fetches
@@ -377,8 +401,6 @@ def _anchor_day_bounds() -> dict[str, date]:
         ),
         "observed_on_max": display_today(),
     }
-
-
 
 
 def _anchor_kind_refusal(account: Account) -> ResponseReturnValue:
@@ -536,7 +558,7 @@ def _true_up_request_gates(
         ``failure`` is the ready-to-return Flask response and ``submission``
         is ``None``.
     """
-    if is_amortizing(account):
+    if classify_account(account) is AccountProjectionKind.AMORTIZING:
         return None, _anchor_kind_refusal(account)
 
     errors = _anchor_schema.validate(request.form)
@@ -599,15 +621,30 @@ def true_up(account_id):
     if failure is not None:
         return failure
 
-    # The balance the user is LOOKING AT, read before the write so the
-    # response can ask whether anything visible happened (finding N-204; see
-    # ``_true_up_success_response``).  Read here rather than inside that
-    # helper because that runs after the write and the comparison needs both
-    # sides.  The account carries an assertion by construction -- the factory
-    # and migration ``cfb15e782f86`` guarantee an opening row -- which is the
-    # same precondition the success response's own ``resolve_anchor`` call has
-    # always had.
-    governing_before = cash_ledger.resolve_anchor(account).balance
+    # The balance the user is LOOKING AT, read before the write so the response
+    # can ask whether anything visible happened (finding N-204; see
+    # ``_true_up_success_response``).  Read here rather than inside that helper
+    # because that one runs after the write and the comparison needs both
+    # sides.
+    #
+    # **``governing_anchor_on`` rather than ``resolve_anchor``, and a review of
+    # this step is why.**  A first version read ``resolve_anchor``, which
+    # RAISES on an account with no assertion at all -- so a door that used to
+    # self-heal that state (``stage_anchor_true_up`` asks
+    # ``governing_anchor_on``, gets an honest ``None``, and appends the first
+    # row) would have taken a 500 with nothing written, for a COSMETIC toast.
+    # It is production-unreachable, and narrowing a write door's precondition
+    # is not something to do by accident on the way to a message.
+    #
+    # The clock read is safe here rather than a second answer to anything: no
+    # assertion can be dated in the future (``resolve_observation_day`` refuses
+    # one at both write doors), so "what governs today" and "what governs now"
+    # are the same row whichever side of midnight this lands on.  ``None`` --
+    # an account with no history -- compares unequal to any balance below, so
+    # the response falls through to "the cell changed", which is exactly what
+    # a first assertion does to it.
+    governing = cash_ledger.governing_anchor_on(account.id, display_today())
+    governing_before = None if governing is None else governing.balance
 
     # Canonical anchor true-up path: route the assertion append, the posting
     # re-base and the commit through the single authoritative helper
@@ -749,7 +786,7 @@ def anchor_form(account_id):
     # 4xx is left non-swapping by ``base.html`` and the click would otherwise
     # do nothing visible at all -- a dead click with no form to explain it,
     # which is finding N-199's defect in its worst form.
-    if is_amortizing(account):
+    if classify_account(account) is AccountProjectionKind.AMORTIZING:
         return _anchor_kind_refusal(account)
 
     revert_context = _normalize_revert_context(request.args.get("revert"))

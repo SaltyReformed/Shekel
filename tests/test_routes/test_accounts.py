@@ -2078,6 +2078,39 @@ class TestTheReconcileRoute:
                 "toast beside it says the same thing twice"
             )
 
+    def test_a_blank_date_box_is_acknowledged_for_TODAY(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The acknowledgement names the resolved day, not a guess.
+
+        The one arm of the day the suite did not grade.  A blank date box
+        carries no day; the write door resolves it to the user's today, and the
+        route may not re-read the clock to name it -- so it reads the day back
+        off the assertion that GOVERNS after the write.  A mutation naming any
+        other day (the account's ``created_at``, the previous assertion's day)
+        renders a wrong date under a correct balance, which is worse than
+        silence: it affirmatively tells the user their record landed on a day
+        it did not.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+
+            self._true_up(
+                auth_client, acct_id, "1500.00",
+                observed_on=today - timedelta(days=6),
+            )
+            # No ``observed_on`` at all -- the shape an older client submits,
+            # and the one the fallback exists for.
+            response = self._true_up(auth_client, acct_id, "1500.00")
+
+            ack = response.data.decode().split(_ACK_SWAP, 1)[1]
+            assert f"as of {today.strftime('%b %-d, %Y')}" in ack
+            assert (
+                f"as of {(today - timedelta(days=6)).strftime('%b %-d, %Y')}"
+                not in ack
+            ), "a blank date box means TODAY, not the day that governed before"
+
     def test_an_idempotent_re_assert_does_not_claim_to_have_recorded(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
@@ -7957,7 +7990,17 @@ class TestTheBalanceHistoryCard:
             )
             # And it announces that it is back-dated, so it is not read as a
             # balance that was true today.
-            assert "entered" in shown
+            #
+            # **Scoped to the row under test.**  A bare ``"entered" in shown``
+            # is near-vacuous here: every row in this fixture is back-dated by
+            # construction, so the caption is present whether or not THIS row
+            # carries one.  Slicing to the cell that holds the figure is what
+            # makes the assertion about the row it names.
+            row = shown.split("$1,777.77", 1)[0].rsplit("<tr>", 1)[1]
+            assert f"entered {today.strftime('%b %-d, %Y')}" in row, (
+                "the back-dated row must name the day it was TYPED, or a "
+                "reader cannot tell it from a balance that was true that day"
+            )
 
     def test_an_ordinary_row_does_not_claim_to_be_back_dated(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -8018,7 +8061,7 @@ class TestTheBalanceHistoryCard:
 
             assert "$5,000.00" in html
             assert "Ledger" not in html
-            assert "Difference" not in html
+            assert "Correction" not in html
             assert "nothing here to reconcile against" in html
 
     def test_a_plain_account_shows_them(
@@ -8039,7 +8082,7 @@ class TestTheBalanceHistoryCard:
             ).data.decode()
 
             assert "Ledger" in html
-            assert "Difference" in html
+            assert "Correction" in html
 
     def test_the_opening_row_publishes_no_difference(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -8062,6 +8105,28 @@ class TestTheBalanceHistoryCard:
             # The lone row is the opening, so every reconciliation cell on the
             # page is the withheld dash.
             assert html.count(">--<") == 2
+
+    def test_a_companion_cannot_reach_the_card(
+        self, app, companion_client, seed_user, seed_periods_today,
+    ):
+        """The owner-role decorator on the fragment is graded, not assumed.
+
+        The COMPANION is the case that matters rather than an unrelated
+        stranger, for the reason the sibling reconcile route's twin gives: a
+        companion is authenticated AND holds granted access to this owner's
+        transactions, so ``@require_owner`` refusing them is a real decision.
+        This card publishes MORE than that panel does -- every balance the
+        owner has ever recorded, with the day each was entered.
+
+        404 rather than 403, per the project's security response rule, so the
+        status cannot be used as an existence oracle.
+        """
+        with app.app_context():
+            account_id = seed_user["account"].id
+
+        assert companion_client.get(
+            f"/accounts/{account_id}/balance-history",
+        ).status_code == 404
 
     def test_another_users_account_is_not_reachable(
         self, app, auth_client, seed_user, seed_periods_today,

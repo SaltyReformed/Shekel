@@ -563,17 +563,6 @@ td.htmx-loading::after {
   z-index: 11000;
 }
 
-/* The anchor-acknowledgement mount holds a STACK since plan step X-f2-b
-   (finding N-206): the true-up's out-of-band swap APPENDS rather than
-   replacing the mount, so two saves inside the 8s autohide window show two
-   toasts instead of the second destroying the first.  Bootstrap's own spacing
-   rule is `.toast-container > :not(:last-child)`, which a grandchild does not
-   match, so the gap is restated here for the mount's own children, reading the
-   same `--bs-toast-spacing` off each `.toast` -- which is the element
-   Bootstrap defines it on. */
-#anchor-ack-mount > .toast:not(:last-child) {
-  margin-bottom: var(--bs-toast-spacing);
-}
 
 /* =============================================
    NAVBAR OFFCANVAS DRAWER

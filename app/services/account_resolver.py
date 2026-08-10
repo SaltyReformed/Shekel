@@ -56,7 +56,7 @@ def is_cash_flow_account(account: Account) -> bool:
     surfaces in the sense this gate cares about, and the gate itself is
     unchanged by that split: a LOAN is refused from all of them.  The remaining
     consumer, the cash detail page, carries its own wider gate
-    (``routes.accounts.detail._cash_detail_wrong_type``, which also
+    (``routes.accounts._cash_page.cash_detail_wrong_type``, which also
     refuses appreciating and retirement / investment kinds), so it is
     not routed through here.  An AMORTIZING loan's balance is not
     a transaction sum -- payment transfers INTO the loan read as inflows,
@@ -243,7 +243,7 @@ def resolve_analytics_account(
     with a different account's balance would be a wrong answer rather
     than a missing one.  The calendar turns this ``None`` into a 404
     (``CalendarAccountNotResolvableError``), matching the cash detail
-    page, which already 404s a loan (``_cash_detail_wrong_type``).
+    page, which already 404s a loan (``_cash_page.cash_detail_wrong_type``).
 
     Args:
         user_id: The current user's id.  Used for ownership check on

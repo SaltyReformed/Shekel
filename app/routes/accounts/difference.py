@@ -22,11 +22,18 @@ difference-preview family is what took ``anchor`` from 916 to the ceiling in
 the first place.
 
 The bodies are unchanged.  Two names stayed in ``anchor`` and are imported
-here rather than copied, because "a loan's balance is not a cash anchor"
-(ruling D4 / step A1, finding B-15) is one rule with one home:
-``LOAN_ANCHOR_REFUSAL`` and ``is_amortizing``, both taken PUBLIC on the way
-out -- a helper with consumers in two modules is part of the interface, which
-is finding **N-33**'s shape stated rather than fenced by convention.
+here rather than copied: ``LOAN_ANCHOR_REFUSAL`` is the write door's own
+copy for "a loan's balance is not a cash anchor" (ruling D4 / step A1, finding
+B-15), and a message with readers in two modules is part of the interface --
+finding **N-33**'s shape stated rather than fenced by convention.
+
+The KIND TEST is not imported, and that is this step's review talking.  The
+cut first promoted ``anchor._is_amortizing`` to public so both modules could
+share it; that helper was ``classify_account(account) is AMORTIZING`` spelled a
+second time, including its ``account_type is None`` case, so the cut was
+widening a duplicate's visibility instead of deleting it.  Both modules ask the
+shipped classifier now, which is the same door ``records_balance_at`` already
+dispatches on.
 
 Every URL, decorator, ownership check and template contract is preserved; the
 blueprint and endpoint names are unchanged, so no ``url_for`` call site moved.
@@ -41,11 +48,12 @@ from flask_login import current_user, login_required
 from app.exceptions import ValidationError
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
-from app.routes.accounts.anchor import (
-    LOAN_ANCHOR_REFUSAL,
-    is_amortizing,
-)
+from app.routes.accounts.anchor import LOAN_ANCHOR_REFUSAL
 from app.services import anchor_service, balance_at
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
 
@@ -215,7 +223,7 @@ def _anchor_difference_context(account: Account) -> dict:
         is nothing to compare.
     """
     empty = {"refusal": None, "difference": None}
-    if is_amortizing(account):
+    if classify_account(account) is AccountProjectionKind.AMORTIZING:
         return {"refusal": LOAN_ANCHOR_REFUSAL, "difference": None}
 
     recorded, submitted_day, refusal = _preview_submission()

@@ -126,6 +126,52 @@ document.body.addEventListener("htmx:afterRequest", function(event) {
   }
 });
 
+// Dispose Bootstrap component instances on markup a swap is about to
+// DESTROY (plan step X-f2-b, finding N-206's class one level up).
+//
+// Bootstrap keys every component instance in an element-keyed `Map` (its
+// dom/data.js -- a Map, verified in the vendored bundle, NOT a WeakMap), so an
+// element removed by an htmx swap while carrying an instance is retained by
+// that map forever, with the whole subtree hanging off it.
+//
+// MEASURED, not theorised, via CDP `Performance.getMetrics` with a forced GC
+// between samples: expanding the cash detail page's Balance history disclosure
+// and refreshing the card five times retained 4,592 DOM nodes -- about 918 per
+// cycle, the detached <tbody> of 46 rows.  Five refreshes WITHOUT expanding
+// moved the counter by -2, so the retention is exactly the Collapse instance.
+//
+// The three types here are the ones this file ATTACHES to swappable content:
+// the afterSwap handler below creates a Popover and a Tooltip per swap and has
+// never disposed the previous ones, which is the same leak already live.
+// Modal and Toast are deliberately absent: the modal mount leaves its markup
+// in place on purpose, and a toast now disposes itself on `hidden.bs.toast`.
+//
+// Disposal is safe because none of the three holds state that must survive the
+// swap: a Collapse's state IS the `show` class, which the replacement markup
+// re-declares.
+document.body.addEventListener("htmx:beforeSwap", function(event) {
+  const target = event.detail && event.detail.target;
+  if (!target || !target.querySelectorAll) {
+    return;
+  }
+  // ``.collapse`` is the COLLAPSIBLE element (Bootstrap's data-api puts the
+  // instance there, never on the button that toggles it); the two
+  // ``data-bs-toggle`` selectors are the popover / tooltip anchors, which DO
+  // carry their own.
+  target.querySelectorAll(
+    '.collapse, [data-bs-toggle="popover"], [data-bs-toggle="tooltip"]',
+  ).forEach(function(el) {
+    [bootstrap.Collapse, bootstrap.Popover, bootstrap.Tooltip].forEach(
+      function(Component) {
+        const instance = Component.getInstance(el);
+        if (instance) {
+          instance.dispose();
+        }
+      },
+    );
+  });
+});
+
 // Consolidated htmx:afterSwap handler -- save flash, popover close, focus restore.
 document.body.addEventListener("htmx:afterSwap", function(event) {
   const el = event.detail.elt;

@@ -200,11 +200,13 @@ def main(argv=None):
         # 4: both dispose and remove themselves once hidden.
         delay = int(page.get_attribute(f"{MOUNT} .toast", "data-bs-delay") or 0)
         page.wait_for_timeout(delay + _AUTOHIDE_SLACK_MS)
+        # Counted by the auto-show MARKER, not by ``.toast`` and not by the
+        # mount's child count: since plan step X-f2-b the mount IS the
+        # ``.toast-container``, so a page rendered with a flash message has
+        # children that were never this probe's subject.
         report.check(
-            page.evaluate(
-                f"document.querySelector('{MOUNT}').children.length",
-            ) == 0,
-            "the mount empties itself after the autohide",
+            page.locator(f"{MOUNT} [data-toast-auto-show]").count() == 0,
+            "the acknowledgements clear themselves after the autohide",
         )
 
         report.check(not errors, "no page errors", "; ".join(errors))

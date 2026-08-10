@@ -24,8 +24,9 @@ from flask_login import current_user, login_required
 
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
+from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.services import balance_at
-from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.auth_helpers import require_owner
 
 #: How many assertions the card shows before the disclosure (developer ruling
 #: 1, 2026-08-10).  The real Checking account carries 57 over 133 days and
@@ -35,14 +36,18 @@ from app.utils.auth_helpers import get_or_404, require_owner
 RECENT_ASSERTIONS = 12
 
 
-def panel_id(account_id: int) -> str:
+def _panel_id(account_id: int) -> str:
     """Return the balance-history card's DOM id for one account.
 
-    Stated once because two mounts share it: the page's own region and the
-    fragment this module serves back into it.  PUBLIC for the reason
-    :func:`app.routes.accounts.reconcile.panel_id` is -- it has a consumer in
-    another module (``detail``, which renders the page), so an underscore would
-    be finding **N-33**'s shape rather than a boundary.
+    PRIVATE, unlike :func:`app.routes.accounts.reconcile.panel_id`, and the
+    difference is real rather than stylistic: that one is imported by
+    ``detail`` to build the reconcile panel's context, while this module builds
+    its OWN context, so nothing outside these four lines needs the name.  A
+    first draft made it public citing a consumer in ``detail`` -- which imports
+    ``panel_id`` from ``reconcile``, not from here -- and that would have left
+    two sibling modules exporting one name for two different ids, the
+    shadowing hazard ``reconcile`` went out of its way to avoid at parameter
+    scope.
 
     Args:
         account_id: The account whose card id to compose.
@@ -53,7 +58,9 @@ def panel_id(account_id: int) -> str:
     return f"balance-history-{account_id}"
 
 
-def _split_by_recording(rows, limit):
+def _split_by_recording(
+    rows: "list[balance_at.CashAnchorRow]", limit: int,
+) -> "tuple[list[balance_at.CashAnchorRow], list[balance_at.CashAnchorRow]]":
     """Partition *rows* into the most recently RECORDED *limit* and the rest.
 
     **The default view is chosen by when a row was RECORDED and rendered in the
@@ -64,8 +71,14 @@ def _split_by_recording(rows, limit):
     2026-07-15 sits 40 rows down, well past any sensible default.  Since giving
     that write a retrieval path is the whole of finding **N-205**, the rows
     shown are the ones most recently TYPED, and they keep the log's own
-    chronological order so each row's ``ledger`` still reads against the
-    assertion before it.
+    chronological order.
+
+    **That order is the log's, not a running argument**, and the distinction
+    matters for how the card is read: with a back-dated row among them the
+    shown set is NOT contiguous, so the row above another is not necessarily
+    the assertion before it.  Every row's own ``ledger`` and ``correction``
+    stay correct -- they are properties of the walk, fixed before any of this
+    -- but a reader must not infer the pairing from adjacency on screen.
 
     **It ranks on the INSTANT, not on ``recorded_on``, and a first build of
     this function got that wrong.**  Every assertion typed in one bookkeeping
@@ -100,7 +113,9 @@ def _split_by_recording(rows, limit):
     )
 
 
-def balance_history_context(account: Account) -> dict:
+def balance_history_context(
+    account: Account, ctx: balance_at.BalanceContext,
+) -> dict:
     """Assemble the Balance history card's context for one account.
 
     The ONE builder both mounts read -- the cash detail page's initial render
@@ -120,25 +135,26 @@ def balance_history_context(account: Account) -> dict:
     Args:
         account: The owned, attached :class:`Account`.  Caller owns the
             ownership check.
+        ctx: The read pass's
+            :class:`~app.services.balance_at.BalanceContext`.  Taken rather
+            than built, so the page that renders this card beside its band
+            resolves ONE read pass instead of two.
 
     Returns:
-        The card's context: ``account``, ``recent`` / ``earlier`` rows,
+        The card's context: ``recent`` / ``earlier`` rows,
         ``total`` (every assertion the account carries, so the header can name
-        what is NOT shown), ``reconcilable`` (whether the ledger / difference
+        what is NOT shown), ``reconcilable`` (whether the ledger / correction
         columns mean anything for this account -- see
         :class:`app.services.balance_at.CashAnchorHistory`), and ``panel_id``.
     """
-    history = balance_at.cash_anchor_history(
-        account, balance_at.BalanceContext.build(current_user.id),
-    )
+    history = balance_at.cash_anchor_history(account, ctx)
     recent, earlier = _split_by_recording(history.rows, RECENT_ASSERTIONS)
     return {
-        "account": account,
         "recent": recent,
         "earlier": earlier,
         "total": len(history.rows),
         "reconcilable": history.reconcilable,
-        "panel_id": panel_id(account.id),
+        "panel_id": _panel_id(account.id),
     }
 
 
@@ -159,10 +175,10 @@ def balance_history(account_id):
     do, so all three surfaces on the page move together rather than one of them
     describing a balance the other two have already replaced.
     """
-    account = get_or_404(Account, account_id)
-    if account is None:
-        return "Account not found", 404
+    account = load_cash_account_or_404(account_id)
     return render_template(
         "accounts/_balance_history.html",
-        history=balance_history_context(account),
+        history=balance_history_context(
+            account, balance_at.BalanceContext.build(current_user.id),
+        ),
     )

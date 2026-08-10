@@ -5321,7 +5321,7 @@ class TestCashAnchorHistory:
             assert [row.ledger for row in history.rows] == [
                 Decimal("500.00"), Decimal("875.00"), None,
             ]
-            assert [row.difference for row in history.rows] == [
+            assert [row.correction for row in history.rows] == [
                 Decimal("-100.00"), Decimal("-375.00"), None,
             ]
             assert [row.is_opening for row in history.rows] == [
@@ -5368,7 +5368,7 @@ class TestCashAnchorHistory:
             assert opening.observed_on == periods[2].start_date
             assert opening.recorded == Decimal("2746.58")
             assert opening.ledger is None
-            assert opening.difference is None
+            assert opening.correction is None
             # Non-vacuity: the walk really does hold a non-zero figure there,
             # so ``None`` is this entry WITHHOLDING one rather than the walk
             # having nothing to report.
@@ -5412,7 +5412,7 @@ class TestCashAnchorHistory:
             # non-opening row and its pair is withheld too.
             assert history.rows[0].is_opening is False
             assert all(row.ledger is None for row in history.rows)
-            assert all(row.difference is None for row in history.rows)
+            assert all(row.correction is None for row in history.rows)
             # Non-vacuity: the PLAIN account beside it does publish a pair for
             # its own non-opening row, so the withholding above is a property
             # of the KIND rather than of the fixture.
@@ -5425,14 +5425,14 @@ class TestCashAnchorHistory:
                 seed_user["account"], balance_at.BalanceContext.build(user_id),
             )
             assert plain.reconcilable is True
-            assert plain.rows[0].difference == Decimal("-100.00")
+            assert plain.rows[0].correction == Decimal("-100.00")
 
     def test_reconcilable_reads_the_kind_not_the_rows(
         self, app, db, seed_user, seed_periods_today,
     ):
         """A PLAIN account with ONE assertion still reconciles.
 
-        The trap this test exists for: ``any(row.difference is not None)``
+        The trap this test exists for: ``any(row.correction is not None)``
         looks like a serviceable definition of ``reconcilable`` and is wrong
         exactly here.  Such an account's only row is its opening, whose pair is
         withheld for the ruled reason -- so an inferred flag would hide the
@@ -5452,7 +5452,7 @@ class TestCashAnchorHistory:
             )
 
             assert [row.is_opening for row in history.rows] == [True]
-            assert history.rows[0].difference is None
+            assert history.rows[0].correction is None
             assert history.reconcilable is True
 
     def test_a_back_dated_row_carries_the_day_it_was_entered(
@@ -5534,7 +5534,7 @@ class TestCashAnchorHistory:
             assert [row.ledger for row in same_day] == [
                 Decimal("1133.47"), Decimal("1172.44"), Decimal("1000.00"),
             ]
-            assert [row.difference for row in same_day] == [
+            assert [row.correction for row in same_day] == [
                 Decimal("-45.86"), Decimal("-38.97"), Decimal("172.44"),
             ]
 
