@@ -88,6 +88,7 @@ from app.models.user import User, UserSettings
 from app.services import cash_ledger
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today
+from tests._test_helpers import registration_spec
 
 
 # ---------------------------------------------------------------------------
@@ -184,50 +185,68 @@ class TestCreationPathsWriteAnchor:
     """C3-5: register_user and POST /accounts always set anchor + history."""
 
     def test_register_user_creates_anchor_and_history(self, app, db):
-        """The auth_service.register_user signup path bootstraps a pay
-        period, anchors the default Checking account to it with a
+        """The auth_service.register_user signup path builds the owner's REAL
+        pay calendar, anchors the default Checking account with a
         Decimal("0.00") balance, and writes an origination
         AccountAnchorHistory row.
 
-        Arithmetic: the user has no prior periods, so the bootstrap
-        period takes period_index=0 with start_date=today.  The
-        Checking account's origination ASSERTION carries
-        ``anchor_balance=Decimal("0.00")`` observed on that same day.  It
-        asserted the ``accounts.current_anchor_*`` columns beside it until
-        ruling R-EH deleted them -- they were a copy of this row.
+        Arithmetic: the owner states they were last paid 6 days ago at a
+        14-day cadence, so period 0 spans ``[today - 6, today + 7]`` and
+        CONTAINS sign-up day.  The Checking account's origination ASSERTION
+        carries ``anchor_balance=Decimal("0.00")`` observed on sign-up day --
+        which is no longer the same date as the period's start, and that
+        distinction is the point of the step.
+
+        **This assertion changed at plan step X-ad-a, on ruling R-DB, and the
+        old one is recorded here rather than deleted.**  It read
+        ``period.start_date == signup_day`` and
+        ``period.end_date == signup_day + 13`` because registration FABRICATED
+        a pay period covering ``[today, today + 13]`` -- and that invented
+        payday is exactly what finding **N-123** traces: it made thirteen of
+        the fourteen following paydays unenterable and left a permanent
+        calendar hole for any later one.  Registration now asks for the day the
+        owner was last paid, so the schedule opens on a real payday in the
+        past and the opening assertion is dated today.
 
         **"Today" here is the USER's, not the process's** (finding R2,
-        ``anchor_settle_partition.md`` Section 9).  ``register_user`` builds the
-        bootstrap period from :func:`~app.utils.dates.display_today`
-        (``auth_service.py:698``) so the period and the origination assertion
-        ``create_account`` dates come off ONE clock.  Asserting ``date.today()``
-        here pinned the PROCESS zone instead: it passes in a dev shell running
-        Eastern and FAILS in CI, which runs UTC, for the four hours a day the two
-        calendars disagree -- which is exactly how it failed the merge gate at
-        03:56 UTC on 2026-08-01, reading ``2026-07-31 != 2026-08-01``.
+        ``anchor_settle_partition.md`` Section 9).  ``register_user`` reads
+        :func:`~app.utils.dates.display_today` ONCE and uses it for both the
+        payday bound and the origination assertion's day.  Asserting
+        ``date.today()`` here pinned the PROCESS zone instead: it passes in a
+        dev shell running Eastern and FAILS in CI, which runs UTC, for the four
+        hours a day the two calendars disagree -- which is exactly how it
+        failed the merge gate at 03:56 UTC on 2026-08-01, reading
+        ``2026-07-31 != 2026-08-01``.
         """
         from app.services import auth_service
 
+        signup_day = display_today()
+        last_payday = signup_day - timedelta(days=6)
         with app.app_context():
-            user = auth_service.register_user(
+            user = auth_service.register_user(registration_spec(
                 email="c3-5@example.com",
                 password="strong-pass-12345",
                 display_name="C3-5 Tester",
-            )
+                first_payday=last_payday,
+                cadence_days=14,
+                num_periods=3,
+            ))
             db.session.commit()
 
             account = db.session.query(Account).filter_by(
                 user_id=user.id, name="Checking",
             ).one()
-            # The bootstrap period covers today (cadence 14 days from
-            # today).  The signup path picks period_index 0 because
-            # this is the user's first period.
-            signup_day = display_today()
-            period = db.session.query(PayPeriod).filter_by(
-                user_id=user.id, period_index=0,
-            ).one()
-            assert period.start_date == signup_day
-            assert period.end_date == signup_day + timedelta(days=13)
+            # Period 0 opens on the stated payday and runs one cadence, so it
+            # spans [today - 6, today + 7] and contains sign-up day.  Three
+            # periods were asked for and three exist -- registration builds a
+            # whole schedule now, not one placeholder.
+            periods = db.session.query(PayPeriod).filter_by(
+                user_id=user.id,
+            ).order_by(PayPeriod.period_index).all()
+            assert len(periods) == 3
+            assert periods[0].start_date == last_payday
+            assert periods[0].end_date == last_payday + timedelta(days=13)
+            assert periods[0].start_date <= signup_day <= periods[0].end_date
 
             histories = db.session.query(AccountAnchorHistory).filter_by(
                 account_id=account.id,
@@ -235,9 +254,10 @@ class TestCreationPathsWriteAnchor:
             assert len(histories) == 1
             # The account's whole anchor state IS this row (rulings R-EH and
             # R-EO): a balance and the day it was true, with no period beside
-            # it and no column mirroring it.  Signup day falls inside the
-            # bootstrap period asserted above, which is what ties the two
-            # halves of the signup path to one clock.
+            # it and no column mirroring it.  The day is SIGN-UP day -- the
+            # owner is asserting what their account holds now, not what it held
+            # on their last payday -- and it falls inside period 0 above, which
+            # is what ties the two halves of the signup path to one clock.
             assert histories[0].observed_on == signup_day
             assert histories[0].anchor_balance == Decimal("0.00")
             # Nothing about PROVENANCE is asserted on the row: ruling R-ES

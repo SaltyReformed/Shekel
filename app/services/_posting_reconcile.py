@@ -164,9 +164,14 @@ def filing_calendar_for(account_id: int) -> tuple[int, PayCalendar] | None:
             **In particular the cadence is INFERRED from the last period's
             stored length for an owner with no ``budget.pay_schedule`` row**
             (``pay_schedule_service.resolve_cadence``), which is plan finding
-            **P8**'s state and is exactly what a freshly-registered owner has:
-            so that fallback is load-bearing on this path, where it used to be
-            read by the schedule-extension routes alone.
+            **P8**'s state.  *That fallback was called load-bearing here on
+            the ground that it "is exactly what a freshly-registered owner
+            has"; plan step X-ad-a falsified the ground -- registration now
+            writes the schedule row beside the paydays.*  It survives for
+            owners created before that step and for the schedule-extension
+            routes that always read it, so the composition is still what a
+            caller has to reason about; what changed is that the common case
+            no longer walks through it.
     """
     owner_id = account_owner_id(account_id)
     if owner_id is None:

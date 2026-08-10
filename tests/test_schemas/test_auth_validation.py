@@ -25,9 +25,12 @@ for each schema) so a future change that loosens any validator is
 caught directly.
 """
 
+from datetime import date
+
 import pytest
 from marshmallow import ValidationError
 
+from app.config import BaseConfig
 from app.schemas.validation import (
     ChangePasswordSchema,
     LoginSchema,
@@ -142,11 +145,19 @@ class TestRegisterSchema:
     """Tests for RegisterSchema (commit C-26 / F-041)."""
 
     def _valid_payload(self):
+        """A complete registration payload, including the pay-schedule half.
+
+        ``last_payday`` became required at plan step X-ad-a: registration
+        stopped inventing a pay period, so the owner has to state a real
+        payday.  The other two default at the schema tier, and the assertions
+        below pin that.
+        """
         return {
             "email": "newuser@example.com",
             "display_name": "New User",
             "password": "longenoughpass",
             "confirm_password": "longenoughpass",
+            "last_payday": "2026-08-05",
         }
 
     def test_valid_data(self):
@@ -155,6 +166,68 @@ class TestRegisterSchema:
         assert data["email"] == "newuser@example.com"
         assert data["display_name"] == "New User"
         assert data["password"] == "longenoughpass"
+        assert data["last_payday"] == date(2026, 8, 5)
+
+    def test_the_pay_schedule_fields_default_to_the_app_premise(self):
+        """Cadence and horizon are optional and default to the app constants.
+
+        A payload with no cadence still loads, at the biweekly premise the
+        whole app is organised around, and at the ~2-year horizon.  Pinned
+        against ``BaseConfig`` rather than against ``14`` and ``52`` so this
+        cannot become a third statement of the same numbers.
+        """
+        data = RegisterSchema().load(self._valid_payload())
+        assert data["cadence_days"] == BaseConfig.DEFAULT_PAY_CADENCE_DAYS
+        assert data["num_periods"] == BaseConfig.DEFAULT_PAY_PERIOD_HORIZON
+
+    def test_missing_last_payday_is_rejected_with_its_own_message(self):
+        """The one pay-schedule field with no default says what it wants.
+
+        "Missing data for required field." would be true and useless on a form
+        that has just grown three inputs, so the field carries its own
+        required-message.
+        """
+        payload = self._valid_payload()
+        del payload["last_payday"]
+        with pytest.raises(ValidationError) as exc:
+            RegisterSchema().load(payload)
+        assert exc.value.messages["last_payday"] == [
+            "Enter the day you were last paid."
+        ]
+
+    @pytest.mark.parametrize(
+        "field,value", [("cadence_days", 0), ("cadence_days", 366),
+                        ("num_periods", 0), ("num_periods", 261)],
+    )
+    def test_out_of_range_pay_schedule_values_are_rejected(self, field, value):
+        """The shared bounds reach this schema, not just the settings forms.
+
+        ``RegisterSchema`` takes the SAME field builders
+        ``PayPeriodGenerateSchema`` does, which is what stops the two doors
+        onto one calendar from bounding their inputs differently.  Both ends of
+        both ranges are exercised, one past each.
+        """
+        payload = self._valid_payload()
+        payload[field] = value
+        with pytest.raises(ValidationError) as exc:
+            RegisterSchema().load(payload)
+        assert field in exc.value.messages
+
+    def test_a_credential_error_still_wins_over_a_missing_payday(self):
+        """Field order keeps the message a user is most likely to need first.
+
+        ``_first_validation_message`` flashes ONE message, taken in
+        field-declaration order, so declaring ``last_payday`` after the
+        credential fields is what keeps "Invalid email format." winning when
+        both are wrong.  Asserted rather than left to the declaration order
+        being noticed by the next person to reorder the class.
+        """
+        payload = self._valid_payload()
+        payload["email"] = "notanemail"
+        del payload["last_payday"]
+        with pytest.raises(ValidationError) as exc:
+            RegisterSchema().load(payload)
+        assert list(exc.value.messages)[0] == "email"
 
     def test_short_password_rejected(self):
         """Password under 12 chars is rejected with the canonical message."""

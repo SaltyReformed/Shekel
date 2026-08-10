@@ -20,13 +20,21 @@
 
   {{ render_field("start_date", "First Payday", type="date", required=true, errors=errors) }}
 
+  {# ``min`` / ``max`` mirror the schema's shared bounds rather than
+     restating them: the cadence floor is the WRITER's (2), not the
+     schedule column's (1), because this form submits to the writer and a
+     one-day cadence reached ck_pay_periods_date_order as a 500 until plan
+     step X-ad-a.  Browser hints only -- the schema and the service refuse
+     the same set independently. #}
   {{ render_field("num_periods", "Number of Periods", type="number",
-                   value="52", input_attrs='min="1" max="260"',
+                   value=config['DEFAULT_PAY_PERIOD_HORIZON'],
+                   input_attrs='min="%s" max="%s"'|format(PERIOD_BATCH_MIN, PERIOD_BATCH_MAX),
                    help_text="52 periods = 2 years of biweekly pay.",
                    errors=errors) }}
 
   {{ render_field("cadence_days", "Days Between Paydays", type="number",
-                   value="14", input_attrs='min="1" max="365"',
+                   value=config['DEFAULT_PAY_CADENCE_DAYS'],
+                   input_attrs='min="%s" max="%s"'|format(CADENCE_DAYS_MIN, CADENCE_DAYS_MAX),
                    help_text="14 = biweekly (most common).",
                    errors=errors) }}
 

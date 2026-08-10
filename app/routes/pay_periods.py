@@ -79,23 +79,39 @@ def generate():
     data = _generate_schema.load(request.form)
 
     try:
-        periods = pay_period_service.generate_pay_periods(
+        # One call, because creating the periods and capturing the cadence
+        # extend / rolling top-up continue from is ONE operation -- the pair
+        # was two lines here and would have been two more in
+        # ``auth_service.register_user`` at plan step X-ad-a.
+        periods = pay_period_service.establish_schedule(
             user_id=current_user.id,
-            start_date=data["start_date"],
+            first_payday=data["start_date"],
             num_periods=data["num_periods"],
             cadence_days=data["cadence_days"],
         )
     except ValidationError as exc:
-        # Forward-only invariant (DH-#39): a start date that would
-        # interleave or overlap the existing schedule is rejected.
-        # Surface it on the start_date field, mirroring the schema 422.
+        # Forward-only invariant (DH-#39): a start date that would interleave
+        # or overlap the existing schedule is rejected.  Surfaced on the
+        # start_date field, mirroring the schema 422 -- and that attribution
+        # is PROVABLE rather than assumed.  ``establish_schedule`` refuses for
+        # three reasons, and ``PayPeriodGenerateSchema`` bounds the cadence and
+        # the batch size to exactly the ranges the writer and the schedule
+        # column accept (``_CADENCE_DAYS_RANGE`` takes the TIGHTER of the two
+        # floors, which is the writer's), so those two cannot reach here and
+        # the date one is what is left.  Widen either field and this line
+        # starts rendering a cadence message under the date box.
+        #
+        # The rollback is what makes the 422 clean: ``establish_schedule``
+        # flushes its periods before persisting the cadence, so a refusal
+        # raised at the second half would leave rows in the session.  Nothing
+        # commits after this today and app-context teardown discards them, but
+        # a rendered response should not sit on a half-written unit of work
+        # whose survival depends on nobody calling ``commit``.
+        db.session.rollback()
         return render_template(
             "pay_periods/generate.html",
             errors={"start_date": [str(exc)]},
         ), 422
-    # Capture the cadence authoritatively at first generation so extend /
-    # rolling top-up have a persisted cadence to continue from.
-    pay_schedule_service.upsert_schedule(current_user.id, data["cadence_days"])
     db.session.commit()
 
     flash(f"Generated {len(periods)} pay periods.", "success")

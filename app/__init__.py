@@ -185,6 +185,18 @@ def create_app(config_name=None, *, init_ref_cache=True):
     # would otherwise raise ``KeyError``.  Production never hits this
     # branch -- migrations have already run by the time Gunicorn
     # imports the app.
+    # The pay-calendar input bounds every schedule form renders its ``min`` /
+    # ``max`` from (plan step X-ad-a).  Registered UNCONDITIONALLY and outside
+    # the ref-cache branch below: they are module constants with no database
+    # precondition, and the three forms that read them must render correctly
+    # in the bootstrap window too.
+    # Pylint: ``import-outside-toplevel`` -- an app-factory deferral, matching
+    # the ref-cache registration below; the module imports cleanly on its own.
+    from app.jinja_globals import (  # pylint: disable=import-outside-toplevel
+        register_pay_calendar_bound_globals,
+    )
+    register_pay_calendar_bound_globals(app)
+
     if init_ref_cache:
         # Pylint: ``import-outside-toplevel`` -- imported here, after the seed and
         # migration-check above and inside the app context below, so ``ref_cache.init``

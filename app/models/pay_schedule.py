@@ -22,6 +22,30 @@ from app.extensions import db
 from app.models.mixins import CreatedAtMixin, UserScopedMixin
 
 
+#: Inclusive bounds on ``pay_schedule.cadence_days``, declared ONCE and read by
+#: the ``ck_pay_schedule_cadence_range`` CHECK below, by every Marshmallow field
+#: that accepts a cadence, and by
+#: :func:`app.services.pay_schedule_service.reject_out_of_range_cadence`, which
+#: the column's one writer asks.  They were six hand-copied literals until plan
+#: step X-ad-a, which added a seventh door (registration) and made the copying
+#: the defect: a bound stated in six places is six places to disagree, and the
+#: one that would have disagreed silently was the service's -- a cadence the
+#: schema never saw reaches the CHECK as a 500 rather than as a refusal the
+#: form can render.
+#:
+#: **One further copy survives on purpose**: ``pay_calendar._derive`` states the
+#: same pair as :data:`~app.services.pay_calendar.MIN_CADENCE_DAYS` /
+#: :data:`~app.services.pay_calendar.MAX_CADENCE_DAYS`.  That package is PURE by
+#: design -- no Flask symbol, no session, no clock -- which is what lets the
+#: pay-calendar arc's harness drive the derivation over production's paydays
+#: without a database, and importing this module would pull ``app.extensions``
+#: in and close a cycle through ``pay_schedule_service``.  So the two copies are
+#: deliberate, and they are held in step by a TEST rather than by memory:
+#: ``tests/test_models/test_pay_schedule.py::TestTheCadenceBoundHasOneValue``.
+CADENCE_DAYS_MIN = 1
+CADENCE_DAYS_MAX = 365
+
+
 class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
     """A user's persisted pay-period cadence and rolling-window config.
 
@@ -34,9 +58,12 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
 
       ``cadence_days`` -- days between consecutive paydays (e.g. 14 for
                           biweekly).  ``ck_pay_schedule_cadence_range``
-                          bounds it to 1..365, matching the
-                          ``generate_pay_periods`` cadence argument and
-                          the generate/extend Marshmallow schemas.
+                          bounds it to
+                          :data:`CADENCE_DAYS_MIN`..:data:`CADENCE_DAYS_MAX`,
+                          the same two names the Marshmallow cadence
+                          fields and ``pay_period_service.establish_schedule``
+                          read -- so the CHECK and every door in front of
+                          it state one bound rather than four.
       ``rolling_enabled`` -- continuous-rolling-window switch.  When
                           true, the on-request top-up keeps a target
                           number of periods generated ahead of today.
@@ -60,7 +87,7 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
         # the service's upsert rely on.
         db.UniqueConstraint("user_id", name="uq_pay_schedule_user"),
         db.CheckConstraint(
-            "cadence_days BETWEEN 1 AND 365",
+            f"cadence_days BETWEEN {CADENCE_DAYS_MIN} AND {CADENCE_DAYS_MAX}",
             name="ck_pay_schedule_cadence_range",
         ),
         db.CheckConstraint(

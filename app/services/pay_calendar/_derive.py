@@ -52,6 +52,17 @@ from app.exceptions import ShekelError
 #: because :func:`_validate_cadence` states them in its refusal message, and a
 #: message that quotes a bound the code does not enforce is how the first cut
 #: of this module shipped.
+#:
+#: **A second copy of the pair lives on the model** as
+#: :data:`app.models.pay_schedule.CADENCE_DAYS_MIN` /
+#: :data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`, where plan step X-ad-a
+#: collapsed six literals into one name.  This module does not import it, and
+#: the reason is this package's purity: importing a model pulls
+#: ``app.extensions`` in and closes an import cycle through
+#: ``pay_schedule_service``, which would end the "drive the derivation with no
+#: database" property C1's harness rests on.  The two are held equal by
+#: ``tests/test_models/test_pay_schedule.py::TestTheCadenceBoundHasOneValue``
+#: rather than by whoever edits one remembering the other.
 MIN_CADENCE_DAYS: int = 1
 MAX_CADENCE_DAYS: int = 365
 

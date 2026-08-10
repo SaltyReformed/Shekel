@@ -12,7 +12,10 @@ from datetime import date, timedelta
 import pytest
 
 from app.exceptions import ValidationError
-from app.services import pay_period_service
+from app.models.pay_period import MIN_MATERIALISABLE_CADENCE_DAYS
+from app.models.pay_schedule import CADENCE_DAYS_MIN
+from app.schemas.validation.pay_periods import CADENCE_DAYS_FORM_MIN
+from app.services import pay_period_service, pay_schedule_service
 
 
 # ---------------------------------------------------------------------------
@@ -259,24 +262,42 @@ class TestGeneratePayPeriods:
                 )
 
     def test_cadence_days_less_than_one_raises_error(self, app, db, bare_user):
-        """cadence_days=0 raises ValidationError."""
+        """cadence_days=0 raises ValidationError.
+
+        The message moved at plan step X-ad-a: the floor is no longer 1 but
+        :data:`~app.models.pay_period.MIN_MATERIALISABLE_CADENCE_DAYS`, because
+        1 was accepted here and then refused by ``ck_pay_periods_date_order``
+        as an unhandled 500.  Zero is still refused, for the same reason it
+        always was.
+        """
         with app.app_context():
-            with pytest.raises(ValidationError, match="cadence_days must be at least 1"):
+            with pytest.raises(ValidationError, match="at least 2"):
                 pay_period_service.generate_pay_periods(
                     user_id=bare_user["user"].id,
                     start_date=date(2026, 1, 2),
                     cadence_days=0,
                 )
 
-    def test_num_periods_zero_returns_empty(self, app, db, bare_user):
-        """num_periods=0 returns an empty list."""
+    def test_num_periods_zero_is_refused(self, app, db, bare_user):
+        """num_periods=0 raises rather than quietly creating nothing.
+
+        **This assertion INVERTED at plan step X-ad-a, and the old one is
+        recorded here rather than deleted.**  It read ``assert periods == []``
+        and called that the contract; an adversarial review showed what the
+        silence cost.  ``range(0)`` yields nothing, so the call succeeded, and
+        the caller found out several statements later -- at registration, as
+        ``create_account`` complaining that the owner had no pay periods, a
+        message naming neither the input nor anything the caller could change.
+        A batch that creates nothing is a caller mistake, not a no-op, and it
+        is now refused where it is made.
+        """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
-                user_id=bare_user["user"].id,
-                start_date=date(2026, 1, 2),
-                num_periods=0,
-            )
-            assert periods == []
+            with pytest.raises(ValidationError, match="between 1 and 260"):
+                pay_period_service.generate_pay_periods(
+                    user_id=bare_user["user"].id,
+                    start_date=date(2026, 1, 2),
+                    num_periods=0,
+                )
 
     def test_num_periods_one_returns_single_period(self, app, db, bare_user):
         """num_periods=1 returns exactly one period."""
@@ -477,20 +498,25 @@ class TestNegativeAndBoundaryPaths:
     out-of-range and negative index queries, and large batch generation.
     """
 
-    def test_negative_num_periods_behavior(self, app, db, bare_user):
-        """num_periods=-1 produces an empty list because range(-1) yields nothing.
+    def test_negative_num_periods_is_refused(self, app, db, bare_user):
+        """num_periods=-1 raises rather than relying on range(-1) being empty.
 
-        A UI bug or API misuse could pass negative counts. The service must
-        not create phantom periods or crash.
+        A UI bug or API misuse could pass a negative count.  The service must
+        not create phantom periods -- and, since plan step X-ad-a, must not
+        pretend the call succeeded either.  **The previous assertion was
+        ``periods == []``**, which graded an ACCIDENT: nothing refused the
+        value, ``range(-1)`` simply happened to yield nothing, so the caller
+        got a success for an operation that did not happen.  See
+        ``TestGeneratePayPeriods::test_num_periods_zero_is_refused`` for what
+        that silence cost at the registration door.
         """
         with app.app_context():
-            # range(-1) produces an empty iterator, so no periods are created.
-            periods = pay_period_service.generate_pay_periods(
-                user_id=bare_user["user"].id,
-                start_date=date(2026, 1, 2),
-                num_periods=-1,
-            )
-            assert periods == []
+            with pytest.raises(ValidationError, match="between 1 and 260"):
+                pay_period_service.generate_pay_periods(
+                    user_id=bare_user["user"].id,
+                    start_date=date(2026, 1, 2),
+                    num_periods=-1,
+                )
 
     def test_get_current_period_exact_start_date(self, app, db, bare_user, bare_periods):
         """get_current_period with as_of equal to a period's start_date returns that period.
@@ -603,3 +629,195 @@ class TestNegativeAndBoundaryPaths:
             # Every period has end_date = start_date + 13 days.
             for p in periods:
                 assert p.end_date == p.start_date + timedelta(days=13)
+
+
+# ---------------------------------------------------------------------------
+# TestEstablishSchedule
+# ---------------------------------------------------------------------------
+
+
+class TestTheWriterRefusesWhatItCannotMaterialise:
+    """``reject_unmaterialisable_batch`` -- plan step X-ad-a.
+
+    Two preconditions this module had never stated, both measured as real
+    failures rather than argued:
+
+    * A cadence of 1 made ``end_date == start_date``, which
+      ``ck_pay_periods_date_order`` refuses -- an unhandled ``IntegrityError``
+      500 reproduced on both the settings form and the registration form.
+      **Not because a one-day pay cycle is illegitimate**: it is legal, and
+      pay-calendar step C4 legalises it by dropping the authored column.  What
+      cannot hold one is an authored ``end_date``.
+    * ``num_periods`` was bounded by no service at all, so a non-form caller
+      could ask for zero (failing several statements later under a message
+      about accounts) or for a hundred thousand.
+    """
+
+    def test_a_one_day_cadence_is_refused_before_the_check_sees_it(
+        self, app, db, bare_user,
+    ):
+        """Cadence 1 is a ValidationError, not a CheckViolation 500.
+
+        Arithmetic: ``end_date = start_date + (cadence_days - 1)``, so at a
+        cadence of 1 a period starting 2026-01-02 would end 2026-01-02 and
+        ``CHECK (start_date < end_date)`` rejects the INSERT.
+        """
+        with app.app_context():
+            with pytest.raises(ValidationError, match="at least 2"):
+                pay_period_service.generate_pay_periods(
+                    user_id=bare_user["user"].id,
+                    start_date=date(2026, 1, 2),
+                    num_periods=2,
+                    cadence_days=1,
+                )
+            db.session.rollback()
+            assert pay_period_service.get_all_periods(
+                bare_user["user"].id,
+            ) == []
+
+    def test_a_two_day_cadence_is_accepted(self, app, db, bare_user):
+        """The floor is INCLUSIVE, and this is the control for the test above.
+
+        Without it, a refusal that also rejected 2 -- or 30 -- would look
+        identical.  Two paydays two days apart give one-day-plus-one periods:
+        01-02..01-03 and 01-04..01-05.
+        """
+        with app.app_context():
+            periods = pay_period_service.generate_pay_periods(
+                user_id=bare_user["user"].id,
+                start_date=date(2026, 1, 2),
+                num_periods=2,
+                cadence_days=2,
+            )
+            db.session.commit()
+            assert [(p.start_date, p.end_date) for p in periods] == [
+                (date(2026, 1, 2), date(2026, 1, 3)),
+                (date(2026, 1, 4), date(2026, 1, 5)),
+            ]
+
+    @pytest.mark.parametrize("count", [0, -1, 261, 100_000])
+    def test_a_batch_size_outside_the_policy_is_refused(
+        self, app, db, bare_user, count,
+    ):
+        """Zero, negative and oversized batches refuse and write nothing.
+
+        Zero is the one that mattered: it created no periods, no error, and
+        surfaced far downstream.  100000 is 383 years of fortnights in one
+        transaction.
+        """
+        with app.app_context():
+            with pytest.raises(ValidationError, match="between 1 and 260"):
+                pay_period_service.generate_pay_periods(
+                    user_id=bare_user["user"].id,
+                    start_date=date(2026, 1, 2),
+                    num_periods=count,
+                    cadence_days=14,
+                )
+            db.session.rollback()
+            assert pay_period_service.get_all_periods(
+                bare_user["user"].id,
+            ) == []
+
+    def test_the_form_bound_and_the_writer_bound_agree(self):
+        """The schema's cadence floor IS the writer's, not the column's.
+
+        This is what makes ``routes/pay_periods.generate``'s error attribution
+        provable: the schema bounds the cadence and the batch to exactly what
+        the writer accepts, so the only service refusal that can reach that
+        handler is the forward-only start-date one it renders on ``start_date``.
+        """
+        assert CADENCE_DAYS_FORM_MIN == MIN_MATERIALISABLE_CADENCE_DAYS
+        assert CADENCE_DAYS_FORM_MIN > CADENCE_DAYS_MIN
+
+
+class TestEstablishSchedule:
+    """``establish_schedule`` is generate and remember-the-cadence as ONE call.
+
+    Added at plan step X-ad-a.  Two doors need the pair -- the
+    ``/pay-periods/generate`` form and ``auth_service.register_user`` -- and
+    writing it twice is how an owner ends up with paydays and no
+    ``budget.pay_schedule`` row, which is pay-calendar finding **P8**:
+    ``resolve_cadence`` then infers the cadence back out of a period's stored
+    LENGTH, the very derivation that arc is removing.
+    """
+
+    def test_creates_the_periods_and_the_schedule_row(self, app, db, bare_user):
+        """One call leaves both the periods and the persisted cadence.
+
+        Arithmetic: 4 periods from 2026-01-02 at a 7-day cadence, so the
+        starts are 01-02 / 01-09 / 01-16 / 01-23 and each period ends six days
+        after it starts.  The cadence is deliberately NOT 14 -- an on-default
+        fixture cannot tell "the cadence was stored" from "the default was".
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            created = pay_period_service.establish_schedule(
+                user_id=user_id,
+                first_payday=date(2026, 1, 2),
+                num_periods=4,
+                cadence_days=7,
+            )
+            db.session.commit()
+
+            assert [p.start_date for p in created] == [
+                date(2026, 1, 2), date(2026, 1, 9),
+                date(2026, 1, 16), date(2026, 1, 23),
+            ]
+            assert [p.end_date for p in created] == [
+                date(2026, 1, 8), date(2026, 1, 15),
+                date(2026, 1, 22), date(2026, 1, 29),
+            ]
+            assert pay_schedule_service.get_schedule(user_id).cadence_days == 7
+
+    def test_refuses_an_unstorable_cadence_without_creating_periods(
+        self, app, db, bare_user,
+    ):
+        """A cadence the schedule column refuses creates no periods either.
+
+        The generate runs first, so a naive composition would leave the owner
+        with 366-day pay periods and no schedule row -- half an operation,
+        committed by whoever calls ``db.session.commit()`` next.  Here the
+        refusal happens inside the same call and the caller's rollback (or, in
+        a route, its error path) sees nothing to keep.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            with pytest.raises(ValidationError, match="between 1 and 365"):
+                pay_period_service.establish_schedule(
+                    user_id=user_id,
+                    first_payday=date(2026, 1, 2),
+                    num_periods=2,
+                    cadence_days=366,
+                )
+            db.session.rollback()
+            assert pay_period_service.get_all_periods(user_id) == []
+            assert pay_schedule_service.get_schedule(user_id) is None
+
+    def test_forward_only_guard_still_applies(self, app, db, bare_user):
+        """A batch overlapping existing coverage is refused, cadence untouched.
+
+        ``establish_schedule`` composes ``generate_pay_periods``; it does not
+        weaken it.  The second call starts one day INSIDE the first batch's
+        coverage (2026-01-02 + 27 days of coverage ends 01-29), so the
+        forward-only guard refuses -- and the stored cadence stays at the
+        value the successful call wrote rather than being advanced by a batch
+        that created nothing.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            pay_period_service.establish_schedule(
+                user_id=user_id,
+                first_payday=date(2026, 1, 2),
+                num_periods=2,
+                cadence_days=14,
+            )
+            db.session.flush()
+
+            with pytest.raises(ValidationError, match="must start after"):
+                pay_period_service.establish_schedule(
+                    user_id=user_id,
+                    first_payday=date(2026, 1, 20),
+                    num_periods=2,
+                    cadence_days=7,
+                )
+            assert pay_schedule_service.get_schedule(user_id).cadence_days == 14

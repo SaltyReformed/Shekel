@@ -14,7 +14,12 @@ from marshmallow import (
     ValidationError,
 )
 
+from app.config import BaseConfig
 from app.schemas.validation._helpers import BaseSchema
+from app.schemas.validation.pay_periods import (
+    cadence_days_field,
+    num_periods_field,
+)
 
 
 # --- Auth and companion user management ----------------------------------
@@ -205,12 +210,28 @@ class LoginSchema(_AuthFormSchema):
 class RegisterSchema(_AuthFormSchema):
     """Validates POST data for /register.
 
-    Required fields: email, display_name, password, confirm_password.
-    Enforces the same 12-character minimum / 72-byte UTF-8 maximum as
-    ``auth_service.register_user`` so the schema layer rejects bad
+    Required fields: email, display_name, password, confirm_password,
+    last_payday.  Enforces the same 12-character minimum / 72-byte UTF-8
+    maximum as ``auth_service.register_user`` so the schema layer rejects bad
     input before the service is called.  Email uniqueness is enforced
     by the service (it needs a live DB session), so the schema only
     validates shape.
+
+    **The three pay-calendar fields arrived at plan step X-ad-a** (ruling
+    **R-DB**), which deleted the fabricated sign-up pay period finding
+    **N-123** traces.  They carry SHAPE only: ``last_payday`` is a date and
+    the other two are bounded integers, while whether the stated payday is one
+    the owner could have been LAST paid on is
+    ``auth_service._reject_impossible_first_payday``'s -- it needs the user's
+    clock, and a schema is not where this package reads one.  The cadence and
+    horizon fields take the same shared declarations the
+    ``/pay-periods/generate`` form uses, so the two doors onto one calendar
+    cannot bound their inputs differently.
+
+    ``last_payday`` is declared LAST on purpose.  Marshmallow accumulates
+    errors in field-declaration order and ``_first_validation_message`` flashes
+    the first one, so the credential messages a user is most likely to hit
+    keep winning over a missing date.
     """
 
     email = _auth_email_field()
@@ -241,6 +262,16 @@ class RegisterSchema(_AuthFormSchema):
         ],
     )
     confirm_password = fields.String(required=True)
+    last_payday = fields.Date(
+        required=True,
+        error_messages={"required": "Enter the day you were last paid."},
+    )
+    cadence_days = cadence_days_field(
+        load_default=BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
+    )
+    num_periods = num_periods_field(
+        load_default=BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
+    )
 
     @validates_schema
     def validate_password_bytes(self, data, **kwargs):

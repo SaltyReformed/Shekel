@@ -9,13 +9,13 @@ out of the recurrence arc's **F-10**, once that proved a missing NORMALIZATION a
 check; **R-F10** / **R-F12** tick with **C5a** / **C2**, and `balance:N-128` / `X-l` are the same
 defect from a third side.
 
-**This arc has NO ready step: the next move is `balance:X-ad`.** C2-d was the last one X-ad did
-not gate. `C2`'s four remaining cutover leaves and `C3` all wait on it (ruled 2026-08-10) because a
+**This arc has NO ready step: the next move is `balance:X-ad`.** C2-d was the last one X-ad did not
+gate. `C2`'s four remaining cutover leaves and `C3` all wait on it (ruled 2026-08-10) because a
 derived calendar ABSORBS a hole instead of reporting it (**P27**), so the doors that open one close
 before the absorber lands; C2-d was exempt because `filing_period` bisects on `start_date` and never
 reads an end, verified over gapped shapes and on a production snapshot. `C2` ticks as ONE step under
-three names -- `C2` == `balance:X-l` == `recurrence:R-F12`.
-**A cold session starts at section 4**, whose preamble names four things a cutover must not assume.
+three names -- `C2` == `balance:X-l` == `recurrence:R-F12`. **A cold session starts at section 4**,
+whose preamble names four things a cutover must not assume.
 
 **Both earlier forks RULED 2026-08-09** and recorded in `steps.md`'s fork table: P3/N-123 to
 `balance:X-ad`, P16 to **C5b**, and **C5 DECOMPOSED** into C5a (after C4) and C5b (after R5).
@@ -286,8 +286,8 @@ and `start + cadence - 1` coincide there, which made C2-a's first P14 test vacuo
 payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to survive a slice (row
 **P26**).
 
-- [x] **C1 -- the derivation, proven equal to what is stored.** `f9d148fe`. Byte-identical on 61
-  of 61 rows of both clones; opened **P15**, **P16**. Proof of record: `_derive.py`'s docstring.
+- [x] **C1 -- the derivation, proven equal to what is stored.** `f9d148fe`. Byte-identical on 61 of
+      61 rows of both clones; opened **P15**, **P16**. Proof of record: `_derive.py`'s docstring.
 
 - [ ] **C2 -- one calendar value answers every "which period" question** -- the DECOMPOSED parent,
   RULED on three forks 2026-08-10. Ticks with the last of its leaves, and that tick is also
@@ -300,8 +300,8 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
 - [ ] **C2-b -- the recurrence cutover.** The DECOMPOSED parent, split 2026-08-10 by an instrumented
       full-suite run: the derived calendar differs from the stored rows at
       **55 shapes over 53 tests**, in two classes -- hole absorption (**P25**, **P27**) and the
-      SILENT re-index of a partial payday set (**P26**). `period_starting_on_or_after` does NOT
-      move -- C2-a shipped it -- so two move, not three. Ticks with its last leaf.
+      SILENT re-index of a partial payday set (**P26**). `period_starting_on_or_after` does NOT move
+      -- C2-a shipped it -- so two move, not three. Ticks with its last leaf.
 
 - [x] **C2-b1 -- the last two questions, the cadence rule, and one door.** `90f2fbb7`.
   `period_by_id` / `earliest_start_in_month` delegate; `cadence_days` is `int \| None`, refused
@@ -309,27 +309,27 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
   `pay_period_service`, which C2-f would cycle. Corrected **P25** and two REFUTED claims of its
   own; opened **P28**. Proof of record: `_loader.py`'s docstring.
 
-- [ ] **C2-b2 -- the cutover.** `PeriodCalendar` / `SchedulePeriod` /
-  `RecurrenceScheduleError` DELETE; 10 `calendar_for` call sites and 8 `app/` modules take the one
-  value. **Its stated P14 work is FALSE and row P14 says so**: all three constructors take
-  `get_all_periods`, the COMPLETE set. **`SCHEDULE_GAP` goes unsatisfiable here** (**P25**) and
-  `__post_init__`'s two refusals go with the class, so C5a's "it deletes no visibility" is true
-  only because this leaf already took it (**P27**). **Sized by a simulated cutover over the whole
-  suite: 5 failures, not the 53 diverging tests** -- P26's phase test plus the four
-  `TestAnOccurrenceInAScheduleGap` tests, which build a state this leaf makes unconstructible. The
-  430-shape baseline stays byte-identical and sees NO divergence class: its schedules are
-  contiguous, complete, and read at the cadence they were generated with (**P28**).
+- [ ] **C2-b2 -- the cutover.** `PeriodCalendar` / `SchedulePeriod` / `RecurrenceScheduleError`
+      DELETE; 10 `calendar_for` call sites and 8 `app/` modules take the one value.
+      **Its stated P14 work is FALSE and row P14 says so**: all three constructors take
+      `get_all_periods`, the COMPLETE set. **`SCHEDULE_GAP` goes unsatisfiable here** (**P25**) and
+      `__post_init__`'s two refusals go with the class, so C5a's "it deletes no visibility" is true
+      only because this leaf already took it (**P27**).
+      **Sized by a simulated cutover over the whole suite: 5 failures, not the 53 diverging tests**
+      -- P26's phase test plus the four `TestAnOccurrenceInAScheduleGap` tests, which build a state
+      this leaf makes unconstructible. The 430-shape baseline stays byte-identical and sees NO
+      divergence class: its schedules are contiguous, complete, and read at the cadence they were
+      generated with (**P28**).
 
 - [ ] **C2-c -- the cash-view cutover.** `_cash_periods._PeriodSpans` retires. Its three call sites
   keep answering `None` outside the reported window, a VIEW question and not the calendar's --
   the identity R-K rests on reads a period's own span.
 
-- [x] **C2-d -- the filing cutover.** `3e6cd4ec`. The chain DELETES and both posting writers file
-  through `filing_period`; `owner_pay_periods` goes with it (developer ruling), so `loan_ledger`
-  owns no session and **N-169** closes. One door, `_posting_reconcile.filing_calendar_for`, which
-  refuses NOTHING -- its raise could not fire where `filing_period` would not, and the two
-  predicates had drifted (developer ruling). Proof of record: that commit, `filing_period`'s
-  docstring, and `tests/manual/verify_filing_cutover.py` (1,654 days, 134 entries, 0 disagreements).
+- [x] **C2-d -- the filing cutover.** `3e6cd4ec`. Both posting writers file through `filing_period`;
+      the old chain and `owner_pay_periods` DELETE, so `loan_ledger` owns no session and **N-169**
+      closes. One door, `_posting_reconcile.filing_calendar_for`, which refuses NOTHING (developer
+      ruling). Proof of record: that commit, `filing_period`'s docstring, and
+      `tests/manual/verify_filing_cutover.py` -- 1,654 days, 134 entries, 0 disagreements.
 
 - [ ] **C2-e -- the projection axis.** `growth_engine.generate_projection_periods` and
   `SyntheticPeriod` DELETE; their six call sites take `axis()`. Closes **P7**, **P17**, **P20**,
@@ -414,13 +414,13 @@ Not required by the normalization and deliberately last. Closes **P10**.
 **Starts with a ruling.** `journal_entries.pay_period_id` is a NOT NULL FK stored beside the
 `entry_date` it derives from, which is row **P1**'s defect on the ledger's header table -- and
 ruling **R-EA** already made the WRITE side derive it. The NOT NULL is also what forces
-`filing_period` to be TOTAL -- to CLAMP rather than answer `None` -- so it is the reason the
-filing question survives as a second question at all rather than collapsing into containment. *It
-forced `resolve_anchor_pay_period` before C2-d, which deleted that chain; the obligation moved, it
-did not go.* Three options, and the trace decides: DROP and derive, make
-it NULLABLE, or KEEP it as a deliberate materialization with the second definition's cost stated.
-Sequenced after C4 (developer, 2026-08-09), because a derived paycheck should be derived from the
-calendar this arc normalizes rather than from the one it is replacing. Closes **P18**.
+`filing_period` to be TOTAL -- to CLAMP rather than answer `None` -- so it is the reason the filing
+question survives as a second question at all rather than collapsing into containment. *It forced
+`resolve_anchor_pay_period` before C2-d, which deleted that chain; the obligation moved, it did not
+go.* Three options, and the trace decides: DROP and derive, make it NULLABLE, or KEEP it as a
+deliberate materialization with the second definition's cost stated. Sequenced after C4 (developer,
+2026-08-09), because a derived paycheck should be derived from the calendar this arc normalizes
+rather than from the one it is replacing. Closes **P18**.
 
 ## 5. Findings ledger
 
