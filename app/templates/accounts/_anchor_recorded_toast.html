@@ -1,5 +1,6 @@
 {% from "_money_macros.html" import money %}
-{# The BACK-DATED balance acknowledgement (plan step X-f1e3, finding N-199).
+{# The balance-write acknowledgement (plan step X-f1e3, finding N-199;
+   re-keyed at plan step X-f2-b, finding N-204).
 
    Swapped out-of-band into ``#anchor-ack-mount`` (``base.html``) by the anchor
    true-up's success response and auto-shown by the ``data-toast-auto-show``
@@ -9,32 +10,49 @@
    cell, the investment hero, the cash hero) and an out-of-band swap needs a
    target that exists on all of them.
 
-   **Why an acknowledgement exists at all.**  A back-dated assertion by
-   definition does NOT govern -- a later reading still does -- so the cell
-   re-renders from ``cash_ledger.resolve_anchor`` to the same figure it already
-   showed.  Without a message the response is indistinguishable from having done
-   nothing, and the user's next move is to enter it again.  That is the same
-   defect ``_anchor_editor_error`` prevents on the failure side.
+   **Why an acknowledgement exists at all.**  When a write leaves the GOVERNING
+   balance where it was, the cell re-renders from
+   ``cash_ledger.resolve_anchor`` to the same figure it already showed, and the
+   response is indistinguishable from having done nothing -- so the user's next
+   move is to enter it again.  That is the same defect
+   ``_anchor_editor_error`` prevents on the failure side.  A back-dated
+   assertion is the obvious case (a later reading still governs), and finding
+   N-204 is the one that was missed: re-recording the balance that already
+   governs for a LATER day writes a row, moves the coverage boundary, and
+   changes nothing on screen.
 
    **Why it is not the ``#anchor-as-of`` caption it used to ride.**  Two
    different facts were sharing one element: "as of <day>" captions the
    assertion that governs NOW (durable, per-surface), while this acknowledges
-   the REQUEST just made (transient, and about a day that deliberately is not
-   the governing one).  Riding the caption gave the transient fact the durable
+   the REQUEST just made (transient, and often about a day that is not the
+   governing one).  Riding the caption gave the transient fact the durable
    one's mounting problem -- skipped outright on three surfaces, and destroyed
    on the dashboard by the very ``balanceChanged`` refresh this response
    triggers (finding N-199).
 
-   It can never collide with the reconcile prompt: the two are the opposite
-   branches of ``_submission_is_the_coverage_boundary``, chosen in ONE if/else
-   in ``_true_up_success_response`` so the exclusion is structural rather than
-   two independent conditionals that could drift into both or neither.
+   **It APPENDS rather than replacing its mount** (finding N-206).  The swap
+   was ``hx-swap-oob="true"`` on an element carrying the mount's own id, which
+   is an outerHTML swap: a second back-dated save inside the 8s autohide window
+   replaced the mount and the first toast was simply lost.  ``beforeend:``
+   appends instead, and ``app.js`` disposes each toast on ``hidden.bs.toast``
+   so the mount does not accumulate detached instances with armed timers.
+   The wrapper below is load-bearing for that: for any swap style OTHER than
+   outerHTML, htmx moves the CHILD NODES of the annotated element into the
+   target (``htmx.min.js``, the ``He``/``a`` pair), so annotating the toast
+   itself would append its innards and drop the ``.toast`` element.
 
-   Expected context: account (Account), balance (Decimal -- the balance this
-   submission ASSERTED, not the one that governs), observed_on (date -- the
-   civil day it was asserted for; never None, because a blank date box means
-   "today", which IS the coverage boundary and so takes the prompt branch). #}
-<div id="anchor-ack-mount" hx-swap-oob="true">
+   Expected context:
+     account     -- the Account whose balance was asserted.
+     balance     -- Decimal, the balance this submission ASSERTED (not
+                    necessarily the one that governs).
+     observed_on -- the civil day it was asserted for.
+     was_written -- True when a row was appended (``COMMITTED``), False when
+                    the submission matched the governing assertion and ruling
+                    R-EQ rolled it back.  The copy has to say which: a toast
+                    reading "Balance recorded" over a write that wrote nothing
+                    is the same class of untruth this acknowledgement exists to
+                    remove. #}
+<div hx-swap-oob="beforeend:#anchor-ack-mount">
   {# ``role="status"`` rather than the flash toasts' ``role="alert"``: this is a
      confirmation, not an interruption, and the enclosing container is already
      ``aria-live="polite"`` -- an assertive role nested in a polite region
@@ -48,13 +66,17 @@
     <div class="d-flex">
       <div class="toast-body">
         <div class="fw-semibold">
-          <i class="bi bi-check-circle" aria-hidden="true"></i> Balance recorded
+          <i class="bi bi-check-circle" aria-hidden="true"></i>
+          {% if was_written %}Balance recorded{% else %}Balance confirmed{% endif %}
         </div>
         <div>
           {{ account.name }} &middot;
           <span class="font-mono">{{ money(balance) }}</span>
         </div>
-        <div>as of {{ observed_on.strftime('%b %-d, %Y') }}</div>
+        <div>
+          as of {{ observed_on.strftime('%b %-d, %Y') }}
+          {%- if not was_written %} &middot; already what you had recorded{% endif -%}
+        </div>
       </div>
       <button type="button" class="btn-close btn-close-white me-2 m-auto"
               data-bs-dismiss="toast" aria-label="Close"></button>

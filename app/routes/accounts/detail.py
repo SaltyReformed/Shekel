@@ -63,6 +63,7 @@ from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.interest_params import InterestParams
 from app.models.ref import CompoundingFrequency
 from app.routes.accounts._bp import accounts_bp
+from app.routes.accounts.history import balance_history_context
 from app.routes.accounts.reconcile import panel_id, reconcile_context
 from app.services import (
     balance_at,
@@ -448,10 +449,25 @@ def cash_detail(account_id):
     assets, and retirement / investment accounts 404 out.  The balance
     production contract lives on :func:`_cash_detail_context` (shared
     with the band fragment).
+
+    The Balance history card below the reconcile panel (plan step X-f2-b) is
+    composed separately -- see the comment on the call.
     """
     account = _load_cash_account_or_404(account_id)
     return render_template(
-        "accounts/cash_detail.html", **_cash_detail_context(account),
+        "accounts/cash_detail.html",
+        # Under ONE name rather than splatted: ``reconcile_context`` inside
+        # ``_cash_detail_context`` already publishes ``account`` and
+        # ``panel_id``, so splatting a second builder's keys over it would
+        # silently re-root the reconcile panel at the history card's DOM id
+        # and break that panel's POST target.  And it is composed HERE rather
+        # than inside ``_cash_detail_context`` because that builder also
+        # serves the BAND fragment, which re-renders on every
+        # ``balanceChanged`` and has no use for an assertion log -- folding it
+        # in would walk the account's whole event stream again for a card the
+        # response does not carry.
+        history=balance_history_context(account),
+        **_cash_detail_context(account),
     )
 
 

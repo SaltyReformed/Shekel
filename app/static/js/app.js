@@ -206,12 +206,44 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
     // page load to be shown by, and without this it would swap in and
     // stay invisible (.toast is display:none until .show).
     //
-    // Marked by ``data-toast-auto-show`` rather than matching .toast, so
-    // an unrelated swap that happens to carry toast markup cannot
-    // re-show a toast the user already dismissed.  Delay and autohide
-    // come from the element's own data-bs-* attributes.
-    target.querySelectorAll('[data-toast-auto-show]').forEach(function(toastEl) {
-      bootstrap.Toast.getOrCreateInstance(toastEl).show();
+    // Marked by ``data-toast-auto-show`` rather than matching .toast, so a
+    // swap that happens to carry toast markup cannot re-show a toast the user
+    // already dismissed.  Delay and autohide come from the element's own
+    // data-bs-* attributes.
+    //
+    // **It searches the DOCUMENT, not the settled element, and that is plan
+    // step X-f2-b.**  Scoping it to ``target`` worked only while the
+    // acknowledgement's swap was ``hx-swap-oob="true"``: that is an outerHTML
+    // swap, so the settled element WAS the toast's container and htmx fired an
+    // ``afterSwap`` naming it.  Finding N-206 changed the swap to
+    // ``beforeend:``, and htmx dispatches no per-element ``afterSwap`` for a
+    // non-outerHTML out-of-band swap (``He``/``a`` in htmx.min.js insert the
+    // nodes and fire ``htmx:oobAfterSwap`` on the REQUESTING element instead).
+    // A container-scoped query therefore missed the appended toast entirely,
+    // leaving it in the DOM and permanently invisible -- N-199's exact
+    // symptom, reproduced in a live browser before it shipped.
+    //
+    // The un-instantiated guard is what keeps a document-wide query safe, and
+    // it is the same shape the popover / tooltip initializers above use: a
+    // toast that has already been shown carries a Bootstrap instance, and one
+    // the user dismissed is GONE, because each toast now removes itself.
+    //
+    // Each toast DISPOSES AND REMOVES ITSELF once hidden (finding N-206).  The
+    // acknowledgement appends rather than replacing its mount, so without this
+    // the mount would accumulate one dead node per save; and Bootstrap keys
+    // its instances off the element in a Data map that a plain remove() leaves
+    // populated, with the autohide setTimeout still armed to fire hide() on a
+    // detached node.  Disposing first and removing after clears both.
+    document.querySelectorAll('[data-toast-auto-show]').forEach(function(toastEl) {
+      if (bootstrap.Toast.getInstance(toastEl)) {
+        return;
+      }
+      var toast = bootstrap.Toast.getOrCreateInstance(toastEl);
+      toastEl.addEventListener('hidden.bs.toast', function() {
+        toast.dispose();
+        toastEl.remove();
+      }, { once: true });
+      toast.show();
     });
   }
 });

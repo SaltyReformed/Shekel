@@ -41,6 +41,15 @@ from app.services import (
 from app.services.auth_service import hash_password
 
 
+#: The out-of-band swap that carries the balance acknowledgement into
+#: ``base.html``'s single mount.  Spelled once because three tests slice the
+#: response on it: the swap STYLE is load-bearing, not incidental -- an
+#: outerHTML swap of the mount destroys a still-visible predecessor, which is
+#: finding N-206, so a test that matched only the mount NAME would keep passing
+#: through the regression this constant exists to catch.
+_ACK_SWAP = 'hx-swap-oob="beforeend:#anchor-ack-mount"'
+
+
 def _create_other_user_account():
     """Create a second user with their own account.
 
@@ -1891,9 +1900,22 @@ class TestTheReconcileRoute:
             # and the dashboard's copy was destroyed by the ``balanceChanged``
             # refresh this same response fires (finding N-199).  The mount
             # asserted below is what makes five a property of the structure.
-            assert 'id="anchor-ack-mount"' in html, (
+            #
+            # **It TARGETS the mount rather than carrying its id, since plan
+            # step X-f2-b** (finding N-206).  The swap was an outerHTML
+            # replacement of ``#anchor-ack-mount``, so a second back-dated save
+            # inside the 8s autohide window destroyed the first toast; it
+            # APPENDS now.  What is graded is unchanged -- the acknowledgement
+            # reaches the ONE global mount rather than a per-surface element --
+            # and the marker for it is the swap attribute that names the mount.
+            assert _ACK_SWAP in html, (
                 "the acknowledgement must ride the global base.html mount, "
                 "not a per-surface element only some surfaces carry"
+            )
+            assert 'id="anchor-ack-mount"' not in html, (
+                "the fragment must APPEND into the mount, never re-emit it: "
+                "re-emitting IS the outerHTML swap that destroys a "
+                "still-visible predecessor (N-206)"
             )
             # **The negatives are scoped to the acknowledgement fragment, not
             # to the whole body, and that is load-bearing.**  On the grid the
@@ -1904,17 +1926,17 @@ class TestTheReconcileRoute:
             # fail the honest code, which is a control that fires on the truth.
             #
             # The as-of snippet is REMOVED before slicing rather than the
-            # slice being taken on faith.  Taking everything after the mount
-            # id makes the negatives depend on the order the route
+            # slice being taken on faith.  Taking everything after the swap
+            # marker makes the negatives depend on the order the route
             # concatenates its fragments (``html + as_of + feedback``): move
             # the acknowledgement earlier and ``f"as of {today}" not in ack``
             # would silently start grading the as-of snippet instead, which is
             # a control that stops testing its own subject without failing.
-            assert html.count('id="anchor-ack-mount"') == 1
+            assert html.count(_ACK_SWAP) == 1
             ack = re.sub(
                 r'<small[^>]*id="anchor-as-of".*?</small>', "", html,
                 flags=re.DOTALL,
-            ).split('id="anchor-ack-mount"', 1)[1]
+            ).split(_ACK_SWAP, 1)[1]
             assert "Balance recorded" in ack
             # **The attribute that makes the toast VISIBLE, graded** -- the
             # whole feature hangs on one token and nothing saw it.  Vendored
@@ -1949,6 +1971,149 @@ class TestTheReconcileRoute:
                 "the acknowledgement must name the SUBMITTED balance, not the "
                 "one that still governs"
             )
+
+    def test_re_recording_the_same_balance_later_is_acknowledged(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A real write that changes no figure says so (finding **N-204**).
+
+        The state the OLD predicate could not see, and the reason the
+        acknowledgement stopped being the reconcile prompt's complement.
+        Re-record the balance that already governs, for a LATER day, with
+        nothing outstanding: a row IS appended (the day differs, so ruling
+        R-EQ's duplicate test does not fire), the coverage boundary MOVES, and
+        the balance cell re-renders to the figure it already showed -- so the
+        submission was the boundary, took the prompt branch, and the prompt was
+        empty.  Nothing at all reached the screen.
+
+        Measured on production: this exact shape, an equal balance re-asserted
+        on a later day, occurs once in the real Checking account's 57
+        assertions.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            statement_day = display_today() - timedelta(days=6)
+
+            self._true_up(
+                auth_client, acct_id, "1500.00", observed_on=statement_day,
+            )
+            response = self._true_up(
+                auth_client, acct_id, "1500.00", observed_on=display_today(),
+            )
+
+            html = response.data.decode()
+            # A row really was written -- the coverage boundary moved -- so
+            # this is a write that produced no visible change, not a no-op.
+            assert (
+                cash_ledger.reconciled_through(acct_id).observed_day
+                == display_today()
+            )
+            assert "data-modal-auto-show" not in html, (
+                "nothing is outstanding, so the prompt is empty and the "
+                "acknowledgement is the only thing that can speak"
+            )
+            assert _ACK_SWAP in html
+            ack = html.split(_ACK_SWAP, 1)[1]
+            assert "Balance recorded" in ack
+            assert "$1,500.00" in ack
+
+    def test_a_write_that_moves_the_figure_is_not_acknowledged(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The non-vacuity control for the case above.
+
+        Identical fixture and identical days; only the submitted BALANCE
+        differs, so the cell re-renders to a new figure and IS its own
+        acknowledgement.  Without this, firing the toast unconditionally would
+        pass the test above while burying every ordinary true-up under a
+        redundant confirmation.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            statement_day = display_today() - timedelta(days=6)
+
+            self._true_up(
+                auth_client, acct_id, "1500.00", observed_on=statement_day,
+            )
+            response = self._true_up(
+                auth_client, acct_id, "1600.00", observed_on=display_today(),
+            )
+
+            assert _ACK_SWAP not in response.data.decode(), (
+                "the balance cell already shows the new figure, so a toast "
+                "repeating it is noise"
+            )
+
+    def test_the_prompt_still_wins_when_there_is_something_to_reconcile(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A visible prompt IS the acknowledgement, so the toast stays quiet.
+
+        The exclusivity, graded on the one state where the re-key could have
+        produced BOTH: the figure does not move (so the toast's first clause
+        holds) and the submission is the coverage boundary with a purchase
+        outstanding (so the prompt opens).  The prompt is captioned with the
+        balance and day just recorded, which is why it discharges the
+        acknowledgement rather than competing with it.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+            self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("120.00", today - timedelta(days=2), False, None)],
+            )
+            self._true_up(
+                auth_client, acct_id, "1500.00",
+                observed_on=today - timedelta(days=6),
+            )
+            response = self._true_up(
+                auth_client, acct_id, "1500.00", observed_on=today,
+            )
+
+            html = response.data.decode()
+            assert "data-modal-auto-show" in html
+            assert _ACK_SWAP not in html, (
+                "the prompt names the balance and day just recorded, so a "
+                "toast beside it says the same thing twice"
+            )
+
+    def test_an_idempotent_re_assert_does_not_claim_to_have_recorded(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Ruling R-EQ's UNCHANGED outcome gets its own copy.
+
+        Submitting the governing balance for the governing DAY writes nothing
+        and is rolled back, while the route reports success.  That state
+        reaches the acknowledgement under the re-keyed predicate -- the figure
+        did not move and the prompt is empty -- so the copy has to say what
+        happened.  "Balance recorded" over a write that wrote nothing is the
+        same class of untruth the acknowledgement exists to remove.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+
+            self._true_up(auth_client, acct_id, "1500.00", observed_on=today)
+            before = db.session.query(AccountAnchorHistory).filter_by(
+                account_id=acct_id,
+            ).count()
+            response = self._true_up(
+                auth_client, acct_id, "1500.00", observed_on=today,
+            )
+
+            # Nothing was written, which is the premise of the copy below.
+            assert db.session.query(AccountAnchorHistory).filter_by(
+                account_id=acct_id,
+            ).count() == before
+
+            ack = response.data.decode().split(_ACK_SWAP, 1)[1]
+            assert "Balance confirmed" in ack
+            assert "Balance recorded" not in ack, (
+                "nothing was recorded -- ruling R-EQ rolled the submission "
+                "back -- so the copy must not say it was"
+            )
+            assert "$1,500.00" in ack
 
     @pytest.mark.parametrize(
         "revert",
@@ -7643,3 +7808,273 @@ class TestAnchorDifference:
 
             assert response.status_code == 404
             assert b"Your records" not in response.data
+
+
+class TestTheBalanceHistoryCard:
+    """The durable record of a balance assertion -- plan step X-f2-b (R-EV).
+
+    The card closes finding **N-205**: before it, the only evidence a
+    back-dated assertion landed was an 8-second toast, and no template read
+    ``AccountAnchorHistory`` at all except the GOVERNING assertion's "as of"
+    caption -- which by definition is never the back-dated row.
+
+    Every figure is graded at the producer
+    (``test_services/test_balance_at.py::TestCashAnchorHistory``); what is
+    graded HERE is the route's own three decisions -- which rows are shown by
+    default, that the card is reachable only by its owner, and that it refreshes
+    when a write appends to it.
+    """
+
+    @staticmethod
+    def _assert_balance(auth_client, account_id, balance, observed_on=None):
+        """Record a balance through the real PATCH route."""
+        data = {"anchor_balance": balance}
+        if observed_on is not None:
+            data["observed_on"] = observed_on.isoformat()
+        response = auth_client.patch(
+            f"/accounts/{account_id}/true-up", data=data,
+        )
+        assert response.status_code == 200
+
+    def test_the_page_carries_the_log_and_refreshes_it_on_a_write(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The card renders on the page and re-fetches on ``balanceChanged``.
+
+        The refresh is not decoration: a true-up APPENDS an assertion, so a
+        card left un-refreshed would omit the very row the user just recorded
+        -- the defect the card exists to close, one layer up.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            self._assert_balance(auth_client, acct_id, "1234.56")
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/details",
+            ).data.decode()
+
+            assert "Balance history" in html
+            assert f'id="balance-history-{acct_id}"' in html
+            assert f"/accounts/{acct_id}/balance-history" in html
+            region = html.split(f'id="balance-history-{acct_id}"', 1)[1]
+            assert 'hx-trigger="balanceChanged from:body"' in region.split(
+                "</div>", 1,
+            )[0]
+            assert "$1,234.56" in html
+
+    def test_the_fragment_shows_a_write_the_page_predates(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The refresh target really does pick up a newly appended row.
+
+        The region's trigger is asserted above; this is the other half -- that
+        what it fetches has moved.  Without it a card wired to a stale producer
+        would pass the markup test and still show yesterday's log forever.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            before = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+            assert "$4,321.00" not in before
+
+            self._assert_balance(auth_client, acct_id, "4321.00")
+
+            after = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+            assert "$4,321.00" in after
+
+    def test_the_default_view_is_capped_and_says_what_it_hides(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Past twelve rows the card discloses the rest rather than growing.
+
+        The real Checking account carries 57 assertions over 133 days and grows
+        by about 13 a month, so the loan twin's "render every row" shape -- it
+        has ONE anchor -- would make the log the page's dominant element
+        (developer ruling 1, 2026-08-10).
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+            # 14 true-ups on distinct days, plus the account's opening = 15.
+            for offset in range(14, 0, -1):
+                self._assert_balance(
+                    auth_client, acct_id, f"{1000 + offset}.00",
+                    observed_on=today - timedelta(days=offset),
+                )
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+
+            assert html.count("<tr>") == 1 + 15, (
+                "every assertion is in the DOM -- the disclosure hides rows, "
+                "it does not drop them"
+            )
+            assert "Show all 15" in html
+            assert "12 of 15 recorded" in html
+            # The rows past the cap are behind the collapse rather than gone.
+            hidden = html.split('class="collapse"', 1)[1]
+            assert hidden.count("<tr>") == 3
+
+    def test_the_rows_shown_are_the_most_recently_RECORDED(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A back-dated write is visible without expanding the disclosure.
+
+        The card's whole job is giving that write a retrieval path (**N-205**),
+        and sorting by the day a balance was TRUE defeats it: a balance
+        recorded today for a day three weeks back sits at that day's position,
+        which on the real Checking account is 40 rows down.  So the default
+        view is chosen by ``recorded_on`` and rendered in ``observed_on`` order.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+            for offset in range(14, 0, -1):
+                self._assert_balance(
+                    auth_client, acct_id, f"{2000 + offset}.00",
+                    observed_on=today - timedelta(days=offset),
+                )
+            # NOW record an old statement.  Its ``observed_on`` is older than
+            # every row above, so an ``observed_on``-ranked cap would bury it.
+            self._assert_balance(
+                auth_client, acct_id, "1777.77",
+                observed_on=today - timedelta(days=30),
+            )
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+            shown = html.split('class="collapse"', 1)[0]
+
+            assert "$1,777.77" in shown, (
+                "the row just recorded must be visible without expanding, or "
+                "the card does not answer the question it exists for"
+            )
+            # And it announces that it is back-dated, so it is not read as a
+            # balance that was true today.
+            assert "entered" in shown
+
+    def test_an_ordinary_row_does_not_claim_to_be_back_dated(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The non-vacuity control for the caption above.
+
+        A same-day true-up leaves the two clocks equal, so the caption must be
+        absent -- one that fired on every row would stop distinguishing
+        anything.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            self._assert_balance(
+                auth_client, acct_id, "1500.00", observed_on=display_today(),
+            )
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+
+            assert "$1,500.00" in html
+            assert "entered" not in html
+
+    def test_a_modelled_account_shows_no_reconciliation_columns(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """An HYSA logs what was declared and claims no reconciliation.
+
+        The walk sees recorded CASH only, so an accruing account's difference
+        would name interest as untracked spend -- on production the HYSA's one
+        row would read $4,863.56 against a $5,363.56 balance (finding N-213).
+        The log itself still renders, because "what did I declare, and when" is
+        a fact for every kind.
+        """
+        with app.app_context():
+            hysa_type = db.session.query(AccountType).filter_by(
+                name="HYSA",
+            ).one()
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=hysa_type.id,
+                    name="HYSA History",
+                    anchor_balance=Decimal("5000.00"),
+                ),
+            )
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.04500"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
+            db.session.commit()
+
+            html = auth_client.get(
+                f"/accounts/{acct.id}/balance-history",
+            ).data.decode()
+
+            assert "$5,000.00" in html
+            assert "Ledger" not in html
+            assert "Difference" not in html
+            assert "nothing here to reconcile against" in html
+
+    def test_a_plain_account_shows_them(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The non-vacuity control for the case above.
+
+        Same route, same fixture shape, only the KIND differs -- so the missing
+        columns there are a property of the account rather than of the card
+        never rendering them at all.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            self._assert_balance(auth_client, acct_id, "1500.00")
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+
+            assert "Ledger" in html
+            assert "Difference" in html
+
+    def test_the_opening_row_publishes_no_difference(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The opening is badged and its reconciliation cells are withheld.
+
+        Its "ledger" is the sum of rows dated before the account existed
+        (open finding **N-37**) and its gap is opening EQUITY, the figure plan
+        step X-f5 books -- not a correction, so the card refuses to caption it
+        as one.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+
+            assert "Opening" in html
+            # The lone row is the opening, so every reconciliation cell on the
+            # page is the withheld dash.
+            assert html.count(">--<") == 2
+
+    def test_another_users_account_is_not_reachable(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """404 for both "not found" and "not yours" (the security rule).
+
+        The card publishes an account's whole balance history, so an
+        unscoped read here would leak more than most: every figure the owner
+        has ever recorded, with dates.
+        """
+        with app.app_context():
+            other = _create_other_user_account()
+            response = auth_client.get(
+                f"/accounts/{other['account'].id}/balance-history",
+            )
+            assert response.status_code == 404

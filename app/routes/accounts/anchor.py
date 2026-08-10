@@ -50,7 +50,6 @@ from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts.reconcile import prompt_fragment
 from app.services import (
     anchor_service,
-    balance_at,
     cash_ledger,
     pay_period_service,
 )
@@ -67,19 +66,13 @@ logger = logging.getLogger(__name__)
 # gate (ruling D4 / step A1): an amortizing loan's balance is
 # ledger-derived and is asserted on the loan's own page
 # (``apply_loan_anchor_true_up``), never as a cash anchor (B-15).
-_LOAN_ANCHOR_REFUSAL = (
+LOAN_ANCHOR_REFUSAL = (
     "A loan's balance is not a cash anchor. Record a balance true-up "
     "on the loan's own page instead."
 )
 
-#: What the difference preview says when the date box holds something that is
-#: not a day.  Its own sentence rather than the schema's, which names the FIELD
-#: (``observed_on``) the user has never seen -- the form labels that box
-#: "Balance as of".
-_UNREADABLE_DAY = "Enter a date to compare this balance against."
 
-
-def _is_amortizing(account: Account) -> bool:
+def is_amortizing(account: Account) -> bool:
     """Return True when *account* is an amortizing loan.
 
     The route-layer twin of the loan package's ``_load_loan_account``
@@ -87,6 +80,12 @@ def _is_amortizing(account: Account) -> bool:
     never a type-name string).  Used to refuse the CASH anchor editor
     for a loan; the service-layer backstop is
     :class:`~app.services.anchor_service.AmortizingAccountAnchorError`.
+
+    PUBLIC because it has consumers in two modules -- this one and
+    :mod:`app.routes.accounts.difference`, which refuses to preview a save the
+    write door would reject.  It was ``_is_amortizing`` and would have been
+    imported across that boundary anyway, which is finding **N-33**'s shape: a
+    name whose underscore claims a visibility its call sites do not respect.
     """
     acct_type = account.account_type
     return acct_type is not None and acct_type.has_amortization
@@ -220,7 +219,8 @@ class _AnchorSubmission:
 
 def _true_up_success_response(
     account: Account, revert_context: str | None,
-    submission: _AnchorSubmission,
+    submission: _AnchorSubmission, governing_before: Decimal,
+    outcome: AnchorTrueUpOutcome,
 ) -> tuple[str, int, dict[str, str]]:
     """Compose the anchor true-up success response.
 
@@ -231,19 +231,40 @@ def _true_up_success_response(
 
     * **the updated display cell**, the response's primary target on all five
       surfaces;
-    * **exactly ONE of the reconcile prompt or the back-dated
-      acknowledgement**, both out-of-band into a ``base.html`` mount that no
-      refresh region owns, so both reach all five surfaces by construction;
+    * **the reconcile prompt, the acknowledgement, or neither**, both
+      out-of-band into a ``base.html`` mount that no refresh region owns, so
+      both reach all five surfaces by construction;
     * **the ``#anchor-as-of`` caption, for the GRID alone**, because it is the
       only surface whose caption nothing else redraws (see
       ``grid/_anchor_as_of_oob.html`` for the per-surface measurement).
 
-    **The prompt and the acknowledgement are ONE if/else, deliberately.**  They
-    are the opposite branches of :func:`_submission_is_the_coverage_boundary`:
-    a submission that IS the account's coverage boundary can be reconciled
-    against, and one that is not has nothing new to reconcile.  Writing them as
-    two independent conditionals -- which is what stood here -- states one
-    branch twice and lets a later edit produce both or neither.
+    **The prompt and the acknowledgement answer DIFFERENT questions, and
+    welding them into one if/else is finding N-204** (plan step X-f2-b).  They
+    were the two branches of :func:`_submission_is_the_coverage_boundary`,
+    which is the right predicate for the PROMPT -- it is what makes the offered
+    purchases the ones a statement for that day could actually settle -- and
+    was never the right one for the acknowledgement.  Keying the second on the
+    first's complement left a real write landing with NOTHING on screen:
+    re-record the balance that already governs for a LATER day and a row is
+    appended (the day differs), the coverage boundary moves, the cell
+    re-renders to the same figure, and the prompt is ``""`` whenever nothing is
+    outstanding.  Measured on production, that shape -- an equal balance
+    re-asserted on a later day -- occurs once in the Checking account's 57
+    assertions.
+
+    So the acknowledgement now asks its own question: **did anything visible
+    happen?**  It fires when the GOVERNING balance did not move and the prompt
+    did not open.  The two stay mutually exclusive, but as a CONSEQUENCE of
+    that second clause rather than as a construction -- and every state that
+    acknowledged before still does, because a back-dated write cannot move the
+    governing balance and so is a strict subset of the new condition.
+
+    The comparison is on the BALANCE alone, deliberately, not on
+    ``(balance, day)``.  Including the day would count the same-balance-later-day
+    write as "something changed" because the ``as of`` caption moved -- and
+    that is exactly the row N-204 is about.  A caption is also the wrong thing
+    to rest on: it does not move at all for a back-dated write, so treating it
+    as sufficient here and not there would be two rules for one question.
 
     **A BACK-DATED submission is acknowledged rather than rendered**, and the
     reason is that without it this response is indistinguishable from doing
@@ -262,12 +283,19 @@ def _true_up_success_response(
             R-EP).
         revert_context: The normalized surface token, or ``None`` -- which is
             the grid, the one surface the "as of" snippet is emitted for.
-        submission: What the form asserted.  Decides whether the reconcile
-            prompt is asked (:func:`_submission_is_the_coverage_boundary`) and,
-            on the other branch, supplies both figures the acknowledgement
-            names.  **Required, with no default**: a defaulted submission here
-            means "suppress the safety check", and with one caller a default
-            that can only ever be wrong is a footgun rather than a convenience.
+        submission: What the form asserted.  Supplies both figures the
+            acknowledgement names.  **Required, with no default**: a defaulted
+            submission here means "suppress the safety check", and with one
+            caller a default that can only ever be wrong is a footgun rather
+            than a convenience.
+        governing_before: The balance ``resolve_anchor`` reported BEFORE the
+            write.  Read by the caller rather than here, because here is after
+            it and the comparison needs both sides.
+        outcome: What the write door did.  It decides the acknowledgement's
+            COPY, not whether it fires: under ruling R-EQ a submission matching
+            the governing assertion writes nothing and is rolled back while
+            reporting success, and that state reaches the acknowledgement now
+            -- so saying "Balance recorded" there would be false.
 
     Returns:
         The ``(body, status, headers)`` tuple Flask returns, carrying the
@@ -278,28 +306,28 @@ def _true_up_success_response(
         "grid/_anchor_edit.html", account=account,
         anchor_balance=anchor.balance, editing=False,
     )
-    is_boundary = _submission_is_the_coverage_boundary(
-        cash_ledger.reconciled_through(account.id).observed_day,
-        submission.observed_on,
+    # The one question worth asking after a balance reading -- which of these
+    # purchases has your bank taken?  Empty when nothing is outstanding, so the
+    # one-click habit is not taxed by a prompt with nothing in it.
+    feedback = (
+        prompt_fragment(account)
+        if _submission_is_the_coverage_boundary(
+            cash_ledger.reconciled_through(account.id).observed_day,
+            submission.observed_on,
+        )
+        else ""
     )
-    if is_boundary:
-        # The one question worth asking after a balance reading -- which of
-        # these purchases has your bank taken?  Empty when nothing is
-        # outstanding, so the one-click habit is not taxed by a prompt with
-        # nothing in it.
-        feedback = prompt_fragment(account)
-    else:
-        # ``submission.observed_on`` cannot be None on this branch: a blank
-        # date box means "today", and today IS the coverage boundary
-        # (:func:`_submission_is_the_coverage_boundary` proves it from the
-        # no-future-day rule), so a blank submission always takes the branch
-        # above.  The template dereferences it, so a future edit that broke
-        # that guarantee fails LOUD rather than rendering a wrong day.
+    if not feedback and anchor.balance == governing_before:
         feedback = render_template(
             "accounts/_anchor_recorded_toast.html",
             account=account,
             balance=submission.balance,
-            observed_on=submission.observed_on,
+            # The day the SUBMISSION asserted, resolved: a blank date box means
+            # the user's today, and the acknowledgement names the day the
+            # balance is about rather than leaving it to be guessed from a
+            # figure that did not move.
+            observed_on=submission.observed_on or anchor.observed_on,
+            was_written=outcome is AnchorTrueUpOutcome.COMMITTED,
         )
     # ``None`` is the grid, and only the grid: every named surface re-fetches
     # its own region on the ``balanceChanged`` fired below and redraws its own
@@ -351,237 +379,6 @@ def _anchor_day_bounds() -> dict[str, date]:
     }
 
 
-# ── The difference, before it is saved (X-f2-a, ruling R-EU) ──────
-
-
-def _preview_submission() -> tuple[Decimal | None, date | None, str | None]:
-    """Parse the editor's two boxes LENIENTLY, through the write door's schema.
-
-    The preview fires while the user is still typing, so it must answer a
-    half-finished form rather than refuse one -- and it must nonetheless read
-    both boxes by exactly the rules ``true_up`` will apply, or it would preview
-    a figure the save then rejects.  Sharing ``_anchor_schema`` is what makes
-    that structural rather than a claim: the cent quantization
-    (``fields.Decimal(places=2)``) and the empty-string normalizer that lets a
-    cleared date box mean "today" are the SAME code both paths run.  The whole
-    query string is handed in, exactly as ``true_up`` hands in the whole form:
-    ``BaseSchema.Meta.unknown = EXCLUDE`` drops what the schema does not
-    declare, so a hand-kept list of field names here would be a SECOND copy of
-    the schema's own -- able to drift in one direction only, which is the shape
-    this step exists to remove.
-
-    Two leniencies, each for a state ordinary typing produces:
-
-    * **A balance box that does not parse yet** -- mid-keystroke, or cleared --
-      is ``None`` rather than an error.  ``partial=`` is what expresses that:
-      the field is ``required=True`` for the save, and asking the schema to
-      relax exactly that one requirement is narrower than a second parser.
-    * **A blank date box** is ``None``, which the caller resolves to the user's
-      today through the same :func:`~app.services.anchor_service.resolve_observation_day`
-      the write door uses (ruling R-ER).  The default is NOT applied here: a
-      route that invented the day would be the second answer to "when is an
-      assertion dated" that ruling deleted.
-
-    An UNPARSEABLE DATE is the one thing that is refused rather than defaulted,
-    and the difference matters: blank means "now", while ``2026-13-40`` means
-    the user is mid-edit on a day that is not a day, and silently previewing
-    today's figure under a date box showing something else would caption a
-    figure with the wrong day -- this arc's own root defect, rendered.
-
-    Returns:
-        ``(recorded, submitted_day, refusal)``.  ``refusal`` is ``None`` unless
-        the DATE box holds something unparseable, in which case both figures are
-        ``None`` and the message is ready to render.
-    """
-    raw = dict(request.args)
-    errors = _anchor_schema.validate(raw)
-    if "observed_on" in errors:
-        # Not ``flatten_schema_errors``: that renders "observed_on: Not a valid
-        # date." -- a schema FIELD NAME, under a box the user sees labelled
-        # "Balance as of".  The editor's own rejection surface can afford the
-        # field name because it re-renders the labelled input beside it; a
-        # caption floating under the form cannot.
-        return None, None, _UNREADABLE_DAY
-
-    if "anchor_balance" in errors:
-        raw.pop("anchor_balance", None)
-    data = _anchor_schema.load(raw, partial=("anchor_balance",))
-    balance = data.get("anchor_balance")
-    return (
-        None if balance is None else Decimal(str(balance)),
-        data.get("observed_on"),
-        None,
-    )
-
-
-#: What a difference MEANS, as a name the template maps to copy rather than
-#: re-deriving from the sign.  The verdict is decided in Python -- where it is
-#: under test -- for the reason ``pace_pill`` / ``dti_badge`` take a computed
-#: label rather than a number: a ``{% elif %}`` chain over a Decimal is a
-#: SECOND statement of the sign convention, in the one language this project
-#: forbids financial reasoning in.
-DIFF_AGREES = "agrees"
-DIFF_UNRECORDED_SPEND = "unrecorded_spend"
-DIFF_UNACCOUNTED_MONEY = "unaccounted_money"
-
-#: The same three names, handed to the partial so its branches compare against
-#: THESE values rather than against re-typed literals.  A template literal and a
-#: module constant are two spellings of one name that drift silently -- the
-#: partial would simply stop matching and fall to its else arm, rendering the
-#: wrong sentence with no error anywhere.
-_DIFF_VERDICT_NAMES = {
-    "DIFF_AGREES": DIFF_AGREES,
-    "DIFF_UNRECORDED_SPEND": DIFF_UNRECORDED_SPEND,
-    "DIFF_UNACCOUNTED_MONEY": DIFF_UNACCOUNTED_MONEY,
-}
-
-
-def _difference_verdict(difference: Decimal) -> str:
-    """Return what *difference* MEANS, as one of the ``DIFF_*`` names.
-
-    The sign convention is ``recorded - records``, so:
-
-    * **negative** -- the bank holds LESS than the records account for: money
-      left that was never recorded, or a payment that moved earlier than it was
-      budgeted to.
-    * **positive** -- the bank holds MORE: income not recorded, or a budgeted
-      bill that never left.
-    * **zero** -- the records agree with the statement, which is the outcome the
-      user is aiming for and which reads as an empty state unless it is named.
-
-    Args:
-        difference: ``recorded - records``, cent-exact.
-
-    Returns:
-        One of :data:`DIFF_AGREES`, :data:`DIFF_UNRECORDED_SPEND`,
-        :data:`DIFF_UNACCOUNTED_MONEY`.
-    """
-    if difference == 0:
-        return DIFF_AGREES
-    return (
-        DIFF_UNRECORDED_SPEND if difference < 0 else DIFF_UNACCOUNTED_MONEY
-    )
-
-
-def _anchor_difference_context(account: Account) -> dict:
-    """Assemble the difference preview's context for one account.
-
-    Ruling **R-EU**: the form shows what the account's RECORDS produce for the
-    day it names, what the user typed, and the gap -- before Save.
-
-    **The figure is ``balance_at.records_balance_at``, not the account's current
-    balance, and that is the whole correction this leaf was rebuilt for.**  An
-    assertion RESETS the cash walk, so "what the app reports for that day"
-    becomes the user's own declared figure the moment they declare one -- and a
-    difference measured against it is zero by construction, or on a CORRECTION
-    is the gap between two successive guesses with a sign that can oppose the
-    real one (measured on production Checking 2026-04-15: ``-$45.86`` against
-    the previous entry, ``-$92.29`` against the records).
-
-    Four states, each a real one:
-
-    * **a refusal** -- an amortizing loan (a raced kind change; see
-      :func:`_anchor_kind_refusal`), or a day that cannot be asserted.
-      Previewing a save guaranteed to be refused is the dead-end affordance
-      ruling R-ET's corollary deletes, so the region says why instead.
-    * **a MODELLED account** -- ``records_balance_at`` answers ``None``, because
-      an HYSA accruing interest or a Property appreciating is not being
-      reconciled against a bank statement (see that function for the scope
-      argument and finding **N-213**).  The region renders empty rather than
-      captioning a model-vs-market gap as untracked spend.
-    * **a reconciliation** -- the ordinary state.
-    * **nothing typed yet** -- the balance box holds nothing parseable, so there
-      is no comparison to draw.
-
-    **What it deliberately does NOT do is preview the form's PREFILL.**  The
-    editor opens with the governing balance already in the box (ruling R-EE's
-    one-click habit), so a preview fired on form-open would compare a figure the
-    user has not entered against the records and caption the gap as the app's
-    fault -- reproduced by an adversarial review: a settled, fully posted
-    ``$150.00`` expense rendered as "money Shekel has not accounted for", and
-    pressing Enter on that prefill drops the ``$150.00`` out of the projection.
-    The region is therefore mounted EMPTY and fills on the first real edit; see
-    ``grid/_anchor_edit.html`` for the trigger set that expresses it.
-
-    Args:
-        account: The owned, attached :class:`Account` being previewed.
-
-    Returns:
-        The template context: ``refusal`` (str or ``None``), and when there is a
-        comparison to draw, ``observed_on`` / ``records`` / ``recorded`` /
-        ``difference`` / ``verdict``.  ``difference`` is ``None`` whenever there
-        is nothing to compare.
-    """
-    empty = {"refusal": None, "difference": None}
-    if _is_amortizing(account):
-        return {"refusal": _LOAN_ANCHOR_REFUSAL, "difference": None}
-
-    recorded, submitted_day, refusal = _preview_submission()
-    if refusal is not None:
-        return {"refusal": refusal, "difference": None}
-    try:
-        day = anchor_service.resolve_observation_day(
-            current_user.id, submitted_day,
-        ).civil_day
-    except ValidationError as exc:
-        return {"refusal": str(exc), "difference": None}
-    if recorded is None:
-        return empty
-
-    records = balance_at.records_balance_at(
-        account, balance_at.BalanceContext.build(current_user.id), day,
-    )
-    if records is None:
-        return empty
-
-    difference = recorded - records
-    return {
-        "refusal": None,
-        "observed_on": day,
-        "records": records,
-        "recorded": recorded,
-        "difference": difference,
-        "verdict": _difference_verdict(difference),
-    }
-
-
-@accounts_bp.route(
-    "/accounts/<int:account_id>/anchor-difference", methods=["GET"],
-)
-@login_required
-@require_owner
-def anchor_difference(account_id):
-    """HTMX partial: the true-up editor's recorded-vs-ledger difference.
-
-    Ruling **R-EU** (plan step X-f2-a).  A GET because it WRITES NOTHING: it
-    reads the two boxes off the query string, asks the balance seam what the
-    account was worth on the day they name, and renders the comparison.
-
-    **It is fetched by the editor rather than rendered with it.**
-    ``anchor_form`` is one click on the grid, per account, and today it costs
-    two cheap reads (``cash_ledger.resolve_anchor`` and the schedule floor);
-    :func:`~app.services.balance_at.records_balance_at` assembles the account's
-    whole event stream, which is dashboard-sized work.  Keeping it out of the
-    editor's own render leaves the primary control as fast as it is now.  That
-    is the FIRST-PAINT trade; it does not make the total cheaper, and the honest
-    claim is the narrow one.
-
-    **The preview cannot go stale against its FORM**: the region re-fetches on
-    every change to the form it lives in, and the response carries the day it
-    was computed for, so a figure and its caption move together.  It CAN go
-    stale against the ledger -- another tab's true-up, or the reconcile panel's
-    own POST, both fire ``balanceChanged``, which this region deliberately does
-    not listen for (re-folding on every balance event would cost a fold per
-    event for a figure nobody is looking at unless the editor is open).
-    """
-    account = get_or_404(Account, account_id)
-    if account is None:
-        return "Account not found", 404
-    return render_template(
-        "accounts/_anchor_difference.html",
-        **_DIFF_VERDICT_NAMES,
-        **_anchor_difference_context(account),
-    )
 
 
 def _anchor_kind_refusal(account: Account) -> ResponseReturnValue:
@@ -623,7 +420,7 @@ def _anchor_kind_refusal(account: Account) -> ResponseReturnValue:
             account=account,
             anchor_balance=cash_ledger.resolve_anchor(account).balance,
             editing=False,
-            error=_LOAN_ANCHOR_REFUSAL,
+            error=LOAN_ANCHOR_REFUSAL,
         ),
         422,
     )
@@ -739,7 +536,7 @@ def _true_up_request_gates(
         ``failure`` is the ready-to-return Flask response and ``submission``
         is ``None``.
     """
-    if _is_amortizing(account):
+    if is_amortizing(account):
         return None, _anchor_kind_refusal(account)
 
     errors = _anchor_schema.validate(request.form)
@@ -802,6 +599,16 @@ def true_up(account_id):
     if failure is not None:
         return failure
 
+    # The balance the user is LOOKING AT, read before the write so the
+    # response can ask whether anything visible happened (finding N-204; see
+    # ``_true_up_success_response``).  Read here rather than inside that
+    # helper because that runs after the write and the comparison needs both
+    # sides.  The account carries an assertion by construction -- the factory
+    # and migration ``cfb15e782f86`` guarantee an opening row -- which is the
+    # same precondition the success response's own ``resolve_anchor`` call has
+    # always had.
+    governing_before = cash_ledger.resolve_anchor(account).balance
+
     # Canonical anchor true-up path: route the assertion append, the posting
     # re-base and the commit through the single authoritative helper
     # (``anchor_service.apply_anchor_true_up``) so ruling R-EQ's duplicate
@@ -852,7 +659,9 @@ def true_up(account_id):
         # writer's, and two INFO lines per true-up where one is contained in the
         # other is noise that reads as corroboration.
 
-    return _true_up_success_response(account, revert_context, submission)
+    return _true_up_success_response(
+        account, revert_context, submission, governing_before, outcome,
+    )
 
 
 def _anchor_revert_url(account_id, revert_context):
@@ -940,7 +749,7 @@ def anchor_form(account_id):
     # 4xx is left non-swapping by ``base.html`` and the click would otherwise
     # do nothing visible at all -- a dead click with no form to explain it,
     # which is finding N-199's defect in its worst form.
-    if _is_amortizing(account):
+    if is_amortizing(account):
         return _anchor_kind_refusal(account)
 
     revert_context = _normalize_revert_context(request.args.get("revert"))

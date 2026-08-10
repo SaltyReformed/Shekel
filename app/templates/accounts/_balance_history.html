@@ -1,0 +1,151 @@
+{% from "_money_macros.html" import money %}
+{# Balance history: every balance you have told this account it held.
+
+   The durable record of a balance assertion (ruling R-EV, plan step X-f2-b)
+   and the cash twin of the loan dashboard's Balance anchors card.  Until it
+   existed the only evidence a back-dated assertion landed was an 8-second
+   toast, and no template read ``AccountAnchorHistory`` at all except the
+   GOVERNING assertion's "as of" caption -- which by definition is never the
+   back-dated row (finding N-205).
+
+   Rendered in two places from this one file: the cash detail page's initial
+   render and the HTMX fragment the card re-fetches itself through on
+   ``balanceChanged`` (``accounts.balance_history``).  One implementation, so a
+   refreshed card cannot come to say something different from the one the page
+   drew.  It renders the WHOLE card, not a body, for the reason
+   ``accounts/_cash_band.html`` does: the page owns a plain region div and
+   swaps this partial into it, so a header or footer whose copy depends on the
+   data moves with the data.
+
+   TWO COLUMNS ARE CONDITIONAL, and their absence is a statement.  ``ledger``
+   and ``difference`` are published only where the pair has an agreed meaning:
+   never on the OPENING row (whose "ledger" is the sum of rows dated before the
+   account existed -- open finding N-37 -- and whose gap is opening EQUITY, not
+   a correction), and never on an account whose balance carries a MODELLED tier
+   (an HYSA's accrued interest is not untracked spend; finding N-213).  The
+   producer decides both, so this template asks no question about kind and
+   re-derives no figure.
+
+   Expected context, all under ``history``
+   (``accounts.history.balance_history_context``):
+     account       -- the Account whose log this is.
+     recent        -- list[CashAnchorRow], newest ``observed_on`` first: the
+                      most recently RECORDED rows, shown by default.
+     earlier       -- the rest, behind the disclosure; empty when everything
+                      fits.
+     total         -- how many assertions the account carries in all.
+     reconcilable  -- whether the ledger / difference columns are shown.
+     panel_id      -- the page region's DOM id, which this partial uses only to
+                      name its own disclosure target.
+#}
+{% macro history_row(row, reconcilable) %}
+<tr>
+  <td>
+    {{ row.observed_on.strftime('%b %-d, %Y') }}
+    {%- if row.is_opening %}
+    <span class="badge bg-secondary ms-1">Opening</span>
+    {%- endif %}
+    {% if row.recorded_on != row.observed_on %}
+    {# A BACK-DATED row: the balance was true for the day above and was typed
+       on the day below.  Shown only when the two differ, or the caption would
+       fire on every ordinary same-day true-up and stop meaning anything. #}
+    <div class="fs-xs text-body-secondary">
+      entered {{ row.recorded_on.strftime('%b %-d, %Y') }}
+    </div>
+    {% endif %}
+  </td>
+  <td class="text-end font-mono">{{ money(row.recorded) }}</td>
+  {% if reconcilable %}
+  <td class="text-end font-mono">
+    {%- if row.ledger is none %}<span class="text-muted">--</span>
+    {%- else %}{{ money(row.ledger) }}{% endif -%}
+  </td>
+  {# NO COLOR ON THE DIFFERENCE, and that is the same ruling X-f2-a's preview
+     made one surface over.  Neither direction is a money state: a positive
+     difference is money the app has not accounted for and a negative one is
+     spend it has not recorded, and both are the ORDINARY state of this
+     workflow -- measured on production, 55 of the real Checking account's 57
+     assertions carry a non-zero difference, mean $292.23.  Painting them a
+     caution color would be manufactured urgency on the normal case, which the
+     design language reserves for real financial signals.  The loan card colors
+     its drift because there "owe more" and "owe less" genuinely ARE money
+     states for a liability. #}
+  <td class="text-end font-mono">
+    {%- if row.difference is none %}<span class="text-muted">--</span>
+    {%- else %}{{ money(row.difference) }}{% endif -%}
+  </td>
+  {% endif %}
+</tr>
+{% endmacro %}
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center gap-2">
+    <h6 class="mb-0">
+      <i class="bi bi-clipboard-check" aria-hidden="true"></i> Balance history
+    </h6>
+    {% if history.total %}
+    <span class="text-body-secondary small">
+      {%- if history.earlier %}{{ history.recent|length }} of {{ history.total }} recorded
+      {%- else %}{{ history.total }} recorded{% endif -%}
+    </span>
+    {% endif %}
+  </div>
+
+  {% if history.recent %}
+  <div class="table-responsive">
+    <table class="table table-sm mb-0 align-middle">
+      <thead>
+        <tr>
+          <th scope="col">As of</th>
+          <th scope="col" class="text-end">Recorded</th>
+          {% if history.reconcilable %}
+          <th scope="col" class="text-end">Ledger</th>
+          <th scope="col" class="text-end">Difference</th>
+          {% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in history.recent %}{{ history_row(row, history.reconcilable) }}{% endfor %}
+      </tbody>
+      {% if history.earlier %}
+      {# A second <tbody> rather than a wrapping div: the earlier rows have to
+         share the header's column widths, and Bootstrap's collapse only
+         toggles the ``show`` class, so the element returns to its own display
+         type when revealed. #}
+      <tbody class="collapse" id="{{ history.panel_id }}-earlier">
+        {% for row in history.earlier %}{{ history_row(row, history.reconcilable) }}{% endfor %}
+      </tbody>
+      {% endif %}
+    </table>
+  </div>
+
+  {% if history.earlier %}
+  <div class="card-body py-2">
+    <button class="btn btn-sm btn-outline-secondary" type="button"
+            data-bs-toggle="collapse"
+            data-bs-target="#{{ history.panel_id }}-earlier"
+            aria-expanded="false"
+            aria-controls="{{ history.panel_id }}-earlier">
+      Show all {{ history.total }}
+    </button>
+  </div>
+  {% endif %}
+
+  <div class="card-footer text-muted small">
+    {% if history.reconcilable %}
+    Difference is the balance you recorded minus what this account's records
+    produced just before it: negative means your bank held less than the
+    records account for.
+    {% else %}
+    This account's balance includes modelled growth its recorded transactions
+    do not carry, so there is nothing here to reconcile against. The log is
+    what you recorded, and when.
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="card-body">
+    <p class="small text-body-secondary mb-0">
+      No balance has been recorded for this account yet.
+    </p>
+  </div>
+  {% endif %}
+</div>

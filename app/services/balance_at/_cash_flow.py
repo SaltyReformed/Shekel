@@ -387,15 +387,27 @@ class CashAnchorRow:
         observed_on: The civil day this balance was declared TRUE for
             (``AccountAnchorHistory.observed_on``) -- the day the whole walk
             partitions on.
+        recorded_at: The RECORDING instant, aware-UTC
+            (:attr:`~app.services.cash_ledger.CashAnchorFact.asserted_at`
+            unchanged).  It is what a reader RANKS by, and the day below is
+            what a reader SHOWS -- two jobs a single field cannot do, which a
+            first build of this row got wrong.  A day has no resolution to rank
+            with: every assertion typed in one sitting shares one
+            ``recorded_on``, so "the most recently recorded twelve" degenerated
+            to "the twelve newest ``observed_on``" and buried the back-dated
+            row this field exists to surface.  That is not a rare tie -- it is
+            what a bookkeeping session looks like.
         recorded_on: The civil day the assertion was ENTERED, converted from
-            the recording instant into the display timezone.  It exists so a
-            BACK-DATED row identifies itself: sorted by :attr:`observed_on` a
-            balance recorded today for a past day lands at that past day's
-            position, and on the real Checking account that is 40 rows down --
-            so ordering alone does not give a back-dated write the retrieval
-            path finding **N-205** is about.  Equal to :attr:`observed_on` for
-            the ordinary same-day true-up, which is why the template shows it
-            only when the two differ.
+            :attr:`recorded_at` into the display timezone HERE, because a
+            template may not convert a timezone and a route restating the
+            conversion would be a second answer to which day an instant falls
+            on.  It exists so a BACK-DATED row identifies itself: sorted by
+            :attr:`observed_on` a balance recorded today for a past day lands
+            at that past day's position, and on the real Checking account that
+            is 40 rows down -- so ordering alone does not give a back-dated
+            write the retrieval path finding **N-205** is about.  Equal to
+            :attr:`observed_on` for the ordinary same-day true-up, which is why
+            the template shows it only when the two differ.
         recorded: The balance the user asserted, cent-quantized.  A fact for
             every account kind, which is why it is never ``None``.
         ledger: What the recorded facts alone produced immediately before this
@@ -412,6 +424,7 @@ class CashAnchorRow:
     """
 
     observed_on: date
+    recorded_at: datetime
     recorded_on: date
     recorded: Decimal
     ledger: "Decimal | None"
@@ -504,6 +517,7 @@ def cash_anchor_history(
     rows = [
         CashAnchorRow(
             observed_on=correction.observed_on,
+            recorded_at=correction.anchor.asserted_at,
             recorded_on=to_display_date(correction.anchor.asserted_at),
             recorded=correction.anchor.anchor_balance,
             # One condition, both cases: the pair is published only where it
