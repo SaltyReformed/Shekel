@@ -48,6 +48,14 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no database session, no
 clock.  Everything here is a pure function of values a caller supplies.
 """
 
+from ._calendar import (
+    PayCalendar,
+    PeriodWindow,
+    containing_period,
+    final_covered_day,
+    latest_started_period,
+    opening_payday,
+)
 from ._derive import (
     MAX_CADENCE_DAYS,
     MIN_CADENCE_DAYS,
@@ -60,6 +68,12 @@ __all__ = [
     "MAX_CADENCE_DAYS",
     "MIN_CADENCE_DAYS",
     "DerivedPeriod",
+    "PayCalendar",
     "PayCalendarError",
+    "PeriodWindow",
+    "containing_period",
     "derive_periods",
+    "final_covered_day",
+    "latest_started_period",
+    "opening_payday",
 ]

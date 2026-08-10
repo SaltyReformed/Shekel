@@ -36,13 +36,18 @@ that exist rather than indexing into a walk, and
 :meth:`PeriodCalendar.period_containing` answers ``None`` for a day in a gap
 rather than pulling it into the neighbouring period.
 """
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from operator import attrgetter
 
 from app.exceptions import ShekelError
+from app.services.pay_calendar import (
+    containing_period,
+    final_covered_day,
+    opening_payday,
+)
 
 #: The bisect key for both placement searches: a period's opening payday.
 #: Module-level so the two searches cannot key on different fields.
@@ -237,9 +242,7 @@ class PeriodCalendar:
             The earliest period's ``start_date``, or ``None`` for an empty
             schedule.
         """
-        if not self.periods:
-            return None
-        return self.periods[0].start_date
+        return opening_payday(self.periods)
 
     def horizon(self) -> date | None:
         """Return the last day the schedule covers, or ``None`` when empty.
@@ -256,9 +259,7 @@ class PeriodCalendar:
         Returns:
             The last covered day, or ``None`` for an empty schedule.
         """
-        if not self.periods:
-            return None
-        return self.periods[-1].end_date
+        return final_covered_day(self.periods)
 
     def period_containing(self, day: date) -> SchedulePeriod | None:
         """Return the period whose span covers *day*, or ``None``.
@@ -284,11 +285,7 @@ class PeriodCalendar:
         Returns:
             The containing :class:`SchedulePeriod`, or ``None``.
         """
-        index = bisect_right(self.periods, day, key=_BY_START_DATE) - 1
-        if index < 0:
-            return None
-        period = self.periods[index]
-        return period if day <= period.end_date else None
+        return containing_period(self.periods, day)
 
     def period_starting_on_or_after(self, day: date) -> SchedulePeriod | None:
         """Return the first period opening on or after *day*, or ``None``.
