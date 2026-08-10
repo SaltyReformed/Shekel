@@ -24,7 +24,7 @@ scheduled as one commit by all three documents. Before this table that identity 
 files with nothing reconciling it, and the `P3` / `N-123` collision went unnoticed from April to
 2026-08-09.
 
-**106 steps, 93 open.**
+**106 steps, 92 open.**
 
 | arc | id | aliases | step | state | commit | blocked by |
 |---|---|---|---|---|---|---|
@@ -103,7 +103,7 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | pay_calendar | C2 | balance:X-l / recurrence:R-F12 | **C2 -- one calendar value answers every "which period" question.** The DECOMPOSED parent, RULED on three forks 2026-08-10; ticks with the last of its leaves, and that tick is also `balance:X-l` and `recurrence:R-F12` | open | -- | -- |
 | pay_calendar | C2-a | -- | **C2-a -- the one calendar VALUE, and nothing calls it.** `PayCalendar`, three named questions, a window that is a VIEW, and the recurrence calendar DELEGATING three of its own methods to the shared primitives. Opened **P21**-**P25** | SHIPPED | `3cb3082f` | -- |
 | pay_calendar | C2-b | -- | **C2-b -- the recurrence cutover.** The DECOMPOSED parent, split 2026-08-10 on an instrumented full-suite measurement; ticks with the last of its leaves | open | -- | pay_calendar:C2-a |
-| pay_calendar | C2-b1 | -- | **C2-b1 -- the calendar's last two questions, the cadence rule, and the one DB door.** `period_by_id` / `earliest_start_in_month` move; `cadence_days` becomes `int \| None`, refused beside a payday; `pay_calendar.calendar_for` loads. Nothing calls it. Corrected **P25**'s two expired docstrings; opened **P28** | open | -- | pay_calendar:C2-a |
+| pay_calendar | C2-b1 | -- | **C2-b1 -- the calendar's last two questions, the cadence rule, and the one DB door.** `period_by_id` / `earliest_start_in_month` move; `cadence_days` becomes `int \| None`, refused beside a payday; `pay_calendar.calendar_for` loads. Nothing calls it. Corrected **P25**'s two expired docstrings; opened **P28** | SHIPPED | `90f2fbb7` | pay_calendar:C2-a |
 | pay_calendar | C2-b2 | -- | **C2-b2 -- the cutover.** `PeriodCalendar` / `SchedulePeriod` / `RecurrenceScheduleError` DELETE; 10 `calendar_for` sites and 8 modules repoint; the 5 tests a simulated cutover fails are rewritten. Owns **P26**, **P27**, **P28** | open | -- | pay_calendar:C2-b1 / balance:X-ad (deletes the registration door that opens a hole) / pay_calendar:C3 (deletes the free-date door; developer ruling 2026-08-10 -- the derived calendar ABSORBS a hole instead of reporting it, row **P27**, so the generators close BEFORE the absorber lands) |
 | pay_calendar | C2-c | -- | **C2-c -- the cash-view cutover.** `balance_at/_cash_periods._PeriodSpans` retires (**P14**) | open | -- | pay_calendar:C2-a / balance:X-ad (deletes the registration door that opens a hole) / pay_calendar:C3 (deletes the free-date door; developer ruling 2026-08-10 -- the derived calendar ABSORBS a hole instead of reporting it, row **P27**, so the generators close BEFORE the absorber lands) |
 | pay_calendar | C2-d | -- | **C2-d -- the filing cutover.** `find_period_containing_date` and `resolve_anchor_pay_period` DELETE; the two posting writers call the filing rule. **NOT blocked by the P27 pair**: `filing_period` bisects on `start_date` and never reads an end, and its equivalence to the chain it replaces was proven over GAPPED shapes | open | -- | pay_calendar:C2-a |

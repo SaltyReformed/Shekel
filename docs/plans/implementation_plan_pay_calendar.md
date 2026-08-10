@@ -2,14 +2,14 @@
 
 ## Where this stands
 
-**C1** (`f9d148fe`) and **C2-a** (`3cb3082f`) are built; which has reached `main` and production is
-a MEASUREMENT -- `git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`. The arc
-opened 2026-08-08 out of the recurrence arc's **F-10**, once that proved a missing NORMALIZATION and
-not a missing check; **R-F10** / **R-F12** tick with **C5a** / **C2**, and `balance:N-128` / `X-l`
-are the same defect from a third side.
+**C1** (`f9d148fe`), **C2-a** (`3cb3082f`) and **C2-b1** (`90f2fbb7`) are built; which has reached
+`main` and production is a MEASUREMENT -- `git log --oneline origin/main..dev`,
+`docker inspect shekel-prod-app`. The arc opened 2026-08-08 out of the recurrence arc's **F-10**,
+once that proved a missing NORMALIZATION and not a missing check; **R-F10** / **R-F12** tick with
+**C5a** / **C2**, and `balance:N-128` / `X-l` are the same defect from a third side.
 
 **C2 is RULED on all three forks (2026-08-10) and DECOMPOSED; `C2-b` DECOMPOSED again the same day
-on a measurement, so NEXT is `C2-b1`.** `C2` ticks as ONE step under three names -- `C2` ==
+on a measurement, so NEXT is `C2-d`.** `C2` ticks as ONE step under three names -- `C2` ==
 `balance:X-l` == `recurrence:R-F12`. **The four CUTOVER leaves then wait on `balance:X-ad` and
 `C3`** (ruled 2026-08-10): a derived calendar ABSORBS a hole instead of reporting it (**P27**), so
 the two doors that open one close before the absorber lands. `C2-d` is exempt, because
@@ -304,16 +304,12 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       SILENT re-index of a partial payday set (**P26**). `period_starting_on_or_after` does NOT
       move -- C2-a shipped it -- so two move, not three. Ticks with its last leaf.
 
-- [ ] **C2-b1 -- the last two questions, the cadence rule, and one door.** `period_by_id` and
-  `earliest_start_in_month` join the value as shared primitives, the shape C2-a used for the other
-  three. `cadence_days` becomes `int \| None`: legal ONLY beside an EMPTY payday set, where the
-  derivation provably never reads it, and REFUSED beside a payday. **Two claims a first draft made
-  here are REFUTED and the corrections ship with it**: the refusal does NOT police **P8**
-  (`resolve_cadence` answers `None` only with no schedule row AND no period, so P8's owner gets an
-  inferred 14), and the empty calendar is kept for `balance:X-ad`, after which a new owner really
-  holds none, not for the `_reading.resolved_recurrence` guard the draft cited.
-  `pay_calendar.calendar_for` is the one door out of the database, NOT through `pay_period_service`,
-  which C2-f points at this value and would cycle. Corrects **P25**; opens **P28**.
+- [x] **C2-b1 -- the last two questions, the cadence rule, and one door.** `90f2fbb7`.
+  `period_by_id` / `earliest_start_in_month` delegate; `cadence_days` is `int \| None`, refused
+  beside a payday; `calendar_for` reads `budget.pay_periods` directly, never through
+  `pay_period_service`, which C2-f would cycle. Corrected **P25** and two REFUTED claims of its own
+  (the refusal polices no P8; the empty calendar is kept for `balance:X-ad`); opened **P28**.
+  Rule 5; the proof of record is that commit and `_loader.py`'s docstring.
 
 - [ ] **C2-b2 -- the cutover.** `PeriodCalendar` / `SchedulePeriod` /
   `RecurrenceScheduleError` DELETE; 10 `calendar_for` call sites and 8 `app/` modules take the one
