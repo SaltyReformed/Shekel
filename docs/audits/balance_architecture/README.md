@@ -42,7 +42,7 @@ staleness was invisible because nothing here is a predicate.
 | **why this shape** | the anchor half was redesigned from scratch by ruling **R-EB**; R-EQ designed the duplicate rule that had only ever been re-keyed, R-ER put the day rule in the module that owns what an assertion is, X-f1e1 deleted the second DOOR, X-f1e2 the second WRITER, X-f1e3 the mount that was destroying its own message | Section 3.3, and R-EB / R-EQ / R-ER / R-ES / R-ET in Section 4 |
 | **the live lesson** | **a producer that is correct on the ordinary path can be inverted on the correcting one, and only the correcting path is worth testing.** X-f2-a first built its preview on `balance_at`, which is right the FIRST time a day is recorded and returns the user's own prior figure every time after -- because an assertion RESETS the walk. Five tests passed; not one asked about a day that already carried an assertion, the only axis the defect lives on. Measured on production Checking 2026-04-15 (three balances recorded in one day): `-$45.86` reported against `-$92.29` true. The answer was already public and already the LOAN card's -- `CashAnchorCorrection.balance_before`. **Ask what a producer says the second time.** | Section 8 |
 | **the ledger** | **99 rows**, +3 across X-f2-a: **N-212** five schema fields rounding money with BANKER'S rounding where W9904 forbids exactly that and cannot see it (the `.quantize()` is inside Marshmallow), **G2**'s. **N-213** the preview answers nothing for the six MODELLED account kinds, **X-j**'s. **N-214** a read that fires while you type shares one rate-limit ceiling with the save it precedes, `operator`'s. X-an-b's four: **N-208** a sixth non-total anchor ordering, in `scripts/integrity_check.py`, which an `app/`-scoped census could not see. **N-209** the suite CANNOT build the `created_at` tie production builds routinely (`_FrozenDbClock` increments on purpose), so the class was invisible to it. **N-210** two package exports with no out-of-package caller. **N-211** a real tie means two contradictory assertions for one day and nothing says so. **N-204 / N-205 / N-206 re-point from the X-f2 parent onto X-f2-b**, the leaf that closes them | `../../plans/ledger.md` |
-| **resuming cold** | Branch from `dev`. Whether it is ahead of `main`, and whether by documents or by code, is a MEASUREMENT (`git log --oneline origin/main..dev`) and this row no longer claims it -- the previous revision said "DOCUMENTS ONLY" and block 10's `C1` shipped `app/services/pay_calendar/` into that gap. The repo head is **`c7f3a9d1e864`** and the test template is already stamped at it -- VERIFIED by reading `alembic_version` in `shekel_test_template`, not assumed; rebuild only if you add a migration. Baseline **8,486** green (`./scripts/test.sh`, 187 s, 2026-08-09, measured on `dev` at `397ce36e`); it read 8,469 before X-f2-a's 17 controls, 8,431 before X-an's two leaves, and 8,258 before R7a-1 and C1. **The venv must be ACTIVE for `git commit`**: pre-commit hooks are `language: system` and the first attempt failed with `Executable pylint not found`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x). This row used to name one hand-made prod restore point; **the recurrence arc's R-F8 made every deploy dump unconditionally**, so `~/shekel-backups/` now holds one per release and the deploy REFUSES a rollback its image cannot resolve | Section 7.2 |
+| **resuming cold** | Branch from `dev`. Whether it is ahead of `main`, and whether by documents or by code, is a MEASUREMENT (`git log --oneline origin/main..dev`) and this row no longer claims it -- the previous revision said "DOCUMENTS ONLY" and block 10's `C1` shipped `app/services/pay_calendar/` into that gap. The repo head is **`c7f3a9d1e864`** and the test template is already stamped at it -- VERIFIED by reading `alembic_version` in `shekel_test_template`, not assumed; rebuild only if you add a migration. Baseline **8,486** green (`./scripts/test.sh`, 191 s, 2026-08-09, re-measured on `dev` at the plan-gate merge `0b833783`); it read 8,469 before X-f2-a's 17 controls, 8,431 before X-an's two leaves, and 8,258 before R7a-1 and C1. The registries have their own gate, **111 green** (`pytest tools/plan_gate -c /dev/null -q`), and **what may start now is a QUERY over `steps.md`'s `blocked by` column, not the row order** -- see `docs/plans/conventions.md` rules 7 and 13. **The venv must be ACTIVE for `git commit`**: pre-commit hooks are `language: system` and the first attempt failed with `Executable pylint not found`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x). This row used to name one hand-made prod restore point; **the recurrence arc's R-F8 made every deploy dump unconditionally**, so `~/shekel-backups/` now holds one per release and the deploy REFUSES a rollback its image cannot resolve | Section 7.2 |
 
 Section 5 is the work that remains and Section 4 the rulings that govern it; `archive/` is what
 already shipped. **Every open defect is a row in `../../plans/ledger.md` whose `arc` reads
@@ -151,6 +151,14 @@ still-Projected item whose date has passed is CLAMPED FORWARD, never absorbed by
 (R-G): its effective instant is `max(its attribution date, as_of + 1 day)`, because a plan cannot
 have already happened. Before an account's first assertion the fold BACK-PROJECTS over the records
 and holds flat before the earliest one (R-I / R-S).
+
+**What "settled transaction rows" MEANS, and it is structural rather than a fence: a row is settled
+if and only if it carries a settle day.** `status_seam.apply_status_change` is the single door that
+writes `status_id`, and it writes the day in the same call. A `CHECK` cannot express it -- the
+predicate lives in `ref.statuses` and a constraint cannot join -- and a reader finding a settled row
+with no day FAILS LOUD, because silently dropping it from the fold is silent money loss. Established
+at X-f1 and stated HERE rather than in that step's entry, because X-f2 and X-f3 read against it and
+rule 5 forbids a live sentence depending on an archived one.
 
 ### 3.2 The modeled asset, as shipped
 
@@ -317,17 +325,11 @@ with their own text and owners, so restating them here was the registry duplicat
   scratch 2026-08-03 on ruling R-EB** and now ships as X-f1..X-f5, with X-f6 as the ruled follow-on.
   It ticks with the last of them.
 
-* [x] **X-f1** `feat(transactions): a settle carries the day the money moved` -- absorbs **S2-b**.
-  **COMPLETE at fourteen leaves, CONDENSED into `archive/phase_x_as_built_2026-08-04.md` Section 1a**
-  (rule 5). It did NOT close **N-173**, which re-points to **X-f6**.
-  **ONE thing it established stays LIVE here, because X-f2 and X-f3 read against it** (rule 5):
-  **a row is settled if and only if it carries a settle day** -- structural, not a fence, because
-  `status_seam.apply_status_change` is the single door that writes `status_id` and writes the day in
-  the same call; a `CHECK` cannot express it (the predicate lives in `ref.statuses` and a constraint
-  cannot join); and a reader finding a settled row with no day FAILS LOUD, because silently dropping
-  it from the fold is silent money loss.
-  Its **(b)**, the seam's stamping rule, MOVED to X-f2's entry -- the step that reads it. X-an-a
-  consumed the other half of that pair.
+* [x] **X-f1** `8d812662` (PR #83) a settle carries the day the money moved; absorbs **S2-b**.
+  COMPLETE at fourteen leaves, CONDENSED into `archive/phase_x_as_built_2026-08-04.md` Section 1a.
+  Did NOT close **N-173**, which re-points to **X-f6**. The rule it established -- a row is settled
+  iff it carries a settle day -- is Section 3.1's, not this entry's, because X-f2 and X-f3 read
+  against it. Its **(b)** moved to X-f2's entry; X-an-a consumed the other half of that pair.
 * [x] **X-an** `3d3f0ef5` / `549015c0` a payment is history from the day its money moved (ruling
   **R-EK**), the DECOMPOSED parent, COMPLETE at two leaves and **CONDENSED into
   `archive/phase_x_as_built_2026-08-04.md` Section 1b** (rule 5), which is where the two leaves'
@@ -344,17 +346,12 @@ with their own text and owners, so restating them here was the registry duplicat
   to the settled band and PRESERVES the day on re-entry, which is what stops archiving a payment from
   re-dating its money. X-f2-c puts the STATEMENT date there instead of the stamp. X-f1's other half
   of the pair -- keying the loan resolver's history cut on the stored day -- was consumed by X-an-a.
-* [x] **X-f2-a** `397ce36e` the DIFFERENCE, before it is saved (**R-EU**). The anchor editor gains a
-  server-rendered preview: what the account's RECORDS produce for the day the form names, what the
-  user typed, and the difference. Read-only, so **no figure moves**; the arithmetic and the sign's
-  MEANING are both decided in the route, never in Jinja or JS. **The figure is
-  `balance_at.records_balance_at`, and a first build got this wrong**: it used the account's current
-  balance, which an assertion RESETS, so the difference read `$0.00` on any day already recorded and
-  on a CORRECTION carried the opposite sign to the truth (production Checking 2026-04-15: `-$45.86`
-  against the previous entry, `-$92.29` against the records). The right figure is the walk's own
-  `CashAnchorCorrection.balance_before` -- already public, and already what the LOAN drift card
-  renders. **Scoped to accounts with no modelled tier** (57 of 78 non-loan assertions are Checking);
-  the modelled kinds are **N-213**.
+* [x] **X-f2-a** `397ce36e` the DIFFERENCE, before it is saved (**R-EU**), preceded by the module
+  split it forced (`69b91a53`). The anchor editor previews what the account's RECORDS produce for the
+  day the form names, what was typed, and the gap, through `balance_at.records_balance_at`.
+  Read-only, so no figure moves; the arithmetic and the sign's MEANING are decided in the route.
+  Scoped to accounts with no modelled tier. Opened **N-212**, **N-213**, **N-214**; the
+  correcting-path lesson is the signpost's and the measurements are the commit's.
 * [ ] **X-f2-b** the DURABLE record (**R-EV**). A Balance history card on the cash detail page --
   as-of, recorded, ledger, difference -- the cash twin of the loan page's Balance anchors card,
   which is the asymmetry **N-205** measures: an AST pass found NO read path from

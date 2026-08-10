@@ -56,18 +56,25 @@ SIGNPOST_CAPS = {"balance": 30, "recurrence": 20, "pay_calendar": 20}
 
 #: A SHIPPED step's entry cap (rule 7).
 #:
-#: **``None`` for balance is a KNOWN HOLE, not an absence of subject.**  That
-#: justification used to read "where a document has never ticked a step, so no
-#: entry exists to grade", and it is false: the balance README has four ticked
-#: steps (X-ae, X-af, X-aj1, X-f1) and turning the arm on reports five live
-#: violations -- all four open with prose instead of their commit hash, and
-#: X-f1's entry runs 18 lines against the 6 every other arc obeys.  Closing it
-#: needs each step's real commit, which is the author's `git log` and not a
-#: guess, so it is left OFF and stated rather than left off and explained away.
-#: conventions.md:8 lists rule 7 as a PREDICATE; for this one document it is
-#: not one.
+#: **The balance HOLE is CLOSED (2026-08-09) and the number it was justified by
+#: had gone stale in both directions.**  The exemption read "four ticked steps
+#: (X-ae, X-af, X-aj1, X-f1) ... all four open with prose instead of their
+#: commit hash, and X-f1's entry runs 18 lines".  Measured before closing it:
+#: SIX steps were ticked, only X-f1 lacked a hash, and its entry was 11 lines
+#: -- three violations, not five, and X-ae / X-af / X-aj1 / X-an had quietly
+#: been fixed with nobody re-reading the exemption that cited them.  **A
+#: disabled arm carries a claim about the corpus, and that claim rots exactly
+#: like any other**; this one had been arguing for its own existence off
+#: numbers that were no longer true.
+#:
+#: Closing it took one hash (`8d812662`, PR #83) and two condensations, and
+#: `conventions.md:8` now lists rule 7 as a PREDICATE without an exception.
+#: X-f1's live sentence -- a row is settled iff it carries a settle day -- did
+#: NOT go with the trim: rule 5 forbids a live sentence depending on an
+#: archived one, so it moved UP to Section 3.1, which defines the "settled
+#: transaction rows" it is about.
 TICKED_CAPS = {
-    "balance": None,
+    "balance": 6,
     "recurrence": 6,
     "pay_calendar": 6,
     "credit_card": 6,

@@ -90,11 +90,20 @@ _TICKED_OPENER_RX = re.compile(
     r"^\s*[-*]\s*\[[xX]\]\s*\*\*(?P<title>.*?)\*\*\s*(?P<rest>.*)$",
 )
 
+#: What a commit hash LOOKS like, shared by the two arms that grade one.  The
+#: SHAPE is one fact; the POSITION each arm requires is not, which is why this
+#: is a fragment rather than a whole pattern -- :data:`_COMMIT_CITATION_RX`
+#: anchors it to the start of a specification's rest-of-line, and
+#: :mod:`_registry` anchors it to a whole ``steps.md`` cell.  Two copies of the
+#: shape would let the index and the specification disagree about what a hash
+#: even is.
+COMMIT_SHA = r"[0-9a-f]{7,40}"
+
 #: The commit citation, required to be the FIRST thing after the title.
 #: Position is the discriminator, not shape: an Alembic revision id is also 12
 #: hex characters and would satisfy any "contains a hash" test while naming no
 #: commit -- both live documents cite one in the same breath as their commit.
-_COMMIT_CITATION_RX = re.compile(r"^`([0-9a-f]{7,40})`")
+_COMMIT_CITATION_RX = re.compile(rf"^`({COMMIT_SHA})`")
 
 
 @dataclass(frozen=True)

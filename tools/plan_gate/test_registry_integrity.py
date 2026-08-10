@@ -541,6 +541,52 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
         assert any("ONE blocker set" in p for p in problems), problems
 
 
+class TestTheIndexNamesTheCommitThatShippedAStep:
+    """conventions.md rule 7, the INDEX half.
+
+    Rule 7's arc-document arm has always required a ticked entry to OPEN with
+    its hash.  The ``steps.md`` ``commit`` column asked the same question and
+    nothing read it: three of twelve SHIPPED rows held ``--`` while their own
+    arc entries cited a hash.
+    """
+
+    def test_every_shipped_row_names_a_commit_and_no_open_row_does(self):
+        """Every shipped row names a commit, and no open row does."""
+        assert not registry.commit_column_violations()
+
+    def test_the_live_corpus_actually_holds_shipped_rows_to_grade(self):
+        """A rule with no subject in the corpus is untested by the clean case."""
+        shipped = [row for row in registry.step_rows() if row.shipped]
+        assert shipped, "no step has shipped -- this arm grades nothing"
+
+    def test_the_control_fires_on_a_shipped_row_with_no_commit(self, stage):
+        """The control fires on a shipped row with no commit."""
+        line = _row("steps", "| balance | X-an |")
+        stage("steps", line, _with_cell(line, -2, "--"))
+        problems = registry.commit_column_violations()
+        assert any("balance:X-an" in p and "SHIPPED" in p for p in problems), problems
+
+    def test_the_control_fires_on_an_open_row_that_names_one(self, stage):
+        """A step that has not shipped has no commit."""
+        line = _row("steps", "| balance | X-f3 |")
+        stage("steps", line, _with_cell(line, -2, "`deadbee1`"))
+        problems = registry.commit_column_violations()
+        assert any("balance:X-f3" in p and "has not shipped" in p
+                   for p in problems), problems
+
+    def test_a_non_hash_in_the_cell_is_refused(self, stage):
+        """Prose in the commit cell is not a commit.
+
+        The failure the ``--`` case cannot catch: a cell that is populated but
+        names something that is not a hash.  ``PR #83`` identifies the same
+        ship and is not a thing a reader can `git show`.
+        """
+        line = _row("steps", "| balance | X-an |")
+        stage("steps", line, _with_cell(line, -2, "PR #83"))
+        problems = registry.commit_column_violations()
+        assert any("balance:X-an" in p for p in problems), problems
+
+
 class TestAParentTicksWithTheLastOfItsLeaves:
     """conventions.md rule 13, the decomposition half.
 

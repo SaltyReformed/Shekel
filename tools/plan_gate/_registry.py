@@ -30,6 +30,7 @@ from pathlib import Path
 
 from _plan_gate import (
     CHECKBOX_RX,
+    COMMIT_SHA,
     NON_STEP_OWNERS,
     OWNER_RX,
     split_owners,
@@ -49,6 +50,13 @@ CONVENTIONS = PLANS / "conventions.md"
 UNESCAPED_PIPE_RX = re.compile(r"(?<!\\)\|")
 
 STATED_COUNT_RX = re.compile(r"\*\*The ledger stands at (?P<count>\d+) rows?\.?\*\*")
+
+#: A ``steps.md`` ``commit`` cell naming a hash: the WHOLE cell is one
+#: backticked sha.  The shape comes from :data:`_plan_gate.COMMIT_SHA` so the
+#: index and the specifications cannot disagree about what a hash is; the
+#: anchoring is this module's, because here the discriminator is that the cell
+#: holds nothing else.
+COMMIT_CELL_RX = re.compile(rf"^`{COMMIT_SHA}`$")
 
 #: The three-colour marks :func:`_first_cycle` walks with.  GREY means "on the
 #: current path", which is the only state that distinguishes a cycle from a
@@ -537,6 +545,45 @@ def index_agreement_violations() -> list[str]:
                     f"{document.name} but {row.state} in steps.md "
                     f"(conventions.md rule 12)",
                 )
+    return problems
+
+
+def commit_column_violations() -> list[str]:
+    """Rule 7, the INDEX side: a shipped step names its commit, an open one does not.
+
+    Rule 7 makes a shipped step's SPECIFICATION open with its hash, and
+    :func:`_plan_gate.ticked_entry_violations` grades that.  Nothing graded the
+    other half -- ``steps.md`` has carried a ``commit`` column since the
+    registries were split, and three of twelve SHIPPED rows held ``--``
+    (``X-ae``, ``X-af``, ``X-f1``) while their own arc entries cited a hash.
+    The index said "shipped" and refused to say what shipped it.
+
+    Deliberately NOT checked: that the two hashes are EQUAL.  ``X-aj1``'s cell
+    names `1688f508`, the first of the three commits its entry lists, while the
+    entry opens with the merge `dde107f6`; ``X-an``'s cell names the last of
+    two.  Both are correct answers to "which commit", and an equality arm would
+    force one convention onto a column where the useful hash genuinely differs
+    by step.  What matters is that the index names ONE.
+
+    Returns:
+        One message per shipped row with no hash, and per open row with one.
+    """
+    problems: list[str] = []
+    for row in step_rows():
+        cell = row.commit.strip()
+        if row.shipped and not COMMIT_CELL_RX.match(cell):
+            problems.append(
+                f"{row.key} is SHIPPED but its `commit` cell is {cell!r}.  A "
+                f"shipped step names the commit that shipped it, so a reader "
+                f"can read the code instead of prose about it "
+                f"(conventions.md rule 7)",
+            )
+        if not row.shipped and cell != "--":
+            problems.append(
+                f"{row.key} is {row.state} but its `commit` cell names "
+                f"{cell!r}.  A step that has not shipped has no commit "
+                f"(conventions.md rule 7)",
+            )
     return problems
 
 

@@ -28,11 +28,11 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 
 | arc | id | aliases | step | state | commit | blocked by |
 |---|---|---|---|---|---|---|
-| balance | X-ae | -- | **X-ae** `fix(app): a submitted digit string is parsed, not predicated` -- PR #79, merge | SHIPPED | -- | -- |
-| balance | X-af | -- | **X-af** `test(periods): the fixtures build their window on the USER's clock` -- PR #77, | SHIPPED | -- | -- |
+| balance | X-ae | -- | **X-ae** `fix(app): a submitted digit string is parsed, not predicated` -- PR #79, merge | SHIPPED | `a778703f` | -- |
+| balance | X-af | -- | **X-af** `test(periods): the fixtures build their window on the USER's clock` -- PR #77, | SHIPPED | `dbee3812` | -- |
 | balance | X-aj1 | -- | **X-aj1** the status seam merge, in three commits (`1688f508` R-DR's extraction, `63514efc` | SHIPPED | `1688f508` | -- |
 | balance | X-f | -- | **X-f** `feat(transactions): the app records when money moved` -- the DECOMPOSED parent, | open | -- | -- |
-| balance | X-f1 | -- | **X-f1** `feat(transactions): a settle carries the day the money moved` -- absorbs **S2-b**. | SHIPPED | -- | -- |
+| balance | X-f1 | -- | **X-f1** `feat(transactions): a settle carries the day the money moved` -- absorbs **S2-b**. | SHIPPED | `8d812662` | -- |
 | balance | X-an | -- | **X-an** `fix(loan): a payment is history from the day its money moved` -- the DECOMPOSED parent, COMPLETE at two leaves, condensed into `archive/…2026-08-04.md` Section 1b | SHIPPED | `549015c0` | -- |
 | balance | X-f2 | -- | **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half, the DECOMPOSED parent | open | -- | -- |
 | balance | X-f2-a | -- | **X-f2-a** the DIFFERENCE, before it is saved: the anchor form shows what the account's RECORDS produce for its day, what was typed, and the gap (**R-EU**). Read-only. Opened **N-212**, **N-213**, **N-214** | SHIPPED | `397ce36e` | -- |

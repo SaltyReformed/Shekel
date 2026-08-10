@@ -76,6 +76,14 @@ to avoid.
 7. **A SHIPPED step's specification is a POINTER: it OPENS with its commit hash.** The hash's
    POSITION is the predicate, not its presence -- an Alembic revision id is hex too. A LIVE step is
    a specification and is never trimmed.
+   **`steps.md`'s `commit` column is the same rule on the index**, and it went ungraded until
+   2026-08-09: three of twelve SHIPPED rows held `--` while their own arc entries cited a hash, so
+   the index said "shipped" and refused to say what shipped it. The two hashes need not be EQUAL --
+   `X-aj1`'s cell names the first of its three commits and its entry opens with the merge -- because
+   which commit is the useful one genuinely differs by step. What is graded is that each document
+   names ONE. **The balance document's exemption from this rule is CLOSED**: it was justified by a
+   count that had gone stale in both directions, which is what a disabled arm does to the claim it
+   rests on.
 
 8. **A finding is not deferred for cost.** "Materially larger than this step" is a reason to give
    something its OWN step, never a reason to leave it unowned. A finding costing `$0.00` on today's
