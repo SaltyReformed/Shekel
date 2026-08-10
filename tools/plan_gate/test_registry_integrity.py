@@ -418,6 +418,112 @@ class TestTheIndexAndTheSpecificationsAgree:
         assert any("C1" in p and "ticked" in p for p in problems), problems
 
 
+class TestTheBlockedByColumnIsTheDependencyGraph:
+    """conventions.md rule 13 -- the column that was parsed and never read.
+
+    Until this class existed ``StepRow.blocked`` was populated by hand, carried
+    through the parser and consulted by nothing, so an edge could name a
+    deleted step, contradict itself or close a loop with every gate green.  The
+    contradiction that proves it was found by BUILDING: ``steps.md`` recorded
+    ``R6 blocked by balance:X-an`` while the recurrence document derived ``R6``
+    from a column ``R5`` creates behind ``X-f4``.
+    """
+
+    def test_the_graph_is_referentially_sound_acyclic_and_alias_coherent(self):
+        """The live dependency graph satisfies all five arms."""
+        assert not registry.blocked_by_violations()
+
+    def test_the_live_corpus_actually_contains_edges_to_grade(self):
+        """A rule with no subject in the corpus is untested by the clean case."""
+        edges = [row for row in registry.step_rows() if row.blocked_keys()]
+        assert edges, "no step carries a blocker -- rule 13 grades nothing"
+
+    def test_an_annotated_blocker_parses_to_its_key(self):
+        """``CC3b`` carries a real annotation, and the key is parsed OUT of it.
+
+        A naive reader would take the whole cell as the key and report the one
+        row that documents WHY its blocker is already shipped as broken -- the
+        false positive the shared ``aliases`` grammar was written against.
+        """
+        by_key = {row.key: row for row in registry.step_rows()}
+        assert by_key["credit_card:CC3b"].blocked_keys() == ["balance:X-f1"]
+
+    def test_the_control_fires_on_a_blocker_naming_no_step(self, stage):
+        """The control fires on a blocker naming no step."""
+        line = _row("steps", "| balance | X-x |")
+        stage("steps", line, _with_cell(line, -1, "balance:X-gone"))
+        problems = registry.blocked_by_violations()
+        assert any("X-gone" in p and "no step" in p for p in problems), problems
+
+    def test_the_control_fires_on_a_self_block(self, stage):
+        """The control fires on a self-block.
+
+        Checked before the referential arm on purpose: ``balance:X-x`` IS a
+        real step, so a self-edge satisfies arm 2 and would otherwise pass.
+        """
+        line = _row("steps", "| balance | X-x |")
+        stage("steps", line, _with_cell(line, -1, "balance:X-x"))
+        problems = registry.blocked_by_violations()
+        assert any("blocked by ITSELF" in p for p in problems), problems
+
+    def test_the_control_fires_when_a_shipped_step_is_blocked_by_an_open_one(
+        self, stage,
+    ):
+        """A SHIPPED step blocked by an OPEN one is one of two real defects."""
+        line = _row("steps", "| balance | X-an |")
+        stage("steps", line, _with_cell(line, -1, "balance:X-f3"))
+        problems = registry.blocked_by_violations()
+        assert any(
+            "balance:X-an" in p and "stated prerequisite" in p for p in problems
+        ), problems
+
+    def test_the_control_fires_on_a_cycle(self, stage):
+        """The control fires on a cycle.
+
+        ``R5`` is already blocked by ``X-f4``; pointing ``X-f4`` back at ``R5``
+        closes the loop across two arcs, which is the shape no single arc
+        document could have seen.
+        """
+        line = _row("steps", "| balance | X-f4 |")
+        stage("steps", line, _with_cell(line, -1, "recurrence:R5"))
+        problems = registry.blocked_by_violations()
+        assert any("CYCLE" in p for p in problems), problems
+
+    def test_a_converging_edge_is_not_reported_as_a_cycle(self):
+        """Two steps blocked by one third is a DIAMOND, not a loop.
+
+        A two-colour visited set would report it as a cycle, and the live
+        corpus already contains one -- ``X-k`` and ``R6`` are both blocked by
+        ``R5`` -- so the naive detector would fail the clean case on day one.
+        The three-colour walk distinguishes "on the current path" from "already
+        finished", which is the whole reason for the GREY mark.
+        """
+        blockers = {
+            row.key: row.blocked_keys() for row in registry.step_rows()
+        }
+        converging = [k for k, v in blockers.items() if "recurrence:R5" in v]
+        assert len(converging) >= 2, (
+            f"expected a converging edge in the live corpus, found {converging}"
+        )
+        assert not [
+            p for p in registry.blocked_by_violations() if "CYCLE" in p
+        ]
+
+    def test_the_control_fires_when_one_name_of_a_class_carries_the_blocker(
+        self, stage,
+    ):
+        """``C2`` == ``X-l`` == ``R-F12``: a blocker on one binds all three.
+
+        This is the arm that matters most to a reader picking up work: without
+        it, recording the blocker on ``C2`` alone leaves ``X-l`` and ``R-F12``
+        reading as READY.
+        """
+        line = _row("steps", "| pay_calendar | C2 |")
+        stage("steps", line, _with_cell(line, -1, "balance:X-f3"))
+        problems = registry.blocked_by_violations()
+        assert any("ONE blocker set" in p for p in problems), problems
+
+
 class TestTheParserSurvivesTheShapesTheRealFilesUse:
     """The measured false positives, kept as controls rather than as prose."""
 
