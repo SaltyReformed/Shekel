@@ -33,9 +33,9 @@ from app.services import (
     anchor_service,
     balance_at,
     cash_ledger,
-    entry_service,
     pay_period_service,
     posting_service,
+    reconcile_service,
 )
 from app.services.balance_at import BalanceContext
 from app.utils.dates import display_today, to_display_date
@@ -265,13 +265,13 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
         """Reconcile the envelope's purchases through the real service door.
 
         The user ticking the purchase off their statement
-        (``entry_service.record_settled_days``) -- the step that replaced the
+        (``reconcile_service.record_settled_days``) -- the step that replaced the
         bulk clear.  Returns how many rows were actually stamped, which the
         callers assert on: a reconcile that silently matched nothing would make
         every figure below hold for the wrong reason.
         """
         observed_on = cash_ledger.reconciled_through(account.id).observed_day
-        recorded = entry_service.record_settled_days(
+        recorded = reconcile_service.record_settled_days(
             seed_user["user"].id, account.id,
             {entry.id for entry in envelope.entries}, observed_on,
         )

@@ -25,6 +25,8 @@ from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
     append_balance_assertion,
+    create_account_of_type,
+    create_loan_account,
     settle_instant_on,
 )
 from app.models.interest_params import InterestParams
@@ -1726,13 +1728,14 @@ class TestTheReconcileRoute:
     it names is unchanged and still real: reconciling account A must not touch
     account B's purchases.  The exhaustive scoping matrix (another user, a
     credit purchase, a settled parent, an already-recorded entry) is graded at
-    the service in ``test_services/test_entry_service.py``; what is graded here
+    the service in ``test_services/test_reconcile_service.py``; what is graded here
     is the ROUTE -- that it resolves the assertion day itself, refuses a
     non-owner, and commits.
     """
 
     def _make_grocery_txn_with_entries(
         self, seed_user, seed_periods_today, entries, account=None,
+        name="Groceries",
     ):
         """Create a tracked grocery transaction with the given entries.
 
@@ -1747,6 +1750,10 @@ class TestTheReconcileRoute:
                 to.  Defaults to the seed_user's primary checking
                 account; pass a second account to exercise the
                 per-account scope of the reconcile.
+            name: the envelope's name, on both the template and the row.
+                Defaults to "Groceries"; pass a second name to exercise the
+                per-envelope GROUPING (plan step X-f2-c1), which needs two
+                distinguishable blocks in one panel.
 
         Returns:
             The Transaction object.
@@ -1765,7 +1772,7 @@ class TestTheReconcileRoute:
             account_id=account.id,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            name="Groceries",
+            name=name,
             default_amount=Decimal("500.00"),
             is_envelope=True,
         )
@@ -1778,7 +1785,7 @@ class TestTheReconcileRoute:
             scenario_id=seed_user["scenario"].id,
             account_id=account.id,
             status_id=projected.id,
-            name="Groceries",
+            name=name,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
             estimated_amount=Decimal("500.00"),
@@ -2487,7 +2494,7 @@ class TestTheReconcileRoute:
         purchase would get ``settled_on = today``, which is AFTER the asserted
         day, so ``ReconciledThrough.covers`` answers False, the reservation never
         drops, and the projection stays low by the whole purchase.  Worse, the
-        row now fails ``_outstanding_scope``'s ``settled_on IS NULL`` clause, so
+        row now fails ``reconcile_service._outstanding_scope``'s ``settled_on IS NULL`` clause, so
         the panel can never offer it again -- the user cannot fix it from the
         surface that broke it.
         """
@@ -2698,6 +2705,147 @@ class TestTheReconcileRoute:
             by_id = {e.id: e for e in self._entries_of(txn.id)}
             assert by_id[ticked_id].settled_on == display_today()
             assert by_id[untouched_id].settled_on is None
+
+    def test_the_panel_404s_for_an_account_this_page_does_not_serve(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Finding **N-216**: both reconcile doors take the page's kind gate.
+
+        The cash detail page and its other three fragments all resolve through
+        ``_cash_page.load_cash_account_or_404``, which 404s the kinds this page
+        does not serve; these two routes guarded on OWNERSHIP alone, so
+        ``GET /accounts/<loan id>/reconcile`` rendered a cash-reconciliation
+        panel for an amortizing account and answered "every purchase recorded
+        on this account has been matched to your bank" -- a sentence that is
+        not about a loan.
+
+        **A 200 with an empty list is what it did, which is why a
+        content assertion could not have caught it.** The list is empty because
+        a loan's ``account_anchor_history`` carries only its origination row, so
+        the offer set's date bound admits nothing: a property of the DATA, and
+        one plan step X-f2-c2 removes when the set widens to transactions and a
+        loan's projected transfer shadows become tickable. The status code is
+        therefore the only honest oracle here.
+
+        Both doors are asserted: a READ that rendered the panel is the leak, and
+        a WRITE that accepted a tick against a loan is the money.
+        """
+        with app.app_context():
+            loan = create_loan_account(seed_user, db.session, name="Van Loan")
+            db.session.commit()
+            loan_id = loan.id
+
+        assert auth_client.get(
+            f"/accounts/{loan_id}/reconcile",
+        ).status_code == 404
+        assert auth_client.post(
+            f"/accounts/{loan_id}/reconcile",
+            data={"entry_ids": ["1"]},
+        ).status_code == 404
+
+    def test_a_true_up_on_a_kind_this_panel_refuses_prompts_NOTHING(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Finding **N-216**'s THIRD door, and the regression the first fix made.
+
+        The reconcile panel has three doors, not two: the two routes, and the
+        post-true-up modal ``prompt_fragment`` mounts out of band.  The anchor
+        editor opens on every kind except an amortizing one, so a 401(k) or
+        Property true-up reaches that modal -- and once the two ROUTES 404'd
+        those kinds, the modal still rendered with its checkboxes while its
+        submit button POSTed to a door that refused.  **htmx swaps only 2xx**,
+        so the button did nothing, silently and forever: strictly worse than
+        the state before the gate, and the exact failure
+        ``app/error_handlers.py`` refuses to ship for a mutating fragment.
+
+        The premise is asserted, not assumed: the true-up itself must SUCCEED
+        (200) on this kind, or the modal's absence would prove nothing.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            retirement = create_account_of_type(
+                seed_user, db.session, "401(k)", "Empower 401(k)",
+                anchor_balance=Decimal("50000.00"),
+            )
+            db.session.commit()
+            retirement_id = retirement.id
+            # An outstanding purchase ON that account, so the offer set is
+            # non-empty and an ungated modal would really render.
+            self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("40.00", past, False, None)],
+                account=retirement,
+            )
+
+            trued_up = self._true_up(auth_client, retirement_id, "51000.00")
+
+            assert trued_up.status_code == 200
+            body = trued_up.data.decode()
+            assert "data-modal-auto-show" not in body
+            assert "Mark ticked as posted" not in body
+
+    def test_purchases_are_grouped_under_their_own_envelope(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Ruling **R-EW**: a purchase nests under the thing it belongs to.
+
+        The flat list this replaced named each purchase's parent in a trailing
+        fragment on its own line, so two purchases against one envelope repeated
+        that envelope's name twice and a purchase against another sat between
+        them under whatever purchase date ordered it. Grouped, each envelope's
+        name appears ONCE and its purchases are contiguous beneath it.
+
+        Graded on the rendered document rather than on the producer, because the
+        producer's grouping is already pinned in
+        ``test_services/test_reconcile_service.py`` and what this asserts is that
+        the panel consumes it: the name appears exactly once per envelope, each
+        block carries its own subtotal, and every purchase is still individually
+        tickable (the two acts stay independent, R-EW's second half).
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            groceries = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [
+                    ("40.00", past, False, None),
+                    ("60.00", past, False, None),
+                ],
+            )
+            gas = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("25.00", past, False, None)],
+                name="Gas",
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            body = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+            ).data.decode()
+
+            # (i) Each block names itself ONCE, not once per purchase --
+            # which is the whole difference between a heading and a trailing
+            # fragment on every line.
+            assert body.count("Groceries") == 1
+            assert body.count("Gas") == 1
+            # (ii) Its own subtotal: 40.00 + 60.00 = 100.00, hand-computed.
+            assert "$100.00" in body
+            # (iii) Every purchase is still its OWN tick (R-EW: the two acts
+            # stay independent).
+            grocery_ids = [e.id for e in self._entries_of(groceries.id)]
+            gas_ids = [e.id for e in self._entries_of(gas.id)]
+            for entry_id in grocery_ids + gas_ids:
+                assert f'value="{entry_id}"' in body
+            # (iv) And they are CONTIGUOUS beneath their own heading, which is
+            # what "nested" means and what (i) alone does not prove: a flat
+            # list that merely printed each name once would interleave.  Read
+            # off the rendered document by position rather than asserted about
+            # markup, so a restyle does not fail it and a re-ordering does.
+            at = body.index
+            assert at("Groceries") < min(
+                at(f'value="{i}"') for i in grocery_ids
+            )
+            assert max(
+                at(f'value="{i}"') for i in grocery_ids
+            ) < at("Gas") < min(at(f'value="{i}"') for i in gas_ids)
 
 
 # ── Account Type CRUD ─────────────────────────────────────────────

@@ -34,11 +34,9 @@ can enforce.
 
 Services boundary: this module owns the HTTP-shaped concerns (ownership
 checks, form parsing, fragment rendering, ``HX-Trigger`` composition) and
-delegates every read and write to :mod:`app.services.entry_service` and
+delegates every read and write to :mod:`app.services.reconcile_service` and
 :mod:`app.services.cash_ledger`.
 """
-
-from decimal import Decimal
 
 from flask import render_template, request
 from flask_login import current_user, login_required
@@ -46,8 +44,12 @@ from flask_login import current_user, login_required
 from app.extensions import db
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
-from app.services import cash_ledger, entry_service
-from app.utils.auth_helpers import get_or_404, require_owner
+from app.routes.accounts._cash_page import (
+    cash_detail_wrong_type,
+    load_cash_account_or_404,
+)
+from app.services import cash_ledger, reconcile_service
+from app.utils.auth_helpers import require_owner
 from app.utils.digit_strings import parse_row_ids
 
 
@@ -90,27 +92,30 @@ def reconcile_context(account: Account, panel: str) -> dict:
             shadowing it would make the two indistinguishable at a glance.
 
     Returns:
-        The template context.  ``outstanding`` is empty (and the partial says
-        so) for an account with nothing to reconcile or no assertion at all.
+        The template context.  ``outstanding`` is an
+        :class:`~app.services.reconcile_service.OutstandingSet`, and it reports
+        itself empty (the partial says so) for an account with nothing to
+        reconcile or no assertion at all.
     """
     # The raw DAY, and both uses below are why the boundary offers it: an SQL
     # bound on the offer set, and a rendered caption.  Neither asks whether a
     # movement is inside the balance -- that question has one implementation
     # (``ReconciledThrough.covers``) and neither of these is a second one.
     observed_on = cash_ledger.reconciled_through(account.id).observed_day
+    # An account with no assertion has nothing for a purchase to be INSIDE of,
+    # so the empty set is built here rather than passed a sentinel day.  The
+    # producer is never asked about a ``None`` day, which is what keeps its
+    # ``observed_on`` non-optional.
     outstanding = (
-        []
+        reconcile_service.OutstandingSet.empty()
         if observed_on is None
-        else entry_service.outstanding_purchases(
+        else reconcile_service.outstanding_set(
             current_user.id, account.id, observed_on,
         )
     )
     return {
         "account": account,
         "outstanding": outstanding,
-        "outstanding_total": sum(
-            (entry.amount for entry in outstanding), Decimal("0.00"),
-        ),
         "reconciled_through": observed_on,
         "anchor_balance": cash_ledger.resolve_anchor(account).balance,
         "panel_id": panel,
@@ -131,14 +136,37 @@ def prompt_fragment(account: Account) -> str:
     module, so an underscore here would be finding **N-33**'s shape rather than
     a boundary.
 
+    **It is the panel's THIRD door and it takes the same kind gate** (finding
+    **N-216**), which a first version of that fix missed because the finding
+    named the two ROUTES.  The anchor editor opens on every kind except an
+    amortizing one, so a Property or 401(k) true-up reached here -- and once
+    the two routes 404'd those kinds, the modal still rendered with its
+    checkboxes while its submit button POSTed to a door that refused.  htmx
+    swaps only 2xx, so the button did nothing, silently and forever: strictly
+    worse than before the gate, and the exact failure
+    ``app/error_handlers.py`` already refuses to ship for a mutating fragment.
+    Gating here rather than widening the two routes is what makes
+    ``_reconcile_modal.html``'s own promise -- *"dismissing it loses nothing:
+    the same list is a permanent section on the account's detail page"* --
+    TRUE, because that page 404s these kinds too.
+
+    **The consequence is stated rather than discovered**: an entry recorded
+    against a transaction on one of those accounts has no reconcile surface at
+    all and its reservation releases only through ``entry_service.update_entry``.
+    Measured on production 2026-08-10: all 82 entries, and all 59 outstanding
+    ones, are on Checking, so the set this closes is empty today.
+
     Args:
         account: The just-asserted account.
 
     Returns:
-        The rendered fragment, or ``""``.
+        The rendered fragment, or ``""`` -- for an account with nothing
+        outstanding, and for one this panel does not serve.
     """
+    if cash_detail_wrong_type(account):
+        return ""
     context = reconcile_context(account, panel="reconcile-panel-modal")
-    if not context["outstanding"]:
+    if context["outstanding"].is_empty:
         return ""
     return render_template("accounts/_reconcile_modal.html", **context)
 
@@ -155,10 +183,20 @@ def reconcile_panel(account_id):
     A true-up moves the day the list is computed against, so a list left
     un-refreshed would offer purchases that are no longer outstanding -- the
     same reason the band above it re-fetches on the same event.
+
+    **The kind gate is finding N-216's fix.**  This route guarded on ownership
+    alone while the page it belongs to and its other three fragments all went
+    through :func:`~app.routes.accounts._cash_page.load_cash_account_or_404`,
+    so ``GET /accounts/<loan id>/reconcile`` rendered a cash-reconciliation
+    panel for an amortizing account -- captioned "every purchase recorded on
+    this account has been matched to your bank", which is not a sentence about
+    a loan.  It answered with an EMPTY list only because a loan's
+    ``account_anchor_history`` carries just its origination row, so the offer
+    set's date bound admitted nothing: a property of the data, not of the
+    route, and one plan step X-f2-c2 removes when the set widens to
+    transactions.
     """
-    account = get_or_404(Account, account_id)
-    if account is None:
-        return "Account not found", 404
+    account = load_cash_account_or_404(account_id)
     return render_template(
         "accounts/_reconcile_purchases.html",
         **reconcile_context(account, panel=panel_id(account.id)),
@@ -199,10 +237,14 @@ def reconcile_purchases(account_id):
 
     Returns the refreshed panel plus ``HX-Trigger: balanceChanged`` so every
     surface showing a projection recomputes.
+
+    **The kind gate is finding N-216's fix**, on the WRITE half; see
+    :func:`reconcile_panel` for the measurement.  The two doors take the same
+    gate because a gate one member of a family can be written without is a gate
+    the next member will be written without too -- which is how this pair came
+    to be the exception in the first place.
     """
-    account = get_or_404(Account, account_id)
-    if account is None:
-        return "Account not found", 404
+    account = load_cash_account_or_404(account_id)
 
     # The raw DAY: it bounds the offer set in SQL and is STAMPED onto every
     # ticked purchase as its posting day, neither of which is the "is this
@@ -219,7 +261,7 @@ def reconcile_purchases(account_id):
             **reconcile_context(account, panel=panel_id(account.id)),
         )
 
-    entry_service.record_settled_days(
+    reconcile_service.record_settled_days(
         current_user.id,
         account.id,
         parse_row_ids(request.form.getlist("entry_ids")),
