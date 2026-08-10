@@ -2,21 +2,20 @@
 
 ## Where this stands
 
-**C1 IS IN PRODUCTION** (`f9d148fe`, PR #87); nothing else has shipped. This arc was opened
-2026-08-08 out of the recurrence arc's **F-10**, once that was established to be a missing
-NORMALIZATION rather than a missing check. Its **R-F10** / **R-F12** are ticked by **C5a** / **C2**
-here, and the balance arc's **N-128** / **X-l** are the same defect from a third side.
+**C1** (`f9d148fe`) and **C2-a** (`3cb3082f`) are built; which has reached `main` and production is
+a MEASUREMENT -- `git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`. The arc
+opened 2026-08-08 out of the recurrence arc's **F-10**, once that proved a missing NORMALIZATION
+rather than a missing check; **R-F10** / **R-F12** tick with **C5a** / **C2**, and the balance arc's
+**N-128** / **X-l** are the same defect from a third side.
 
-**C2 is RULED on all three of its forks (2026-08-10) and DECOMPOSED into `C2-a`..`C2-f`; NEXT =
-`C2-a`**, the value itself, which nothing calls. It still ships the three-arc identity as one tick
--- `C2` == `balance:X-l` == `recurrence:R-F12` -- but not as one commit. The ruling rests on a
-census that contradicted these documents: **SIX** implementations of "which paycheck covers this
-day", not the three row **P6** named, across **66** call sites (section 2).
+**C2 is RULED on all three forks (2026-08-10) and DECOMPOSED; NEXT is any of `C2-b`..`C2-f`, all
+five unblocked by C2-a.** `C2` ticks as ONE step under three names -- `C2` == `balance:X-l` ==
+`recurrence:R-F12`. **A cold session starts at section 4**, whose preamble names the three things a
+cutover must not assume.
 
-**Both forks RULED 2026-08-09.** P3/N-123 to the balance arc's **X-ad**, so that row is
-`balance:N-123` and C3 no longer owns it. P16 to the occurrence-aware remedy, now **C5b**:
-**C5 DECOMPOSED the same day**, C5a the deletion (after C4) and C5b the migration, BLOCKED BY
-recurrence **R5**, which creates the `occurs_on` its index re-key needs.
+**Both earlier forks RULED 2026-08-09.** P3/N-123 to the balance arc's **X-ad**, so that row is
+`balance:N-123`. P16 to the occurrence-aware remedy, now **C5b**: **C5 DECOMPOSED the same day**,
+C5a the deletion (after C4) and C5b the migration, blocked by recurrence **R5**.
 
 **Section 4 is the steps; findings, the step index and the rules are the shared registries.**
 
@@ -38,9 +37,8 @@ recurrence **R5**, which creates the `occurs_on` its index re-key needs.
 
 ## 0. Sequencing against the other two arcs
 
-Three arcs are live. **A step with no code yet has no measured file set**, and the first draft said
-one for C1-C3 anyway under the heading "measured" (found by adversarial review 2026-08-08). What IS
-measured is the consumer surface C4 must cross, by AST over `app/`:
+Three arcs are live. **A step with no code yet has no measured file set**, and the first draft
+claimed one for C1-C3 anyway. What IS measured is the surface C4 must cross, by AST over `app/`:
 
 ```text
 .end_date      35 files / 72 accesses.  33 are PayPeriod; 2 read only RecurrenceRule
@@ -64,11 +62,10 @@ registration bootstrap payday is DELETED rather than kept beside the owner's rea
 
 **C3 and the recurrence arc's R7c share a derivation, not a file.**
 `recurrence_rules.offset_periods` is a phase modulo `interval_n` computed from the start period's
-`period_index` (`recurrence/_resolution.py:896`). Once `period_index` is derived rather than stored,
-inserting a payday BEFORE an existing one shifts every later index and silently re-phases every
-`Every N Periods` rule. Ledger row **P11**. Zero live rules are exposed today (all 46 carry
-`interval_n = 1`, where the phase is inert -- measured on `shekel-prod-db` 2026-08-08), and R7c
-derives the phase from the authored anchor instead, which removes the exposure permanently.
+`period_index` (`recurrence/_resolution.py:896`), so once the index is derived, inserting a payday
+BEFORE an existing one re-phases every `Every N Periods` rule. Ledger row **P11** carries the
+measurement (zero live rules exposed today); R7c derives the phase from the authored anchor instead,
+which removes the exposure permanently.
 
 ---
 
@@ -298,51 +295,54 @@ one value states BOTH -- and the third, `period_starting_on_or_after`, already e
 Each step is a leaf boundary -- one commit, its own tests green, independently revertible -- and
 **budgets a neutral adversarial review pass and a fix pass**.
 
-- [x] **C1 -- the derivation exists and is proven equal to what is stored.** `f9d148fe`,
-  `app/services/pay_calendar`; byte-identical on 61 of 61 rows of both clones under two
-  controls. Opened **P15**, **P16**. Condensed under rule 5 on 2026-08-10; the proof of record
-  is that commit and the three files it names in `_derive.py`'s docstring.
+**Three things every C2 cutover must not assume, learned by building C2-a.** `DerivedPeriod` has
+`period_id`, NOT `.id`, and every PROJECTED period carries `period_id = None`, so an `{p.id: ...}`
+map over a projected axis collapses (row **P21**); `period_index` is the key that stays unique.
+`derive_periods` accepts an UNSAVED payday, so "not a projection" is not "saved". And an ON-CADENCE
+fixture cannot see a derived-end defect -- `lead(start) - 1` and `start + cadence - 1` coincide
+there, which made this step's first P14 test vacuous.
+
+- [x] **C1 -- the derivation exists and is proven equal to what is stored.** `f9d148fe`.
+  Byte-identical on 61 of 61 rows of both clones under two controls; opened **P15**, **P16**.
+  Condensed under rule 5; the proof of record is that commit and `_derive.py`'s docstring.
 
 - [ ] **C2 -- one calendar value answers every "which period" question** -- the DECOMPOSED parent,
-  RULED on three forks 2026-08-10 (rulings table). Ticks with the last of its leaves, and that
-  tick is also `balance:X-l` and `recurrence:R-F12`: one step under three names, one commit
-  each. The balance README's "SEQUENCED TOGETHER" (`:604`) names the other two.
+      RULED on three forks 2026-08-10. Ticks with the last of its leaves, and that tick is also
+      `balance:X-l` and `recurrence:R-F12`: one step under three names, one commit each.
 
-- [ ] **C2-a -- the one calendar VALUE, and nothing calls it.**
-
-`PayCalendar` in `app/services/pay_calendar/`, built from an owner's COMPLETE payday set over C1's
-`derive_periods`. Four named searches -- covers-this-day over SAVED periods (`None` in a hole, which
-`recurrence/_occurrence.py:713` needs to tell a hole from "not there yet"),
-`period_starting_on_or_after`, `period_starting_on_or_before` (the missing mirror), and the FILING
-rule derived from the third. TOTAL forward at the owner's cadence with `period_id = None` past the
-last payday. A window is a `view()` that keeps real ends, which is what closes row **P14**
-structurally. Additive: zero `app/` callers, so the harness proves it against production's 61
-paydays BEFORE anything depends on it -- C1's technique, and the reason this is its own leaf.
+- [x] **C2-a -- the one calendar VALUE, and nothing calls it.** `3cb3082f`. `PayCalendar` answers
+      `period_containing` / `span_containing` / `filing_period`; a window is a `PeriodWindow`, a
+      TYPE no constructor accepts. The periods are DERIVED in `__post_init__`, so tiling is
+      structural. `recurrence.PeriodCalendar` now DELEGATES three methods to the shared primitives
+      -- forced by `duplicate-code`, proven live by a mutation. Suite 8535; 11 mutants killed.
+      Opened **P21**-**P25**.
 
 - [ ] **C2-b -- the recurrence cutover.** `PeriodCalendar` / `SchedulePeriod` /
-      `RecurrenceScheduleError` retire into the one value; `routes/_recurrence_preview.py:252` and
-      `generation_schedule.py:192` stop passing a partial list and take a `view()` (row **P14**).
-      The arc's 430-shape baseline must stay byte-identical.
+      `RecurrenceScheduleError` retire into the one value; `period_by_id`, `earliest_start_in_month`
+      and `period_starting_on_or_after` move across with them.
+      **Its stated P14 work is FALSE and row P14 now says so**: both named callers take
+      `get_all_periods`, the COMPLETE set. **`SCHEDULE_GAP` goes unsatisfiable here** (row **P25**).
+      The 430-shape baseline must stay byte-identical -- and it CANNOT see hole absorption, because
+      every shape it builds is contiguous.
 
 - [ ] **C2-c -- the cash-view cutover.** `balance_at/_cash_periods._PeriodSpans` retires. Its three
-      call sites keep answering `None` outside the reported window, which is a VIEW question and not
-      the calendar's -- the identity R-K rests on reads a period's own span.
+  call sites keep answering `None` outside the reported window, which is a VIEW question and not
+  the calendar's -- the identity R-K rests on reads a period's own span.
 
 - [ ] **C2-d -- the filing cutover.** `loan_ledger.find_period_containing_date` and
   `resolve_anchor_pay_period` DELETE; the two posting writers
-  (`loan_posting_service/_anchors.py:223`, `account_posting_service/_anchors.py:270`) call the
-  filing rule. Proven equivalent over 1,800 (shape, day) pairs 2026-08-10, gapped and one-day
-  shapes included. The first is a public export whose only `app/` caller is twelve lines below
-  it -- `balance:N-210`'s shape, one package over.
+  (`loan_posting_service/_anchors.py:223`, `account_posting_service/_anchors.py:270`) call
+  `filing_period`, which is proven equivalent over 1,800 (shape, day) pairs. The first is a
+  public export whose only `app/` caller is twelve lines below it -- `balance:N-210`'s shape.
 
 - [ ] **C2-e -- the projection axis.** `growth_engine.generate_projection_periods` and
-  `SyntheticPeriod` DELETE; their six call sites take a projected `view()`. Closes **P7**,
-  **P17** and **P20** together: the fabricated ids leave the real `pay_periods.id` namespace,
-  and the axis stops being biweekly for owners who are not.
+  `SyntheticPeriod` DELETE; their six call sites take `axis()`. Closes **P7**, **P17**, **P20**,
+  **P21**, **P22**, **P23** -- read all six before starting; three were found AFTER this leaf
+  was written and they change what it owes.
 
 - [ ] **C2-f -- the readers answer from the calendar.** `pay_period_service`'s six `get_*` (`:213`,
-      `:237`, `:260`, `:277`, `:317`, `:336`) resolve against the one value across their 66 call
-      sites. Closes **P19** with `get_current_period`'s unordered `.first()`.
+  `:237`, `:260`, `:277`, `:317`, `:336`) resolve against the one value across their 66 call
+  sites. Closes **P19** with `get_current_period`'s unordered `.first()`.
 
 - [ ] **C3 -- the writer writes paydays, forward-only.**
 

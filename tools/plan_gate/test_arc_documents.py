@@ -193,12 +193,25 @@ class TestAShippedStepIsAPointer:
         assert ticked, "no ticked step anywhere -- rule 7 grades nothing"
 
     def test_the_control_fires_when_a_ticked_entry_drops_its_hash(self):
-        """pay_calendar C1 is ticked and opens with `f9d148fe`."""
+        """pay_calendar C1 is ticked and opens with `f9d148fe`.
+
+        **The planted edit must not depend on the PUNCTUATION after the hash.**
+        It did until 2026-08-10: it replaced ``` `f9d148fe`, ``` including the
+        comma, so when C1's entry was condensed and the comma became a period
+        the replacement matched NOTHING, the text went through unmodified, and
+        the control passed a document it had not mutated -- reporting the arm
+        healthy without exercising it.  Stripping the hash alone is punctuation
+        independent, and the assertion below proves the mutation landed before
+        asking whether the arm fired.
+        """
         spec = SPECS["pay_calendar"]
         text = spec.read()
         assert "`f9d148fe`" in text, "the control's anchor commit is gone"
-        problem = ticked_entry_violations(text.replace("`f9d148fe`,", "shipped,"), spec)
-        assert problem, "a ticked entry with no opening hash must be reported"
+        planted = text.replace("`f9d148fe`", "shipped")
+        assert planted != text, "the control mutated nothing"
+        assert ticked_entry_violations(planted, spec), (
+            "a ticked entry with no opening hash must be reported"
+        )
 
 
 class TestTheDocumentsPointAtTheRegistries:
