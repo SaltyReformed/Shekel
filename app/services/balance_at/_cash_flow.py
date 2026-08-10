@@ -22,6 +22,7 @@ pre-anchor date by fabricating today's balance or omitting the period entirely
 """
 
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -30,6 +31,9 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.cash_ledger import walk_cash_ledger
+from app.utils.dates import to_display_date
+
 from ._context import BalanceContext
 
 from . import _cash_fold
@@ -346,3 +350,176 @@ def records_balance_at(
         if correction.observed_on == as_of:
             return correction.balance_before
     return cash_balance_at(account, ctx, as_of)
+
+
+@dataclass(frozen=True)
+class CashAnchorRow:
+    """One recorded balance, beside what the records held just before it.
+
+    The display row of :func:`cash_anchor_history`, and the cash twin of
+    :class:`app.services.loan_posting_service.LoanAnchorDrift`.
+
+    **:attr:`ledger` and :attr:`difference` are OPTIONAL, and their absence is
+    a statement rather than a gap.**  Both are ``None`` exactly where the pair
+    has no agreed meaning, and the two cases are one rule:
+
+    * **the OPENING row.**  Its ``balance_before`` is the sum of settled rows
+      dated BEFORE the account's first assertion, replayed from a zero seed --
+      which :func:`app.services.cash_ledger.dated_deltas` documents as "not a
+      balance the account ever had", and what a reader should answer there is
+      OPEN finding **N-37**.  On the real Checking account it reads
+      ``$2,057.42`` against an opening of ``$2,746.58``, and the ``$689.16``
+      between them is the account's opening EQUITY (the figure plan step X-f5
+      books), not a correction -- so captioning it as a difference would say
+      "the records were off by $689.16 the day the account opened", which is
+      false.  The loan twin renders the same two cells ``--`` for the same
+      reason, one tier down: a loan opens from nothing.
+    * **an account whose balance carries a MODELLED tier.**  The walk sees
+      recorded CASH only; an HYSA's accrued interest and a brokerage's growth
+      never were transactions, so the difference would name a model-vs-market
+      gap as untracked spend.  Measured on production: the HYSA's one row
+      would read ``$4,863.56`` against a ``$5,363.56`` balance (91 percent of
+      it), and the Money Market's two true-ups ``$15.01`` / ``$15.24``, which
+      are interest.  This is the scope :func:`records_balance_at` already
+      states for the X-f2-a preview, and widening it is finding **N-213**.
+
+    Attributes:
+        observed_on: The civil day this balance was declared TRUE for
+            (``AccountAnchorHistory.observed_on``) -- the day the whole walk
+            partitions on.
+        recorded_on: The civil day the assertion was ENTERED, converted from
+            the recording instant into the display timezone.  It exists so a
+            BACK-DATED row identifies itself: sorted by :attr:`observed_on` a
+            balance recorded today for a past day lands at that past day's
+            position, and on the real Checking account that is 40 rows down --
+            so ordering alone does not give a back-dated write the retrieval
+            path finding **N-205** is about.  Equal to :attr:`observed_on` for
+            the ordinary same-day true-up, which is why the template shows it
+            only when the two differ.
+        recorded: The balance the user asserted, cent-quantized.  A fact for
+            every account kind, which is why it is never ``None``.
+        ledger: What the recorded facts alone produced immediately before this
+            assertion reset the walk
+            (:attr:`~app.services.cash_ledger.CashAnchorCorrection.balance_before`),
+            or ``None`` in the two cases above.
+        difference: ``recorded - ledger``
+            (:attr:`~app.services.cash_ledger.CashAnchorCorrection.delta`), the
+            jump this assertion booked over the records, or ``None`` alongside
+            :attr:`ledger`.  NEGATIVE means the bank held LESS than the records
+            account for -- the same ``recorded - records`` convention the
+            difference preview's verdict reads (``accounts.anchor``).
+        is_opening: ``True`` for the account's first assertion.
+    """
+
+    observed_on: date
+    recorded_on: date
+    recorded: Decimal
+    ledger: "Decimal | None"
+    difference: "Decimal | None"
+    is_opening: bool
+
+
+@dataclass(frozen=True)
+class CashAnchorHistory:
+    """An account's balance-assertion log, as the history card renders it.
+
+    Attributes:
+        rows: One :class:`CashAnchorRow` per assertion the account carries,
+            NEWEST first.  The producer's order is the reverse of the walk's,
+            which is the order the card reads in; it is not the order the
+            figures were computed in, and it cannot change them (each row's
+            ``ledger`` is the running total of the events BEFORE it).
+        reconcilable: ``True`` when this account's balance is recorded cash
+            alone, so the :attr:`CashAnchorRow.ledger` /
+            :attr:`~CashAnchorRow.difference` pair means something and the card
+            shows those columns.
+
+            **It cannot be derived from the rows, and that is a trap worth
+            naming.**  ``any(row.difference is not None)`` looks equivalent and
+            is wrong for a PLAIN account carrying exactly ONE assertion: its
+            only row is the opening, whose pair is ``None`` for the ruled
+            reason above, and the derived flag would then hide the columns on
+            an account that reconciles perfectly well.  It is read from
+            :func:`~app.services.account_projection.classify_account`, stated
+            once, here.
+    """
+
+    rows: "list[CashAnchorRow]"
+    reconcilable: bool
+
+
+def cash_anchor_history(
+    account: Account, ctx: BalanceContext,
+) -> CashAnchorHistory:
+    """Return every balance an account has been told it held, newest first.
+
+    Ruling **R-EV** (plan step X-f2-b): the DURABLE record of a balance
+    assertion, which the app did not have.  Until this entry the only evidence
+    that a back-dated assertion landed was an 8-second toast, and an AST pass
+    over :class:`~app.models.account.AccountAnchorHistory` found no read path
+    into any template except the GOVERNING assertion's "as of" caption -- which
+    by definition is not the back-dated row (finding **N-205**).
+
+    **It needs no new producer and adds no new rule.**  Every column is a field
+    the walk already publishes: :class:`~app.services.cash_ledger.CashAnchorCorrection`
+    carries ``observed_on``, its anchor's ``anchor_balance`` and ``asserted_at``,
+    ``balance_before`` and ``delta``.  Re-deriving any of them here would be a
+    second statement of the walk's own arithmetic, which is the shape plan step
+    X-f2-a corrected in the difference preview.
+
+    **It takes no valuation date, and that is exact rather than an omission.**
+    The loan twin
+    (:func:`app.services.loan_posting_service.loan_balance_anchor_history`)
+    filters its anchors to ``anchor_date <= as_of`` because a loan anchor can
+    be dated ahead of a display date.  A cash assertion cannot:
+    :func:`app.services.anchor_service.resolve_observation_day` refuses a day
+    in the future at BOTH write doors, so every assertion has already happened
+    and a bound would be a no-op that a later reader would have to re-justify.
+    ``ctx`` is still required -- it scopes the settled rows the ``ledger``
+    column folds -- but its ``as_of`` decides nothing here.
+
+    Reads only -- no writes, no commit.
+
+    Args:
+        account: The account whose assertion log to read.  Caller owns the
+            ownership check.  Its KIND is consulted once, for
+            :attr:`CashAnchorHistory.reconcilable`.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+            Its scenario scopes the settled rows the walk folds; assertions
+            themselves are per-ACCOUNT and replay in every scenario.
+
+    Returns:
+        The :class:`CashAnchorHistory`.  Its ``rows`` are empty only for an
+        account carrying no assertion at all -- production-unreachable
+        (``account_service.create_account`` and migration ``cfb15e782f86``
+        guarantee an opening row), and answered rather than raised because a
+        log of nothing is honestly empty.
+
+    Raises:
+        BaselineMissingError: When ``ctx`` carries no scenario.
+    """
+    _require_scenario(ctx)
+    reconcilable = classify_account(account) is AccountProjectionKind.PLAIN
+    walk = walk_cash_ledger(account.id, ctx.scenario_id)
+    rows = [
+        CashAnchorRow(
+            observed_on=correction.observed_on,
+            recorded_on=to_display_date(correction.anchor.asserted_at),
+            recorded=correction.anchor.anchor_balance,
+            # One condition, both cases: the pair is published only where it
+            # has an agreed meaning (see :class:`CashAnchorRow`).
+            ledger=(
+                correction.balance_before
+                if reconcilable and not correction.anchor.is_opening
+                else None
+            ),
+            difference=(
+                correction.delta
+                if reconcilable and not correction.anchor.is_opening
+                else None
+            ),
+            is_opening=correction.anchor.is_opening,
+        )
+        for correction in reversed(walk.anchor_corrections)
+    ]
+    return CashAnchorHistory(rows=rows, reconcilable=reconcilable)

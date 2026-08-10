@@ -422,3 +422,101 @@ prior balance across gap months within a loan's span. Re-verified to the cent on
 Live-verified 2026-07-12 (real prod-clone data, both themes, desktop + mobile); acceptance shots at
 `/home/josh/projects/shekel_theme/property_equity_loop_a/shots-live/property_rebuilt__*`. Scratch
 mockup RETAINED per the developer's 2026-07-12 instruction (delete after the developer's check).
+
+## Surface 7: Balance history (2026-08-10, plan step X-f2-b)
+
+New surface on the cash detail page, so it re-enters the protocol here: this audit section, then
+Loop A, then Loop B. Plan of record `docs/audits/balance_architecture/README.md` step **X-f2-b**
+(ruling **R-EV**); it closes findings **N-205**, **N-204** and **N-206** in `docs/plans/ledger.md`.
+
+### The surface's job
+
+"What balances have I told this account it held, and how far off were my records each time?" The
+cash twin of the loan dashboard's Balance anchors card (`loan/dashboard.html:427-478`, producer
+`loan_posting_service._display.loan_balance_anchor_history`), which renders As of / Recorded /
+Ledger / Drift per anchor.
+
+### What exists today, and the divergence
+
+- **Nothing durable.** An AST pass over `AccountAnchorHistory` confirms it: no template reads the
+  table except the governing-assertion caption (`anchor_as_of`, `_cash_band.html:21-22`), which by
+  definition is the CURRENT assertion and never a back-dated one. Verified again 2026-08-10 by
+  grepping every non-model reference; every other consumer is a service.
+- **The only evidence a back-dated assertion landed is an 8s toast**
+  (`accounts/_anchor_recorded_toast.html`, `data-bs-delay="8000"`). A user who looked away has no
+  retrieval path at all (finding **N-205**, WCAG 2.2 SC 2.2.1 shape).
+- **A second acknowledgement destroys a still-visible first** (finding **N-206**):
+  `hx-swap-oob="true"` is an outerHTML swap of `#anchor-ack-mount`, and nothing calls `dispose()`,
+  so each detached toast is retained in Bootstrap's element-keyed map with its autohide timer still
+  armed.
+- **The acknowledgement is keyed on the wrong question** (finding **N-204**):
+  `_submission_is_the_coverage_boundary` asks "was the submitted day the coverage boundary", so
+  re-confirming an unchanged balance on a LATER day appends a row, moves `reconciled_through`, and
+  takes the prompt branch, whose prompt is `""` whenever nothing is outstanding. The write lands
+  with no acknowledgement and an unchanged figure.
+- **Verdict: add.** A durable Balance history card below the band. It needs NO new producer:
+  `cash_ledger.walk_cash_ledger(...).anchor_corrections` already carries all four columns
+  (`observed_on`, `anchor.anchor_balance`, `balance_before`, `delta`).
+
+### Measured on the production clone (2026-08-10, 79 assertion rows)
+
+Run through the shipped `walk_cash_ledger`, not read off the table, so the Ledger and Difference
+columns are the ones the card would actually render.
+
+| account | kind | assertions | zero-difference | gross correction | net correction |
+| ------- | ---- | ---------- | --------------- | ---------------- | -------------- |
+| Checking | PLAIN | 57 | 2 | $16,656.94 | -$850.74 |
+| Fidelity Savings (HYSA) | INTEREST | 1 | 0 | $4,863.56 | $4,863.56 |
+| Fidelity Money Market | INTEREST | 3 | 0 | $4,909.51 | $4,909.51 |
+
+Four facts the design has to answer, none of them visible from the loan twin, which renders one row:
+
+1. **Scale.** Checking carries 57 assertions over 133 days, about 13 a month and growing. The loan
+   card's "render every row" shape does not transfer.
+2. **A day is not a key.** Three days carry more than one assertion (2026-04-15 carries THREE,
+   2026-05-07 and 2026-06-03 two each). On 2026-04-15 the three read $1,172.44, $1,133.47 and
+   $1,087.61, and each row's Ledger is the previous row's Recorded, so they are successive
+   corrections and all three have to render, in walk order.
+3. **The OPENING row's Ledger is not zero and is not a correction.** Checking's opening reads
+   Recorded $2,746.58, Ledger $2,057.42, Difference $689.16. That $2,057.42 is the sum of settled
+   rows dated BEFORE the opening assertion, replayed from a zero seed --
+   `cash_ledger._walk.dated_deltas` calls it "not a balance the account ever had" and what a reader
+   should show there is OPEN finding **N-37**. The gap of $689.16 is the account's opening equity,
+   the figure plan step X-f5 books, so captioning it as a difference would read "my records were off
+   by that much the day I started", which is false.
+4. **A modelled account's Difference is a model-vs-market gap, not untracked spend.** The HYSA's
+   single row is $4,863.56 on a $5,363.56 balance (91 percent of it), and the Money Market's two
+   non-opening rows are $15.01 and $15.24 -- accrued interest, which a "money Shekel has not
+   accounted for" caption would misname. This is the scope argument `records_balance_at` already
+   makes for X-f2-a's preview (finding **N-213**).
+
+A fifth fact is about the card's own job rather than its figures:
+**sorted by `observed_on`, a back-dated row does not appear at the top.** A balance recorded today
+for 2026-07-15 lands between the 07-10 and 07-16 rows, 40 rows down. Since the card exists to give a
+back-dated write a retrieval path (N-205), the ordering alone does not discharge it.
+
+### Loop A rulings (developer, 2026-08-10 -- LOCKED)
+
+1. **Depth: the 12 most recent, with Show all.** The card shows twelve rows and a disclosure expands
+   the rest in place. The twelve are the most recently RECORDED, rendered in `observed_on` order, so
+   fact 5's back-dated row is always among them; the header names what is shown.
+2. **Scope: one card, every cash kind, the reconciliation pair nullable per row.** Rather than two
+   card variants, `ledger` and `difference` are `Decimal | None` and render `--` where they have no
+   agreed meaning -- which makes the opening row (ruling 3) and a modelled account ONE rule with one
+   expression. The two columns and the caption are gated by a `reconcilable` flag read from
+   `classify_account`, never inferred from the rows: a PLAIN account with exactly one assertion has
+   only its opening, whose pair is withheld, and an inferred flag would hide the columns on every
+   freshly created checking account. Leaves **N-213** open and undecided.
+3. **The opening row renders `--` for Ledger and Difference**, badged Opening -- the loan twin's
+   treatment, for fact 3's reason.
+4. **The acknowledgement re-keys onto "did anything visible happen".** The reconcile prompt keeps
+   its own predicate (`_submission_is_the_coverage_boundary`), which is correct for it; the toast
+   fires when the governing balance did not move AND the prompt did not open. They stay mutually
+   exclusive as a consequence rather than as a construction. N-204's defect was welding the
+   acknowledgement to the prompt's complement, not the prompt's own question.
+5. **Copy branches on the write outcome.** Ruling R-EQ re-asserting the governing balance for the
+   same day writes nothing and rolls back, and that state now reaches the toast, so `COMMITTED` says
+   "Balance recorded" and `UNCHANGED` says the figure already matched. Without it the re-key ships a
+   toast that lies.
+6. **Placement: below the Outstanding purchases card.** The band is the answer, the reconcile panel
+   is the task, the history is the record.
