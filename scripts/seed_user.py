@@ -4,7 +4,7 @@ Shekel Budget App -- Seed User & Default Data
 Creates the single Phase 1 user by delegating to
 ``auth_service.register_user`` -- the same provisioning path the
 /register route uses -- so the seeded user is identical in shape to a
-self-registered one: user, settings, bootstrap pay period, checking
+self-registered one: user, settings, the pay-period schedule, checking
 account (with origination anchor history), baseline scenario, default
 categories, and default tax configuration.  This script owns only the
 operator-facing policy around that call: env parsing, production
@@ -17,6 +17,17 @@ Validates that the password is at least 12 characters, matching the
 minimum enforced by the application's change_password() and
 register_user() functions.  Exits with code 1 if the password is
 too short.
+
+**SEED_USER_LAST_PAYDAY is REQUIRED and has no default** (plan step X-ad-a,
+ruling R-DB).  Registration stopped inventing a pay period at sign-up because
+an invented payday is never the owner's real one and blocks them from entering
+it (finding **N-123**); defaulting the seeded operator's payday to "today"
+here would put that same fabrication back on the one path that provisions the
+production account.  There is no honest default for the day somebody was last
+paid, so the script refuses rather than guesses -- the same shape as its
+refusal of the documented default password in production.  The cadence and the
+horizon DO default, to the app-wide constants, because those are stated
+premises rather than facts about one person.
 
 After seeding completes (or returns early on an existing user), the
 SEED_USER_PASSWORD and SEED_USER_EMAIL values are scrubbed from
@@ -33,13 +44,19 @@ Usage:
     python scripts/seed_user.py
 
 Environment variables (or .env file):
-    SEED_USER_EMAIL        -- default: admin@shekel.local
-    SEED_USER_PASSWORD     -- default: ChangeMe!2026
-    SEED_USER_DISPLAY_NAME -- default: Budget Admin
+    SEED_USER_EMAIL         -- default: admin@shekel.local
+    SEED_USER_PASSWORD      -- default: ChangeMe!2026
+    SEED_USER_DISPLAY_NAME  -- default: Budget Admin
+    SEED_USER_LAST_PAYDAY   -- REQUIRED, ISO ``YYYY-MM-DD``: the day the
+                               operator was last paid.  Must fall within one
+                               cadence of today, which the service enforces.
+    SEED_USER_CADENCE_DAYS  -- default: the app's DEFAULT_PAY_CADENCE_DAYS
+    SEED_USER_NUM_PERIODS   -- default: the app's DEFAULT_PAY_PERIOD_HORIZON
 """
 
 import os
 import sys
+from datetime import date
 
 
 # Names of the seed-only env vars that must be scrubbed from
@@ -62,6 +79,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # root, in that mode).
 # pylint: disable=wrong-import-position
 from app import create_app
+from app.config import BaseConfig
 from app.exceptions import ConflictError, ValidationError
 from app.extensions import db
 from app.models.user import User
@@ -69,15 +87,78 @@ from app.services import auth_service
 # pylint: enable=wrong-import-position
 
 
+def _read_int_env(name: str, default: int, unit: str) -> int:
+    """Return an integer env var, exiting 1 on a value that is not one.
+
+    ``int()`` on operator input is a place a typo becomes a traceback.  The
+    service refuses an out-of-RANGE value with a message the operator can act
+    on; this refuses an unparseable one the same way, rather than letting a
+    ``ValueError`` escape as a stack trace in the container log.
+
+    Args:
+        name: The environment variable to read.
+        default: The value to use when the variable is unset or empty.
+        unit: What the number counts, for the refusal message.  Required
+            rather than defaulted: this helper reads a count of DAYS and a
+            count of PAY PERIODS, and one hardcoded noun made the message
+            wrong for whichever caller did not pick it.
+
+    Returns:
+        The parsed integer, or *default*.
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(
+            f"Error: {name} must be a whole number of {unit} (got {raw!r}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _read_last_payday() -> date:
+    """Return SEED_USER_LAST_PAYDAY, exiting 1 when it is absent or malformed.
+
+    REQUIRED with no default (plan step X-ad-a): see the module docstring for
+    why the one thing this script may not invent is the day somebody was paid.
+
+    Returns:
+        The parsed civil date.
+    """
+    raw = os.getenv("SEED_USER_LAST_PAYDAY", "").strip()
+    if not raw:
+        print(
+            "Error: SEED_USER_LAST_PAYDAY is not set.  Set it to the ISO date "
+            "(YYYY-MM-DD) the seeded user was last paid -- Shekel budgets by "
+            "paycheck and there is no honest default for that day.  It must "
+            "fall within one pay cadence of today.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        print(
+            f"Error: SEED_USER_LAST_PAYDAY must be an ISO date (YYYY-MM-DD); "
+            f"got {raw!r}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def seed_user():
     """Create the seeded user via ``auth_service.register_user``.
 
     Applies the script-side guards (production password policy, the
-    12-character minimum with operator guidance), then delegates the
-    provisioning itself to the registration service so the seeded
-    user's shape is identical to a /register user's.  Idempotent: an
-    existing user takes the already-exists skip and is returned
-    unchanged.  Exits with code 1 on a password or input problem.
+    12-character minimum with operator guidance, and the required
+    last-payday input), then delegates the provisioning itself to the
+    registration service so the seeded user's shape is identical to a
+    /register user's.  Idempotent: an existing user takes the
+    already-exists skip and is returned unchanged.  Exits with code 1
+    on a password or input problem.
 
     Returns:
         The created (or pre-existing) User.
@@ -124,41 +205,85 @@ def seed_user():
         )
         sys.exit(1)
 
-    # Provision via the canonical registration service -- the same
-    # path /register uses -- so the seeded user's shape (settings,
-    # bootstrap period, checking account, baseline scenario,
-    # categories, tax configuration) cannot drift from a
-    # self-registered user's.  ``register_user`` checks email
-    # uniqueness itself and raises BEFORE creating anything, so the
-    # ConflictError branch is the idempotent already-exists skip
-    # (container restarts re-run this script).  Audit finding F-114 /
-    # C-16: stdout is captured by the container log driver and shipped
-    # off-host, so log lines carry the synthetic primary key, never
-    # the email.
-    try:
-        user = auth_service.register_user(email, password, display_name)
-    except ConflictError:
-        existing = (
-            db.session.query(User)
-            .filter_by(email=email.strip().lower())
-            .one()
-        )
+    # THE ALREADY-EXISTS SKIP COMES FIRST, and it must (adversarial review of
+    # plan step X-ad-a).  A re-run over an existing owner creates nothing, so
+    # it needs no creation inputs -- but Python evaluates a call's arguments
+    # before the call, so building the spec below would run
+    # ``_read_last_payday()`` first, and that ``sys.exit(1)`` raises
+    # ``SystemExit``, a ``BaseException`` no ``except`` clause here catches.
+    # A production stack whose ``state`` volume was recreated (an operator
+    # path ``entrypoint.sh`` documents as supported) would then abort under
+    # ``set -e`` and never exec Gunicorn -- the app failing to boot for want
+    # of a payday that a skipped creation was never going to use.
+    #
+    # ``register_user``'s own uniqueness check REMAINS the authority: it still
+    # raises ``ConflictError`` below, which is now the racing-loser path
+    # rather than the ordinary one.  Audit finding F-114 / C-16: stdout is
+    # captured by the container log driver and shipped off-host, so log lines
+    # carry the synthetic primary key, never the email.
+    existing = (
+        db.session.query(User)
+        .filter_by(email=email.strip().lower())
+        .first()
+    )
+    if existing is not None:
         print(
             f"User id={existing.id} already exists (email redacted).  "
             "Skipping."
         )
         return existing
+
+    # Provision via the canonical registration service -- the same
+    # path /register uses -- so the seeded user's shape (settings,
+    # pay-period schedule, checking account, baseline scenario,
+    # categories, tax configuration) cannot drift from a
+    # self-registered user's.
+    #
+    # The pay-schedule inputs are read HERE rather than at the top of the
+    # function so the password guards above still run first: an operator with
+    # both problems is told about the credential one before being sent to look
+    # up a payday.
+    try:
+        user = auth_service.register_user(auth_service.RegistrationSpec(
+            email=email,
+            password=password,
+            display_name=display_name,
+            first_payday=_read_last_payday(),
+            cadence_days=_read_int_env(
+                "SEED_USER_CADENCE_DAYS",
+                BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
+                unit="days",
+            ),
+            num_periods=_read_int_env(
+                "SEED_USER_NUM_PERIODS",
+                BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
+                unit="pay periods",
+            ),
+        ))
+    except ConflictError:
+        # The race: another process created this owner between the check
+        # above and this call.  Same outcome, re-read rather than assumed.
+        raced = (
+            db.session.query(User)
+            .filter_by(email=email.strip().lower())
+            .one()
+        )
+        print(
+            f"User id={raced.id} already exists (email redacted).  "
+            "Skipping."
+        )
+        return raced
     except ValidationError as exc:
-        # Operator input problem (e.g. a malformed SEED_USER_EMAIL).
-        # The message is safe to print: it describes the rule, not the
-        # value.
+        # Operator input problem (e.g. a malformed SEED_USER_EMAIL, or a
+        # payday outside the window the service bounds it to).  The message
+        # is safe to print: it describes the rule, not a secret.
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
     db.session.commit()
     print(
         f"Created user id={user.id} (email redacted from log) with "
-        "settings, bootstrap pay period, checking account, baseline "
+        "settings, pay-period schedule, checking account, baseline "
         "scenario, default categories, and default tax configuration."
     )
     # Final summary stays on user_id only -- the email is the same

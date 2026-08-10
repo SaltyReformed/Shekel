@@ -49,6 +49,7 @@ if str(_SCRIPT_DIR) not in sys.path:
 # pylint: disable=wrong-import-position
 from _audit_common import atomic_write_json
 from app import create_app, ref_cache
+from app.config import BaseConfig
 from app.enums import (
     AcctTypeEnum,
     CalcMethodEnum,
@@ -81,7 +82,12 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
-from app.services.auth_service import hash_password, register_user
+from app.services.auth_service import (
+    RegistrationSpec,
+    hash_password,
+    register_user,
+)
+from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
 
@@ -213,10 +219,26 @@ def create_owner(email: str, password: str, display_name: str) -> User:
     """Create an owner user via the application's register_user().
 
     Uses the live service to exercise the production onboarding path:
-    creates the User, UserSettings, a default Checking Account, a
-    Baseline Scenario, default categories, and tax configuration.
+    creates the User, UserSettings, the owner's pay-period schedule, a
+    default Checking Account, a Baseline Scenario, default categories, and
+    tax configuration.
+
+    The pay-schedule half of the spec arrived at plan step **X-ad-a**, which
+    deleted the pay period registration used to invent.  The payday is the
+    USER's today (``display_today``), never ``date.today()``: the service
+    refuses a payday in the future, and this harness runs in whatever
+    timezone its container has.  Cadence and horizon take
+    ``RegistrationSpec``'s callers' usual defaults, stated explicitly because
+    the spec deliberately carries none.
     """
-    user = register_user(email, password, display_name)
+    user = register_user(RegistrationSpec(
+        email=email,
+        password=password,
+        display_name=display_name,
+        first_payday=display_today(),
+        cadence_days=BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
+        num_periods=BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
+    ))
     db.session.commit()
     return user
 

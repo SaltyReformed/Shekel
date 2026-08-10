@@ -282,11 +282,19 @@ python scripts/seed_ref_tables.py
 # /register instead.  seed_user.py delegates to
 # auth_service.register_user() -- the same provisioning path the
 # /register web route uses -- so both create the identical shape in
-# one transaction: user, settings, bootstrap pay period, checking
+# one transaction: user, settings, the pay-period schedule, checking
 # account, baseline scenario, default categories, AND default tax
 # data.  seed_tax_brackets.py in the next step then finds the new
 # user's tax rows already present and skips them; it remains the
 # idempotent repair tool for pre-existing users with missing rows.
+#
+# SEED_USER_LAST_PAYDAY is REQUIRED when this step runs (plan step
+# X-ad-a): registration no longer invents a pay period, so the seeded
+# owner's real payday has to come from somewhere and there is no
+# honest default for it.  seed_user.py exits 1 with an actionable
+# message when it is unset, malformed, or outside one cadence of
+# today -- and `set -e` aborts the entrypoint, so a misconfigured
+# first boot fails loudly instead of provisioning a wrong calendar.
 SEED_STATE_DIR="/home/shekel/app/state"
 SEED_SENTINEL="${SEED_STATE_DIR}/.seed-complete"
 if [ -n "${SEED_USER_EMAIL:-}" ]; then

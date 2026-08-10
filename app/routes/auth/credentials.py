@@ -38,6 +38,7 @@ from app.routes.auth._helpers import (
     _first_validation_message,
     _is_safe_redirect,
 )
+from app.utils.dates import display_today
 from app.utils.log_events import (
     AUTH,
     EVT_LOGIN_FAILED,
@@ -49,6 +50,27 @@ from app.utils.log_events import (
 from app.utils.session_helpers import stamp_login_session
 
 logger = logging.getLogger(__name__)
+
+
+def _render_register_form():
+    """Render the registration form with the one bound that is not a constant.
+
+    The four render sites (the GET, the already-authenticated GET, the
+    schema-error re-render and the service-error re-render) go through here so
+    a fifth cannot forget it.  ``today`` is the USER's civil day (ruling
+    R-DH (b)): it caps the most-recent-payday input, and a payday cannot be in
+    the future on anyone's clock but theirs.
+
+    The cadence and horizon bounds are NOT passed here.  They are module
+    constants, so they are Jinja globals registered once in ``create_app``
+    (``jinja_globals.register_pay_calendar_bound_globals``) and read by this
+    template and the settings generate form alike -- threading them through
+    every renderer would be the plumbing that lets two forms drift.
+
+    Returns:
+        The rendered registration page.
+    """
+    return render_template("auth/register.html", today=display_today())
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
@@ -164,7 +186,7 @@ def register_form():
         if current_user.role_id == companion_id:
             return redirect(url_for("companion.index"))
         return redirect(url_for("dashboard.page"))
-    return render_template("auth/register.html")
+    return _render_register_form()
 
 
 @auth_bp.route("/register", methods=["POST"])
@@ -199,11 +221,9 @@ def register():
         # remain stable.  ``_first_validation_message`` flattens
         # Marshmallow's nested dict to a single human-readable line.
         flash(_first_validation_message(exc), "danger")
-        return render_template("auth/register.html")
+        return _render_register_form()
 
     email = register_data["email"]
-    display_name = register_data["display_name"]
-    password = register_data["password"]
 
     try:
         # Capture the user so the structured ``user_registered`` event
@@ -211,7 +231,14 @@ def register():
         # returned the user (audit-finding F-085 / commit C-14
         # required no signature change here -- the route was simply
         # discarding the value).
-        user = auth_service.register_user(email, password, display_name)
+        user = auth_service.register_user(auth_service.RegistrationSpec(
+            email=email,
+            password=register_data["password"],
+            display_name=register_data["display_name"],
+            first_payday=register_data["last_payday"],
+            cadence_days=register_data["cadence_days"],
+            num_periods=register_data["num_periods"],
+        ))
         db.session.commit()
         log_event(
             logger, logging.INFO, EVT_USER_REGISTERED, AUTH,
@@ -222,10 +249,10 @@ def register():
         return redirect(url_for("auth.login"))
     except ConflictError as e:
         flash(str(e), "danger")
-        return render_template("auth/register.html")
+        return _render_register_form()
     except ValidationError as e:
         flash(str(e), "danger")
-        return render_template("auth/register.html")
+        return _render_register_form()
 
 
 @auth_bp.route("/logout", methods=["POST"])

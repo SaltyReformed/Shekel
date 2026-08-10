@@ -595,10 +595,13 @@ class PayCalendar:
         :func:`~._loader.calendar_for` resolves the cadence through
         ``pay_schedule_service.resolve_cadence``, which for an owner with no
         ``budget.pay_schedule`` row INFERS it from the last period's stored
-        length -- plan finding **P8**, and the state every freshly-registered
-        owner is in.  That moves no filing answer (only the last period's
-        derived end, which this never reads), but it does mean a value outside
-        1..365 would REFUSE the calendar rather than mis-file a record.
+        length -- plan finding **P8**.  *This sentence read "and the state
+        every freshly-registered owner is in" until plan step X-ad-a, which
+        made registration write the schedule row; the inference now serves
+        only owners created before that step.*  It moves no filing answer
+        (only the last period's derived end, which this never reads), but it
+        does mean a value outside 1..365 would REFUSE the calendar rather than
+        mis-file a record.
 
         **Always a MATERIALISED period**, and that is enforced rather than
         assumed.  A first cut searched all of :attr:`periods` and claimed the

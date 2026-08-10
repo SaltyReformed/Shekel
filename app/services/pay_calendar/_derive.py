@@ -52,6 +52,17 @@ from app.exceptions import ShekelError
 #: because :func:`_validate_cadence` states them in its refusal message, and a
 #: message that quotes a bound the code does not enforce is how the first cut
 #: of this module shipped.
+#:
+#: **A second copy of the pair lives on the model** as
+#: :data:`app.models.pay_schedule.CADENCE_DAYS_MIN` /
+#: :data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`, where plan step X-ad-a
+#: collapsed six literals into one name.  This module does not import it, and
+#: the reason is this package's purity: importing a model pulls
+#: ``app.extensions`` in and closes an import cycle through
+#: ``pay_schedule_service``, which would end the "drive the derivation with no
+#: database" property C1's harness rests on.  The two are held equal by
+#: ``tests/test_models/test_pay_schedule.py::TestTheCadenceBoundHasOneValue``
+#: rather than by whoever edits one remembering the other.
 MIN_CADENCE_DAYS: int = 1
 MAX_CADENCE_DAYS: int = 365
 
@@ -247,9 +258,10 @@ def derive_periods(
             f"payday set by hand (plan step C3's writer does exactly that, "
             f"from a form batch plus the existing rows), and _loader.py, if a "
             f"concurrent truncate lands between its payday read and its "
-            f"cadence read.  It is NOT what pay_schedule_service."
-            f"resolve_cadence answers for a fresh signup: that owner has a "
-            f"bootstrap payday, so the cadence is INFERRED from its length."
+            f"cadence read.  A fresh signup is NOT one of them: since plan "
+            f"step X-ad-a, registration writes a budget.pay_schedule row "
+            f"beside the owner's paydays, so resolve_cadence answers from the "
+            f"stored value rather than inferring one."
         )
 
     last_position = len(ordered) - 1

@@ -26,6 +26,7 @@ from app.extensions import db
 from app.models.user import MfaConfig, User
 from app.services import mfa_service
 from app.services.mfa_service import TotpVerificationResult
+from tests._test_helpers import register_form_data
 
 
 # ── /login ───────────────────────────────────────────────────────────
@@ -105,12 +106,12 @@ class TestRegisterSchemaWiring:
         """An 11-char password is rejected; no User row is created."""
         with app.app_context():
             count_before = db.session.query(User).count()
-            response = client.post("/register", data={
-                "email": "tooshort@example.com",
-                "display_name": "Test",
-                "password": "x" * 11,
-                "confirm_password": "x" * 11,
-            }, follow_redirects=True)
+            response = client.post("/register", data=register_form_data(
+                email="tooshort@example.com",
+                display_name="Test",
+                password="x" * 11,
+                confirm_password="x" * 11,
+            ), follow_redirects=True)
             assert response.status_code == 200
             assert b"at least 12 characters" in response.data
             assert db.session.query(User).count() == count_before
@@ -122,12 +123,12 @@ class TestRegisterSchemaWiring:
             with patch(
                 "app.services.auth_service.bcrypt.gensalt"
             ) as mock_gensalt:
-                response = client.post("/register", data={
-                    "email": "huge@example.com",
-                    "display_name": "Big",
-                    "password": "x" * 100_000,
-                    "confirm_password": "x" * 100_000,
-                }, follow_redirects=True)
+                response = client.post("/register", data=register_form_data(
+                    email="huge@example.com",
+                    display_name="Big",
+                    password="x" * 100_000,
+                    confirm_password="x" * 100_000,
+                ), follow_redirects=True)
                 assert response.status_code == 200
                 assert mock_gensalt.call_count == 0
             assert db.session.query(User).count() == count_before
@@ -135,24 +136,24 @@ class TestRegisterSchemaWiring:
     def test_password_mismatch_rejected(self, app, client):
         """Schema-level mismatch produces the canonical user-facing string."""
         with app.app_context():
-            response = client.post("/register", data={
-                "email": "mismatch@example.com",
-                "display_name": "Mismatch",
-                "password": "longenoughpass",
-                "confirm_password": "differentpass1",
-            }, follow_redirects=True)
+            response = client.post("/register", data=register_form_data(
+                email="mismatch@example.com",
+                display_name="Mismatch",
+                password="longenoughpass",
+                confirm_password="differentpass1",
+            ), follow_redirects=True)
             assert response.status_code == 200
             assert b"Password and confirmation do not match" in response.data
 
     def test_invalid_email_rejected(self, app, client):
         """Schema-level invalid email format produces 'Invalid email format.'"""
         with app.app_context():
-            response = client.post("/register", data={
-                "email": "notanemail",
-                "display_name": "X",
-                "password": "longenoughpass",
-                "confirm_password": "longenoughpass",
-            }, follow_redirects=True)
+            response = client.post("/register", data=register_form_data(
+                email="notanemail",
+                display_name="X",
+                password="longenoughpass",
+                confirm_password="longenoughpass",
+            ), follow_redirects=True)
             assert response.status_code == 200
             assert b"Invalid email format" in response.data
 

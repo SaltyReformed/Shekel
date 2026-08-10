@@ -377,6 +377,19 @@ services:
       SEED_USER_EMAIL: ${SEED_USER_EMAIL:-}
       SEED_USER_PASSWORD: ${SEED_USER_PASSWORD:-}
       SEED_USER_DISPLAY_NAME: ${SEED_USER_DISPLAY_NAME:-Budget Admin}
+      # The seeded owner's pay schedule.  SEED_USER_LAST_PAYDAY is
+      # REQUIRED whenever the seed step actually runs (i.e. whenever
+      # SEED_USER_EMAIL is set and the sentinel is absent) and has no
+      # default: Shekel budgets by paycheck, and an invented payday is
+      # what plan step X-ad-a removed from /register.  ISO YYYY-MM-DD,
+      # and it must fall within one cadence of the day the container
+      # boots -- seed_user.py exits 1 with an actionable message
+      # otherwise.  The other two default to the app's biweekly premise
+      # and ~2-year horizon.  Not secrets, so they are not in the
+      # post-seed scrub set.
+      SEED_USER_LAST_PAYDAY: ${SEED_USER_LAST_PAYDAY:-}
+      SEED_USER_CADENCE_DAYS: ${SEED_USER_CADENCE_DAYS:-}
+      SEED_USER_NUM_PERIODS: ${SEED_USER_NUM_PERIODS:-}
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
       TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
       # Retired TOTP keys for non-destructive rotation.  Empty in
