@@ -385,7 +385,9 @@ with their own text and owners, so restating them here was the registry duplicat
   R-I seed compensator. Byte-identical by construction; the baseline harness is the gate. **State
   the deletion of `_posted_only_key_period_id`'s defensive branch explicitly** -- it has fired in
   production (**N-176**) -- rather than letting it go unnoticed. Closes **N-176**, and takes
-  **N-161**, **N-169** and **N-170** with it by deleting the family they are properties of.
+  **N-161** and **N-170** with it by deleting the family they are properties of. **N-169 is
+  already CLOSED** -- the pay-calendar arc's `C2-d` (`3e6cd4ec`) deleted the loan-package chronology
+  primitive this package imported, so the half that was waiting here no longer exists.
   **GATES the recurrence redesign's `R5`** (the `transactions.due_date` / `transfers.due_date` ->
   `occurs_on` + new `due_on` split): `R5` edits `cash_ledger/_events.py`, which is inside this step's
   `ReconciledThrough` deletion set, so renaming a column in a file this step is deleting from is

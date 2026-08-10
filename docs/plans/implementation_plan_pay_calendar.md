@@ -2,24 +2,24 @@
 
 ## Where this stands
 
-**C1** (`f9d148fe`), **C2-a** (`3cb3082f`) and **C2-b1** (`90f2fbb7`) are built; which has reached
-`main` and production is a MEASUREMENT -- `git log --oneline origin/main..dev`,
-`docker inspect shekel-prod-app`. The arc opened 2026-08-08 out of the recurrence arc's **F-10**,
-once that proved a missing NORMALIZATION and not a missing check; **R-F10** / **R-F12** tick with
-**C5a** / **C2**, and `balance:N-128` / `X-l` are the same defect from a third side.
+**C1** (`f9d148fe`), **C2-a** (`3cb3082f`), **C2-b1** (`90f2fbb7`) and **C2-d** (`3e6cd4ec`) are
+built; which has reached `main` and production is a MEASUREMENT --
+`git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`. The arc opened 2026-08-08
+out of the recurrence arc's **F-10**, once that proved a missing NORMALIZATION and not a missing
+check; **R-F10** / **R-F12** tick with **C5a** / **C2**, and `balance:N-128` / `X-l` are the same
+defect from a third side.
 
-**C2 is RULED on all three forks (2026-08-10) and DECOMPOSED; `C2-b` DECOMPOSED again the same day
-on a measurement, so NEXT is `C2-d`.** `C2` ticks as ONE step under three names -- `C2` ==
-`balance:X-l` == `recurrence:R-F12`. **The four CUTOVER leaves then wait on `balance:X-ad` and
-`C3`** (ruled 2026-08-10): a derived calendar ABSORBS a hole instead of reporting it (**P27**), so
-the two doors that open one close before the absorber lands. `C2-d` is exempt, because
-`filing_period` bisects on `start_date` and never reads an end.
+**This arc has NO ready step: the next move is `balance:X-ad`.** C2-d was the last one X-ad did
+not gate. `C2`'s four remaining cutover leaves and `C3` all wait on it (ruled 2026-08-10) because a
+derived calendar ABSORBS a hole instead of reporting it (**P27**), so the doors that open one close
+before the absorber lands; C2-d was exempt because `filing_period` bisects on `start_date` and never
+reads an end, verified over gapped shapes and on a production snapshot. `C2` ticks as ONE step under
+three names -- `C2` == `balance:X-l` == `recurrence:R-F12`.
 **A cold session starts at section 4**, whose preamble names four things a cutover must not assume.
 
 **Both earlier forks RULED 2026-08-09** and recorded in `steps.md`'s fork table: P3/N-123 to
 `balance:X-ad`, P16 to **C5b**, and **C5 DECOMPOSED** into C5a (after C4) and C5b (after R5).
-
-**Section 4 is the steps; findings, the step index and the rules are the shared registries.**
+Findings, the step index and the rules are the shared registries.
 
 ## Rulings
 
@@ -286,17 +286,16 @@ and `start + cadence - 1` coincide there, which made C2-a's first P14 test vacuo
 payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to survive a slice (row
 **P26**).
 
-- [x] **C1 -- the derivation exists and is proven equal to what is stored.** `f9d148fe`.
-  Byte-identical on 61 of 61 rows of both clones; opened **P15**, **P16**. Rule 5; the proof of
-  record is that commit and `_derive.py`'s docstring.
+- [x] **C1 -- the derivation, proven equal to what is stored.** `f9d148fe`. Byte-identical on 61
+  of 61 rows of both clones; opened **P15**, **P16**. Proof of record: `_derive.py`'s docstring.
 
 - [ ] **C2 -- one calendar value answers every "which period" question** -- the DECOMPOSED parent,
   RULED on three forks 2026-08-10. Ticks with the last of its leaves, and that tick is also
   `balance:X-l` and `recurrence:R-F12`: one step under three names, one commit each.
 
 - [x] **C2-a -- the one calendar VALUE, and nothing calls it.** `3cb3082f`. Three named questions, a
-  window that is a TYPE, tiling made structural; opened **P21**-**P25**. Rule 5; the proof of
-  record is that commit and `pay_calendar/_calendar.py`'s docstring.
+  window that is a TYPE, tiling made structural; opened **P21**-**P25**. Proof of record:
+  `pay_calendar/_calendar.py`'s docstring.
 
 - [ ] **C2-b -- the recurrence cutover.** The DECOMPOSED parent, split 2026-08-10 by an instrumented
       full-suite run: the derived calendar differs from the stored rows at
@@ -307,9 +306,8 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
 - [x] **C2-b1 -- the last two questions, the cadence rule, and one door.** `90f2fbb7`.
   `period_by_id` / `earliest_start_in_month` delegate; `cadence_days` is `int \| None`, refused
   beside a payday; `calendar_for` reads `budget.pay_periods` directly, never through
-  `pay_period_service`, which C2-f would cycle. Corrected **P25** and two REFUTED claims of its own
-  (the refusal polices no P8; the empty calendar is kept for `balance:X-ad`); opened **P28**.
-  Rule 5; the proof of record is that commit and `_loader.py`'s docstring.
+  `pay_period_service`, which C2-f would cycle. Corrected **P25** and two REFUTED claims of its
+  own; opened **P28**. Proof of record: `_loader.py`'s docstring.
 
 - [ ] **C2-b2 -- the cutover.** `PeriodCalendar` / `SchedulePeriod` /
   `RecurrenceScheduleError` DELETE; 10 `calendar_for` call sites and 8 `app/` modules take the one
@@ -326,11 +324,12 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
   keep answering `None` outside the reported window, a VIEW question and not the calendar's --
   the identity R-K rests on reads a period's own span.
 
-- [ ] **C2-d -- the filing cutover.** `loan_ledger.find_period_containing_date` and
-  `resolve_anchor_pay_period` DELETE; the two posting writers
-  (`loan_posting_service/_anchors.py:223`, `account_posting_service/_anchors.py:270`) call
-  `filing_period`, which is proven equivalent over 1,800 (shape, day) pairs. The first is a
-  public export whose only `app/` caller is twelve lines below it -- `balance:N-210`'s shape.
+- [x] **C2-d -- the filing cutover.** `3e6cd4ec`. The chain DELETES and both posting writers file
+  through `filing_period`; `owner_pay_periods` goes with it (developer ruling), so `loan_ledger`
+  owns no session and **N-169** closes. One door, `_posting_reconcile.filing_calendar_for`, which
+  refuses NOTHING -- its raise could not fire where `filing_period` would not, and the two
+  predicates had drifted (developer ruling). Proof of record: that commit, `filing_period`'s
+  docstring, and `tests/manual/verify_filing_cutover.py` (1,654 days, 134 entries, 0 disagreements).
 
 - [ ] **C2-e -- the projection axis.** `growth_engine.generate_projection_periods` and
   `SyntheticPeriod` DELETE; their six call sites take `axis()`. Closes **P7**, **P17**, **P20**,
@@ -415,8 +414,10 @@ Not required by the normalization and deliberately last. Closes **P10**.
 **Starts with a ruling.** `journal_entries.pay_period_id` is a NOT NULL FK stored beside the
 `entry_date` it derives from, which is row **P1**'s defect on the ledger's header table -- and
 ruling **R-EA** already made the WRITE side derive it. The NOT NULL is also what forces
-`resolve_anchor_pay_period` to be TOTAL, so it is the reason row **P6**'s third implementation
-cannot simply be deleted once C2 lands. Three options, and the trace decides: DROP and derive, make
+`filing_period` to be TOTAL -- to CLAMP rather than answer `None` -- so it is the reason the
+filing question survives as a second question at all rather than collapsing into containment. *It
+forced `resolve_anchor_pay_period` before C2-d, which deleted that chain; the obligation moved, it
+did not go.* Three options, and the trace decides: DROP and derive, make
 it NULLABLE, or KEEP it as a deliberate materialization with the second definition's cost stated.
 Sequenced after C4 (developer, 2026-08-09), because a derived paycheck should be derived from the
 calendar this arc normalizes rather than from the one it is replacing. Closes **P18**.
