@@ -122,7 +122,17 @@ to avoid.
     reconciled the two --
     **the column was parsed into `StepRow.blocked` and never read by any arm**, so every edge in it
     was decoration. An unsatisfiable ordering claim is not a scheduling preference; it is work that
-    cannot be done in the order the plan states.
+    cannot be done in the order the plan states. **A DECOMPOSITION is NOT an edge in that column**
+    -- rule 2 already puts it in the id -- but it is graded by a sixth arm:
+    **a step that DECLARES itself "the DECOMPOSED parent" may not be SHIPPED while a leaf is open**,
+    which is rule 2's own sentence made a predicate. The parent set is DECLARED and only the leaf
+    set is derived, and that asymmetry is the design: deriving BOTH by id prefix claims `R-F1` as
+    the parent of `R-F10`, `R-F12` and `R-F13`, three unrelated findings-steps, with `R-F1` shipped
+    and all three open -- three false failures on the first run. Deriving NEITHER would need a list
+    of parent names, which is finding `N-147`'s defect and what Phase G exists to delete.
+    **A parent holding no leaves is silence, not a failure**: rule 5 archives completed spans,
+    `X-f1`'s fourteen leaves have already left the index, and an arm that demanded they still be
+    there would put rules 5 and 13 in contradiction.
 
 ## The two relations in `ledger.md`, and why conflating them deletes work
 

@@ -541,6 +541,79 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
         assert any("ONE blocker set" in p for p in problems), problems
 
 
+class TestAParentTicksWithTheLastOfItsLeaves:
+    """conventions.md rule 13, the decomposition half.
+
+    Rule 2 has always said a decomposed parent ticks with its last leaf, and
+    nothing graded it.  The arm exists because the readiness question needs it:
+    a container is not pickable work, and X-f, X-aj, X-i and X-x all read as
+    READY while their own leaves are open.
+    """
+
+    def test_no_parent_has_shipped_ahead_of_an_open_leaf(self):
+        """No declared parent has shipped ahead of an open leaf."""
+        assert not registry.decomposition_violations()
+
+    def test_the_live_corpus_actually_declares_parents_with_leaves(self):
+        """A rule with no subject in the corpus is untested by the clean case."""
+        rows = registry.step_rows()
+        parents = [row for row in rows if row.is_decomposed_parent]
+        assert parents, "no row declares itself a parent -- this arm grades nothing"
+        withleaves = [
+            p for p in parents
+            if any(r.arc == p.arc and r.ident != p.ident
+                   and r.ident.startswith(p.ident) for r in rows)
+        ]
+        assert withleaves, f"no declared parent has a leaf in the table: {parents}"
+
+    def test_a_prefix_derivation_would_have_fired_falsely_on_this_corpus(self):
+        """The reason the parent set is DECLARED rather than derived.
+
+        ``R-F1`` is SHIPPED and is a string prefix of ``R-F10``, ``R-F12`` and
+        ``R-F13``, which are unrelated findings-steps and all open.  Deriving
+        parenthood from the id alone would report three failures the moment the
+        arm was switched on -- and the tempting fix is an exception list, which
+        is finding N-147's defect.  This control keeps that measurement alive:
+        if the corpus ever stops containing the trap, the reason for the design
+        should be re-read rather than assumed.
+        """
+        rows = {row.ident: row for row in registry.step_rows()
+                if row.arc == "recurrence"}
+        assert rows["R-F1"].shipped
+        tempting = [i for i in rows if i != "R-F1" and i.startswith("R-F1")]
+        assert tempting, "the R-F1 prefix trap has left the corpus"
+        assert not any(rows[i].shipped for i in tempting)
+        assert not rows["R-F1"].is_decomposed_parent, (
+            "R-F1 must NOT declare itself a parent -- it has no decomposition"
+        )
+
+    def test_the_control_fires_when_a_parent_ships_over_an_open_leaf(self, stage):
+        """The control fires when a parent ships over an open leaf."""
+        line = _row("steps", "| balance | X-an-b |")
+        stage("steps", line, _with_cell(line, 4, "open"))
+        problems = registry.decomposition_violations()
+        assert any("balance:X-an" in p and "X-an-b" in p for p in problems), problems
+
+    def test_an_archived_leaf_set_is_not_a_violation(self, stage):
+        """Rule 5 archives a completed span, and rule 13 must not refuse it.
+
+        ``X-f1`` shipped with fourteen leaves that have already left this
+        index.  An arm that required a declared parent to still HOLD leaves
+        would make rule 5 and rule 13 contradict each other, so the absence of
+        leaves is silence, not a failure.
+        """
+        line = _row("steps", "| balance | X-f |")
+        stage("steps", line, _with_cell(line, 4, "SHIPPED"))
+        # X-f's leaves X-f2..X-f6 are still indexed and open, so this SHOULD
+        # fire -- proving the arm is live -- and it must name them, not the
+        # archived ones.
+        problems = registry.decomposition_violations()
+        assert any("balance:X-f" in p for p in problems), problems
+        assert not any("X-f1" in p for p in problems), (
+            f"a SHIPPED leaf must not be reported as open: {problems}"
+        )
+
+
 class TestTheParserSurvivesTheShapesTheRealFilesUse:
     """The measured false positives, kept as controls rather than as prose."""
 

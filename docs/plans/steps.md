@@ -12,12 +12,12 @@ table sorts by arc, and two rows sit ABOVE their own blockers (`X-x` above `X-ad
 column. `conventions.md` rule 13 grades it -- referential, acyclic, no shipped step behind an open
 one, and one blocker set per identity class. **Two things are deliberately NOT in that column.** A
 decomposition is in the ID by rule 2, so `X-f2-a` needs no edge saying it is inside `X-f2` --
-recording it would be this registry's own disease. **The id is not yet a PREDICATE, though**, and
-saying so is the point: rule 2's suffix is spelled two ways -- `X-ai-a` and `X-an-b` with a dash,
-`X-aj2`, `X-i1` and `X-x1` without -- so a prefix derivation reads `X-f`, `X-aj` and `X-i` as READY
-while their own leaves are open. That arm is UNBUILT and named here rather than assumed. Second, an
-edge is written only where an arc document STATES it: the graph holds 65 edges over 42 rows, the
-gaps are real, and a guess where a citation belongs is worse than a blank.
+recording it would be this registry's own disease. It is graded by its own arm instead: a row that
+DECLARES itself "the DECOMPOSED parent" may not ship while a leaf is open.
+**The parent set is declared and only the leaf set derived**, because deriving both by id prefix
+claims `R-F1` as the parent of `R-F10`, `R-F12` and `R-F13`. Second, an edge is written only where
+an arc document STATES it: the graph holds 65 edges over 42 rows, the gaps are real, and a guess
+where a citation belongs is worse than a blank.
 
 **`aliases` is what this table exists for.** `C2`, `X-l` and `R-F12` are ONE step under three names,
 scheduled as one commit by all three documents. Before this table that identity was prose in three
@@ -41,17 +41,17 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | balance | X-f4 | -- | **X-f4** `refactor(cash): delete what the cutover orphans` -- `ReconciledThrough` and its 78 | open | -- | balance:X-f3 |
 | balance | X-f5 | -- | **X-f5** `fix(ledger): the opening equity account holds only the opening` -- one balanced | open | -- | balance:X-f4 |
 | balance | X-f6 | -- | **X-f6** `feat(import): the bank says when money moved` -- **RULED as the follow-on, not an | open | -- | balance:X-f5 |
-| balance | X-ai | -- | **X-ai** `refactor(posting): the posted ledger gets one verb and one trigger` -- the END | open | -- | -- |
+| balance | X-ai | -- | **X-ai** `refactor(posting): the posted ledger gets one verb and one trigger` -- the DECOMPOSED parent; the END | open | -- | -- |
 | balance | X-ai-a | -- | **X-ai-a** the cash verb, built from R-DV's sentence with N-162's, N-165's and N-166's | open | -- | -- |
 | balance | X-ai-b | -- | **X-ai-b** the trigger: the commit-boundary grader, drained from the registry the writers | open | -- | -- |
 | balance | X-ai-c | -- | **X-ai-c** the loan side onto the same verb. | open | -- | -- |
 | balance | X-ai-g | -- | **X-ai-g** the bulk-statement census: each of the 20 sites is proven unable to touch a | open | -- | -- |
 | balance | X-ai-s | -- | **X-ai-s** the `journal_entries` migration -- source identity as an EXCLUSIVE ARC of typed | open | -- | balance:X-f3 |
 | balance | X-d | -- | **X-d** `fix(cash): the posted account ledger is a checked projection` -- E1a's shape for | open | -- | balance:X-ai |
-| balance | X-aj | -- | **X-aj** `refactor(status): one status seam, and the fence is structural` -- rulings | open | -- | -- |
+| balance | X-aj | -- | **X-aj** `refactor(status): one status seam, and the fence is structural` -- the DECOMPOSED parent; rulings | open | -- | -- |
 | balance | X-aj2 | -- | **X-aj2** the structural write door and the DELETION of W9907 (**R-DP**), carrying | open | -- | -- |
 | balance | X-ak | -- | **X-ak** `refactor(transfers): a shadow inherits its parent's fields by ONE rule` -- closes | open | -- | balance:X-aj |
-| balance | X-x | -- | **X-x** `refactor(balance): one pay-calendar precondition, one answer` -- closes **N-116**, | open | -- | balance:X-ad |
+| balance | X-x | -- | **X-x** `refactor(balance): one pay-calendar precondition, one answer` -- the DECOMPOSED parent; closes **N-116**, | open | -- | balance:X-ad |
 | balance | X-x1 | -- | **X-x1 THE ONE ANSWER** (R-CY) -- `PayCalendarGapError`, | open | -- | -- |
 | balance | X-x2 | -- | **X-x2 THE FABRICATIONS** (R-CY) -- the branches that publish a figure the app did not | open | -- | balance:X-x1 |
 | balance | X-x3 | -- | **X-x3 THE ONE PREDICATE** (R-DA) -- `onboarding.has_periods` asks Q2 rather than Q1, so the | open | -- | -- |
@@ -59,7 +59,7 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | balance | X-x5 | -- | **X-x5 THE HARNESS** -- delete `verify_savings_producers.py`'s dict-or-attribute `_get` | open | -- | -- |
 | balance | X-ad | -- | **X-ad** `feat(periods): the pay calendar a new user can actually enter` -- closes **N-123**, | open | -- | -- |
 | balance | X-y | -- | **X-y** `refactor(balance): the baseline decision that is not the balance seam's` -- closes | open | -- | balance:X-x |
-| balance | X-i | -- | **X-i** `refactor(balance): one read pass, one derivation, one clock` -- closes **FU-3**, | open | -- | -- |
+| balance | X-i | -- | **X-i** `refactor(balance): one read pass, one derivation, one clock` -- the DECOMPOSED parent; closes **FU-3**, | open | -- | -- |
 | balance | X-i1 | -- | **X-i1 THE MEMO** -- additive, byte-identical on both databases. The context gains the input | open | -- | -- |
 | balance | X-i2 | -- | **X-i2 THE CLOCK** -- the cutover. Each memoized loader takes `ctx.as_of` and `ctx.scenario`, | open | -- | balance:X-i1 |
 | balance | X-j | -- | **X-j** `feat(balance): one account, one answer -- or a row that explains the difference` -- | open | -- | balance:X-i2 |

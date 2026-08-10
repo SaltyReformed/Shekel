@@ -110,6 +110,25 @@ class StepRow:
         """The ``arc:id`` keys this step is also known by."""
         return _key_list(self.aliases)
 
+    @property
+    def is_decomposed_parent(self) -> bool:
+        """Whether this row DECLARES itself the parent of a decomposition.
+
+        **Declared, never derived, and that is the whole design.**  Rule 2 puts
+        a decomposition in the id, so deriving the relation by longest id
+        prefix is the obvious implementation -- and it is wrong on this corpus:
+        ``R-F1`` is a string prefix of ``R-F10``, ``R-F12`` and ``R-F13``,
+        which are unrelated findings-steps, and ``R-F1`` is SHIPPED while all
+        three are open.  A derived arm would have reported three false
+        failures on its first run.
+
+        Consulting only DECLARED parents removes that class by construction
+        rather than by an exception list -- which is finding **N-147**'s defect
+        (a rule enforced by a list of names that must be kept complete) and is
+        exactly what Phase G exists to delete.
+        """
+        return "decomposed parent" in self.title.casefold()
+
     def blocked_keys(self) -> list[str]:
         """The ``arc:id`` keys this step may not ship before (rule 13).
 
@@ -518,6 +537,52 @@ def index_agreement_violations() -> list[str]:
                     f"{document.name} but {row.state} in steps.md "
                     f"(conventions.md rule 12)",
                 )
+    return problems
+
+
+def decomposition_violations() -> list[str]:
+    """Rule 13, the decomposition half: a parent ticks with the LAST of its leaves.
+
+    Rule 2 states it in prose -- "a decomposition appends a suffix ... a
+    DECOMPOSED parent ticks with the last of its leaves" -- and nothing graded
+    it, so a parent could ship over open work with every gate green.  The
+    readiness question makes it concrete: ``X-f``, ``X-aj``, ``X-i`` and
+    ``X-x`` all read as pickable work while their own leaves are open, because
+    a container is not a task.
+
+    **The parent set is DECLARED** (:attr:`StepRow.is_decomposed_parent`) and
+    the leaf set is derived by id prefix FROM that set.  Deriving both would
+    claim ``R-F1`` as the parent of ``R-F10`` / ``R-F12`` / ``R-F13``; deriving
+    neither would need a name list, which is N-147's defect.  Declaring the
+    small set and deriving the large one costs one phrase per parent and has no
+    list to rot.
+
+    **A parent with NO leaves in the table is NOT a failure.**  Rule 5 archives
+    a completed span, and ``X-f1``'s fourteen leaves have already left this
+    index -- grading their absence would refuse a legal archive and make rule 5
+    and rule 13 contradict each other.
+
+    Returns:
+        One message per parent that has shipped ahead of an open leaf.
+    """
+    rows = step_rows()
+    problems: list[str] = []
+    for parent in rows:
+        if not parent.is_decomposed_parent or not parent.shipped:
+            continue
+        open_leaves = sorted(
+            row.ident for row in rows
+            if row.arc == parent.arc
+            and row.ident != parent.ident
+            and row.ident.startswith(parent.ident)
+            and not row.shipped
+        )
+        if open_leaves:
+            problems.append(
+                f"{parent.key} is SHIPPED but declares itself a DECOMPOSED "
+                f"parent and its leaves {open_leaves} are open.  A parent ticks "
+                f"with the LAST of its leaves (conventions.md rule 13)",
+            )
     return problems
 
 
