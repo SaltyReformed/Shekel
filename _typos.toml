@@ -31,6 +31,17 @@ extend-exclude = [
   "docs/plans/historical/**",
 ]
 
+# A git SHORT HASH is never a typo, and this is the STRUCTURAL form of that
+# rule rather than an allowlist of the hashes that have happened to collide.
+# These registries cite commits by hash on purpose (conventions.md rule 7: a
+# shipped step's specification OPENS with its commit), so the corpus gains
+# hashes continuously and any of them may spell a dictionary word -- `daa9c402`
+# reads as "data", and the next one will read as something else.  Matching the
+# 7-40 hex-character shape inside backticks exempts the citation form the
+# documents actually use, and nothing wider.
+[default]
+extend-ignore-re = ["`[0-9a-f]{7,40}`"]
+
 [default.extend-words]
 # Domain vocabulary and library names -- correct as written, not typos.
 HSA = "HSA"             # Health Savings Account (app/enums.py)

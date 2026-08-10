@@ -7,6 +7,12 @@ consumed by the balance calculator (Commit 3), entry credit workflow
 (Commit 4), mark-paid logic (Commit 5), and all entry UI (Commits
 7, 8, 10).
 
+**The OUTSTANDING SET left this module at plan step X-f2-c1** for
+:mod:`app.services.reconcile_service`: "which of these had the bank taken by
+the day you asserted a balance for" stopped being a question about ENTRIES
+when ruling R-EW widened it to bills, envelope closes and transfer shadows.
+That module carries the rule and the measurement that forced the cut.
+
 Architecture:
   - No Flask imports.  Receives plain data, returns ORM objects or
     raises exceptions.
@@ -21,7 +27,6 @@ from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
@@ -30,11 +35,7 @@ from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
-from app.utils.balance_predicates import (
-    is_cancelled,
-    is_done,
-    is_projected_clause,
-)
+from app.utils.balance_predicates import is_cancelled, is_done
 # ``is_credit`` from balance_predicates collides with the
 # ``is_credit: bool`` keyword argument on this module's
 # ``create_entry`` / ``update_entry`` functions.  Aliasing the
@@ -45,7 +46,6 @@ from app.utils.dates import display_today
 from app.utils.entry_partition import partition_entries
 from app.utils.log_events import (
     BUSINESS,
-    EVT_ENTRIES_SETTLED_DAY_RECORDED,
     EVT_ENTRY_CREATED,
     EVT_ENTRY_DELETED,
     EVT_ENTRY_UPDATED,
@@ -177,7 +177,7 @@ class EntryDetails:
     ``settled_on`` is deliberately not here.  The day the BANK took the money
     is an observation, and at the moment a purchase is recorded there is
     nothing to have observed; it arrives later, through
-    :func:`record_settled_days` at a balance true-up or through
+    :func:`app.services.reconcile_service.record_settled_days` at a balance true-up or through
     :func:`update_entry`.
     """
 
@@ -412,8 +412,8 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     ``settled_on`` is updatable HERE and not at the create door: it records the
     day the bank took the money, which is an observation the user makes later
     (off a statement, or by ticking the purchase at a balance true-up through
-    :func:`record_settled_days`).  Passing ``None`` clears it, putting the
-    purchase back among the outstanding ones.
+    :func:`app.services.reconcile_service.record_settled_days`).  Passing
+    ``None`` clears it, putting the purchase back among the outstanding ones.
 
     Args:
         entry_id: The entry to update.
@@ -814,178 +814,3 @@ def check_purchase_date_in_period(
     """
     period = transaction.pay_period
     return period.start_date <= purchased_on <= period.end_date
-
-
-def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
-    """Return the filter clauses for "not yet seen on a statement".
-
-    The ONE definition of the outstanding set, shared by the reader
-    (:func:`outstanding_purchases`) and the writer
-    (:func:`record_settled_days`) so a purchase the panel does not offer can
-    never be stamped by a forged id -- and so the two cannot drift about what
-    "outstanding" means, which is the shape this whole step exists to end.
-
-    Five clauses, each load-bearing:
-
-    * ``settled_on IS NULL`` -- the definition itself.  A purchase whose
-      posting day is already recorded is not outstanding, whatever that day is.
-    * ``is_credit IS FALSE`` -- a credit-card purchase never touches checking;
-      it leaves through its own CC Payback sibling, so it is not on this
-      account's statement and reconciling it would mean nothing.
-    * ``purchased_on <= observed_on`` -- a purchase made AFTER the day the
-      balance was read cannot be inside it.  Offering one would let the user
-      record a posting day earlier than the purchase, which
-      ``ck_transaction_entries_settled_not_before_purchase`` refuses at the
-      database; filtering here means that constraint is a backstop rather than
-      a reachable 500.
-    * the parent is this OWNER's and on THIS account -- a balance assertion
-      declares the real balance of one account, and a user may hold more than
-      one checking account (there is no per-type uniqueness).  Reconciling
-      across accounts would drop another account's reservation without ever
-      raising its anchor.
-    * the parent is PROJECTED and not soft-deleted -- the entry reservation
-      prices only projected rows
-      (:func:`app.services.cash_ledger._amounts._entry_aware_amount`), so an
-      entry on a settled parent is inert and listing it would be asking the
-      user to reconcile something that cannot move a figure.  Routed through
-      the centralized ``is_projected_clause`` (D6-09 / MED-02) so this filter
-      shares one definition with every other Projected filter.
-
-    Not scoped by scenario_id: transactions are scenario-scoped, but Phase 1 is
-    baseline-only (every transaction lives in the single baseline scenario), so
-    account_id fully isolates the set today.  When what-if scenarios land
-    (Phase 3), the callers must thread an operating-scenario context in here
-    too -- the same deferral ``clear_entries_for_anchor_true_up`` carried.
-
-    Args:
-        owner_id: The user_id whose purchases to scope to.
-        account_id: The cash account the balance was asserted for.
-        observed_on: The civil day that balance was true for.
-
-    Returns:
-        A list of SQLAlchemy filter clauses to apply to a
-        :class:`~app.models.transaction_entry.TransactionEntry` query.
-    """
-    return [
-        TransactionEntry.settled_on.is_(None),
-        TransactionEntry.is_credit.is_(False),
-        TransactionEntry.purchased_on <= observed_on,
-        TransactionEntry.transaction_id.in_(
-            db.session.query(Transaction.id)
-            .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
-            .filter(
-                PayPeriod.user_id == owner_id,
-                Transaction.account_id == account_id,
-                Transaction.is_deleted.is_(False),
-                is_projected_clause(Transaction),
-            )
-        ),
-    ]
-
-
-def outstanding_purchases(
-    owner_id: int, account_id: int, observed_on: date,
-) -> list[TransactionEntry]:
-    """Return the purchases this account has not been seen to have paid for.
-
-    The reconcile panel's list: debit purchases made on or before *observed_on*
-    whose posting day has never been recorded, so the projection is still
-    holding their whole envelope budget back.  Ticking one is what tells the
-    app the bank has taken the money (:func:`record_settled_days`).
-
-    **This is the question a stored ``is_cleared`` flag used to answer by
-    guessing.**  The flag was written by a bulk UPDATE at every true-up over
-    "every entry dated on or before the SERVER's today", so a purchase recorded
-    after the true-up was never reconciled and one recorded before always was,
-    whether or not the bank had taken either.  The list this returns is the
-    same question asked of the user, who is holding the statement.
-
-    Reads only (no writes, no commit).
-
-    Args:
-        owner_id: The user_id whose purchases to list.
-        account_id: The cash account whose balance was asserted.
-        observed_on: The civil day that balance was true for -- purchases made
-            after it cannot be inside it and are not listed.
-
-    Returns:
-        The outstanding :class:`TransactionEntry` rows, oldest purchase first
-        (``id`` breaking a same-day tie deterministically).  Empty when the
-        account has nothing outstanding, which is the steady state for a user
-        who reconciles at every true-up.
-    """
-    return (
-        db.session.query(TransactionEntry)
-        .filter(*_outstanding_scope(owner_id, account_id, observed_on))
-        .order_by(TransactionEntry.purchased_on, TransactionEntry.id)
-        .all()
-    )
-
-
-def record_settled_days(
-    owner_id: int,
-    account_id: int,
-    entry_ids: "set[int]",
-    observed_on: date,
-) -> int:
-    """Record that the bank had taken *entry_ids* by *observed_on*.
-
-    The reconcile step's writer: the user ticked these purchases off a
-    statement, so each one's ``settled_on`` becomes the day that statement's
-    balance was true for.  The stored date is an UPPER BOUND on the true
-    posting day -- the purchase may have cleared a day or two earlier -- and it
-    is the only bound the reconciliation predicate consumes
-    (``settled_on <= observed_on``), so no answer changes by sharpening it.
-    A user who wants the exact day off their statement edits the entry.
-
-    **Every id is re-scoped through :func:`_outstanding_scope` rather than
-    trusted.**  The ids arrive from a form, so an id belonging to another
-    user, another account, a credit purchase, a settled parent or an
-    already-reconciled entry simply does not match and is silently skipped --
-    the same "404 for both not-found and not-yours" posture the ownership
-    helpers take, expressed as a filter because this is a set operation.
-    The count returned is what actually changed, not what was asked for.
-
-    Does NOT commit -- the caller owns the session boundary.
-
-    Args:
-        owner_id: The user_id whose purchases these must be.
-        account_id: The cash account the balance was asserted for.
-        entry_ids: The entry ids the user ticked.  An empty set is a no-op.
-        observed_on: The civil day the asserted balance was true for, and the
-            day each ticked purchase is recorded as having settled by.
-
-    Returns:
-        The number of entries actually stamped.
-    """
-    if not entry_ids:
-        return 0
-
-    # ``synchronize_session='fetch'`` because later code in the same request
-    # (the grid re-rendering its projection) may already hold these rows and
-    # must see the new posting day.
-    updated = (
-        db.session.query(TransactionEntry)
-        .filter(
-            TransactionEntry.id.in_(entry_ids),
-            *_outstanding_scope(owner_id, account_id, observed_on),
-        )
-        .update(
-            {TransactionEntry.settled_on: observed_on},
-            synchronize_session="fetch",
-        )
-    )
-
-    if updated:
-        log_event(
-            logger, logging.INFO,
-            EVT_ENTRIES_SETTLED_DAY_RECORDED, BUSINESS,
-            "Outstanding purchases confirmed against a bank statement",
-            user_id=owner_id,
-            account_id=account_id,
-            observed_on=observed_on.isoformat(),
-            recorded_count=updated,
-            requested_count=len(entry_ids),
-        )
-
-    return updated

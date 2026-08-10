@@ -39,6 +39,7 @@ from app.services import (
     entry_credit_workflow,
     entry_service,
     pay_period_service,
+    reconcile_service,
     recurrence_engine,
     transaction_service,
     transfer_recurrence,
@@ -517,6 +518,18 @@ class TestEntryServiceLogging:
         assert record is not None
         assert record.entry_id == entry_id
 
+
+# ── The reconcile writer ───────────────────────────────────────────
+
+
+class TestReconcileServiceLogging:
+    """reconcile_service emits one BUSINESS event per reconcile that lands.
+
+    Split out of ``TestEntryServiceLogging`` at plan step X-f2-c1, when the
+    writer these two cases exercise moved to its own module: a class named for
+    one service whose cases call another is the shape the move exists to end.
+    """
+
     def test_record_settled_days_emits_the_reconcile_event(
         self, app, db, seed_user, _envelope_transaction,
     ):
@@ -545,8 +558,8 @@ class TestEntryServiceLogging:
             )
             db.session.commit()
             observed_on = date(2026, 1, 5)
-            with _LogCapture("app.services.entry_service") as cap:
-                count = entry_service.record_settled_days(
+            with _LogCapture("app.services.reconcile_service") as cap:
+                count = reconcile_service.record_settled_days(
                     seed_user["user"].id, seed_user["account"].id,
                     {entry.id}, observed_on,
                 )
@@ -582,8 +595,8 @@ class TestEntryServiceLogging:
                 ),
             )
             db.session.commit()
-            with _LogCapture("app.services.entry_service") as cap:
-                count = entry_service.record_settled_days(
+            with _LogCapture("app.services.reconcile_service") as cap:
+                count = reconcile_service.record_settled_days(
                     seed_user["user"].id, seed_user["account"].id,
                     {entry.id}, date(2026, 1, 5),
                 )
@@ -591,7 +604,6 @@ class TestEntryServiceLogging:
         assert count == 0
         assert cap.find(EVT_ENTRIES_SETTLED_DAY_RECORDED) is None
         assert entry.settled_on is None
-
 
 # ── Entry credit workflow ──────────────────────────────────────────
 

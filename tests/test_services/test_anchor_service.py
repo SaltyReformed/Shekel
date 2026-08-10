@@ -253,7 +253,7 @@ class TestApplyAnchorTrueUpCommitted:
         was decided by the order two buttons were pressed: record then true up
         and it cleared, true up then record and it never did.  The engine now
         never guesses a posting day; the user supplies it by ticking the
-        purchase off a statement (``entry_service.record_settled_days``, whose
+        purchase off a statement (``reconcile_service.record_settled_days``, whose
         own tests live with that service and whose ROUTE is graded in
         ``test_routes/test_accounts.py``).
 
