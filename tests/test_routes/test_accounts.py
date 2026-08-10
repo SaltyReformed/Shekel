@@ -34,6 +34,7 @@ from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
 from app.services import (
     account_service,
+    balance_at,
     cash_ledger,
     pay_period_service,
 )
@@ -7304,3 +7305,341 @@ class TestAnchorKindGate:
 
             refreshed = db.session.get(Account, loan.id)
             assert refreshed.name == "Renamed Gate Loan"
+
+
+class TestAnchorDifference:
+    """The true-up form shows the difference BEFORE it is saved.
+
+    Plan step **X-f2-a**, ruling **R-EU** -- R-DH (f)'s second half.  The
+    figure's own contract is pinned in
+    ``tests/test_services/test_balance_at.py::TestRecordsBalanceAt``; these
+    cases grade the WIRING: that the editor mounts the region without previewing
+    its own prefill, that the two boxes reach the producer by the write door's
+    parsing rules, and that a state the save would refuse is refused here.
+    """
+
+    STATEMENT_DAYS_BACK = 20
+
+    def _statement_day(self, seed_user):
+        """Return a past day inside both bounds, asserting the fixture affords it."""
+        day = display_today() - timedelta(days=self.STATEMENT_DAYS_BACK)
+        floor = pay_period_service.earliest_recordable_day(seed_user["user"].id)
+        assert floor <= day, (
+            f"the schedule starts {floor}, so {day} is not assertable; "
+            "seed_periods_today no longer affords 20 days of history"
+        )
+        return day
+
+    def _preview(self, auth_client, account_id, **params):
+        """GET the preview region, returning its decoded body."""
+        return auth_client.get(
+            f"/accounts/{account_id}/anchor-difference", query_string=params,
+        ).data.decode()
+
+    def test_the_editor_mounts_the_region_without_previewing_its_prefill(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The region is present, empty, and NOT triggered on load.
+
+        **The ``load`` trigger is the defect, not an optimisation.**  The editor
+        opens prefilled with the governing balance, so a preview on open reads
+        "You entered <a figure the user did not enter>" and captions the gap as
+        the app's fault -- over records that may be perfectly complete.  Pressing
+        Enter on that prefill then asserts the stale balance.  Asserting the
+        ABSENCE of the trigger is the only way this stays fixed: the feature
+        works either way, and only this control says which way is correct.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/anchor-form"
+            ).data.decode()
+
+            assert f'id="anchor-difference-{acct_id}"' in html
+            assert f'/accounts/{acct_id}/anchor-difference' in html
+            assert 'hx-include="closest form"' in html
+            trigger = re.search(
+                r'id="anchor-difference-\d+"[^>]*hx-trigger="([^"]*)"', html,
+            )
+            assert trigger is not None, "the region carries no hx-trigger"
+            spec = trigger.group(1)
+            assert "load" not in spec
+            # ONE trigger spec, measured in Chromium against the repo's own
+            # vendored htmx: a ``keyup`` + ``change`` PAIR costs a second
+            # identical fold on blur, because htmx tracks ``changed`` per spec
+            # and the ``change`` arm sees the typed value for the first time.
+            assert "," not in spec, f"more than one trigger spec: {spec!r}"
+
+    def test_it_renders_records_entered_and_difference(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """All three figures render, against the RECORDS.
+
+        The entered balance is placed a known distance below the records', so a
+        response that echoed one figure twice, or subtracted the other way,
+        could not pass.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = seed_user["account"]
+            day = self._statement_day(seed_user)
+            records = balance_at.records_balance_at(
+                account, balance_at.BalanceContext.build(user_id), day,
+            )
+            entered = records - Decimal("48.25")
+
+            html = self._preview(
+                auth_client, account.id,
+                anchor_balance=str(entered), observed_on=day.isoformat(),
+            )
+
+            assert "Your records" in html
+            assert f"${records:,.2f}" in html
+            assert f"${entered:,.2f}" in html
+            assert "-$48.25" in html
+            assert day.strftime("%b %-d, %Y") in html
+
+    def test_it_reports_the_records_gap_on_a_day_already_recorded(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Re-opening a recorded day compares against the RECORDS, not the entry.
+
+        The defect that sent this leaf back: the first build compared against the
+        account's current balance, which an assertion RESETS -- so on a
+        correction it reported the gap between the user's two successive guesses,
+        with a sign that can oppose the real one.  Both figures are hand-computed
+        here so a regression to the reset value fails rather than merely
+        differing.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = seed_user["account"]
+            day = self._statement_day(seed_user)
+            records = balance_at.records_balance_at(
+                account, balance_at.BalanceContext.build(user_id), day,
+            )
+
+            auth_client.patch(
+                f"/accounts/{account.id}/true-up",
+                data={
+                    "anchor_balance": str(records + Decimal("625.00")),
+                    "observed_on": day.isoformat(),
+                },
+            )
+            db.session.expire_all()
+
+            entered = records + Decimal("445.00")
+            html = self._preview(
+                auth_client, account.id,
+                anchor_balance=str(entered), observed_on=day.isoformat(),
+            )
+
+            assert f"${records:,.2f}" in html
+            assert "+$445.00" not in html  # the macro renders a bare figure
+            assert "$445.00" in html
+            # The reset value must be absent: it is what the broken build showed.
+            assert f"${records + Decimal('625.00'):,.2f}" not in html
+            # And the sign is the TRUE one -- money the records do not account
+            # for -- not the "-$180.00" a comparison against the entry produces.
+            assert "money Shekel has not accounted for" in html
+
+    def test_the_three_verdicts_each_render_their_own_sentence(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Negative, zero and positive each get their own caption.
+
+        The sign's MEANING is decided in the route (``_difference_verdict``) and
+        the partial only maps it to copy -- but nothing asserted the mapping, so
+        a wrong caption was invisible to the suite.  All three branches, one
+        case, because the value of this control is that it covers the set.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = seed_user["account"]
+            day = self._statement_day(seed_user)
+            records = balance_at.records_balance_at(
+                account, balance_at.BalanceContext.build(user_id), day,
+            )
+
+            for delta, expected in (
+                (Decimal("-25.00"), "spend Shekel has not recorded"),
+                (Decimal("0.00"), "your records agree with this balance"),
+                (Decimal("25.00"), "money Shekel has not accounted for"),
+            ):
+                html = self._preview(
+                    auth_client, account.id,
+                    anchor_balance=str(records + delta),
+                    observed_on=day.isoformat(),
+                )
+                assert expected in html, f"delta {delta} rendered: {html!r}"
+
+    def test_a_modelled_account_previews_nothing(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An account carrying a modelled tier renders an EMPTY region.
+
+        A brokerage is not being reconciled against a bank statement, and its
+        recorded cash is a fraction of what its screens show -- so a difference
+        drawn against it would caption a model-vs-market gap as untracked spend
+        (finding **N-213**).
+        """
+        from tests._test_helpers import make_investment_account  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            user_id = seed_user["user"].id
+            periods = pay_period_service.get_all_periods(user_id)
+            inv = make_investment_account(
+                seed_user, db.session, periods[0], Decimal("10000.00"),
+            )
+            db.session.commit()
+
+            html = self._preview(
+                auth_client, inv.id, anchor_balance="10500.00",
+            )
+
+            assert html.strip() == ""
+
+    def test_a_blank_balance_box_previews_nothing(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Clearing the balance leaves an EMPTY region, not a placeholder.
+
+        A rendered ``$0.00`` difference is indistinguishable from "your records
+        agree", so the empty state has to actually be empty.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            day = self._statement_day(seed_user)
+
+            html = self._preview(
+                auth_client, acct_id,
+                anchor_balance="", observed_on=day.isoformat(),
+            )
+
+            assert html.strip() == ""
+
+    def test_a_blank_date_box_means_today(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An empty date box previews TODAY, the same default the save applies.
+
+        ``resolve_observation_day`` owns "when is an assertion dated" for both
+        anchor write doors (ruling R-ER); this path calls it rather than reading
+        a clock of its own.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            html = self._preview(
+                auth_client, acct_id,
+                anchor_balance="1000.00", observed_on="",
+            )
+
+            assert display_today().strftime("%b %-d, %Y") in html
+
+    def test_an_unparseable_day_is_refused_not_defaulted(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A date box holding a non-date says so instead of previewing today.
+
+        Blank means "now"; ``2026-13-40`` means the user is mid-edit on a day
+        that is not a day, and previewing today's figure under a date box showing
+        something else would caption a figure with the wrong day.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            html = self._preview(
+                auth_client, acct_id,
+                anchor_balance="1000.00", observed_on="2026-13-40",
+            )
+
+            assert "Enter a date" in html
+            assert "Your records" not in html
+            assert display_today().strftime("%b %-d, %Y") not in html
+            # The schema's FIELD NAME must not reach the user: the box they see
+            # is labelled "Balance as of", not "observed_on".
+            assert "observed_on" not in html
+
+    def test_a_future_day_is_refused_by_the_write_door_s_own_rule(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A day the save would refuse previews the refusal, not a figure."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            tomorrow = display_today() + timedelta(days=1)
+
+            html = self._preview(
+                auth_client, acct_id,
+                anchor_balance="1000.00", observed_on=tomorrow.isoformat(),
+            )
+
+            assert "has not happened yet" in html
+            assert "Your records" not in html
+
+    def test_a_day_below_the_schedule_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The FLOOR is previewed as a refusal too, not only the ceiling."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            acct_id = seed_user["account"].id
+            below = pay_period_service.earliest_recordable_day(
+                user_id,
+            ) - timedelta(days=1)
+
+            html = self._preview(
+                auth_client, acct_id,
+                anchor_balance="1000.00", observed_on=below.isoformat(),
+            )
+
+            assert "recorded history starts" in html
+            assert "Your records" not in html
+
+    def test_it_refuses_an_amortizing_loan(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A loan previews the kind refusal, matching both anchor doors.
+
+        Reachable as a RACE rather than an ordinary click -- an account's kind is
+        editable -- and the region answers the same sentence ``anchor_form`` and
+        ``true_up`` do rather than a balance nobody may assert here.
+        """
+        from tests._test_helpers import create_loan_account  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Preview Gate Loan",
+                principal=Decimal("10000.00"), rate=Decimal("0.05000"),
+            )
+            db.session.commit()
+
+            html = self._preview(
+                auth_client, loan.id, anchor_balance="1000.00",
+            )
+
+            assert "not a cash anchor" in html
+            assert "Your records" not in html
+
+    def test_another_users_account_is_not_previewable(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The preview is an ownership-scoped read, like every other anchor route.
+
+        It renders a real balance, so an unscoped one would be an IDOR that leaks
+        another owner's figure through a route nobody thinks of as a balance
+        endpoint.  404 exactly -- ``get_or_404`` collapses not-found and
+        not-yours, and admitting a redirect here would let an auth regression
+        pass this control.
+        """
+        with app.app_context():
+            other = _create_other_user_account()
+
+            response = auth_client.get(
+                f"/accounts/{other['account'].id}/anchor-difference",
+                query_string={"anchor_balance": "1000.00"},
+            )
+
+            assert response.status_code == 404
+            assert b"Your records" not in response.data

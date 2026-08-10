@@ -1,0 +1,68 @@
+{% from "_money_macros.html" import money %}
+{# The true-up form's DIFFERENCE preview (plan step X-f2-a, ruling R-EU).
+
+   "Your records produce $X, you entered $Y, difference $Z" -- the sentence
+   ruling R-DH (f) asks the anchor form for, so a balance is reconciled BEFORE
+   it is saved rather than diagnosed afterwards from the grid's Period timing /
+   Book vs bank rows.
+
+   ``records`` is ``balance_at.records_balance_at`` -- what the account's
+   RECORDED transactions add up to for that day, with the day's own assertion
+   NOT applied.  It is deliberately not the account's current balance: an
+   assertion resets the cash walk, so on a day the user has already declared,
+   the current balance IS their declaration and the difference would be zero by
+   construction.  See that function for the measurement.
+
+   Rendered into ``#anchor-difference-<account id>`` inside the editor
+   (``grid/_anchor_edit.html``), which fetches it when a box actually CHANGES --
+   never on form-open, because the editor opens prefilled and a preview of the
+   prefill would caption the app's own correct records as the app's fault.
+
+   NEITHER THE ARITHMETIC NOR THE VERDICT IS HERE.  ``difference`` arrives
+   computed with ``Decimal`` and ``verdict`` arrives decided, both in the route
+   (``accounts._anchor_difference_context`` / ``_difference_verdict``), where
+   they are under test.  A sign comparison spelled in Jinja would be a second
+   statement of the convention -- the shape ``pace_pill`` and ``dti_badge``
+   already avoid by taking a computed label.
+
+   Expected context:
+     refusal    -- str or None.  Why there is nothing to preview: the account is
+                   an amortizing loan, or the day cannot be asserted.  Rendered
+                   INSTEAD of the figures, because previewing a save guaranteed
+                   to be refused is the dead-end affordance ruling R-ET's
+                   corollary deletes.
+     difference -- Decimal or None.  None renders EMPTY: nothing typed yet, or a
+                   modelled account, where a bank reconciliation is not the
+                   question being asked.
+     observed_on, records, recorded, verdict -- present whenever difference is.
+#}
+{% if refusal %}
+<div class="small text-body-secondary mt-1">
+  <i class="bi bi-info-circle" aria-hidden="true"></i> {{ refusal }}
+</div>
+{% elif difference is not none %}
+<dl class="small mt-2 mb-0 mw-px-200">
+  <div class="d-flex justify-content-between gap-3">
+    <dt class="fw-normal text-body-secondary">Your records</dt>
+    <dd class="font-mono mb-0">{{ money(records) }}</dd>
+  </div>
+  <div class="d-flex justify-content-between gap-3">
+    <dt class="fw-normal text-body-secondary">You entered</dt>
+    <dd class="font-mono mb-0">{{ money(recorded) }}</dd>
+  </div>
+  <div class="d-flex justify-content-between gap-3 border-top pt-1 mt-1">
+    <dt>Difference</dt>
+    <dd class="font-mono mb-0">{{ money(difference) }}</dd>
+  </div>
+  <div class="text-body-secondary fs-xs mt-1">
+    as of {{ observed_on.strftime('%b %-d, %Y') }} &middot;
+    {% if verdict == DIFF_AGREES %}
+      your records agree with this balance
+    {% elif verdict == DIFF_UNRECORDED_SPEND %}
+      spend Shekel has not recorded, or a payment that moved early
+    {% else %}
+      money Shekel has not accounted for, or a bill that never left
+    {% endif %}
+  </div>
+</dl>
+{% endif %}

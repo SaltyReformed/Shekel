@@ -87,6 +87,7 @@ from tests._test_helpers import (
     create_account_of_type,
     create_hysa_account,
     create_loan_account,
+    create_settled_cash_transaction,
     create_settled_transfer,
     insert_trueup_event,
     loan_params_for,
@@ -5086,3 +5087,164 @@ class TestLoanTermsAreScenarioIndependent:
             terms = balance_at.loan_terms(account, ctx)
             assert figures is not None
             assert figures.terms == terms
+
+
+class TestRecordsBalanceAt:
+    """``records_balance_at`` answers a day WITHOUT its own assertion applied.
+
+    Ruling **R-EU** (plan step X-f2-a).  The true-up form asks "what do my
+    records produce for this day?", and the answer must not be the balance the
+    user already declared for it -- an assertion RESETS the cash walk, so
+    ``cash_balance_at`` answers with the declaration and any difference measured
+    against it is zero by construction.
+
+    **The reset case is the whole point, and the FIRST version of this step
+    shipped without a single test on it** -- every case asked about a day
+    carrying no assertion, which is the one axis where the two producers agree.
+    """
+
+    def test_a_day_with_no_assertion_is_the_plain_cash_balance(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """With nothing to see past, it IS ``cash_balance_at``.
+
+        The branch that must NOT diverge: inventing a second answer for the
+        ordinary day would be the duplicate producer this seam exists to delete.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = seed_user["account"]
+            ctx = balance_at.BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            day = periods[1].end_date
+
+            assert balance_at.records_balance_at(account, ctx, day) == (
+                balance_at.cash_balance_at(account, ctx, day)
+            )
+
+    def test_it_sees_past_the_assertion_dated_that_day(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """On a day the user has declared, it answers the RECORDS, not the declaration.
+
+        The defect this function exists for, pinned with hand-computed figures:
+        seed one settled $125.00 expense, note what the records produce, then
+        declare a balance far away from it. ``cash_balance_at`` must move to the
+        declaration and this must not.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = seed_user["account"]
+            periods = pay_period_service.get_all_periods(user_id)
+            day = periods[1].end_date
+
+            create_settled_cash_transaction(
+                seed_user, db.session, periods[1], Decimal("125.00"),
+                account=account, name="Recorded spend",
+                settled_on=periods[1].start_date,
+            )
+            db.session.commit()
+
+            before = balance_at.records_balance_at(
+                account, balance_at.BalanceContext.build(user_id), day,
+            )
+
+            anchor_service.apply_anchor_true_up(
+                account=account, new_balance=before + Decimal("625.00"),
+                observed_on=day,
+            )
+            db.session.commit()
+
+            ctx = balance_at.BalanceContext.build(user_id)
+            # The declaration governs the account's balance ...
+            assert balance_at.cash_balance_at(account, ctx, day) == (
+                before + Decimal("625.00")
+            )
+            # ... and the records are unmoved by it, which is the whole rule.
+            assert balance_at.records_balance_at(account, ctx, day) == before
+
+    def test_the_first_assertion_of_a_day_is_the_one_that_answers(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Three declarations in one day still report the RECORDS once.
+
+        Production Checking did exactly this on 2026-04-15 -- three balances
+        recorded, no transaction between them -- and it is the case where a
+        "last assertion" reading would silently return the user's SECOND guess.
+        Each successive declaration must leave this figure untouched.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = seed_user["account"]
+            periods = pay_period_service.get_all_periods(user_id)
+            day = periods[1].end_date
+
+            records = balance_at.records_balance_at(
+                account, balance_at.BalanceContext.build(user_id), day,
+            )
+
+            for balance in (Decimal("900.00"), Decimal("800.00"),
+                            Decimal("700.00")):
+                anchor_service.apply_anchor_true_up(
+                    account=account, new_balance=balance, observed_on=day,
+                )
+                db.session.commit()
+                assert balance_at.records_balance_at(
+                    account, balance_at.BalanceContext.build(user_id), day,
+                ) == records
+
+            # Non-vacuity: the declarations really did land and really did move
+            # the account's balance, so the constant above is a property of this
+            # function rather than of an unchanged database.
+            assert balance_at.cash_balance_at(
+                account, balance_at.BalanceContext.build(user_id), day,
+            ) == Decimal("700.00")
+            assert records != Decimal("700.00")
+
+    def test_a_modelled_account_is_out_of_scope(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An account carrying a modelled tier answers ``None``.
+
+        A scope statement, not a failure: an HYSA accruing interest or a
+        brokerage compounding is not being reconciled against a bank statement,
+        and its recorded cash is a fraction of what its screens show -- so a
+        difference drawn against it would caption a model-vs-market gap as
+        untracked spend (finding **N-213**).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            periods = pay_period_service.get_all_periods(user_id)
+            ctx = balance_at.BalanceContext.build(user_id)
+            inv = make_investment_account(
+                seed_user, db.session, periods[0], Decimal("10000.00"),
+            )
+
+            assert balance_at.records_balance_at(
+                inv, ctx, periods[-1].end_date,
+            ) is None
+            # Non-vacuity: the plain account beside it DOES answer, so this is a
+            # property of the KIND rather than of the fixture.
+            assert balance_at.records_balance_at(
+                seed_user["account"], ctx, periods[-1].end_date,
+            ) is not None
+
+    def test_it_refuses_an_instant_where_a_civil_day_is_meant(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A ``datetime`` raises rather than silently valuing some other moment.
+
+        Asserted here because this entry is reached from a route that parses a
+        date box -- the one place a ``datetime`` could arrive from a caller that
+        "helpfully" widened a type.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            ctx = balance_at.BalanceContext.build(user_id)
+            day = pay_period_service.get_current_period(user_id).end_date
+
+            with pytest.raises(TypeError):
+                balance_at.records_balance_at(
+                    seed_user["account"], ctx,
+                    datetime(day.year, day.month, day.day),
+                )

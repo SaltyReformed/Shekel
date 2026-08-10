@@ -107,6 +107,39 @@
            data-action="anchor-cancel-on-escape"
            data-revert-url="{{ revert_url }}">
   </div>
+  {# The DIFFERENCE, before it is saved (plan step X-f2-a, ruling R-EU).
+
+     **It does NOT fire on ``load``, and that is a correctness rule rather than
+     a performance one.**  This editor opens PREFILLED with the governing
+     balance (ruling R-EE keeps the ordinary path to one click plus Enter), so a
+     preview on open would compare a figure the user has not entered against
+     their records and caption the gap as the app's fault.  Reproduced by an
+     adversarial review of this step: an account carrying one settled, fully
+     posted $150.00 expense rendered "You entered $1,000.00" (they entered
+     nothing) over "money Shekel has not accounted for" (it had) -- and pressing
+     Enter on that prefill asserts the stale balance and drops the $150.00 out
+     of every forward projection.  The region stays empty until a box actually
+     changes, which makes "You entered" true by construction.
+
+     ONE trigger, and ``input`` rather than ``keyup`` + ``change``, MEASURED in
+     Chromium against this repo's own vendored htmx: the pair costs a SECOND
+     identical fold on blur, because htmx tracks ``changed`` per trigger spec, so
+     the ``change`` spec sees the typed value for the first time and fires again
+     (typing then blurring: 2 requests with the pair, 1 with this).  ``input``
+     also covers what ``keyup`` misses on its own -- a paste, the number
+     spinner, and a date chosen from the picker, which sets a value without ever
+     emitting a keyup.  Verified: 0 on open, 1 after typing, 0 more on blur,
+     1 more when the date changes.
+
+     ``hx-include="closest form"`` puts both boxes on the query string; the
+     route hands the whole thing to the write door's own schema, which drops
+     what it does not declare. #}
+  <div id="anchor-difference-{{ account.id }}"
+       role="status" aria-live="polite"
+       hx-get="{{ url_for('accounts.anchor_difference', account_id=account.id) }}"
+       hx-include="closest form"
+       hx-trigger="input changed delay:400ms from:closest form"
+       hx-swap="innerHTML"></div>
   {% if error %}
   {# The refusal, rendered where the submission was made.  It arrives on a 400
      carrying the Shekel-Designed-Fragment marker, which is what lets htmx swap

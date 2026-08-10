@@ -10,7 +10,7 @@ scheduled as one commit by all three documents. Before this table that identity 
 files with nothing reconciling it, and the `P3` / `N-123` collision went unnoticed from April to
 2026-08-09.
 
-**94 steps, 81 open.**
+**95 steps, 84 open.**
 
 | arc | id | aliases | step | state | commit | blocked by |
 |---|---|---|---|---|---|---|
@@ -19,10 +19,11 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | balance | X-aj1 | -- | **X-aj1** the status seam merge, in three commits (`1688f508` R-DR's extraction, `63514efc` | SHIPPED | `1688f508` | -- |
 | balance | X-f | -- | **X-f** `feat(transactions): the app records when money moved` -- the DECOMPOSED parent, | open | -- | -- |
 | balance | X-f1 | -- | **X-f1** `feat(transactions): a settle carries the day the money moved` -- absorbs **S2-b**. | SHIPPED | -- | -- |
-| balance | X-an | -- | **X-an** `fix(loan): a payment is history from the day its money moved` -- the DECOMPOSED parent. | SHIPPED | `549015c0` | -- |
-| balance | X-an-a | -- | **X-an-a** the CUT: the replay/projection boundary moves onto `settled_on`, through ONE predicate. Closes **N-187** | SHIPPED | `3d3f0ef5` | -- |
-| balance | X-an-b | -- | **X-an-b** the anchor TIE-BREAK: ONE chronology key, not `id` bolted onto every ordering. Closes **N-196** | SHIPPED | `549015c0` | -- |
-| balance | X-f2 | -- | **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half. The | open | -- | -- |
+| balance | X-an | -- | **X-an** `fix(loan): a payment is history from the day its money moved` -- the DECOMPOSED parent, COMPLETE at two leaves, condensed into `archive/…2026-08-04.md` Section 1b | SHIPPED | `549015c0` | -- |
+| balance | X-f2 | -- | **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half, the DECOMPOSED parent | open | -- | -- |
+| balance | X-f2-a | -- | **X-f2-a** the DIFFERENCE, before it is saved: the anchor form shows the ledger's balance for its day, what was typed, and the gap (**R-EU**). Read-only | open | -- | -- |
+| balance | X-f2-b | -- | **X-f2-b** the DURABLE record: a Balance history card on the cash detail page, the loan card's cash twin (**R-EV**). Closes **N-205**, **N-204**, **N-206** | open | -- | -- |
+| balance | X-f2-c | -- | **X-f2-c** the OUTSTANDING SET, widened to transactions, envelopes and transfers, grouped by envelope (**R-EW**). MOVES MONEY on a tick | open | -- | -- |
 | balance | X-f3 | -- | **X-f3** `feat(cash): the ledger is sum-of-postings and the residual is classified` -- **THE | open | -- | -- |
 | balance | X-f4 | -- | **X-f4** `refactor(cash): delete what the cutover orphans` -- `ReconciledThrough` and its 78 | open | -- | -- |
 | balance | X-f5 | -- | **X-f5** `fix(ledger): the opening equity account holds only the opening` -- one balanced | open | -- | -- |

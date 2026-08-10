@@ -73,7 +73,10 @@ kill.
   those rows and left this family at plan step X-g3b; see :mod:`._grid` for
   :func:`grid_balance_view`, which answers every kind its modelled balance.
   See :mod:`._cash_flow` for the entries the pulse, the calendar and the cash
-  detail page still read.
+  detail page still read -- and for :func:`records_balance_at`, the fourth,
+  which answers the same fold at a date with the day's OWN assertion not yet
+  applied (ruling R-EU): what the records produce, as against what the app
+  currently reports for a day the user has already declared a balance for.
 * The LIABILITY entry (:func:`liability_owed_at_dates`) answers every debt's
   owed magnitude at a list of FORWARD calendar dates in one resolution pass --
   the shape a long-horizon liability band needs, which neither the period-keyed
@@ -184,6 +187,7 @@ from ._cash_flow import (
     cash_balance_at,
     cash_balance_map,
     cash_daily_balance_series,
+    records_balance_at,
 )
 from ._confirmed_view import confirmed_view
 from ._context import BalanceContext, require_scenario
@@ -299,6 +303,7 @@ __all__ = [
     "loan_required_extra",
     "loan_principal_paid_in_year",
     "positions",
+    "records_balance_at",
     "positions_period_map",
     "require_scenario",
     "secured_loan_series",
