@@ -444,9 +444,26 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
         A naive reader would take the whole cell as the key and report the one
         row that documents WHY its blocker is already shipped as broken -- the
         false positive the shared ``aliases`` grammar was written against.
+
+        **Asserted as a PROPERTY, not as that row's exact list.** The first
+        version pinned ``== ["balance:X-f1"]`` and went red the moment the
+        credit-card arc's own gate was added beside it -- pinning data the
+        registry is expected to grow is a test that fails on correct edits,
+        which is the kind that gets weakened rather than believed. The claim
+        worth holding is that EVERY parsed key is bare.
         """
         by_key = {row.key: row for row in registry.step_rows()}
-        assert by_key["credit_card:CC3b"].blocked_keys() == ["balance:X-f1"]
+        annotated = by_key["credit_card:CC3b"]
+        assert "(" in annotated.blocked, (
+            "CC3b no longer carries an annotated blocker, so this control has "
+            f"lost its subject: {annotated.blocked!r}"
+        )
+        assert "balance:X-f1" in annotated.blocked_keys()
+        for row in registry.step_rows():
+            for key in row.blocked_keys():
+                assert "(" not in key and " " not in key, (
+                    f"{row.key}: blocker {key!r} kept its annotation"
+                )
 
     def test_the_control_fires_on_a_blocker_naming_no_step(self, stage):
         """The control fires on a blocker naming no step."""
