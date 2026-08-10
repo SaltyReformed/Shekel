@@ -543,8 +543,14 @@ with their own text and owners, so restating them here was the registry duplicat
   `accounts.current_anchor_period_id` is why the bootstrap exists, and ruling R-EH dropped that
   column at X-f1c3c, in production since `8d812662`. So the fork is no longer "what will replace it"
   but "nothing replaces it, and what does the bootstrap exist for now": answer that from the tree,
-  and note that `reconcile_account_anchor_corrections` still raises for an owner with no pay periods
-  (**N-192**), which is the live reason the bootstrap has not simply been deleted.
+  and note that an owner with no pay period still cannot have an anchor correction posted
+  (**N-192**), which is the live reason the bootstrap has not simply been deleted. **That refusal
+  MOVED at the pay-calendar arc's `C2-d` (`3e6cd4ec`) and changed exception type**: it was a
+  `PostingError` raised by `reconcile_account_anchor_corrections`, and it is now a
+  `PayCalendarError` from `pay_calendar.PayCalendar.filing_period` -- one refusal rather than two,
+  and it now fires for "no MATERIALISED period" rather than "no periods at all". Registration
+  creates the default account, so deleting the bootstrap payday makes this the FIRST thing a new
+  owner hits; whatever X-ad does about it, the site to read is `filing_period`.
   **This step and the pay-calendar arc's `C3` are TWO REMEDIES FOR ONE DEFECT, and neither document
   said so until 2026-08-09.** N-123 IS that arc's row `P3`. R-DB answers it by DELETING the
   registration bootstrap payday; `C3` answers it by KEEPING the bootstrap and letting the owner's
