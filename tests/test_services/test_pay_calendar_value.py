@@ -565,6 +565,100 @@ class TestTheRemainingLookupsMovedIntact:
         assert cal.horizon() == date(2026, 2, 26)
 
 
+class TestPeriodByIdIsIdentityNotASearch:
+    """Plan step C2-b1: which STORED paycheck a rule's start period names."""
+
+    def test_it_finds_the_period_carrying_the_id(self):
+        """Keyed on ``period_id``, which is not the ordinal and not the index."""
+        found = calendar().period_by_id(12)
+
+        assert found is not None
+        assert found.start_date == date(2026, 1, 30)
+        # The fixture's ids start at 10 on purpose: an implementation that
+        # confused the id with the ordinal would answer the FIRST period here.
+        assert found.period_index == 2
+
+    def test_none_in_is_none_out(self):
+        """A rule may legitimately name no start period."""
+        assert calendar().period_by_id(None) is None
+
+    def test_an_id_that_names_no_period_answers_none(self):
+        """A stale in-memory id outliving its ``ON DELETE SET NULL`` row."""
+        assert calendar().period_by_id(9999) is None
+
+    def test_it_answers_over_an_off_cadence_schedule_too(self):
+        """Identity does not depend on the spacing, unlike every other lookup."""
+        found = calendar(OFF_CADENCE).period_by_id(12)
+
+        assert found is not None
+        assert found.start_date == date(2026, 1, 20)
+
+    def test_the_searchable_id_space_holds_only_saved_periods(self):
+        """Every projection carries ``period_id = None``, so identity is saved-only.
+
+        Ledger row **P21**: an ``{p.id: ...}`` map over a projected axis
+        collapses because the projections SHARE that ``None``.  Here the
+        consequence is the safe one -- a lookup cannot hand an unsaved period to
+        a caller about to write a foreign key.
+
+        Asserted structurally rather than by round-tripping the projection's own
+        ``period_id``, which an adversarial review of this step showed was
+        vacuous: that value IS ``None``, so the call returned at the guard
+        without ever reaching the scan, and the test would have passed against a
+        completely broken one.
+        """
+        cal = calendar()
+        projected = cal.span_containing(date(2027, 1, 1))
+
+        assert projected is not None and projected.period_id is None
+        assert projected not in cal.periods
+        assert all(period.period_id is not None for period in cal.periods)
+
+
+class TestEarliestStartInMonthIsWhatMonthlyFirstAsks:
+    """Plan step C2-b1: when a month's FIRST paycheck lands."""
+
+    def test_it_returns_the_earliest_payday_of_a_month_holding_two(self):
+        """January 2026 holds 01-02 and 01-16; the pattern fires on the first."""
+        assert calendar().earliest_start_in_month(2026, 1) == date(2026, 1, 2)
+
+    def test_it_returns_the_only_payday_of_a_month_holding_one(self):
+        """February 2026 holds 02-13 alone."""
+        assert calendar().earliest_start_in_month(2026, 2) == date(2026, 2, 13)
+
+    def test_a_month_the_schedule_covers_but_opens_no_payday_in_answers_none(self):
+        """A real answer, not an error -- and the distinction that matters.
+
+        OFF_CADENCE opens 2026-01-02, 01-16 and 01-20, so its last period runs
+        01-20 to 02-02 at a 14-day cadence: February 2nd IS covered by a
+        paycheck, and February opens none.  "Which paycheck covers this day"
+        and "does a paycheck START this month" are different questions, and a
+        ``Monthly First`` rule asks the second.
+        """
+        cal = calendar(OFF_CADENCE)
+
+        assert cal.period_containing(date(2026, 2, 2)) is not None
+        assert cal.earliest_start_in_month(2026, 2) is None
+
+    def test_a_month_past_the_horizon_answers_none_and_is_not_projected(self):
+        """SAVED periods only, so a Monthly First rule cannot fire into thin air.
+
+        This is the method's one sharp edge: the calendar PROJECTS for
+        ``span_containing`` and must not here, because the answer selects a
+        paycheck a generated row will be seated in by ``pay_period_id``.
+        """
+        cal = calendar()
+        assert cal.span_containing(date(2026, 6, 1)) is not None
+        assert cal.earliest_start_in_month(2026, 6) is None
+
+    def test_it_does_not_confuse_the_same_month_in_another_year(self):
+        """Both halves of the key are read, which one careless filter would not."""
+        cal = calendar([(30, date(2025, 1, 9)), (31, date(2026, 1, 23))])
+
+        assert cal.earliest_start_in_month(2025, 1) == date(2025, 1, 9)
+        assert cal.earliest_start_in_month(2026, 1) == date(2026, 1, 23)
+
+
 class TestTheDerivedPeriodContract:
     """What every consumer reads off the value."""
 
