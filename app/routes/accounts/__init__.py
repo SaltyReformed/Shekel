@@ -27,6 +27,12 @@ Module map:
 * :mod:`app.routes.accounts.anchor` -- The grid and Net Worth Cockpit
   anchor true-up endpoints, consumers of
   :func:`app.services.anchor_service.apply_anchor_true_up`.
+* :mod:`app.routes.accounts.reconcile` -- The outstanding-purchase panel
+  ("which of these has your bank taken?") its context builder and both
+  mounts share.  Split out of ``anchor`` when that module reached the
+  1000-line ceiling; the boundary is WRITE DOOR against WHAT IS STILL
+  OUTSTANDING, and it took two cross-module private names public with it
+  (finding N-33's shape).
 * :mod:`app.routes.accounts.types` -- Account-type CRUD for the
   per-user custom catalogue (commit C-28 / F-044).
 * :mod:`app.routes.accounts.detail` -- Per-account detail pages.  The
@@ -59,6 +65,7 @@ from app.routes.accounts._bp import accounts_bp
 # otherwise fire on what is, by design, a deferred-import side-
 # effect registration.
 from app.routes.accounts import crud  # noqa: F401, E402
+from app.routes.accounts import reconcile  # noqa: F401, E402
 from app.routes.accounts import anchor  # noqa: F401, E402
 from app.routes.accounts import types  # noqa: F401, E402
 from app.routes.accounts import detail  # noqa: F401, E402
