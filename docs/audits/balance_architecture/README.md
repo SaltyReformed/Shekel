@@ -628,12 +628,14 @@ with their own text and owners, so restating them here was the registry duplicat
   the two steps must be SEQUENCED TOGETHER or the fourth answer gets built here.
   **Since 2026-08-08 it is THREE steps, not two: this step IS the pay-calendar arc's `C2`**
   (`docs/plans/implementation_plan_pay_calendar.md`), which supplies the total function this row
-  asks for by DERIVING the calendar from the paydays. Whoever builds it satisfies all three specs,
-  and `C2` adds one this row did not have -- **row P14: the calendar may not be constructed from a
-  partial window**, or the last period in that window reports a different end than the same period
-  reports elsewhere. `PeriodCalendar.from_pay_periods` and `_cash_periods._PeriodSpans.of` both
-  accept one today, and the sibling shape is already measured in-repo at `$150,000.00`
-  (`loan_ledger/_visible.py:78-95`). **Root, and it is this arc's own disease on the other axis: the pay
+  asks for by DERIVING the calendar from the paydays, and `C2` adds one requirement this row did not
+  have -- **row P14: the calendar may not be constructed from a partial window** (the sibling shape
+  is measured in-repo at `$150,000.00`, `loan_ledger/_visible.py:78-95`).
+  **`C2` was RULED on three forks 2026-08-10 and DECOMPOSED into `C2-a`..`C2-f`, so this box ticks
+  with its LAST leaf rather than with one commit.** The census that sized it corrected a claim
+  BOTH other documents carried: **SIX** implementations of "which paycheck covers this day", not
+  three, across **66** `app/` call sites. The specifications are the pay-calendar document's
+  section 4; nothing about them is restated here. **Root, and it is this arc's own disease on the other axis: the pay
   calendar is a PARTIAL function.** `get_all_periods` returns the MATERIALIZED rows and nothing
   else, so past the last row every consumer improvises and the improvisations disagree -- precisely
   the shape Section 1 describes and Section 3 deletes with a total fold. Measured: past the horizon

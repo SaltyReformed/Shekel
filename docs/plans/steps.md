@@ -24,7 +24,7 @@ scheduled as one commit by all three documents. Before this table that identity 
 files with nothing reconciling it, and the `P3` / `N-123` collision went unnoticed from April to
 2026-08-09.
 
-**98 steps, 86 open.**
+**104 steps, 92 open.**
 
 | arc | id | aliases | step | state | commit | blocked by |
 |---|---|---|---|---|---|---|
@@ -65,7 +65,7 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | balance | X-i2 | -- | **X-i2 THE CLOCK** -- the cutover. Each memoized loader takes `ctx.as_of` and `ctx.scenario`, | open | -- | balance:X-i1 |
 | balance | X-j | -- | **X-j** `feat(balance): one account, one answer -- or a row that explains the difference` -- | open | -- | balance:X-i2 |
 | balance | X-k | -- | **X-k** `fix(recurring): the recurrence bound is reconciled, not stored and forgotten` -- | open | -- | recurrence:R5 |
-| balance | X-l | pay_calendar:C2 / recurrence:R-F12 | **X-l** `feat(periods): the pay calendar answers any date` -- closes **N-82**, **N-128**, and | open | -- | -- |
+| balance | X-l | pay_calendar:C2 / recurrence:R-F12 | **X-l** `feat(periods): the pay calendar answers any date` -- closes **N-82**, **N-128**, and. The DECOMPOSED parent under its balance name: the leaves are `pay_calendar:C2-a`..`C2-f`, so what may start here is `C2-a` | open | -- | -- |
 | balance | X-m | -- | **X-m** `refactor(growth): the projection engine takes its axis, not its boundaries` -- closes | open | -- | -- |
 | balance | X-n | -- | **X-n** `fix(loan): a redistributed payment carries its REAL installment` -- closes **N-36**. | open | -- | -- |
 | balance | X-e | -- | **X-e** `refactor(accounts): current_anchor_balance is a reconciled cache or it is nothing` -- | open | -- | -- |
@@ -96,11 +96,17 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | recurrence | R-F2 | -- | **R-F2 -- Tighten the ref-seed parity scan's statement boundary** (finding F-2). | open | -- | -- |
 | recurrence | R-F3 | -- | **R-F3 -- Resolve the ref-table constraint-naming disagreement** (finding F-3). | open | -- | -- |
 | recurrence | R-F10 | pay_calendar:C5a (ticks it) | **R-F10 -- Delete the gap machinery the pay-calendar arc makes unconstructible** (finding | open | -- | pay_calendar:C4 |
-| recurrence | R-F12 | pay_calendar:C2 / balance:X-l | **R-F12 -- One `PeriodCalendar`, not three period-containing searches** (finding F-12). | open | -- | -- |
+| recurrence | R-F12 | pay_calendar:C2 / balance:X-l | **R-F12 -- One `PeriodCalendar`, not three period-containing searches** (finding F-12). The DECOMPOSED parent under its recurrence name; `pay_calendar:C2-b` is the leaf that retires `PeriodCalendar` | open | -- | -- |
 | recurrence | R-F13 | -- | **R-F13 -- Close the three holes in this arc's own gate** (finding F-13). | open | -- | -- |
 | recurrence | R-F7 | -- | **R-F7 -- Delete two unreachable branches in `_first_of_month_anchor`** (finding D11). | open | -- | -- |
 | pay_calendar | C1 | -- | **C1 -- the derivation exists and is proven equal to what is stored.** `f9d148fe`, | SHIPPED | `f9d148fe` | -- |
-| pay_calendar | C2 | balance:X-l / recurrence:R-F12 | **C2 -- one calendar value answers every "which period" question.** | open | -- | -- |
+| pay_calendar | C2 | balance:X-l / recurrence:R-F12 | **C2 -- one calendar value answers every "which period" question.** The DECOMPOSED parent, RULED on three forks 2026-08-10; ticks with the last of its leaves, and that tick is also `balance:X-l` and `recurrence:R-F12` | open | -- | -- |
+| pay_calendar | C2-a | -- | **C2-a -- the one calendar VALUE, and nothing calls it.** Four named searches over C1's derivation, TOTAL forward at the owner's cadence, and a window that is a VIEW. Additive; proven against production before any consumer depends on it | open | -- | -- |
+| pay_calendar | C2-b | -- | **C2-b -- the recurrence cutover.** `PeriodCalendar` / `SchedulePeriod` retire; the two partial-list callers take a view (**P14**) | open | -- | pay_calendar:C2-a |
+| pay_calendar | C2-c | -- | **C2-c -- the cash-view cutover.** `balance_at/_cash_periods._PeriodSpans` retires (**P14**) | open | -- | pay_calendar:C2-a |
+| pay_calendar | C2-d | -- | **C2-d -- the filing cutover.** `find_period_containing_date` and `resolve_anchor_pay_period` DELETE; the two posting writers call the filing rule | open | -- | pay_calendar:C2-a |
+| pay_calendar | C2-e | -- | **C2-e -- the projection axis.** `generate_projection_periods` and `SyntheticPeriod` DELETE. Closes **P7**, **P17**, **P20** | open | -- | pay_calendar:C2-a |
+| pay_calendar | C2-f | -- | **C2-f -- the readers answer from the calendar.** `pay_period_service`'s six `get_*` across 66 call sites. Closes **P19** | open | -- | pay_calendar:C2-a |
 | pay_calendar | C3 | -- | **C3 -- the writer writes paydays, forward-only.** | open | -- | balance:X-ad |
 | pay_calendar | C4 | -- | **C4 -- drop the derived columns.** | open | -- | pay_calendar:C2 / pay_calendar:C3 |
 | pay_calendar | C5 | -- | **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** The DECOMPOSED PARENT, split 2026-08-09; ticks with the last of its leaves | open | -- | pay_calendar:C4 / recurrence:R5 |
