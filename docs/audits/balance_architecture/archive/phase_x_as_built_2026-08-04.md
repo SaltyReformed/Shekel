@@ -113,6 +113,39 @@ with X-an (it reads `due_on`, which `R5` creates behind X-f4). That `developer-d
 by `implementation_plan_recurrence_redesign.md` section 0 and by `steps.md`'s `blocked by` cell on
 `recurrence:R6`, both of which state it independently of this record.
 
+### 1c. The X-f2 cluster's first two leaves (added 2026-08-10)
+
+**X-f2 itself is OPEN** -- `X-f2-c` is unbuilt and decomposed into three leaves of its own -- so the
+parent's specification stays in `../README.md`. What comes here is the two leaves that are DONE.
+Rule 5's three conditions hold: `N-205` is unfinished and stays in `ledger.md` under `X-j`; the one
+live sentence either leaf carried (the seam PRESERVES an existing settle day, which `X-f2-c2`
+overrides with the statement date) moved UP into `X-f2-c2`'s own specification rather than being
+archived under it; and nothing below was carried without re-verification.
+
+| step | commit(s) | what it did | findings |
+|---|---|---|---|
+| **X-f2-a** | `397ce36e`, preceded by the module split it forced (`69b91a53`) | The DIFFERENCE, before it is saved (**R-EU**): the anchor editor previews what the account's RECORDS produce for the day the form names, what was typed, and the gap, through `balance_at.records_balance_at`. Read-only, so no figure moved; the arithmetic and the sign's MEANING are decided in the route. Scoped to accounts with no modelled tier, which is what **N-213** records | opened **N-212**, **N-213**, **N-214** |
+| **X-f2-b** | `a41b5ebf` + `7f30057a` + `a004361d` | The DURABLE record (**R-EV**): a Balance history card on the cash detail page -- as-of, recorded, ledger, CORRECTION -- on the new seam entry `balance_at.cash_anchor_history`, whose every column is a field `walk_cash_ledger(...).anchor_corrections` already published, so no producer was added. The acknowledgement re-keys onto "did the figure the user is looking at change" and its mount stops destroying a still-visible predecessor. `a004361d` is two neutral adversarial reviews' residue, and its top finding is the live lesson below | closed **N-204**, **N-206**; **N-205** NARROWED to the modelled kinds and re-pointed to **X-j** |
+
+**Three lessons this cluster paid for, kept because they are cited.** (i) One WORD covered two rules:
+the card's `recorded - balance_before` and the true-up preview's `recorded - records_balance_at(day)`
+were both labelled "Difference" on one page and diverge on any day carrying more than one assertion
+-- 3 of the real Checking account's ~50 -- so the column is `Correction` now and the figures never
+moved. (ii) **The pytest suite structurally cannot see a JS visibility defect**: `beforeend:` put the
+acknowledgement outside the element its auto-show handler is scoped to, so it reached the DOM and
+stayed INVISIBLE with 8,556 tests green; `tests/manual/verify_anchor_ack.py` is the probe that saw
+it. (iii) Bootstrap's instance map is a `Map`, not a WeakMap, so any component on an element an htmx
+swap destroys is retained: 5 expand-then-refresh cycles of the card retained **4,592 DOM nodes**,
+measured by CDP `Performance.getMetrics` with a forced GC, and `app.js` now disposes on
+`htmx:beforeSwap`.
+
+**Two defects this cluster REPORTED and did not fix**, each wanting its own step and each recorded
+where it will be read: `loan_posting_service.loan_balance_anchor_history` and
+`balance_at.cash_anchor_history` are two statements of ONE rule, and the fence registry rules that
+same column two opposite ways; and `is_opening` is POSITIONAL, so an assertion back-dated before an
+account's origination takes the "Opening" badge and the real origination loses it -- which is
+**N-200**, owned by `X-f3`.
+
 ## 2. Findings closed outside a Phase X step
 
 | finding | closed by | note |

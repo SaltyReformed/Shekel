@@ -129,7 +129,7 @@ class CashAnchorFact:
     production rows, and carried an ``ON DELETE CASCADE`` that let a
     pay-period reset destroy the user's balance record.  A reader wanting
     "which period does this assertion book in" derives it from the day
-    (:func:`app.services.loan_ledger.resolve_anchor_pay_period`).
+    (:meth:`app.services.pay_calendar.PayCalendar.filing_period`).
 
     Attributes:
         account_id: The ``budget.accounts`` id the assertion belongs to.

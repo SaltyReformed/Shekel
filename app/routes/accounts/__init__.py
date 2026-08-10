@@ -33,6 +33,17 @@ Module map:
   1000-line ceiling; the boundary is WRITE DOOR against WHAT IS STILL
   OUTSTANDING, and it took two cross-module private names public with it
   (finding N-33's shape).
+* :mod:`app.routes.accounts.difference` -- The true-up form's read-only
+  DIFFERENCE preview (plan step X-f2-a, ruling R-EU): what the records produce
+  for the day the form names, what was typed, and the gap.  Split out of
+  ``anchor`` when plan step X-f2-b's acknowledgement re-key pushed that module
+  past the 1000-line ceiling; the boundary is WRITE DOOR against a PREVIEW of
+  a save that has not happened, and it took two names public with it.
+* :mod:`app.routes.accounts.history` -- The Balance history card (plan step
+  X-f2-b, ruling R-EV): every balance the user has told an account it held,
+  beside what its records produced just before each one.  A third subject
+  beside ``detail``'s page and ``anchor``'s write door, split for the reason
+  ``reconcile`` was.
 * :mod:`app.routes.accounts.types` -- Account-type CRUD for the
   per-user custom catalogue (commit C-28 / F-044).
 * :mod:`app.routes.accounts.detail` -- Per-account detail pages.  The
@@ -66,7 +77,9 @@ from app.routes.accounts._bp import accounts_bp
 # effect registration.
 from app.routes.accounts import crud  # noqa: F401, E402
 from app.routes.accounts import reconcile  # noqa: F401, E402
+from app.routes.accounts import history  # noqa: F401, E402
 from app.routes.accounts import anchor  # noqa: F401, E402
+from app.routes.accounts import difference  # noqa: F401, E402
 from app.routes.accounts import types  # noqa: F401, E402
 from app.routes.accounts import detail  # noqa: F401, E402
 

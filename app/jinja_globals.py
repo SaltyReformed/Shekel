@@ -1,9 +1,14 @@
-"""Single source of truth for ID-derived Jinja globals.
+"""Single source of truth for the constants Jinja reads.
 
-Registers every constant the templates consume by integer ID rather
-than by ref-table ``name`` string (the project's "IDs for logic,
-strings for display only" invariant -- see CLAUDE.md "Reference
-tables: IDs for logic, strings for display only.").
+TWO groups, registered separately because they have different
+preconditions.  The first and larger is the ID-derived set: every
+constant the templates consume by integer ID rather than by ref-table
+``name`` string (the project's "IDs for logic, strings for display
+only" invariant -- see CLAUDE.md "Reference tables: IDs for logic,
+strings for display only.").  The second is the pay-calendar INPUT
+BOUNDS, added at plan step X-ad-a; it needs no database and is
+registered unconditionally -- see
+:func:`register_pay_calendar_bound_globals`.
 
 Called from two places:
 
@@ -46,6 +51,9 @@ from app.enums import (
     StatusEnum,
     TxnTypeEnum,
 )
+from app.models.pay_schedule import CADENCE_DAYS_MAX
+from app.schemas.validation.pay_periods import CADENCE_DAYS_FORM_MIN
+from app.services.pay_period_service import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
 
 # Every ID-derived Jinja global, grouped by the ``ref_cache`` accessor
 # that resolves it.  Each group pairs one accessor with the
@@ -159,3 +167,36 @@ def register_ref_id_globals(app: Flask) -> None:
     for accessor, members in _REF_ID_GLOBALS:
         for name, member in members.items():
             globals_map[name] = accessor(member)
+
+
+def register_pay_calendar_bound_globals(app: Flask) -> None:
+    """Register the pay-calendar input bounds every schedule form renders.
+
+    **Plan step X-ad-a**, and it exists so a template hint cannot disagree
+    with the rule behind it.  Three forms carry a cadence and a period count
+    -- the settings generate card, its standalone page, and now registration
+    -- and each rendered its own ``min`` / ``max`` literals.  A literal in a
+    template is the copy nobody re-reads: the cadence floor moved to the
+    WRITER's (a one-day cadence cannot be materialised into an authored
+    ``end_date``) and three hardcoded ``min="1"`` attributes would have gone
+    on inviting the value that reached the CHECK as a 500.
+
+    Registered UNCONDITIONALLY, unlike :func:`register_ref_id_globals`: these
+    are module constants, so there is no ref-cache precondition and no
+    bootstrap window in which they would raise.  That also means the per-test
+    ref-cache reseat does not have to re-run this one -- nothing invalidates
+    a constant.
+
+    The names are the browser's half of a three-layer refusal and never the
+    guard: the Marshmallow field and the service refuse the same set whatever
+    was rendered.
+
+    Args:
+        app: The Flask application whose ``jinja_env.globals`` to populate.
+    """
+    app.jinja_env.globals.update({
+        "CADENCE_DAYS_MIN": CADENCE_DAYS_FORM_MIN,
+        "CADENCE_DAYS_MAX": CADENCE_DAYS_MAX,
+        "PERIOD_BATCH_MIN": PERIOD_BATCH_MIN,
+        "PERIOD_BATCH_MAX": PERIOD_BATCH_MAX,
+    })

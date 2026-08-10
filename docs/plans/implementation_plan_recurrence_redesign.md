@@ -710,15 +710,14 @@ Deletion-only, so the 430-shape baseline must stay byte-identical.
 
 - [ ] **R-F12 -- One `PeriodCalendar`, not three period-containing searches** (finding F-12).
 
-**Still starts with a ruling, not a keystroke**: the third implementation's fallback
-(`loan_ledger/_visible.py:117`, "the latest period ENDING before the target") is what the other two
-deliberately refuse, so unifying them means ruling whether that fallback is a legitimate second
-QUESTION -- an anchor correction needs a home period because `journal_entries.pay_period_id` is NOT
-NULL -- or a compensator. If it is a second question it gets its own named method on the one value;
-it does not get a second implementation. **It is DELIVERED by the pay-calendar arc's C2**, which
-builds that one value out of the paydays and makes it TOTAL, and which ships as ONE commit with the
-balance arc's X-l -- all three arcs need the same value, and building it twice is the defect this
-step exists to remove. **Tick this box with C2's commit.**
+**RULED 2026-08-10, and this step's own count was wrong**: an AST census found **SIX**
+implementations, not three. The third's fallback (`loan_ledger/_visible.py:150`) is a legitimate
+second QUESTION and gets its own named method on the one value -- proven equivalent over 1,800
+(shape, day) pairs to "the latest period starting on or before the day, else the earliest", which is
+the exact mirror of the `period_starting_on_or_after` this arc's own `PeriodCalendar` already
+carries. **DELIVERED by the pay-calendar arc's C2**, now DECOMPOSED into `C2-a`..`C2-f`; `C2-b` is
+the leaf that retires `PeriodCalendar` and `SchedulePeriod` into it, and the arc's 430-shape
+baseline must stay byte-identical across it. **Tick this box with C2's LAST leaf.**
 
 - [ ] **R-F13 -- Close the three holes in this arc's own gate** (finding F-13).
 

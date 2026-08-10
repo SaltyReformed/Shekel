@@ -56,13 +56,15 @@ from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum, CompoundingFrequencyEnum
+from app.enums import CompoundingFrequencyEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.interest_params import InterestParams
 from app.models.ref import CompoundingFrequency
 from app.routes.accounts._bp import accounts_bp
+from app.routes.accounts._cash_page import load_cash_account_or_404
+from app.routes.accounts.history import balance_history_context
 from app.routes.accounts.reconcile import panel_id, reconcile_context
 from app.services import (
     balance_at,
@@ -299,55 +301,7 @@ def _cash_projection(
     return balances, interest_by_period, anchor
 
 
-def _cash_detail_wrong_type(account: Account) -> bool:
-    """Return True when *account* is a kind the cash detail page does NOT serve.
-
-    The merged cash detail page serves Checking, the ``has_interest`` types
-    (HYSA / Money Market / CD / HSA), and plain cash types (Savings, Credit
-    Card, plain custom).  It does NOT serve loans (``has_amortization``),
-    physical assets (``has_appreciation``), or retirement / investment
-    accounts (category RETIREMENT or INVESTMENT) -- those keep their own
-    screens.  Resolves by boolean type flag and integer category id only,
-    never a ref-table ``name`` string (the IDs-for-logic invariant).  An
-    account with no ``account_type`` (degenerate / partially loaded) is
-    served as a plain cash account, matching ``classify_account``'s
-    None-is-PLAIN convention.
-    """
-    acct_type = account.account_type
-    if acct_type is None:
-        return False
-    return bool(
-        acct_type.has_amortization
-        or acct_type.has_appreciation
-        or acct_type.category_id in (
-            ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT),
-            ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT),
-        )
-    )
-
-
-# ── Cash Detail (checking + interest + plain cash) ────────────────
-
-
-def _load_cash_account_or_404(account_id: int) -> Account:
-    """Load a cash-detail-served account for the current user, or 404.
-
-    The shared gate for :func:`cash_detail` and its two HTMX fragments
-    (:func:`cash_band`, :func:`cash_balance_hero`): ``get_or_404``
-    resolves cross-owner / non-existent accounts to ``None`` (the
-    project's "404 for not-found and not-yours" rule), and
-    :func:`_cash_detail_wrong_type` 404s the kinds this page does not
-    serve (loans, physical assets, retirement / investment).
-    """
-    account = get_or_404(Account, account_id)
-    if account is None:
-        abort(404)
-    if _cash_detail_wrong_type(account):
-        abort(404)
-    return account
-
-
-def _cash_detail_context(account: Account) -> dict:
+def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
     """Assemble the cash detail template context (page AND band fragments).
 
     Extracted from :func:`cash_detail` when the D14 click-to-edit port
@@ -374,7 +328,6 @@ def _cash_detail_context(account: Account) -> dict:
 
     all_periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
-    balance_ctx = BalanceContext.build(current_user.id)
 
     # Preserve the pre-merge ``interest_detail`` behaviour: the params row is
     # auto-created before any projection so the parameters card always
@@ -387,7 +340,7 @@ def _cash_detail_context(account: Account) -> dict:
     )
 
     balances, interest_by_period, anchor = _cash_projection(
-        account, is_interest, balance_ctx, all_periods,
+        account, is_interest, ctx, all_periods,
     )
 
     current_balance = _current_period_balance(balances, current_period, anchor)
@@ -444,14 +397,35 @@ def cash_detail(account_id):
     additionally get an APY / compounding parameters card, a "next 12
     months" projected-interest chip, and their interest-accrued
     balances.  Serves every cash account kind (see
-    :func:`_cash_detail_wrong_type` for the type gate); loans, physical
-    assets, and retirement / investment accounts 404 out.  The balance
-    production contract lives on :func:`_cash_detail_context` (shared
-    with the band fragment).
+    :func:`~app.routes.accounts._cash_page.cash_detail_wrong_type` for the
+    type gate); loans, physical assets, and retirement / investment accounts
+    404 out.  The balance production contract lives on
+    :func:`_cash_detail_context` (shared with the band fragment).
+
+    The Balance history card below the reconcile panel (plan step X-f2-b) is
+    composed separately -- see the comment on the call.
     """
-    account = _load_cash_account_or_404(account_id)
+    account = load_cash_account_or_404(account_id)
+    # ONE read pass for the whole page.  Both builders below fold this
+    # account, and handing each its own context would be two resolutions of
+    # one question inside one request.  The WALK still runs twice (the band's
+    # fold and the history's), which is plan step X-i1's subject -- the
+    # context is the half this route can hold to one.
+    ctx = BalanceContext.build(current_user.id)
     return render_template(
-        "accounts/cash_detail.html", **_cash_detail_context(account),
+        "accounts/cash_detail.html",
+        # Under ONE name rather than splatted: ``reconcile_context`` inside
+        # ``_cash_detail_context`` already publishes ``account`` and
+        # ``panel_id``, so splatting a second builder's keys over it would
+        # silently re-root the reconcile panel at the history card's DOM id
+        # and break that panel's POST target.  And it is composed HERE rather
+        # than inside ``_cash_detail_context`` because that builder also
+        # serves the BAND fragment, which re-renders on every
+        # ``balanceChanged`` and has no use for an assertion log -- folding it
+        # in would walk the account's whole event stream again for a card the
+        # response does not carry.
+        history=balance_history_context(account, ctx),
+        **_cash_detail_context(account, ctx),
     )
 
 
@@ -476,9 +450,10 @@ def cash_band(account_id):
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("accounts.cash_detail", account_id=account_id))
-    account = _load_cash_account_or_404(account_id)
+    account = load_cash_account_or_404(account_id)
     return render_template(
-        "accounts/_cash_band.html", **_cash_detail_context(account),
+        "accounts/_cash_band.html",
+        **_cash_detail_context(account, BalanceContext.build(current_user.id)),
     )
 
 
@@ -503,12 +478,14 @@ def cash_balance_hero(account_id):
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("accounts.cash_detail", account_id=account_id))
-    account = _load_cash_account_or_404(account_id)
-    ctx = _cash_detail_context(account)
+    account = load_cash_account_or_404(account_id)
+    context = _cash_detail_context(
+        account, BalanceContext.build(current_user.id),
+    )
     return render_template(
         "accounts/_cash_balance_hero.html",
         account=account,
-        current_balance=ctx["current_balance"],
+        current_balance=context["current_balance"],
     )
 
 

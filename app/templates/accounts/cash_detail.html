@@ -17,7 +17,9 @@
    current_balance, current_period, anchor_as_of, horizons (list of
    {label, value, delta} -- deltas computed in the route with Decimal),
    interest_next_year, params, compounding_frequencies, chart_json,
-   has_chart. #}
+   has_chart, the reconcile panel's keys, and ``history`` (the balance
+   assertion log -- one nested name rather than splatted keys, because the
+   reconcile panel already publishes ``account`` and ``panel_id``). #}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
@@ -69,6 +71,21 @@
        hx-swap="innerHTML">
     {% include "accounts/_reconcile_purchases.html" %}
   </div>
+</div>
+
+{# ── Balance history, below the reconcile panel ─────────────────────────
+   The DURABLE record of a balance assertion (plan step X-f2-b, ruling R-EV),
+   and the reason it sits here: the band above is the answer, the reconcile
+   panel is the task, and this is the record.
+
+   It self-refreshes on ``balanceChanged`` because a true-up APPENDS an
+   assertion -- a card left un-refreshed would omit the very row the user just
+   recorded, which is the defect the card exists to close. #}
+<div id="{{ history.panel_id }}"
+     hx-get="{{ url_for('accounts.balance_history', account_id=account.id) }}"
+     hx-trigger="balanceChanged from:body"
+     hx-swap="innerHTML">
+  {% include "accounts/_balance_history.html" %}
 </div>
 
 {# ── Parameters card, below the band (decision 7) ───────────────────── #}

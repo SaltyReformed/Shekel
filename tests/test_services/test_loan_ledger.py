@@ -4,8 +4,11 @@ Plan step B1 (``docs/audits/balance_architecture/README.md``).  These tests pin
 the fold's CONTRACT -- totality, the delta each event contributes, and the two
 visibility rules it reproduces -- against HAND-COMPUTED figures.  The fold moved
 into the balance seam at step D-fold (*a fold is a balance*); the WALK it samples
-and the chronology primitives it reproduces stay in the ``loan_ledger`` leaf (*a
-walk is a fact*), and this file also pins those leaf primitives directly.
+and the two visibility rules it reproduces stay in the ``loan_ledger`` leaf (*a
+walk is a fact*), and this file also pins those leaf primitives directly.  The
+leaf's CALENDAR names left at pay-calendar plan step C2-d -- see
+``TestTheFoldTakesNoCalendarAndThePackageHoldsNone`` for what replaced their
+tests, and ``test_pay_calendar_value.py`` for the rule that replaced them.
 
 **Hand-computed, deliberately.**  The fold and the posted ledger share the walk
 (that is the design: the postings are a PROJECTION of the fold), so grading the
@@ -22,7 +25,6 @@ from decimal import Decimal
 
 import pytest
 
-from app.models.pay_period import PayPeriod
 from app.services import loan_ledger, loan_loaders
 from app.services.balance_at._fold import fold_loan_balances
 from tests._test_helpers import (
@@ -180,28 +182,52 @@ class TestFoldIsTotal:
         Totality is over the QUESTION (any date, any account).  Pre-C2 an anchor's
         visible-on date was ``LEAST(anchor_date, containing period.start)``, so the
         fold loaded the owner's whole calendar and RAISED when it was empty.  The
-        one clock counts an anchor from its OWN date, so the fold reaches the
-        calendar loader NOT AT ALL -- pinned here by making ``owner_pay_periods``
-        raise if the fold ever calls it, and folding successfully anyway.
+        one clock counts an anchor from its OWN date, so the fold reaches no
+        calendar at all.
+
+        **Pinned against the calendar doors this arc has built, and the
+        REWRITE found the old guard had no teeth.**  It used to make
+        ``loan_ledger.owner_pay_periods`` raise if the fold called it, patched
+        on ``_visible`` -- but the posting writer imported that name DIRECTLY,
+        so the patched attribute was a binding nothing in ``app/`` ever read.
+        The fixture built a loan through the writer with the poison installed
+        and never tripped it.  Pay-calendar plan step C2-d deleted the loader,
+        and poisoning its successor properly is what exposed that.
+
+        **Three bindings, and the ORDER is now load-bearing.**
+        ``calendar_for`` is imported by name in ``_posting_reconcile``, so
+        patching the defining module alone would leave the binding both anchor
+        writers actually call.  Those writers legitimately DO consult the
+        calendar -- filing an anchor correction is what C2-d pointed at it --
+        so the loan is built FIRST and the poison installed afterwards, around
+        the fold alone.  A poison installed before setup grades the fixture.
+
+        This is not every route to a calendar: ``recurrence._authoring``'s own
+        ``calendar_for`` and ``pay_period_service.get_all_periods`` are two
+        more, deliberately un-poisoned, and a fold regression reaching either
+        would slip past.  The STRUCTURAL half of the claim is
+        ``test_the_leaf_owns_no_database_session`` below.
         """
-        def _must_not_call(account_id):
+        def _must_not_call(user_id):
             raise AssertionError(
                 "the fold must not consult the owner calendar (step C2)"
             )
-        monkeypatch.setattr(
-            "app.services.loan_ledger._visible.owner_pay_periods",
-            _must_not_call,
-        )
         with app.app_context():
             loan = _make_loan(seed_user, db)
+            for binding in (
+                "app.services.pay_calendar.calendar_for",
+                "app.services.pay_calendar._loader.calendar_for",
+                "app.services._posting_reconcile.calendar_for",
+            ):
+                monkeypatch.setattr(binding, _must_not_call)
             # Trued up to $100,000 as of 2026-01-05; a later date holds it flat.
             assert _fold(loan, seed_user, [date(2026, 1, 20)])[
                 date(2026, 1, 20)
             ] == _ANCHOR_BALANCE
 
 
-class TestTheFoldTakesNoCalendarAndOwnerPayPeriodsIsTheWriters:
-    """The fold takes no period list, and since C2 needs no calendar at all.
+class TestTheFoldTakesNoCalendarAndThePackageHoldsNone:
+    """The fold takes no period list, and since C2-d the package holds no calendar.
 
     Pre-C2 an anchor's visible-on date was derived from the period CONTAINING it,
     so a PARTIAL calendar silently moved the answer (a window excluding the
@@ -212,10 +238,16 @@ class TestTheFoldTakesNoCalendarAndOwnerPayPeriodsIsTheWriters:
     calendar at all; the no-period-argument property below stays a structural
     guard against re-introducing that coupling.
 
-    ``owner_pay_periods`` survives as the POSTING WRITER's loader
-    (:func:`app.services.loan_posting_service._anchors.reconcile_loan_anchor_corrections`
-    files each anchor's NOT NULL ``pay_period_id`` from it); the two tests below
-    pin its correctness for that consumer.
+    **The three calendar names are GONE as of pay-calendar plan step C2-d.**
+    ``owner_pay_periods``, ``find_period_containing_date`` and
+    ``resolve_anchor_pay_period`` had one consumer left between them -- the two
+    anchor-posting writers -- and those now file through
+    ``pay_calendar.PayCalendar.filing_period``.  The tests that pinned the
+    locator's three branches went with it, because the branches themselves did:
+    that chain is one clamp now, proven equal to it over 1,800 (shape, day) pairs
+    in ``test_pay_calendar_value.py`` and re-measured against production at the
+    cutover.  What replaces them here is the property their deletion CREATED --
+    the leaf is pure.
     """
 
     def test_fold_loan_balances_takes_no_period_argument(self):
@@ -230,127 +262,63 @@ class TestTheFoldTakesNoCalendarAndOwnerPayPeriodsIsTheWriters:
         params = inspect.signature(fold_loan_balances).parameters
         assert list(params) == ["loan_account_id", "scenario_id", "dates"]
 
-    def test_owner_pay_periods_returns_the_WHOLE_calendar_ascending(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Every period the owner has, in ``period_index`` order -- never a window."""
-        with app.app_context():
-            loan = _make_loan(seed_user, db)
-            loaded = loan_ledger.owner_pay_periods(loan.id)
-            assert [p.id for p in loaded] == [p.id for p in seed_periods]
-            assert [p.period_index for p in loaded] == sorted(
-                p.period_index for p in seed_periods
-            )
+    def test_the_package_exports_no_calendar_name(self):
+        """The three deleted names are gone from the public surface, not shadowed.
 
-    def test_owner_pay_periods_is_scoped_to_the_accounts_own_owner(
-        self, app, db, seed_user, seed_second_user, seed_periods,
-    ):
-        """Another user's periods never enter the calendar (it joins the account).
-
-        The loader takes an ACCOUNT, not an owner id, so a loan cannot be paired
-        with someone else's calendar even by a caller's mistake.
+        A deletion that left the names importable would let a future consumer
+        reach the old three-branch chain and file an anchor by a second rule --
+        the exact duplication plan step C2 exists to remove.  Asserted on
+        ``__all__`` and on the module attributes, because a stale ``__all__``
+        entry and a stale re-export fail differently.
         """
-        with app.app_context():
-            from app.services import pay_period_service
-            pay_period_service.generate_pay_periods(
-                user_id=seed_second_user["user"].id,
-                start_date=date(2026, 1, 2), num_periods=4, cadence_days=14,
-            )
-            db.session.commit()
-            loan = _make_loan(seed_user, db)
-            owners = {
-                p.user_id for p in loan_ledger.owner_pay_periods(loan.id)
-            }
-            assert owners == {seed_user["user"].id}
+        for name in (
+            "owner_pay_periods",
+            "find_period_containing_date",
+            "resolve_anchor_pay_period",
+        ):
+            assert name not in loan_ledger.__all__, name
+            assert not hasattr(loan_ledger, name), name
 
+    def test_the_leaf_owns_no_database_session(self):
+        """``owner_pay_periods`` was the package's ONE query, and it is deleted.
 
-class TestFindPeriodContainingDate:
-    """The date-to-period locator: a hit, the period-END fallback, and ``None``.
+        The structural half of the claim above: rather than proving one consumer
+        does not call one loader, this proves no module in the leaf OWNS a
+        session -- neither importing :mod:`app.extensions` nor reaching a
+        ``.query`` off a model, the two ways this codebase spells one.
 
-    It moved here from ``account_projection`` at plan step D1b -- a kind
-    CLASSIFIER had been holding a chronology rule that this package then imported
-    back -- and it arrived with no direct coverage of its own, which the move was
-    the moment to fix.
+        **"Owns", not "is pure", and the weaker word is the honest one.**
+        :func:`walk_loan_ledger` still takes ids and reaches
+        :mod:`app.services.loan_loaders`, which holds the session; a walk is a
+        function of the facts a loader hands it, and that collaborator is
+        declared in the package docstring.  What this pins is that the leaf
+        stopped issuing queries of its OWN, which is the property C2-d created
+        and the one a future calendar loader would break.
 
-    **All three branches are load-bearing, not defensive.**
-    :func:`~app.services.loan_ledger.resolve_anchor_pay_period` is built on it and
-    files every anchor correction's NOT NULL ``pay_period_id`` from the answer, so
-    a wrong branch mis-dates an anchor: ``owner_pay_periods``' own docstring
-    measures a **$150,000.00** balance swing on exactly that path when the
-    containing period is missing and the fallback fires instead.
-
-    Built on real unsaved :class:`~app.models.pay_period.PayPeriod` rows rather
-    than stubs -- the C9a ruling (a hand-rolled fake drifts the moment a column is
-    added, and fails on ``AttributeError`` instead of on behaviour).
-    """
-
-    @staticmethod
-    def _periods():
-        """Return three consecutive biweekly periods, deliberately UNSORTED.
-
-        Out of order on purpose: the scan keys on ``period_index``, never on list
-        position, and a caller is not required to pre-sort.
-
-        **The EARLIEST period is first, and that ordering is what gives the
-        fallback test teeth.**  With the LATEST first, "the first candidate the
-        scan meets" and "the candidate with the highest ``period_index``"
-        coincide, so a fallback that drops the max-by-index comparison passes
-        anyway -- verified: mutating the comparison to ``if fallback is None``
-        left all four tests green under a latest-first fixture.  Production hands
-        this function ASCENDING lists (``owner_pay_periods`` and
-        ``pay_period_service.get_all_periods`` both ``ORDER BY period_index``),
-        where that mutant returns the EARLIEST period instead of the latest, so
-        the fixture must be able to tell them apart.
+        Read through the AST rather than by substring, so a docstring that
+        MENTIONS ``db.session`` -- this file's siblings do -- cannot fail it,
+        and so a spelling the substring scan missed cannot pass.
         """
-        rows = [
-            PayPeriod(
-                start_date=date(2026, 1, 2) + timedelta(days=14 * i),
-                end_date=date(2026, 1, 15) + timedelta(days=14 * i),
-                period_index=i,
-            )
-            for i in range(3)
-        ]
-        return [rows[0], rows[2], rows[1]]
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        import ast  # pylint: disable=import-outside-toplevel
+        import pathlib  # pylint: disable=import-outside-toplevel
 
-    def test_returns_the_period_whose_interval_contains_the_date(self):
-        """A date inside a period resolves to THAT period, inclusive at both ends."""
-        periods = self._periods()
-        # Period 1 spans 2026-01-16..2026-01-29.
-        for probe in (date(2026, 1, 16), date(2026, 1, 22), date(2026, 1, 29)):
-            located = loan_ledger.find_period_containing_date(periods, probe)
-            assert located is not None
-            assert located.period_index == 1, f"{probe} landed outside period 1"
-
-    def test_falls_back_to_the_latest_period_ending_before_the_date(self):
-        """Past the horizon: the LAST period that ended on or before *target*.
-
-        The user's last known position at the horizon is the honest answer for a
-        date beyond every generated period -- and it must be the LATEST such
-        period, not merely the first one the scan happens to meet.
-        """
-        periods = self._periods()
-        # Every period ends by 2026-02-12; period 2 is the last (index 2).
-        located = loan_ledger.find_period_containing_date(
-            periods, date(2027, 6, 1),
+        offenders = []
+        for module in sorted(pathlib.Path(loan_ledger.__file__).parent.glob("*.py")):
+            tree = ast.parse(module.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == "app.extensions":
+                    offenders.append(f"{module.name}: imports app.extensions")
+                elif isinstance(node, ast.Import) and any(
+                    alias.name == "app.extensions" for alias in node.names
+                ):
+                    offenders.append(f"{module.name}: imports app.extensions")
+                elif isinstance(node, ast.Attribute) and node.attr == "query":
+                    offenders.append(f"{module.name}: reaches a .query")
+        assert offenders == [], (
+            f"loan_ledger owns no session as of plan step C2-d; found {offenders}"
         )
-        assert located is not None
-        assert located.period_index == 2
-
-    def test_returns_none_when_the_date_precedes_every_period(self):
-        """No containing period and nothing earlier: ``None``, never period[0].
-
-        The distinction is what makes the caller's own fallback meaningful --
-        ``resolve_anchor_pay_period`` turns this ``None`` into the EARLIEST period
-        deliberately, so an imported loan originating years before the app's first
-        period still books its opening somewhere real.
-        """
-        assert loan_ledger.find_period_containing_date(
-            self._periods(), date(2025, 12, 31),
-        ) is None
-
-    def test_an_empty_calendar_answers_none(self):
-        """A user with no periods at all: ``None``, not an IndexError."""
-        assert loan_ledger.find_period_containing_date([], date(2026, 1, 5)) is None
 
 
 class TestFoldValue:

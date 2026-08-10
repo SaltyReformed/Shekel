@@ -36,13 +36,20 @@ that exist rather than indexing into a walk, and
 :meth:`PeriodCalendar.period_containing` answers ``None`` for a day in a gap
 rather than pulling it into the neighbouring period.
 """
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from operator import attrgetter
 
 from app.exceptions import ShekelError
+from app.services.pay_calendar import (
+    containing_period,
+    earliest_start_in_month,
+    final_covered_day,
+    opening_payday,
+    period_by_id,
+)
 
 #: The bisect key for both placement searches: a period's opening payday.
 #: Module-level so the two searches cannot key on different fields.
@@ -237,9 +244,7 @@ class PeriodCalendar:
             The earliest period's ``start_date``, or ``None`` for an empty
             schedule.
         """
-        if not self.periods:
-            return None
-        return self.periods[0].start_date
+        return opening_payday(self.periods)
 
     def horizon(self) -> date | None:
         """Return the last day the schedule covers, or ``None`` when empty.
@@ -256,9 +261,7 @@ class PeriodCalendar:
         Returns:
             The last covered day, or ``None`` for an empty schedule.
         """
-        if not self.periods:
-            return None
-        return self.periods[-1].end_date
+        return final_covered_day(self.periods)
 
     def period_containing(self, day: date) -> SchedulePeriod | None:
         """Return the period whose span covers *day*, or ``None``.
@@ -284,11 +287,7 @@ class PeriodCalendar:
         Returns:
             The containing :class:`SchedulePeriod`, or ``None``.
         """
-        index = bisect_right(self.periods, day, key=_BY_START_DATE) - 1
-        if index < 0:
-            return None
-        period = self.periods[index]
-        return period if day <= period.end_date else None
+        return containing_period(self.periods, day)
 
     def period_starting_on_or_after(self, day: date) -> SchedulePeriod | None:
         """Return the first period opening on or after *day*, or ``None``.
@@ -316,6 +315,11 @@ class PeriodCalendar:
     def period_by_id(self, period_id: int | None) -> SchedulePeriod | None:
         """Return the period with *period_id*, or ``None``.
 
+        Delegates to the shared primitive since plan step C2-b1, for the reason
+        the three searches above delegate: one question must not have two
+        implementations, and this one decides which stored paycheck a rule's
+        authored start period names.
+
         Args:
             period_id: A ``budget.pay_periods.id``, or ``None``.
 
@@ -325,19 +329,15 @@ class PeriodCalendar:
             rule whose start period was deleted -- the FK is
             ``ON DELETE SET NULL``, but a stale in-memory id can outlive it).
         """
-        if period_id is None:
-            return None
-        for period in self.periods:
-            if period.period_id == period_id:
-                return period
-        return None
+        return period_by_id(self.periods, period_id)
 
     def earliest_start_in_month(self, year: int, month: int) -> date | None:
         """Return the earliest payday falling in *year* / *month*.
 
         The one question ``Monthly First`` asks: that pattern fires on each
         month's FIRST paycheck, so whether a given month can honour a rule
-        depends on when its first paycheck lands.
+        depends on when its first paycheck lands.  Delegates to the shared
+        primitive since plan step C2-b1.
 
         Args:
             year: Calendar year.
@@ -349,11 +349,4 @@ class PeriodCalendar:
             not an error: a cadence longer than a month leaves months with no
             payday at all, and the horizon ends somewhere.
         """
-        starts = [
-            period.start_date for period in self.periods
-            if period.start_date.year == year
-            and period.start_date.month == month
-        ]
-        if not starts:
-            return None
-        return min(starts)
+        return earliest_start_in_month(self.periods, year, month)

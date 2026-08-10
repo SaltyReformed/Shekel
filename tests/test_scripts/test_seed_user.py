@@ -24,13 +24,16 @@ covered by tests/test_deploy/test_seed_credential_hygiene.py.
 import os
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
+from app.config import BaseConfig
 from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
+from app.models.pay_schedule import PaySchedule
 from app.models.scenario import Scenario
 from app.models.tax_config import (
     FicaConfig,
@@ -46,6 +49,7 @@ from app.services.auth_service import (
     DEFAULT_STATE_CHILD_DEDUCTIONS,
     DEFAULT_STATE_TAX,
 )
+from app.utils.dates import display_today
 # Aliased so the module-level name cannot shadow the ``seed_user``
 # pytest fixture from conftest.py.
 from scripts.seed_user import seed_user as run_seed_user
@@ -368,10 +372,20 @@ class TestSeedUserProvisioning:
 
     @staticmethod
     def _set_seed_env(monkeypatch, email="seeded@shekel.local"):
-        """Point the script's env inputs at a test identity."""
+        """Point the script's env inputs at a test identity.
+
+        ``SEED_USER_LAST_PAYDAY`` is set to the USER's today (plan step
+        X-ad-a): the script has no default for it, and the service refuses a
+        payday in the future -- which ``date.today()`` would be, for the four
+        hours a day a UTC process is already on tomorrow's date.
+        """
         monkeypatch.setenv("SEED_USER_EMAIL", email)
         monkeypatch.setenv("SEED_USER_PASSWORD", "a-strong-seed-pass-1")
         monkeypatch.setenv("SEED_USER_DISPLAY_NAME", "Seeded User")
+        monkeypatch.setenv(
+            "SEED_USER_LAST_PAYDAY", display_today().isoformat(),
+        )
+        monkeypatch.setenv("SEED_USER_NUM_PERIODS", "4")
 
     def test_seed_creates_full_registration_shape(self, app, db, monkeypatch):
         """One seed run provisions the complete /register shape.
@@ -392,11 +406,25 @@ class TestSeedUserProvisioning:
                 .filter_by(user_id=user.id).count() == 1
             )
 
+            # The seeded owner gets a REAL schedule, not the single fabricated
+            # period registration used to invent (plan step X-ad-a, ruling
+            # R-DB): SEED_USER_NUM_PERIODS periods opening on the stated
+            # payday, plus the ``budget.pay_schedule`` row that keeps a later
+            # extend from having to infer the cadence back out of a period's
+            # length (pay-calendar finding P8).
             periods = (
-                db.session.query(PayPeriod).filter_by(user_id=user.id).all()
+                db.session.query(PayPeriod)
+                .filter_by(user_id=user.id)
+                .order_by(PayPeriod.period_index)
+                .all()
             )
-            assert len(periods) == 1
-            assert periods[0].period_index == 0
+            assert len(periods) == 4
+            assert [p.period_index for p in periods] == [0, 1, 2, 3]
+            assert periods[0].start_date == display_today()
+            schedule = (
+                db.session.query(PaySchedule).filter_by(user_id=user.id).one()
+            )
+            assert schedule.cadence_days == BaseConfig.DEFAULT_PAY_CADENCE_DAYS
 
             account = (
                 db.session.query(Account).filter_by(user_id=user.id).one()
@@ -469,3 +497,165 @@ class TestSeedUserProvisioning:
                 db.session.query(User)
                 .filter_by(email="seeded@shekel.local").count() == 1
             )
+
+    def test_missing_last_payday_refuses_and_creates_nothing(
+        self, app, db, monkeypatch, capsys,
+    ):
+        """No SEED_USER_LAST_PAYDAY is a loud exit, not a guessed payday.
+
+        Plan step X-ad-a, ruling R-DB.  Registration stopped inventing a pay
+        period because an invented payday is never the owner's and blocks them
+        from entering their real one (finding **N-123**); defaulting this to
+        "today" here would put that same fabrication back on the one path that
+        provisions the PRODUCTION account.  The script has no honest default,
+        so it refuses -- the same shape as its existing refusal of the
+        documented default password in production.
+
+        The exit is what makes it safe operationally: ``entrypoint.sh`` runs
+        under ``set -e``, so a first boot with the variable unset aborts
+        rather than provisioning an owner onto a wrong calendar.
+        """
+        with app.app_context():
+            self._set_seed_env(monkeypatch)
+            monkeypatch.delenv("SEED_USER_LAST_PAYDAY", raising=False)
+            before = db.session.query(User).count()
+
+            with pytest.raises(SystemExit) as exc:
+                run_seed_user()
+
+            assert exc.value.code == 1
+            assert "SEED_USER_LAST_PAYDAY is not set" in capsys.readouterr().err
+            db.session.rollback()
+            assert db.session.query(User).count() == before
+
+    def test_malformed_last_payday_refuses_with_the_expected_shape(
+        self, app, db, monkeypatch, capsys,
+    ):
+        """A payday that is not an ISO date exits 1 instead of tracebacking.
+
+        ``date.fromisoformat`` on operator input is a place a typo becomes a
+        stack trace in the container log; the message names the shape wanted
+        and quotes what was given.
+        """
+        with app.app_context():
+            self._set_seed_env(monkeypatch)
+            monkeypatch.setenv("SEED_USER_LAST_PAYDAY", "08/05/2026")
+
+            with pytest.raises(SystemExit) as exc:
+                run_seed_user()
+
+            assert exc.value.code == 1
+            captured = capsys.readouterr().err
+            assert "must be an ISO date (YYYY-MM-DD)" in captured
+            assert "08/05/2026" in captured
+
+    def test_a_non_numeric_cadence_refuses_rather_than_tracebacks(
+        self, app, db, monkeypatch, capsys,
+    ):
+        """SEED_USER_CADENCE_DAYS that is not a number exits 1.
+
+        The cadence and horizon DO have defaults, so an unset value is fine;
+        a value that is set but unparseable is an operator mistake and gets
+        the same actionable refusal the payday gets.
+        """
+        with app.app_context():
+            self._set_seed_env(monkeypatch)
+            monkeypatch.setenv("SEED_USER_CADENCE_DAYS", "fortnightly")
+
+            with pytest.raises(SystemExit) as exc:
+                run_seed_user()
+
+            assert exc.value.code == 1
+            assert "whole number of days" in capsys.readouterr().err
+
+    def test_a_stale_last_payday_is_refused_by_the_service(
+        self, app, db, monkeypatch, capsys,
+    ):
+        """A payday older than one cadence reaches the service's refusal.
+
+        The script does not re-state the window rule -- ``register_user`` owns
+        it -- so this proves the operator input is carried through to the bound
+        rather than being validated only for shape here.
+
+        **The message is asserted, not just the exit code**, and an adversarial
+        review is why: every ``ValidationError`` this script catches exits 1,
+        so a bare ``code == 1`` would pass just as well on a bad email, a short
+        password or a bad cadence -- it would not prove the payday reached
+        anything.
+        """
+        with app.app_context():
+            self._set_seed_env(monkeypatch)
+            stale = display_today() - timedelta(days=30)
+            monkeypatch.setenv("SEED_USER_LAST_PAYDAY", stale.isoformat())
+
+            with pytest.raises(SystemExit) as exc:
+                run_seed_user()
+
+            assert exc.value.code == 1
+            captured = capsys.readouterr().err
+            assert "has already ended" in captured
+            assert stale.isoformat() in captured
+
+    def test_a_rerun_skips_without_needing_a_payday(
+        self, app, db, monkeypatch, capsys,
+    ):
+        """The idempotent re-run works with SEED_USER_LAST_PAYDAY unset.
+
+        **The deploy contract, and it was broken for one revision of this
+        step.** ``entrypoint.sh`` documents recreating the ``state`` volume as
+        a supported operator action: the sentinel goes, the seed step re-runs,
+        and the already-exists path creates nothing.  Building the
+        registration spec first made that path demand a payday it was never
+        going to use -- and the refusal is ``sys.exit(1)``, a ``BaseException``
+        no ``except`` here catches, so under ``set -e`` the entrypoint aborted
+        and Gunicorn never exec'd.  **The app failed to boot.**
+
+        This is the arm the suite lacked: the existing re-run test sets the
+        variable, so it could not see the requirement being asked at the wrong
+        time.
+        """
+        with app.app_context():
+            self._set_seed_env(monkeypatch)
+            first = run_seed_user()
+            first_id = first.id
+            capsys.readouterr()
+
+            monkeypatch.delenv("SEED_USER_LAST_PAYDAY", raising=False)
+            monkeypatch.delenv("SEED_USER_CADENCE_DAYS", raising=False)
+            monkeypatch.delenv("SEED_USER_NUM_PERIODS", raising=False)
+
+            second = run_seed_user()
+
+            assert second.id == first_id
+            assert "already exists" in capsys.readouterr().out
+            assert (
+                db.session.query(User)
+                .filter_by(email="seeded@shekel.local").count() == 1
+            )
+
+    def test_an_unmaterialisable_horizon_refuses_before_the_user_exists(
+        self, app, db, monkeypatch, capsys,
+    ):
+        """SEED_USER_NUM_PERIODS=0 refuses cleanly, creating no owner.
+
+        Zero periods used to pass every bound the app had: the schema never
+        saw it (this is not a form), and ``generate_pay_periods`` happily
+        created nothing -- so the failure surfaced several statements later, in
+        ``create_account``, as "the user has no pay periods.  Generate pay
+        periods first", which names no environment variable and no action the
+        operator can take.  Worse, it fired AFTER the ``User`` row was added,
+        falsifying ``register_user``'s own claim that every refusal happens
+        before that.
+        """
+        with app.app_context():
+            self._set_seed_env(monkeypatch)
+            monkeypatch.setenv("SEED_USER_NUM_PERIODS", "0")
+            before = db.session.query(User).count()
+
+            with pytest.raises(SystemExit) as exc:
+                run_seed_user()
+
+            assert exc.value.code == 1
+            assert "must be between 1 and 260" in capsys.readouterr().err
+            db.session.rollback()
+            assert db.session.query(User).count() == before

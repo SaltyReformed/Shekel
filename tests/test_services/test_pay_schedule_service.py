@@ -82,6 +82,58 @@ class TestUpsertSchedule:
             assert pay_schedule_service.get_schedule(user_id).id == schedule.id
 
 
+class TestUpsertScheduleRefusesAnUnstorableCadence:
+    """``upsert_schedule`` bounds the cadence itself (plan step X-ad-a).
+
+    ``ck_pay_schedule_cadence_range`` bounds the column to 1..365, and until
+    this step the only thing standing between a caller and that CHECK was each
+    caller's own Marshmallow field -- a rule held by four separate
+    declarations and by whoever remembered to add a fifth.  Registration was
+    that fifth door.  The refusal now lives at the one writer, so the
+    failure mode it removes is an ``IntegrityError`` 500 on a value a form
+    could have reported.
+    """
+
+    @pytest.mark.parametrize("cadence", [0, -1, 366, 100_000])
+    def test_out_of_range_cadence_raises_before_writing(
+        self, app, bare_user, cadence,
+    ):
+        """A cadence outside 1..365 raises and writes no schedule row.
+
+        The four values bracket both ends: 0 and -1 below the floor (a
+        zero-day cadence is a schedule with no paydays; a negative one runs
+        backwards), 366 one past the ceiling, and 100000 far past it.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            with pytest.raises(ValidationError, match="between 1 and 365"):
+                pay_schedule_service.upsert_schedule(user_id, cadence)
+            assert pay_schedule_service.get_schedule(user_id) is None
+
+    def test_message_names_the_offending_value(self, app, bare_user):
+        """The refusal quotes the value, so a surface can render it verbatim."""
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc:
+                pay_schedule_service.upsert_schedule(
+                    bare_user["user"].id, 400,
+                )
+            assert "got 400" in str(exc.value)
+
+    @pytest.mark.parametrize("cadence", [1, 365])
+    def test_the_bounds_themselves_are_accepted(self, app, bare_user, cadence):
+        """1 and 365 are INSIDE the range -- the check is inclusive.
+
+        A test that only proved the refusals would pass just as well against
+        an off-by-one that refused the endpoints too, which is the mistake
+        this pins: the CHECK reads ``BETWEEN 1 AND 365``.
+        """
+        with app.app_context():
+            schedule = pay_schedule_service.upsert_schedule(
+                bare_user["user"].id, cadence,
+            )
+            assert schedule.cadence_days == cadence
+
+
 class TestSetRolling:
     """``set_rolling`` writes rolling config onto an existing schedule row."""
 
