@@ -63,7 +63,7 @@ from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.interest_params import InterestParams
 from app.models.ref import CompoundingFrequency
 from app.routes.accounts._bp import accounts_bp
-from app.routes.accounts.anchor import _panel_id, reconcile_context
+from app.routes.accounts.reconcile import panel_id, reconcile_context
 from app.services import (
     balance_at,
     cash_ledger,
@@ -428,7 +428,7 @@ def _cash_detail_context(account: Account) -> dict:
         # The outstanding-purchase list (plan step S1-c), built by the SAME
         # helper the post-true-up prompt uses so the page and the modal cannot
         # come to disagree about what is still unreconciled.
-        **reconcile_context(account, panel_id=_panel_id(account.id)),
+        **reconcile_context(account, panel=panel_id(account.id)),
     }
 
 

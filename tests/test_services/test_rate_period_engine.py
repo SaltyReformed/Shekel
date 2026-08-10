@@ -26,7 +26,9 @@ from app.services.rate_period_engine import (
 ORIGINATION = date(2020, 1, 1)
 
 
-def _confirmed(period_start: date, payment_day: int) -> ConfirmedPayment:
+def _confirmed(
+    period_start: date, payment_day: int, settled_on: date | None = None,
+) -> ConfirmedPayment:
     """An ON-TIME confirmed payment: its pay period contains its due date.
 
     Derives the due date from the pay-period start, which is correct exactly
@@ -34,10 +36,17 @@ def _confirmed(period_start: date, payment_day: int) -> ConfirmedPayment:
     these replay tests exercise.  A payment settled LATE breaks that assumption
     and must carry its own stored due date; see
     ``TestReplayScheduleLatePayment``.
+
+    ``settled_on`` defaults to the pay-period start, which is what the replay's
+    as-of cap read BEFORE plan step X-an moved it onto the settled day.  Every
+    hand-computed expectation below is therefore unchanged by that move, and the
+    cases where the two dates differ are exercised explicitly (the caller passes
+    a day) rather than by accident.
     """
     return ConfirmedPayment(
         period_start=period_start,
         due_date=monthly_due_date(period_start, payment_day),
+        settled_on=period_start if settled_on is None else settled_on,
     )
 
 
@@ -480,16 +489,15 @@ class TestReplaySchedule:
         # pay-period start (05-21) it was keyed to.
         assert result.rows[0].payment_date == date(2026, 6, 1)
 
-    def test_prepaid_payment_replayed_when_period_started(self):
-        """The as-of cap is the pay-period START, not the due date (asymmetry).
+    def test_prepaid_payment_replayed_when_its_cash_moved(self):
+        """The as-of cap is the CASH day, not the due date (asymmetry).
 
-        A payment keyed to 2026-05-21 (due 2026-06-01) is evaluated on
-        2026-05-31 -- before its 06-01 due date but after its pay period
-        began (05-21).  The user marked it paid, so it is a real historical
-        payment and replays: the as_of cap tests the pay-period start
-        (05-21 <= 05-31), NOT the due date (which is still ahead).  The
-        anchor boundary still uses the due date; only the as_of cap uses
-        the pay-period start.
+        A payment whose cash moved 2026-05-21 (due 2026-06-01) is evaluated on
+        2026-05-31 -- before its 06-01 due date but after the money left.  It is
+        a real historical payment and replays: the as_of cap tests the settled
+        day (05-21 <= 05-31), NOT the due date (which is still ahead).  The
+        anchor boundary still uses the due date; only the as_of cap uses the
+        cash day.
 
           interest  = 300000 * 0.06/12 = 1500.00
           principal = 1798.65 - 1500.00 = 298.65
@@ -511,13 +519,12 @@ class TestReplaySchedule:
         assert len(result.rows) == 1
         assert result.balance_as_of == Decimal("299701.35")
 
-    def test_payment_whose_period_has_not_begun_not_replayed(self):
-        """A confirmed payment whose pay period starts after as_of is excluded.
+    def test_payment_whose_cash_has_not_moved_by_as_of_not_replayed(self):
+        """A payment settled after as_of is excluded from the replay.
 
-        Pay-period start 2026-06-15 is after the 2026-06-02 evaluation
-        date, so the payment's period has not begun and it is held for the
-        forward projection, not the historical replay -- even though its
-        due date (07-01) is well after the anchor.
+        Its cash moved 2026-06-15, after the 2026-06-02 evaluation date, so on
+        that date it had not happened and is held for the forward projection --
+        even though its due date (07-01) is well after the anchor.
         """
         periods = _fixed_loan_periods()
         result = replay_schedule(
@@ -595,10 +602,11 @@ class TestReplayScheduleLatePayment:
     biweekly period, and that assumption breaks: deriving from the period start
     then returns the FOLLOWING month's installment.
 
-    ``ConfirmedPayment`` therefore carries both dates, and the replay reads each
-    for its own job: the DUE date for the anchor boundary and the row's date, the
-    PERIOD START for the rate and the ``as_of`` cap (the basis the posting ledger
-    sums on).
+    ``ConfirmedPayment`` therefore carries all three dates, and the replay reads
+    each for its own job: the DUE date for the anchor boundary and the row's
+    date, the PERIOD START for the rate, and the SETTLED day for the ``as_of``
+    cap (the day the fold counts the payment's principal from -- plan step
+    X-an).
     """
 
     def test_row_is_dated_at_the_due_date_not_the_period_derivation(self):
@@ -623,6 +631,7 @@ class TestReplayScheduleLatePayment:
                 ConfirmedPayment(
                     period_start=date(2026, 5, 21),
                     due_date=date(2026, 5, 15),
+                    settled_on=date(2026, 5, 21),
                 ),
             ],
             payment_day=15,
@@ -634,14 +643,14 @@ class TestReplayScheduleLatePayment:
         # next_pay_date advances one month from the row it actually replayed.
         assert result.next_pay_date == date(2026, 6, 15)
 
-    def test_as_of_cap_reads_the_period_start_not_the_due_date(self):
-        """The "has this period begun?" cap stays on the PAY PERIOD.
+    def test_as_of_cap_reads_the_settled_day_not_the_due_date(self):
+        """The "has this happened?" cap is the day the CASH moved.
 
-        A payment due 2026-05-15 but PRE-PAID in the period starting 2026-05-07:
-        its period has begun by an as_of of 2026-05-08, so it is historical and
-        replays -- even though its due date is still ahead.  This is the bound the
-        posting ledger sums on (``PayPeriod.start_date <= as_of``), and the replay
-        must match it or the two disagree on which payments are confirmed.
+        A payment due 2026-05-15 whose money left on 2026-05-07: by an as_of of
+        2026-05-08 it has happened and replays, even though its due date is
+        still ahead.  This is the day the fold counts its principal from
+        (``loan_ledger.payment_visible_on``), and the replay must match it or
+        the two disagree on which payments have happened.
         """
         periods = _fixed_loan_periods()
         anchor = BalanceAnchor(
@@ -654,6 +663,7 @@ class TestReplayScheduleLatePayment:
                 ConfirmedPayment(
                     period_start=date(2026, 5, 7),
                     due_date=date(2026, 5, 15),
+                    settled_on=date(2026, 5, 7),
                 ),
             ],
             payment_day=15,
@@ -663,13 +673,77 @@ class TestReplayScheduleLatePayment:
         assert len(result.rows) == 1
         assert result.rows[0].payment_date == date(2026, 5, 15)
 
-    def test_anchor_boundary_reads_the_due_date_not_the_period_start(self):
+    def test_as_of_cap_reads_the_settled_day_not_the_period_start(self):
+        """N-187, the EARLY half: paid before the paycheck period funding it.
+
+        The 2026-06-01 installment is funded by the pay period opening
+        2026-05-31, and its cash left on 2026-05-28.  Read on 2026-05-28 the
+        money HAS moved, so the payment is history -- which is what the fold
+        says, because it counts the principal from that same day.  The
+        pay-period start (05-31) is still ahead, and reading THAT was the defect:
+        the ledger had already paid the installment down while the resolver was
+        still planning it, so the forward projection paid it a second time.
+        """
+        periods = _fixed_loan_periods()
+        result = replay_schedule(
+            periods=periods,
+            anchor=BalanceAnchor(
+                balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
+            ),
+            confirmed_payments=[
+                ConfirmedPayment(
+                    period_start=date(2026, 5, 31),
+                    due_date=date(2026, 6, 1),
+                    settled_on=date(2026, 5, 28),
+                ),
+            ],
+            payment_day=1,
+            as_of=date(2026, 5, 28),
+        )
+
+        assert len(result.rows) == 1
+        assert result.rows[0].payment_date == date(2026, 6, 1)
+        #   interest  = 300000 * 0.06/12 = 1500.00
+        #   principal = 1798.65 - 1500.00 = 298.65
+        assert result.balance_as_of == Decimal("299701.35")
+
+    def test_a_period_that_has_begun_does_not_make_a_payment_historical(self):
+        """N-187, the LATE half: the funding period opened, the cash had not.
+
+        The mirror of the case above, and the one an ordinary read of a PAST
+        date meets: the payment's pay period opened 2026-05-07 but its money did
+        not leave until 2026-05-20.  Asked about 2026-05-08 the loan had not
+        paid it, which is what the fold says; counting it there would have shown
+        a balance the bank never reached, and excluded it from the forward plan
+        at the same time.
+        """
+        periods = _fixed_loan_periods()
+        result = replay_schedule(
+            periods=periods,
+            anchor=BalanceAnchor(
+                balance=Decimal("300000.00"), as_of_date=date(2026, 5, 1),
+            ),
+            confirmed_payments=[
+                ConfirmedPayment(
+                    period_start=date(2026, 5, 7),
+                    due_date=date(2026, 5, 15),
+                    settled_on=date(2026, 5, 20),
+                ),
+            ],
+            payment_day=15,
+            as_of=date(2026, 5, 8),
+        )
+
+        assert result.rows == []
+        assert result.balance_as_of == Decimal("300000.00")
+
+    def test_anchor_boundary_reads_the_due_date_not_the_settled_day(self):
         """The anchor boundary stays on the DUE date.
 
-        A true-up dated 2026-05-10 sits between the payment's pay-period start
+        A true-up dated 2026-05-10 sits between the day the payment's cash moved
         (2026-05-07) and its due date (2026-05-15).  The payment came due AFTER
         the balance was verified, so it is NOT baked into the anchor and must
-        still replay -- the mid-period-true-up rule.  Comparing the period start
+        still replay -- the mid-period-true-up rule.  Comparing the cash day
         against the anchor would strand it.
         """
         periods = _fixed_loan_periods()
@@ -683,6 +757,7 @@ class TestReplayScheduleLatePayment:
                 ConfirmedPayment(
                     period_start=date(2026, 5, 7),
                     due_date=date(2026, 5, 15),
+                    settled_on=date(2026, 5, 7),
                 ),
             ],
             payment_day=15,

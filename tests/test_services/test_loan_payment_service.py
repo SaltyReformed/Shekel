@@ -3,7 +3,9 @@ Tests for the loan payment service.
 
 Verifies that get_payment_history() correctly queries shadow income
 transactions, applies the right filters, uses effective_amount for
-the payment amount, and maps is_confirmed from status.is_settled.
+the payment amount, and carries each shadow's three dates: the pay period
+funding it, the installment it satisfies, and -- since plan step X-an -- the
+stored day its cash moved, which is what ``is_confirmed`` is derived from.
 
 Also tests the payment preparation utilities (compute_contractual_pi
 and prepare_payments_for_engine) that correct escrow inflation and
@@ -11,11 +13,14 @@ biweekly month overlaps before passing payments to the amortization
 engine.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
+
+import pytest
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
+from app.exceptions import UndatedSettleError
 from app.extensions import db
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
@@ -80,7 +85,8 @@ def _create_loan_account(seed_user):
 
 
 def _create_transfer_to_loan(seed_user, loan_account, period, amount,
-                              status_enum=StatusEnum.PROJECTED):
+                              status_enum=StatusEnum.PROJECTED,
+                              settled_on=None):
     """Create a transfer from checking to loan account.
 
     Uses the transfer service to ensure shadow transaction invariants
@@ -92,6 +98,10 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
         period: The PayPeriod for the transfer.
         amount: Transfer amount as Decimal.
         status_enum: StatusEnum member for the initial status.
+        settled_on: The civil day the cash moved, for a transfer created
+            already in the settled band.  ``None`` leaves the write door to
+            stamp the user's today (a settled create) or to write no day at
+            all (a Projected one).
 
     Returns:
         Transfer: the created transfer.
@@ -106,6 +116,7 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             amount=amount,
             status_id=ref_cache.status_id(status_enum),
             category_id=seed_user["categories"]["Rent"].id,
+            settled_on=settled_on,
         ),
     )
 
@@ -350,6 +361,95 @@ class TestGetPaymentHistory:
             )
             assert len(result) == 1
             assert result[0].payment_date == seed_periods[2].start_date
+
+    def test_settled_on_is_the_shadows_own_stored_day_not_its_pay_period(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``settled_on`` is the day the CASH moved, read off the shadow.
+
+        Plan step **X-an** / finding **N-187**: the resolver's
+        replay-vs-projection cut keys on this day, and it must be the row's own
+        stored fact rather than anything derived from the pay period funding
+        it.  Here the cash left three days BEFORE that period opened -- an
+        ordinary early payment -- which is exactly the case the derived answer
+        got wrong.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            period = seed_periods[2]
+            cash_day = period.start_date - timedelta(days=3)
+            _create_transfer_to_loan(
+                seed_user, loan, period, Decimal("1500.00"),
+                status_enum=StatusEnum.DONE, settled_on=cash_day,
+            )
+            db.session.commit()
+
+            result = get_payment_history(
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+            )
+            assert len(result) == 1
+            assert result[0].settled_on == cash_day
+            assert result[0].payment_date == period.start_date
+            assert result[0].is_confirmed is True
+
+    def test_a_projected_shadow_carries_no_settle_day(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A payment that has not happened has no day, and is not confirmed.
+
+        ``is_confirmed`` IS that absence since plan step X-an, so this pins the
+        derived property against the database rather than only against the
+        value object.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            _create_transfer_to_loan(
+                seed_user, loan, seed_periods[2], Decimal("1500.00"),
+                status_enum=StatusEnum.PROJECTED,
+            )
+            db.session.commit()
+
+            result = get_payment_history(
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+            )
+            assert len(result) == 1
+            assert result[0].settled_on is None
+            assert result[0].is_confirmed is False
+
+    def test_a_settled_shadow_with_no_day_is_refused_not_dated(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A broken settled-iff-dated row FAILS LOUD rather than being guessed.
+
+        The state is reachable only by bypassing the status seam -- here a bulk
+        ``query.update`` on ``status_id``, the shape finding N-65 measured 41 of
+        in the suite.  The resolver's cut now reads this day, so inventing one
+        would place a real payment on a day nothing recorded; the shared
+        accessor refuses instead
+        (:func:`app.utils.balance_predicates.settled_day`).
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            _create_transfer_to_loan(
+                seed_user, loan, seed_periods[2], Decimal("1500.00"),
+                status_enum=StatusEnum.PROJECTED,
+            )
+            db.session.commit()
+
+            income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+            db.session.query(Transaction).filter(
+                Transaction.account_id == loan.id,
+                Transaction.transaction_type_id == income_type_id,
+            ).update(
+                {"status_id": ref_cache.status_id(StatusEnum.DONE)},
+                synchronize_session=False,
+            )
+            db.session.commit()
+
+            with pytest.raises(UndatedSettleError):
+                get_payment_history(
+                    loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+                )
 
     def test_ordered_by_pay_period_date(
         self, app, db, seed_user, seed_periods,
@@ -711,9 +811,9 @@ class TestPreparePaymentsForEngine:
         The $283 above P&I is escrow -> subtract it -> $1,517.
         """
         payments = [
-            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1800.00"), True),
-            PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1800.00"), True),
-            PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), Decimal("1800.00"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), date(2026, 1, 1), Decimal("1800.00")),
+            PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), date(2026, 2, 1), Decimal("1800.00")),
+            PaymentRecord(date(2026, 3, 1), monthly_due_date(date(2026, 3, 1), 1), date(2026, 3, 1), Decimal("1800.00")),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -763,8 +863,8 @@ class TestPreparePaymentsForEngine:
         # between them.  (Every other record in this class has
         # payment_date == due_date, where the two keyings cannot disagree.)
         payments = [
-            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1800.00"), True),
-            PaymentRecord(date(2026, 5, 21), date(2026, 6, 1), Decimal("1850.00"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), date(2026, 1, 1), Decimal("1800.00")),
+            PaymentRecord(date(2026, 5, 21), date(2026, 6, 1), date(2026, 5, 21), Decimal("1850.00")),
         ]
         assert payments[1].payment_date < date(2026, 5, 25) < payments[1].due_date
 
@@ -788,7 +888,7 @@ class TestPreparePaymentsForEngine:
         this payment did not include escrow, so no subtraction.
         """
         payments = [
-            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1500.00"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), date(2026, 1, 1), Decimal("1500.00")),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -810,15 +910,15 @@ class TestPreparePaymentsForEngine:
         redistributed to the next free due month, 2026-03-01.
 
         Only the DUE date is redistributed.  ``payment_date`` -- the pay period
-        the cash actually moved in -- is a FACT and is carried through
-        untouched on BOTH records: it is the replay's "has this period begun?"
-        cap and the basis the posting ledger sums on, so overwriting it with
-        the invented due date would feed a due date to every consumer expecting
-        a pay-period start.
+        funding the payment -- and ``settled_on`` -- the day its cash moved --
+        are FACTS and are carried through untouched on BOTH records: the first
+        is the replay's rate key, the second its "has this happened?" cap, so
+        overwriting either with the invented due date would feed a fabricated
+        date to a consumer expecting a fact.
         """
         payments = [
-            PaymentRecord(date(2026, 1, 2), monthly_due_date(date(2026, 1, 2), 1), Decimal("1517.00"), True),
-            PaymentRecord(date(2026, 1, 16), monthly_due_date(date(2026, 1, 16), 1), Decimal("1517.00"), True),
+            PaymentRecord(date(2026, 1, 2), monthly_due_date(date(2026, 1, 2), 1), date(2026, 1, 2), Decimal("1517.00")),
+            PaymentRecord(date(2026, 1, 16), monthly_due_date(date(2026, 1, 16), 1), date(2026, 1, 16), Decimal("1517.00")),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -849,7 +949,7 @@ class TestPreparePaymentsForEngine:
     def test_no_escrow_no_subtraction(self):
         """Zero escrow means no subtraction regardless of amount."""
         payments = [
-            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("2000.00"), True),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), date(2026, 1, 1), Decimal("2000.00")),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -863,8 +963,8 @@ class TestPreparePaymentsForEngine:
     def test_preserves_is_confirmed(self):
         """is_confirmed flag is preserved through preparation."""
         payments = [
-            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1800.00"), True),
-            PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), Decimal("1800.00"), False),
+            PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), date(2026, 1, 1), Decimal("1800.00")),
+            PaymentRecord(date(2026, 2, 1), monthly_due_date(date(2026, 2, 1), 1), None, Decimal("1800.00")),
         ]
         result = prepare_payments_for_engine(
             payments,
@@ -887,8 +987,8 @@ class TestPreparePaymentsForEngine:
         were actually paid in.
         """
         payments = [
-            PaymentRecord(date(2026, 12, 5), monthly_due_date(date(2026, 12, 5), 1), Decimal("1517.00"), True),
-            PaymentRecord(date(2026, 12, 19), monthly_due_date(date(2026, 12, 19), 1), Decimal("1517.00"), True),
+            PaymentRecord(date(2026, 12, 5), monthly_due_date(date(2026, 12, 5), 1), date(2026, 12, 5), Decimal("1517.00")),
+            PaymentRecord(date(2026, 12, 19), monthly_due_date(date(2026, 12, 19), 1), date(2026, 12, 19), Decimal("1517.00")),
         ]
         result = prepare_payments_for_engine(
             payments,

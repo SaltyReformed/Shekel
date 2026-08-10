@@ -350,15 +350,20 @@ def record_tracking_start(account_id):
 
     For an already-amortizing loan the operator began tracking mid-life: the user
     asserts "when I started tracking, my real balance was $X as of date D."  The
-    handler appends a ``tracking_start`` :class:`LoanAnchorEvent` which becomes
-    the loan's confirmed-ledger OPENING
-    (:func:`app.services.loan_loaders._opening_anchor_fact` synthesizes the
-    ``is_opening`` anchor from it in place of the origination), so the genesis
-    ledger opens at the recent known balance -- eliminating the fictional
-    origination-to-tracking-start plateau and letting every recorded payment
-    accrue interest on the correct balance.  The origination fields on
+    handler appends a ``tracking_start`` :class:`LoanAnchorEvent`, which the
+    genesis walk loads as an ordinary ``is_opening=False`` balance ASSERTION
+    (:func:`app.services.loan_loaders.load_loan_anchor_facts`) that RESETS the
+    running balance at its own date -- so a date at or after it reads the
+    operator's real balance rather than an amortized guess, while a date before
+    it reads the origination opening held flat.  The origination fields on
     :class:`LoanParams` are untouched (they still drive the amortization schedule
     / projection).
+
+    *It does NOT become the loan's opening, and this docstring said it did until
+    plan step X-an-b*, citing ``loan_loaders._opening_anchor_fact`` -- a function
+    step C1 deleted along with that behaviour.  Origination is the opening
+    ALWAYS: opening at a mid-life tracking-start read the loan out of existence
+    for its whole pre-tracking window (the false pre-opening zero, finding B-11).
 
     Validation chain (mirrors :func:`true_up_balance`, plus the ordering guard):
 

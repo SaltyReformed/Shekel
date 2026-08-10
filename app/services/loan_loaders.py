@@ -45,14 +45,25 @@ from app.utils.balance_predicates import (
     is_projected_clause,
     settled_status_ids,
 )
+from app.utils.dates import anchor_chronology_key
 
 # The synthesized origination anchor's created_at: the earliest possible
 # instant (UTC-aware, comparable with the timestamptz ``created_at`` of real
 # user-trueup rows), so a true-up asserted ON the origination date still wins
-# the resolver's ``(anchor_date, created_at)`` latest-anchor tie-break --
+# the ``(anchor_date, created_at, event_id)`` chronology's second term --
 # exactly as the stored origination row (created at loan setup, before any
 # true-up) did.
 _ORIGINATION_CREATED_AT = datetime.min.replace(tzinfo=timezone.utc)
+
+# The synthesized origination anchor's event id: the id twin of
+# _ORIGINATION_CREATED_AT above, and there for the same reason -- the synthesized
+# fact has NO stored row, and ``app.utils.dates.anchor_chronology_key`` needs a
+# comparable value in every term.  Zero is below every
+# ``budget.loan_anchor_events.id`` (SERIAL, so the sequence starts at 1).  It
+# never actually decides an ordering: _ORIGINATION_CREATED_AT is strictly
+# earlier than the ``func.now()`` instant of every stored row, so the key is
+# settled one term before this one is read.
+_ORIGINATION_EVENT_ID = 0
 
 
 @dataclass(frozen=True)
@@ -63,7 +74,8 @@ class LoanAnchorFact:
     final commit): the genesis posting walk derives its opening / true-up
     corrections from these, and the loan resolver's replay fallback consumes
     them as its duck-typed anchor events (it reads ``anchor_date`` /
-    ``anchor_balance`` / ``created_at``, all here).  Three provenances:
+    ``anchor_balance`` / ``created_at`` / ``event_id``, all here).  Three
+    provenances:
 
     * **The origination anchor is SYNTHESIZED from the immutable
       :class:`LoanParams`** (``origination_date`` / ``original_principal``)
@@ -99,9 +111,17 @@ class LoanAnchorFact:
             origination; ``False`` for a tracking-start or a user true-up (both
             ordinary balance assertions) -- drives the OPENING vs TRUEUP posting
             kinds.
-        created_at: The assertion's creation instant (the latest-anchor
-            tie-break); the synthesized origination uses the earliest
-            possible UTC instant so any same-day assertion wins.
+        created_at: The assertion's creation instant, the chronology's SECOND
+            term; the synthesized origination uses the earliest possible UTC
+            instant so any same-day assertion wins.  It does NOT decide a tie on
+            its own: ``created_at`` is ``server_default=func.now()``, which
+            PostgreSQL evaluates at TRANSACTION START, so every row written in
+            one transaction shares an instant.
+        event_id: The stored ``budget.loan_anchor_events.id``, the chronology's
+            THIRD and final term -- what makes the key TOTAL, so exactly one
+            ordering of a loan's anchors exists (see
+            :func:`load_loan_anchor_facts`).  The synthesized origination has no
+            stored row and carries :data:`_ORIGINATION_EVENT_ID`.
         is_tracking_start: ``True`` for a ``tracking_start`` assertion (a
             mid-life import's balance-as-of-date), ``False`` for the origination
             opening and every user true-up.  Display provenance only (the drift
@@ -114,6 +134,7 @@ class LoanAnchorFact:
     anchor_balance: Decimal
     is_opening: bool
     created_at: datetime
+    event_id: int
     is_tracking_start: bool = False
 
 
@@ -128,8 +149,37 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
     ``tracking_start`` and ``user_trueup`` :class:`LoanAnchorEvent` is loaded as
     an ``is_opening=False`` balance ASSERTION -- the two differ only in
     ``is_tracking_start`` (a display label; the walk resets on both identically).
-    Rows come in no guaranteed order (consumers sort by ``(anchor_date,
-    created_at)`` where order matters).
+
+    **The returned order IS the loan's chronology, and stating it HERE is the
+    point of this function** (plan step X-an-b, closing finding N-196).  Facts
+    come back ascending by ``(anchor_date, created_at, event_id)`` -- BUSINESS
+    date first, the recording instant next, the stored row id last -- which is
+    the cash side's key, term for term
+    (:func:`app.services.cash_ledger.cash_anchor_facts`), and the loan side was
+    the only gap.  Two properties are load-bearing and neither was true before:
+
+    * **The key is TOTAL.**  ``created_at`` is ``server_default=func.now()``,
+      which PostgreSQL evaluates at TRANSACTION START, so two anchors written in
+      one transaction (a backfill, a migration, a fixture) share an instant and
+      ``(anchor_date, created_at)`` does not order them.  ``event_id`` does, and
+      the later INSERT wins -- the same "the last one recorded is that day's
+      closing balance" rule the cash walk and this table's own write door
+      (:func:`app.services.anchor_service._governing_loan_anchor`) already apply.
+    * **It is ONE statement, not a rule each consumer re-derives.**  This list
+      had no ``ORDER BY`` and its two consumers each broke a tie their own way:
+      the fold's walk (:func:`app.services.loan_ledger.walk_loan_ledger`) reset
+      at the LAST of a tie, the resolver
+      (:func:`app.services.loan_resolver.select_latest_anchor`) took ``max()``,
+      the FIRST -- so on a full tie carrying two balances they were GUARANTEED to
+      name opposite rows, and which row each named was whatever PostgreSQL
+      returned.  Finding **N-133 / R1** ruled this same question on the cash
+      side: state the order where the rows are READ, and do not restate it as a
+      re-sort in the consumer.
+
+    The sort is in PYTHON rather than an ``ORDER BY`` because the synthesized
+    origination has no stored row to order with, so SQL alone cannot produce the
+    final list; sorting the MERGED list is what makes the contract hold for
+    every fact rather than only the stored ones.
 
     **Origination is the opening ALWAYS** (plan step C1): a loan originates
     before it can be tracked, so opening at a mid-life ``tracking_start`` read the
@@ -144,8 +194,12 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
             and the immutable origination fields).
 
     Returns:
-        The :class:`LoanAnchorFact` list -- always non-empty (the origination
-        opening is always first), so a configured loan is always resolvable.
+        The :class:`LoanAnchorFact` list ascending by ``(anchor_date,
+        created_at, event_id)`` -- always non-empty (the synthesized origination
+        opening is always present), so a configured loan is always resolvable.
+        The opening is first for every loan the write doors admit, since both
+        refuse an assertion earlier than ``origination_date``; the sort does not
+        depend on that guard holding.
     """
     trueup_source_id = ref_cache.loan_anchor_source_id(
         LoanAnchorSourceEnum.USER_TRUEUP,
@@ -171,10 +225,12 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
             anchor_balance=Decimal(str(event.anchor_balance)),
             is_opening=False,
             created_at=event.created_at,
+            event_id=event.id,
             is_tracking_start=(event.source_id == tracking_start_source_id),
         )
         for event in events
     )
+    facts.sort(key=anchor_chronology_key)
     return facts
 
 
@@ -184,7 +240,12 @@ def synthesize_origination_anchor(params: LoanParams) -> LoanAnchorFact:
     The origination-dated opening -- ``(origination_date, original_principal)``
     -- ALWAYS.  Since step C1 the origination is :func:`load_loan_anchor_facts`'
     opening too (a ``tracking_start`` no longer supersedes it, it is an ordinary
-    assertion), so ``load_loan_anchor_facts(params)[0] == this``.  This function
+    assertion), and it is that loader's single ``is_opening`` fact.  It is also
+    ``[0]`` for every loan the write doors admit, since both refuse an assertion
+    earlier than ``origination_date`` -- but read the FLAG, never the position:
+    the loader sorts (plan step X-an-b) rather than prepending, so position is a
+    consequence of the data, and every ``is_opening`` reader in ``app/`` already
+    scans for the flag.  This function
     stays the loan's ONE definition of the origination anchor, reused there and by
     the callers that need JUST it -- the contractual back-projection that fills a
     tracking-start loan's pre-tracking months
@@ -192,9 +253,13 @@ def synthesize_origination_anchor(params: LoanParams) -> LoanAnchorFact:
     seeds from origination alone, without the loan's true-up assertions.
 
     The synthesized origination carries :data:`_ORIGINATION_CREATED_AT` (the
-    earliest possible instant) for the ``(anchor_date, created_at)`` latest-anchor
-    tie-break, so an assertion made ON the origination date still outranks it --
-    exactly as the retired stored origination row (created at loan setup) did.
+    earliest possible instant) and :data:`_ORIGINATION_EVENT_ID` (below every
+    stored id) for the ``(anchor_date, created_at, event_id)`` chronology
+    :func:`load_loan_anchor_facts` orders on, so an assertion made ON the
+    origination date still outranks it -- exactly as the retired stored
+    origination row (created at loan setup) did.  It has no stored row, so
+    both are sentinels rather than read values; see the constants for why a
+    total key needs them.
 
     Pure: reads only the immutable *params* fields, no query.
 
@@ -212,6 +277,7 @@ def synthesize_origination_anchor(params: LoanParams) -> LoanAnchorFact:
         anchor_balance=Decimal(str(params.original_principal)),
         is_opening=True,
         created_at=_ORIGINATION_CREATED_AT,
+        event_id=_ORIGINATION_EVENT_ID,
         is_tracking_start=False,
     )
 
@@ -457,15 +523,23 @@ def settled_income_shadows(
       (:func:`app.services.loan_ledger.walk_loan_ledger`), not a payment exclusion.
       A pre-anchor payment is split and posted (its principal effect is later
       subsumed by the anchor correction), never silently dropped.
-    * **No period-begun UPPER bound.**  Settlement is the confirming event: the
+    * **No has-happened-yet UPPER bound.**  Settlement is the confirming event: the
       Step-2 cash entry posts the moment a payment settles, so the split correction
       must post in the SAME moment or the loan-linked ledger holds raw cash with no
       interest / escrow backout from the payment's period start until the next loan
       write (the 2026-07-02 adversarial review's H2 -- demonstrated as a ~$1,636
-      understatement on the real Mortgage).  Both entries carry the payment's
-      ``pay_period_id``, so the READERS' period bound still keeps an early-settled
-      payment out of every displayed balance until its period begins -- posting
-      early changes when the fact is RECORDED, never when it is SHOWN.
+      understatement on the real Mortgage).  The READERS apply their own bound, so
+      posting early changes when the fact is RECORDED, never when it is SHOWN.
+
+      **That bound is the payment's SETTLED day, not its pay period, on every
+      reader** -- the fold's since step C2 (:func:`app.services.loan_ledger.payment_visible_on`),
+      the resolver's replay since plan step **X-an**.  This paragraph used to say
+      the readers' PERIOD bound kept an early-settled payment out of every
+      displayed balance until its period began, and finding **N-187** is that
+      sentence being false in both directions at once: an early-settled payment
+      IS shown from the day its cash moved, and the resolver was the one reader
+      still waiting for the period -- so it planned an installment the ledger had
+      already paid down.
 
     Sorted by pay-period start -- the app's canonical payment chronology
     (``get_payment_history`` orders identically) and the order the fold's running

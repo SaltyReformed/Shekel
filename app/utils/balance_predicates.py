@@ -172,6 +172,11 @@ def settled_day(transaction_id: int, settled_on: date | None) -> date:
     invariant is held structurally at the write door rather than declared at the
     storage tier.
 
+    Its companion question -- "had this row's cash moved YET, at date D" -- is
+    :func:`app.utils.dates.has_settled_by`, which lives one module over on a
+    purity argument its callers force (see that function).  The two take
+    opposite positions on a missing day, and each is right for its own caller.
+
     **A missing day is REFUSED, not defaulted, and that is the point of the
     function.**  The derivation this replaced fell back to the pay period's
     ``start_date`` whenever the instant was NULL, which was a guess the reader

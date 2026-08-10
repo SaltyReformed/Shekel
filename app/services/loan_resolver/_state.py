@@ -201,13 +201,16 @@ def resolve_loan(
 
     Algorithm (see the package docstring for the full rationale):
 
-    1. Pick the latest anchor by ``(anchor_date, created_at)`` DESC.
+    1. Pick the governing anchor -- the greatest under
+       :func:`app.utils.dates.anchor_chronology_key`, i.e. ``(anchor_date,
+       created_at, event_id)`` DESC (:func:`._periods.select_latest_anchor`).
     2. Generate the schedule via :func:`._payoff.compute_payoff_scenarios`
        with the FULL payment list and the standing ``extra_principal``
        (``extra_monthly=0``: the payoff lever's what-if extra is not part of
-       the committed plan).  The composer replays confirmed-pre-``as_of``
-       payments and routes everything else (projected recurring payments, any
-       confirmed payment past ``as_of``) forward through ``monthly_override``,
+       the committed plan).  The composer replays the payments SETTLED by
+       ``as_of`` and routes everything else (projected recurring payments, and
+       any payment settled after ``as_of``) forward through
+       ``monthly_override``,
        applying the standing extra to every forward month.  ARM vs. fixed-rate
        anchor handling lives inside the composer (Phase 6 of the
        amortization-engine split); the resolver no longer reaches the engine
@@ -226,8 +229,8 @@ def resolve_loan(
             (``loan_params``, ``anchor_events``, ``payments``,
             ``rate_changes``).  ``anchor_events`` must be non-empty
             (the Commit-12 invariant); an empty list raises a
-            ValueError.  Only confirmed payments are replayed into the
-            balance; projected payments feed the committed forward schedule.
+            ValueError.  Only payments settled by ``as_of`` are replayed into
+            the balance; the rest feed the committed forward schedule.
         as_of: The evaluation date.  Drives the current-balance walk
             and the out-of-window monthly-payment computation.
         confirmed_view: The loan's genesis-ledger confirmed view (the read
@@ -267,8 +270,8 @@ def resolve_loan(
     # ``compute_payoff_scenarios`` calls ``replay_schedule`` once (confirmed
     # history, balance, remaining term) and ``project_forward`` once to build
     # the COMMITTED trajectory: it partitions the FULL ``payments`` view into
-    # confirmed-pre-``as_of`` (replayed) and everything else (projected
-    # recurring payments + any confirmed payment past ``as_of``, routed forward
+    # settled-by-``as_of`` (replayed) and everything else (projected
+    # recurring payments + any payment settled after ``as_of``, routed forward
     # through ``monthly_override``), then applies the standing ``extra_principal``
     # to every forward month.  ``extra_monthly=0`` because the payoff lever's
     # what-if extra is NOT part of the committed plan.  ``LoanState.schedule`` is

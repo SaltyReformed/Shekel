@@ -24,11 +24,13 @@ checkbox even is.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 from _plan_gate import (
     CHECKBOX_RX,
+    COMMIT_SHA,
     NON_STEP_OWNERS,
     OWNER_RX,
     split_owners,
@@ -48,6 +50,20 @@ CONVENTIONS = PLANS / "conventions.md"
 UNESCAPED_PIPE_RX = re.compile(r"(?<!\\)\|")
 
 STATED_COUNT_RX = re.compile(r"\*\*The ledger stands at (?P<count>\d+) rows?\.?\*\*")
+
+#: A ``steps.md`` ``commit`` cell naming a hash: the WHOLE cell is one
+#: backticked sha.  The shape comes from :data:`_plan_gate.COMMIT_SHA` so the
+#: index and the specifications cannot disagree about what a hash is; the
+#: anchoring is this module's, because here the discriminator is that the cell
+#: holds nothing else.
+COMMIT_CELL_RX = re.compile(rf"^`{COMMIT_SHA}`$")
+
+#: The three-colour marks :func:`_first_cycle` walks with.  GREY means "on the
+#: current path", which is the only state that distinguishes a cycle from a
+#: node merely reached twice -- a two-colour visited set reports a diamond
+#: (two steps blocked by one third) as a cycle, which every one of these
+#: registries contains.
+_WHITE, _GREY, _BLACK = 0, 1, 2
 
 #: One arc document, by the slug its registry rows carry.
 ARC_DOCS = {
@@ -100,14 +116,39 @@ class StepRow:
 
     def alias_keys(self) -> list[str]:
         """The ``arc:id`` keys this step is also known by."""
-        if self.aliases.strip() == "--":
-            return []
-        out = []
-        for part in self.aliases.split(" / "):
-            token = part.split(" (")[0].strip()
-            if ":" in token:
-                out.append(token)
-        return out
+        return _key_list(self.aliases)
+
+    @property
+    def is_decomposed_parent(self) -> bool:
+        """Whether this row DECLARES itself the parent of a decomposition.
+
+        **Declared, never derived, and that is the whole design.**  Rule 2 puts
+        a decomposition in the id, so deriving the relation by longest id
+        prefix is the obvious implementation -- and it is wrong on this corpus:
+        ``R-F1`` is a string prefix of ``R-F10``, ``R-F12`` and ``R-F13``,
+        which are unrelated findings-steps, and ``R-F1`` is SHIPPED while all
+        three are open.  A derived arm would have reported three false
+        failures on its first run.
+
+        Consulting only DECLARED parents removes that class by construction
+        rather than by an exception list -- which is finding **N-147**'s defect
+        (a rule enforced by a list of names that must be kept complete) and is
+        exactly what Phase G exists to delete.
+        """
+        return "decomposed parent" in self.title.casefold()
+
+    def blocked_keys(self) -> list[str]:
+        """The ``arc:id`` keys this step may not ship before (rule 13).
+
+        The same grammar as :meth:`alias_keys`, through the same function: both
+        cells carry a ``/``-separated list of annotated step keys, and a second
+        copy of that grammar is the denormalization these registries exist to
+        remove.  The annotation is real and load-bearing -- ``CC3b`` carries
+        ``balance:X-f1 (shipped; absorbed the X-f1b leaf this once named)`` --
+        so the key is parsed OUT of the entry rather than the entry being read
+        as a key.
+        """
+        return _key_list(self.blocked)
 
 
 @dataclass(frozen=True)
@@ -159,6 +200,35 @@ class Fork:
         one live row rather than for all of them.
         """
         return re.findall(r"\b([a-z_]+:[A-Za-z0-9][A-Za-z0-9-]*)", self.defect)
+
+
+def _key_list(cell: str) -> list[str]:
+    """Return the ``arc:id`` keys a ``/``-separated step-key cell names.
+
+    Shared by :meth:`StepRow.alias_keys` and :meth:`StepRow.blocked_keys`,
+    which is the whole point: ``aliases`` and ``blocked by`` carry the SAME
+    shape -- a list of step keys, each optionally annotated in parentheses --
+    and rule 13 grades the second against the first's identity classes, so the
+    two cells being read by two grammars would let a class agree about its
+    names and disagree about what parsed as one.
+
+    An entry with no ``:`` is dropped rather than reported, because ``--`` and
+    prose asides are both legal in these cells and neither names a step.
+
+    Args:
+        cell: The raw cell text, ``--`` for none.
+
+    Returns:
+        The ``arc:id`` keys, in the order the cell states them.
+    """
+    if cell.strip() == "--":
+        return []
+    out = []
+    for part in cell.split(" / "):
+        token = part.split(" (")[0].strip()
+        if ":" in token:
+            out.append(token)
+    return out
 
 
 def _rows(text: str, columns: int) -> list[list[str]]:
@@ -475,4 +545,217 @@ def index_agreement_violations() -> list[str]:
                     f"{document.name} but {row.state} in steps.md "
                     f"(conventions.md rule 12)",
                 )
+    return problems
+
+
+def commit_column_violations() -> list[str]:
+    """Rule 7, the INDEX side: a shipped step names its commit, an open one does not.
+
+    Rule 7 makes a shipped step's SPECIFICATION open with its hash, and
+    :func:`_plan_gate.ticked_entry_violations` grades that.  Nothing graded the
+    other half -- ``steps.md`` has carried a ``commit`` column since the
+    registries were split, and three of twelve SHIPPED rows held ``--``
+    (``X-ae``, ``X-af``, ``X-f1``) while their own arc entries cited a hash.
+    The index said "shipped" and refused to say what shipped it.
+
+    Deliberately NOT checked: that the two hashes are EQUAL.  ``X-aj1``'s cell
+    names `1688f508`, the first of the three commits its entry lists, while the
+    entry opens with the merge `dde107f6`; ``X-an``'s cell names the last of
+    two.  Both are correct answers to "which commit", and an equality arm would
+    force one convention onto a column where the useful hash genuinely differs
+    by step.  What matters is that the index names ONE.
+
+    Returns:
+        One message per shipped row with no hash, and per open row with one.
+    """
+    problems: list[str] = []
+    for row in step_rows():
+        cell = row.commit.strip()
+        if row.shipped and not COMMIT_CELL_RX.match(cell):
+            problems.append(
+                f"{row.key} is SHIPPED but its `commit` cell is {cell!r}.  A "
+                f"shipped step names the commit that shipped it, so a reader "
+                f"can read the code instead of prose about it "
+                f"(conventions.md rule 7)",
+            )
+        if not row.shipped and cell != "--":
+            problems.append(
+                f"{row.key} is {row.state} but its `commit` cell names "
+                f"{cell!r}.  A step that has not shipped has no commit "
+                f"(conventions.md rule 7)",
+            )
+    return problems
+
+
+def decomposition_violations() -> list[str]:
+    """Rule 13, the decomposition half: a parent ticks with the LAST of its leaves.
+
+    Rule 2 states it in prose -- "a decomposition appends a suffix ... a
+    DECOMPOSED parent ticks with the last of its leaves" -- and nothing graded
+    it, so a parent could ship over open work with every gate green.  The
+    readiness question makes it concrete: ``X-f``, ``X-aj``, ``X-i`` and
+    ``X-x`` all read as pickable work while their own leaves are open, because
+    a container is not a task.
+
+    **The parent set is DECLARED** (:attr:`StepRow.is_decomposed_parent`) and
+    the leaf set is derived by id prefix FROM that set.  Deriving both would
+    claim ``R-F1`` as the parent of ``R-F10`` / ``R-F12`` / ``R-F13``; deriving
+    neither would need a name list, which is N-147's defect.  Declaring the
+    small set and deriving the large one costs one phrase per parent and has no
+    list to rot.
+
+    **A parent with NO leaves in the table is NOT a failure.**  Rule 5 archives
+    a completed span, and ``X-f1``'s fourteen leaves have already left this
+    index -- grading their absence would refuse a legal archive and make rule 5
+    and rule 13 contradict each other.
+
+    Returns:
+        One message per parent that has shipped ahead of an open leaf.
+    """
+    rows = step_rows()
+    problems: list[str] = []
+    for parent in rows:
+        if not parent.is_decomposed_parent or not parent.shipped:
+            continue
+        open_leaves = sorted(
+            row.ident for row in rows
+            if row.arc == parent.arc
+            and row.ident != parent.ident
+            and row.ident.startswith(parent.ident)
+            and not row.shipped
+        )
+        if open_leaves:
+            problems.append(
+                f"{parent.key} is SHIPPED but declares itself a DECOMPOSED "
+                f"parent and its leaves {open_leaves} are open.  A parent ticks "
+                f"with the LAST of its leaves (conventions.md rule 13)",
+            )
+    return problems
+
+
+def _first_cycle(graph: dict[str, list[str]]) -> list[str] | None:
+    """Return one cycle in *graph* as a key path, or ``None`` when acyclic.
+
+    An iterative three-colour depth-first search rather than recursion: the
+    corpus is small today, but a gate that raises ``RecursionError`` on a deep
+    chain fails in a way that reads as a broken gate rather than as a broken
+    plan.
+
+    Returns ONE cycle, not all of them.  A second cycle is almost always the
+    same edit's other face, and a failure listing every rotation of every cycle
+    buries the one edge the author has to reconsider.
+
+    Args:
+        graph: ``{step key: [keys it is blocked by]}``.  A key named as a
+            blocker but absent as a node is ignored here -- the referential arm
+            reports it, and reporting the same edge twice would make one broken
+            cell look like two defects.
+
+    Returns:
+        The cycle as ``[a, b, ..., a]``, or ``None``.
+    """
+    colour = dict.fromkeys(graph, _WHITE)
+    for root in graph:
+        if colour[root] != _WHITE:
+            continue
+        # (node, iterator over the keys it is blocked by) -- the explicit stack.
+        stack: list[tuple[str, Iterator[str]]] = [(root, iter(graph[root]))]
+        path = [root]
+        colour[root] = _GREY
+        while stack:
+            node, pending = stack[-1]
+            nxt = next(pending, None)
+            if nxt is None:
+                colour[node] = _BLACK
+                stack.pop()
+                path.pop()
+                continue
+            if nxt not in graph or colour[nxt] == _BLACK:
+                continue
+            if colour[nxt] == _GREY:
+                return path[path.index(nxt):] + [nxt]
+            colour[nxt] = _GREY
+            path.append(nxt)
+            stack.append((nxt, iter(graph[nxt])))
+    return None
+
+
+def blocked_by_violations() -> list[str]:
+    """Rule 13: ``blocked by`` is the dependency GRAPH, and it is graded.
+
+    **The column was parsed and never read.**  ``StepRow.blocked`` has existed
+    since the registries were split, and no arm consulted it -- so every edge
+    in it was decoration, and the one contradiction it should have caught was
+    found by hand instead: ``steps.md`` recorded ``R6 blocked by balance:X-an``
+    while the recurrence document derived ``R6`` from a column ``R5`` creates
+    behind ``X-f4``, three steps past ``X-an``.
+
+    Five arms, each for a distinct way an edge lies:
+
+    1. **no self-block** -- checked FIRST, because a self-edge resolves through
+       :func:`step_rows` to the row itself and would otherwise pass every
+       later arm while naming an ordering nothing can satisfy;
+    2. **referential** -- a blocker names a real step, which is rule 1's arm one
+       tier up: an id that survives a rename or a decomposition is a dependency
+       on nothing;
+    3. **shipped consistency** -- a SHIPPED step is never blocked by an OPEN
+       one.  That is not a bookkeeping slip: either the work shipped before its
+       stated prerequisite, or the prerequisite was never real;
+    4. **acyclic** -- see :func:`_first_cycle`;
+    5. **alias coherence** -- an identity class shares ONE blocker set.  ``C2``,
+       ``X-l`` and ``R-F12`` are one commit, so a blocker recorded on one name
+       and not the others leaves two of the three rows reading as READY.  This
+       is exactly rule 11's tick-state arm on the other column, and the failure
+       it prevents is the one that makes a reader pick up blocked work.
+
+    Returns:
+        One message per violation, each citing the rule.
+    """
+    rows = step_rows()
+    steps = {row.key: row for row in rows}
+    graph = {row.key: row.blocked_keys() for row in rows}
+    problems: list[str] = []
+    for row in rows:
+        for key in row.blocked_keys():
+            if key == row.key:
+                problems.append(
+                    f"{row.key} is blocked by ITSELF.  A self-edge names an "
+                    f"ordering nothing can satisfy (conventions.md rule 13)",
+                )
+                continue
+            blocker = steps.get(key)
+            if blocker is None:
+                problems.append(
+                    f"{row.key}: `blocked by` names {key!r}, which is no step in "
+                    f"steps.md.  A dependency on a step that does not exist is a "
+                    f"dependency on nothing (conventions.md rule 13)",
+                )
+                continue
+            if row.shipped and not blocker.shipped:
+                problems.append(
+                    f"{row.key} is {row.state} while the step it is blocked by, "
+                    f"{key}, is {blocker.state}.  Either it shipped before its "
+                    f"stated prerequisite or the prerequisite was never real "
+                    f"(conventions.md rule 13)",
+                )
+    cycle = _first_cycle(graph)
+    if cycle is not None:
+        problems.append(
+            f"`blocked by` has a CYCLE: {' -> '.join(cycle)}.  That is not a "
+            f"scheduling preference, it is work no order satisfies "
+            f"(conventions.md rule 13)",
+        )
+    for row in rows:
+        mine = set(row.blocked_keys())
+        for alias in row.alias_keys():
+            other = steps.get(alias)
+            if other is None or set(other.blocked_keys()) == mine:
+                continue
+            problems.append(
+                f"{row.key} is blocked by {sorted(mine)} while its alias {alias} "
+                f"is blocked by {sorted(set(other.blocked_keys()))}.  They are ONE "
+                f"step under two names, so they share ONE blocker set -- "
+                f"otherwise one of the two rows reads as READY "
+                f"(conventions.md rule 13)",
+            )
     return problems

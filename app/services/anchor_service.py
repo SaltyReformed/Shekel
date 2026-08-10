@@ -725,10 +725,12 @@ def _governing_loan_anchor(
     -- every source PLUS the synthesized origination, which has no stored row and
     can never be the thing a submission duplicates.  Sharing a query between the
     two would mean filtering the reader's synthesized fact back out, which is
-    more coupling than the four lines it would save.  Its ordering is deliberately
-    STRICTER than the resolver's, which breaks a ``(anchor_date, created_at)``
-    tie by first-maximal-wins with no ``id`` term (finding **N-196**); this door
-    must name one row deterministically.
+    more coupling than the four lines it would save.  **Both now break a tie the
+    SAME way, and this door is where that rule was already right**: its
+    ``(anchor_date, created_at, id)`` DESC was the only TOTAL anchor ordering
+    until plan step X-an-b gave the read path the ``id`` term too (finding
+    **N-196**).  ``id`` is load-bearing -- ``created_at`` is evaluated at
+    TRANSACTION START, so two rows written together share an instant.
 
     Args:
         account_id: The loan account whose anchors to search.
@@ -890,9 +892,9 @@ def apply_loan_anchor_true_up(
     :class:`LoanAnchorEvent` is an INSERT-only row with no ``version_id``
     column, and the resolver is read-only.  Two concurrent trueup commits
     with different ``(anchor_date, anchor_balance)`` produce two rows, both
-    legitimate; the resolver selects the latest by
-    ``(anchor_date, created_at)`` DESC, so the last writer's row wins on
-    display while neither is lost.  The cash path used to differ -- it
+    legitimate; the resolver selects the latest by ``(anchor_date, created_at,
+    event_id)`` DESC (the third term is X-an-b's; without it the last writer
+    won only when the two differed in day).  The cash path used to differ -- it
     carried a ``STALE_CONFLICT`` outcome and a 409 -- and ruling R-EN deleted
     that, on the ground that this contract had documented since Commit 16.
 
@@ -956,15 +958,15 @@ def record_loan_tracking_start(
 
     The mid-life-import opening flow: the operator started tracking an
     already-amortizing loan and asserts its real balance as of a date at/before
-    the first recorded payment.  Recorded through this chokepoint, the
-    ``tracking_start`` event becomes the loan's confirmed-ledger OPENING
-    (:func:`app.services.loan_loaders._opening_anchor_fact` synthesizes the
-    ``is_opening`` anchor from it in place of the origination), so the genesis
-    ledger opens at the recent known balance -- no fictional
-    origination-to-tracking-start plateau, and every recorded payment accrues
-    interest on the correct balance.  The origination fields on
-    :class:`LoanParams` are untouched; they still drive the amortization
-    schedule / projection.
+    the first recorded payment.  It is an ordinary ``is_opening=False`` balance
+    ASSERTION that RESETS the genesis walk's running balance at its own date
+    (:func:`app.services.loan_loaders.load_loan_anchor_facts`); the origination
+    fields on :class:`LoanParams` are untouched.  *It is NOT the loan's OPENING,
+    and this said it was until plan step X-an-b*, citing
+    ``loan_loaders._opening_anchor_fact`` -- deleted by step C1 along with the
+    behaviour.  Origination is the opening ALWAYS: opening at a mid-life
+    tracking-start read the loan out of existence for its whole pre-tracking
+    window (finding B-11).
 
     Shares the append + all-scenario re-sync + duplicate rule of
     :func:`apply_loan_anchor_true_up` via :func:`_append_loan_anchor_and_sync`;

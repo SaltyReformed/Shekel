@@ -163,7 +163,10 @@ def _projection_seed(
       loan does not exist), but the projection still has to know what it will owe
       the day it closes.  That is the loan's OPENING ANCHOR balance -- the same
       fact the genesis walk posts as the ``loan_opening``
-      (:func:`app.services.loan_loaders._opening_anchor_fact`).  ONE fact, two
+      (:func:`app.services.loan_loaders.synthesize_origination_anchor`, the
+      loan's ONE ``is_opening`` fact; the citation named
+      ``_opening_anchor_fact`` until plan step X-an-b, a function step C1
+      deleted).  ONE fact, two
       readers, split on the boundary the architecture turns on: the ledger owns the
       origination once it has HAPPENED, the projection until it does.
 

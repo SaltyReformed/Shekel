@@ -52,14 +52,18 @@ The resolver collapses both onto a single derivation:
    synthesizes the origination fact from the immutable LoanParams and
    loads the stored user true-ups, so every configured loan has at
    least one).
-2. Replay only ``is_confirmed`` payments whose true monthly due date
-   (``rate_period_engine.monthly_due_date`` of the pay-period-start the
-   payment is keyed to) is strictly after the anchor date.  Comparing
-   the due date rather than the pay-period start keeps a payment whose
-   biweekly pay period began on or before a mid-period balance true-up
-   but whose monthly payment is not due until after it.  Projected
-   (unconfirmed) payments do not reduce the balance -- they are future
-   commitments, not historical fact.
+2. Replay only the payments that have ALREADY HAPPENED at ``as_of`` --
+   whose stored settle day is on or before it
+   (``app.utils.dates.has_settled_by``, the same day the fold counts a
+   payment's principal from, plan step X-an) -- and among those only the
+   ones whose true monthly due date (``loan_loaders.loan_payment_due_date``,
+   the shadow's own stored ``due_date``) is strictly after the anchor date.
+   Comparing the DUE date rather than the settle day against the anchor
+   keeps a payment whose cash moved on or before a mid-period balance
+   true-up but whose monthly installment is not due until after it.  A
+   payment whose cash has not moved does not reduce the balance -- it is a
+   future commitment, not historical fact, and the forward projection owns
+   it.
 3. For an ARM whose anchor and as_of both fall inside
    ``[origination_date, origination_date + arm_first_adjustment_months)``
    (the fixed-rate window), compute the monthly payment ONCE from

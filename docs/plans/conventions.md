@@ -5,8 +5,8 @@ balance README Section 9, the recurrence plan's Section 7, the pay-calendar plan
 near-identical wording, which is the same denormalization the arcs keep finding in the code. The
 credit-card plan had none at all and drifted furthest.
 
-**Rules 1-4, 7, 10, 11 and 12 are PREDICATES**, graded by `tools/plan_gate/` through a pre-commit
-hook scoped to these documents and the CI step that runs the custom pylint checkers -- so EDITING a
+**Rules 1-4, 7 and 10-13 are PREDICATES**, graded by `tools/plan_gate/` through a pre-commit hook
+scoped to these documents and the CI step that runs the custom pylint checkers -- so EDITING a
 planning document is what runs the gate.
 **Rules 5, 6's "replaced, never appended" half, 8 and 9 are DISCIPLINES.** Saying which is which is
 the point: a safety that is not a predicate is not a safety, and labelling a discipline as one is
@@ -76,6 +76,14 @@ to avoid.
 7. **A SHIPPED step's specification is a POINTER: it OPENS with its commit hash.** The hash's
    POSITION is the predicate, not its presence -- an Alembic revision id is hex too. A LIVE step is
    a specification and is never trimmed.
+   **`steps.md`'s `commit` column is the same rule on the index**, and it went ungraded until
+   2026-08-09: three of twelve SHIPPED rows held `--` while their own arc entries cited a hash, so
+   the index said "shipped" and refused to say what shipped it. The two hashes need not be EQUAL --
+   `X-aj1`'s cell names the first of its three commits and its entry opens with the merge -- because
+   which commit is the useful one genuinely differs by step. What is graded is that each document
+   names ONE. **The balance document's exemption from this rule is CLOSED**: it was justified by a
+   count that had gone stale in both directions, which is what a disabled arm does to the claim it
+   rests on.
 
 8. **A finding is not deferred for cost.** "Materially larger than this step" is a reason to give
    something its OWN step, never a reason to leave it unowned. A finding costing `$0.00` on today's
@@ -108,6 +116,31 @@ to avoid.
 
 12. **`steps.md` and the arc documents agree in both directions.** An index row with no
     specification in its arc document, and a specification with no index row, are both failures.
+
+13. **`steps.md`'s `blocked by` cell is the dependency GRAPH, and it is graded.** The cell is `--`
+    or a ` / `-separated list of `arc:id` keys, each optionally annotated in parentheses -- the same
+    grammar the `aliases` cell uses, because both carry a list of step keys and two grammars for one
+    shape is the denormalization these registries remove. Five arms: no step blocks itself; every
+    key names a real step; a SHIPPED step is never blocked by an OPEN one; the graph is ACYCLIC; and
+    an identity class shares ONE blocker set, for the reason rule 11 makes it share one tick state.
+    **The acyclicity arm is why this rule exists.** "`R6` ships WITH `X-an`" was carried by three
+    documents until 2026-08-09, when building `X-an`'s first leaf showed it unsatisfiable: `R6`
+    reads a column `R5` creates, and `R5` waits on `X-f4`, three steps behind `X-an` with a
+    moves-money PR between them. `steps.md` had recorded `R6 blocked by balance:X-an`, and nothing
+    reconciled the two --
+    **the column was parsed into `StepRow.blocked` and never read by any arm**, so every edge in it
+    was decoration. An unsatisfiable ordering claim is not a scheduling preference; it is work that
+    cannot be done in the order the plan states. **A DECOMPOSITION is NOT an edge in that column**
+    -- rule 2 already puts it in the id -- but it is graded by a sixth arm:
+    **a step that DECLARES itself "the DECOMPOSED parent" may not be SHIPPED while a leaf is open**,
+    which is rule 2's own sentence made a predicate. The parent set is DECLARED and only the leaf
+    set is derived, and that asymmetry is the design: deriving BOTH by id prefix claims `R-F1` as
+    the parent of `R-F10`, `R-F12` and `R-F13`, three unrelated findings-steps, with `R-F1` shipped
+    and all three open -- three false failures on the first run. Deriving NEITHER would need a list
+    of parent names, which is finding `N-147`'s defect and what Phase G exists to delete.
+    **A parent holding no leaves is silence, not a failure**: rule 5 archives completed spans,
+    `X-f1`'s fourteen leaves have already left the index, and an arm that demanded they still be
+    there would put rules 5 and 13 in contradiction.
 
 ## The two relations in `ledger.md`, and why conflating them deletes work
 

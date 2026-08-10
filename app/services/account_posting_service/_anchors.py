@@ -146,8 +146,11 @@ def _account_correction_kinds(
     pair the loan corrections use (REUSED by design -- the journal SOURCE
     distinguishes account from loan corrections).  Keyed off the fact's
     ``is_opening`` flag, which :func:`app.services.cash_ledger.cash_anchor_facts`
-    derives from the
-    ``(created_at, id)`` order.
+    derives from the ``(observed_on, created_at, id)`` order -- BUSINESS date
+    first.  *This said ``(created_at, id)`` until plan step X-an-b: that was the
+    key before plan step 2 made ``observed_on`` a user-supplied column, and
+    trusting it here would reproduce the defect that once tagged a ``$1,307.66``
+    true-up as the account's OPENING.*
 
     Args:
         fact: The :class:`~app.services.cash_ledger.CashAnchorFact` whose

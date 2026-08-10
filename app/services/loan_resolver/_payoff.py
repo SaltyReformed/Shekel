@@ -20,6 +20,7 @@ from app.services.amortization_engine import (
     project_forward,
 )
 from app.services.rate_period_engine import period_for_date
+from app.utils.dates import has_settled_by
 from app.utils.money import round_money
 
 from ._periods import (
@@ -123,21 +124,31 @@ def _build_monthly_override(
     The composer routes two payment classes through
     ``project_forward``'s ``monthly_override``:
 
-    * Every projected (``is_confirmed=False``) payment regardless of
-      date.  These are the user's planned future outlays from
+    * Every payment whose cash has NOT moved (``settled_on is None``),
+      regardless of date.  These are the user's planned future outlays from
       recurring transfer templates; they belong on the forward side
       because they have not actually happened yet.
-    * Confirmed payments whose pay-period start is after ``as_of``.  Rare
-      data hygiene case (a user marked a future payment as settled);
-      treated as a projection so the replay window stops cleanly at
-      ``as_of`` and the forward slice picks the payment up.
+    * Payments settled AFTER ``as_of``.  The case this is FOR is a read of a
+      PAST date, where a payment settled since is correctly still a projection
+      at that date.  It is not claimed empty for a today-read: the write door
+      does refuse a future settle day, but against a different clock and it is
+      not the only writer -- see :func:`compute_payoff_scenarios`, which states
+      that in full rather than leaving a guarantee here it cannot keep.
 
     Two dates with distinct jobs (the same split ``replay_schedule`` makes):
 
-    * The replay/projection CUT keys on the pay-period-start date, the same
-      date ``replay_schedule`` uses for its ``as_of`` cap, so the two
-      partitions are exact complements: a confirmed payment is in replay
-      XOR projection, never both and never neither.
+    * The replay/projection CUT keys on the SETTLED day, through the same
+      :func:`~app.utils.dates.has_settled_by` predicate
+      ``replay_schedule`` caps on, so a payment is never in BOTH halves and
+      never dropped because the two spellings disagreed.  (It can still be in
+      neither: ``replay_schedule`` further drops a candidate an anchor subsumes
+      or that falls past a payoff, and this function correctly does not take
+      those back -- see that function.)  The cut keyed on the pay-period start
+      until plan step **X-an** -- the FUNDING basis, which the ledger does not
+      use -- and finding **N-187** is what that cost: a payment settled before
+      its funding period began was already paid down in the ledger balance
+      seeding this projection AND planned here, so its installment was paid
+      twice.
     * The override MONTH is the payment's own due month
       (:attr:`PaymentRecord.due_date`), matching the due-date dating
       ``replay_schedule`` gives its rows and ``project_forward`` its forward
@@ -152,12 +163,11 @@ def _build_monthly_override(
     Args:
         payments: The full prepared payment list, typically from
             :func:`app.services.loan_payment_service.prepare_payments_for_engine`.
-            Mixed confirmed/projected; the function filters
+            Mixed settled/projected; the function filters
             internally.
         as_of: Cutoff date used to separate replay history from
-            forward projection.  Confirmed payments whose pay-period
-            start is at or before ``as_of`` are consumed by replay and
-            excluded here.
+            forward projection.  Payments settled at or before ``as_of``
+            are consumed by replay and excluded here.
 
     Returns:
         A dict mapping ``(year, month) -> Decimal`` total payment.
@@ -165,13 +175,13 @@ def _build_monthly_override(
     """
     override: dict[tuple[int, int], Decimal] = {}
     for payment in payments:
-        # Confirmed payments whose pay period has begun by as_of belong to
-        # replay, not projection -- exclude them.  Everything else
-        # (projected payments + confirmed payments whose period has not
-        # begun) is a forward-only concept.  The pay-period-start test
-        # mirrors replay_schedule's as_of cap so the two are exact
-        # complements.
-        if payment.is_confirmed and payment.payment_date <= as_of:
+        # A payment whose cash has already moved by as_of belongs to replay,
+        # not projection -- exclude it.  Everything else (payments not yet
+        # settled + payments settled after as_of) is a forward-only concept.
+        # ONE predicate, shared with replay_schedule's as_of cap, so the split
+        # is a property of one rule rather than of two comparisons that happen
+        # to agree (plan step X-an).
+        if has_settled_by(payment.settled_on, as_of):
             continue
         # Key on the payment's own due month so the planned amount lands on
         # the same forward row project_forward generates (it advances from
@@ -241,7 +251,12 @@ def _build_forward_inputs(
             exactly off-schedule (the ledger books the REAL principal /
             interest paid, the replay the SCHEDULED figures).  The forward
             slices then amortize the real owed balance over the remaining
-            contractual months.
+            contractual months.  **That agreement is what plan step X-an
+            established, and it did not hold before** (finding **N-187**): the
+            two producers cut history at different dates, so a payment settled
+            outside its own pay period was the ledger's last one and not the
+            replay's, seeding a balance one installment ahead of the date and
+            month count derived beside it.
 
     Returns:
         A :class:`_ProjectionPrep` with the shared projection inputs, the
@@ -372,13 +387,26 @@ def compute_payoff_scenarios(
     lands on a historical month.  The extra flows through PROJECTED override
     amounts, which are base-only (the standing extra is a live parameter, never
     baked into a projected shadow's stored amount), so there is no double-count
-    on them.  ONE narrow edge is exempt from that guarantee: a CONFIRMED payment
-    whose pay-period start is after ``as_of`` is routed to the override
+    on them.  ONE narrow edge is exempt from that guarantee: a SETTLED payment
+    whose settle day is after ``as_of`` is routed to the override
     (:func:`_build_monthly_override`) carrying its FROZEN actual (base + the
     standing extra frozen at settlement), so for a loan with a standing extra
     that one month's forward chart double-applies it.  It is display-only (the
-    ledger balance is authoritative) and requires marking a future-period
-    payment settled -- the rare data-hygiene case the override routing names.
+    ledger balance is authoritative), and plan step **X-an** narrowed WHEN it
+    can arise: the edge used to be any payment settled before its pay period
+    began, which is an ordinary early payment rather than a data-hygiene case
+    (finding **N-187**).  What is left is a read of a PAST date whose loan has
+    been paid since -- where treating the payment as a projection is the correct
+    answer for that date, and only the frozen extra inside its amount is off.
+
+    **It is not claimed unreachable for a today-read, deliberately.**  The
+    write door refuses a future settle day
+    (:func:`app.services.status_seam.reject_future_settle_day`) against
+    ``display_today()`` while ``BalanceContext``'s default ``as_of`` is
+    ``date.today()``, and finding **N-191** records that those are two clocks
+    with no rule tying them; and the door is not the only writer -- a bulk
+    ``query.update`` reaches ``settled_on`` without passing it.  "Unreachable
+    through the seam" is what can be said, and that is weaker than unreachable.
 
     Algorithm:
 
@@ -388,8 +416,8 @@ def compute_payoff_scenarios(
     2. Replay starts at the verified anchor balance (ARM and fixed-rate
        alike).  Pre-anchor confirmed payments are filtered inside
        replay; their effect is already baked into the anchor balance.
-    3. Group projected payments (and any confirmed payments past
-       ``as_of``) by ``(year, month)`` for the forward overrides
+    3. Group the payments whose cash has not moved by ``as_of`` by
+       ``(year, month)`` for the forward overrides
        (see :func:`_build_monthly_override`).
     4. Replay produces ``history_rows``, ``balance_as_of``,
        ``next_pay_date``, ``remaining_months_as_of``, and the
@@ -411,7 +439,7 @@ def compute_payoff_scenarios(
             ``rate_changes``).  ``anchor_events`` must be non-empty
             (the Commit-12 invariant); an empty list raises a
             ValueError via ``._periods.select_latest_anchor``.  The
-            composer separates confirmed-pre-as_of payments (replay)
+            composer separates payments SETTLED by ``as_of`` (replay)
             from everything else (override) internally; the full
             rate-period terms feed governs the forward slices month by
             month.

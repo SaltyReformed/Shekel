@@ -55,6 +55,7 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import escrow_calculator, loan_resolver
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
+from app.services.loan_ledger import payment_visible_on
 from app.services.loan_loaders import (
     _rate_change_records_from,
     load_escrow_lines,
@@ -225,23 +226,38 @@ def get_payment_history(
       - status.excludes_from_balance = False (excludes Cancelled and
         Credit statuses, which do not represent actual payments)
 
-    The is_confirmed flag is determined by the status.is_settled
-    boolean:
-      - True for Paid, Received, Settled (payment actually occurred)
-      - False for Projected (payment is committed but not yet made)
-
     Uses effective_amount (not manual actual/estimated logic) to
     respect the 5A.1 fix: actual_amount when populated, else
     estimated_amount, with correct zero-vs-null handling.
 
-    Each record carries BOTH of a loan payment's dates (see
+    Each record carries all three of a loan payment's dates (see
     :class:`~app.services.amortization_engine.PaymentRecord`): ``payment_date``
-    is the pay-period start (the cash basis the ledger sums on), and
-    ``due_date`` is the installment it satisfies, from the ONE derivation the
-    genesis write walk also uses
-    (:func:`app.services.loan_loaders.loan_payment_due_date`).  The two differ
-    for a payment settled late, and deriving the second from the first is the
-    defect that mis-dated such a payment to the following month.
+    is the pay-period start (the funding basis), ``due_date`` is the
+    installment it satisfies, from the ONE derivation the genesis write walk
+    also uses (:func:`app.services.loan_loaders.loan_payment_due_date`), and
+    ``settled_on`` is the day the cash moved, from the ONE derivation the
+    genesis fold dates that payment's principal by
+    (:func:`app.services.loan_ledger.payment_visible_on`).
+
+    **Deriving the DUE date or the CASH day from the pay period has cost a
+    defect each** -- the first mis-dated a late payment to the following
+    month, the second was finding **N-187**, where an early payment was history
+    to the ledger and a plan to the resolver at the same instant.  The funding
+    basis has cost none: it decides only the replay's rate lookup, which finding
+    **N-36** records as deliberate and step X-n owns.
+
+    **This function is the ONE place status and settle day are arbitrated, and
+    ``PaymentRecord.is_confirmed`` is derived from the result.**  ``status.is_settled``
+    decides whether the payment happened; the day is then REQUIRED, because
+    :func:`~app.utils.balance_predicates.settled_day` (inside
+    ``payment_visible_on``) refuses a settled row carrying none rather than
+    inventing one.  A row broken the other way -- Projected but still carrying a
+    stale day, which only a seam bypass can produce -- has that day dropped
+    here, so the record cannot report it as confirmed.  Status-first is the
+    same order the fold's loader uses
+    (:func:`app.services.loan_loaders.settled_income_shadows`, which filters on
+    ``status_id``), which is why the two producers cannot classify a broken row
+    differently.
 
     Args:
         account_id: The debt account receiving payments.
@@ -253,6 +269,20 @@ def get_payment_history(
     Returns:
         List of PaymentRecord instances sorted by payment date
         (ascending).  Empty list if no qualifying transactions exist.
+
+    Raises:
+        UndatedSettleError: When a shadow in a settled status carries no
+            ``settled_on`` -- the settled-iff-dated invariant is broken on that
+            row, and dating it by a fallback would put real money on a day
+            nothing recorded (see :func:`app.utils.balance_predicates.settled_day`).
+            **The mark-paid door is one of the callers that can now surface
+            this**, through ``live_loan_payment_amount`` ->
+            :func:`load_loan_context`, so a 500 on settling a loan payment leads
+            here.  It is not a new failure CLASS for such a loan: the sibling
+            cash leg already refuses at ``cash_ledger._events`` and the loan fold
+            at ``loan_ledger._visible``, so the row is broken on every surface
+            already -- what changed at plan step X-an is that the resolver reads
+            the day too, so it stopped being the one reader that papered over it.
     """
     # Shadow-income transactions for this account across every period,
     # ordered by period start for the chronological payment timeline.
@@ -278,8 +308,16 @@ def get_payment_history(
         payments.append(PaymentRecord(
             payment_date=txn.pay_period.start_date,
             due_date=loan_payment_due_date(txn, payment_day),
+            # The day the cash moved, read through the SAME accessor the fold
+            # dates this payment's principal by, so the resolver's
+            # "already happened" and the ledger's are one derivation and not
+            # two (plan step X-an).  ``None`` for a Projected shadow: its cash
+            # has not moved, and ``PaymentRecord.is_confirmed`` is exactly
+            # that absence.
+            settled_on=(
+                payment_visible_on(txn) if txn.status.is_settled else None
+            ),
             amount=amount,
-            is_confirmed=txn.status.is_settled,
         ))
 
     return payments
@@ -354,13 +392,17 @@ def _redistribute_to_distinct_months(
     month -- a pay-period-start-month key would leave that collision
     unresolved and sum both into a single double payment.
 
-    Only the DUE date shifts.  ``payment_date`` (the pay period the cash
-    actually moved in) is a FACT and is carried through untouched: it is the
-    replay's "has this period begun?" cap and its rate lookup, and it is what
-    the posting ledger sums on, so overwriting it with the shifted due date
-    (the pre-fix behaviour) fed a due date to every consumer expecting a
-    pay-period start -- excluding a shifted payment from the replay whenever
-    its invented due date sorted after ``as_of``.
+    Only the DUE date shifts.  ``payment_date`` (the pay period funding the
+    payment) and ``settled_on`` (the day its cash moved) are FACTS and are
+    carried through untouched: the first is the replay's rate lookup, the second
+    is its "has this happened?" cap, and an invented date must reach neither.
+    Overwriting ``payment_date`` with the shifted due date (the pre-fix
+    behaviour) costs a WRONG RATE PERIOD for that payment today -- the reason
+    finding **N-36** keeps the rate on a fact rather than on a redistribution's
+    output.  It used to cost more: until plan step **X-an** ``payment_date`` was
+    also the replay's as-of cap, so a shifted payment whose invented due date
+    sorted after ``as_of`` fell out of the replay entirely.  That half is gone
+    with the cap; the rate half is not.
     """
     result: list[PaymentRecord] = []
     allocated_months: set[tuple[int, int]] = set()
@@ -385,8 +427,8 @@ def _redistribute_to_distinct_months(
             result.append(PaymentRecord(
                 payment_date=p.payment_date,
                 due_date=new_due,
+                settled_on=p.settled_on,
                 amount=p.amount,
-                is_confirmed=p.is_confirmed,
             ))
             allocated_months.add((y, m))
     return result
@@ -465,8 +507,8 @@ def prepare_payments_for_engine(
             adjusted.append(PaymentRecord(
                 payment_date=p.payment_date,
                 due_date=p.due_date,
+                settled_on=p.settled_on,
                 amount=new_amount,
-                is_confirmed=p.is_confirmed,
             ))
         sorted_payments = adjusted
 

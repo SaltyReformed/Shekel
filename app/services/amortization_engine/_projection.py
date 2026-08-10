@@ -43,26 +43,37 @@ class PaymentRecord:
     schedule so projections reflect real payment history rather than
     assuming the contractual amount every month.
 
-    A loan payment carries TWO dates with DISTINCT jobs, and conflating them
-    is a financial-correctness bug:
+    A loan payment carries THREE dates with DISTINCT jobs, and conflating any
+    two of them is a financial-correctness bug:
 
-    * ``payment_date`` -- the CASH basis: which pay period the payment is
-      booked in.  Drives the "has this payment's period begun?" replay cap and
-      the rate lookup, and it is the basis the posting ledger sums on
-      (``PayPeriod.start_date <= as_of``), so the resolver and the ledger agree
-      on WHICH payments are historical.
+    * ``settled_on`` -- the CASH day: when the money actually moved.  It is the
+      ONE answer to "has this payment already happened?", shared with the
+      posted ledger, which counts a payment's principal from exactly this day
+      (:func:`app.services.loan_ledger.payment_visible_on`, the fold's clock).
+      ``None`` for a payment that has not happened -- see ``is_confirmed``.
+    * ``payment_date`` -- the FUNDING basis: which pay period the payment is
+      booked in, i.e. which paycheck pays for it.  Drives the replay's rate
+      lookup, and it is the plan date of a payment whose cash has not moved.
     * ``due_date`` -- the INSTALLMENT basis: which contractual monthly payment
       this satisfies.  Drives the anchor boundary, the replayed row's date, and
       ``next_pay_date``.
 
-    They differ whenever a payment is settled LATE (past its due date, into the
-    next biweekly pay period -- routine over a weekend or holiday).  Deriving
-    the due date FROM the pay period (the pre-fix behaviour) then reports the
-    NEXT month's installment, mis-dating the row and desyncing the replay from
-    the genesis walk.
+    The funding basis and the installment basis differ whenever a payment is
+    settled LATE (past its due date, into the next biweekly pay period --
+    routine over a weekend or holiday).  Deriving the due date FROM the pay
+    period (the pre-fix behaviour) then reports the NEXT month's installment,
+    mis-dating the row and desyncing the replay from the genesis walk.
+
+    The CASH day differs from the funding basis in BOTH directions, and using
+    the funding basis for "has it happened" was finding **N-187** (plan step
+    **X-an**): a payment settled BEFORE its pay period begins was history to
+    the ledger and a forward projection to the resolver, so the same
+    installment was counted twice; a payment settled AFTER an evaluation date
+    inside its own pay period was history to the resolver and not to the
+    ledger, so it vanished from both the balance and the plan.
 
     Attributes:
-        payment_date: The payment's pay-period start (the cash basis above).
+        payment_date: The payment's pay-period start (the funding basis above).
             Matched to the schedule by year-month, not exact day, so
             biweekly payment dates (e.g. 2026-03-06) correctly map to
             the monthly schedule period (2026-03).
@@ -71,17 +82,50 @@ class PaymentRecord:
             :func:`app.services.loan_loaders.loan_payment_due_date` -- the one
             derivation the genesis write walk uses too, so the posted ledger
             and the replay can never drift on a payment's due date.
+        settled_on: The civil day the payment's cash moved (the cash basis
+            above), or ``None`` when it has not moved.  Supplied by
+            :func:`app.services.loan_ledger.payment_visible_on`, the same
+            derivation the fold dates the payment's principal by.
         amount: The total payment amount (principal + interest).  Must
             be >= 0.  A zero amount represents a missed payment where
             only interest accrues (negative amortization).
-        is_confirmed: True if the payment is Paid/Settled (historical
-            fact).  False if Projected (future commitment).
     """
 
     payment_date: date
     due_date: date
+    settled_on: date | None
     amount: Decimal
-    is_confirmed: bool
+
+    @property
+    def is_confirmed(self) -> bool:
+        """Return whether this payment is historical fact rather than a plan.
+
+        **Derived, never stored** (plan step **X-an**).  A payment is confirmed
+        if and only if it carries the day its money moved -- the same
+        settled-iff-dated invariant
+        :func:`app.services.status_seam.apply_status_change` holds on the row
+        this record is built from, and :func:`app.utils.balance_predicates.settled_day`
+        refuses to break.  Storing the boolean beside the day would be a second
+        copy of one fact, free to disagree with it inside a record every
+        consumer reads.
+
+        **What that removes, precisely.**  Not the disagreement in the
+        DATABASE: there is deliberately no ``CHECK`` constraint (the predicate
+        lives in ``ref.statuses`` and a constraint cannot join), so a bulk
+        ``query.update`` bypassing the seam can still leave a settled day on a
+        Projected row.  What it removes is the disagreement in the RECORD, by
+        moving the arbitration to one boundary --
+        :func:`app.services.loan_payment_service.get_payment_history`, which
+        reads the STATUS and then requires the day, the same order the fold's
+        loader uses (``loan_loaders.settled_income_shadows``).  So the resolver
+        and the ledger cannot classify a payment differently even on a row a
+        bypass has broken.
+
+        Returns:
+            ``True`` for a settled payment (Paid / Received / Settled), ``False``
+            for a Projected one.
+        """
+        return self.settled_on is not None
 
     def __post_init__(self):
         """Validate payment record fields at construction time.
@@ -90,8 +134,8 @@ class PaymentRecord:
         results deep in the schedule loop.
 
         Raises:
-            TypeError: If payment_date or due_date is not a date, amount is
-                not a Decimal, or is_confirmed is not a bool.
+            TypeError: If payment_date, due_date or a non-``None`` settled_on
+                is not a date, or amount is not a Decimal.
             ValueError: If amount is negative.
         """
         if not isinstance(self.payment_date, date):
@@ -102,6 +146,11 @@ class PaymentRecord:
             raise TypeError(
                 f"due_date must be a date, got {type(self.due_date).__name__}"
             )
+        if self.settled_on is not None and not isinstance(self.settled_on, date):
+            raise TypeError(
+                "settled_on must be a date or None, got "
+                f"{type(self.settled_on).__name__}"
+            )
         if not isinstance(self.amount, Decimal):
             raise TypeError(
                 f"amount must be a Decimal, got {type(self.amount).__name__}"
@@ -109,10 +158,6 @@ class PaymentRecord:
         if self.amount < 0:
             raise ValueError(
                 f"amount must be >= 0, got {self.amount}"
-            )
-        if not isinstance(self.is_confirmed, bool):
-            raise TypeError(
-                f"is_confirmed must be a bool, got {type(self.is_confirmed).__name__}"
             )
 
 

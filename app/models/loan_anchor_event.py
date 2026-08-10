@@ -82,8 +82,14 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
             "anchor_balance >= 0",
             name="ck_loan_anchor_events_balance_nonneg",
         ),
-        # Forward-scan index for the resolver's "latest anchor per account"
-        # lookup and for the write door's governing-event query.  It shared the
+        # Forward-scan index for the write door's governing-event query
+        # (``anchor_service._governing_loan_anchor``, which filters on
+        # ``account_id`` and bounds ``anchor_date``).  It named the RESOLVER's
+        # "latest anchor per account" lookup too until plan step X-an-b: that
+        # read path issues no ``ORDER BY`` at all now -- ``load_loan_anchor_facts``
+        # filters on ``account_id`` and orders in Python, because the synthesized
+        # origination has no row for SQL to sort -- so only the seek term serves
+        # it.  It shared the
         # table with a unique expression index over ``(account_id, anchor_date,
         # anchor_balance, utc_day(created_at))`` until ruling R-EQ deleted that
         # one (plan step X-f1c4b); this is now the only index serving the
@@ -133,13 +139,27 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
         nullable=False,
     )
 
-    # Relationships -- read-only consumers (resolver, dashboard).
+    # **This collection carries NO ``order_by``, deliberately** (plan step
+    # X-an-b).  It held ``anchor_date DESC, created_at DESC`` until then, which
+    # was a third statement of "which anchor governs" -- incomplete (no ``id``
+    # term, so it did not order two rows written in one transaction) and with
+    # ZERO readers in ``app/``, ``tests/`` or ``scripts/``.  Growing it the
+    # missing term would have kept a correct answer to the wrong question: this
+    # collection can never BE the loan's anchor set under any ordering, because
+    # it EXCLUDES the synthesized origination (which has no stored row) and
+    # INCLUDES the legacy ``origination``-source rows that
+    # ``loan_loaders.load_loan_anchor_facts`` deliberately ignores.  An
+    # ordered-looking collection therefore invites a reader to treat it as the
+    # anchor chronology, which it is not.  **The loan's ONE anchor order is
+    # ``load_loan_anchor_facts``**, ascending by
+    # ``(anchor_date, created_at, id)``; read anchors through it.
+    #
+    # The relationship itself stays: its cascade configuration is load-bearing
+    # (see the module docstring on the account-deletion disposal path).
     account = db.relationship(
         "Account",
         backref=db.backref(
             "loan_anchor_events",
-            order_by="LoanAnchorEvent.anchor_date.desc(), "
-                    "LoanAnchorEvent.created_at.desc()",
             cascade="all, delete-orphan",
             passive_deletes=True,
             lazy="select",

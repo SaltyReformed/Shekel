@@ -10,6 +10,7 @@ stack.
 """
 import calendar
 from datetime import date, datetime, timezone
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 # Single source of truth for the timezone the UI presents instants in.
@@ -94,6 +95,158 @@ def display_today() -> date:
         The current calendar date in :data:`DISPLAY_TIMEZONE`.
     """
     return to_display_tz(datetime.now(timezone.utc)).date()
+
+
+def has_settled_by(settled_on: date | None, as_of: date) -> bool:
+    """Return whether a row's cash had already moved on or before *as_of*.
+
+    The companion question to
+    :func:`app.utils.balance_predicates.settled_day`: that one answers WHICH day
+    a settled row's money moved, this one answers whether it had moved YET.
+    Both read the one stored fact ``transactions.settled_on``, so a caller
+    cannot reach a different answer by comparing a different date.
+
+    **It lives HERE, not beside** :func:`~app.utils.balance_predicates.settled_day`,
+    on a purity argument that its consumers force.  It reads no status, no ORM
+    row and no reference cache -- it is two ``date`` values and a comparison --
+    while ``balance_predicates`` imports :class:`~app.models.transaction.Transaction`
+    and :mod:`app.ref_cache`.  Its two callers are
+    :mod:`app.services.rate_period_engine`, whose module docstring promises "no
+    Flask, no ``db``", and :mod:`app.services.loan_resolver`, which goes to the
+    trouble of a ``TYPE_CHECKING``-only import to stay a runtime model-free leaf
+    (``loan_resolver/_periods.py``).  Putting it in ``balance_predicates`` would
+    have given both a runtime edge to a model-importing module for a two-date
+    comparison; this module is stdlib-only and both already import from it.
+
+    **The two take opposite positions on a missing day, deliberately.**
+    :func:`~app.utils.balance_predicates.settled_day` REFUSES ``None``, because
+    its caller is holding a row it believes is settled and a missing day means
+    the settled-iff-dated invariant is broken.  This one ACCEPTS it and answers
+    ``False``: its callers classify a MIXED feed of settled and projected rows,
+    and a projected row legitimately carries no day.  A row that has not settled
+    has not settled by any date.
+
+    **Written once, and the reason is the LEDGER, not a measured drift between
+    its two callers** (plan step **X-an**, finding **N-187**).  The loan resolver
+    splits its payment feed on this ONE predicate: the HISTORY side goes to
+    :func:`app.services.rate_period_engine.replay_schedule` and the rest to
+    ``loan_resolver._payoff._build_monthly_override``, which plans it.  They had
+    two inline comparisons and those AGREED -- both read the payment's
+    PAY-PERIOD start -- so the split stayed clean while the rule itself was
+    wrong.  What they disagreed with was the posted ledger, which counts the same
+    payment from the day it settled
+    (:func:`app.services.loan_ledger.payment_visible_on`).  Naming the rule once
+    is what stops the NEXT edit moving one side: the two spellings are the
+    latent hazard, the ledger divergence is the measured one.
+
+    **This predicate is the WHOLE split, and the replay then drops more.**  A
+    payment this answers ``False`` for is planned, always.  A payment it answers
+    ``True`` for is a CANDIDATE for the replay, which then excludes the ones an
+    anchor subsumes (``due_date <= anchor_date``) and the ones past a payoff --
+    and neither is handed back to the plan, correctly, because the anchor
+    already contains them and a paid-off loan owes nothing.  So the two consumers
+    are disjoint and their union is the SETTLED-BY set, not the whole feed.
+
+    **Measured on production before the move** (both live loans, every day of a
+    306-day span): no balance moved on any day, and the loan's amortization
+    SCHEDULE lost a whole installment on 34 (loan, day) pairs -- a ``$1,910.95``
+    mortgage payment absent from the confirmed history AND from the forward plan
+    for the 12 days between its pay period opening and its cash leaving, with the
+    page meanwhile naming the FOLLOWING month's installment as the next one due.
+
+    Args:
+        settled_on: The row's stored ``settled_on``, or ``None`` when the row has
+            not settled.  Takes the VALUE rather than the row, for the same
+            reason :func:`~app.utils.balance_predicates.settled_day` does:
+            callers hold ORM attributes, batched query tuples and pure value
+            objects alike.
+        as_of: The evaluation date.
+
+    Returns:
+        ``True`` iff *settled_on* is a day at or before *as_of*.
+    """
+    return settled_on is not None and settled_on <= as_of
+
+
+class DatedAssertion(Protocol):
+    """The three fields a loan anchor's chronological position is built from.
+
+    A structural type, not a base class: it names what
+    :func:`anchor_chronology_key` reads without forcing its callers onto a
+    concrete class.  The production value is
+    :class:`app.services.loan_loaders.LoanAnchorFact`, which this module must
+    not import (it would give a stdlib-only module a runtime edge to the model
+    layer -- the same purity argument :func:`has_settled_by` makes above).
+
+    Attributes:
+        anchor_date: The civil day the balance was asserted FOR -- the business
+            date, and the first term.
+        created_at: The instant the assertion was RECORDED, aware-UTC.
+        event_id: The stored ``budget.loan_anchor_events.id``.
+    """
+
+    anchor_date: date
+    created_at: datetime
+    event_id: int
+
+
+def anchor_chronology_key(
+    anchor: DatedAssertion,
+) -> tuple[date, datetime, int]:
+    """Return a loan anchor's position in its loan's ONE chronology.
+
+    **The single definition of "which of a loan's balance assertions is later",
+    written once and called by both consumers that must agree on it** (plan step
+    X-an-b, closing finding **N-196**):
+
+    * :func:`app.services.loan_loaders.load_loan_anchor_facts` sorts its facts by
+      this, so the list every reader receives is already in chronological order;
+    * :func:`app.services.loan_resolver.select_latest_anchor` takes the ``max()``
+      of it, so the resolver seeds from the greatest whatever order it is handed.
+
+    They must name the SAME row -- the walk resets the running balance at each
+    anchor in turn, so the last one it sees decides the posted balance, while the
+    resolver's seeds the replayed one.  Before this function they were two inline
+    tuples, and the tuples had drifted: neither carried the row id, and
+    ``max()`` returns the FIRST maximal element where the walk applies the LAST,
+    so a tie named opposite rows.
+
+    **It lives HERE for the reason :func:`has_settled_by` does, one step
+    earlier in the same arc.**  Its two callers cannot share a module: the
+    resolver is a runtime model-free leaf (``loan_resolver/_periods.py`` takes a
+    ``TYPE_CHECKING``-only import to stay one) and ``loan_loaders`` imports
+    models and ``db`` while declaring itself a leaf that imports "never another
+    loan service".  So neither can import the other, and a key spelled in both
+    would be two statements kept in step by hope.  This module is stdlib-only
+    and both already depend on it.
+
+    **All three terms, and why none is optional.**  ``anchor_date`` is the
+    business day the assertion is ABOUT.  ``created_at`` orders two assertions
+    about one business day, so the last one recorded is that day's closing
+    balance -- and the synthesized origination fact carries the earliest possible
+    instant, so a true-up asserted ON the origination date still outranks it.
+    ``event_id`` makes the key TOTAL: ``created_at`` is
+    ``server_default=func.now()``, which PostgreSQL evaluates at TRANSACTION
+    START, so every row written in one transaction shares an instant --
+    ``shekel-prod-db`` carries four such rows today, and they escape a tie only
+    because no two of them share an ``anchor_date``.  The higher id wins, which
+    is the rule the write door
+    (:func:`app.services.anchor_service._governing_loan_anchor`) and both cash
+    orderings already apply.
+
+    Pure: three attribute reads and a tuple, no I/O and no clock.
+
+    Args:
+        anchor: Any :class:`DatedAssertion` -- an object exposing
+            ``anchor_date``, ``created_at`` and ``event_id``.  Takes the OBJECT
+            rather than the three values because its callers pass it as a
+            ``key=`` function, which is the point: a caller that unpacked the
+            fields itself would be free to reassemble them differently.
+
+    Returns:
+        The ``(anchor_date, created_at, event_id)`` tuple, ascending-comparable.
+    """
+    return (anchor.anchor_date, anchor.created_at, anchor.event_id)
 
 
 def utc_instant(instant: datetime) -> datetime:

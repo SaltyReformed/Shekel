@@ -31,6 +31,7 @@ from app.services.rate_period_engine import (
     build_rate_periods,
     replay_schedule,
 )
+from app.utils.dates import anchor_chronology_key
 
 if TYPE_CHECKING:
     # Typing-only import: keeps this resolver a runtime model-free leaf
@@ -287,12 +288,14 @@ class LoanInputs:
             hint is a typing-only forward reference, not a runtime
             constraint).
         anchor_events: Non-empty list of anchor-shaped objects
-            (``anchor_date``, ``anchor_balance``, ``created_at``) --
-            in production the :class:`~app.services.loan_loaders.LoanAnchorFact`
+            (``anchor_date``, ``anchor_balance``, ``created_at``,
+            ``event_id``) -- in production the
+            :class:`~app.services.loan_loaders.LoanAnchorFact`
             list from ``load_loan_anchor_facts`` (the synthesized
             origination fact plus stored true-ups), so a configured loan
             always has at least one; an empty list raises ``ValueError``
-            when the latest anchor is selected.
+            when the governing anchor is selected.  ``event_id`` is what
+            makes :func:`select_latest_anchor`'s key TOTAL -- see there.
         payments: Prepared :class:`PaymentRecord` list from
             :func:`app.services.loan_payment_service.prepare_payments_for_engine`
             (escrow subtracted, biweekly redistributed).  ``None`` or
@@ -308,28 +311,62 @@ class LoanInputs:
 
 
 def select_latest_anchor(anchor_events: list) -> object:
-    """Return the most recent anchor event by (anchor_date, created_at) DESC.
+    """Return the anchor that governs, by ``(anchor_date, created_at, event_id)``.
 
-    Mirrors the ORM ``backref(order_by=...)`` on
-    :class:`LoanAnchorEvent`: ``anchor_date DESC, created_at DESC``.
-    A loan can carry multiple events on the same day (origination
-    plus a later trueup); ``created_at`` is the deterministic
-    tie-breaker so the same anchor list always selects the same
-    event.
+    **The key is not spelled here.**  It is
+    :func:`app.utils.dates.anchor_chronology_key`, the ONE definition of "which
+    of a loan's assertions is later", and
+    :func:`app.services.loan_loaders.load_loan_anchor_facts` sorts by the same
+    function -- so the greatest element here IS the last element there, by
+    construction rather than by two tuples agreeing.  That identity is what the
+    fold's walk (:func:`app.services.loan_ledger.walk_loan_ledger`) depends on:
+    it resets the running balance at each anchor in turn, so the anchor it
+    reaches LAST must be the one this seeds from.  See that function for why all
+    three terms are load-bearing; the third (``event_id``) is what plan step
+    X-an-b added, closing finding **N-196**.
 
-    Re-exported from the package so the out-of-package Build-Order Step 4
-    split walk (:func:`app.services.loan_ledger.compute_loan_payment_splits`)
-    seeds its running balance from the IDENTICAL anchor the resolver replays
-    from -- the posted loan-payment ledger and the resolver's balance can never
-    disagree on which dated balance is the opening point.
+    **The bound is the WALK's, which takes no as-of, and NOT a reader's.**  This
+    names the loan's latest anchor outright; every reader of the walk applies its
+    own ``as_of`` bound afterwards
+    (:func:`app.services.balance_at.confirmed_view`,
+    ``loan_posting_service.loan_balance_anchor_history``), so for a PAST read
+    date the last anchor a reader has applied is not necessarily this one.  That
+    gap is finding **N-207** -- this resolves against the loan's latest anchor
+    whatever date the pass asked about -- and it is owned by X-i2, not fixed
+    here.
+
+    **It is deliberately order-INSENSITIVE where the walk is not.**  The walk
+    calls the loader itself and consumes its order; this resolver is a pure leaf
+    whose contract is that the CALLER loads the data and passes it in -- and 68
+    of its test call sites hand-build the list -- so it re-derives the greatest
+    element rather than trusting a position.
+
+    *A previous version of this docstring said it mirrored the ORM
+    ``backref(order_by=...)`` on :class:`LoanAnchorEvent`, and that it existed
+    as a package export so the Build-Order Step 4 split walk
+    (``loan_ledger.compute_loan_payment_splits``) could seed from the identical
+    anchor.  Both were false when X-an-b measured them: that walk resets at
+    EVERY anchor from a zero seed and has never called this, and the backref was
+    a third, incomplete statement of the order with no reader at all -- X-an-b
+    deleted its ``order_by`` rather than growing it an ``id`` term.  A first
+    draft of the REPLACEMENT then claimed the two spellings were "pinned equal by
+    a test, the same treatment ``cash_ledger.resolve_anchor`` and
+    ``cash_anchor_facts`` get": no such cash test exists, and an adversarial
+    review caught the invented citation.  There are no longer two spellings to
+    pin.*
 
     Args:
-        anchor_events: Non-empty list of LoanAnchorEvent-shaped
-            objects with ``anchor_date`` (date) and ``created_at``
-            (datetime) attributes.
+        anchor_events: Non-empty list of
+            :class:`~app.utils.dates.DatedAssertion`-shaped objects (
+            ``anchor_date`` / ``created_at`` / ``event_id``) -- in production the
+            :class:`~app.services.loan_loaders.LoanAnchorFact` list from
+            ``load_loan_anchor_facts``.  Any order: the greatest element is
+            returned regardless, PROVIDED the keys are distinct.  They are for
+            every list the loader builds (``event_id`` is a primary key), and a
+            hand-built fixture that repeats one gets ``max()``'s first maximal.
 
     Returns:
-        The single most recent event.
+        The single governing anchor.
 
     Raises:
         ValueError: If ``anchor_events`` is empty.  A configured loan's
@@ -345,10 +382,7 @@ def select_latest_anchor(anchor_events: list) -> object:
             "its LoanParams via loan_loaders.load_loan_anchor_facts -- "
             "received an empty list."
         )
-    return max(
-        anchor_events,
-        key=lambda event: (event.anchor_date, event.created_at),
-    )
+    return max(anchor_events, key=anchor_chronology_key)
 
 
 def _replay_from_anchor(
@@ -377,13 +411,22 @@ def _replay_from_anchor(
     each payment by its true monthly due date so a pay period that
     straddles a mid-period balance true-up is classified correctly.
 
+    The comprehension below filters on the SETTLE DAY rather than on
+    :attr:`~app.services.amortization_engine.PaymentRecord.is_confirmed`, and
+    they are the same predicate: ``is_confirmed`` IS ``settled_on is not None``
+    since plan step **X-an**, when it stopped being stored.  Binding the day in
+    the filter is what makes
+    :attr:`~app.services.rate_period_engine.ConfirmedPayment.settled_on`'s
+    non-``None`` type a property of the code rather than of a comment.
+
     Args:
         loan_inputs: The loan's loaded input bundle.  ``anchor_events``
             must be non-empty (the Commit-12 invariant).
         periods: The loan's ordered rate periods, built once by the
             caller via :func:`resolve_periods`.
-        as_of: Evaluation date; replay stops at the latest payment whose
-            pay period has begun by this date.
+        as_of: Evaluation date; replay stops at the latest payment whose CASH
+            had moved by it (plan step **X-an**; it was the pay period until
+            then, which is the funding basis, not the day the money left).
 
     Returns:
         The :class:`~app.services.rate_period_engine.ScheduleReplay` for
@@ -404,9 +447,10 @@ def _replay_from_anchor(
             ConfirmedPayment(
                 period_start=payment.payment_date,
                 due_date=payment.due_date,
+                settled_on=settled_on,
             )
             for payment in (loan_inputs.payments or [])
-            if payment.is_confirmed
+            if (settled_on := payment.settled_on) is not None
         ],
         payment_day=loan_inputs.loan_params.payment_day,
         as_of=as_of,

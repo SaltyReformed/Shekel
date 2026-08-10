@@ -418,6 +418,283 @@ class TestTheIndexAndTheSpecificationsAgree:
         assert any("C1" in p and "ticked" in p for p in problems), problems
 
 
+class TestTheBlockedByColumnIsTheDependencyGraph:
+    """conventions.md rule 13 -- the column that was parsed and never read.
+
+    Until this class existed ``StepRow.blocked`` was populated by hand, carried
+    through the parser and consulted by nothing, so an edge could name a
+    deleted step, contradict itself or close a loop with every gate green.  The
+    contradiction that proves it was found by BUILDING: ``steps.md`` recorded
+    ``R6 blocked by balance:X-an`` while the recurrence document derived ``R6``
+    from a column ``R5`` creates behind ``X-f4``.
+    """
+
+    def test_the_graph_is_referentially_sound_acyclic_and_alias_coherent(self):
+        """The live dependency graph satisfies all five arms."""
+        assert not registry.blocked_by_violations()
+
+    def test_the_live_corpus_actually_contains_edges_to_grade(self):
+        """A rule with no subject in the corpus is untested by the clean case."""
+        edges = [row for row in registry.step_rows() if row.blocked_keys()]
+        assert edges, "no step carries a blocker -- rule 13 grades nothing"
+
+    def test_an_annotated_blocker_parses_to_its_key(self):
+        """``CC3b`` carries a real annotation, and the key is parsed OUT of it.
+
+        A naive reader would take the whole cell as the key and report the one
+        row that documents WHY its blocker is already shipped as broken -- the
+        false positive the shared ``aliases`` grammar was written against.
+
+        **Asserted as a PROPERTY, not as that row's exact list.** The first
+        version pinned ``== ["balance:X-f1"]`` and went red the moment the
+        credit-card arc's own gate was added beside it -- pinning data the
+        registry is expected to grow is a test that fails on correct edits,
+        which is the kind that gets weakened rather than believed. The claim
+        worth holding is that EVERY parsed key is bare.
+        """
+        by_key = {row.key: row for row in registry.step_rows()}
+        annotated = by_key["credit_card:CC3b"]
+        assert "(" in annotated.blocked, (
+            "CC3b no longer carries an annotated blocker, so this control has "
+            f"lost its subject: {annotated.blocked!r}"
+        )
+        assert "balance:X-f1" in annotated.blocked_keys()
+        for row in registry.step_rows():
+            for key in row.blocked_keys():
+                assert "(" not in key and " " not in key, (
+                    f"{row.key}: blocker {key!r} kept its annotation"
+                )
+
+    def test_the_control_fires_on_a_blocker_naming_no_step(self, stage):
+        """The control fires on a blocker naming no step."""
+        line = _row("steps", "| balance | X-x |")
+        stage("steps", line, _with_cell(line, -1, "balance:X-gone"))
+        problems = registry.blocked_by_violations()
+        assert any("X-gone" in p and "no step" in p for p in problems), problems
+
+    def test_the_control_fires_on_a_self_block(self, stage):
+        """The control fires on a self-block.
+
+        Checked before the referential arm on purpose: ``balance:X-x`` IS a
+        real step, so a self-edge satisfies arm 2 and would otherwise pass.
+        """
+        line = _row("steps", "| balance | X-x |")
+        stage("steps", line, _with_cell(line, -1, "balance:X-x"))
+        problems = registry.blocked_by_violations()
+        assert any("blocked by ITSELF" in p for p in problems), problems
+
+    def test_the_control_fires_when_a_shipped_step_is_blocked_by_an_open_one(
+        self, stage,
+    ):
+        """A SHIPPED step blocked by an OPEN one is one of two real defects."""
+        line = _row("steps", "| balance | X-an |")
+        stage("steps", line, _with_cell(line, -1, "balance:X-f3"))
+        problems = registry.blocked_by_violations()
+        assert any(
+            "balance:X-an" in p and "stated prerequisite" in p for p in problems
+        ), problems
+
+    def test_the_control_fires_on_a_cycle(self, stage):
+        """The control fires on a cycle.
+
+        ``R5`` is already blocked by ``X-f4``; pointing ``X-f4`` back at ``R5``
+        closes the loop across two arcs, which is the shape no single arc
+        document could have seen.
+        """
+        line = _row("steps", "| balance | X-f4 |")
+        stage("steps", line, _with_cell(line, -1, "recurrence:R5"))
+        problems = registry.blocked_by_violations()
+        assert any("CYCLE" in p for p in problems), problems
+
+    def test_a_converging_edge_is_not_reported_as_a_cycle(self):
+        """Two steps blocked by one third is a DIAMOND, not a loop.
+
+        A two-colour visited set would report it as a cycle, and the live
+        corpus already contains one -- ``X-k`` and ``R6`` are both blocked by
+        ``R5`` -- so the naive detector would fail the clean case on day one.
+        The three-colour walk distinguishes "on the current path" from "already
+        finished", which is the whole reason for the GREY mark.
+        """
+        blockers = {
+            row.key: row.blocked_keys() for row in registry.step_rows()
+        }
+        converging = [k for k, v in blockers.items() if "recurrence:R5" in v]
+        assert len(converging) >= 2, (
+            f"expected a converging edge in the live corpus, found {converging}"
+        )
+        assert not [
+            p for p in registry.blocked_by_violations() if "CYCLE" in p
+        ]
+
+    def test_the_control_fires_when_one_name_of_a_class_carries_the_blocker(
+        self, stage,
+    ):
+        """``C2`` == ``X-l`` == ``R-F12``: a blocker on one binds all three.
+
+        This is the arm that matters most to a reader picking up work: without
+        it, recording the blocker on ``C2`` alone leaves ``X-l`` and ``R-F12``
+        reading as READY.
+        """
+        line = _row("steps", "| pay_calendar | C2 |")
+        stage("steps", line, _with_cell(line, -1, "balance:X-f3"))
+        problems = registry.blocked_by_violations()
+        assert any("ONE blocker set" in p for p in problems), problems
+
+
+class TestTheIndexNamesTheCommitThatShippedAStep:
+    """conventions.md rule 7, the INDEX half.
+
+    Rule 7's arc-document arm has always required a ticked entry to OPEN with
+    its hash.  The ``steps.md`` ``commit`` column asked the same question and
+    nothing read it: three of twelve SHIPPED rows held ``--`` while their own
+    arc entries cited a hash.
+    """
+
+    def test_every_shipped_row_names_a_commit_and_no_open_row_does(self):
+        """Every shipped row names a commit, and no open row does."""
+        assert not registry.commit_column_violations()
+
+    def test_the_live_corpus_actually_holds_shipped_rows_to_grade(self):
+        """A rule with no subject in the corpus is untested by the clean case."""
+        shipped = [row for row in registry.step_rows() if row.shipped]
+        assert shipped, "no step has shipped -- this arm grades nothing"
+
+    def test_the_control_fires_on_a_shipped_row_with_no_commit(self, stage):
+        """The control fires on a shipped row with no commit."""
+        line = _row("steps", "| balance | X-an |")
+        stage("steps", line, _with_cell(line, -2, "--"))
+        problems = registry.commit_column_violations()
+        assert any("balance:X-an" in p and "SHIPPED" in p for p in problems), problems
+
+    def test_the_control_fires_on_an_open_row_that_names_one(self, stage):
+        """A step that has not shipped has no commit."""
+        line = _row("steps", "| balance | X-f3 |")
+        stage("steps", line, _with_cell(line, -2, "`deadbee1`"))
+        problems = registry.commit_column_violations()
+        assert any("balance:X-f3" in p and "has not shipped" in p
+                   for p in problems), problems
+
+    def test_a_non_hash_in_the_cell_is_refused(self, stage):
+        """Prose in the commit cell is not a commit.
+
+        The failure the ``--`` case cannot catch: a cell that is populated but
+        names something that is not a hash.  ``PR #83`` identifies the same
+        ship and is not a thing a reader can `git show`.
+        """
+        line = _row("steps", "| balance | X-an |")
+        stage("steps", line, _with_cell(line, -2, "PR #83"))
+        problems = registry.commit_column_violations()
+        assert any("balance:X-an" in p for p in problems), problems
+
+
+class TestAParentTicksWithTheLastOfItsLeaves:
+    """conventions.md rule 13, the decomposition half.
+
+    Rule 2 has always said a decomposed parent ticks with its last leaf, and
+    nothing graded it.  The arm exists because the readiness question needs it:
+    a container is not pickable work, and X-f, X-aj, X-i and X-x all read as
+    READY while their own leaves are open.
+    """
+
+    def test_no_parent_has_shipped_ahead_of_an_open_leaf(self):
+        """No declared parent has shipped ahead of an open leaf."""
+        assert not registry.decomposition_violations()
+
+    def test_the_live_corpus_actually_declares_parents_with_leaves(self):
+        """A rule with no subject in the corpus is untested by the clean case."""
+        rows = registry.step_rows()
+        parents = [row for row in rows if row.is_decomposed_parent]
+        assert parents, "no row declares itself a parent -- this arm grades nothing"
+        withleaves = [
+            p for p in parents
+            if any(r.arc == p.arc and r.ident != p.ident
+                   and r.ident.startswith(p.ident) for r in rows)
+        ]
+        assert withleaves, f"no declared parent has a leaf in the table: {parents}"
+
+    def test_a_prefix_derivation_would_have_fired_falsely_on_this_corpus(self):
+        """The reason the parent set is DECLARED rather than derived.
+
+        ``R-F1`` is SHIPPED and is a string prefix of ``R-F10``, ``R-F12`` and
+        ``R-F13``, which are unrelated findings-steps and all open.  Deriving
+        parenthood from the id alone would report three failures the moment the
+        arm was switched on -- and the tempting fix is an exception list, which
+        is finding N-147's defect.  This control keeps that measurement alive:
+        if the corpus ever stops containing the trap, the reason for the design
+        should be re-read rather than assumed.
+        """
+        rows = {row.ident: row for row in registry.step_rows()
+                if row.arc == "recurrence"}
+        assert rows["R-F1"].shipped
+        tempting = [i for i in rows if i != "R-F1" and i.startswith("R-F1")]
+        assert tempting, "the R-F1 prefix trap has left the corpus"
+        assert not any(rows[i].shipped for i in tempting)
+        assert not rows["R-F1"].is_decomposed_parent, (
+            "R-F1 must NOT declare itself a parent -- it has no decomposition"
+        )
+
+    def test_the_control_fires_when_a_parent_ships_over_an_open_leaf(self, stage):
+        """The control fires when a parent ships over an open leaf.
+
+        **Asserted as a property, and the leaf names are NOT pinned.**  Two
+        versions of this control died to that: the first anchored on
+        ``X-an-b``, which the next merge archived out of the index under rule
+        5; the second pinned ``X-f2-a`` as an open leaf, and it SHIPPED in the
+        same merge.  Both times the arm was correct and the control was wrong,
+        which is a control that fails on correct edits.  What is stable is the
+        claim: a shipped parent is named, and every leaf reported against it is
+        genuinely open.
+        """
+        line = _row("steps", "| balance | X-f2 |")
+        stage("steps", line, _with_cell(line, 4, "SHIPPED"))
+        problems = [p for p in registry.decomposition_violations()
+                    if "balance:X-f2" in p]
+        assert problems, registry.decomposition_violations()
+        named = {row.ident for row in registry.step_rows()
+                 if row.ident.startswith("X-f2-") and row.ident in problems[0]}
+        assert named, f"the failure names no leaf: {problems}"
+        by_key = {row.ident: row for row in registry.step_rows()}
+        assert not [i for i in named if by_key[i].shipped], (
+            f"a SHIPPED leaf was reported as open: {problems}"
+        )
+
+    def test_an_archived_leaf_set_is_not_a_violation(self):
+        """Rule 5 archives a completed span, and rule 13 must not refuse it.
+
+        **This is a LIVE corpus case, not a staged one.**  ``X-an`` is SHIPPED,
+        declares itself a DECOMPOSED parent, and its two leaves ``X-an-a`` /
+        ``X-an-b`` were condensed into the archive on 2026-08-09 -- so the
+        index holds a shipped parent with no leaves at all.  An arm that
+        required a declared parent to still HOLD leaves would put rules 5 and
+        13 in contradiction, and it would fire on this row today.
+        """
+        rows = registry.step_rows()
+        parent = next(r for r in rows if r.key == "balance:X-an")
+        assert parent.shipped and parent.is_decomposed_parent
+        assert not [r for r in rows
+                    if r.arc == "balance" and r.ident.startswith("X-an-")], (
+            "X-an's leaves are back in the index -- this control has lost its "
+            "subject and the archive case needs a new one"
+        )
+        assert not [p for p in registry.decomposition_violations()
+                    if "X-an" in p]
+
+    def test_a_shipped_leaf_is_never_reported_as_open(self, stage):
+        """``X-f1`` is SHIPPED; a parent over it must not name it.
+
+        The other half of the arm: it reports the OPEN leaves and only those.
+        Staging ``X-f`` to SHIPPED fires on ``X-f2``..``X-f6``, which are open,
+        and must stay silent about ``X-f1``, which is not.
+        """
+        line = _row("steps", "| balance | X-f |")
+        stage("steps", line, _with_cell(line, 4, "SHIPPED"))
+        problems = registry.decomposition_violations()
+        assert any("balance:X-f" in p for p in problems), problems
+        assert not any("'X-f1'" in p for p in problems), (
+            f"a SHIPPED leaf must not be reported as open: {problems}"
+        )
+
+
 class TestTheParserSurvivesTheShapesTheRealFilesUse:
     """The measured false positives, kept as controls rather than as prose."""
 
