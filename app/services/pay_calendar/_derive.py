@@ -258,9 +258,10 @@ def derive_periods(
             f"payday set by hand (plan step C3's writer does exactly that, "
             f"from a form batch plus the existing rows), and _loader.py, if a "
             f"concurrent truncate lands between its payday read and its "
-            f"cadence read.  It is NOT what pay_schedule_service."
-            f"resolve_cadence answers for a fresh signup: that owner has a "
-            f"bootstrap payday, so the cadence is INFERRED from its length."
+            f"cadence read.  A fresh signup is NOT one of them: since plan "
+            f"step X-ad-a, registration writes a budget.pay_schedule row "
+            f"beside the owner's paydays, so resolve_cadence answers from the "
+            f"stored value rather than inferring one."
         )
 
     last_position = len(ordered) - 1

@@ -361,10 +361,11 @@ the hole, renumbers correctly, and deletes the predicate instead of widening it.
 
 - [ ] **C4 -- drop the derived columns.**
 
-First the WRITE-DOOR invariant row P8 actually needs -- `auth_service.register_user` writes a
-`PaySchedule` beside its bootstrap payday, so a backfill is not reopened by the next signup -- and
-the ORM-relationship readers named in section 3 get the bounds from the calendar instead of from
-`txn.pay_period`. Then ONE migration: backfill the schedule row for every owner with paydays,
+**P8's write-door half is DONE** (`balance:X-ad-a`), so the backfill below is no longer reopened by
+the next signup. What remains: the ORM-relationship readers of section 3 take their bounds from the
+calendar rather than from `txn.pay_period`, and `models/pay_period`'s
+`MIN_MATERIALISABLE_CADENCE_DAYS` drops -- its whole subject is the authored `end_date` this step
+deletes. Then ONE migration: backfill the schedule row for every owner with paydays,
 `DROP COLUMN end_date`, `DROP COLUMN period_index`, and drop **three** constraints with them --
 `ck_pay_periods_date_order`, `ck_pay_periods_positive_index` (`models/pay_period.py:30`, which the
 first draft omitted) and `uq_pay_periods_user_index`. Destructive, so it carries the `Review:` line.
