@@ -24,7 +24,7 @@ scheduled as one commit by all three documents. Before this table that identity 
 files with nothing reconciling it, and the `P3` / `N-123` collision went unnoticed from April to
 2026-08-09.
 
-**94 steps, 81 open.**
+**99 steps, 86 open.**
 
 | arc | id | aliases | step | state | commit | blocked by |
 |---|---|---|---|---|---|---|
@@ -94,7 +94,7 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | recurrence | R-F8 | -- | **R-F8 -- the deploy's safety net stops lying (F-8, F-14, R-R14).** `2e63e4f9`, `8aeae48e`, | SHIPPED | `2e63e4f9` | -- |
 | recurrence | R-F2 | -- | **R-F2 -- Tighten the ref-seed parity scan's statement boundary** (finding F-2). | open | -- | -- |
 | recurrence | R-F3 | -- | **R-F3 -- Resolve the ref-table constraint-naming disagreement** (finding F-3). | open | -- | -- |
-| recurrence | R-F10 | pay_calendar:C5 (ticks it) | **R-F10 -- Delete the gap machinery the pay-calendar arc makes unconstructible** (finding | open | -- | pay_calendar:C4 |
+| recurrence | R-F10 | pay_calendar:C5a (ticks it) | **R-F10 -- Delete the gap machinery the pay-calendar arc makes unconstructible** (finding | open | -- | pay_calendar:C4 |
 | recurrence | R-F12 | pay_calendar:C2 / balance:X-l | **R-F12 -- One `PeriodCalendar`, not three period-containing searches** (finding F-12). | open | -- | -- |
 | recurrence | R-F13 | -- | **R-F13 -- Close the three holes in this arc's own gate** (finding F-13). | open | -- | -- |
 | recurrence | R-F7 | -- | **R-F7 -- Delete two unreachable branches in `_first_of_month_anchor`** (finding D11). | open | -- | -- |
@@ -102,8 +102,11 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | pay_calendar | C2 | balance:X-l / recurrence:R-F12 | **C2 -- one calendar value answers every "which period" question.** | open | -- | -- |
 | pay_calendar | C3 | -- | **C3 -- the writer writes paydays, forward-only.** | open | -- | balance:X-ad |
 | pay_calendar | C4 | -- | **C4 -- drop the derived columns.** | open | -- | pay_calendar:C2 / pay_calendar:C3 |
-| pay_calendar | C5 | recurrence:R-F10 (ticked by it) | **C5 -- delete what is now unconstructible.** | open | -- | pay_calendar:C4 |
+| pay_calendar | C5 | -- | **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** The DECOMPOSED PARENT, split 2026-08-09; ticks with the last of its leaves | open | -- | pay_calendar:C4 / recurrence:R5 |
+| pay_calendar | C5a | recurrence:R-F10 (ticked by it) | **C5a -- delete what is now unconstructible.** Deletion-only; the recurrence arc's 430-shape baseline stays byte-identical. It deletes no VISIBILITY -- see P16 | open | -- | pay_calendar:C4 |
+| pay_calendar | C5b | -- | **C5b -- a paycheck may owe one template more than once.** `should_skip_period` becomes occurrence-aware; `refuse_unstorable_repeats` retires. Closes **P16** | open | -- | recurrence:R5 |
 | pay_calendar | C6 | -- | **C6 -- a payday may be inserted mid-schedule.** | open | -- | pay_calendar:C4 / recurrence:R7c |
+| pay_calendar | C7 | -- | **C7 -- the ledger entry derives its paycheck.** Rules `journal_entries.pay_period_id`, P1's defect on the ledger header. Closes **P18** | open | -- | pay_calendar:C4 |
 | credit_card | CC0a | -- | **CC0a** `feat(ref): account types carry a revolving-credit kind` -- migration adds | open | -- | balance:X-f4 / balance:X-am |
 | credit_card | CC0b | -- | **CC0b** `feat(cards): budget.credit_card_params satellite` -- model + migration as specced in | open | -- | balance:X-f4 / balance:X-am |
 | credit_card | CC0c | -- | **CC0c** `feat(cards): card params setup flow` -- create/update routes + Marshmallow schema | open | -- | balance:X-f4 / balance:X-am |
@@ -134,4 +137,4 @@ gate checks that too: a ruling nobody re-points is a ruling that decided nothing
 | defect | competing remedies | ruled |
 |---|---|---|
 | pay_calendar:P3 = balance:N-123 | balance:X-ad (R-DB: DELETE the bootstrap payday) **vs** pay_calendar:C3 (KEEP it, beside the real payday) | **balance:X-ad**, 2026-08-09 -- delete it, and registration asks for the LAST payday, not the next |
-| pay_calendar:P16 | pay_calendar:C5 (make should_skip_period occurrence-aware) **vs** pay_calendar:C3 (refuse an over-long period at the writer) | **pay_calendar:C5**, 2026-08-09 -- occurrence-aware; the writer option would refuse legitimate monthly schedules |
+| pay_calendar:P16 | pay_calendar:C5b (make should_skip_period occurrence-aware) **vs** pay_calendar:C3 (refuse an over-long period at the writer) | **pay_calendar:C5b**, 2026-08-09 -- occurrence-aware; the writer option would refuse legitimate monthly schedules. Named `C5` when ruled; C5 DECOMPOSED the same day and the winning remedy is its `C5b` leaf, so both cells follow the work |

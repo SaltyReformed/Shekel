@@ -3,21 +3,20 @@
 ## Where this stands
 
 **C1 IS IN PRODUCTION** (`f9d148fe`, PR #87); nothing else has shipped. This arc was opened
-2026-08-08 out of the recurrence arc's **F-10**, after the ruling below established that F-10 is not
-a missing check but a missing normalization. That arc's **R-F10** and **R-F12** stay live there and
-are ticked by **C5** and **C2** here; the balance arc's **N-128** and **X-l** are the same defect
-from the third side.
+2026-08-08 out of the recurrence arc's **F-10**, once that was established to be a missing
+NORMALIZATION rather than a missing check. Its **R-F10** / **R-F12** are ticked by **C5a** / **C2**
+here, and the balance arc's **N-128** / **X-l** are the same defect from a third side.
 
-**NEXT = C2**, which starts with a ruling and not a keystroke (section 3, "What is NOT decided yet")
-and **ships as ONE commit with the balance arc's X-l** -- both build the same total calendar, and
-building it twice is the defect C2 exists to remove.
-**Nothing here blocks the recurrence arc's Half A** (R7a, R7b, R7c, R8), which touches no file this
-arc edits.
+**NEXT = C2**, which starts with a ruling and not a keystroke (section 3) and
+**ships as ONE commit with the balance arc's X-l** -- building the same calendar twice is the defect
+C2 removes. Nothing here blocks the recurrence arc's Half A.
 
-C1's neutral review corrected two of this document's own claims and opened **P15** and **P16**.
-**Both forks are now RULED (2026-08-09).** P3/N-123 went to the balance arc's **X-ad** (delete the
-bootstrap payday; ask for the payday LAST paid on), so that row is `balance:N-123` and C3 no longer
-owns it. P16 went to **C5**: make `should_skip_period` occurrence-aware -- which needs a migration.
+**Both forks RULED 2026-08-09.** P3/N-123 to the balance arc's **X-ad**, so that row is
+`balance:N-123` and C3 no longer owns it. P16 to the occurrence-aware remedy, now **C5b**:
+**C5 DECOMPOSED the same day**, C5a the deletion (after C4) and C5b the migration, BLOCKED BY
+recurrence **R5**, which creates the `occurs_on` its index re-key needs.
+**Only C5b is genuinely late** -- C2 is unblocked today, and `steps.md`'s `blocked by` column now
+carries that instead of prose. New rows **P17** (owner C2) and **P18** (owner **C7**, after C4).
 
 **Section 4 is the steps; findings, the step index and the rules are the shared registries.**
 
@@ -379,7 +378,13 @@ four surviving fences of section 1, including BA-03/BA-04 and `_pp_assert_struct
 2, 3a and 3b. Closes **P1**, **P4**, **P5**, **P8**, **P9**.
 **This step needs its own review pass**; it is the deepest cut into the spine.
 
-- [ ] **C5 -- delete what is now unconstructible.**
+- [ ] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.**
+
+**The DECOMPOSED PARENT, split 2026-08-09 (developer).** Its two halves shared only a sentence in
+row P16 and are not one commit: one is a pure deletion gated on C4, the other is a migration gated
+on an arc this document does not own. It ticks with the last of them.
+
+- [ ] **C5a -- delete what is now unconstructible.**
 
 `GenerationPlan.gaps` (`recurrence_engine.py:153`), `_recurrence_common.report_schedule_gaps` and
 its two call sites (`recurrence_engine.py:309`, `transfer_recurrence.py:81`),
@@ -388,6 +393,21 @@ its two call sites (`recurrence_engine.py:309`, `transfer_recurrence.py:81`),
 `PeriodCalendar.__post_init__`'s two refusals. Every one exists to describe or police a state the
 model can no longer produce. Ticks recurrence **R-F10**. Deletion-only: the recurrence arc's
 430-shape baseline must stay byte-identical.
+**It deletes no visibility, and that correction is why the split is safe.** P16 argued the gap
+machinery was the last thing reporting the under-bill; it is not. `report_schedule_gaps` logs an
+occurrence no period CONTAINS, and the cadence-30/31 case has no hole at all -- both occurrences
+land inside one period. Nothing reports that today.
+
+- [ ] **C5b -- a paycheck may owe one template more than once.**
+
+`should_skip_period` (`_recurrence_common.py:196-232`) becomes OCCURRENCE-aware instead of returning
+True on the first template-linked row; `refuse_unstorable_repeats` (`:235-300`) and
+`RecurrenceCadenceUnsupported` retire with the refusal they exist to raise. Closes **P16**.
+**BLOCKED BY the recurrence arc's `R5`, and this is the dependency that made the whole arc look
+deferred.** The indexes must re-key onto `(template, scenario, occurs_on)` -- recurrence row
+**D19**'s own answer -- and `occurs_on` does not exist: `grep occurs_on app/models/` is empty, R5
+creates it, and R5 waits on the balance arc's X-f4. So the re-key is R5's and NOT restated here;
+this step consumes it. Needs a migration and its own review pass.
 
 - [ ] **C6 -- a payday may be inserted mid-schedule.**
 
@@ -395,6 +415,17 @@ model can no longer produce. Ticks recurrence **R-F10**. Deletion-only: the recu
 answers: what happens to a row whose date `attribution_date` would now CLAMP into the wrong half,
 and whether the newly split-off payday is repopulated (understated income) or not (a doubled bill).
 Not required by the normalization and deliberately last. Closes **P10**.
+
+- [ ] **C7 -- the ledger entry derives its paycheck.**
+
+**Starts with a ruling.** `journal_entries.pay_period_id` is a NOT NULL FK stored beside the
+`entry_date` it derives from, which is row **P1**'s defect on the ledger's header table -- and
+ruling **R-EA** already made the WRITE side derive it. The NOT NULL is also what forces
+`resolve_anchor_pay_period` to be TOTAL, so it is the reason row **P6**'s third implementation
+cannot simply be deleted once C2 lands. Three options, and the trace decides: DROP and derive, make
+it NULLABLE, or KEEP it as a deliberate materialization with the second definition's cost stated.
+Sequenced after C4 (developer, 2026-08-09), because a derived paycheck should be derived from the
+calendar this arc normalizes rather than from the one it is replacing. Closes **P18**.
 
 ## 5. Findings ledger
 
