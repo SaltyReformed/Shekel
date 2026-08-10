@@ -91,6 +91,28 @@ ways), **X-f1c3** (the anchor's one home -- c3a, c3b, c3c; the census was 65 ref
 `app/` modules and 5 templates, and substituting moved no figure on 9 of 9 production accounts),
 and **X-f1c4** (the statement day and the duplicate rule -- c4a, c4b, c4c, one SESSION each).
 **X-f1c's ordering was load-bearing: c3 ran BEFORE c4**, so back-dating never met the anchor cache.
+
+### 1b. The X-an cluster (added 2026-08-09)
+
+**COMPLETE at two leaves, merged to `dev` and NOT yet PR'd to `main`**, so CI has graded neither.
+The parent **X-an** stays ticked in `../README.md` because live sentences cite it by id; the two
+leaves left the index with their specifications, the X-f1 precedent one cluster over.
+
+| step | commit | what it did | findings |
+|---|---|---|---|
+| **X-an-a** | `3d3f0ef5` | The CUT: the loan resolver's replay/projection boundary moves off the pay-period start onto `settled_on`, through ONE `app.utils.dates.has_settled_by` both halves call, and `PaymentRecord.is_confirmed` stops being stored beside the day. Measured per-DAY on the prod clone (`tests/manual/verify_loan_daily_figures.py`, `d0adf188`): no balance moved and a **$1,910.95** installment came back into a schedule it had been missing from for 12 days. **The exhaustive seam harness was BLIND to it by construction** -- it samples the default `as_of` plus six fixed dates while the change moves an answer only in 1-12 day windows -- and came back byte-identical, proving nothing | closed **N-187**; opened **N-207** |
+| **X-an-b** | `549015c0` | The anchor TIE-BREAK: a loan's anchors were loaded by one function and reduced by TWO consumers, each breaking a tie its own way over a list with no `ORDER BY` (the walk reset on the LAST of a tie, `select_latest_anchor`'s `max()` took the FIRST). It moves POSTED money -- `_anchor_correction_targets` sums same-day legs, so the sum telescopes to the walk's anchor while the resolver seeds from the other. Production `$0.00`: four rows share the backfill instant, none share an `anchor_date`. **The fix is ONE key, not an `id` term added to three orderings**: `app.utils.dates.anchor_chronology_key`. Two ORM `order_by=` arguments DELETED rather than corrected; the fifth site was found by CENSUS, not by the step's list. `43fdf325` carries the separate `_opening_anchor_fact` correction the same trace found | closed **N-196**; opened **N-208**, **N-209**, **N-210**, **N-211** |
+
+**The live lesson, kept because it is cited**: X-an-b's first draft added the missing `id` term to
+each ordering and justified the two surviving spellings by citing a cash test that pins
+`resolve_anchor` against `cash_anchor_facts`. No such test exists, and the invented citation was the
+tell that the shape was wrong.
+
+**One obligation left this span and did NOT come here**: the recurrence redesign's `R6` cannot ship
+with X-an (it reads `due_on`, which `R5` creates behind X-f4). That `developer-decision` is carried
+by `implementation_plan_recurrence_redesign.md` section 0 and by `steps.md`'s `blocked by` cell on
+`recurrence:R6`, both of which state it independently of this record.
+
 ## 2. Findings closed outside a Phase X step
 
 | finding | closed by | note |

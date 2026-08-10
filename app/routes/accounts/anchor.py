@@ -47,17 +47,17 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
+from app.routes.accounts.reconcile import prompt_fragment
 from app.services import (
     anchor_service,
+    balance_at,
     cash_ledger,
-    entry_service,
     pay_period_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
-from app.utils.digit_strings import parse_row_ids
 from app.utils.error_fragments import designed_error, flatten_schema_errors
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,12 @@ _LOAN_ANCHOR_REFUSAL = (
     "A loan's balance is not a cash anchor. Record a balance true-up "
     "on the loan's own page instead."
 )
+
+#: What the difference preview says when the date box holds something that is
+#: not a day.  Its own sentence rather than the schema's, which names the FIELD
+#: (``observed_on``) the user has never seen -- the form labels that box
+#: "Balance as of".
+_UNREADABLE_DAY = "Enter a date to compare this balance against."
 
 
 def _is_amortizing(account: Account) -> bool:
@@ -125,179 +131,6 @@ def _normalize_revert_context(raw_revert: str | None) -> str | None:
         surface; otherwise ``None`` (the grid default).
     """
     return raw_revert if raw_revert in _REVERT_SURFACES else None
-
-
-def reconcile_context(account: Account, panel_id: str) -> dict:
-    """Assemble the reconcile panel's context for one account.
-
-    The ONE builder both surfaces read: the post-true-up prompt
-    (:func:`_reconcile_prompt_fragment`) and the permanent section on the cash
-    account's detail page.  Two builders would be two answers to "what is still
-    outstanding on this account", which is the shape plan step S1-c exists to
-    remove.
-
-    Args:
-        account: The account to reconcile.  Caller owns the ownership check.
-        panel_id: The DOM id the inner partial roots at, so a POST's re-render
-            swaps in place.
-
-    Returns:
-        The template context.  ``outstanding`` is empty (and the partial says
-        so) for an account with nothing to reconcile or no assertion at all.
-    """
-    # The raw DAY, and both uses below are why the boundary offers it: an SQL
-    # bound on the offer set, and a rendered caption.  Neither asks whether a
-    # movement is inside the balance -- that question has one implementation
-    # (``ReconciledThrough.covers``) and neither of these is a second one.
-    observed_on = cash_ledger.reconciled_through(account.id).observed_day
-    outstanding = (
-        []
-        if observed_on is None
-        else entry_service.outstanding_purchases(
-            current_user.id, account.id, observed_on,
-        )
-    )
-    return {
-        "account": account,
-        "outstanding": outstanding,
-        "outstanding_total": sum(
-            (entry.amount for entry in outstanding), Decimal("0.00"),
-        ),
-        "reconciled_through": observed_on,
-        "anchor_balance": cash_ledger.resolve_anchor(account).balance,
-        "panel_id": panel_id,
-    }
-
-
-def _reconcile_prompt_fragment(account: Account) -> str:
-    """Return the out-of-band reconcile prompt, or ``""`` when there is none.
-
-    Appended to a successful true-up's body so the modal lands in
-    ``#modal-mount`` (``base.html``) whichever of the five surfaces opened the
-    editor.  It is empty whenever the account has nothing outstanding, which is
-    the steady state for a user who reconciles as they go -- the one-click
-    true-up habit is not taxed by a prompt with nothing in it.
-
-    Args:
-        account: The just-asserted account.
-
-    Returns:
-        The rendered fragment, or ``""``.
-    """
-    context = reconcile_context(account, panel_id="reconcile-panel-modal")
-    if not context["outstanding"]:
-        return ""
-    return render_template("accounts/_reconcile_modal.html", **context)
-
-
-@accounts_bp.route(
-    "/accounts/<int:account_id>/reconcile", methods=["GET"],
-)
-@login_required
-@require_owner
-def reconcile_panel(account_id):
-    """HTMX partial: re-render the account's outstanding-purchase list.
-
-    The ``balanceChanged`` refresh target on the cash detail page's section.
-    A true-up moves the day the list is computed against, so a list left
-    un-refreshed would offer purchases that are no longer outstanding -- the
-    same reason the band above it re-fetches on the same event.
-    """
-    account = get_or_404(Account, account_id)
-    if account is None:
-        return "Account not found", 404
-    return render_template(
-        "accounts/_reconcile_purchases.html",
-        **reconcile_context(account, panel_id=_panel_id(account.id)),
-    )
-
-
-@accounts_bp.route(
-    "/accounts/<int:account_id>/reconcile", methods=["POST"],
-)
-@login_required
-@require_owner
-def reconcile_purchases(account_id):
-    """Record that the ticked purchases had reached the bank.
-
-    The reconcile step's write door (ruling R-DH (d) / the R-M re-ruling).
-    Each ticked entry's ``settled_on`` becomes the civil day the account's
-    latest balance was asserted for, after which the projection stops holding
-    that purchase's budget back -- the same predicate the balance walk applies
-    to a settled transaction, on a date the USER supplied rather than one the
-    engine guessed.
-
-    **It is its own request, and that is deliberate.**  Folding it into
-    ``apply_anchor_true_up`` would put it inside the transaction that function
-    ROLLS BACK when a submission changes nothing (ruling R-EQ) while reporting
-    idempotent success -- so a re-assert of the governing balance would silently
-    discard every reconciliation the user had just made while the UI said it
-    saved.  A separate transaction cannot be swallowed by another one's
-    rollback.  The mechanism was an ``IntegrityError`` handler around a unique
-    index until plan step X-f1c4b; the hazard is the same and so is the ruling.
-
-    A submitted value that does not name a row is dropped by
-    :func:`~app.utils.digit_strings.parse_row_ids` before the service is
-    reached, and every id that survives is re-scoped there against the
-    outstanding set (owner, account, debit, projected parent, still
-    unrecorded), so a forged id matches nothing rather than raising -- the
-    set-operation form of the project's "404 for both not-found and
-    not-yours" rule.
-
-    Returns the refreshed panel plus ``HX-Trigger: balanceChanged`` so every
-    surface showing a projection recomputes.
-    """
-    account = get_or_404(Account, account_id)
-    if account is None:
-        return "Account not found", 404
-
-    # The raw DAY: it bounds the offer set in SQL and is STAMPED onto every
-    # ticked purchase as its posting day, neither of which is the "is this
-    # inside the balance" question (that has one implementation, and this
-    # writes the fact that implementation later reads).
-    observed_on = cash_ledger.reconciled_through(account.id).observed_day
-    if observed_on is None:
-        # No balance has ever been asserted for this account, so there is
-        # nothing for a purchase to be inside of.  Unreachable through the UI
-        # (the panel renders no form in that state) and answered rather than
-        # raised, because it is a legitimate empty state.
-        return render_template(
-            "accounts/_reconcile_purchases.html",
-            **reconcile_context(account, panel_id=_panel_id(account.id)),
-        )
-
-    entry_service.record_settled_days(
-        current_user.id,
-        account.id,
-        parse_row_ids(request.form.getlist("entry_ids")),
-        observed_on,
-    )
-    db.session.commit()
-
-    return (
-        render_template(
-            "accounts/_reconcile_purchases.html",
-            **reconcile_context(account, panel_id=_panel_id(account.id)),
-        ),
-        200,
-        {"HX-Trigger": "balanceChanged"},
-    )
-
-
-def _panel_id(account_id: int) -> str:
-    """Return the reconcile panel's DOM id for one account.
-
-    Stated once so the POST's re-render lands on whichever copy of the panel
-    submitted it: the modal prompt roots at a fixed id, the detail page's
-    section at a per-account one, and both post to the same route.
-
-    Args:
-        account_id: The account whose panel id to compose.
-
-    Returns:
-        The DOM id string.
-    """
-    return f"reconcile-panel-{account_id}"
 
 
 def _submission_is_the_coverage_boundary(
@@ -454,7 +287,7 @@ def _true_up_success_response(
         # these purchases has your bank taken?  Empty when nothing is
         # outstanding, so the one-click habit is not taxed by a prompt with
         # nothing in it.
-        feedback = _reconcile_prompt_fragment(account)
+        feedback = prompt_fragment(account)
     else:
         # ``submission.observed_on`` cannot be None on this branch: a blank
         # date box means "today", and today IS the coverage boundary
@@ -516,6 +349,239 @@ def _anchor_day_bounds() -> dict[str, date]:
         ),
         "observed_on_max": display_today(),
     }
+
+
+# ── The difference, before it is saved (X-f2-a, ruling R-EU) ──────
+
+
+def _preview_submission() -> tuple[Decimal | None, date | None, str | None]:
+    """Parse the editor's two boxes LENIENTLY, through the write door's schema.
+
+    The preview fires while the user is still typing, so it must answer a
+    half-finished form rather than refuse one -- and it must nonetheless read
+    both boxes by exactly the rules ``true_up`` will apply, or it would preview
+    a figure the save then rejects.  Sharing ``_anchor_schema`` is what makes
+    that structural rather than a claim: the cent quantization
+    (``fields.Decimal(places=2)``) and the empty-string normalizer that lets a
+    cleared date box mean "today" are the SAME code both paths run.  The whole
+    query string is handed in, exactly as ``true_up`` hands in the whole form:
+    ``BaseSchema.Meta.unknown = EXCLUDE`` drops what the schema does not
+    declare, so a hand-kept list of field names here would be a SECOND copy of
+    the schema's own -- able to drift in one direction only, which is the shape
+    this step exists to remove.
+
+    Two leniencies, each for a state ordinary typing produces:
+
+    * **A balance box that does not parse yet** -- mid-keystroke, or cleared --
+      is ``None`` rather than an error.  ``partial=`` is what expresses that:
+      the field is ``required=True`` for the save, and asking the schema to
+      relax exactly that one requirement is narrower than a second parser.
+    * **A blank date box** is ``None``, which the caller resolves to the user's
+      today through the same :func:`~app.services.anchor_service.resolve_observation_day`
+      the write door uses (ruling R-ER).  The default is NOT applied here: a
+      route that invented the day would be the second answer to "when is an
+      assertion dated" that ruling deleted.
+
+    An UNPARSEABLE DATE is the one thing that is refused rather than defaulted,
+    and the difference matters: blank means "now", while ``2026-13-40`` means
+    the user is mid-edit on a day that is not a day, and silently previewing
+    today's figure under a date box showing something else would caption a
+    figure with the wrong day -- this arc's own root defect, rendered.
+
+    Returns:
+        ``(recorded, submitted_day, refusal)``.  ``refusal`` is ``None`` unless
+        the DATE box holds something unparseable, in which case both figures are
+        ``None`` and the message is ready to render.
+    """
+    raw = dict(request.args)
+    errors = _anchor_schema.validate(raw)
+    if "observed_on" in errors:
+        # Not ``flatten_schema_errors``: that renders "observed_on: Not a valid
+        # date." -- a schema FIELD NAME, under a box the user sees labelled
+        # "Balance as of".  The editor's own rejection surface can afford the
+        # field name because it re-renders the labelled input beside it; a
+        # caption floating under the form cannot.
+        return None, None, _UNREADABLE_DAY
+
+    if "anchor_balance" in errors:
+        raw.pop("anchor_balance", None)
+    data = _anchor_schema.load(raw, partial=("anchor_balance",))
+    balance = data.get("anchor_balance")
+    return (
+        None if balance is None else Decimal(str(balance)),
+        data.get("observed_on"),
+        None,
+    )
+
+
+#: What a difference MEANS, as a name the template maps to copy rather than
+#: re-deriving from the sign.  The verdict is decided in Python -- where it is
+#: under test -- for the reason ``pace_pill`` / ``dti_badge`` take a computed
+#: label rather than a number: a ``{% elif %}`` chain over a Decimal is a
+#: SECOND statement of the sign convention, in the one language this project
+#: forbids financial reasoning in.
+DIFF_AGREES = "agrees"
+DIFF_UNRECORDED_SPEND = "unrecorded_spend"
+DIFF_UNACCOUNTED_MONEY = "unaccounted_money"
+
+#: The same three names, handed to the partial so its branches compare against
+#: THESE values rather than against re-typed literals.  A template literal and a
+#: module constant are two spellings of one name that drift silently -- the
+#: partial would simply stop matching and fall to its else arm, rendering the
+#: wrong sentence with no error anywhere.
+_DIFF_VERDICT_NAMES = {
+    "DIFF_AGREES": DIFF_AGREES,
+    "DIFF_UNRECORDED_SPEND": DIFF_UNRECORDED_SPEND,
+    "DIFF_UNACCOUNTED_MONEY": DIFF_UNACCOUNTED_MONEY,
+}
+
+
+def _difference_verdict(difference: Decimal) -> str:
+    """Return what *difference* MEANS, as one of the ``DIFF_*`` names.
+
+    The sign convention is ``recorded - records``, so:
+
+    * **negative** -- the bank holds LESS than the records account for: money
+      left that was never recorded, or a payment that moved earlier than it was
+      budgeted to.
+    * **positive** -- the bank holds MORE: income not recorded, or a budgeted
+      bill that never left.
+    * **zero** -- the records agree with the statement, which is the outcome the
+      user is aiming for and which reads as an empty state unless it is named.
+
+    Args:
+        difference: ``recorded - records``, cent-exact.
+
+    Returns:
+        One of :data:`DIFF_AGREES`, :data:`DIFF_UNRECORDED_SPEND`,
+        :data:`DIFF_UNACCOUNTED_MONEY`.
+    """
+    if difference == 0:
+        return DIFF_AGREES
+    return (
+        DIFF_UNRECORDED_SPEND if difference < 0 else DIFF_UNACCOUNTED_MONEY
+    )
+
+
+def _anchor_difference_context(account: Account) -> dict:
+    """Assemble the difference preview's context for one account.
+
+    Ruling **R-EU**: the form shows what the account's RECORDS produce for the
+    day it names, what the user typed, and the gap -- before Save.
+
+    **The figure is ``balance_at.records_balance_at``, not the account's current
+    balance, and that is the whole correction this leaf was rebuilt for.**  An
+    assertion RESETS the cash walk, so "what the app reports for that day"
+    becomes the user's own declared figure the moment they declare one -- and a
+    difference measured against it is zero by construction, or on a CORRECTION
+    is the gap between two successive guesses with a sign that can oppose the
+    real one (measured on production Checking 2026-04-15: ``-$45.86`` against
+    the previous entry, ``-$92.29`` against the records).
+
+    Four states, each a real one:
+
+    * **a refusal** -- an amortizing loan (a raced kind change; see
+      :func:`_anchor_kind_refusal`), or a day that cannot be asserted.
+      Previewing a save guaranteed to be refused is the dead-end affordance
+      ruling R-ET's corollary deletes, so the region says why instead.
+    * **a MODELLED account** -- ``records_balance_at`` answers ``None``, because
+      an HYSA accruing interest or a Property appreciating is not being
+      reconciled against a bank statement (see that function for the scope
+      argument and finding **N-213**).  The region renders empty rather than
+      captioning a model-vs-market gap as untracked spend.
+    * **a reconciliation** -- the ordinary state.
+    * **nothing typed yet** -- the balance box holds nothing parseable, so there
+      is no comparison to draw.
+
+    **What it deliberately does NOT do is preview the form's PREFILL.**  The
+    editor opens with the governing balance already in the box (ruling R-EE's
+    one-click habit), so a preview fired on form-open would compare a figure the
+    user has not entered against the records and caption the gap as the app's
+    fault -- reproduced by an adversarial review: a settled, fully posted
+    ``$150.00`` expense rendered as "money Shekel has not accounted for", and
+    pressing Enter on that prefill drops the ``$150.00`` out of the projection.
+    The region is therefore mounted EMPTY and fills on the first real edit; see
+    ``grid/_anchor_edit.html`` for the trigger set that expresses it.
+
+    Args:
+        account: The owned, attached :class:`Account` being previewed.
+
+    Returns:
+        The template context: ``refusal`` (str or ``None``), and when there is a
+        comparison to draw, ``observed_on`` / ``records`` / ``recorded`` /
+        ``difference`` / ``verdict``.  ``difference`` is ``None`` whenever there
+        is nothing to compare.
+    """
+    empty = {"refusal": None, "difference": None}
+    if _is_amortizing(account):
+        return {"refusal": _LOAN_ANCHOR_REFUSAL, "difference": None}
+
+    recorded, submitted_day, refusal = _preview_submission()
+    if refusal is not None:
+        return {"refusal": refusal, "difference": None}
+    try:
+        day = anchor_service.resolve_observation_day(
+            current_user.id, submitted_day,
+        ).civil_day
+    except ValidationError as exc:
+        return {"refusal": str(exc), "difference": None}
+    if recorded is None:
+        return empty
+
+    records = balance_at.records_balance_at(
+        account, balance_at.BalanceContext.build(current_user.id), day,
+    )
+    if records is None:
+        return empty
+
+    difference = recorded - records
+    return {
+        "refusal": None,
+        "observed_on": day,
+        "records": records,
+        "recorded": recorded,
+        "difference": difference,
+        "verdict": _difference_verdict(difference),
+    }
+
+
+@accounts_bp.route(
+    "/accounts/<int:account_id>/anchor-difference", methods=["GET"],
+)
+@login_required
+@require_owner
+def anchor_difference(account_id):
+    """HTMX partial: the true-up editor's recorded-vs-ledger difference.
+
+    Ruling **R-EU** (plan step X-f2-a).  A GET because it WRITES NOTHING: it
+    reads the two boxes off the query string, asks the balance seam what the
+    account was worth on the day they name, and renders the comparison.
+
+    **It is fetched by the editor rather than rendered with it.**
+    ``anchor_form`` is one click on the grid, per account, and today it costs
+    two cheap reads (``cash_ledger.resolve_anchor`` and the schedule floor);
+    :func:`~app.services.balance_at.records_balance_at` assembles the account's
+    whole event stream, which is dashboard-sized work.  Keeping it out of the
+    editor's own render leaves the primary control as fast as it is now.  That
+    is the FIRST-PAINT trade; it does not make the total cheaper, and the honest
+    claim is the narrow one.
+
+    **The preview cannot go stale against its FORM**: the region re-fetches on
+    every change to the form it lives in, and the response carries the day it
+    was computed for, so a figure and its caption move together.  It CAN go
+    stale against the ledger -- another tab's true-up, or the reconcile panel's
+    own POST, both fire ``balanceChanged``, which this region deliberately does
+    not listen for (re-folding on every balance event would cost a fold per
+    event for a figure nobody is looking at unless the editor is open).
+    """
+    account = get_or_404(Account, account_id)
+    if account is None:
+        return "Account not found", 404
+    return render_template(
+        "accounts/_anchor_difference.html",
+        **_DIFF_VERDICT_NAMES,
+        **_anchor_difference_context(account),
+    )
 
 
 def _anchor_kind_refusal(account: Account) -> ResponseReturnValue:

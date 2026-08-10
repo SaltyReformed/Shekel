@@ -26,6 +26,10 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from app.models.account import Account
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from ._context import BalanceContext
 
 from . import _cash_fold
@@ -260,3 +264,85 @@ def cash_daily_balance_series(
         account, ctx.scenario_id, ctx.as_of, days,
     )
     return OrderedDict((day, folded[day]) for day in days)
+
+
+def records_balance_at(
+    account: Account, ctx: BalanceContext, as_of: date,
+) -> "Decimal | None":
+    """Return what an account's RECORDS produce at *as_of*, before its own
+    assertion for that day overrides them.
+
+    The figure ruling **R-EU** asks the true-up form for (plan step X-f2-a):
+    *"Shekel has $X"*, where X is what the recorded transactions add up to --
+    NOT what the app currently reports, which after a balance is recorded for a
+    day IS that recorded balance.
+
+    **The distinction exists because an assertion RESETS the walk**
+    (``cash_ledger._walk``: ``running = anchor.anchor_balance``).  So
+    :func:`cash_balance_at` on a day that already carries an assertion answers
+    with that assertion, and a difference measured against it is zero by
+    construction -- or worse, on a CORRECTION it is the gap between the user's
+    two successive guesses, which can carry the opposite sign to the real one.
+    Measured on production Checking, 2026-04-15, where three balances were
+    recorded in one day with no transaction between them: against the previous
+    entry the third reads ``-$45.86``; against the records it reads
+    ``-$92.29``.
+
+    **It is the walk's OWN field, not arithmetic over the fold.**
+    :attr:`~app.services.cash_ledger.CashAnchorCorrection.balance_before` is
+    documented as the running balance *just before this assertion resets it*,
+    which is exactly this question, already public and already the figure the
+    LOAN side's drift card renders (``loan_posting_service._display``:
+    ``computed``).  Subtracting correction deltas out of
+    :func:`cash_balance_at` instead would be a second statement of the fold's
+    step rule -- and a wrong one, because ``_cash_fold._actual_steps`` moves the
+    OPENING correction into the seed and books a compensator for it, so the
+    opening's delta is not a step to subtract.
+
+    Two branches, and they are one rule rather than a special case:
+
+    * an assertion is dated *as_of* -- take the FIRST one's ``balance_before``.
+      First, not last: a later assertion on the same day carries the earlier
+      one's reset inside it, so only the first sees the records alone.
+    * no assertion is dated *as_of* -- there is nothing to see past, and
+      :func:`cash_balance_at` already IS the records' balance.
+
+    **``None`` is a SCOPE statement, not a failure.**  An account whose balance
+    carries a MODELLED tier -- an HYSA accruing interest, a brokerage
+    compounding, a Property appreciating -- is not answering "does my bank agree
+    with my book".  Its recorded cash is a fraction of what its screens show, so
+    a reconciliation against it would caption a model-vs-market difference as
+    untracked spend.  Production bears the split out: 57 of the 78 non-loan
+    assertions are on Checking, the one account carrying no modelled tier.
+    Widening this to the modelled kinds is a different question with different
+    copy and wants its own ruling (finding **N-213**).
+
+    Args:
+        account: The account to value.  Caller owns the ownership check.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+        as_of: The civil day to answer for.
+
+    Returns:
+        The cent-quantized records-only ``Decimal``, or ``None`` when the
+        account models a return and the question does not apply.
+
+    Raises:
+        BaselineMissingError: When ``ctx`` carries no scenario.
+        TypeError: When *as_of* is not a civil :class:`datetime.date`.
+    """
+    _require_scenario(ctx)
+    _require_civil_date("records_balance_at", as_of=as_of)
+    if classify_account(account) is not AccountProjectionKind.PLAIN:
+        # The app's OWN name for "no modelled tier rides on this balance"
+        # (``account_projection``, whose ladder every seam producer already
+        # dispatches on).  Asked through the classifier rather than by
+        # re-testing ``has_interest`` / ``has_appreciation`` / an
+        # ``InvestmentParams`` row, which would be a fourth statement of a
+        # precedence this codebase has already been bitten by stating twice
+        # (S6-03).
+        return None
+    walk = _cash_fold.assemble(account, ctx.scenario_id, ctx.as_of).walk
+    for correction in walk.anchor_corrections:
+        if correction.observed_on == as_of:
+            return correction.balance_before
+    return cash_balance_at(account, ctx, as_of)

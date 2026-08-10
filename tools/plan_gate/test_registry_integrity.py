@@ -588,28 +588,63 @@ class TestAParentTicksWithTheLastOfItsLeaves:
         )
 
     def test_the_control_fires_when_a_parent_ships_over_an_open_leaf(self, stage):
-        """The control fires when a parent ships over an open leaf."""
-        line = _row("steps", "| balance | X-an-b |")
-        stage("steps", line, _with_cell(line, 4, "open"))
-        problems = registry.decomposition_violations()
-        assert any("balance:X-an" in p and "X-an-b" in p for p in problems), problems
+        """The control fires when a parent ships over an open leaf.
 
-    def test_an_archived_leaf_set_is_not_a_violation(self, stage):
+        **Asserted as a property, and the leaf names are NOT pinned.**  Two
+        versions of this control died to that: the first anchored on
+        ``X-an-b``, which the next merge archived out of the index under rule
+        5; the second pinned ``X-f2-a`` as an open leaf, and it SHIPPED in the
+        same merge.  Both times the arm was correct and the control was wrong,
+        which is a control that fails on correct edits.  What is stable is the
+        claim: a shipped parent is named, and every leaf reported against it is
+        genuinely open.
+        """
+        line = _row("steps", "| balance | X-f2 |")
+        stage("steps", line, _with_cell(line, 4, "SHIPPED"))
+        problems = [p for p in registry.decomposition_violations()
+                    if "balance:X-f2" in p]
+        assert problems, registry.decomposition_violations()
+        named = {row.ident for row in registry.step_rows()
+                 if row.ident.startswith("X-f2-") and row.ident in problems[0]}
+        assert named, f"the failure names no leaf: {problems}"
+        by_key = {row.ident: row for row in registry.step_rows()}
+        assert not [i for i in named if by_key[i].shipped], (
+            f"a SHIPPED leaf was reported as open: {problems}"
+        )
+
+    def test_an_archived_leaf_set_is_not_a_violation(self):
         """Rule 5 archives a completed span, and rule 13 must not refuse it.
 
-        ``X-f1`` shipped with fourteen leaves that have already left this
-        index.  An arm that required a declared parent to still HOLD leaves
-        would make rule 5 and rule 13 contradict each other, so the absence of
-        leaves is silence, not a failure.
+        **This is a LIVE corpus case, not a staged one.**  ``X-an`` is SHIPPED,
+        declares itself a DECOMPOSED parent, and its two leaves ``X-an-a`` /
+        ``X-an-b`` were condensed into the archive on 2026-08-09 -- so the
+        index holds a shipped parent with no leaves at all.  An arm that
+        required a declared parent to still HOLD leaves would put rules 5 and
+        13 in contradiction, and it would fire on this row today.
+        """
+        rows = registry.step_rows()
+        parent = next(r for r in rows if r.key == "balance:X-an")
+        assert parent.shipped and parent.is_decomposed_parent
+        assert not [r for r in rows
+                    if r.arc == "balance" and r.ident.startswith("X-an-")], (
+            "X-an's leaves are back in the index -- this control has lost its "
+            "subject and the archive case needs a new one"
+        )
+        assert not [p for p in registry.decomposition_violations()
+                    if "X-an" in p]
+
+    def test_a_shipped_leaf_is_never_reported_as_open(self, stage):
+        """``X-f1`` is SHIPPED; a parent over it must not name it.
+
+        The other half of the arm: it reports the OPEN leaves and only those.
+        Staging ``X-f`` to SHIPPED fires on ``X-f2``..``X-f6``, which are open,
+        and must stay silent about ``X-f1``, which is not.
         """
         line = _row("steps", "| balance | X-f |")
         stage("steps", line, _with_cell(line, 4, "SHIPPED"))
-        # X-f's leaves X-f2..X-f6 are still indexed and open, so this SHOULD
-        # fire -- proving the arm is live -- and it must name them, not the
-        # archived ones.
         problems = registry.decomposition_violations()
         assert any("balance:X-f" in p for p in problems), problems
-        assert not any("X-f1" in p for p in problems), (
+        assert not any("'X-f1'" in p for p in problems), (
             f"a SHIPPED leaf must not be reported as open: {problems}"
         )
 
