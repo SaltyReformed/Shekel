@@ -760,9 +760,10 @@ class TestResetResyncsAccountOpenings:
             )
             # The fixture's Checking is asserted on 2024-01-05 and the rebuilt
             # schedule starts 2026-06-05, so the assertion's day precedes EVERY
-            # period.  ``resolve_anchor_pay_period`` files such a correction in
-            # the user's EARLIEST period -- index 0 -- so the reader, which
-            # bounds by period start, counts it from the first period on.
+            # period.  ``pay_calendar.PayCalendar.filing_period`` clamps such a
+            # correction into the user's EARLIEST period -- index 0 -- so the
+            # reader, which bounds by period start, counts it from the first
+            # period on.
             assert all(
                 opening_assertion.observed_on < p.start_date for p in rebuilt
             ), (

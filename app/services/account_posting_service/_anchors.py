@@ -42,8 +42,20 @@ app's ONLY day-to-period rule** (ruling R-DH: *"an assertion's period and the
 civil day it was true are two statements of one fact, and the moment they can
 be set independently they can disagree"*).  Every anchor correction, cash and
 loan alike, is filed through
-:func:`app.services.loan_ledger.resolve_anchor_pay_period` against the entry's
-own date.
+:meth:`app.services.pay_calendar.PayCalendar.filing_period` against the entry's
+own date, loaded through the one door both writers share
+(:func:`app.services._posting_reconcile.filing_calendar_for`).
+
+**That rule became ONE clamp at plan step C2-d.**  It was
+``loan_ledger.resolve_anchor_pay_period`` -- containment, else the latest
+period ENDING before the day, else the earliest -- a three-branch chain across
+two functions, one of them a public export of the LOAN package that this cash
+package had to import (finding **N-169**).  The 2026-08-10 ruling named what
+the chain was actually computing: *the latest period STARTING on or before the
+day, else the earliest*.  The equivalence to that chain, the PRECONDITION it
+holds under, and the proofs covering each half are stated once at
+:meth:`app.services.pay_calendar.PayCalendar.filing_period` rather than
+repeated here and in the loan twin.
 
 **That sentence used to carry a limit, and finding N-170 was the limit** --
 closed structurally rather than repaired.  A WRITE-side resolver,
@@ -109,27 +121,18 @@ yet (plan step X-ai-s).
 
 from app import ref_cache
 from app.enums import PostingKindEnum, PostingSourceEnum
-from app.models.pay_period import PayPeriod
 from app.services import ledger_account_service
 from app.services._posting_reconcile import (
     CorrectionKey,
     LegMap,
-    account_owner_id,
     emit_correction_deltas,
+    filing_calendar_for,
     merge_target_legs,
     posted_correction_legs,
 )
 from app.services.cash_ledger import CashAnchorFact
-# The chronology primitive both ledgers file an anchor correction through.  It
-# is named in ``loan_ledger`` because the loan half needed it first; nothing
-# about "which period contains this day" is loan-specific, and this package
-# consuming it is what makes the cash and loan halves ONE rule rather than two
-# that agree (finding N-169 records that its home is now worth revisiting).
-from app.services.loan_ledger import (
-    owner_pay_periods,
-    resolve_anchor_pay_period,
-)
-from app.services.posting_reads import PostingError, _ledger_account_for
+from app.services.pay_calendar import PayCalendar
+from app.services.posting_reads import _ledger_account_for
 
 from ._walk import AccountAnchorCorrection
 
@@ -218,7 +221,7 @@ def _account_anchor_correction_target(
 def _account_anchor_correction_targets(
     corrections: list[AccountAnchorCorrection],
     owner_id: int,
-    periods: list[PayPeriod],
+    calendar: PayCalendar,
 ) -> dict[CorrectionKey, LegMap]:
     """Merge an account's corrections into per-(source, period, date) targets.
 
@@ -233,8 +236,8 @@ def _account_anchor_correction_targets(
     zero by the reconcile.
 
     **Both key parts that identify WHEN come off the same fact**: the entry's
-    date IS the assertion's ``observed_on``, and its period is the one
-    CONTAINING that day (:func:`app.services.loan_ledger.resolve_anchor_pay_period`,
+    date IS the assertion's ``observed_on``, and its period is the one that day
+    files under (:meth:`app.services.pay_calendar.PayCalendar.filing_period`,
     the derivation the loan twin makes and the rule ruling R-DH states).  The
     stored ``account_anchor_history.pay_period_id`` is deliberately NOT read
     here -- it is a cache of this same derivation, and a row whose clock split
@@ -245,9 +248,13 @@ def _account_anchor_correction_targets(
         corrections: The account's corrections from
             :func:`._walk.walk_account_ledger`, chronological.
         owner_id: The account owner's user id.
-        periods: The owner's pay periods ascending, non-empty (the caller
-            raises when the account has corrections to post and the owner has
-            none, so :func:`resolve_anchor_pay_period` always resolves).
+        calendar: The owner's whole pay calendar, from
+            :func:`app.services._posting_reconcile.filing_calendar_for`.
+            :meth:`~app.services.pay_calendar.PayCalendar.filing_period` is the
+            one place the "is there a period to point at" question is asked and
+            refused, so this carries no precondition of its own -- an earlier
+            draft claimed the loader had already checked, which was a second
+            statement of one predicate and the two had drifted.
 
     Returns:
         ``{(source_kind_id, pay_period_id, entry_date): {ledger_account_id:
@@ -267,7 +274,7 @@ def _account_anchor_correction_targets(
         observed_on = correction.anchor.observed_on
         key = (
             ref_cache.posting_source_id(source_enum),
-            resolve_anchor_pay_period(periods, observed_on).id,
+            calendar.filing_period(observed_on).period_id,
             observed_on,
         )
         merge_target_legs(
@@ -311,46 +318,36 @@ def reconcile_account_anchor_corrections(
 
     Raises:
         PostingError: If the account has no linked ledger account (a broken
-            chart-of-accounts pairing), or has corrections to post while its
-            owner has no pay periods (see below).
+            chart-of-accounts pairing).
+        PayCalendarError: The owner has no MATERIALISED pay period, so a
+            correction's ``NOT NULL`` ``pay_period_id`` has nothing to point at
+            -- refused by
+            :meth:`~app.services.pay_calendar.PayCalendar.filing_period`, which
+            is the ONE place that question is asked (developer ruling
+            2026-08-10).  Finding **N-192** is why it fails loud.
         ValueError: If the anchor-equity resolver rejects the account (see
             :func:`_account_anchor_correction_target`).
     """
     if not corrections:
         return
-    owner_id = account_owner_id(account_id)
-    if owner_id is None:
+    # The owner's whole calendar, loaded ONCE for the target keys through the
+    # same door the loan twin takes (plan step C2-d), so the two halves cannot
+    # come to file an anchor correction under different periods OR against
+    # differently-loaded calendars.  It resolves the OWNER from the account and
+    # returns both, so the two cannot be paired wrongly.  It refuses nothing:
+    # ``filing_period`` below is the one place "is there a period to point at"
+    # is asked, and a second copy of that test here had already drifted from it
+    # (developer ruling 2026-08-10).
+    resolved = filing_calendar_for(account_id)
+    if resolved is None:
         return
-    # The owner's whole calendar, loaded ONCE for the target keys -- the same
-    # load and the same resolver the loan twin uses, so the two halves cannot
-    # come to file an anchor correction under different periods.
-    #
-    # **It stopped being referentially unreachable at ruling R-EO** (plan step
-    # X-f1c3c) and this comment justified it with the deleted FK until then: an
-    # assertion used to carry a NOT NULL ``pay_period_id``, so a correction
-    # implied a period existed.  An assertion carries no period now.  What
-    # keeps the state out of reach is the CODE rather than a constraint --
-    # registration opens a bootstrap period before it creates the default
-    # account (``auth_service``), ``truncate_pay_periods`` only deletes indices
-    # ABOVE the one kept so index 0 always survives, and ``reset_pay_periods``
-    # regenerates before it returns.  Weaker than an FK, which is why the
-    # failure below stays LOUD: this reconcile DERIVES each correction's period
-    # from its day, so an empty calendar is the one state that could otherwise
-    # silently mis-file every correction an account has.
-    periods = owner_pay_periods(account_id)
-    if not periods:
-        raise PostingError(
-            f"Account {account_id} has anchor corrections to post but owner "
-            f"{owner_id} has no pay periods; the containing period of an "
-            f"assertion's day cannot be resolved, and "
-            f"journal_entries.pay_period_id is NOT NULL."
-        )
+    owner_id, calendar = resolved
     linked = _ledger_account_for(account_id)
     emit_correction_deltas(
         owner_id,
         scenario_id,
         target=_account_anchor_correction_targets(
-            corrections, owner_id, periods,
+            corrections, owner_id, calendar,
         ),
         posted=posted_correction_legs(
             linked.id,

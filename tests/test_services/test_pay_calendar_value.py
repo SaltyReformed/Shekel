@@ -10,13 +10,17 @@ written at the edges rather than in the middle:
   containment says ``None`` past the horizon where the span PROJECTS and the
   filing rule CLAMPS.  A test that only asked mid-schedule would pass against
   all six of the implementations this value replaces;
-* the FILING rule is proven equal to the chain it deletes
+* the FILING rule is proven equal to the chain it deleted
   (``loan_ledger.find_period_containing_date`` composed with
-  ``resolve_anchor_pay_period``) over every MATERIALISED shape.  A GAPPED
-  shape is absent because it is unconstructible here -- derived periods tile,
-  which is the value's own invariant -- so the gapped half of that
-  equivalence lives in the session probe that drove the 2026-08-10 ruling,
-  over stored-style periods where a hole still exists;
+  ``resolve_anchor_pay_period``) over every MATERIALISED shape, and separately
+  over STORED-style period rows that a calendar cannot express at all -- a
+  hole, two holes, an overlap, a shared boundary day, a runaway end.  Those
+  are unconstructible through :class:`PayCalendar` because derived periods
+  TILE, which is the value's own invariant, so they are built by hand.
+  **That second half used to live in a session probe outside the repository**
+  while four docstrings cited it as proof; plan step C2-d landed it here,
+  along with the counterexample that states the equivalence's PRECONDITION
+  (index order must agree with date order) rather than leaving it implied;
 * the TILING invariant is asserted directly, because it is what makes the
   recurrence arc's ``PeriodCalendar.__post_init__`` refusals unconstructible
   rather than merely unused;
@@ -42,6 +46,7 @@ from app.services.pay_calendar import (
     PayCalendar,
     PayCalendarError,
     PeriodWindow,
+    latest_started_period,
 )
 
 #: A contiguous biweekly schedule -- production's shape, four paydays of it.
@@ -292,15 +297,31 @@ class TestTheFilingRuleEqualsTheChainItDeletes:
     """The 2026-08-10 ruling's evidence, re-run as a test."""
 
     @staticmethod
-    def chain(cal, day):
-        """Answer as ``loan_ledger`` does today: containment, else two fallbacks.
+    def chain(periods, day):
+        """Answer as ``loan_ledger`` did: containment, else two fallbacks.
 
         A transcription of ``find_period_containing_date`` composed with
-        ``resolve_anchor_pay_period``, kept here rather than imported so this
-        test still grades the rule after plan step C2-d deletes both.
+        ``resolve_anchor_pay_period``, kept here rather than imported because
+        plan step C2-d DELETED both -- so this is the only surviving statement
+        of the rule the clamp replaced, and the equivalence has to be graded
+        against it rather than against a live function.
+
+        **It reduces by ``period_index``, and that is not decoration.**  Both
+        fallbacks take the highest index and the last resort takes
+        ``periods[0]`` -- position in an index-ordered list.  The clamp reduces
+        by ``start_date``.  On a schedule where those two orders disagree the
+        rules part company, which is what
+        :meth:`test_index_order_disagreeing_with_date_order_is_the_one_divergence`
+        pins.
+
+        Takes a period SEQUENCE rather than a calendar, so the same
+        transcription grades both datasets: the shapes a
+        :class:`~app.services.pay_calendar.PayCalendar` can hold, and the
+        stored-style shapes below that it cannot.
 
         Args:
-            cal: The calendar to answer over.
+            periods: The periods to answer over, as the stored rows would be --
+                index order, whatever their dates do.
             day: The date to file.
 
         Returns:
@@ -308,7 +329,7 @@ class TestTheFilingRuleEqualsTheChainItDeletes:
             would choose.
         """
         containing, fallback = None, None
-        for period in cal.periods:
+        for period in periods:
             if period.start_date <= day <= period.end_date:
                 if containing is None or period.period_index > containing.period_index:
                     containing = period
@@ -316,7 +337,31 @@ class TestTheFilingRuleEqualsTheChainItDeletes:
                 if fallback is None or period.period_index > fallback.period_index:
                     fallback = period
         located = containing if containing is not None else fallback
-        return located if located is not None else cal.periods[0]
+        return located if located is not None else periods[0]
+
+    @staticmethod
+    def clamp(periods, day):
+        """Answer as the SHIPPED rule does, over a bare period sequence.
+
+        :meth:`~app.services.pay_calendar.PayCalendar.filing_period` cannot be
+        asked these shapes -- a calendar DERIVES its periods from paydays, so
+        it tiles and can hold neither a hole nor an overlap.  This composes the
+        two shipped pieces that method is built from
+        (:func:`~app.services.pay_calendar.latest_started_period` plus the
+        clamp to the earliest), so the rule under test is production code and
+        not a second transcription.
+
+        Args:
+            periods: The periods to answer over, in any order.
+            day: The date to file.
+
+        Returns:
+            The :class:`~app.services.pay_calendar.DerivedPeriod` the clamp
+            chooses.
+        """
+        by_date = tuple(sorted(periods, key=lambda p: p.start_date))
+        located = latest_started_period(by_date, day)
+        return located if located is not None else by_date[0]
 
     @pytest.mark.parametrize(
         "name,paydays,cadence", MATERIALISED_SHAPES,
@@ -338,7 +383,7 @@ class TestTheFilingRuleEqualsTheChainItDeletes:
         day = cal.opening_bound() - timedelta(days=40)
         end = cal.horizon() + timedelta(days=200)
         while day <= end:
-            assert cal.filing_period(day) == self.chain(cal, day), f"{name} {day}"
+            assert cal.filing_period(day) == self.chain(cal.periods, day), f"{name} {day}"
             day += timedelta(days=1)
 
     def test_the_comparison_can_fail(self):
@@ -349,8 +394,8 @@ class TestTheFilingRuleEqualsTheChainItDeletes:
         """
         cal = calendar()
         beyond = cal.horizon() + timedelta(days=1)
-        assert self.chain(cal, beyond) is cal.periods[-1]
-        assert cal.periods[0] != self.chain(cal, beyond)
+        assert self.chain(cal.periods, beyond) is cal.periods[-1]
+        assert cal.periods[0] != self.chain(cal.periods, beyond)
 
     def test_filing_never_returns_an_unsaved_or_projected_period(self):
         """A ``NOT NULL`` foreign key cannot point at ``period_id = None``.
@@ -380,6 +425,123 @@ class TestTheFilingRuleEqualsTheChainItDeletes:
         empty = PayCalendar.from_paydays([], 14, user_id=2)
         with pytest.raises(PayCalendarError, match="no materialised pay period"):
             empty.filing_period(date(2026, 1, 1))
+
+    # ---- the shapes a calendar CANNOT hold ---------------------------
+
+    #: STORED-style period rows: a hole, two holes, an overlap, a stored end
+    #: far past the cadence, and index order disagreeing with date order.  A
+    #: :class:`PayCalendar` can express none of them -- it derives its periods
+    #: from paydays, so they tile -- which is why the equivalence over these
+    #: shapes had lived only in the session probe that drove the 2026-08-10
+    #: ruling, an artifact outside the repository.  Built as
+    #: :class:`~app.services.pay_calendar.DerivedPeriod` values by hand,
+    #: bypassing the derivation on purpose: the point is to feed both rules a
+    #: schedule the DELETED chain could receive from ``budget.pay_periods`` and
+    #: the new one never builds.
+    STORED_SHAPES = [
+        (
+            "a 14-day hole -- the P27 shape",
+            [(1, 0, date(2026, 1, 2), date(2026, 1, 15)),
+             (2, 1, date(2026, 1, 30), date(2026, 2, 12))],
+        ),
+        (
+            "two holes",
+            [(1, 0, date(2026, 1, 2), date(2026, 1, 15)),
+             (2, 1, date(2026, 2, 1), date(2026, 2, 14)),
+             (3, 2, date(2026, 3, 1), date(2026, 3, 14))],
+        ),
+        (
+            "an overlap -- a stored end past the next payday",
+            [(1, 0, date(2026, 1, 2), date(2026, 1, 20)),
+             (2, 1, date(2026, 1, 16), date(2026, 1, 29))],
+        ),
+        (
+            "a shared boundary day -- the pair BA-04 cannot see",
+            [(1, 0, date(2026, 1, 2), date(2026, 1, 15)),
+             (2, 1, date(2026, 1, 15), date(2026, 1, 28))],
+        ),
+        (
+            "a stored end 400 days past the cadence",
+            [(1, 0, date(2026, 1, 2), date(2027, 3, 1)),
+             (2, 1, date(2027, 3, 2), date(2027, 3, 15))],
+        ),
+    ]
+
+    @staticmethod
+    def _rows(spec):
+        """Build stored-style periods from ``(id, index, start, end)`` tuples.
+
+        Args:
+            spec: The tuples, in the index order the old loader returned.
+
+        Returns:
+            A list of :class:`~app.services.pay_calendar.DerivedPeriod`.
+        """
+        return [
+            DerivedPeriod(
+                period_id=pid, period_index=idx, start_date=start,
+                end_date=end, end_is_projected=False,
+            )
+            for pid, idx, start, end in spec
+        ]
+
+    @pytest.mark.parametrize(
+        "name,spec", STORED_SHAPES, ids=[s[0][:40] for s in STORED_SHAPES],
+    )
+    def test_the_two_rules_agree_over_shapes_a_calendar_cannot_hold(
+        self, name, spec,
+    ):
+        """A hole, an overlap and a runaway end are all invisible to the clamp.
+
+        **This is the half of the equivalence the suite could not previously
+        state**, and its absence was the load-bearing gap: the ruling's
+        gapped evidence lived in a session probe nobody could re-run, while the
+        docstrings cited it as proof.  A hole is what plan row **P27** is
+        about, and it is the reason the arc's four OTHER cutover leaves wait on
+        ``balance:X-ad`` and ``C3``.  C2-d is exempt because the clamp asks
+        which period most recently OPENED, and a hole changes only which period
+        a day is INSIDE.
+
+        Every day from 60 before the first payday to 60 past the last stored
+        end, so both fallback branches and the pre-schedule clamp are crossed.
+        """
+        rows = self._rows(spec)
+        day = min(p.start_date for p in rows) - timedelta(days=60)
+        end = max(p.end_date for p in rows) + timedelta(days=60)
+        while day <= end:
+            assert self.clamp(rows, day) == self.chain(rows, day), f"{name} {day}"
+            day += timedelta(days=1)
+
+    def test_index_order_disagreeing_with_date_order_is_the_one_divergence(self):
+        """The precondition, stated as the counterexample that violates it.
+
+        The two rules are equal on a schedule that is non-overlapping AND
+        index-ordered by date.  Both halves matter, and an earlier draft of this
+        step's prose named only the first.  Here the stored ordinals run
+        BACKWARDS against the dates: the old chain's last resort is
+        ``periods[0]`` -- lowest INDEX -- while the clamp takes the earliest
+        DATE, so every day below both paydays parts them.
+
+        Unreachable today, and the citation matters more than the reachability:
+        ``pay_period_service`` holds the property with the batch guard
+        ``_reject_overlapping_batch`` plus a tail-append at ``max_index + 1``,
+        and **plan step C3 deletes the first of those**.  That is safe only
+        because the chain needing it dies at C2-d -- which is a claim C3 must
+        not have to rediscover.
+        """
+        rows = self._rows([
+            (1, 0, date(2026, 3, 1), date(2026, 3, 14)),
+            (2, 1, date(2026, 1, 2), date(2026, 1, 15)),
+        ])
+        below = date(2025, 12, 1)
+        # The chain falls to periods[0], the row with the LOWEST index, whose
+        # payday is the LATER of the two; the clamp takes the earlier payday.
+        assert self.chain(rows, below).period_id == 1
+        assert self.clamp(rows, below).period_id == 2
+        # And they agree everywhere the two orders happen to coincide -- inside
+        # each period, which is the containment branch.
+        for inside in (date(2026, 1, 8), date(2026, 3, 8)):
+            assert self.chain(rows, inside) == self.clamp(rows, inside)
 
 
 class TestTheTwoOrderingSearchesAreMirrors:
@@ -563,6 +725,100 @@ class TestTheRemainingLookupsMovedIntact:
         assert cal.horizon() == date(2026, 2, 26)
         cal.span_containing(date(2030, 1, 1))
         assert cal.horizon() == date(2026, 2, 26)
+
+
+class TestPeriodByIdIsIdentityNotASearch:
+    """Plan step C2-b1: which STORED paycheck a rule's start period names."""
+
+    def test_it_finds_the_period_carrying_the_id(self):
+        """Keyed on ``period_id``, which is not the ordinal and not the index."""
+        found = calendar().period_by_id(12)
+
+        assert found is not None
+        assert found.start_date == date(2026, 1, 30)
+        # The fixture's ids start at 10 on purpose: an implementation that
+        # confused the id with the ordinal would answer the FIRST period here.
+        assert found.period_index == 2
+
+    def test_none_in_is_none_out(self):
+        """A rule may legitimately name no start period."""
+        assert calendar().period_by_id(None) is None
+
+    def test_an_id_that_names_no_period_answers_none(self):
+        """A stale in-memory id outliving its ``ON DELETE SET NULL`` row."""
+        assert calendar().period_by_id(9999) is None
+
+    def test_it_answers_over_an_off_cadence_schedule_too(self):
+        """Identity does not depend on the spacing, unlike every other lookup."""
+        found = calendar(OFF_CADENCE).period_by_id(12)
+
+        assert found is not None
+        assert found.start_date == date(2026, 1, 20)
+
+    def test_the_searchable_id_space_holds_only_saved_periods(self):
+        """Every projection carries ``period_id = None``, so identity is saved-only.
+
+        Ledger row **P21**: an ``{p.id: ...}`` map over a projected axis
+        collapses because the projections SHARE that ``None``.  Here the
+        consequence is the safe one -- a lookup cannot hand an unsaved period to
+        a caller about to write a foreign key.
+
+        Asserted structurally rather than by round-tripping the projection's own
+        ``period_id``, which an adversarial review of this step showed was
+        vacuous: that value IS ``None``, so the call returned at the guard
+        without ever reaching the scan, and the test would have passed against a
+        completely broken one.
+        """
+        cal = calendar()
+        projected = cal.span_containing(date(2027, 1, 1))
+
+        assert projected is not None and projected.period_id is None
+        assert projected not in cal.periods
+        assert all(period.period_id is not None for period in cal.periods)
+
+
+class TestEarliestStartInMonthIsWhatMonthlyFirstAsks:
+    """Plan step C2-b1: when a month's FIRST paycheck lands."""
+
+    def test_it_returns_the_earliest_payday_of_a_month_holding_two(self):
+        """January 2026 holds 01-02 and 01-16; the pattern fires on the first."""
+        assert calendar().earliest_start_in_month(2026, 1) == date(2026, 1, 2)
+
+    def test_it_returns_the_only_payday_of_a_month_holding_one(self):
+        """February 2026 holds 02-13 alone."""
+        assert calendar().earliest_start_in_month(2026, 2) == date(2026, 2, 13)
+
+    def test_a_month_the_schedule_covers_but_opens_no_payday_in_answers_none(self):
+        """A real answer, not an error -- and the distinction that matters.
+
+        OFF_CADENCE opens 2026-01-02, 01-16 and 01-20, so its last period runs
+        01-20 to 02-02 at a 14-day cadence: February 2nd IS covered by a
+        paycheck, and February opens none.  "Which paycheck covers this day"
+        and "does a paycheck START this month" are different questions, and a
+        ``Monthly First`` rule asks the second.
+        """
+        cal = calendar(OFF_CADENCE)
+
+        assert cal.period_containing(date(2026, 2, 2)) is not None
+        assert cal.earliest_start_in_month(2026, 2) is None
+
+    def test_a_month_past_the_horizon_answers_none_and_is_not_projected(self):
+        """SAVED periods only, so a Monthly First rule cannot fire into thin air.
+
+        This is the method's one sharp edge: the calendar PROJECTS for
+        ``span_containing`` and must not here, because the answer selects a
+        paycheck a generated row will be seated in by ``pay_period_id``.
+        """
+        cal = calendar()
+        assert cal.span_containing(date(2026, 6, 1)) is not None
+        assert cal.earliest_start_in_month(2026, 6) is None
+
+    def test_it_does_not_confuse_the_same_month_in_another_year(self):
+        """Both halves of the key are read, which one careless filter would not."""
+        cal = calendar([(30, date(2025, 1, 9)), (31, date(2026, 1, 23))])
+
+        assert cal.earliest_start_in_month(2025, 1) == date(2025, 1, 9)
+        assert cal.earliest_start_in_month(2026, 1) == date(2026, 1, 23)
 
 
 class TestTheDerivedPeriodContract:

@@ -13,8 +13,10 @@ an account that models a return and whose CONTRIBUTION tier only for one whose
 payroll funds it.  So a HYSA, a brokerage, a Property and a checking account are
 not four dispatches -- they are one producer given different facts, which is
 what deleted the period-granular arm these entries used to carry for three of
-the kinds (finding N-71) and with it ``find_period_containing_date`` and the
-pre-horizon anchor fallback (finding N-29).
+the kinds (finding N-71) and with it this module's date-to-period call and the
+pre-horizon anchor fallback (finding N-29).  That call was
+``loan_ledger.find_period_containing_date``, itself deleted at pay-calendar
+plan step C2-d.
 
 Also home to :func:`investment_growth_since_anchor`, the growth-vs-contributed
 decomposition the investment detail page's chip renders, so no consumer reaches
@@ -220,7 +222,9 @@ def balance_at(
     period's first and last day while ``$328.50`` accrued inside it on the
     Empower 401(k), ``$261.24`` on the Money Market and ``$114.07`` on the Roth.
     A replay has a step for every day, so there is no period to stand in for a
-    date and no ``find_period_containing_date`` call left to make.
+    date and no date-to-period call left to make -- which is why the deletion
+    of ``find_period_containing_date`` at pay-calendar plan step C2-d touched
+    nothing here.
 
     **The pre-horizon fallback is gone with it** (finding N-29).  A date before
     the user's first pay period used to return the LATEST anchor balance

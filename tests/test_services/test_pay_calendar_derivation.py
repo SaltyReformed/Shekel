@@ -39,6 +39,7 @@ from app.services import pay_period_service
 from app.services.pay_calendar import (
     MAX_CADENCE_DAYS,
     DerivedPeriod,
+    PayCalendar,
     PayCalendarError,
     derive_periods,
 )
@@ -102,7 +103,7 @@ class TestDerivationRefusals:
             derive_periods([(1, date(2026, 1, 2))], cadence_days)
 
     @pytest.mark.parametrize(
-        "cadence_days", [True, False, 14.0, 14.9, "14", None],
+        "cadence_days", [True, False, 14.0, 14.9, "14"],
     )
     def test_a_cadence_that_is_not_a_plain_int_is_refused(self, cadence_days):
         """``bool`` and ``float`` are the dangerous two, and both are refused.
@@ -110,12 +111,13 @@ class TestDerivationRefusals:
         ``True`` is an ``int`` subclass and would pass as a one-day cadence.  A
         ``float`` is silently TRUNCATED -- ``date.__add__`` reads only
         ``timedelta.days`` -- so 14.9 would produce the same calendar as 14 and
-        the error would be invisible.  ``None`` is what
-        ``pay_schedule_service.resolve_cadence`` returns for a user with no
-        schedule row and no period to infer from.  Production's companion is
-        exactly that user -- zero paydays, measured 2026-08-08.  A fresh signup
-        is NOT: ``register_user`` writes a bootstrap payday, so its cadence is
-        inferred from that one period's length, circularly (plan finding P8).
+        the error would be invisible.
+
+        **``None`` left this parametrization at plan step C2-b1** and is not an
+        omission: it stopped being a type error and became a MEANING -- "this
+        owner has no schedule at all" -- whose legality depends on whether they
+        have paydays.  ``TestTheCadenceIsRequiredOnlyBesideAPayday`` below owns
+        both directions of that rule.
         """
         with pytest.raises(PayCalendarError, match="must be a plain int"):
             derive_periods([(1, date(2026, 1, 2))], cadence_days)
@@ -189,6 +191,108 @@ class TestDerivationRefusals:
         """
         derived = derive_periods([(None, date(2026, 1, 2))], 14)
         assert derived[0].period_id is None
+
+
+# ---------------------------------------------------------------------------
+# TestTheCadenceIsRequiredOnlyBesideAPayday
+# ---------------------------------------------------------------------------
+
+
+class TestTheCadenceIsRequiredOnlyBesideAPayday:
+    """Plan step C2-b1: ``cadence_days`` and ``paydays`` travel together.
+
+    The cadence is read for exactly one thing -- the LAST period's end -- so an
+    owner with no paydays has nothing to read it for, and
+    ``pay_schedule_service.resolve_cadence`` answers ``None`` for exactly that
+    owner (no ``budget.pay_schedule`` row, and no period to infer one from).
+    Production's companion user is one: zero paydays, measured 2026-08-08.
+
+    The same absence BESIDE a payday is a different fact -- plan finding P8's
+    broken state -- and this is the only place in the application that refuses
+    it.  Both directions are asserted here because a rule tested in one
+    direction is a rule that can be satisfied by refusing everything.
+    """
+
+    def test_no_paydays_and_no_cadence_derive_an_empty_calendar(self):
+        """The legal pairing, and the reason the empty calendar stays buildable.
+
+        ``recurrence._reading.resolved_recurrence`` answers ``None`` for an
+        owner with no periods so the Recurring surface still renders; raising
+        here would take that page to a 500 for the one owner it is written for.
+        """
+        assert derive_periods([], None) == ()
+
+    def test_a_payday_with_no_cadence_is_refused(self):
+        """P8's state: a payday exists and its period's end cannot be derived.
+
+        Every alternative invents a horizon the owner never chose, so the
+        refusal names the invariant rather than clamping.
+        """
+        with pytest.raises(PayCalendarError, match="no cadence"):
+            derive_periods([(1, date(2026, 1, 2))], None)
+
+    def test_the_refusal_counts_the_paydays_it_refused(self):
+        """The message names the value, per the project's error-message rule."""
+        with pytest.raises(PayCalendarError, match=r"\b3 payday\(s\)"):
+            derive_periods(
+                [
+                    (1, date(2026, 1, 2)),
+                    (2, date(2026, 1, 16)),
+                    (3, date(2026, 1, 30)),
+                ],
+                None,
+            )
+
+    def test_an_absent_cadence_is_refused_after_a_duplicate_payday(self):
+        """Order of refusals: the payday set is graded before the pairing.
+
+        A caller who hands in both faults hears about the one that is a
+        property of the data they supplied, not the one that is a property of
+        their schedule row -- and this pins that order so the two refusals
+        cannot start racing.
+        """
+        with pytest.raises(PayCalendarError, match="appears twice"):
+            derive_periods(
+                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], None,
+            )
+
+    def test_a_present_cadence_is_still_graded_beside_an_empty_set(self):
+        """Absence is excused; a WRONG value never is, whatever the payday set.
+
+        ``None`` means "there is no schedule"; ``0`` means "the schedule says
+        zero", which no write door could have produced.
+        """
+        with pytest.raises(PayCalendarError, match="at least 1 day and at most 365"):
+            derive_periods([], 0)
+
+    def test_an_empty_calendar_answers_every_question_without_a_cadence(self):
+        """The pairing is safe because no method reads what is not there.
+
+        Asserted over the whole public surface rather than the two methods that
+        obviously touch the cadence: the claim being made is that NONE of them
+        reads it, and a spot check of two would not be that claim.
+        """
+        calendar = PayCalendar.from_paydays(
+            paydays=[], cadence_days=None, user_id=1,
+        )
+        day = date(2026, 1, 2)
+
+        assert calendar.periods == ()
+        assert calendar.opening_bound() is None
+        assert calendar.horizon() is None
+        assert calendar.period_containing(day) is None
+        assert calendar.span_containing(day) is None
+        assert calendar.period_starting_on_or_after(day) is None
+        assert calendar.period_starting_on_or_before(day) is None
+        assert calendar.period_by_id(1) is None
+        assert calendar.earliest_start_in_month(2026, 1) is None
+        assert len(calendar.window(0, 6)) == 0
+        assert len(calendar.overlapping(day, date(2027, 1, 1))) == 0
+        assert len(calendar.axis(day, date(2027, 1, 1))) == 0
+        # The one method that MUST refuse: it exists to name a row a NOT NULL
+        # foreign key can point at, and there is none.
+        with pytest.raises(PayCalendarError, match="no materialised pay period"):
+            calendar.filing_period(day)
 
 
 # ---------------------------------------------------------------------------

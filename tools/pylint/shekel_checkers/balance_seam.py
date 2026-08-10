@@ -380,7 +380,9 @@ _FENCED_MODULE_RULINGS = {
     # The account-KIND classifier -- why it is scoped is recorded once, at
     # :data:`_KIND_CLASSIFIER_MODULES`.  Its ``find_period_containing_date``
     # went to ``loan_ledger._visible`` at D1b (chronology belongs with the rules
-    # built on it), leaving two names.
+    # built on it), leaving two names -- and on to ``pay_calendar`` at C2-d,
+    # which DELETED it: two relocations for one primitive, because "the rules
+    # built on it" were themselves a copy of a question the calendar owns.
     "app.services.account_projection": (frozenset(), frozenset({
         # The canonical kind classifier and the payroll-funding predicate:
         # account metadata, not balances.
@@ -422,14 +424,17 @@ _FENCED_MODULE_RULINGS = {
             #     yields the loan's anchor FACTS, which carry an asserted
             #     ``anchor_balance`` -- but a user-asserted stored fact is not a
             #     balance-at-T, the same ruling ``resolve_anchor`` carries above.
-            #   * the two visibility rules, the calendar they resolve against, and
-            #     the date-to-period locator that resolution is built on: these
-            #     return a ``date`` / a ``PayPeriod`` / a list of them, and cannot
-            #     yield a figure at all.
+            #   * the two visibility rules: each returns a ``date`` and cannot
+            #     yield a figure at all.  **Three names left this entry at plan
+            #     step C2-d** -- ``owner_pay_periods``,
+            #     ``find_period_containing_date`` and
+            #     ``resolve_anchor_pay_period``, the owner's calendar and the
+            #     date-to-period chain the anchor writers filed against, now
+            #     ``pay_calendar.PayCalendar.filing_period``.  Their ruling had
+            #     to carry a caveat ("a ``PayPeriod`` is an ORM row, so money is
+            #     reachable by relationship; a period is not an account's
+            #     balance") that the two survivors do not need.
             "merge_anchor_and_payment_events",
-            "find_period_containing_date",
-            "resolve_anchor_pay_period",
-            "owner_pay_periods",
             "anchor_visible_on",
             "payment_visible_on",
             # The walk's events re-keyed by their visible dates (plan step

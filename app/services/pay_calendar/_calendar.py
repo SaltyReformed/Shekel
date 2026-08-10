@@ -4,19 +4,27 @@ Plan step **C2-a** (``docs/plans/implementation_plan_pay_calendar.md`` section
 4), the first leaf of the step three arcs share -- it is also ``balance:X-l``
 and ``recurrence:R-F12``.
 
-**Nothing in ``app/`` calls this yet, and that is the leaf boundary.**  C1 built
-the derivation and proved it byte-identical against production's 61 paydays
-before anything read it; this builds the value and proves it the same way.  The
-five cutover leaves (C2-b..C2-f) then move one consumer package each.
+**The first consumer arrived at plan step C2-d**, and until then nothing in
+``app/`` called this at all -- that was C2-a's leaf boundary.  C1 built the
+derivation and proved it byte-identical against production's 61 paydays before
+anything read it; C2-a built the value and proved it the same way.  The cutover
+leaves then move one consumer package each, and **C2-d took the first**: both
+anchor-correction posting writers file every ledger entry's ``pay_period_id``
+through :meth:`PayCalendar.filing_period`.  ``C2-b2`` (the recurrence engine),
+``C2-c`` (the cash period view), ``C2-e`` (the projection axis) and ``C2-f``
+(``pay_period_service``'s readers) remain.
 
 Why the value exists at all: an AST census on 2026-08-10 found **SIX**
 implementations of "which pay period contains this date" in ``app/`` -- ledger
-row **P6**, which had claimed three until then -- and they disagree at exactly
-the edges that matter.  Two bisect and answer ``None`` outside the schedule; one
-scans linearly and falls back past the end of it; one scans SYNTHETIC periods;
-two are SQL, and one of those (``get_current_period``) has no ``ORDER BY`` at
-all (row **P19**).  Six answers to one question is the defect; the number of
-QUESTIONS is three, and they are named here so a caller has to choose:
+row **P6**, which had claimed three until then -- and an adversarial review of
+this step found a **SEVENTH** the same day (``savings_dashboard_service``'s
+``_period_id_at``), which the census structurally could not see because it keyed
+on the containment PREDICATE.  They disagree at exactly the edges that matter.
+Two bisect and answer ``None`` outside the schedule; one scans linearly and
+falls back past the end of it; one scans SYNTHETIC periods; two are SQL, and one
+of those (``get_current_period``) has no ``ORDER BY`` at all (row **P19**).
+Seven answers to one question is the defect; the number of QUESTIONS is three,
+and they are named here so a caller has to choose:
 
 ===================================== ==================================
 question                              method
@@ -65,8 +73,10 @@ if it rules the column away.
 **P14**).  A period's end is its successor's payday, so deriving a calendar from
 a SLICE gives that slice's last row a cadence-projected end instead of a
 fact-dictated one -- the same period reporting two different ends depending on
-which window asked.  The sibling shape is measured in-repo at ``$150,000.00``
-(``loan_ledger/_visible.owner_pay_periods``).  Here a slice is a
+which window asked.  The sibling shape is measured at ``$150,000.00``
+(:func:`~._derive.derive_periods`, which holds it now: it was on
+``loan_ledger/_visible.owner_pay_periods``, deleted at plan step C2-d).  Here a
+slice is a
 :class:`PeriodWindow`, which is NOT a :class:`PayCalendar`, cannot be derived
 from, and carries the ends the whole calendar computed.
 
@@ -160,6 +170,80 @@ def opening_payday(periods: "tuple[DerivedPeriod, ...]") -> "date | None":
     if not periods:
         return None
     return periods[0].start_date
+
+
+def period_by_id(
+    periods: "tuple[DerivedPeriod, ...]", period_id: "int | None",
+) -> "DerivedPeriod | None":
+    """Return the period of *periods* carrying *period_id*, else ``None``.
+
+    **The single identity lookup.**  Shared with the recurrence arc's
+    ``PeriodCalendar`` at plan step C2-b1 for the reason every other primitive
+    here is shared: two implementations of one question drift, and this one
+    answers a WRITE question -- which stored row a rule's authored start period
+    names -- so a drift places a generated row against the wrong paycheck.
+
+    Linear rather than a map built at construction, and deliberately: a
+    calendar is built once per request and the lookup runs once per rule, so an
+    index would be a second derived value to keep in step with :attr:`periods`
+    for no measured gain (61 paydays against 46 live rules on production).
+
+    Args:
+        periods: The owner's periods, in any order.  Identity is not a search
+            over a sorted key, so unlike the two bisects above this carries no
+            ordering precondition.
+        period_id: A ``budget.pay_periods.id``, or ``None``.
+
+    Returns:
+        The matching :class:`~._derive.DerivedPeriod`, or ``None`` when
+        *period_id* is ``None`` or names no period here.  ``None`` in is
+        ``None`` out rather than an error: a rule may legitimately name no
+        start period, and the foreign key is ``ON DELETE SET NULL`` -- though a
+        stale in-memory id can outlive the row it named, which is the second
+        way this answers ``None``.  A PROJECTED period can never match, because
+        every one of them carries ``period_id = None``.
+    """
+    if period_id is None:
+        return None
+    for period in periods:
+        if period.period_id == period_id:
+            return period
+    return None
+
+
+def earliest_start_in_month(
+    periods: "tuple[DerivedPeriod, ...]", year: int, month: int,
+) -> "date | None":
+    """Return the earliest payday of *periods* falling in *year* / *month*.
+
+    **The single "when does this month's first paycheck land" rule**, shared
+    with the recurrence arc's ``PeriodCalendar`` at plan step C2-b1.  It is the
+    one question ``Monthly First`` asks: that pattern fires on each month's
+    FIRST paycheck, so whether a month can honour a rule depends on when its
+    first paycheck arrives.
+
+    A minimum over the periods that exist rather than an index into a walk,
+    because months with no payday are legal -- a cadence longer than a month
+    leaves some empty, and the schedule ends somewhere.
+
+    Args:
+        periods: The owner's periods, in any order.  It takes a minimum rather
+            than a first match, so like :func:`period_by_id` and unlike the two
+            bisects it carries no ordering precondition.
+        year: Calendar year.
+        month: Calendar month, 1-12.
+
+    Returns:
+        The earliest ``start_date`` in that month, or ``None`` when no period
+        opens there.  ``None`` is a real answer, not an error.
+    """
+    starts = [
+        period.start_date for period in periods
+        if period.start_date.year == year and period.start_date.month == month
+    ]
+    if not starts:
+        return None
+    return min(starts)
 
 
 def final_covered_day(periods: "tuple[DerivedPeriod, ...]") -> "date | None":
@@ -274,6 +358,13 @@ class PayCalendar:
         cadence_days: Days between paydays, from ``budget.pay_schedule``.  Read
             for the last saved period's end and for every projected period past
             it; validated by :func:`~._derive.derive_periods`.
+            **``None`` ONLY when :attr:`paydays` is empty** (plan step C2-b1),
+            and that pairing is enforced rather than documented: an owner with
+            no schedule row and no period to infer one from has no last period,
+            so the value is provably unread, while the same absence beside a
+            payday is plan finding **P8**'s broken state and is refused at
+            construction.  Every method that reads it is reachable only from a
+            non-empty calendar, so none of them tests it.
         periods: The owner's SAVED periods, ``start_date`` ascending.  DERIVED
             at construction, never passed in, and excluded from equality so two
             calendars compare on their facts.
@@ -281,7 +372,7 @@ class PayCalendar:
 
     user_id: int
     paydays: "tuple[tuple[int | None, date], ...]"
-    cadence_days: int
+    cadence_days: "int | None"
     periods: "tuple[DerivedPeriod, ...]" = field(
         init=False, repr=False, compare=False,
     )
@@ -321,7 +412,7 @@ class PayCalendar:
     def from_paydays(
         cls,
         paydays: "Iterable[tuple[int | None, date]]",
-        cadence_days: int,
+        cadence_days: "int | None",
         user_id: int,
     ) -> "PayCalendar":
         """Build a calendar from an owner's COMPLETE payday set.
@@ -332,7 +423,10 @@ class PayCalendar:
                 ``budget.pay_periods.id`` the payday was read from; ``None``
                 marks a period no foreign key can point at.  **The whole set,
                 never a window** -- see the class docstring.
-            cadence_days: Days between paydays, from ``budget.pay_schedule``.
+            cadence_days: Days between paydays, from ``budget.pay_schedule``,
+                or ``None`` for an owner who has neither a schedule row nor a
+                period to infer one from.  ``None`` beside a non-empty
+                *paydays* is refused.
             user_id: The owner these paydays belong to.
 
         Returns:
@@ -366,12 +460,14 @@ class PayCalendar:
     def horizon(self) -> "date | None":
         """Return the last day the SAVED schedule covers, or ``None`` when empty.
 
-        Saved, deliberately: the recurrence engine bounds generation by this
-        day and uses :meth:`period_containing` inside it to tell a schedule
-        HOLE from "the schedule has not reached there yet".  A horizon that
-        moved with the projection would erase that distinction and generate
-        rows into periods that have no ``id`` for
-        ``transactions.pay_period_id`` to point at.
+        Saved, deliberately, and the reason is NARROWER than the one an earlier
+        draft gave (ledger row **P25**).  That draft said the recurrence engine
+        needs this bound to tell a schedule HOLE from "the schedule has not
+        reached there yet"; on a DERIVED calendar the periods tile, so there is
+        no hole to tell apart and that reason has expired.  What has not: a
+        horizon that moved with the projection would let generation seat a row
+        in a period with no ``id`` for ``transactions.pay_period_id`` to point
+        at.  The bound is about the foreign key, not about holes.
 
         Returns:
             The last saved period's ``end_date``, or ``None`` when empty.
@@ -383,11 +479,15 @@ class PayCalendar:
     def period_containing(self, day: date) -> "DerivedPeriod | None":
         """Return the SAVED period whose span covers *day*, else ``None``.
 
-        ``None`` is a real answer and not an error: a day can fall in a hole
-        (expressible until plan step C4 drops the columns that make one), before
-        the first payday, or past the horizon.  Answering ``None`` rather than
-        the neighbouring period is the point -- pulling a bill into a paycheck
-        whose span does not contain it silently misplaces real money.
+        ``None`` is a real answer and not an error, and there are exactly TWO
+        ways to get it here: *day* precedes the first payday, or it lies past
+        the horizon.  **A hole is NOT one of them** -- these periods are derived
+        from the paydays and therefore TILE, which is ledger row **P25** and
+        which an earlier draft of this docstring got wrong by carrying the
+        stored model's third case forward.  Answering ``None`` outside the
+        covered span rather than clamping to the nearest period is the point:
+        seating a bill in a paycheck whose span does not contain it silently
+        misplaces real money.
 
         Args:
             day: The calendar day to place.
@@ -451,12 +551,54 @@ class PayCalendar:
         entries on production do -- a mortgage dated 2018-12-01 and a van loan
         2023-02-14, both years before the owner's first payday.
 
-        The rule is ONE clamp, not the three-branch chain
-        ``loan_ledger.resolve_anchor_pay_period`` spells today:
-        **the latest period starting on or before *day*, else the earliest**.
-        Proven equivalent to that chain over 1,800 (shape, day) pairs across
-        contiguous, gapped, two-hole, single-period, one-day and long-tail
-        schedules, 2026-08-10.
+        The rule is ONE clamp: **the latest period starting on or before *day*,
+        else the earliest**.  It replaced the three-branch chain
+        ``loan_ledger.find_period_containing_date`` composed with
+        ``resolve_anchor_pay_period`` -- containment, else the latest period
+        ENDING before the day, else the earliest -- which plan step **C2-d**
+        DELETED once both anchor-posting writers took this method.
+
+        **The equivalence to that chain has a PRECONDITION, and the first
+        statement of it here named only half.**  The two rules agree on every
+        schedule that is non-overlapping AND whose ``period_index`` order
+        matches its ``start_date`` order.  Drop the second half and they part
+        company on 800 of 872 probed days: the old chain reduced by INDEX (its
+        fallbacks took ``max(period_index)`` and its last resort ``periods[0]``)
+        while this reduces by DATE.  Both halves are held by
+        ``pay_period_service`` today -- the batch guard
+        ``_reject_overlapping_batch`` and the tail-append at ``max_index + 1``
+        -- and plan step **C3** deletes the first, which is safe only because
+        the chain that needed it dies here.  Where the two DO differ this one is
+        right: it searches a calendar whose index is DERIVED from date order, so
+        no stored ordinal can disagree with its own dates.
+
+        The proofs, each saying what it covers:
+        ``tests/test_services/test_pay_calendar_value.py`` grades this method
+        against a transcription of the chain over every shape a
+        :class:`PayCalendar` can HOLD, and separately over stored-style period
+        lists a calendar cannot express -- gapped, two-hole, overlapping, and
+        the index-order counterexample -- because derived periods TILE and so
+        cannot produce a hole to test with;
+        ``tests/manual/verify_filing_cutover.py`` re-runs both halves against a
+        real database and is where the cutover's production numbers come from.
+
+        **It never reads a period's END, and that is why C2-d could ship ahead
+        of the two steps that close the calendar's write doors.**  The other
+        four C2 cutovers wait on ``balance:X-ad`` and ``C3`` because a DERIVED
+        calendar absorbs a hole instead of reporting it (ledger row **P27**);
+        this one bisects on ``start_date`` through
+        :func:`latest_started_period` and so cannot tell a derived end from a
+        stored one.  A hole changes which period a day is INSIDE; it does not
+        change which period most recently OPENED.  *The METHOD is end-free; the
+        composition a caller reaches it through is not, and saying only the
+        first is how the exemption gets over-read.*
+        :func:`~._loader.calendar_for` resolves the cadence through
+        ``pay_schedule_service.resolve_cadence``, which for an owner with no
+        ``budget.pay_schedule`` row INFERS it from the last period's stored
+        length -- plan finding **P8**, and the state every freshly-registered
+        owner is in.  That moves no filing answer (only the last period's
+        derived end, which this never reads), but it does mean a value outside
+        1..365 would REFUSE the calendar rather than mis-file a record.
 
         **Always a MATERIALISED period**, and that is enforced rather than
         assumed.  A first cut searched all of :attr:`periods` and claimed the
@@ -542,6 +684,41 @@ class PayCalendar:
             ``None`` when *day* precedes every payday.
         """
         return latest_started_period(self.periods, day)
+
+    # ---- identity, and the month a paycheck opens --------------------
+
+    def period_by_id(self, period_id: "int | None") -> "DerivedPeriod | None":
+        """Return the SAVED period carrying *period_id*, else ``None``.
+
+        The one question here that is not about a DATE: a recurrence rule names
+        its start period by stored id, so resolving it is a lookup rather than
+        a search.  Never answers a projected period, which has no id.
+
+        Args:
+            period_id: A ``budget.pay_periods.id``, or ``None``.
+
+        Returns:
+            The matching :class:`~._derive.DerivedPeriod`, or ``None`` -- see
+            :func:`period_by_id` for the two distinct ways that happens.
+        """
+        return period_by_id(self.periods, period_id)
+
+    def earliest_start_in_month(self, year: int, month: int) -> "date | None":
+        """Return the earliest payday falling in *year* / *month*, else ``None``.
+
+        What ``Monthly First`` asks: that pattern fires on a month's FIRST
+        paycheck, so honouring it depends on when that paycheck lands.
+
+        Args:
+            year: Calendar year.
+            month: Calendar month, 1-12.
+
+        Returns:
+            The earliest ``start_date`` in that month, or ``None`` when the
+            SAVED schedule opens no period there -- a month a long cadence
+            skips, or one past the horizon.
+        """
+        return earliest_start_in_month(self.periods, year, month)
 
     # ---- views, never calendars --------------------------------------
 
@@ -657,7 +834,11 @@ class PayCalendar:
 
         Args:
             day: A calendar day strictly after :meth:`horizon`.  The caller
-                guarantees it -- both callers reach here only after testing.
+                guarantees it -- both callers reach here only after testing,
+                which also guarantees :attr:`cadence_days` is an ``int`` here:
+                a day past the horizon means the calendar has one, and a
+                calendar with a period cannot have been constructed without a
+                cadence (:func:`~._derive.derive_periods` refuses that pair).
 
         Returns:
             The projected :class:`~._derive.DerivedPeriod`, carrying
