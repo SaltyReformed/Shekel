@@ -1,28 +1,27 @@
 """
 Shekel Budget App -- Pay Period Service
 
-Generates, extends, and queries biweekly pay periods.  Each period
-is defined by a start_date (payday) and end_date (day before next
-payday).
+Queries an owner's biweekly pay periods.  Each period is defined by a
+start_date (payday) and an end_date (the day before the next payday).
+
+**It no longer WRITES them** (plan step C3-b): ``generate_pay_periods``,
+``establish_schedule``, the batch bounds and the forward-only guard moved to
+:mod:`app.services.pay_period_write`, which is now the one place in ``app/``
+that changes ``budget.pay_periods``.  The reason is C3-a's, one level up --
+deciding that a schedule should change and changing it are two concerns, and
+the invariant that the stored ``end_date`` / ``period_index`` equal the
+derivation over the owner's paydays needs exactly one home for plan steps C4,
+C6 and C7 to inherit.  What is left here is the read side, which plan step
+**C2-f** points at ``pay_calendar.PayCalendar``.
 """
 
-import logging
-from datetime import date, timedelta
+from datetime import date
 
 from sqlalchemy import or_
 
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.exceptions import ValidationError
 from app.utils.dates import display_today
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_PAY_PERIODS_GENERATED,
-    log_event,
-)
-
-logger = logging.getLogger(__name__)
-
 
 
 def earliest_recordable_day(user_id: int) -> date:
@@ -83,131 +82,6 @@ def earliest_recordable_day(user_id: int) -> date:
     if earliest is None:
         return today
     return min(earliest, today)
-
-def _reject_overlapping_batch(existing_periods, new_starts):
-    """Reject a batch whose earliest new payday overlaps existing coverage.
-
-    Forward-only invariant (DH-#39): new periods are appended with the
-    highest ``period_index`` values, so their start dates MUST fall after
-    every existing period's COVERAGE, not merely after the latest existing
-    start.  Otherwise ``period_index`` order stops matching calendar
-    order.  The cash fold indexes a day's column by DATE
-    (``balance_at._cash_fold._PeriodSpans``, a bisect over sorted
-    ``start_date``) so it would place a flow in the wrong column rather than
-    skip it.  The index-ordered anchor-forward walks that used to SKIP such a
-    period outright -- silently dropping its transactions -- were deleted at
-    plan step X-g4b, so the date-keyed misplacement is now the only failure
-    mode, and it is the reason this batch is rejected rather than reshuffled.  A start date that
-    lands ON or WITHIN any existing period's ``[start_date, end_date]`` span
-    also produces overlapping date ranges (two periods covering one day) and a
-    nondeterministic ``get_current_period``.
-
-    The bound is therefore the latest existing ``end_date``: the new batch
-    must start strictly after the day the current schedule's coverage
-    ends.  This is a user mistake or a schedule change that needs a
-    dedicated realign flow, not a silent reshuffle, so reject the whole
-    batch loudly before writing anything.
-
-    Args:
-        existing_periods: List of ``(start_date, end_date)`` rows for the
-            user's existing periods (empty for a first-time schedule).
-        new_starts: The de-duplicated start dates this batch would create.
-
-    Raises:
-        ValidationError: When the earliest new start falls on or before
-            the latest existing ``end_date``.
-    """
-    if not (existing_periods and new_starts):
-        return
-    latest_end = max(row[1] for row in existing_periods)
-    if min(new_starts) <= latest_end:
-        raise ValidationError(
-            "New pay periods must start after your latest existing "
-            f"period ends ({latest_end.isoformat()}). The requested "
-            "start date would create periods that overlap or predate "
-            "your current schedule; choose a later start date to "
-            "extend your schedule forward."
-        )
-
-
-def generate_pay_periods(user_id, start_date, num_periods=52, cadence_days=14):
-    """Generate a series of pay periods for a user.
-
-    Existing periods for this user are checked to avoid duplicates.
-    New periods are appended starting from the next available index.
-
-    Args:
-        user_id:       The owning user's ID.
-        start_date:    The first payday (date object).
-        num_periods:   How many periods to generate (default 52 = ~2 years).
-        cadence_days:  Days between paydays (default 14 = biweekly).
-
-    Returns:
-        List of newly created PayPeriod objects.
-
-    Raises:
-        ValidationError: If start_date is not a date, cadence is invalid,
-            or the batch would create periods that overlap or predate the
-            user's existing schedule (the forward-only invariant that keeps
-            ``period_index`` order chronological -- see DH-#39).
-    """
-    if not isinstance(start_date, date):
-        raise ValidationError("start_date must be a date object.")
-    if cadence_days < 1:
-        raise ValidationError("cadence_days must be at least 1.")
-
-    # Find the highest existing period_index for this user.
-    max_index = (
-        db.session.query(db.func.max(PayPeriod.period_index))
-        .filter_by(user_id=user_id)
-        .scalar()
-    )
-    next_index = 0 if max_index is None else max_index + 1
-
-    existing_periods = (
-        db.session.query(PayPeriod.start_date, PayPeriod.end_date)
-        .filter_by(user_id=user_id)
-        .all()
-    )
-    existing_starts = {row[0] for row in existing_periods}
-
-    # Determine which paydays this batch would create -- every requested
-    # start that is not already an existing period.  An exact-match re-run
-    # is skipped (not duplicated), so re-running with the same start and a
-    # larger count legitimately extends the schedule.
-    new_starts = []
-    current_start = start_date
-    for _ in range(num_periods):
-        if current_start not in existing_starts:
-            new_starts.append(current_start)
-        current_start += timedelta(days=cadence_days)
-
-    _reject_overlapping_batch(existing_periods, new_starts)
-
-    created = []
-    assigned_index = next_index  # Highest existing index + 1; gap-free.
-    for new_start in new_starts:
-        end = new_start + timedelta(days=cadence_days - 1)
-        period = PayPeriod(
-            user_id=user_id,
-            start_date=new_start,
-            end_date=end,
-            period_index=assigned_index,
-        )
-        db.session.add(period)
-        created.append(period)
-        assigned_index += 1
-
-    db.session.flush()  # Assign IDs without committing.
-    log_event(
-        logger, logging.INFO, EVT_PAY_PERIODS_GENERATED, BUSINESS,
-        "Pay periods generated",
-        user_id=user_id,
-        count=len(created),
-        start_date=start_date.isoformat(),
-        cadence_days=cadence_days,
-    )
-    return created
 
 
 def get_current_period(user_id, as_of=None):

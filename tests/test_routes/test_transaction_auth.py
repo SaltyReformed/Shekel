@@ -21,7 +21,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
-from app.services import pay_period_service
+from app.services import pay_period_service, pay_period_write
 from app.services import account_service
 
 
@@ -44,9 +44,9 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
 
     # E-19 (Commit 3): pay periods must exist before the account so
     # the NOT NULL anchor columns can be populated at construction.
-    other_periods = pay_period_service.generate_pay_periods(
+    other_periods = pay_period_write.record_paydays(
         user_id=other_user.id,
-        start_date=date(2026, 1, 2),
+        first_payday=date(2026, 1, 2),
         num_periods=3,
         cadence_days=14,
     )

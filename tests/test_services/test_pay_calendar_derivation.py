@@ -35,13 +35,15 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from app.services import pay_period_service
+from app.services import pay_period_service, pay_period_write
 from app.services.pay_calendar import (
     MAX_CADENCE_DAYS,
     DerivedPeriod,
+    PayCalendar,
     PayCalendarError,
     derive_periods,
 )
+from tests._test_helpers import open_calendar_hole
 from tests.oracles.pay_calendar_derivation import (
     IRREGULAR_SHAPES,
     build_stored_rows,
@@ -102,7 +104,7 @@ class TestDerivationRefusals:
             derive_periods([(1, date(2026, 1, 2))], cadence_days)
 
     @pytest.mark.parametrize(
-        "cadence_days", [True, False, 14.0, 14.9, "14", None],
+        "cadence_days", [True, False, 14.0, 14.9, "14"],
     )
     def test_a_cadence_that_is_not_a_plain_int_is_refused(self, cadence_days):
         """``bool`` and ``float`` are the dangerous two, and both are refused.
@@ -110,12 +112,13 @@ class TestDerivationRefusals:
         ``True`` is an ``int`` subclass and would pass as a one-day cadence.  A
         ``float`` is silently TRUNCATED -- ``date.__add__`` reads only
         ``timedelta.days`` -- so 14.9 would produce the same calendar as 14 and
-        the error would be invisible.  ``None`` is what
-        ``pay_schedule_service.resolve_cadence`` returns for a user with no
-        schedule row and no period to infer from.  Production's companion is
-        exactly that user -- zero paydays, measured 2026-08-08.  A fresh signup
-        is NOT: ``register_user`` writes a bootstrap payday, so its cadence is
-        inferred from that one period's length, circularly (plan finding P8).
+        the error would be invisible.
+
+        **``None`` left this parametrization at plan step C2-b1** and is not an
+        omission: it stopped being a type error and became a MEANING -- "this
+        owner has no schedule at all" -- whose legality depends on whether they
+        have paydays.  ``TestTheCadenceIsRequiredOnlyBesideAPayday`` below owns
+        both directions of that rule.
         """
         with pytest.raises(PayCalendarError, match="must be a plain int"):
             derive_periods([(1, date(2026, 1, 2))], cadence_days)
@@ -189,6 +192,108 @@ class TestDerivationRefusals:
         """
         derived = derive_periods([(None, date(2026, 1, 2))], 14)
         assert derived[0].period_id is None
+
+
+# ---------------------------------------------------------------------------
+# TestTheCadenceIsRequiredOnlyBesideAPayday
+# ---------------------------------------------------------------------------
+
+
+class TestTheCadenceIsRequiredOnlyBesideAPayday:
+    """Plan step C2-b1: ``cadence_days`` and ``paydays`` travel together.
+
+    The cadence is read for exactly one thing -- the LAST period's end -- so an
+    owner with no paydays has nothing to read it for, and
+    ``pay_schedule_service.resolve_cadence`` answers ``None`` for exactly that
+    owner (no ``budget.pay_schedule`` row, and no period to infer one from).
+    Production's companion user is one: zero paydays, measured 2026-08-08.
+
+    The same absence BESIDE a payday is a different fact -- plan finding P8's
+    broken state -- and this is the only place in the application that refuses
+    it.  Both directions are asserted here because a rule tested in one
+    direction is a rule that can be satisfied by refusing everything.
+    """
+
+    def test_no_paydays_and_no_cadence_derive_an_empty_calendar(self):
+        """The legal pairing, and the reason the empty calendar stays buildable.
+
+        ``recurrence._reading.resolved_recurrence`` answers ``None`` for an
+        owner with no periods so the Recurring surface still renders; raising
+        here would take that page to a 500 for the one owner it is written for.
+        """
+        assert derive_periods([], None) == ()
+
+    def test_a_payday_with_no_cadence_is_refused(self):
+        """P8's state: a payday exists and its period's end cannot be derived.
+
+        Every alternative invents a horizon the owner never chose, so the
+        refusal names the invariant rather than clamping.
+        """
+        with pytest.raises(PayCalendarError, match="no cadence"):
+            derive_periods([(1, date(2026, 1, 2))], None)
+
+    def test_the_refusal_counts_the_paydays_it_refused(self):
+        """The message names the value, per the project's error-message rule."""
+        with pytest.raises(PayCalendarError, match=r"\b3 payday\(s\)"):
+            derive_periods(
+                [
+                    (1, date(2026, 1, 2)),
+                    (2, date(2026, 1, 16)),
+                    (3, date(2026, 1, 30)),
+                ],
+                None,
+            )
+
+    def test_an_absent_cadence_is_refused_after_a_duplicate_payday(self):
+        """Order of refusals: the payday set is graded before the pairing.
+
+        A caller who hands in both faults hears about the one that is a
+        property of the data they supplied, not the one that is a property of
+        their schedule row -- and this pins that order so the two refusals
+        cannot start racing.
+        """
+        with pytest.raises(PayCalendarError, match="appears twice"):
+            derive_periods(
+                [(1, date(2026, 1, 2)), (2, date(2026, 1, 2))], None,
+            )
+
+    def test_a_present_cadence_is_still_graded_beside_an_empty_set(self):
+        """Absence is excused; a WRONG value never is, whatever the payday set.
+
+        ``None`` means "there is no schedule"; ``0`` means "the schedule says
+        zero", which no write door could have produced.
+        """
+        with pytest.raises(PayCalendarError, match="at least 1 day and at most 365"):
+            derive_periods([], 0)
+
+    def test_an_empty_calendar_answers_every_question_without_a_cadence(self):
+        """The pairing is safe because no method reads what is not there.
+
+        Asserted over the whole public surface rather than the two methods that
+        obviously touch the cadence: the claim being made is that NONE of them
+        reads it, and a spot check of two would not be that claim.
+        """
+        calendar = PayCalendar.from_paydays(
+            paydays=[], cadence_days=None, user_id=1,
+        )
+        day = date(2026, 1, 2)
+
+        assert calendar.periods == ()
+        assert calendar.opening_bound() is None
+        assert calendar.horizon() is None
+        assert calendar.period_containing(day) is None
+        assert calendar.span_containing(day) is None
+        assert calendar.period_starting_on_or_after(day) is None
+        assert calendar.period_starting_on_or_before(day) is None
+        assert calendar.period_by_id(1) is None
+        assert calendar.earliest_start_in_month(2026, 1) is None
+        assert len(calendar.window(0, 6)) == 0
+        assert len(calendar.overlapping(day, date(2027, 1, 1))) == 0
+        assert len(calendar.axis(day, date(2027, 1, 1))) == 0
+        # The one method that MUST refuse: it exists to name a row a NOT NULL
+        # foreign key can point at, and there is none.
+        with pytest.raises(PayCalendarError, match="no materialised pay period"):
+            calendar.filing_period(day)
 
 
 # ---------------------------------------------------------------------------
@@ -435,9 +540,9 @@ class TestTheStoredColumnsAreReproduced:
         caught in CI rather than at the next manual run.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id,
-                start_date=_LIVE_FIRST_PAYDAY,
+                first_payday=_LIVE_FIRST_PAYDAY,
                 num_periods=_LIVE_PERIOD_COUNT,
                 cadence_days=_LIVE_CADENCE_DAYS,
             )
@@ -476,9 +581,9 @@ class TestTheStoredColumnsAreReproduced:
         ``lead(start) - 1`` branch) and the LAST (the projection), by hand.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=6,
                 cadence_days=cadence_days,
             )
@@ -512,16 +617,16 @@ class TestTheStoredColumnsAreReproduced:
         """
         with app.app_context():
             user_id = bare_user["user"].id
-            first = pay_period_service.generate_pay_periods(
+            first = pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=3,
                 cadence_days=14,
             )
             db.session.flush()
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=first[-1].end_date + timedelta(days=1),
+                first_payday=first[-1].end_date + timedelta(days=1),
                 num_periods=3,
                 cadence_days=14,
             )
@@ -538,33 +643,54 @@ class TestTheStoredColumnsAreReproduced:
     def test_a_gapped_batch_diverges_on_the_row_before_the_hole(
         self, app, db, bare_user,
     ):
-        """Plan finding P2, written through the REAL writer and then diffed.
+        """Plan finding P2 -- and BOTH halves of what plan step C3-b did to it.
 
-        ``_reject_overlapping_batch`` refuses a batch that starts on or before
-        the latest existing end and refuses nothing else, so a batch opening
-        two weeks late is accepted today.  The stored calendar then leaves
-        2026-01-30 through 2026-02-12 funded by no paycheck; the derivation
-        cannot express that, so the period before the hole absorbs it.  This
-        is the one disagreement, and it is the normalization working.
+        The batch guard of the day, ``_reject_overlapping_batch``, refused a
+        batch starting on or before the latest existing end and refused nothing
+        else, so a batch opening two weeks late was accepted and left
+        2026-01-30 through 2026-02-12 funded by no paycheck.  The derivation
+        cannot express that, so the row before the hole was the one
+        disagreement this oracle reported.
+
+        **C3-b closed the writer, so this test now asserts the closure FIRST**:
+        the late batch goes in through the real writer and the oracle reports
+        NOTHING, because the stored columns are the derivation.  The hole is
+        then punched by hand -- the only way to reach it since C3-b, and the
+        shape data written before it still carries -- and the oracle's answer
+        is what it always was.  Two claims, one fixture, and neither can pass
+        while the other is broken.
         """
         with app.app_context():
             user_id = bare_user["user"].id
-            pay_period_service.generate_pay_periods(
+            first = pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=2,
                 cadence_days=14,
             )
-            db.session.flush()
             # The missing payday would have been 2026-01-30; this batch opens
-            # a fortnight after THAT, and 15 days after the latest stored end
-            # (2026-01-29), so the forward-only guard lets it through.
-            pay_period_service.generate_pay_periods(
+            # a fortnight after THAT, 15 days past the payday before it.
+            pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 2, 13),
+                first_payday=date(2026, 2, 13),
                 num_periods=2,
                 cadence_days=14,
             )
+            db.session.commit()
+
+            # Half one: the writer left NO hole.  The second period's stored
+            # end runs to the day before the late payday.
+            assert compare(
+                user_id=user_id,
+                periods=pay_period_service.get_all_periods(user_id),
+                cadence_days=14,
+                cadence_is_stored=True,
+            ).disagreements == ()
+            assert first[1].end_date == date(2026, 2, 12)
+
+            # Half two: hand the oracle the pre-C3-b shape and it reports the
+            # row before the hole, exactly as it did when the writer made one.
+            open_calendar_hole(db.session, first[1], date(2026, 1, 29))
             db.session.commit()
 
             comparison = compare(
@@ -866,9 +992,9 @@ class TestTheComparatorRefusesWhatItCannotMeasure:
         flush would write the perturbed calendar into it.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=3,
                 cadence_days=14,
             )

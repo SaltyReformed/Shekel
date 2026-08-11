@@ -77,6 +77,12 @@ kill.
   which answers the same fold at a date with the day's OWN assertion not yet
   applied (ruling R-EU): what the records produce, as against what the app
   currently reports for a day the user has already declared a balance for.
+  :func:`cash_anchor_history` is the FIFTH and the only one that is not a
+  balance at a date at all: it is the account's assertion LOG, every recorded
+  balance beside what the records held immediately before it (ruling R-EV).
+  It is here rather than on the ``cash_ledger`` leaf because its ``ledger``
+  column IS a balance-at-T -- the running total just before an assertion reset
+  it -- and no screen reaches one except through this door.
 * The LIABILITY entry (:func:`liability_owed_at_dates`) answers every debt's
   owed magnitude at a list of FORWARD calendar dates in one resolution pass --
   the shape a long-horizon liability band needs, which neither the period-keyed
@@ -184,6 +190,9 @@ same ``abs`` convention.  All three classify asset-vs-liability through the one
 """
 
 from ._cash_flow import (
+    CashAnchorHistory,
+    CashAnchorRow,
+    cash_anchor_history,
     cash_balance_at,
     cash_balance_map,
     cash_daily_balance_series,
@@ -271,6 +280,8 @@ from ._secured_debt import (
 __all__ = [
     "ZERO",
     "BalanceContext",
+    "CashAnchorHistory",
+    "CashAnchorRow",
     "GridBalanceView",
     "GridColumn",
     "GridRowFlags",
@@ -284,6 +295,7 @@ __all__ = [
     "balance_at",
     "balance_map",
     "build_maps",
+    "cash_anchor_history",
     "cash_balance_at",
     "cash_balance_map",
     "cash_daily_balance_series",

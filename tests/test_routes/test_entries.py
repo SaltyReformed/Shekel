@@ -21,7 +21,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType, RecurrencePattern, Status, TransactionType
 from app.models.user import User, UserSettings
-from app.services import pay_period_service
+from app.services import pay_period_service, pay_period_write
 from app.services.auth_service import hash_password
 from app.services import account_service
 from app.utils.dates import display_today
@@ -232,9 +232,9 @@ def _create_other_user_txn():
     db.session.add(category)
     db.session.flush()
 
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=other_user.id,
-        start_date=date(2026, 1, 2),
+        first_payday=date(2026, 1, 2),
         num_periods=3,
         cadence_days=14,
     )

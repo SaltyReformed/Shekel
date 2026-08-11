@@ -15,7 +15,8 @@ import hashlib
 import logging
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import bcrypt
@@ -29,12 +30,15 @@ from app.models.user import User, UserSettings
 # the canonical factory in ``app.services.account_service`` materializes
 # both and is the only acceptable creation path post-E-19.
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.ref import FilingStatus
 from app.models.scenario import Scenario
 from app.models.tax_config import FicaConfig
 from app.exceptions import AuthError, ConflictError, ValidationError
-from app.services import account_service
+from app.services import (
+    account_service,
+    pay_period_write,
+    pay_schedule_service,
+)
 from app.services.tax_seed_data import (
     DEFAULT_FEDERAL_BRACKETS,
     DEFAULT_FICA,
@@ -624,30 +628,158 @@ def change_password(user, current_password, new_password):
     user.password_hash = hash_password(new_password)
 
 
-def register_user(email, password, display_name):
-    """Register a new user with default settings and a baseline scenario.
+def _reject_impossible_first_payday(
+    first_payday: date, cadence_days: int, today: date,
+) -> None:
+    """Refuse a sign-up payday the owner could not have been LAST paid on.
 
-    Creates a User, UserSettings (with model defaults), and a baseline
-    Scenario atomically.  Does NOT commit -- the caller is responsible
-    for committing the transaction.
+    Registration asks for the owner's MOST RECENT payday, and the rule is one
+    sentence: **the paycheck that payday opens must still be running.**  The
+    first period spans ``[first_payday, first_payday + cadence_days - 1]``, so
+    the accepted window is ``[today - cadence_days + 1, today]`` -- and that is
+    what makes the rest of registration work with no second step.  Sign-up day
+    falls INSIDE period 0, so the default account's opening assertion, dated
+    today, has a real paycheck to post its correction into rather than reaching
+    :meth:`~app.services.pay_calendar.PayCalendar.filing_period`'s clamp.
+
+    Each end refuses for its own reason.  A FUTURE day is not a payday that has
+    happened.  A day whose paycheck has already ENDED means a later payday has
+    arrived that the owner did not name, and opening the schedule there would
+    date period 0 entirely in the past.
+
+    **The lower refusal's message is deliberately about the paycheck, not about
+    the owner's arithmetic.**  It read "one of the two does not match the
+    other" until an adversarial review of plan step X-ad-a found a user whose
+    two answers match perfectly: on payday itself, before the deposit posts,
+    "the day money landed" is honestly one cadence ago.  The form's wording was
+    the real defect and it was fixed there -- the question now asks for the
+    date on the paycheck.  This message stopped accusing them either way.
 
     Args:
-        email:        The user's email address.
-        password:     The plaintext password (must be >= 12 chars).
-        display_name: The user's display name.
-
-    Returns:
-        The newly created User object (unflushed settings and scenario
-        are attached to the same session).
+        first_payday: The stated most recent payday.
+        cadence_days: The stated days between their paydays.  Already bounded
+            by :func:`~app.services.pay_schedule_service.reject_out_of_range_cadence`
+            before this runs, so the window below cannot be absurdly wide.
+        today: The owner's civil today, read once by the caller so this bound
+            and the opening assertion's day cannot straddle midnight.
 
     Raises:
-        ValidationError: If the email format is invalid, the display
-            name is empty, or the password is too short.
-        ConflictError: If a user with the given email already exists.
+        ValidationError: *first_payday* lies outside the window.  Each message
+            names the offending day and the bound it broke.
+    """
+    if first_payday > today:
+        raise ValidationError(
+            f"Your most recent payday cannot be {first_payday.isoformat()}: "
+            f"that day has not happened yet (today is {today.isoformat()}).  "
+            "Enter the date of the paycheck you have already been paid."
+        )
+    earliest = today - timedelta(days=cadence_days - 1)
+    if first_payday < earliest:
+        raise ValidationError(
+            f"The paycheck starting {first_payday.isoformat()} has already "
+            f"ended: paid every {cadence_days} days, it covered through "
+            f"{(first_payday + timedelta(days=cadence_days - 1)).isoformat()}."
+            f"  Enter the payday whose paycheck covers today -- "
+            f"{earliest.isoformat()} or later."
+        )
+
+
+@dataclass(frozen=True)
+class RegistrationSpec:
+    """Everything one sign-up states: an identity, and a real pay calendar.
+
+    **The pay-calendar half is plan step X-ad-a** (ruling **R-DB**, and the
+    cross-arc fork ruled to it on 2026-08-09).  Registration used to FABRICATE
+    a pay period covering ``[today, today + 13]`` because
+    :func:`app.services.account_service.create_account` refuses an owner with
+    no pay period -- and that invented payday is what then blocked the owner's
+    real one: the forward-only batch guard of the day
+    (``pay_period_service._reject_overlapping_batch``, replaced at plan step
+    C3-b by ``pay_period_write._reject_backward_payday``) refused any batch
+    starting on or before the latest existing ``end_date``, so ``today + 1``
+    through ``today + 13`` were REFUSED outright and every date from
+    ``today + 14`` on left a permanent hole in the calendar (finding
+    **N-123**).  The remedy is not a better guess: it is to ask.
+
+    Frozen, so a constructed spec is an immutable record of one sign-up
+    request, and modelled on
+    :class:`app.services.account_service.AccountSpec` for the same reason --
+    six co-loaded values are one concept, not a keyword list.
+
+    **No field carries a default, deliberately.**  ``first_payday`` has no
+    defensible one, and giving the other two a default here would put a second
+    copy of the app's biweekly premise below the one place that states it
+    (``BaseConfig.DEFAULT_PAY_CADENCE_DAYS`` / ``DEFAULT_PAY_PERIOD_HORIZON``,
+    applied by the Marshmallow layer and by ``scripts/seed_user.py``).  This
+    module reads no Flask config by design -- see the module docstring.
+
+    Attributes:
+        email: The user's email address.  Stripped and lowercased by
+            :func:`register_user`, which also re-validates its shape.
+        password: The plaintext password (12 characters minimum, 72 UTF-8
+            bytes maximum -- bcrypt's hard input cap).
+        display_name: The user's display name; stripped, and required to be
+            non-empty after stripping.
+        first_payday: The day the owner was LAST paid, which opens their
+            schedule.  **Last, never next**, and that is the 2026-08-09
+            ruling: an answer in ``[today - cadence_days + 1, today]`` has
+            nothing to overlap on an empty calendar AND covers sign-up day, so
+            the default account's opening balance has a paycheck to post into
+            and the owner needs no second step.  A NEXT payday would leave
+            sign-up day uncovered, and the opening correction would then reach
+            :meth:`~app.services.pay_calendar.PayCalendar.filing_period`'s
+            clamp -- which exists for a loan opened years before the owner's
+            first payday, not for a balance asserted today.
+        cadence_days: Days between the owner's paydays.  Bounded by
+            ``ck_pay_schedule_cadence_range``; persisted as the owner's
+            schedule so extend and the rolling top-up have a cadence to
+            continue from rather than inferring one (pay-calendar finding
+            **P8**).
+        num_periods: How many periods to generate forward from
+            *first_payday*.
+    """
+
+    email: str
+    password: str
+    display_name: str
+    first_payday: date
+    cadence_days: int
+    num_periods: int
+
+
+def register_user(spec: RegistrationSpec):
+    """Register a new user with default settings, a pay calendar, and a baseline.
+
+    Creates a User, UserSettings (with model defaults), the owner's pay
+    periods and schedule row, a baseline Scenario, the default Checking
+    account with its opening assertion, the default categories and the default
+    tax configuration -- atomically.  Does NOT commit; the caller owns the
+    transaction.
+
+    **Every refusal happens before the ``User`` row is added**, which is a
+    property worth stating: a validation that fired later would leave a
+    partly-built owner in the session, protected only by the fact that no
+    caller commits after catching.  The pay-calendar inputs are checked in the
+    same block as the email and the password for exactly that reason.
+
+    Args:
+        spec: The :class:`RegistrationSpec` for this sign-up.
+
+    Returns:
+        The newly created User object (settings, periods, schedule, scenario,
+        account, categories and tax rows are attached to the same session).
+
+    Raises:
+        ValidationError: The email format is invalid, the display name is
+            empty, the password is too short or too long, the cadence falls
+            outside ``ck_pay_schedule_cadence_range``, or the stated payday is
+            not one the owner could have been LAST paid on -- in the future,
+            or more than one cadence back.
+        ConflictError: A user with the given email already exists.
     """
     # Sanitize inputs.
-    email = email.strip().lower()
-    display_name = display_name.strip()
+    email = spec.email.strip().lower()
+    display_name = spec.display_name.strip()
 
     # Validate email format.
     if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
@@ -658,10 +790,28 @@ def register_user(email, password, display_name):
         raise ValidationError("Display name is required.")
 
     # Validate password length.
-    if len(password) < 12:
+    if len(spec.password) < 12:
         raise ValidationError("Password must be at least 12 characters.")
-    if len(password.encode("utf-8")) > 72:
+    if len(spec.password.encode("utf-8")) > 72:
         raise ValidationError("Password is too long. Please use 72 characters or fewer.")
+
+    # The clock is the USER's, not the process's (ruling R-DH (b)), and it is
+    # read ONCE: this same day bounds the stated payday below and dates the
+    # opening assertion further down, so the two cannot land on different
+    # civil days when a request straddles midnight in the display zone.
+    today = display_today()
+    # Both write doors' preconditions, asked HERE rather than where they fire,
+    # so the claim above is true: the schedule's own bound (what
+    # ``budget.pay_schedule`` may store) and the writer's (what
+    # ``record_paydays`` can materialise, and how much of it), then this
+    # module's own question about the day.  Asking them late would let a bad
+    # cadence or a zero horizon refuse several statements after the ``User``
+    # row exists, under a message about accounts rather than about the input.
+    pay_schedule_service.reject_out_of_range_cadence(spec.cadence_days)
+    pay_period_write.reject_unmaterialisable_batch(
+        spec.num_periods, spec.cadence_days,
+    )
+    _reject_impossible_first_payday(spec.first_payday, spec.cadence_days, today)
 
     # Check email uniqueness.
     if User.query.filter_by(email=email).first():
@@ -670,7 +820,7 @@ def register_user(email, password, display_name):
     # Create user.
     user = User(
         email=email,
-        password_hash=hash_password(password),
+        password_hash=hash_password(spec.password),
         display_name=display_name,
     )
     db.session.add(user)
@@ -680,35 +830,22 @@ def register_user(email, password, display_name):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3).  ``create_account`` refuses an
-    # owner with no pay periods (``_require_pay_period_schedule``), because the
-    # opening balance posts a correction into the period containing the day it
-    # asserts.  This comment read "the account's anchor columns are NOT NULL
-    # (migration cfb15e782f86), so an account cannot exist without a pay period
-    # to point at" until plan step X-f1e2 -- ruling R-EH deleted those columns
-    # and R-EO deleted the assertion's own period, so there is nothing left to
-    # point AT; the live reason is the opening's posting reconcile.
-    # The user's actual pay schedule is captured later via
-    # /pay-periods/generate, which appends additional periods starting
-    # at ``max(period_index) + 1``; this bootstrap takes period_index 0
-    # and is preserved so the anchor reference stays valid.  Start
-    # date is today and cadence is the project-default 14 days so the
-    # grid shows a current-period balance immediately after sign-up.
-    #
-    # The day is the USER's, not the process's (ruling R-DH (b)).  The
-    # origination assertion this period anchors is dated ``display_today()``
-    # by ``create_account``, so building the period from ``date.today()``
-    # would, in any process not pinned to the display zone, open the schedule
-    # on the day AFTER the assertion it exists to hold.
-    today = display_today()
-    bootstrap_period = PayPeriod(
+    # The owner's REAL pay calendar, from the payday they stated (plan step
+    # X-ad-a, ruling R-DB).  It must exist before the default account:
+    # ``create_account`` refuses an owner with no pay periods
+    # (``_require_pay_period_schedule``) because the opening balance posts a
+    # correction, and ``pay_calendar.PayCalendar.filing_period`` raises when
+    # there is no materialised period to file it under (finding **N-192**).
+    # ``record_paydays`` writes the ``budget.pay_schedule`` row in the same
+    # call -- the cadence rule, plan step C3-b -- which is what keeps
+    # registration from re-opening pay-calendar finding **P8**, a payday with
+    # no schedule row beside it, on every new sign-up.
+    pay_period_write.record_paydays(
         user_id=user.id,
-        start_date=today,
-        end_date=today + timedelta(days=13),
-        period_index=0,
+        first_payday=spec.first_payday,
+        num_periods=spec.num_periods,
+        cadence_days=spec.cadence_days,
     )
-    db.session.add(bootstrap_period)
-    db.session.flush()
 
     # Create the baseline scenario BEFORE the first account (Build-Order
     # Step 5): ``account_service.create_account`` posts the new account's
@@ -734,15 +871,20 @@ def register_user(email, password, display_name):
             account_type_id=checking_type_id,
             name="Checking",
             anchor_balance=Decimal("0.00"),
-            # Day one of the bootstrap period built just above -- the same
-            # clock that built it, so a signup's opening assertion is dated by
-            # the schedule it is created alongside rather than by a second
-            # reading of the wall clock.  Two fields have left this call: the
-            # explicit ``anchor_period_id`` at plan step X-f1c3c (an assertion
-            # carries a DAY) and the ``notes="origination (sign-up)"`` label at
-            # X-f1e2 (ruling R-ES -- nothing read it, and the registration
-            # INSERT is in ``system.audit_log`` either way).
-            observed_on=bootstrap_period.start_date,
+            # SIGN-UP DAY, and at plan step X-ad-a that stopped being the same
+            # thing as the schedule's opening payday.  This read
+            # ``bootstrap_period.start_date`` while registration fabricated a
+            # period starting today; the owner's real first payday is now up to
+            # one cadence in the PAST, and a balance of $0.00 is being asserted
+            # NOW rather than as of that payday.  It is still the same clock
+            # reading -- ``today``, taken once at the top of this function --
+            # which is what keeps the assertion and the period bounding it on
+            # one civil day.  Two fields have left this call: the explicit
+            # ``anchor_period_id`` at plan step X-f1c3c (an assertion carries a
+            # DAY) and the ``notes="origination (sign-up)"`` label at X-f1e2
+            # (ruling R-ES -- nothing read it, and the registration INSERT is
+            # in ``system.audit_log`` either way).
+            observed_on=today,
         ),
     )
 

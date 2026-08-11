@@ -214,7 +214,16 @@
   {% endif %}
 
   {# --- Toast Notifications --- #}
-  <div class="toast-container position-fixed top-0 end-0 p-3" aria-live="polite">
+  {# The toast container IS the anchor-acknowledgement mount (plan step
+     X-f2-b).  It was a bare <div> nested inside this container, which made
+     appended toasts GRANDCHILDREN -- and Bootstrap's own spacing rule is
+     ``.toast-container > :not(:last-child)``, so the gap had to be restated
+     in base.css for the wrapper's children.  Carrying the id here deletes
+     the wrapper AND that rule, and Bootstrap's own spacing then covers the
+     flash toasts and the appended ones alike. #}
+  <div id="anchor-ack-mount"
+       class="toast-container position-fixed top-0 end-0 p-3"
+       aria-live="polite">
     {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
     {% for category, message in messages %}
@@ -231,11 +240,10 @@
        and the toast twin of ``#modal-mount`` below (plan step X-f1e3).
        A flash message above is a property of a FULL page render and cannot
        reach a partial response; a write made through HTMX needs a mount that
-       already exists on the page it was made from.
-
-       It is INSIDE the live region rather than beside it so an appended toast
-       is announced by the same ``aria-live="polite"`` container the flash
-       toasts use, and inherits its fixed position and z-index.
+       already exists on the page it was made from.  The acknowledgement
+       APPENDS into it (``hx-swap-oob="beforeend:#anchor-ack-mount"``) so a
+       second save inside the autohide window stacks rather than destroying
+       the first (finding N-206); ``app.js`` removes each toast once hidden.
 
        **Its placement is load-bearing: it must never sit inside a region that
        re-fetches itself.**  The acknowledgement it carries used to ride the
@@ -246,7 +254,6 @@
        ``base.html`` outside every refresh target is what makes reaching all
        five anchor-editor surfaces a property of the STRUCTURE rather than of
        each surface remembering to host an element. #}
-    <div id="anchor-ack-mount"></div>
   </div>
 
   {# --- Security-event "was this you?" Banner ---

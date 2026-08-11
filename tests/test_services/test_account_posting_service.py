@@ -53,9 +53,12 @@ from app.services import (
     account_service,
     anchor_service,
     balance_at,
+    loan_posting_service,
+    pay_period_write,
     posting_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
+from app.services.pay_calendar import PayCalendarError
 from app.services.auth_service import hash_password
 from app.utils.dates import to_display_date
 from tests._test_helpers import (
@@ -177,7 +180,7 @@ def _period_containing(user_id, day):
     """Return the id of the period a correction observed on ``day`` books in.
 
     The derivation ``account_posting_service._anchors`` makes
-    (:func:`app.services.loan_ledger.resolve_anchor_pay_period`), asked here
+    (:meth:`app.services.pay_calendar.PayCalendar.filing_period`), asked here
     rather than read off the assertion row.  These tests compared a journal
     entry's ``pay_period_id`` against ``AccountAnchorHistory.pay_period_id``
     until ruling R-EO deleted that column -- a comparison that graded the
@@ -185,17 +188,18 @@ def _period_containing(user_id, day):
     passed on production's two rows whose stored period does not contain
     their own day (finding N-168).  Asking the derivation is what the
     producer is actually contracted to do.
+
+    **It asked ``loan_ledger.resolve_anchor_pay_period`` until pay-calendar
+    plan step C2-d**, which deleted that chain.  This helper re-derives from
+    the same door the producer takes rather than transcribing the rule, so it
+    cannot drift from it -- the equivalence of the OLD chain to the new clamp
+    is graded once, at ``test_pay_calendar_value.py``, where the transcription
+    belongs.
     """
     # Pylint: import-outside-toplevel -- deferred import is the file-wide
     # test convention.
-    from app.services.loan_ledger import resolve_anchor_pay_period  # pylint: disable=import-outside-toplevel
-    periods = (
-        _db.session.query(PayPeriod)
-        .filter_by(user_id=user_id)
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
-    return resolve_anchor_pay_period(periods, day).id
+    from app.services.pay_calendar import calendar_for  # pylint: disable=import-outside-toplevel
+    return calendar_for(user_id).filing_period(day).period_id
 
 
 def _correction_entries(account_id, scenario_id, source_enum):
@@ -1168,9 +1172,9 @@ class TestCorrectionPeriodAttribution:
 
         ``seed_user`` carries only its 2024 bootstrap period, so an assertion
         dated 2026 has no containing period and
-        :func:`app.services.loan_ledger.resolve_anchor_pay_period` falls back
-        to it -- the state a user reaches by asserting a balance past the end
-        of their generated schedule.  ``600 - 500 = +100.00``.
+        :meth:`app.services.pay_calendar.PayCalendar.filing_period` clamps to
+        it -- the state a user reaches by asserting a balance past the end of
+        their generated schedule.  ``600 - 500 = +100.00``.
         """
         account = _make_account(seed_user, "500.00")
         _pin_opening(account)
@@ -1569,7 +1573,7 @@ class TestLedgerAgreesWithTheGridOnAssertionPeriods:
     as a measurement in a docstring (plan step X-ai-r; finding N-169).  Two
     independent implementations answer "which pay period did this balance
     assertion book in": the WRITER derives it through
-    ``loan_ledger.resolve_anchor_pay_period`` and stamps
+    ``pay_calendar.PayCalendar.filing_period`` and stamps
     ``journal_entries.pay_period_id``; the READER
     (``balance_at._cash_periods._assertion_sums``) buckets the walk's
     corrections by ``spans.containing(observed_on)`` and renders the result as
@@ -1655,3 +1659,232 @@ class TestLedgerAgreesWithTheGridOnAssertionPeriods:
             # (net +50.00) and the second 800-550 = +250.00.
             assert grid.columns[first.id].book_vs_bank == Decimal("50.00")
             assert grid.columns[second.id].book_vs_bank == Decimal("250.00")
+
+
+class TestTheSharedFilingDoor:
+    """Both anchor reconciles reach the calendar through ONE function.
+
+    Pay-calendar plan step **C2-d**.  Before it, each package opened its
+    reconcile with the same four lines -- load the owner's periods, refuse an
+    empty list (in two different spellings of one message), resolve each
+    correction's period -- and the loader they shared,
+    ``loan_ledger.owner_pay_periods``, was a public export of the LOAN package
+    that the CASH package had to import (finding **N-169**).  Both now call
+    :func:`app.services._posting_reconcile.filing_calendar_for`, which is the
+    only place either reaches a calendar, and the three ``loan_ledger`` names
+    are deleted.
+
+    These grade the door's contract -- the owner scoping the deleted loader
+    carried in its own join, the missing-account no-op, and the refusal finding
+    **N-192** rules LOUD -- plus the claim the arc is actually about: the two
+    halves file one day under ONE period, not two that happen to agree.
+    """
+
+    _PRE_SCHEDULE_DAY = date(2023, 6, 14)
+
+    @staticmethod
+    def _door():
+        """Return the shared filing door.
+
+        Returns:
+            :func:`app.services._posting_reconcile.filing_calendar_for`.
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.services._posting_reconcile import (  # pylint: disable=import-outside-toplevel
+            filing_calendar_for,
+        )
+        return filing_calendar_for
+
+    def test_the_owner_comes_from_the_account_and_travels_with_its_calendar(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """A foreign calendar is UNREPRESENTABLE, not merely never requested.
+
+        The deleted ``owner_pay_periods`` joined through the account, so a loan
+        could not be resolved against someone else's schedule even by a
+        caller's mistake.  **A first cut of this door took ``(account_id,
+        owner_id)`` and correlated them nowhere**, which downgraded that to a
+        property of its two callers while its docstring claimed otherwise --
+        and the test written to re-pin it instead demonstrated the mis-pairing
+        succeeding, then asserted the two calendars differed.  That assertion
+        was tautological: distinct users hold distinct period ids.
+
+        The door now takes ONE id and returns the owner WITH the calendar, so
+        there is no second argument to get wrong.  What is asserted is that
+        contract: the owner comes back, it is the ACCOUNT's owner, and the
+        calendar is that owner's -- checked against the second user's schedule,
+        which is built at a different time so a mix-up would move the answer
+        rather than merely widen it.
+        """
+        with app.app_context():
+            from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+            pay_period_write.record_paydays(
+                user_id=seed_second_user["user"].id,
+                first_payday=date(2025, 1, 1), num_periods=4, cadence_days=14,
+            )
+            _db.session.commit()
+            account = _make_account(seed_user, "500.00")
+
+            owner_id, calendar = self._door()(account.id)
+            assert owner_id == seed_user["user"].id
+            assert calendar.user_id == seed_user["user"].id
+            assert [start for _id, start in calendar.paydays] == sorted(
+                period.start_date for period in seed_periods
+            )
+            # The teeth: the OTHER user's schedule opens 2025-01-01 and reaches
+            # a day this owner's does not, so a calendar mix-up would answer
+            # here instead of clamping to this owner's earliest period.
+            probe = date(2025, 6, 1)
+            assert calendar.filing_period(probe).period_id == min(
+                (p.id for p in seed_periods),
+            )
+
+    def test_a_missing_account_is_a_no_op_rather_than_a_guess(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """No account row means nothing to reconcile, the disposition it replaced.
+
+        ``account_owner_id`` answered ``None`` here and both writers returned;
+        folding that resolution into this door must not turn a deleted account
+        into a refusal or, worse, into some other owner's calendar.
+        """
+        with app.app_context():
+            assert self._door()(999_999) is None
+
+    def test_an_owner_with_no_materialised_period_is_refused_loudly(
+        self, app, db, seed_user,
+    ):
+        """No period to point at is a LOUD failure, refused in ONE place.
+
+        ``journal_entries.pay_period_id`` is NOT NULL and this reconcile DERIVES
+        each correction's period from its day, so an empty calendar is the one
+        state that could silently mis-file every correction an account has
+        (finding **N-192**).  What keeps it out of reach is code rather than a
+        constraint -- registration opens a period before it creates the default
+        account, ``truncate_pay_periods`` always keeps the period its
+        ``keep_through_period_id`` names (plan step C3-a; it read "never
+        deletes index 0" while the form posted an ordinal), and
+        ``reset_pay_periods`` regenerates before returning -- so the refusal is
+        deliberate rather than defensive, and it is asserted here because no
+        test covered it before C2-d gave it one home.
+
+        **It reaches the reconcile as a ``PayCalendarError``, not a
+        ``PostingError``, and that is the ruling of 2026-08-10.**  A first cut
+        also refused at the loader, naming the account; two adversarial reviews
+        found that raise could never fire where ``filing_period`` would not
+        also fire -- every caller returns early on an empty corrections list --
+        and that the two predicates had ALREADY drifted, the loader testing "no
+        periods at all" against the writers' documented "no MATERIALISED
+        period".  The second copy is deleted rather than realigned: those
+        differ exactly for the unsaved-payday calendar plan step C3's writer
+        builds.
+        """
+        with app.app_context():
+            account = _make_account(seed_user, "500.00")
+            account_id, owner_id = account.id, seed_user["user"].id
+            # CASCADE takes the already-posted opening entry with the periods,
+            # which is exactly the state the refusal is about: corrections to
+            # post and nowhere to file them.
+            _db.session.query(PayPeriod).filter_by(user_id=owner_id).delete()
+            _db.session.commit()
+
+            with pytest.raises(
+                PayCalendarError,
+                match=rf"user {owner_id} has no materialised pay period",
+            ):
+                account_posting_service.sync_account_anchor_postings(
+                    account_id, seed_user["scenario"].id,
+                )
+            _db.session.rollback()
+
+    def test_the_loader_itself_refuses_nothing(
+        self, app, db, seed_user,
+    ):
+        """The door hands back an unusable calendar rather than second-guessing it.
+
+        The structural half of the ruling above: with the second refusal gone,
+        an owner with no paydays gets a real (empty) calendar out of this door,
+        and the ONE refusal happens when something asks it to file a record.
+        Pinned so a future "defensive" re-add is a test failure rather than a
+        silent second predicate.
+        """
+        with app.app_context():
+            account = _make_account(seed_user, "500.00")
+            account_id = account.id
+            _db.session.query(PayPeriod).filter_by(
+                user_id=seed_user["user"].id,
+            ).delete()
+            _db.session.commit()
+
+            owner_id, calendar = self._door()(account_id)
+            assert owner_id == seed_user["user"].id
+            assert calendar.periods == ()
+            with pytest.raises(PayCalendarError):
+                calendar.filing_period(date(2026, 1, 1))
+            _db.session.rollback()
+
+    def test_the_cash_and_loan_halves_file_one_day_under_one_period(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A cash assertion and a loan anchor on ONE day file in ONE period.
+
+        The property the arc is for, asserted rather than argued.  Both halves
+        take the same door and the same rule, so this cannot be two answers
+        that agree by coincidence -- and the day chosen is BEFORE the whole
+        schedule, the clamp branch, because inside the schedule every candidate
+        rule agrees and the assertion would grade nothing.
+
+        ``seed_periods`` opens 2026-01-02, so a 2023-06-14 event precedes every
+        payday and both halves must clamp into ``period_index`` 0.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            earliest = min(seed_periods, key=lambda p: p.period_index)
+            assert earliest.start_date > self._PRE_SCHEDULE_DAY, (
+                "the fixture must place the probe day before every payday"
+            )
+
+            account = _make_account(seed_user, "500.00")
+            _pin_opening(account, datetime(
+                2023, 6, 14, 16, 0, tzinfo=timezone.utc,
+            ))
+            _db.session.commit()
+            account_posting_service.sync_account_anchor_postings(
+                account.id, scenario_id,
+            )
+
+            loan = create_loan_account(
+                seed_user, _db.session, name="Pre-schedule Loan",
+                principal=Decimal("200000.00"),
+                origination_date=self._PRE_SCHEDULE_DAY,
+                rate=Decimal("0.06"),
+            )
+            _db.session.commit()
+            loan_posting_service.sync_loan_postings(loan.id, scenario_id)
+            _db.session.commit()
+
+            # Filtered on the DAY, not merely on the source kind: re-stamping
+            # the cash opening leaves its original entry behind, reversed to
+            # zero by the reconcile's own self-heal, and counting entries would
+            # grade that instead of the filing rule.
+            filed = {}
+            for source in (
+                PostingSourceEnum.ACCOUNT_OPENING,
+                PostingSourceEnum.LOAN_OPENING,
+            ):
+                entries = (
+                    _db.session.query(JournalEntry)
+                    .filter_by(
+                        user_id=seed_user["user"].id,
+                        scenario_id=scenario_id,
+                        source_kind_id=ref_cache.posting_source_id(source),
+                        entry_date=self._PRE_SCHEDULE_DAY,
+                    )
+                    .all()
+                )
+                assert len(entries) == 1, (source, entries)
+                filed[source] = entries[0].pay_period_id
+
+            assert filed[PostingSourceEnum.ACCOUNT_OPENING] == earliest.id
+            assert filed[PostingSourceEnum.LOAN_OPENING] == earliest.id

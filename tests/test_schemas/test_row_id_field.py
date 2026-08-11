@@ -179,6 +179,57 @@ class TestTheFieldIsWiredIntoRealSchemas:
 #: alias invisible to a matcher that only knew one of the two names.
 _LAX_INTEGER_SPELLINGS = frozenset({"Integer", "Int"})
 
+#: Every FACTORY in the validation package that returns a lax integer field.
+#:
+#: **This set exists because plan step X-ad-a nearly blinded the gate.**  That
+#: step gave ``pay_periods.py`` two shared field builders --
+#: ``cadence_days_field`` and ``num_periods_field`` -- so the cadence and batch
+#: bounds are stated once instead of six times, and registration became a fifth
+#: door without adding a seventh copy.  But this gate reads SOURCE: a field
+#: written ``cadence_days = cadence_days_field(...)`` carries the token
+#: ``cadence_days_field``, not ``Integer``, so the scan stopped seeing three
+#: real declarations.  Nothing failed loudly -- the sweep simply had three
+#: fewer subjects, which is the quiet failure a completeness gate exists to
+#: prevent in the code it grades and must therefore not have itself.
+#:
+#: A factory that returns a lax ``Integer`` is exactly as dangerous as an
+#: inline one, so the scan grades the two identically and
+#: ``test_every_lax_factory_really_returns_a_lax_field`` resolves each name and
+#: proves what it builds.  Add a name here when you add a builder; the
+#: stale-entry arm below then holds it to being real.
+_LAX_INTEGER_FACTORIES = frozenset({"cadence_days_field", "num_periods_field"})
+
+#: What the AST scan treats as "declared lax": the two marshmallow spellings
+#: plus every registered factory.
+_LAX_DECLARATIONS = _LAX_INTEGER_SPELLINGS | _LAX_INTEGER_FACTORIES
+
+#: Field builders in the package that return something that is NOT an integer
+#: field, so the row-id question does not arise for them.  Registered anyway,
+#: because ``test_the_factories_are_the_only_unscanned_call_form`` treats an
+#: unclassified builder as a hole -- and "it happens to return a String" is a
+#: fact about the helper that should be asserted rather than assumed.
+_NON_INTEGER_FIELD_FACTORIES = frozenset({"_auth_email_field"})
+
+#: Every marshmallow field spelling the package declares that is not an
+#: integer.
+#:
+#: **Exactly what the package declares, and nothing pre-authorised.**  A first
+#: cut listed sixteen marshmallow types "so the set is future-proof", twelve of
+#: which named nothing here -- and an adversarial review showed that generosity
+#: was a hole, not foresight: ``account_id = fields.Raw()`` would have passed
+#: the completeness arm below (``Raw`` is "known") AND the lax-declaration arm
+#: (``Raw`` is not an Integer spelling), while ``fields.Raw`` accepts ``"007"``,
+#: ``-5`` and ``0`` verbatim -- strictly worse than the ``fields.Integer`` this
+#: whole gate exists to remove.  Pre-authorising a type nobody has declared is
+#: the same defect as pre-authorising a NAME, which is what
+#: ``test_the_allowlist_has_no_stale_entries`` refuses on
+#: :data:`_NON_ROW_ID_INTEGERS`.  So this set is held to being real by
+#: ``test_the_non_integer_spellings_are_all_declared``: adding a genuinely new
+#: field type means declaring it and listing it in the same commit.
+_NON_INTEGER_FIELD_SPELLINGS = frozenset({
+    "Boolean", "Date", "Decimal", "String",
+})
+
 #: Every field-class spelling in the validation package that is STRICT about
 #: what names a row -- ``RowId`` and anything derived from it.
 #:
@@ -222,7 +273,11 @@ _NON_ROW_ID_INTEGERS = frozenset({
     "grid_default_periods",
     "inflation_effective_month",
     "interval_n",
-    "keep_through_index",
+    # ``keep_through_index`` LEFT this set at plan step C3-a rather than being
+    # relaxed out of it: the truncate form now posts ``keep_through_period_id``,
+    # a ``RowId``, because the value selects which pay periods a CASCADE
+    # destroys and identity is ``id`` (finding P13).  It was the one entry here
+    # that named a row while being spelled as a position.
     "large_transaction_threshold",
     "low_balance_threshold",
     "max_term_months",
@@ -307,6 +362,184 @@ class TestNoIdFieldWasMissed:
         assert fields.Int is fields.Integer
         assert {"Integer", "Int"} == _LAX_INTEGER_SPELLINGS
 
+    def test_every_lax_factory_really_returns_a_lax_field(self):
+        """The premise for grading a shared builder as a lax declaration.
+
+        :data:`_LAX_INTEGER_FACTORIES` widens what the scan calls "declared
+        lax", and a widened allowlist is the cheapest way past a gate -- the
+        same hole ``test_every_strict_spelling_really_derives_from_row_id``
+        closes on the strict side.  So each registered name is resolved and
+        the field it builds is asserted to be the lax ``Integer`` and NOT a
+        ``RowId``: a factory that started returning ``RowId`` would belong on
+        the strict side, and one that returned something else entirely would
+        mean the scan is grading a token that names nothing.
+        """
+        from app.schemas.validation import (  # pylint: disable=import-outside-toplevel
+            pay_periods,
+        )
+
+        for factory_name in _LAX_INTEGER_FACTORIES:
+            factory = getattr(pay_periods, factory_name, None)
+            assert factory is not None, (
+                f"{factory_name} is registered as a lax field factory but does "
+                "not exist in app.schemas.validation.pay_periods"
+            )
+            built = factory(required=True)
+            assert isinstance(built, fields.Integer), (
+                f"{factory_name} is graded as a lax Integer declaration but "
+                f"builds a {type(built).__name__}"
+            )
+            assert not isinstance(built, RowId), (
+                f"{factory_name} builds a RowId, so it is STRICT and belongs "
+                "in _STRICT_ROW_ID_SPELLINGS rather than here"
+            )
+
+    @staticmethod
+    def _class_body_field_calls():
+        """Return every ``attr = <call>(...)`` written in a CLASS body.
+
+        A narrower reader than :meth:`_id_fields_by_class`, which walks whole
+        modules and so also collects local variables inside functions
+        (``row_id = parse_row_id(value)``).  Those are harmless to the arms
+        that filter by callee name and fatal to an arm that asks "is every
+        callee here one I recognise", so the completeness question gets a
+        scan scoped to what a schema field actually IS: an attribute of a
+        class.
+
+        Returns:
+            list of ``(file, attribute, callee token)`` tuples.
+        """
+        import ast  # pylint: disable=import-outside-toplevel
+        from pathlib import Path  # pylint: disable=import-outside-toplevel
+
+        package = Path(__file__).resolve().parents[2] / "app" / "schemas"
+        found = []
+        for path in sorted(package.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                for stmt in node.body:
+                    if isinstance(stmt, ast.Assign):
+                        target = stmt.targets[0]
+                    elif isinstance(stmt, ast.AnnAssign):
+                        target = stmt.target
+                    else:
+                        continue
+                    if not isinstance(target, ast.Name):
+                        continue
+                    if not isinstance(stmt.value, ast.Call):
+                        continue
+                    func = stmt.value.func
+                    found.append((
+                        path.name,
+                        target.id,
+                        func.attr if isinstance(func, ast.Attribute)
+                        else getattr(func, "id", None),
+                    ))
+        return found
+
+    def test_the_class_body_scan_is_not_vacuous(self):
+        """Premise: the narrower reader below is finding real declarations."""
+        assert len(self._class_body_field_calls()) > 200
+
+    def test_no_schema_field_is_built_by_an_unclassified_call(self):
+        """Every field a schema declares is built by a callee this gate knows.
+
+        The scan reads the callee TOKEN, so a field whose right-hand side is a
+        call to something that is neither a marshmallow field class nor a
+        registered builder is a field this gate cannot classify -- and an
+        unclassifiable field is one the row-id sweep silently stops covering.
+        That is not hypothetical: plan step X-ad-a added two shared builders
+        to ``pay_periods.py`` and three real declarations left the sweep
+        without anything failing.  Only the stale-allowlist arm noticed, and
+        only because those three names happened to be allowlisted already --
+        a new field would have vanished in silence.
+
+        Failing here forces the next helper to declare which side it is on.
+        """
+        known = (
+            _LAX_DECLARATIONS
+            | _STRICT_ROW_ID_SPELLINGS
+            | _NON_INTEGER_FIELD_SPELLINGS
+            | _NON_INTEGER_FIELD_FACTORIES
+        )
+        unknown = sorted({
+            (file, attr, cls)
+            for file, attr, cls in self._class_body_field_calls()
+            if cls not in known
+        })
+        assert unknown == [], (
+            "these schema attributes are built by a call this gate cannot "
+            "classify, so they are outside the row-id sweep.  Register the "
+            "callee: _LAX_INTEGER_FACTORIES if it builds a lax Integer, "
+            "_STRICT_ROW_ID_SPELLINGS if it builds a RowId, "
+            f"_NON_INTEGER_FIELD_FACTORIES if it builds neither: {unknown}"
+        )
+
+    def test_the_non_integer_spellings_are_all_declared(self):
+        """No field type is waved through that the package does not declare.
+
+        The stale-entry arm :data:`_NON_ROW_ID_INTEGERS` gets, applied to the
+        other registry.  A listed-but-unused type is a standing permission for
+        a FUTURE field to be declared with it, unreviewed -- and at least one
+        such type (``fields.Raw``) is laxer than the ``fields.Integer`` this
+        gate exists to remove, so the permission is not harmless.
+        """
+        declared = {cls for _, _, cls in self._class_body_field_calls()}
+        stale = sorted(_NON_INTEGER_FIELD_SPELLINGS - declared)
+        assert stale == [], (
+            "these field types are listed as declared non-integer spellings "
+            "but nothing in the package declares one, so each is a standing "
+            "permission for an unreviewed future field (fields.Raw, for one, "
+            f"reads '007', -5 and 0 as ids).  Remove them: {stale}"
+        )
+
+    def test_a_lax_non_integer_field_type_would_be_caught(self):
+        """The negative control for the arm above, on the type that motivated it.
+
+        ``fields.Raw`` is the concrete escape the review demonstrated: laxer
+        than ``Integer``, and invisible to a sweep that only looks for integer
+        spellings.  Asserting it is NOT pre-authorised is what makes
+        ``account_id = fields.Raw()`` fail the completeness arm rather than
+        sail through it.
+        """
+        assert "Raw" not in _NON_INTEGER_FIELD_SPELLINGS
+        assert "Raw" not in _LAX_DECLARATIONS
+        assert "Raw" not in _STRICT_ROW_ID_SPELLINGS
+        # And it really is lax -- the premise, not an assumption about it.
+        assert fields.Raw().deserialize("007") == "007"
+
+    def test_every_non_integer_factory_really_builds_a_non_integer(self):
+        """The premise for waving a builder through as "not an integer".
+
+        :data:`_NON_INTEGER_FIELD_FACTORIES` is the escape hatch of the arm
+        above, so it needs the same treatment the other two registries get:
+        each name is resolved and the field it builds is asserted NOT to be an
+        integer.  Otherwise the cheapest way past the sweep would be to
+        register a lax integer builder as "not an integer".
+        """
+        from app.schemas.validation import auth  # pylint: disable=import-outside-toplevel
+
+        modules = {"_auth_email_field": auth}
+        for factory_name in _NON_INTEGER_FIELD_FACTORIES:
+            module = modules.get(factory_name)
+            assert module is not None, (
+                f"{factory_name} is registered as a non-integer field factory "
+                "but this test does not know which module to resolve it from"
+            )
+            factory = getattr(module, factory_name, None)
+            assert factory is not None, (
+                f"{factory_name} is registered as a non-integer field factory "
+                f"but does not exist in {module.__name__}"
+            )
+            built = factory()
+            assert not isinstance(built, fields.Integer), (
+                f"{factory_name} builds a {type(built).__name__}, which IS an "
+                "integer field -- it belongs in _LAX_INTEGER_FACTORIES or "
+                "_STRICT_ROW_ID_SPELLINGS, not here"
+            )
+
     def test_every_strict_spelling_really_derives_from_row_id(self):
         """The strict allowlist cannot be padded with a lax field class.
 
@@ -340,7 +573,7 @@ class TestNoIdFieldWasMissed:
         """
         found = self._id_fields_by_class()
         row_ids = [f for f in found if f[3] in _STRICT_ROW_ID_SPELLINGS]
-        integers = [f for f in found if f[3] in _LAX_INTEGER_SPELLINGS]
+        integers = [f for f in found if f[3] in _LAX_DECLARATIONS]
         assert len(row_ids) >= 74, (
             f"the scan found only {len(row_ids)} strict row-id declarations; "
             "it is not reading the schema package"
@@ -362,7 +595,7 @@ class TestNoIdFieldWasMissed:
         lax = [
             (file, lineno, attr)
             for file, lineno, attr, cls in self._id_fields_by_class()
-            if cls in _LAX_INTEGER_SPELLINGS
+            if cls in _LAX_DECLARATIONS
             and attr not in _NON_ROW_ID_INTEGERS
         ]
         assert lax == [], (
@@ -381,7 +614,7 @@ class TestNoIdFieldWasMissed:
         """
         declared = {
             attr for _, _, attr, cls in self._id_fields_by_class()
-            if cls in _LAX_INTEGER_SPELLINGS
+            if cls in _LAX_DECLARATIONS
         }
         stale = sorted(_NON_ROW_ID_INTEGERS - declared)
         assert stale == [], (

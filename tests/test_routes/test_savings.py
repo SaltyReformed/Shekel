@@ -32,7 +32,7 @@ from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.services import balance_at, savings_dashboard_service
+from app.services import balance_at, pay_period_write, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
@@ -412,9 +412,9 @@ class TestDashboard:
             # ~August 2026 (only 2 milestones would be displayed and
             # the assertion below would fail).
             start = date.today() - timedelta(days=14)
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=start,
+                first_payday=start,
                 num_periods=40,
                 cadence_days=14,
             )
@@ -460,9 +460,9 @@ class TestDashboard:
             # See test_dashboard_investment_account_shows_growth_projections
             # for why ``start`` is computed relative to today.
             start = date.today() - timedelta(days=14)
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=start,
+                first_payday=start,
                 num_periods=40,
                 cadence_days=14,
             )
@@ -509,9 +509,9 @@ class TestDashboard:
             # The BINDING went with the ``current_anchor_period_id`` line it
             # fed (ruling R-EH); the CALL is fixture setup and stays -- it is
             # what creates the periods this test projects over.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=start,
+                first_payday=start,
                 num_periods=40,
                 cadence_days=14,
             )

@@ -128,10 +128,10 @@ class TestGetOwnedViaParent:
             login_user(seed_user["user"])
 
             # Create a pay period for the second user.
-            from app.services import pay_period_service
-            periods2 = pay_period_service.generate_pay_periods(
+            from app.services import pay_period_write
+            periods2 = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
-                start_date=date(2026, 3, 1),
+                first_payday=date(2026, 3, 1),
                 num_periods=2,
                 cadence_days=14,
             )
@@ -572,10 +572,10 @@ class TestAccessDeniedLogging:
     ):
         """A cross-user denial through the parent path emits ``access_denied_cross_user``."""
         # Build a transaction owned by the second user.
-        from app.services import pay_period_service  # noqa: WPS433
-        periods2 = pay_period_service.generate_pay_periods(
+        from app.services import pay_period_write  # noqa: WPS433
+        periods2 = pay_period_write.record_paydays(
             user_id=second_user["user"].id,
-            start_date=date(2026, 3, 1),
+            first_payday=date(2026, 3, 1),
             num_periods=2,
             cadence_days=14,
         )
@@ -746,12 +746,12 @@ class TestAccessDeniedLogging:
         deep-hunt #85: the owner-path denial was silent before.  WARNING
         level matches the sibling get_or_404 cross-user event.
         """
-        from app.services import pay_period_service  # noqa: WPS433
+        from app.services import pay_period_write  # noqa: WPS433
         with app.test_request_context("/some/path"):
             login_user(seed_user["user"])
-            periods2 = pay_period_service.generate_pay_periods(
+            periods2 = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
-                start_date=date(2026, 3, 1),
+                first_payday=date(2026, 3, 1),
                 num_periods=2,
                 cadence_days=14,
             )

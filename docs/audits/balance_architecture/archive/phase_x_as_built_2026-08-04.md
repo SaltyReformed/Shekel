@@ -113,6 +113,39 @@ with X-an (it reads `due_on`, which `R5` creates behind X-f4). That `developer-d
 by `implementation_plan_recurrence_redesign.md` section 0 and by `steps.md`'s `blocked by` cell on
 `recurrence:R6`, both of which state it independently of this record.
 
+### 1c. The X-f2 cluster's first two leaves (added 2026-08-10)
+
+**X-f2 itself is OPEN** -- `X-f2-c` is unbuilt and decomposed into three leaves of its own -- so the
+parent's specification stays in `../README.md`. What comes here is the two leaves that are DONE.
+Rule 5's three conditions hold: `N-205` is unfinished and stays in `ledger.md` under `X-j`; the one
+live sentence either leaf carried (the seam PRESERVES an existing settle day, which `X-f2-c2`
+overrides with the statement date) moved UP into `X-f2-c2`'s own specification rather than being
+archived under it; and nothing below was carried without re-verification.
+
+| step | commit(s) | what it did | findings |
+|---|---|---|---|
+| **X-f2-a** | `397ce36e`, preceded by the module split it forced (`69b91a53`) | The DIFFERENCE, before it is saved (**R-EU**): the anchor editor previews what the account's RECORDS produce for the day the form names, what was typed, and the gap, through `balance_at.records_balance_at`. Read-only, so no figure moved; the arithmetic and the sign's MEANING are decided in the route. Scoped to accounts with no modelled tier, which is what **N-213** records | opened **N-212**, **N-213**, **N-214** |
+| **X-f2-b** | `a41b5ebf` + `7f30057a` + `a004361d` | The DURABLE record (**R-EV**): a Balance history card on the cash detail page -- as-of, recorded, ledger, CORRECTION -- on the new seam entry `balance_at.cash_anchor_history`, whose every column is a field `walk_cash_ledger(...).anchor_corrections` already published, so no producer was added. The acknowledgement re-keys onto "did the figure the user is looking at change" and its mount stops destroying a still-visible predecessor. `a004361d` is two neutral adversarial reviews' residue, and its top finding is the live lesson below | closed **N-204**, **N-206**; **N-205** NARROWED to the modelled kinds and re-pointed to **X-j** |
+
+**Three lessons this cluster paid for, kept because they are cited.** (i) One WORD covered two rules:
+the card's `recorded - balance_before` and the true-up preview's `recorded - records_balance_at(day)`
+were both labelled "Difference" on one page and diverge on any day carrying more than one assertion
+-- 3 of the real Checking account's ~50 -- so the column is `Correction` now and the figures never
+moved. (ii) **The pytest suite structurally cannot see a JS visibility defect**: `beforeend:` put the
+acknowledgement outside the element its auto-show handler is scoped to, so it reached the DOM and
+stayed INVISIBLE with 8,556 tests green; `tests/manual/verify_anchor_ack.py` is the probe that saw
+it. (iii) Bootstrap's instance map is a `Map`, not a WeakMap, so any component on an element an htmx
+swap destroys is retained: 5 expand-then-refresh cycles of the card retained **4,592 DOM nodes**,
+measured by CDP `Performance.getMetrics` with a forced GC, and `app.js` now disposes on
+`htmx:beforeSwap`.
+
+**Two defects this cluster REPORTED and did not fix**, each wanting its own step and each recorded
+where it will be read: `loan_posting_service.loan_balance_anchor_history` and
+`balance_at.cash_anchor_history` are two statements of ONE rule, and the fence registry rules that
+same column two opposite ways; and `is_opening` is POSITIONAL, so an assertion back-dated before an
+account's origination takes the "Opening" badge and the real origination loses it -- which is
+**N-200**, owned by `X-f3`.
+
 ## 2. Findings closed outside a Phase X step
 
 | finding | closed by | note |
@@ -137,6 +170,7 @@ in the plan document's git history at the commit that recorded it.
 | **R-F** | -- | Phase X ships FOLD-FIRST, not partition-patch-first |
 | **R-H** | -- | ONE walk, designed for both consumers from the start |
 | **R-J** | 2026-07-25 | A loan is refused at the SOURCE; the cash producers stay TOTAL and kind-blind |
+| **R-M** | 2026-07-25, amended 2026-08-01 | The column SPLITS rather than the guard bending: `purchased_on` is the day of purchase, `settled_on` the day the bank was seen to take it |
 | **R-P** | 2026-07-26 | Every surface that renders the subtotal figures renders ruling R-O's row, on R-O's own non-zero rule |
 | **R-R** | 2026-07-26 | A contribution is partitioned by SOURCE, so the two feeds are disjoint BY CONSTRUCTION and there is no de-dup rule to get wrong |
 | **R-V** | 2026-07-26 | Plan step X-c2c3 is CANCELLED; X-g replaces the modeled bases outright, and no compensator ships in the meantime |
@@ -212,6 +246,21 @@ in the plan document's git history at the commit that recorded it.
 | **R-DL** | 2026-08-02 | The anchor reconcile resolves its two ledger accounts ONCE per account rather than once per correction, and the fix rides INSIDE X-d |
 | **R-DX** | 2026-08-03 | The IDENTITY invariants go to the DATABASE tier where they CAN go |
 | **R-DZ** | 2026-08-03 | R2 for anchor corrections is a KEY-SHAPE change with NO migration in it, and it ships FIRST, alone, as plan step X-ai-r |
+| **R-DB** | 2026-07-31, DEEPER than recommended | Registration STOPS creating a bootstrap pay period |
+| **R-EC** | 2026-08-03 | `transactions.paid_at` is REPLACED by `transactions.settled_on`, not joined by it: the column stores the CIVIL DAY and the click instant is deleted |
+| **R-ED** | 2026-08-03 | The settle day is EDITABLE on a finalised row, and it is POSTING-RELEVANT |
+| **R-EF** | 2026-08-03 | The settle-day door ships on BOTH forms, because the transaction door alone corrects NOTHING |
+| **R-EG** | 2026-08-03 | A settle day submitted alongside a REVERT is dropped at the door, not refused |
+| **R-EI** | 2026-08-03 | The true-up editor's statement date goes on a SECOND LINE |
+| **R-EJ** | 2026-08-03 | A settle day in the FUTURE is refused, at the seam |
+| **R-EL** | 2026-08-04 | A settle day BELOW the schedule is refused, at the same seam and by the same bound an anchor observation already uses |
+| **R-EP** | 2026-08-04 | "As of when was this balance asserted" gets ONE source: the assertion's own `observed_on` |
+| **R-AQ** | 2026-07-27 | There is no DEFERRED category. Every finding is owned by a step, and a wake condition is not an owner. SUPERSEDED as a rule by `conventions.md` rule 1, which grades it |
+| **R-CC** | 2026-07-29 | A financial STATEMENT never reports zeros for a ledger it cannot read |
+| **R-DC** | 2026-07-31 | A mid-life schedule change FILLS the hole it would leave |
+| **R-DD** | 2026-07-31 | Both write-path fixes are their OWN step (X-ad), sequenced immediately after X-x. REVERSED on the ordering by **R-DE**, and the later ruling governs |
+| **R-DS** | 2026-08-02 | A status repair takes the PAIR's instant, and never invents one |
+
 ## 4. What this record deliberately does not carry
 
 * **The running-state narrative.** ~1,000 lines of "X-n is DONE" entries with their measurements,

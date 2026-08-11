@@ -209,7 +209,7 @@ class RecurrenceWindowError(ShekelError):
       is a route-layer hole or a probe;
     * the caller passed an UNSAVED period, which has no id to match against a
       schedule read back from the database.  The repopulation paths flush
-      before populating (``pay_period_service.generate_pay_periods``), so an
+      before populating (``pay_period_write.record_paydays``), so an
       unsaved period here means a caller skipped that.
 
     Raised rather than skipped because both alternatives are silent: a window
@@ -248,7 +248,7 @@ class PayPeriodLocked(ShekelError):
 
     Attributes:
         blocking: A dict mapping each blocking pay-period id to its
-            :class:`~app.services.pay_period_admin.PeriodLockReason`.
+            :class:`~app.services.pay_period_locks.PeriodLockReason`.
     """
 
     def __init__(self, blocking):
@@ -279,6 +279,85 @@ class PayPeriodDiscardRequired(ShekelError):
         super().__init__(
             f"This will permanently discard {count} hand-entered or changed "
             f"item(s) that cannot be regenerated. Confirm to proceed."
+        )
+
+
+class PayPeriodUnresolved(ShekelError):
+    """A submitted pay-period id names no period the requesting owner has.
+
+    Raised by ``pay_period_admin.truncate_pay_periods`` when the id the
+    truncate form posted resolves to none of the caller's own periods -- it
+    was never theirs, it never existed, or a concurrent truncate deleted it
+    between the discard-confirm 422 and the confirmation post.  The operation
+    deletes nothing.
+
+    **One class for all three cases, and that is the security property**
+    (plan step C3-a, finding **P13**).  The house rule is that "not found" and
+    "not yours" are answered identically so no door becomes an existence
+    oracle; here that is structural rather than remembered, because there is
+    only one exception to raise and one message on it.  Which case it was IS
+    distinguished -- in the ACCESS log, where an analyst can see it and a
+    prober cannot (``pay_period_admin._log_unresolved_period``).
+
+    Its own class rather than a bare
+    :class:`ValidationError`, because the truncate route has to catch it: a
+    catch on the generic base would flash "reload the settings page and choose
+    the period again" for any future business-rule refusal raised anywhere
+    below it, turning a real defect into advice about a dropdown.
+
+    Attributes:
+        period_id: The submitted id that resolved to nothing.
+    """
+
+    def __init__(self, period_id):
+        self.period_id = period_id
+        super().__init__(
+            f"Pay period {period_id} is not one of yours, or no longer "
+            f"exists. Reload the pay-periods settings page and choose the "
+            f"period to keep through from the current list."
+        )
+
+
+class PayPeriodOverlapStored(ShekelError):
+    """A stored pay period covers days its successor's payday already claims.
+
+    Raised by ``pay_period_write._write_derivation`` (plan step C3-b) when a
+    non-last period's stored ``end_date`` is LATER than the day before the next
+    payday.  Two periods then cover the same days, which is the state
+    ``uq_pay_periods_user_index`` and three runtime fences exist to catch and
+    which no writer in this app's history could produce.  Nothing is written.
+
+    **It is not the mirror of a hole, and that is why it raises where a hole
+    repairs.**  A stored end BELOW the derivation is days the owner's paydays
+    cover and the column does not, so materialising the derivation LENGTHENS
+    the period and can only pull a row's money back into a column it belongs
+    in.  Above it, the two values contradict each other and rewriting the
+    column SHORTENS a period -- possibly one holding settled money -- on the
+    strength of a guess about which value is right.  A broken invariant, not
+    user input: no form can produce it and no route catches this, because the
+    right disposition is a stack trace naming the row.
+
+    Attributes:
+        period_id: The ``budget.pay_periods.id`` that overlaps.
+        payday: Its ``start_date``.
+        stored_end: The ``end_date`` on the row.
+        derived_end: The day before the next payday -- what the row's own
+            successor says its end must be.
+    """
+
+    def __init__(self, period_id, payday, stored_end, derived_end):
+        self.period_id = period_id
+        self.payday = payday
+        self.stored_end = stored_end
+        self.derived_end = derived_end
+        super().__init__(
+            f"Pay period {period_id} (payday {payday.isoformat()}) is stored "
+            f"ending {stored_end.isoformat()}, past {derived_end.isoformat()} "
+            f"-- the day before the next payday -- so it overlaps the period "
+            f"after it.  Refusing to rewrite the column: shortening a period "
+            f"that may hold settled money, to resolve a contradiction this "
+            f"writer cannot have created, needs a person to decide which value "
+            f"is right."
         )
 
 

@@ -60,6 +60,30 @@ def _stage_arc(tmp_path, monkeypatch):
     return _apply
 
 
+def _a_live_fork():
+    """Return the first live fork, its ``steps.md`` line, and a remedy's line.
+
+    **The fork controls below used to NAME a specimen** --
+    ``| pay_calendar:P3 = balance:N-123 |`` and ``| balance | N-123 |`` -- and
+    that broke on 2026-08-10, when ``balance:X-ad-a`` shipped the remedy that
+    fork was ruled to, its defect row closed, and the fork line left the table.
+    Three controls went red for the single reason that the rule they grade had
+    WORKED.  A control anchored to one corpus row rots exactly like the prose
+    counts these registries exist to remove, so the specimen is now derived:
+    whichever fork is live gets graded, and the next one to be settled costs
+    this file nothing.
+
+    Returns:
+        ``(fork, fork line, one remedy's step line)``.
+    """
+    found = registry.forks()
+    assert found, "no fork in steps.md -- the controls below have no subject"
+    fork = found[0]
+    line = _row("steps", f"| {fork.defect} |")
+    arc, ident = fork.remedy_keys()[0].split(":", 1)
+    return fork, line, _row("steps", f"| {arc} | {ident} |")
+
+
 def _row(which: str, prefix: str) -> str:
     """Return the one live row of *which* registry starting with *prefix*."""
     source = {"ledger": registry.LEDGER, "steps": registry.STEPS}[which]
@@ -128,6 +152,73 @@ class TestTheLedgerStatesItsOwnSize:
               f"**The ledger stands at {actual - 7} rows.**")
         problem = registry.stated_count_violation()
         assert problem is not None and "rule 3" in problem
+
+
+class TestStepsStatesItsOwnSize:
+    """conventions.md rule 3, on the registry it was not being applied to.
+
+    **All FOUR of these numbers were stale when this class was written**
+    (2026-08-11): the header said "112 steps, 96 open" against 113 and 95, and
+    the graph line said 93 edges over 58 rows against 94 and 59.  Rule 3 was
+    written about `ledger.md` and graded only there, so its sibling carried
+    exactly the defect the rule describes -- and it went wrong in BOTH
+    directions inside one merge, because one session appended a step while
+    another ticked one.
+
+    Each arm is separate because each goes stale for a different reason: the
+    size on an append, the open count on a tick, the graph on a new
+    ``blocked by`` edge.
+    """
+
+    def test_the_stated_counts_match_the_table(self):
+        """The stated counts match the table."""
+        assert not registry.steps_stated_count_violation()
+
+    def test_the_control_fires_on_a_wrong_step_count(self, stage):
+        """The control fires on a wrong step count."""
+        rows = registry.step_rows()
+        opened = sum(1 for row in rows if row.state.lower() == "open")
+        stage("steps", f"**{len(rows)} steps, {opened} open.**",
+              f"**{len(rows) - 7} steps, {opened} open.**")
+        problems = registry.steps_stated_count_violation()
+        assert any("holds 113 steps" in p or "steps and the table holds" in p
+                   for p in problems), problems
+
+    def test_the_control_fires_on_a_wrong_open_count(self, stage):
+        """The control fires on a wrong open count.
+
+        Its own arm because a tick moves this number and not the size, so a
+        single count arm would report clean over the edit that ships a step.
+        """
+        rows = registry.step_rows()
+        opened = sum(1 for row in rows if row.state.lower() == "open")
+        stage("steps", f"**{len(rows)} steps, {opened} open.**",
+              f"**{len(rows)} steps, {opened - 3} open.**")
+        problems = registry.steps_stated_count_violation()
+        assert any("are open and" in p for p in problems), problems
+
+    def test_the_control_fires_on_a_wrong_graph_size(self, stage):
+        """The control fires on a wrong ``blocked by`` graph size."""
+        rows = registry.step_rows()
+        edges = sum(len(row.blocked_keys()) for row in rows)
+        carriers = sum(1 for row in rows if row.blocked_keys())
+        stage("steps", f"holds {edges} edges over {carriers} rows",
+              f"holds {edges - 4} edges over {carriers} rows")
+        problems = registry.steps_stated_count_violation()
+        assert any("edges and it holds" in p for p in problems), problems
+
+    def test_the_pattern_still_matches_the_live_document(self):
+        """Rule 3's own failure mode: a pattern that matches nothing passes.
+
+        The balance README's row-count arm shipped requiring ``rows**`` while
+        the document wrote ``rows.**``, so it matched NOTHING, read that as "no
+        count is claimed" and passed a planted 38-against-41.  These two arms
+        assert their patterns still find something in the REAL file, so the
+        same silence cannot happen here.
+        """
+        text = registry.STEPS.read_text()
+        assert registry.STEPS_COUNT_RX.search(text) is not None
+        assert registry.BLOCKED_GRAPH_RX.search(text) is not None
 
 
 class TestEveryFindingNamesALiveOwner:
@@ -289,14 +380,18 @@ class TestAnIdentityClassSharesOneTickState:
 
 
 class TestAForkBindsItsRemediesAndItsDefectRow:
-    """conventions.md rule 11, second half -- the P3 / N-123 collision.
+    """conventions.md rule 11, second half -- born of the P3 / N-123 collision.
 
     **The controls STAGE an unruled fork rather than requiring the live corpus
-    to hold one.**  Both live forks were ruled on 2026-08-09, so a control that
-    asserted "an unruled fork exists" would now be red -- and the tempting way
-    to green it is to relax the assertion, which is how a predicate quietly
-    stops being tested.  Staging the state proves the arm whether or not the
-    developer happens to have an open fork today.
+    to hold one.**  Every live fork has been ruled, so a control that asserted
+    "an unruled fork exists" would now be red -- and the tempting way to green
+    it is to relax the assertion, which is how a predicate quietly stops being
+    tested.  Staging the state proves the arm whether or not the developer
+    happens to have an open fork today.
+
+    **And the specimen is DERIVED, not named** (:func:`_a_live_fork`): naming
+    one made three of these controls fail on 2026-08-10 for the single reason
+    that the rule had worked and the fork had left the table.
     """
 
     def test_no_fork_is_violated_in_the_live_corpus(self):
@@ -313,10 +408,9 @@ class TestAForkBindsItsRemediesAndItsDefectRow:
 
     def test_the_control_fires_when_a_remedy_ships_before_the_ruling(self, stage):
         """Whichever remedy ships first decides for both arcs."""
-        ruling = _row("steps", "| pay_calendar:P3 = balance:N-123 |")
+        _, ruling, remedy = _a_live_fork()
         stage("steps", ruling, _with_cell(ruling, -1, "**NOT YET RULED**"))
-        line = _row("steps", "| balance | X-ad |")
-        stage("steps", line, _with_cell(line, 4, "SHIPPED"))
+        stage("steps", remedy, _with_cell(remedy, 4, "SHIPPED"))
         problems = registry.fork_violations()
         assert any("NOT YET RULED" in p for p in problems), problems
 
@@ -329,10 +423,9 @@ class TestAForkBindsItsRemediesAndItsDefectRow:
         True -- and a True makes the whole fork arm skip.  This is the rule
         that exists BECAUSE P3 / N-123 went unnoticed from April to 2026-08-09.
         """
-        ruling = _row("steps", "| pay_calendar:P3 = balance:N-123 |")
+        _, ruling, remedy = _a_live_fork()
         stage("steps", ruling, _with_cell(ruling, -1, word))
-        line = _row("steps", "| balance | X-ad |")
-        stage("steps", line, _with_cell(line, 4, "SHIPPED"))
+        stage("steps", remedy, _with_cell(remedy, 4, "SHIPPED"))
         problems = registry.fork_violations()
         assert any("NOT YET RULED" in p for p in problems), (word, problems)
 
@@ -344,14 +437,16 @@ class TestAForkBindsItsRemediesAndItsDefectRow:
         by design.  Without this arm the row could keep pointing at a decision
         already taken, indefinitely, with every other gate green.
         """
-        line = _row("ledger", "| balance | N-123 |")
+        fork, _, _ = _a_live_fork()
+        arc, ident = fork.defect_keys()[0].split(":", 1)
+        line = _row("ledger", f"| {arc} | {ident} |")
         stage("ledger", line, _with_cell(line, -1, "developer-decision (2026-08-09)"))
         problems = registry.fork_violations()
-        assert any("RULED for balance:X-ad" in p for p in problems), problems
+        assert any(f"RULED for {fork.winner}" in p for p in problems), problems
 
     def test_the_control_fires_when_the_defect_names_no_live_row(self, stage):
         """A fork about a row that does not exist decides nothing."""
-        ruling = _row("steps", "| pay_calendar:P16 |")
+        _, ruling, _ = _a_live_fork()
         stage("steps", ruling, _with_cell(ruling, 0, "pay_calendar:P999"))
         problems = registry.fork_violations()
         assert any("names no live ledger.md row" in p for p in problems), problems

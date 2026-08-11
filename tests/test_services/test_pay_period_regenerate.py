@@ -31,6 +31,7 @@ from app.models.transaction import Transaction
 from app.services import (
     pay_period_admin,
     pay_period_service,
+    pay_period_write,
     pay_schedule_service,
     period_population,
 )
@@ -66,9 +67,9 @@ def _spanning_periods(db_session, seed_user, count=8):
     Index 4 (06-12..06-25) is the in-progress period; 1..3 are historical;
     5.. are the rebuildable future tail.
     """
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=_SPAN_START,
+        first_payday=_SPAN_START,
         num_periods=count,
         cadence_days=14,
     )
@@ -104,7 +105,7 @@ class TestRegenerateHappyPath:
         with app.app_context():
             user_id = seed_user["user"].id
             # Index 1 starts ON the frozen today -- the current period.
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id, FROZEN_TODAY, num_periods=4, cadence_days=14,
             )
             db.session.commit()
@@ -239,6 +240,93 @@ class TestRegenerateHappyPath:
             assert all(r.passed for r in check_referential_integrity(db.session))
 
 
+class TestRegenerateWhenTheWholeScheduleIsRebuildable:
+    """The boundary cases at both ends of ``_regenerate_keep_through_period``.
+
+    **Both were unreachable in this suite until plan step C3-a**, and an
+    adversarial review is what found that.  Every other test here uses
+    ``seed_user``, whose bootstrap period is pinned at 2024-01-05 while every
+    frozen today is in 2026 -- so the first period is always historical, always
+    locked, and never the rebuildable boundary.  The "keep NONE of them" arm
+    therefore had no test at all, on the single most destructive branch in the
+    module: it deletes every pay period the owner has, cascading their
+    transactions, their transfers with both shadows, and their journal entries.
+
+    ``bare_user`` has no bootstrap period, so a schedule built entirely on one
+    side of today reaches each arm.
+    """
+
+    def test_an_all_future_schedule_is_rebuilt_from_nothing(
+        self, app, db, bare_user,
+    ):
+        """Every period is unlocked and future, so regenerate replaces them all.
+
+        ``_regenerate_keep_through_period`` answers ``None`` here -- the
+        rebuildable tail starts at the very first period -- and
+        ``_delete_periods_after`` reads that as "delete every one".  The empty
+        state is transient inside the one transaction: the fresh schedule is
+        generated before this call returns, so no committed state is ever
+        period-less.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            old = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 7, 3),
+                num_periods=4, cadence_days=14,
+            )
+            db.session.commit()
+            old_ids = {p.id for p in old}
+
+            new_periods = pay_period_admin.regenerate_pay_periods(
+                user_id, date(2026, 8, 7), 3, 14,
+            )
+            db.session.commit()
+
+            # Not one original row survived, and the count is exactly the
+            # rebuild -- no retained prefix, because there was nothing to keep.
+            surviving = pay_period_service.get_all_periods(user_id)
+            assert {p.id for p in surviving} & old_ids == set()
+            assert len(surviving) == 3
+            assert len(new_periods) == 3
+            assert [p.start_date for p in surviving] == [
+                date(2026, 8, 7), date(2026, 8, 21), date(2026, 9, 4),
+            ]
+            assert_pay_period_invariants(db.session, user_id)
+            assert all(r.passed for r in check_referential_integrity(db.session))
+
+    def test_an_all_past_schedule_degrades_to_an_append(
+        self, app, db, bare_user,
+    ):
+        """No period is rebuildable, so the truncate is a no-op and it appends.
+
+        The other arm: the loop finds no not-yet-started unlocked period and
+        falls through to the LAST one, which ``_delete_periods_after`` then
+        selects nothing after.  The docstring has always claimed this
+        "degrades to an append from ``new_start_date``"; nothing asserted it.
+        """
+        user_id = bare_user["user"].id
+        with app.app_context():
+            old = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 2),
+                num_periods=4, cadence_days=14,
+            )
+            db.session.commit()
+            old_ids = {p.id for p in old}
+
+            new_periods = pay_period_admin.regenerate_pay_periods(
+                user_id, date(2026, 7, 3), 2, 14,
+            )
+            db.session.commit()
+
+            surviving = pay_period_service.get_all_periods(user_id)
+            # All four historical periods kept, two appended: 4 + 2.
+            assert old_ids <= {p.id for p in surviving}
+            assert len(surviving) == 6
+            assert len(new_periods) == 2
+            assert_pay_period_invariants(db.session, user_id)
+            assert all(r.passed for r in check_referential_integrity(db.session))
+
+
 class TestRegenerateRefusals:
     """Regenerate inherits truncate's lock + discard gates (Discipline 4)."""
 
@@ -291,20 +379,29 @@ class TestRegenerateRefusals:
     def test_overlapping_new_start_rejected_and_rolls_back(
         self, app, db, seed_user,
     ):
-        """A new_start that overlaps the retained schedule is rejected.
+        """A new_start below the forward-only floor is rejected, atomically.
 
-        The truncate runs before generate validates the start, so the
+        The truncate runs before the writer validates the start, so the
         route's rollback (simulated here) must restore the deleted tail --
         nothing partial survives.
+
+        **The refused date moved in at plan step C3-b.**  It was five days
+        into the retained current period, which the OLD guard refused because
+        it bounded on the retained ``end_date``; the floor is now the retained
+        PAYDAY plus two, so that date is accepted and correctly shortens the
+        retained period (the "correct my cadence going forward" case the
+        implementation plan's section 6 names).  One day in is still below the
+        floor, so it still refuses -- and the atomicity this test is about is
+        unchanged.
         """
         with app.app_context():
             periods = _spanning_periods(db.session, seed_user, count=8)
             user_id = seed_user["user"].id
             before = _count_periods(db.session, user_id)
-            # A start strictly inside the retained current period (not on a
-            # boundary, so generate cannot skip it as an existing start)
-            # overlaps the retained coverage.
-            bad_start = periods[3].start_date + timedelta(days=5)
+            # One day after the retained current period's PAYDAY: below the
+            # floor of payday + MIN_MATERIALISABLE_CADENCE_DAYS, so it would
+            # leave that period deriving an end equal to its own start.
+            bad_start = periods[3].start_date + timedelta(days=1)
 
             with pytest.raises(ValidationError):
                 pay_period_admin.regenerate_pay_periods(

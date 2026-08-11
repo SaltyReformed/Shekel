@@ -45,7 +45,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.ref import AccountType
-from app.services import pay_period_service, transfer_service
+from app.services import pay_period_service, pay_period_write, transfer_service
 from app.services import account_service
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 
@@ -147,9 +147,9 @@ def _seed_second_user_transfer_assets():
     # Pay periods first (E-19, Commit 3): the account_service factory
     # requires the user to have at least one pay period to anchor
     # against before any account row can be created.
-    other_periods = pay_period_service.generate_pay_periods(
+    other_periods = pay_period_write.record_paydays(
         user_id=other.id,
-        start_date=date(2026, 1, 2),
+        first_payday=date(2026, 1, 2),
         num_periods=2,
         cadence_days=14,
     )

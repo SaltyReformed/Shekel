@@ -36,14 +36,14 @@ loop from the anchor date, so on a fixed calendar the target and the posted
 entries always agreed and no loan figure moves (measured on a production
 clone: zero deltas across every loan).  They stop agreeing when the calendar
 GROWS A PERIOD around an anchor that had none.
-:func:`app.services.loan_ledger.resolve_anchor_pay_period` falls back to the
-nearest period when nothing contains the anchor date, so a loan asserted past
-the end of the user's schedule files against that fallback; the next
-``extend_pay_periods`` -- or the rolling-window top-up
+:meth:`app.services.pay_calendar.PayCalendar.filing_period` clamps to the last
+period that OPENED on or before the anchor date when none contains it, so a
+loan asserted past the end of the user's schedule files against that clamp; the
+next ``extend_pay_periods`` -- or the rolling-window top-up
 (``pay_period_admin.top_up_rolling_window``, which appends through the same
 function on an ordinary grid or dashboard load) -- then creates the period
 that really contains it.  A period-blind key compared the two as equal, so the
-delta was zero and the correction sat in the fallback period permanently, with
+delta was zero and the correction sat in the clamped period permanently, with
 any later adjustment filed there too.  With the period in the key the stale
 key reverses to zero and the real one posts fresh, which is the same lifecycle
 every other reconcile in this ledger already gets.
@@ -63,18 +63,30 @@ which is only safe BECAUSE they refuse.
 
 **Where the period comes from is the SAME on both halves, and this paragraph
 used to say it was not.**  A loan anchor's period is DERIVED from its date
-through :func:`app.services.loan_ledger.resolve_anchor_pay_period` -- the same
-call the fold's visibility rule uses -- because ``budget.loan_anchor_events``
-carries no ``pay_period_id`` column at all (and the origination anchor is
-SYNTHESIZED from ``LoanParams``, so it has no row to carry one).  **The account
-twin makes the identical call** (ruling R-EA): a cash assertion does store a
-period, and the twin deliberately does not read it, because that column is a
-cache of this same derivation and a clock split made it disagree with its own
-day on real data.  An earlier draft of this paragraph read *"a cash assertion
-stores its own period and the account twin reads it"*; that was true of the
-first build of plan step X-ai-r and was left standing when the ruling changed,
-which is exactly the stale-sentence-beside-a-rewritten-one class this arc keeps
-paying for.
+through :meth:`app.services.pay_calendar.PayCalendar.filing_period`, because
+``budget.loan_anchor_events`` carries no ``pay_period_id`` column at all (and
+the origination anchor is SYNTHESIZED from ``LoanParams``, so it has no row to
+carry one).  **The account twin makes the identical call** (ruling R-EA): a
+cash assertion does store a period, and the twin deliberately does not read it,
+because that column is a cache of this same derivation and a clock split made
+it disagree with its own day on real data.  An earlier draft of this paragraph
+read *"a cash assertion stores its own period and the account twin reads it"*;
+that was true of the first build of plan step X-ai-r and was left standing when
+the ruling changed, which is exactly the stale-sentence-beside-a-rewritten-one
+class this arc keeps paying for.
+
+**The rule became ONE clamp at plan step C2-d, and the fold no longer shares
+it.**  It was ``loan_ledger.resolve_anchor_pay_period`` -- containment, else
+the latest period ENDING before the date, else the earliest -- three branches
+over two functions, and the fold's visibility rule was its second consumer.
+Ruling **D5**'s one clock had already taken the fold off it (an anchor counts
+from its OWN date, needing no calendar), leaving the two posting writers as the
+only callers, and the 2026-08-10 ruling then named what they were really
+asking: *the latest period STARTING on or before the day, else the earliest*.
+The equivalence to the deleted chain, its PRECONDITION, and the proofs that
+cover each half are stated once at
+:meth:`app.services.pay_calendar.PayCalendar.filing_period` rather than
+repeated here and in the account twin.
 """
 
 from app import ref_cache
@@ -83,28 +95,24 @@ from app.enums import (
     PostingKindEnum,
     PostingSourceEnum,
 )
-from app.models.pay_period import PayPeriod
 from app.services import ledger_account_service
 from app.services._posting_reconcile import (
     CorrectionKey,
     LegMap,
     account_owner_id,
     emit_correction_deltas,
+    filing_calendar_for,
     merge_target_legs,
     posted_correction_legs,
 )
+from app.services.pay_calendar import PayCalendar
 from app.services.user_write_lock import lock_user_writes
 from app.services.loan_ledger import (
     LoanAnchorCorrection,
-    owner_pay_periods,
-    resolve_anchor_pay_period,
     walk_loan_ledger,
 )
 from app.services.loan_loaders import LoanAnchorFact
-from app.services.posting_service import (
-    PostingError,
-    _ledger_account_for,
-)
+from app.services.posting_service import _ledger_account_for
 
 
 def _anchor_correction_kinds(
@@ -182,7 +190,7 @@ def _loan_anchor_correction_target(
 def _anchor_correction_targets(
     corrections: list[LoanAnchorCorrection],
     owner_id: int,
-    periods: list[PayPeriod],
+    calendar: PayCalendar,
 ) -> dict[CorrectionKey, LegMap]:
     """Merge a loan's anchor corrections into per-(source, period, date) targets.
 
@@ -206,9 +214,13 @@ def _anchor_correction_targets(
     Args:
         corrections: The loan's anchor corrections from :func:`walk_loan_ledger`.
         owner_id: The loan owner's user id.
-        periods: The owner's pay periods ascending, non-empty (the caller
-            raises when the loan has corrections to post and the owner has
-            none, so :func:`resolve_anchor_pay_period` always resolves).
+        calendar: The owner's whole pay calendar, from
+            :func:`app.services._posting_reconcile.filing_calendar_for`.
+            :meth:`~app.services.pay_calendar.PayCalendar.filing_period` is the
+            one place the "is there a period to point at" question is asked and
+            refused, so this carries no precondition of its own -- an earlier
+            draft claimed the loader had already checked, which was a second
+            statement of one predicate and the two had drifted.
 
     Returns:
         ``{(source_kind_id, pay_period_id, entry_date): {ledger_account_id:
@@ -220,7 +232,7 @@ def _anchor_correction_targets(
         anchor_date = correction.anchor.anchor_date
         key = (
             ref_cache.posting_source_id(source_enum),
-            resolve_anchor_pay_period(periods, anchor_date).id,
+            calendar.filing_period(anchor_date).period_id,
             anchor_date,
         )
         bucket = target.setdefault(key, {})
@@ -265,31 +277,33 @@ def reconcile_loan_anchor_corrections(
             (its origination opening + every user-trueup).
 
     Raises:
-        PostingError: If the loan has anchor corrections to post but its owner has
-            no pay periods (a broken invariant -- a correction needs a period).
+        PayCalendarError: The owner has no MATERIALISED pay period, so a
+            correction's ``NOT NULL`` ``pay_period_id`` has nothing to point at
+            -- refused by
+            :meth:`~app.services.pay_calendar.PayCalendar.filing_period`, which
+            is the ONE place that question is asked (developer ruling
+            2026-08-10; a second refusal at the loader was deleted because the
+            two predicates had already drifted).  A broken invariant, and
+            finding **N-192** is why it fails loud rather than clamping.
     """
     if not corrections:
         return
-    owner_id = account_owner_id(loan_account_id)
-    if owner_id is None:
+    # The SAME door the account twin takes (plan step C2-d), so the period this
+    # writer FILES an anchor under and the period that one files an assertion
+    # under cannot come from two different rules OR two different loads.  It
+    # hands back the OWNER with the calendar, which is what keeps a loan from
+    # being resolved against another user's schedule.  The fold is not a third
+    # consumer: ruling D5's one clock counts an anchor from its own date, so it
+    # needs no calendar at all.
+    resolved = filing_calendar_for(loan_account_id)
+    if resolved is None:
         return
-    # The SAME calendar load the fold's visibility rule uses
-    # (:func:`app.services.loan_ledger.owner_pay_periods`), so the period this
-    # writer FILES an anchor under and the period the fold derives its visible-on
-    # date FROM can never come from two different lists.  That is what makes
-    # "two consumers, one rule" true of the period set as well as the lookup.
-    periods = owner_pay_periods(loan_account_id)
-    if not periods:
-        raise PostingError(
-            f"Loan account {loan_account_id} has anchor corrections to post but "
-            f"owner {owner_id} has no pay periods; a correction's NOT NULL "
-            f"pay_period_id cannot be resolved."
-        )
+    owner_id, calendar = resolved
 
     emit_correction_deltas(
         owner_id,
         scenario_id,
-        target=_anchor_correction_targets(corrections, owner_id, periods),
+        target=_anchor_correction_targets(corrections, owner_id, calendar),
         posted=posted_correction_legs(
             _ledger_account_for(loan_account_id).id,
             scenario_id,
@@ -327,8 +341,14 @@ def sync_loan_anchor_corrections(
         scenario_id: The budget scenario to reconcile within.
 
     Raises:
-        PostingError: If the loan has anchor corrections to post but its owner has
-            no pay periods (a broken invariant -- a correction needs a period).
+        PayCalendarError: The owner has no MATERIALISED pay period, so a
+            correction's ``NOT NULL`` ``pay_period_id`` has nothing to point at
+            -- refused by
+            :meth:`~app.services.pay_calendar.PayCalendar.filing_period`, which
+            is the ONE place that question is asked (developer ruling
+            2026-08-10; a second refusal at the loader was deleted because the
+            two predicates had already drifted).  A broken invariant, and
+            finding **N-192** is why it fails loud rather than clamping.
     """
     # Locked like every other reconcile door (plan step X-f1c3c): this one has
     # no ``app/`` caller today, only tests -- and it is in ``__all__``, so the

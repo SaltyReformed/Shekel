@@ -391,7 +391,7 @@ def update_recurrence_rule_from_form(
     # derive from, so the payload remains its only statement of phase -- and
     # it cannot carry a stale non-zero one, because a period that is a rule's
     # anchor is HARD-LOCKED against deletion
-    # (``pay_period_admin.PeriodLockReason.RECURRENCE_ANCHOR``).
+    # (``pay_period_locks.PeriodLockReason.RECURRENCE_ANCHOR``).
     submitted_offset = data.pop("offset_periods", 0)
 
     # The rule's CURRENT authored state, with the form's fields replaced.

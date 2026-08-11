@@ -30,8 +30,8 @@ def populate_periods_from_active_templates(user_id, periods, effective_from=None
     """Generate recurring transactions AND transfers into a set of periods.
 
     The repopulation step extend and regenerate run after creating new,
-    empty periods.  ``generate_pay_periods`` creates blank periods and
-    does NOT call the recurrence engine, so a freshly-appended period has
+    empty periods.  ``pay_period_write.record_paydays`` creates blank periods
+    and does NOT call the recurrence engine, so a freshly-appended period has
     none of its rent / paychecks / recurring transfers until this runs.
     This re-runs BOTH engines -- transactions and transfers, so a new
     period never silently misses a recurring transfer -- over the

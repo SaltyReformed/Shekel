@@ -24,6 +24,7 @@ from app.services import (
     balance_at,
     income_service,
     pay_period_service,
+    pay_period_write,
     posting_service,
 )
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
@@ -1443,9 +1444,9 @@ class TestTransactionNegativePaths:
             settings = UserSettings(user_id=other_user.id)
             db.session.add(settings)
 
-            other_periods = pay_period_service.generate_pay_periods(
+            other_periods = pay_period_write.record_paydays(
                 user_id=other_user.id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=3,
                 cadence_days=14,
             )
@@ -2879,9 +2880,9 @@ class TestPeriodHeaderDateFormat:
 
     def _make_periods(self, db, seed_user, start_date, num_periods=6):
         """Helper: generate pay periods and set anchor to the first one."""
-        periods = pay_period_service.generate_pay_periods(
+        periods = pay_period_write.record_paydays(
             user_id=seed_user["user"].id,
-            start_date=start_date,
+            first_payday=start_date,
             num_periods=num_periods,
             cadence_days=14,
         )

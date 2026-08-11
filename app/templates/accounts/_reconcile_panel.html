@@ -1,0 +1,245 @@
+{% from "_money_macros.html" import money %}
+{% macro settle_row(group, panel_id, label, period_start=none, period_end=none) %}
+{# ONE rendering of a settle offer, used by BOTH arms.
+
+   It was two, and the duplicate honoured ``is_correctable`` in only one of
+   them: the nested arm printed a static figure unconditionally, so a row that
+   carries purchases AND is correctable -- reachable, because a template's
+   ``is_envelope`` can be turned off after its instances hold entries -- lost
+   its correction box silently.  A rule enforced in one of two copies is the
+   shape ruling R-FB's box exists to make reliable.
+
+   ``period_start`` / ``period_end`` are passed only by the CHILDLESS arm,
+   where this row IS the heading: ``OutstandingGroup`` argues the pay-period
+   span is load-bearing because the recurrence engine materialises one row per
+   template per period, so one envelope in two periods is two blocks with one
+   name.  R-FC made most of the panel childless, which is exactly where that
+   ambiguity would have gone unlabelled.
+#}
+<li class="list-group-item d-flex align-items-center gap-2">
+  <input class="form-check-input mt-0 flex-shrink-0" type="checkbox"
+         name="transaction_ids" value="{{ group.settle.transaction_id }}"
+         id="reconcile-{{ panel_id }}-t{{ group.settle.transaction_id }}">
+  <label class="form-check-label flex-grow-1 text-truncate"
+         for="reconcile-{{ panel_id }}-t{{ group.settle.transaction_id }}">
+    <span class="text-body-secondary fs-xs me-1">
+      {{ group.settle.attributed_on.strftime('%m/%d') }}
+    </span>
+    {{ label }}
+    {% if period_start %}
+    <span class="text-body-secondary fw-normal fs-xs ms-1">
+      {{ period_start.strftime('%b %-d') }} - {{ period_end.strftime('%b %-d') }}
+    </span>
+    {% endif %}
+  </label>
+  {% if group.settle.is_correctable %}
+  <div class="input-group input-group-sm flex-shrink-0 reconcile-amount">
+    <span class="input-group-text">$</span>
+    <input type="number" step="0.01" min="0"
+           class="form-control font-mono text-end"
+           name="actual_amount-{{ group.settle.transaction_id }}"
+           value="{{ group.settle.amount }}"
+           aria-label="Amount for {{ label }}">
+  </div>
+  {% else %}
+  <span class="font-mono flex-shrink-0">{{ money(group.settle.amount) }}</span>
+  {% endif %}
+</li>
+{% endmacro %}
+{# The reconcile panel: which of these has your bank actually settled?
+
+   Ruled with plan step S1-c (ruling R-DH (d) / the R-M re-ruling) and widened
+   by R-EW at X-f2-c: the panel offers everything a statement can settle -- the
+   purchases recorded against an envelope, the envelope's own close, and bills,
+   income included (R-FD).  Ticking records that the money moved by the day the
+   balance was asserted for, and the projection stops holding those budgets
+   back.
+
+   **Ruling R-FC's three presentational rules live here, and they are what
+   make ONE collection read as the flat-bills panel the developer chose:**
+
+     1. a block with NO children prints its name inline as one row, rather
+        than as a heading above a one-item list;
+     2. the blocks arrive ordered by kind (the producer's ``_block_order``);
+     3. a section label is printed where the kind changes -- resolved by the
+        producer as ``group.section_label``, because it is a function of the
+        ORDER and a template deriving it would index into the previous element.
+
+   **An amount box appears exactly where the producer says it may** --
+   ``group.settle.is_correctable``, which is ruling R-FF: a tick is correctable
+   when the settle verb takes its manual branch.  Rendering one anywhere else
+   would take a figure the verb ignores and drop it silently.  The rule is read
+   in ONE place, the ``settle_row`` macro above, because both arms render a
+   settle offer and a rule enforced in one of two copies is not enforced.
+
+   **No figure here is composed.**  Every amount is the producer's, including
+   what a tick will BOOK (``settle.amount`` comes from
+   ``transaction_service.settle_amount``, not from a column), so the panel
+   cannot show one number and book another.
+
+   This is the INNER partial, rendered in two places from one file: the
+   post-true-up prompt (``accounts/_reconcile_modal.html``, an out-of-band swap
+   into ``#modal-mount``) and the permanent section on the cash account detail
+   page.  One implementation, so the two cannot come to say different things.
+
+   Expected context:
+     account            -- the Account whose balance was asserted.
+     outstanding        -- a ``reconcile_service.OutstandingSet``: ``groups``
+                           (each with ``name``, ``period_start`` /
+                           ``period_end``, ``purchases``, ``total``, ``kind``,
+                           ``settle``, ``section_label``), the three
+                           count/total pairs, and ``is_empty``.  Already scoped
+                           to this account's owner and to what the asserted day
+                           can settle.  Every figure is the producer's; this
+                           template computes none.
+     reconciled_through -- the civil day of the account's latest asserted
+                           balance.  Ticking stamps this day.
+     anchor_balance     -- the balance asserted for that day, for context.
+     panel_id           -- DOM id of this partial's root, so the POST's
+                           re-render swaps in place.
+#}
+<div id="{{ panel_id }}">
+  {# The panel's ONE rejection surface (``reconcile._refusal``).  Undefined on
+     every other render, which Jinja reads as falsy -- so the alert exists only
+     when a refusal put it there. #}
+  {% if error %}
+  <div class="alert alert-danger py-2 px-3 small mb-3" role="alert">
+    <i class="bi bi-exclamation-triangle" aria-hidden="true"></i>
+    {{ error }}
+  </div>
+  {% endif %}
+  {% if not outstanding.is_empty %}
+  <form hx-post="{{ url_for('accounts.record_reconciliation', account_id=account.id) }}"
+        hx-target="#{{ panel_id }}"
+        hx-swap="outerHTML"
+        hx-disabled-elt="find button[type=submit]">
+    <p class="small text-body-secondary mb-3">
+      Your balance for
+      <strong>{{ reconciled_through.strftime('%b %-d') }}</strong> is
+      <strong>{{ money(anchor_balance) }}</strong>.
+      {# One line, deliberately: a route test asserts this sentence as a byte
+         string to prove the prompt rides on the true-up's own response, and a
+         wrapped phrase makes that assertion fail for a reason that is not
+         about the prompt. #}
+      Tick everything your statement shows:
+      {%- set parts = [] %}
+      {%- if outstanding.purchase_count %}
+        {%- set _ = parts.append(true) %}
+        <strong>{{ outstanding.purchase_count }}</strong>
+        purchase{{ '' if outstanding.purchase_count == 1 else 's' }}
+        ({{ money(outstanding.purchase_total) }}) still held back
+      {%- endif %}
+      {%- if outstanding.payment_count %}
+        {{- ', ' if parts else '' }}{% set _ = parts.append(true) %}
+        <strong>{{ outstanding.payment_count }}</strong>
+        payment{{ '' if outstanding.payment_count == 1 else 's' }}
+        that would book {{ money(outstanding.payment_total) }}
+      {%- endif %}
+      {%- if outstanding.deposit_count %}
+        {{- ', ' if parts else '' }}
+        <strong>{{ outstanding.deposit_count }}</strong>
+        deposit{{ '' if outstanding.deposit_count == 1 else 's' }}
+        that would book {{ money(outstanding.deposit_total) }}
+      {%- endif %}.
+      {#- The wording is EXACT and a looser draft of it was a live defect.  It
+          read "the projection is still waiting on ($634.08)", and that number
+          is what the rows would BOOK -- an envelope books sum(entries).  What
+          the projection is holding is the entry-aware RESERVATION, which for
+          production's three current offers is $145.92, not $634.08: the
+          sentence overstated the panel's own effect by $488.16.  A figure and
+          its caption never disagree, and this screen is the one read beside a
+          paper statement. -#}
+    </p>
+
+    {% for group in outstanding.groups %}
+    {% if group.section_label %}
+    <h6 class="text-uppercase text-body-secondary fs-xs fw-semibold mt-3 mb-2">
+      {{ group.section_label }}
+    </h6>
+    {% endif %}
+
+    {% if group.purchases %}
+    {# Rule 1, the WITH-children arm: a heading, then the list. #}
+    <div class="mb-3">
+      <div class="d-flex justify-content-between align-items-baseline gap-2 mb-1">
+        <h6 class="mb-0 text-truncate">
+          {{ group.name }}
+          <span class="text-body-secondary fw-normal fs-xs ms-1">
+            {{ group.period_start.strftime('%b %-d') }}
+            -
+            {{ group.period_end.strftime('%b %-d') }}
+          </span>
+        </h6>
+        <span class="small text-body-secondary font-mono flex-shrink-0">
+          {{ money(group.total) }}
+        </span>
+      </div>
+      <ul class="list-group">
+        {% for purchase in group.purchases %}
+        <li class="list-group-item d-flex align-items-center gap-2">
+          <input class="form-check-input mt-0 flex-shrink-0" type="checkbox"
+                 name="entry_ids" value="{{ purchase.entry_id }}"
+                 id="reconcile-{{ panel_id }}-e{{ purchase.entry_id }}">
+          <label class="form-check-label flex-grow-1 text-truncate"
+                 for="reconcile-{{ panel_id }}-e{{ purchase.entry_id }}">
+            <span class="text-body-secondary fs-xs me-1">
+              {{ purchase.purchased_on.strftime('%m/%d') }}
+            </span>
+            {{ purchase.description }}
+          </label>
+          <span class="font-mono flex-shrink-0">{{ money(purchase.amount) }}</span>
+        </li>
+        {% endfor %}
+        {% if group.settle %}
+        {# The parent's OWN tick, inside its block (ruling R-EW).  Its amount is
+           sum(entries) here, which is a different unit from the block total
+           above it -- so it carries its own caption rather than being read as
+           a subtotal. #}
+        {{ settle_row(group, panel_id, "Close this envelope") }}
+        {% endif %}
+      </ul>
+    </div>
+    {% else %}
+    {# Rule 1, the CHILDLESS arm: the name prints inline, as one row.
+
+       **An ENVELOPE keeps its verb here**, and leaving it off was a real
+       hazard rather than a wording nicety: an envelope's close is an act, not
+       an observation, and a row reading "Groceries $485.10" beside the
+       instruction "tick everything your statement shows" invites a user to
+       tick the four purchases they already reconciled.  Closing it early
+       releases the unspent remainder AND makes every later purchase on that
+       row inert -- the entry reservation prices only Projected parents.  The
+       nested arm has said "Close this envelope" since this panel had one; the
+       childless arm is where R-FC sent most of the envelopes. #}
+    <ul class="list-group mb-2">
+      {% if group.settle_closes_an_envelope %}
+      {{ settle_row(group, panel_id, "Close " ~ group.name,
+                    group.period_start, group.period_end) }}
+      {% else %}
+      {{ settle_row(group, panel_id, group.name, group.period_start,
+                    group.period_end) }}
+      {% endif %}
+    </ul>
+    {% endif %}
+    {% endfor %}
+
+    <div class="d-flex justify-content-end gap-2">
+      {# Dismissal is the caller's affordance (the modal has a Close button,
+         the detail page needs none), so this partial ships only the action
+         that writes. #}
+      <button type="submit" class="btn btn-sm btn-primary">
+        <i class="bi bi-check-circle" aria-hidden="true"></i>
+        Mark ticked as settled
+      </button>
+    </div>
+  </form>
+  {% else %}
+  <p class="small text-body-secondary mb-0">
+    <i class="bi bi-check-circle text-success" aria-hidden="true"></i>
+    Everything recorded on this account
+    {%- if reconciled_through %} up to
+    {{ reconciled_through.strftime('%b %-d') }}{% endif %}
+    has been matched to your bank.  Nothing is being held back twice.
+  </p>
+  {% endif %}
+</div>

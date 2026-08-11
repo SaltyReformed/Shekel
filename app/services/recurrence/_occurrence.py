@@ -100,11 +100,16 @@ property of the rule, not of how many rows the schedule happened to host.
 The window, and the THREE answers a placement can give (finding **D7**)
 -----------------------------------------------------------------------
 
-Pay periods are NOT contiguous by construction.
-``pay_period_service._reject_overlapping_batch`` rejects overlaps, not gaps,
-and registration bootstraps a 14-day period 0 that a later real schedule may
-start after -- so a date can belong to no period at all, and :func:`place`
-answers ``None`` rather than assuming one.
+Pay periods were not contiguous by construction: the old batch guard
+``pay_period_service._reject_overlapping_batch`` rejected overlaps and not
+gaps, and registration bootstrapped a 14-day period 0 that a later real
+schedule could start after -- so a date could belong to no period at all, and
+:func:`place` answers ``None`` rather than assuming one.  **Both generators are
+closed** (``balance:X-ad-a`` and plan step **C3-b**, whose writer materialises
+a derivation in which a period ends the day before the next payday), so what
+survives is a hole written before them and not yet repaired by the owner's next
+schedule write.  The ``None`` answer stays until plan step C5a, because the
+distinction below is what a reader still has to make.
 
 **``None`` is two different answers, and conflating them is a defect this step
 had and a neutral review caught.**  One is a schedule GAP: the day is inside

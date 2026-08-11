@@ -24,7 +24,11 @@ from app.models.transaction import Transaction
 from app.services import transfer_service
 from app.services import account_service
 
-from tests._test_helpers import create_loan_account, loan_params_for
+from tests._test_helpers import (
+    create_loan_account,
+    loan_params_for,
+    register_form_data,
+)
 
 
 # ── XSS Payload Vectors ─────────────────────────────────────────
@@ -567,12 +571,12 @@ class TestXSSPrevention:
         with app.app_context():
             # Register a new user with the XSS payload as display_name.
             email = "xss-test@shekel.local"
-            resp = client.post("/register", data={
-                "email": email,
-                "display_name": payload,
-                "password": "TestPass123!",
-                "confirm_password": "TestPass123!",
-            })
+            resp = client.post("/register", data=register_form_data(
+                email=email,
+                display_name=payload,
+                password="TestPass123!",
+                confirm_password="TestPass123!",
+            ))
             assert resp.status_code == 302  # Redirect to login
 
             # Log in as the new user.

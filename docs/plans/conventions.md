@@ -50,10 +50,17 @@ to avoid.
    **Step ids are append-only** -- a decomposition appends a suffix, and nothing is renumbered for
    readability, because ids are cited in commit messages, code comments and archived records.
 
-3. **`ledger.md` states its own size and the number is checked**
-   (`**The ledger stands at N rows.**`). The balance ledger once read 38 against a 40-row table
-   because a step that closed four rows and opened three updated the rows and not the prose about
-   them.
+3. **A registry that states its own size has that number CHECKED.** Three sentences carry five
+   numbers and the gate grades all five: `ledger.md`'s `**The ledger stands at N rows.**`, and
+   `steps.md`'s `**N steps, M open.**` and `holds N edges over M rows`. The balance ledger once read
+   38 against a 40-row table because a step that closed four rows and opened three updated the rows
+   and not the prose about them. **`steps.md`'s four went ungraded until 2026-08-11 and every one of
+   them was stale by the time the arm was written**: "112 steps, 96 open" against 113 and 95, and
+   "93 edges over 58 rows" against 94 and 59 -- wrong in both directions inside one merge, because
+   one session appended a step while another ticked one. The rule had been written about one
+   registry and enforced only there, so its sibling carried the exact defect the rule describes, and
+   a cold reader was told what may start now by a number the gate had no opinion about. **A rule
+   stated for one artifact and graded on one artifact is a rule the second artifact does not have.**
 
 4. **Every document is capped, and a cap is a FORCING FUNCTION rather than a ceiling sized to fit
    the work.** Raising a cap is not the answer when it binds; rule 5 is. Current caps live in the

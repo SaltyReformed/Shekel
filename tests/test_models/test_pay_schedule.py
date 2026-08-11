@@ -30,7 +30,12 @@ import pytest
 from sqlalchemy import CheckConstraint, UniqueConstraint, text
 from sqlalchemy.exc import IntegrityError
 
-from app.models.pay_schedule import PaySchedule
+from app.models.pay_schedule import (
+    CADENCE_DAYS_MAX,
+    CADENCE_DAYS_MIN,
+    PaySchedule,
+)
+from app.services import pay_calendar, pay_period_write
 from app.services import pay_period_service
 
 
@@ -150,6 +155,49 @@ class TestModelContract:
         assert "ck_pay_schedule_positive_target" in check_names
 
 
+class TestTheCadenceBoundHasOneValue:
+    """The cadence bound is stated twice, and neither copy may move alone.
+
+    Plan step **X-ad-a** collapsed six hand-copied ``1``/``365`` literals -- the
+    CHECK constraint's text, four Marshmallow fields, and a service refusal
+    that did not exist yet -- onto
+    :data:`app.models.pay_schedule.CADENCE_DAYS_MIN` /
+    :data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`.  ONE copy survives, in
+    ``app.services.pay_calendar._derive``, and it survives on purpose: that
+    package is pure by design (no Flask symbol, no session, no clock) so the
+    arc's harness can drive the derivation over production's paydays with no
+    database, and importing the model there would pull ``app.extensions`` in
+    and close a cycle through ``pay_schedule_service``.
+
+    A deliberate duplicate still needs a reconciler, or it is just a duplicate
+    with a paragraph attached.  This is it: raise the column's ceiling without
+    raising the calendar's and the calendar refuses a cadence the database
+    happily stores -- an owner whose schedule row exists but whose calendar
+    cannot be constructed, which is a 500 on every page that reads one.
+    """
+
+    def test_the_model_and_the_pure_derivation_agree(self):
+        """Both statements of the bound carry the same two numbers."""
+        assert CADENCE_DAYS_MIN == pay_calendar.MIN_CADENCE_DAYS
+        assert CADENCE_DAYS_MAX == pay_calendar.MAX_CADENCE_DAYS
+
+    def test_the_check_constraint_carries_those_numbers(self):
+        """``ck_pay_schedule_cadence_range``'s SQL is built from the constants.
+
+        The CHECK text is an f-string over the same names, so this proves the
+        DDL cannot state a third bound -- which is the copy that would be
+        hardest to notice, because it only disagrees at migration time.
+        """
+        check = next(
+            c for c in PaySchedule.__table__.constraints
+            if isinstance(c, CheckConstraint)
+            and c.name == "ck_pay_schedule_cadence_range"
+        )
+        assert str(check.sqltext) == (
+            f"cadence_days BETWEEN {CADENCE_DAYS_MIN} AND {CADENCE_DAYS_MAX}"
+        )
+
+
 class TestConstraintBehaviour:
     """The DB rejects a duplicate row, a bad cadence, and a bad target."""
 
@@ -233,9 +281,9 @@ class TestBackfill:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 4, 1),
+                first_payday=date(2026, 4, 1),
                 num_periods=5,
                 cadence_days=10,
             )
@@ -286,9 +334,9 @@ class TestBackfill:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 5, 1),
+                first_payday=date(2026, 5, 1),
                 num_periods=3,
                 cadence_days=14,
             )

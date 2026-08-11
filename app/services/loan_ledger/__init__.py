@@ -53,21 +53,30 @@ walk needs no fence (plan step D-fold).
   so neither carries its own copy of the one clock).  Renamed from ``_fold`` at
   step D-fold, when the fold (the balance) left for the seam and only the walk
   (the facts) remained.
-* :mod:`._visible` -- WHEN each fact becomes countable (the ONE clock), the
-  owner's calendar, and the date-to-period locator those rules resolve against.
-  Chronology only: every name here returns a ``date`` or a ``PayPeriod``, never a
-  figure.
+* :mod:`._visible` -- WHEN each fact becomes countable (the ONE clock).
+  Chronology only: every name here returns a ``date``, never a figure.  It held
+  the owner's CALENDAR and the date-to-period locator until plan step **C2-d**,
+  which moved that question to :mod:`app.services.pay_calendar` -- see that
+  module's own header for why all three names went at once.
 
-Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes, no commits.  All
-money is :class:`~decimal.Decimal`.  Depends on the models, the db session
-(:mod:`app.extensions`, for the one calendar query), the money and date utilities
+Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes, no commits, and
+-- since plan step **C2-d** -- **no database session of its own**.
+``_visible.owner_pay_periods`` was the one query this package ever issued, and
+C2-d deleted it.  *That is narrower than "the package is pure", and the
+narrower claim is the true one*: :func:`walk_loan_ledger` still takes ids and
+reaches :mod:`app.services.loan_loaders`, which holds the session, and
+:func:`payment_visible_on` still takes an ORM row.  What changed is that no
+name here OWNS a query and no public name returns an ORM
+:class:`~app.models.pay_period.PayPeriod` -- which is what retires the fence
+caveat :mod:`._visible` records.  All money is
+:class:`~decimal.Decimal`.  Depends on the models, the money and date utilities
 (:mod:`app.utils.money` / :mod:`app.utils.dates`), the loan LOADERS, and the pure
 engines (``loan_resolver`` / ``escrow_calculator`` / ``rate_period_engine``) --
-never on a consumer package, so nothing it needs can import it back.  The
-``account_projection`` dependency this list used to name is gone as of plan step
-D1b: the leaf had been importing a kind CLASSIFIER to reach
-``find_period_containing_date``, its own chronology primitive, which now lives in
-:mod:`._visible` beside the rules built on it.
+never on a consumer package, so nothing it needs can import it back.  Two
+dependencies this list used to name are gone: ``account_projection`` at plan
+step D1b (the leaf had been importing a kind CLASSIFIER to reach its own
+chronology primitive) and :mod:`app.extensions` at C2-d, with the primitive
+itself.
 
 Plan of record: ``docs/audits/balance_architecture/README.md`` (step B1).
 """
@@ -91,10 +100,7 @@ from ._split import (
 )
 from ._visible import (
     anchor_visible_on,
-    find_period_containing_date,
-    owner_pay_periods,
     payment_visible_on,
-    resolve_anchor_pay_period,
 )
 
 __all__ = [
@@ -106,11 +112,8 @@ __all__ = [
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
     "dated_deltas",
-    "find_period_containing_date",
     "merge_anchor_and_payment_events",
-    "owner_pay_periods",
     "payment_visible_on",
-    "resolve_anchor_pay_period",
     "split_one_payment",
     "split_payment_cash",
     "walk_loan_ledger",

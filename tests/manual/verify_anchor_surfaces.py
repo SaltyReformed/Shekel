@@ -15,7 +15,7 @@ next step re-writes it or skips it.  This is that probe, in the repository.
   account's latest assertion beside the projection, not from it
   (``routes.grid._grid_view_and_anchor``).
 * **The reconcile panel** -- outstanding purchases partitioned against the
-  assertion's day (``entry_service.outstanding_purchases``).  Not a balance at
+  assertion's day (``reconcile_service.outstanding_set``).  Not a balance at
   all, which is exactly N-181's class.
 * **The dashboard balance section and the PULSE hero** -- both resolve the
   account's assertion for their own caption and staleness test
@@ -73,9 +73,9 @@ from app.services import (
     cash_ledger,
     dashboard_pulse_service,
     dashboard_service,
-    entry_service,
     home_equity_service,
     pay_period_service,
+    reconcile_service,
     retirement_dashboard_service,
     savings_dashboard_service,
 )
@@ -163,7 +163,7 @@ def _account_surfaces(account, balance_ctx, all_periods):
             # Asked as of the assertion's OWN day, which is the partition the
             # panel draws: purchases made on or before it whose posting day has
             # never been recorded.
-            lambda: entry_service.outstanding_purchases(
+            lambda: reconcile_service.outstanding_set(
                 account.user_id, account.id, anchor.observed_on,
             ),
         ),

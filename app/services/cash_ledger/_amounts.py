@@ -127,7 +127,7 @@ class ReconciledThrough:
     dates can tell them apart (``anchor_settle_partition.md`` Section 10.3).
     The guess ends only where the user says what their statement showed --
     which plan step S1-c built for PURCHASES
-    (``entry_service.record_settled_days``) and which a bank import would do
+    (``reconcile_service.record_settled_days``) and which a bank import would do
     for settles.  Until then this is the best available guess on the settle
     side, and saying so is the honest form of it.
 

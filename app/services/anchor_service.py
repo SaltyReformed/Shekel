@@ -29,7 +29,7 @@ and nothing else.  It mutated ``accounts`` too until ruling R-EH deleted the
 anchor cache columns (plan step X-f1c3c); the assertion IS the state now.
 Confirming which outstanding purchases the
 statement showed is a SEPARATE, user-driven step
-(``entry_service.record_settled_days``) that the route offers after this commit
+(``reconcile_service.record_settled_days``) that the route offers after this commit
 lands; keeping it out of this transaction is deliberate, because a same-day
 re-assert is swallowed here as idempotent success and any reconciliation riding
 along would be silently rolled back with it.
@@ -602,7 +602,7 @@ def apply_anchor_true_up(
     gone; reconciliation is derived from each purchase's own recorded posting
     day.  Which outstanding purchases the statement actually showed is a
     separate step the route offers AFTER this commit succeeds
-    (``entry_service.record_settled_days``) -- and it is deliberately not
+    (``reconcile_service.record_settled_days``) -- and it is deliberately not
     folded in here, because an UNCHANGED submission rolls this transaction
     back, so a reconciliation riding in it would be silently discarded while
     the UI reported a save.

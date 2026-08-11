@@ -37,6 +37,7 @@ import pytest
 
 from app.extensions import db
 from app.models.user import User
+from app.utils.dates import display_today
 
 
 SEED_USER_SCRIPT = Path("scripts/seed_user.py")
@@ -164,6 +165,13 @@ class TestSeedUserSubprocessOutput:
         the variables Python needs to import modules and connects to
         the SAME test database the rest of the suite uses (so the
         script can find the user row it would otherwise create).
+
+        ``SEED_USER_LAST_PAYDAY`` is supplied because the script REQUIRES it
+        and exits 1 without one (plan step X-ad-a): registration no longer
+        invents a pay period, and the day somebody was last paid has no
+        honest default.  The value is the USER's today, never
+        ``date.today()`` -- the service refuses a future payday, and a
+        UTC-pinned process is already on tomorrow's date every evening.
         """
         env = {}
         for key in ("PATH", "PYTHONPATH", "PYTHONHOME", "HOME",
@@ -175,6 +183,7 @@ class TestSeedUserSubprocessOutput:
         if "TEST_DATABASE_URL" in env:
             env["DATABASE_URL"] = env["TEST_DATABASE_URL"]
         env["FLASK_ENV"] = "development"
+        env["SEED_USER_LAST_PAYDAY"] = display_today().isoformat()
         env.update(overrides)
         return env
 

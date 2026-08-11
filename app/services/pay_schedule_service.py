@@ -28,7 +28,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.models.pay_schedule import PaySchedule
+from app.models.pay_schedule import (
+    CADENCE_DAYS_MAX,
+    CADENCE_DAYS_MIN,
+    PaySchedule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,37 @@ def get_schedule(user_id: int) -> PaySchedule | None:
     )
 
 
+def reject_out_of_range_cadence(cadence_days: int) -> None:
+    """Refuse a cadence ``ck_pay_schedule_cadence_range`` would refuse.
+
+    **One implementation of the bound, two callers, and the second is why it
+    is a function** (plan step X-ad-a).  :func:`upsert_schedule` is the one
+    writer of the column and asks this immediately before writing, so no door
+    can persist a value the CHECK refuses.  ``auth_service.register_user`` asks
+    it EARLIER -- in its up-front validation block, before the ``User`` row is
+    added to the session -- because a registration that refuses halfway leaves
+    a partly-built owner in a session whose only protection is that nobody
+    commits it.  Neither caller may hold its own copy of the bound: two copies
+    of a range are two chances for the schema tier, the service tier and the
+    column to disagree.
+
+    Args:
+        cadence_days: The candidate days-between-paydays value.
+
+    Raises:
+        ValidationError: *cadence_days* falls outside
+            :data:`~app.models.pay_schedule.CADENCE_DAYS_MIN` ..
+            :data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`.  The message
+            names the offending value and both bounds, so a surface can render
+            it verbatim.
+    """
+    if not CADENCE_DAYS_MIN <= cadence_days <= CADENCE_DAYS_MAX:
+        raise ValidationError(
+            f"Days between paydays must be between {CADENCE_DAYS_MIN} and "
+            f"{CADENCE_DAYS_MAX}; got {cadence_days}."
+        )
+
+
 def upsert_schedule(user_id: int, cadence_days: int) -> PaySchedule:
     """Create or update the user's persisted cadence, race-safe.
 
@@ -69,16 +104,35 @@ def upsert_schedule(user_id: int, cadence_days: int) -> PaySchedule:
     capturing a new cadence never disturbs an existing row's
     rolling-window configuration (or its ``created_at``).
 
+    **The cadence bound is checked HERE, and that placement is plan step
+    X-ad-a's** (finding **N-123**'s neighbourhood, not the finding itself).
+    This docstring used to say the bound was
+    ``ck_pay_schedule_cadence_range``'s and that "the caller's Marshmallow
+    schema validates the same range before this runs" -- true of the four
+    callers that existed, and a rule held by remembering rather than by
+    structure.  Four doors write a cadence (generate, regenerate, reset, and
+    now registration), the CHECK turns an out-of-range value into an
+    ``IntegrityError`` 500 rather than something a form can render, and this
+    function is the ONE writer of the column.  So the refusal lives at the
+    write door, where a fifth caller inherits it without its author
+    remembering.
+
     Args:
         user_id: The owning user's id.
-        cadence_days: Days between paydays to persist.  Bounded to
-            1..365 by ``ck_pay_schedule_cadence_range``; the caller's
-            Marshmallow schema validates the same range before this
-            runs.
+        cadence_days: Days between paydays to persist.
 
     Returns:
         The created or updated :class:`PaySchedule` row.
+
+    Raises:
+        ValidationError: *cadence_days* falls outside
+            :data:`~app.models.pay_schedule.CADENCE_DAYS_MIN` ..
+            :data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`, the bound
+            ``ck_pay_schedule_cadence_range`` enforces in the database.  A
+            400 rather than a 500: every door in front of this one takes the
+            value from a form.
     """
+    reject_out_of_range_cadence(cadence_days)
     insert_stmt = pg_insert(PaySchedule.__table__).values(
         user_id=user_id, cadence_days=cadence_days,
     )
@@ -148,11 +202,19 @@ def resolve_cadence(user_id: int) -> int | None:
     Prefers the persisted ``pay_schedule.cadence_days``.  A legacy user
     who has periods but no schedule row (they generated before this
     table existed) falls back to inferring the cadence from the last
-    period's length: :func:`pay_period_service.generate_pay_periods`
-    sets ``end_date = start_date + (cadence_days - 1)``, so the cadence
-    is ``(end_date - start_date).days + 1``.  The last period is the
+    period's length: the LAST period's end is
+    ``start_date + (cadence_days - 1)``, so the cadence is
+    ``(end_date - start_date).days + 1``.  The last period is the
     highest ``period_index`` -- the one a forward extend continues
     from -- so its length is the right cadence to continue with.
+
+    **The fallback is CIRCULAR and pay-calendar finding P8 owns that**: since
+    plan step C3-b :func:`app.services.pay_period_write.record_paydays` derives
+    that same last end FROM this answer, so for a schedule-row-less owner this
+    reads back the value it produced.  It is a fixed point rather than a drift,
+    and no door can create such an owner any more -- every batch that records a
+    payday upserts the row (the cadence rule) -- so it names legacy data only.
+    Plan step C4 removes the fallback with the column it reads.
 
     Args:
         user_id: The owning user's id.

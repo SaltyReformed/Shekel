@@ -69,6 +69,51 @@
               </button>
             </div>
           </div>
+          {# Your pay schedule (plan step X-ad-a, ruling R-DB).  Registration
+             used to invent a pay period starting today, which then refused
+             every real payday from tomorrow to a fortnight out and left a
+             permanent hole in the calendar for any later one (finding N-123).
+             Asking is the fix.  The question is the LAST payday, never the
+             next: the period it opens covers today, so the new account's
+             opening balance has a paycheck to sit in and there is no second
+             setup step.  ``max`` is a browser convenience -- the real bound
+             is ``auth_service._reject_impossible_first_payday``, which also
+             holds the lower end because that one depends on the cadence
+             chosen in the field below. #}
+          <hr class="my-4">
+          <h2 class="h6 mb-1">Your pay schedule</h2>
+          <p class="form-text mt-0 mb-3">
+            Shekel budgets by paycheck, so it needs to know when yours arrive.
+          </p>
+          <div class="mb-3">
+            <label for="last_payday" class="form-label">When was your most recent payday?</label>
+            <input type="date" class="form-control" id="last_payday" name="last_payday"
+                   required max="{{ today.isoformat() }}"
+                   value="{{ request.form.get('last_payday', '') }}">
+            {# "The day money landed" was the first wording and it was WRONG at
+               one boundary: on payday itself, before the deposit posts, the
+               honest answer to that question is a fortnight ago -- which the
+               service then refuses, because the paycheck it opens has already
+               ended.  A pay period is bounded by the PAYDAY, not by when the
+               bank got around to it, so the question asks for the date on the
+               paycheck. #}
+            <div class="form-text">The date of your most recent paycheck, even
+              if it has not cleared yet.</div>
+          </div>
+          <div class="mb-3">
+            <label for="cadence_days" class="form-label">Days between paydays</label>
+            <input type="number" class="form-control" id="cadence_days" name="cadence_days"
+                   required min="{{ CADENCE_DAYS_MIN }}" max="{{ CADENCE_DAYS_MAX }}"
+                   value="{{ request.form.get('cadence_days') or config['DEFAULT_PAY_CADENCE_DAYS'] }}">
+            <div class="form-text">14 for every other week, 7 for weekly.</div>
+          </div>
+          <div class="mb-3">
+            <label for="num_periods" class="form-label">Paychecks to plan ahead</label>
+            <input type="number" class="form-control" id="num_periods" name="num_periods"
+                   required min="{{ PERIOD_BATCH_MIN }}" max="{{ PERIOD_BATCH_MAX }}"
+                   value="{{ request.form.get('num_periods') or config['DEFAULT_PAY_PERIOD_HORIZON'] }}">
+            <div class="form-text">You can extend or rebuild this later in Settings.</div>
+          </div>
           <button type="submit" class="btn btn-primary w-100">Create Account</button>
         </form>
         <div class="text-center mt-3">

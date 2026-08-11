@@ -18,7 +18,12 @@ from app.models.scenario import Scenario
 from app.routes.auth._helpers import _is_safe_redirect
 from app.services import mfa_service
 from app.services.mfa_service import TotpVerificationResult
+from app.config import BaseConfig
+from app.models.pay_schedule import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
+from app.schemas.validation.pay_periods import PERIOD_BATCH_MAX
 from app.services.auth_service import hash_password
+from app.utils.dates import display_today
+from tests._test_helpers import register_form_data
 
 
 class TestIsSafeRedirect:
@@ -1796,6 +1801,71 @@ class TestRegistration:
             assert b'name="confirm_password"' in response.data
             assert b"csrf_token" in response.data
 
+    def test_get_register_renders_the_pay_schedule_inputs(self, app, client):
+        """The form asks for the owner's real pay schedule (plan step X-ad-a).
+
+        Three inputs the form did not carry before, because registration used
+        to invent a pay period covering ``[today, today + 13]`` -- the
+        fabrication finding **N-123** traces, which then refused thirteen of
+        the fourteen paydays the owner might actually have.
+
+        The rendered bounds are asserted, not just the field names.  They come
+        from the same constants the validators read, and an input hint that
+        drifts from the rule behind it teaches the user a bound that is not
+        real -- so a template literal creeping back in has to fail here.
+        """
+        with app.app_context():
+            response = client.get("/register")
+            assert response.status_code == 200
+            body = response.data
+
+            assert b'name="last_payday"' in body
+            assert b"When was your most recent payday?" in body
+            # A payday cannot be in the future, on the USER's clock.
+            assert f'max="{display_today().isoformat()}"'.encode() in body
+
+            assert b'name="cadence_days"' in body
+            assert f'min="{CADENCE_DAYS_MIN}"'.encode() in body
+            assert f'max="{CADENCE_DAYS_MAX}"'.encode() in body
+            # Prefilled with the app's biweekly premise rather than blank.
+            assert (
+                f'value="{BaseConfig.DEFAULT_PAY_CADENCE_DAYS}"'.encode()
+                in body
+            )
+
+            assert b'name="num_periods"' in body
+            assert f'max="{PERIOD_BATCH_MAX}"'.encode() in body
+            assert (
+                f'value="{BaseConfig.DEFAULT_PAY_PERIOD_HORIZON}"'.encode()
+                in body
+            )
+
+    def test_register_preserves_the_pay_schedule_inputs_on_error(
+        self, app, client, seed_user,
+    ):
+        """A rejected submission re-renders with the stated schedule intact.
+
+        The credential fields already survived a round trip; the three new
+        ones must too, or a duplicate-email retry silently drops the payday
+        the owner just looked up -- and the field has no default to fall back
+        on.
+        """
+        payday = (display_today() - timedelta(days=5)).isoformat()
+        with app.app_context():
+            response = client.post("/register", data=register_form_data(
+                email="test@shekel.local",
+                display_name="Dup",
+                last_payday=payday,
+                cadence_days="7",
+                num_periods="20",
+            ), follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"already exists" in response.data
+            assert f'value="{payday}"'.encode() in response.data
+            assert b'value="7"' in response.data
+            assert b'value="20"' in response.data
+
     def test_get_register_has_login_link(self, app, client):
         """GET /register includes a link back to the login page."""
         with app.app_context():
@@ -1819,12 +1889,12 @@ class TestRegistration:
         that all three database records exist with correct values.
         """
         with app.app_context():
-            response = client.post("/register", data={
-                "email": "NewUser@Example.com",
-                "display_name": "New User",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            }, follow_redirects=False)
+            response = client.post("/register", data=register_form_data(
+                email="NewUser@Example.com",
+                display_name="New User",
+                password="securepass123",
+                confirm_password="securepass123",
+            ), follow_redirects=False)
 
             assert response.status_code == 302
             assert "/login" in response.headers.get("Location", "")
@@ -1862,12 +1932,12 @@ class TestRegistration:
 
         with app.app_context():
             with caplog.at_level(logging.INFO, logger="app.routes.auth"):
-                response = client.post("/register", data={
-                    "email": "audit-event@example.com",
-                    "display_name": "Audit Event",
-                    "password": "securepass123",
-                    "confirm_password": "securepass123",
-                }, follow_redirects=False)
+                response = client.post("/register", data=register_form_data(
+                    email="audit-event@example.com",
+                    display_name="Audit Event",
+                    password="securepass123",
+                    confirm_password="securepass123",
+                ), follow_redirects=False)
             assert response.status_code == 302
 
             user = db.session.query(User).filter_by(
@@ -1897,12 +1967,12 @@ class TestRegistration:
         """
         with app.app_context():
             # Register.
-            client.post("/register", data={
-                "email": "logintest@example.com",
-                "display_name": "Login Test",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            })
+            client.post("/register", data=register_form_data(
+                email="logintest@example.com",
+                display_name="Login Test",
+                password="securepass123",
+                confirm_password="securepass123",
+            ))
 
             # Log in with the same credentials.
             login_resp = client.post("/login", data={
@@ -1925,12 +1995,12 @@ class TestRegistration:
         """
         with app.app_context():
             # Register a new user.
-            client.post("/register", data={
-                "email": "isolated@example.com",
-                "display_name": "Isolated User",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            })
+            client.post("/register", data=register_form_data(
+                email="isolated@example.com",
+                display_name="Isolated User",
+                password="securepass123",
+                confirm_password="securepass123",
+            ))
 
             # Log in as the new user.
             client.post("/login", data={
@@ -1953,12 +2023,12 @@ class TestRegistration:
         duplicate email conflict.
         """
         with app.app_context():
-            response = client.post("/register", data={
-                "email": "test@shekel.local",
-                "display_name": "Dup Test",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            }, follow_redirects=True)
+            response = client.post("/register", data=register_form_data(
+                email="test@shekel.local",
+                display_name="Dup Test",
+                password="securepass123",
+                confirm_password="securepass123",
+            ), follow_redirects=True)
 
             assert response.status_code == 200
             assert b"already exists" in response.data
@@ -1973,12 +2043,12 @@ class TestRegistration:
         have to re-type them.
         """
         with app.app_context():
-            response = client.post("/register", data={
-                "email": "test@shekel.local",
-                "display_name": "Keep This Name",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            }, follow_redirects=True)
+            response = client.post("/register", data=register_form_data(
+                email="test@shekel.local",
+                display_name="Keep This Name",
+                password="securepass123",
+                confirm_password="securepass123",
+            ), follow_redirects=True)
 
             assert response.status_code == 200
             assert b"test@shekel.local" in response.data
@@ -1987,12 +2057,12 @@ class TestRegistration:
     def test_register_short_password_shows_error(self, app, client):
         """POST /register with a short password shows a validation error."""
         with app.app_context():
-            response = client.post("/register", data={
-                "email": "short@example.com",
-                "display_name": "Short Test",
-                "password": "12345678901",
-                "confirm_password": "12345678901",
-            }, follow_redirects=True)
+            response = client.post("/register", data=register_form_data(
+                email="short@example.com",
+                display_name="Short Test",
+                password="12345678901",
+                confirm_password="12345678901",
+            ), follow_redirects=True)
 
             assert response.status_code == 200
             assert b"at least 12 characters" in response.data
@@ -2000,12 +2070,12 @@ class TestRegistration:
     def test_register_password_mismatch_shows_error(self, app, client):
         """POST /register with mismatched passwords shows an error."""
         with app.app_context():
-            response = client.post("/register", data={
-                "email": "mismatch@example.com",
-                "display_name": "Mismatch Test",
-                "password": "validpassword1",
-                "confirm_password": "validpassword2",
-            }, follow_redirects=True)
+            response = client.post("/register", data=register_form_data(
+                email="mismatch@example.com",
+                display_name="Mismatch Test",
+                password="validpassword1",
+                confirm_password="validpassword2",
+            ), follow_redirects=True)
 
             assert response.status_code == 200
             assert b"do not match" in response.data
@@ -2013,12 +2083,12 @@ class TestRegistration:
     def test_register_invalid_email_shows_error(self, app, client):
         """POST /register with an invalid email shows a validation error."""
         with app.app_context():
-            response = client.post("/register", data={
-                "email": "notvalid",
-                "display_name": "Invalid Email Test",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            }, follow_redirects=True)
+            response = client.post("/register", data=register_form_data(
+                email="notvalid",
+                display_name="Invalid Email Test",
+                password="securepass123",
+                confirm_password="securepass123",
+            ), follow_redirects=True)
 
             assert response.status_code == 200
             assert b"Invalid email format" in response.data
@@ -2026,12 +2096,12 @@ class TestRegistration:
     def test_register_empty_display_name_shows_error(self, app, client):
         """POST /register with an empty display name shows a validation error."""
         with app.app_context():
-            response = client.post("/register", data={
-                "email": "noname@example.com",
-                "display_name": "",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            }, follow_redirects=True)
+            response = client.post("/register", data=register_form_data(
+                email="noname@example.com",
+                display_name="",
+                password="securepass123",
+                confirm_password="securepass123",
+            ), follow_redirects=True)
 
             assert response.status_code == 200
             assert b"Display name is required" in response.data
@@ -2058,12 +2128,12 @@ class TestRegistration:
         with app.app_context():
             user_count_before = db.session.query(User).count()
 
-            response = auth_client.post("/register", data={
-                "email": "sneaky@example.com",
-                "display_name": "Sneaky",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            }, follow_redirects=False)
+            response = auth_client.post("/register", data=register_form_data(
+                email="sneaky@example.com",
+                display_name="Sneaky",
+                password="securepass123",
+                confirm_password="securepass123",
+            ), follow_redirects=False)
 
             assert response.status_code == 302
 
@@ -2078,12 +2148,12 @@ class TestRegistration:
         and user_id.
         """
         with app.app_context():
-            client.post("/register", data={
-                "email": "scenario@example.com",
-                "display_name": "Scenario Test",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            })
+            client.post("/register", data=register_form_data(
+                email="scenario@example.com",
+                display_name="Scenario Test",
+                password="securepass123",
+                confirm_password="securepass123",
+            ))
 
             user = db.session.query(User).filter_by(
                 email="scenario@example.com"
@@ -2101,12 +2171,12 @@ class TestRegistration:
     def test_register_success_creates_default_categories(self, app, client):
         """POST /register creates 22 default categories for the new user."""
         with app.app_context():
-            client.post("/register", data={
-                "email": "categories@example.com",
-                "display_name": "Category Test",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            })
+            client.post("/register", data=register_form_data(
+                email="categories@example.com",
+                display_name="Category Test",
+                password="securepass123",
+                confirm_password="securepass123",
+            ))
 
             user = db.session.query(User).filter_by(
                 email="categories@example.com"
@@ -2121,12 +2191,12 @@ class TestRegistration:
     def test_register_success_creates_checking_account(self, app, client):
         """POST /register creates a default checking account for the new user."""
         with app.app_context():
-            client.post("/register", data={
-                "email": "acct@example.com",
-                "display_name": "Account Test",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            })
+            client.post("/register", data=register_form_data(
+                email="acct@example.com",
+                display_name="Account Test",
+                password="securepass123",
+                confirm_password="securepass123",
+            ))
 
             user = db.session.query(User).filter_by(
                 email="acct@example.com"
@@ -2153,12 +2223,12 @@ class TestRegistration:
         """POST /register returns 404 and creates no user when disabled."""
         with app.app_context():
             app.config["REGISTRATION_ENABLED"] = False
-            response = client.post("/register", data={
-                "email": "blocked@example.com",
-                "display_name": "Blocked",
-                "password": "securepass123",
-                "confirm_password": "securepass123",
-            })
+            response = client.post("/register", data=register_form_data(
+                email="blocked@example.com",
+                display_name="Blocked",
+                password="securepass123",
+                confirm_password="securepass123",
+            ))
             assert response.status_code == 404
 
             # Confirm no user was created.
@@ -2213,20 +2283,20 @@ class TestRegistration:
                 with rate_app.app_context():
                     # Make 3 registration attempts (within the limit).
                     for i in range(3):
-                        rate_client.post("/register", data={
-                            "email": f"bot{i}@example.com",
-                            "display_name": f"Bot {i}",
-                            "password": "securepass123",
-                            "confirm_password": "securepass123",
-                        })
+                        rate_client.post("/register", data=register_form_data(
+                            email=f"bot{i}@example.com",
+                            display_name=f"Bot {i}",
+                            password="securepass123",
+                            confirm_password="securepass123",
+                        ))
 
                     # 4th attempt should be rate-limited.
-                    response = rate_client.post("/register", data={
-                        "email": "bot3@example.com",
-                        "display_name": "Bot 3",
-                        "password": "securepass123",
-                        "confirm_password": "securepass123",
-                    })
+                    response = rate_client.post("/register", data=register_form_data(
+                        email="bot3@example.com",
+                        display_name="Bot 3",
+                        password="securepass123",
+                        confirm_password="securepass123",
+                    ))
                     assert response.status_code == 429
             finally:
                 # Clean up: dispose the secondary app's engine to

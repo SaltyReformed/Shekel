@@ -39,6 +39,8 @@ from app.services import (
     entry_credit_workflow,
     entry_service,
     pay_period_service,
+    pay_period_write,
+    reconcile_service,
     recurrence_engine,
     transaction_service,
     transfer_recurrence,
@@ -134,11 +136,11 @@ class TestPayPeriodServiceLogging:
     def test_generate_emits_event(self, app, db, seed_user):
         """Generating periods emits one event with user_id and count."""
         with app.app_context(), _LogCapture(
-            "app.services.pay_period_service",
+            "app.services.pay_period_write",
         ) as cap:
-            created = pay_period_service.generate_pay_periods(
+            created = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2027, 1, 1),
+                first_payday=date(2027, 1, 1),
                 num_periods=3,
                 cadence_days=14,
             )
@@ -517,6 +519,18 @@ class TestEntryServiceLogging:
         assert record is not None
         assert record.entry_id == entry_id
 
+
+# ── The reconcile writer ───────────────────────────────────────────
+
+
+class TestReconcileServiceLogging:
+    """reconcile_service emits one BUSINESS event per reconcile that lands.
+
+    Split out of ``TestEntryServiceLogging`` at plan step X-f2-c1, when the
+    writer these two cases exercise moved to its own module: a class named for
+    one service whose cases call another is the shape the move exists to end.
+    """
+
     def test_record_settled_days_emits_the_reconcile_event(
         self, app, db, seed_user, _envelope_transaction,
     ):
@@ -545,8 +559,8 @@ class TestEntryServiceLogging:
             )
             db.session.commit()
             observed_on = date(2026, 1, 5)
-            with _LogCapture("app.services.entry_service") as cap:
-                count = entry_service.record_settled_days(
+            with _LogCapture("app.services.reconcile_service") as cap:
+                count = reconcile_service.record_settled_days(
                     seed_user["user"].id, seed_user["account"].id,
                     {entry.id}, observed_on,
                 )
@@ -582,8 +596,8 @@ class TestEntryServiceLogging:
                 ),
             )
             db.session.commit()
-            with _LogCapture("app.services.entry_service") as cap:
-                count = entry_service.record_settled_days(
+            with _LogCapture("app.services.reconcile_service") as cap:
+                count = reconcile_service.record_settled_days(
                     seed_user["user"].id, seed_user["account"].id,
                     {entry.id}, date(2026, 1, 5),
                 )
@@ -591,7 +605,6 @@ class TestEntryServiceLogging:
         assert count == 0
         assert cap.find(EVT_ENTRIES_SETTLED_DAY_RECORDED) is None
         assert entry.settled_on is None
-
 
 # ── Entry credit workflow ──────────────────────────────────────────
 
@@ -784,10 +797,10 @@ class TestRecurrenceEngineLogging:
         ).one()
 
         # Build a transaction owned by the second user.
-        from app.services import pay_period_service as pps  # noqa: WPS433
-        s2_periods = pps.generate_pay_periods(
+        from app.services import pay_period_write as ppw  # noqa: WPS433
+        s2_periods = ppw.record_paydays(
             user_id=seed_second_user["user"].id,
-            start_date=date(2027, 6, 1),
+            first_payday=date(2027, 6, 1),
             num_periods=1,
             cadence_days=14,
         )

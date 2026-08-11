@@ -2226,6 +2226,81 @@ def settle_instant_on(day):
     return _real_datetime.combine(day, time(12, 0), tzinfo=timezone.utc)
 
 
+def register_form_data(**overrides):
+    """Return a complete, valid POST body for ``/register``.
+
+    **One place that knows what the registration form requires**, added at plan
+    step X-ad-a when that grew from four fields to seven: the form now asks for
+    the owner's real pay schedule because registration stopped inventing one
+    (ruling **R-DB**, finding **N-123**).  Twenty-odd call sites across four
+    test modules post this body, and a field added to
+    ``RegisterSchema`` without a home here would otherwise be twenty-odd edits
+    -- which is the shape of test churn that ends in a suite where half the
+    posts are subtly different for no stated reason.
+
+    ``last_payday`` is the USER's today (``display_today``, ruling R-DH (b)),
+    never ``date.today()``: the service bounds it against the same clock, and a
+    process pinned to UTC is already tomorrow at 8pm Eastern -- so a
+    process-clock default would be a FUTURE payday, refused, for four hours
+    every day.  Today is the safest point in the accepted window
+    ``[today - cadence + 1, today]`` because it is valid at every cadence.
+
+    Args:
+        **overrides: Field values to replace or add.  Pass ``email`` and
+            ``display_name`` per test; pass a field explicitly to exercise its
+            refusal (e.g. ``last_payday=""`` for the missing-date path).
+
+    Returns:
+        A ``dict`` suitable for ``client.post("/register", data=...)``.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.config import BaseConfig
+    from app.utils.dates import display_today
+    body = {
+        "email": "newuser@example.com",
+        "display_name": "New User",
+        "password": "securepass123",
+        "confirm_password": "securepass123",
+        "last_payday": display_today().isoformat(),
+        "cadence_days": str(BaseConfig.DEFAULT_PAY_CADENCE_DAYS),
+        "num_periods": str(BaseConfig.DEFAULT_PAY_PERIOD_HORIZON),
+    }
+    body.update(overrides)
+    return body
+
+
+def registration_spec(**overrides):
+    """Return a complete, valid :class:`RegistrationSpec` for service tests.
+
+    The service-tier twin of :func:`register_form_data`, and it exists for the
+    same reason: ``auth_service.register_user`` takes one value object whose
+    pay-calendar half arrived at plan step X-ad-a, and the tests that call it
+    directly should not each restate what a valid sign-up looks like.
+
+    Args:
+        **overrides: Spec fields to replace.  ``first_payday`` defaults to the
+            user's today -- see :func:`register_form_data` for why the clock
+            matters.
+
+    Returns:
+        The :class:`~app.services.auth_service.RegistrationSpec`.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.config import BaseConfig
+    from app.services.auth_service import RegistrationSpec
+    from app.utils.dates import display_today
+    fields = {
+        "email": "newuser@example.com",
+        "password": "securepass123",
+        "display_name": "New User",
+        "first_payday": display_today(),
+        "cadence_days": BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
+        "num_periods": BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
+    }
+    fields.update(overrides)
+    return RegistrationSpec(**fields)
+
+
 def seam_confirmed_view(loan_account_id, scenario_id, as_of):
     """Return a loan's seam CONFIRMED view at an explicit scenario and as-of.
 
@@ -3350,6 +3425,77 @@ def append_balance_assertion(
     row.created_at = at if recorded_at is None else recorded_at
     db_session.flush()
     return row
+
+
+def open_calendar_hole(db_session, period, last_covered_day):
+    """Shorten one period's stored ``end_date`` so a calendar hole opens after it.
+
+    **The hole is HAND-BUILT, and since plan step C3-b that is the only way to
+    build one.**  Four suites need a schedule with a day no pay period covers,
+    because that is the state ledger row D7 / finding **P2** describes and the
+    recurrence engine's ``SCHEDULE_GAP`` answer exists for.  They used to reach
+    it through the REAL writer -- append a batch starting later than the
+    current coverage ends -- deliberately, so that "can this state exist?" was
+    proven rather than assumed.
+
+    ``pay_period_write`` closed that door: it materialises the payday
+    derivation, in which a period ends the day before the next payday, so an
+    append now ABSORBS the days it used to leave behind.  What the suites are
+    about is unchanged -- how a READER behaves when a day belongs to no
+    paycheck -- and that state is still reachable in the wild, from rows written
+    before C3-b.  So the fixture writes the column directly, and the writer's
+    own tests carry the other half: that no door can produce this any more, and
+    that the next write through one REPAIRS it.
+
+    Args:
+        db_session: The test ``db.session``.
+        period: The :class:`~app.models.pay_period.PayPeriod` to shorten -- the
+            one immediately before the intended hole.
+        last_covered_day: The new stored ``end_date``.  Must be on or after
+            *period*'s ``start_date`` (``ck_pay_periods_date_order`` requires
+            strictly after) and before the next period's payday, or no hole
+            opens.
+
+    Returns:
+        The inclusive ``(first_uncovered_day, last_uncovered_day)`` span, so a
+        caller asserts against the fixture's own arithmetic rather than
+        restating it.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.models.pay_period import PayPeriod
+
+    # Re-read by primary key rather than writing through the handed-in object.
+    # Callers typically hold a period from a FIXTURE built in an earlier app
+    # context, which is DETACHED: assigning to it writes nothing, the hole
+    # silently fails to open, and the test then measures a contiguous schedule
+    # while claiming to measure a hole.  ``Session.get`` returns the
+    # identity-mapped instance without copying the detached one's (possibly
+    # stale) state over it, which ``merge`` would.
+    period = db_session.get(PayPeriod, period.id)
+    assert last_covered_day > period.start_date, (
+        f"a period must cover at least two days "
+        f"(ck_pay_periods_date_order); {period.start_date} .. "
+        f"{last_covered_day} does not"
+    )
+    following = (
+        db_session.query(PayPeriod)
+        .filter(
+            PayPeriod.user_id == period.user_id,
+            PayPeriod.start_date > period.start_date,
+        )
+        .order_by(PayPeriod.start_date)
+        .first()
+    )
+    assert following is not None, (
+        "no period follows the one being shortened, so this opens no hole -- "
+        "it moves the schedule's horizon"
+    )
+    period.end_date = last_covered_day
+    db_session.flush()
+    first_uncovered = last_covered_day + _real_timedelta(days=1)
+    last_uncovered = following.start_date - _real_timedelta(days=1)
+    assert first_uncovered <= last_uncovered, "the fixture built no hole"
+    return first_uncovered, last_uncovered
 
 
 def _pp_assert_structure(periods, user_id):

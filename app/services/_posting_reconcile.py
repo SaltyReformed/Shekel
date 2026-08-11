@@ -8,6 +8,9 @@ finding) and both agree exactly:
 
 * :func:`account_owner_id` -- resolve any account's owner id (both packages
   need it for the per-account equity ledger and the entry header).
+* :func:`filing_calendar_for` -- the owner's pay calendar, refused when it is
+  empty (both packages file every correction's entry under a period, and
+  ``journal_entries.pay_period_id`` is ``NOT NULL``).
 * :func:`summed_posting_legs` -- the grouped "what is already posted" query
   shape every posted-leg reader shares.
 * :func:`posted_correction_legs` -- the posted anchor-correction reader,
@@ -37,6 +40,7 @@ from app.enums import PostingSourceEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
+from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.posting_reads import PostingError
 from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
@@ -98,6 +102,81 @@ def account_owner_id(account_id: int) -> int | None:
         .filter(Account.id == account_id)
         .scalar()
     )
+
+
+def filing_calendar_for(account_id: int) -> tuple[int, PayCalendar] | None:
+    """Return an account's owner and the calendar its corrections file against.
+
+    **The one door both anchor reconciles take to the pay calendar** (plan step
+    C2-d).  Each of them keys every correction's entry on the pay period it
+    files under, and both had the same four lines to get there; one call
+    replaces both.
+
+    **It returns the owner WITH the calendar, and that pairing is the whole
+    job.**  The loader it replaced, ``loan_ledger.owner_pay_periods``, took an
+    ``account_id`` and JOINED through it, so a loan could not be resolved
+    against another user's schedule even by a caller's mistake.  A first cut of
+    this function took ``(account_id, owner_id)`` and correlated them nowhere,
+    which downgraded a structural guarantee on a money-write path to a
+    convention -- and said in its own docstring that it had not.  Resolving the
+    owner HERE and handing both back restores it at no cost: the caller needed
+    :func:`account_owner_id` anyway, so this is the same one query, moved to
+    where the pairing is made.
+
+    **It refuses NOTHING, and that is deliberate** (developer ruling,
+    2026-08-10).  A first cut raised a :class:`PostingError` here when the
+    owner had no usable period, which read as a guard and was not one: every
+    caller returns early on an empty corrections list, so
+    :meth:`~app.services.pay_calendar.PayCalendar.filing_period` is always
+    reached at least once and already refuses that exact state -- with a
+    message naming the user, the day, and how many of the calendar's paydays
+    are materialised.  Two statements of one predicate, and they had ALREADY
+    drifted when an adversarial review found them: this one tested "no periods
+    at all" while both writers' docstrings promised "no MATERIALISED period",
+    which differ for the unsaved-payday calendar plan step C3's writer builds.
+    Aligning them by hand would have been the band-aid; deleting one leaves
+    the rule stated once, where it is enforced.  What is lost is the ACCOUNT id
+    in the message, against finding **N-192**'s requirement only that the
+    failure be LOUD -- which it is, unhandled, from a nearer statement of why.
+
+    The whole payday set, never a window:
+    :func:`app.services.pay_calendar.calendar_for` has no window argument, and
+    ledger row **P14** is why -- a partial payday set renumbers every
+    ``period_index`` from zero and gives its last period a cadence-projected
+    end.  Filing reads neither, but the calendar it is asked of must still be
+    the owner's whole one, because the next question asked of it may.
+
+    Args:
+        account_id: The account whose corrections are being reconciled.
+
+    Returns:
+        ``(owner_id, calendar)``, or ``None`` when the account row is absent --
+        which every caller treats as "nothing to reconcile", the same
+        disposition :func:`account_owner_id` already had there.
+
+    Raises:
+        PayCalendarError: The owner's paydays cannot define a calendar.  Not
+            reachable from any live write door -- every one bounds
+            ``cadence_days`` to 1..365 and ``uq_pay_periods_user_start``
+            forbids a repeated payday -- but it is declared because this door
+            put a DERIVATION in front of a money write where a plain query
+            stood, and the composition is what a caller has to reason about.
+            **In particular the cadence is INFERRED from the last period's
+            stored length for an owner with no ``budget.pay_schedule`` row**
+            (``pay_schedule_service.resolve_cadence``), which is plan finding
+            **P8**'s state.  *That fallback was called load-bearing here on
+            the ground that it "is exactly what a freshly-registered owner
+            has"; plan step X-ad-a falsified the ground -- registration now
+            writes the schedule row beside the paydays.*  It survives for
+            owners created before that step and for the schedule-extension
+            routes that always read it, so the composition is still what a
+            caller has to reason about; what changed is that the common case
+            no longer walks through it.
+    """
+    owner_id = account_owner_id(account_id)
+    if owner_id is None:
+        return None
+    return owner_id, calendar_for(owner_id)
 
 
 def summed_posting_legs(extra_columns: list, filters: list):

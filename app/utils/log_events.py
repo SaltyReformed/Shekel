@@ -362,12 +362,31 @@ EVT_ENTRIES_SETTLED_DAY_RECORDED = _register(
     "User confirmed which outstanding purchases their bank statement shows, "
     "stamping each one's settled_on with the day the balance was observed.",
 )
+EVT_TRANSACTIONS_RECONCILED = _register(
+    "transactions_reconciled", BUSINESS,
+    "User confirmed which outstanding transactions their bank statement "
+    "shows; each settled through the transaction service on the day the "
+    "balance was observed, some carrying a corrected amount.",
+)
 
 # ── Business events: pay periods ───────────────────────────────────
 
 EVT_PAY_PERIODS_GENERATED = _register(
     "pay_periods_generated", BUSINESS,
     "Pay-period service created one or more new biweekly periods.",
+)
+EVT_PAY_PERIODS_REMATERIALISED = _register(
+    "pay_periods_rematerialised", BUSINESS,
+    "A stored pay period's end_date or period_index disagreed with the owner's "
+    "own paydays and the writer rewrote it to match (plan step C3-b).  Those "
+    "two columns are derived from the payday set; a disagreement means the "
+    "schedule held a day no paycheck covered, or one covered twice, and the "
+    "row's money was reconciling wrongly until this fired -- possibly under "
+    "settled money.  Production is clean (61 paydays, 0 mismatches, measured "
+    "2026-08-10), so every occurrence names a schedule that had been quietly "
+    "wrong.  ALERT ON IT, and read the stored_* / derived_* fields to see what "
+    "moved.  Plan step C4 drops both columns, after which this event has no "
+    "subject.",
 )
 
 
@@ -386,12 +405,16 @@ EVT_RECURRENCE_OCCURRENCE_UNPLACED = _register(
     "A recurring definition falls on a date the owner's pay schedule covers "
     "with NO pay period, so the occurrence was logged and skipped (plan ledger "
     "row D7, developer ruling 2026-08-08).  The obligation is real and has no "
-    "paycheck to live in.  Reachable because "
-    "pay_period_service._reject_overlapping_batch rejects overlapping batches "
-    "and not GAPPED ones; finding F-10 owns closing the writer.  Production "
-    "has no gap (all 61 periods contiguous, measured 2026-08-08), so every "
-    "occurrence of this event names a schedule that needs repairing -- alert "
-    "on it.",
+    "paycheck to live in.  It WAS reachable because the batch guard of the day, "
+    "pay_period_service._reject_overlapping_batch, rejected overlapping batches "
+    "and not GAPPED ones (finding F-10).  **Both generators of a hole are now "
+    "closed**: balance:X-ad-a deleted the registration bootstrap payday, and "
+    "pay-calendar C3-b replaced that guard with pay_period_write, which "
+    "materialises the payday derivation -- under which a period ends the day "
+    "before the next payday, so no writer can leave a hole and any write "
+    "through it repairs one.  Production has none either (all 61 periods "
+    "contiguous, measured 2026-08-08).  A firing therefore names data written "
+    "before those steps that no schedule write has yet touched -- alert on it.",
 )
 EVT_RECURRENCE_RULE_NOT_EXCLUSIVE = _register(
     "recurrence_rule_not_exclusive", BUSINESS,

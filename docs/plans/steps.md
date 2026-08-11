@@ -16,28 +16,31 @@ recording it would be this registry's own disease. It is graded by its own arm i
 DECLARES itself "the DECOMPOSED parent" may not ship while a leaf is open.
 **The parent set is declared and only the leaf set derived**, because deriving both by id prefix
 claims `R-F1` as the parent of `R-F10`, `R-F12` and `R-F13`. Second, an edge is written only where
-an arc document STATES it: the graph holds 71 edges over 47 rows, the gaps are real, and a guess
-where a citation belongs is worse than a blank.
+an arc document STATES it: the graph holds 94 edges over 59 rows, the gaps are real, and a guess
+where a citation belongs is worse than a blank. *That count read "71 over 47" until 2026-08-10 and
+had been stale since `C2` decomposed into six leaves carrying three blockers each -- a prose count
+beside no reconciler, in the registry whose own rule 3 grades exactly that in `ledger.md`.*
 
 **`aliases` is what this table exists for.** `C2`, `X-l` and `R-F12` are ONE step under three names,
 scheduled as one commit by all three documents. Before this table that identity was prose in three
 files with nothing reconciling it, and the `P3` / `N-123` collision went unnoticed from April to
 2026-08-09.
 
-**98 steps, 86 open.**
+**113 steps, 95 open.**
 
 | arc | id | aliases | step | state | commit | blocked by |
 |---|---|---|---|---|---|---|
-| balance | X-ae | -- | **X-ae** `fix(app): a submitted digit string is parsed, not predicated` -- PR #79, merge | SHIPPED | `a778703f` | -- |
-| balance | X-af | -- | **X-af** `test(periods): the fixtures build their window on the USER's clock` -- PR #77, | SHIPPED | `dbee3812` | -- |
-| balance | X-aj1 | -- | **X-aj1** the status seam merge, in three commits (`1688f508` R-DR's extraction, `63514efc` | SHIPPED | `1688f508` | -- |
 | balance | X-f | -- | **X-f** `feat(transactions): the app records when money moved` -- the DECOMPOSED parent, | open | -- | -- |
 | balance | X-f1 | -- | **X-f1** `feat(transactions): a settle carries the day the money moved` -- absorbs **S2-b**. | SHIPPED | `8d812662` | -- |
 | balance | X-an | -- | **X-an** `fix(loan): a payment is history from the day its money moved` -- the DECOMPOSED parent, COMPLETE at two leaves, condensed into `archive/…2026-08-04.md` Section 1b | SHIPPED | `549015c0` | -- |
 | balance | X-f2 | -- | **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half, the DECOMPOSED parent | open | -- | -- |
-| balance | X-f2-a | -- | **X-f2-a** the DIFFERENCE, before it is saved: the anchor form shows what the account's RECORDS produce for its day, what was typed, and the gap (**R-EU**). Read-only. Opened **N-212**, **N-213**, **N-214** | SHIPPED | `397ce36e` | -- |
-| balance | X-f2-b | -- | **X-f2-b** the DURABLE record: a Balance history card on the cash detail page, the loan card's cash twin (**R-EV**). Closes **N-205**, **N-204**, **N-206** | open | -- | balance:X-f2-a |
-| balance | X-f2-c | -- | **X-f2-c** the OUTSTANDING SET, widened to transactions, envelopes and transfers, grouped by envelope (**R-EW**). MOVES MONEY on a tick | open | -- | balance:X-f2-b |
+| balance | X-f2-c | -- | **X-f2-c** the OUTSTANDING SET, widened to transactions, envelopes and transfers, grouped by envelope (**R-EW**) -- the DECOMPOSED parent, three leaves | open | -- | -- |
+| balance | X-f2-c1 | -- | **X-f2-c1** the reconcile reader and writer get their own module home, all three panel doors get the kind gate, and purchases NEST under their parent. No new row kind, no money moves. Closed **N-216**; opened **N-217**, **N-218** | SHIPPED | `24701c1d` | -- |
+| balance | X-aq | -- | **X-aq** `fix(transactions): a settle books the freshest figure for the row` (**R-FE**) -- the settle verb resolves the amount when the caller supplies none, so every settle door books one figure. MOVES MONEY at the grid | SHIPPED | `9cabc206` | -- |
+| balance | X-ar | -- | **X-ar** `refactor(cash): a projected row's amount has ONE answer` (**R-FE**) -- the stored amount becomes authoritative and the read-time override thread is deleted. Closes **N-40** and **N-224** | open | -- | balance:X-aq |
+| balance | X-f2-c2 | -- | **X-f2-c2** the TRANSACTION twin: the envelope's own close tick and bills, settled on the STATEMENT date through the service-tier settle verb (**R-FA**). MOVES MONEY | SHIPPED | `d23b55fd` | balance:X-f2-c1 / balance:X-aq (the panel must not display a figure the grid contradicts; R-FE) |
+| balance | X-f2-c3 | -- | **X-f2-c3** transfer shadows in their own group, settled through the transfer service with the loan-payment freeze (**R-FA**). MOVES MONEY | open | -- | balance:X-f2-c2 / balance:X-ap (the third settle door is fixed while the verb is fresh; developer 2026-08-10) |
+| balance | X-ap | -- | **X-ap** `fix(transactions): the full-edit Status dropdown settles like every other door` -- the THIRD settle door R-FA's text missed. An envelope-tracked row flipped to Paid via the popover never consults its entries, so $25 of purchases against a $400 estimate books $400. MOVES MONEY | open | -- | balance:X-f2-c2 |
 | balance | X-f3 | -- | **X-f3** `feat(cash): the ledger is sum-of-postings and the residual is classified` -- **THE | open | -- | balance:X-f2 |
 | balance | X-f4 | -- | **X-f4** `refactor(cash): delete what the cutover orphans` -- `ReconciledThrough` and its 78 | open | -- | balance:X-f3 |
 | balance | X-f5 | -- | **X-f5** `fix(ledger): the opening equity account holds only the opening` -- one balanced | open | -- | balance:X-f4 |
@@ -52,20 +55,22 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | balance | X-aj | -- | **X-aj** `refactor(status): one status seam, and the fence is structural` -- the DECOMPOSED parent; rulings | open | -- | -- |
 | balance | X-aj2 | -- | **X-aj2** the structural write door and the DELETION of W9907 (**R-DP**), carrying | open | -- | -- |
 | balance | X-ak | -- | **X-ak** `refactor(transfers): a shadow inherits its parent's fields by ONE rule` -- closes | open | -- | balance:X-aj |
-| balance | X-x | -- | **X-x** `refactor(balance): one pay-calendar precondition, one answer` -- the DECOMPOSED parent; closes **N-116**, | open | -- | balance:X-ad |
+| balance | X-x | -- | **X-x** `refactor(balance): one pay-calendar precondition, one answer` -- the DECOMPOSED parent; closes **N-116**, | open | -- | balance:X-ad-a (the bootstrap payday, the state its refusals were producing) / pay_calendar:C3 (the WORKING repair its refusals point at -- ruling R-EY 2026-08-10 moved N-127 there, which ended the "X-ad then X-x, ONE PR" pairing) |
 | balance | X-x1 | -- | **X-x1 THE ONE ANSWER** (R-CY) -- `PayCalendarGapError`, | open | -- | -- |
 | balance | X-x2 | -- | **X-x2 THE FABRICATIONS** (R-CY) -- the branches that publish a figure the app did not | open | -- | balance:X-x1 |
 | balance | X-x3 | -- | **X-x3 THE ONE PREDICATE** (R-DA) -- `onboarding.has_periods` asks Q2 rather than Q1, so the | open | -- | -- |
 | balance | X-x4 | -- | **X-x4 THE STATES SPLIT** (R-CZ) -- an empty requested window stops answering with the | open | -- | -- |
 | balance | X-x5 | -- | **X-x5 THE HARNESS** -- delete `verify_savings_producers.py`'s dict-or-attribute `_get` | open | -- | -- |
-| balance | X-ad | -- | **X-ad** `feat(periods): the pay calendar a new user can actually enter` -- closes **N-123**, | open | -- | -- |
+| balance | X-ad | -- | **X-ad** `feat(periods): the pay calendar a new user can actually enter` -- the DECOMPOSED parent, split 2026-08-10 (**R-EZ**); ticks with the last of its leaves | open | -- | -- |
+| balance | X-ad-a | -- | **X-ad-a -- registration asks.** The bootstrap payday DELETES; the form takes the most recent payday, the cadence and the horizon; `establish_schedule` writes the periods and the `pay_schedule` row in one call. Closes **N-123** (= pay_calendar:P3) | SHIPPED | `2a4eb477` | -- |
+| balance | X-ad-b | -- | **X-ad-b -- the automatic writer stops writing history.** The rolling top-up creates nothing on a lapsed schedule (**R-EZ**). Closes **N-124** | open | -- | -- |
 | balance | X-y | -- | **X-y** `refactor(balance): the baseline decision that is not the balance seam's` -- closes | open | -- | balance:X-x |
 | balance | X-i | -- | **X-i** `refactor(balance): one read pass, one derivation, one clock` -- the DECOMPOSED parent; closes **FU-3**, | open | -- | -- |
 | balance | X-i1 | -- | **X-i1 THE MEMO** -- additive, byte-identical on both databases. The context gains the input | open | -- | -- |
 | balance | X-i2 | -- | **X-i2 THE CLOCK** -- the cutover. Each memoized loader takes `ctx.as_of` and `ctx.scenario`, | open | -- | balance:X-i1 |
 | balance | X-j | -- | **X-j** `feat(balance): one account, one answer -- or a row that explains the difference` -- | open | -- | balance:X-i2 |
 | balance | X-k | -- | **X-k** `fix(recurring): the recurrence bound is reconciled, not stored and forgotten` -- | open | -- | recurrence:R5 |
-| balance | X-l | pay_calendar:C2 / recurrence:R-F12 | **X-l** `feat(periods): the pay calendar answers any date` -- closes **N-82**, **N-128**, and | open | -- | -- |
+| balance | X-l | pay_calendar:C2 / recurrence:R-F12 | **X-l** `feat(periods): the pay calendar answers any date` -- closes **N-82**, **N-128**, and. The DECOMPOSED parent under its balance name: the leaves are `pay_calendar:C2-a`..`C2-f`, so what may start here is `C2-a` | open | -- | -- |
 | balance | X-m | -- | **X-m** `refactor(growth): the projection engine takes its axis, not its boundaries` -- closes | open | -- | -- |
 | balance | X-n | -- | **X-n** `fix(loan): a redistributed payment carries its REAL installment` -- closes **N-36**. | open | -- | -- |
 | balance | X-e | -- | **X-e** `refactor(accounts): current_anchor_balance is a reconciled cache or it is nothing` -- | open | -- | -- |
@@ -74,6 +79,7 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | balance | X-ac | -- | **X-ac** `refactor(savings): one liquid-savings reduction` -- closes **N-121**. The cockpit | open | -- | -- |
 | balance | X-ag | -- | **X-ag** `feat(pylint): lax digit acceptance is refused, not remembered` -- closes **N-139**. | open | -- | -- |
 | balance | X-ah | -- | **X-ah** `fix(routes): a query-string id is parsed like every other id` -- closes **N-142**. | open | -- | -- |
+| balance | X-ao | -- | **X-ao** `feat(plan-gate): a ruling id resolves to one ruling` -- closes **N-217**. The registries are graded on findings, steps and their graph; the RULINGS tables are not graded at all, and the corpus carried a live collision. One arm per arc document, on the same parser the other arms use | open | -- | -- |
 | balance | X-al | -- | **X-al** `fix(pylint): a duplicate-code disable that suppresses nothing is a finding` -- | open | -- | -- |
 | balance | X-am | -- | **X-am** `refactor(status): the settled band has two members, not three` -- closes **N-177**. | open | -- | -- |
 | balance | E2-0 | -- | **E2-0** `the membership trace` -- NO code. Answer from the code: which modules are members, | open | -- | -- |
@@ -96,18 +102,29 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | recurrence | R-F2 | -- | **R-F2 -- Tighten the ref-seed parity scan's statement boundary** (finding F-2). | open | -- | -- |
 | recurrence | R-F3 | -- | **R-F3 -- Resolve the ref-table constraint-naming disagreement** (finding F-3). | open | -- | -- |
 | recurrence | R-F10 | pay_calendar:C5a (ticks it) | **R-F10 -- Delete the gap machinery the pay-calendar arc makes unconstructible** (finding | open | -- | pay_calendar:C4 |
-| recurrence | R-F12 | pay_calendar:C2 / balance:X-l | **R-F12 -- One `PeriodCalendar`, not three period-containing searches** (finding F-12). | open | -- | -- |
+| recurrence | R-F12 | pay_calendar:C2 / balance:X-l | **R-F12 -- One `PeriodCalendar`, not three period-containing searches** (finding F-12). The DECOMPOSED parent under its recurrence name; `pay_calendar:C2-b` is the leaf that retires `PeriodCalendar` | open | -- | -- |
 | recurrence | R-F13 | -- | **R-F13 -- Close the three holes in this arc's own gate** (finding F-13). | open | -- | -- |
 | recurrence | R-F7 | -- | **R-F7 -- Delete two unreachable branches in `_first_of_month_anchor`** (finding D11). | open | -- | -- |
 | pay_calendar | C1 | -- | **C1 -- the derivation exists and is proven equal to what is stored.** `f9d148fe`, | SHIPPED | `f9d148fe` | -- |
-| pay_calendar | C2 | balance:X-l / recurrence:R-F12 | **C2 -- one calendar value answers every "which period" question.** | open | -- | -- |
-| pay_calendar | C3 | -- | **C3 -- the writer writes paydays, forward-only.** | open | -- | balance:X-ad |
+| pay_calendar | C2 | balance:X-l / recurrence:R-F12 | **C2 -- one calendar value answers every "which period" question.** The DECOMPOSED parent, RULED on three forks 2026-08-10; ticks with the last of its leaves, and that tick is also `balance:X-l` and `recurrence:R-F12` | open | -- | -- |
+| pay_calendar | C2-a | -- | **C2-a -- the one calendar VALUE, and nothing calls it.** `PayCalendar`, three named questions, a window that is a VIEW, and the recurrence calendar DELEGATING three of its own methods to the shared primitives. Opened **P21**-**P25** | SHIPPED | `3cb3082f` | -- |
+| pay_calendar | C2-b | -- | **C2-b -- the recurrence cutover.** The DECOMPOSED parent, split 2026-08-10 on an instrumented full-suite measurement; ticks with the last of its leaves | open | -- | pay_calendar:C2-a |
+| pay_calendar | C2-b1 | -- | **C2-b1 -- the calendar's last two questions, the cadence rule, and the one DB door.** `period_by_id` / `earliest_start_in_month` move; `cadence_days` becomes `int \| None`, refused beside a payday; `pay_calendar.calendar_for` loads. Nothing calls it. Corrected **P25**'s two expired docstrings; opened **P28** | SHIPPED | `90f2fbb7` | pay_calendar:C2-a |
+| pay_calendar | C2-b2 | -- | **C2-b2 -- the cutover.** `PeriodCalendar` / `SchedulePeriod` / `RecurrenceScheduleError` DELETE; 10 `calendar_for` sites and 8 modules repoint; the 5 tests a simulated cutover fails are rewritten. Owns **P26**, **P27**, **P28** | open | -- | pay_calendar:C2-b1 / balance:X-ad-a (deletes the registration door that opens a hole) / pay_calendar:C3 (deletes the free-date door; developer ruling 2026-08-10 -- the derived calendar ABSORBS a hole instead of reporting it, row **P27**, so the generators close BEFORE the absorber lands) |
+| pay_calendar | C2-c | -- | **C2-c -- the cash-view cutover.** `balance_at/_cash_periods._PeriodSpans` retires (**P14**) | open | -- | pay_calendar:C2-a / balance:X-ad-a (deletes the registration door that opens a hole) / pay_calendar:C3 (deletes the free-date door; developer ruling 2026-08-10 -- the derived calendar ABSORBS a hole instead of reporting it, row **P27**, so the generators close BEFORE the absorber lands) |
+| pay_calendar | C2-d | -- | **C2-d -- the filing cutover.** `find_period_containing_date`, `resolve_anchor_pay_period` and `owner_pay_periods` DELETE; both posting writers call the filing rule through one door. Closed **N-169**. **NOT blocked by the P27 pair**: `filing_period` bisects on `start_date` and never reads an end, proven over GAPPED shapes and on a production snapshot | SHIPPED | `3e6cd4ec` | pay_calendar:C2-a |
+| pay_calendar | C2-e | -- | **C2-e -- the projection axis.** `generate_projection_periods` and `SyntheticPeriod` DELETE. Closes **P7**, **P17**, **P20** | open | -- | pay_calendar:C2-a / balance:X-ad-a (deletes the registration door that opens a hole) / pay_calendar:C3 (deletes the free-date door; developer ruling 2026-08-10 -- the derived calendar ABSORBS a hole instead of reporting it, row **P27**, so the generators close BEFORE the absorber lands) |
+| pay_calendar | C2-f | -- | **C2-f -- the readers answer from the calendar.** `pay_period_service`'s six `get_*` across 66 call sites. Closes **P19** | open | -- | pay_calendar:C2-a / balance:X-ad-a (deletes the registration door that opens a hole) / pay_calendar:C3 (deletes the free-date door; developer ruling 2026-08-10 -- the derived calendar ABSORBS a hole instead of reporting it, row **P27**, so the generators close BEFORE the absorber lands) |
+| pay_calendar | C3 | -- | **C3 -- the writer writes paydays, forward-only.** The DECOMPOSED parent, split 2026-08-10 (developer) because the ordinal wire key and the writer are two commits: only one of them takes user input, and only one can renumber. Also owns **N-127**, the interior hole's repair, moved here 2026-08-10 by ruling `balance:R-EY`. Ticks with the last of its leaves | SHIPPED | `7e3fb33b` | balance:X-ad-a |
+| pay_calendar | C3-a | -- | **C3-a -- the destructive form stops keying on an ordinal.** `keep_through_index` becomes `keep_through_period_id`, a `RowId`; the truncate service resolves it against the owner's own periods and refuses anything else as `PayPeriodUnresolved`, logging both F-144 branches; the tail is selected by PAYDAY, so nothing in the operation reads a column C4 drops. The lock classifier moves to `pay_period_locks` (developer ruling; `pay_period_admin` hit the 1000-line ceiling and the two concerns are read-predicate vs destructive writer). Closes **P13**; opened **P29**, **P30** | SHIPPED | `5f1e2bd6` | balance:X-ad-a |
+| pay_calendar | C3-b | -- | **C3-b -- the writer materialises the derivation.** `pay_period_write` is NEW and is the one place in `app/` that constructs or deletes a pay period; the stored `end_date` / `period_index` come from `derive_periods` over the WHOLE payday list on every write, so C4's drop cannot move a figure. Ruling **R-PC1** SPLIT in two and only ONE half survives: a forward-only floor of one full CADENCE (it was a paycheck too low, and P10's both damage arms were reachable). **The coverage half was DELETED (developer ruling 2026-08-11)** -- it was approved on the claim that stranding a settled row's cash day reproduces `balance:N-128`, and the claim was false: each column is valued at its OWN `end_date`, so a day off the top of the window cancels on both sides of R-K and reports as `period_timing`. Retire and record stay ONE call, now for the derivation rather than the rule. Cadence rule: a batch that CREATED a payday stores it; `cadence_days` is DELETED from the extend door. Observability of the state the refusal used to forbid moved to `integrity_check` **BA-06** -- a derivable QUERY rather than a log line at the write, because logging it would store a computed claim beside no reconciler. Closed **P2**'s writer half, **P12**, **P29**, **N-127** and P27's second end; **P15** and **P30** were re-pointed rather than closed, **P31** opened and was then narrowed by the deletion, **P32** opened, and **P33** was FOUND rather than opened -- it is pre-existing, and the deletion only removed the `except` clause that had been sitting above it | SHIPPED | `7e3fb33b` | pay_calendar:C3-a |
 | pay_calendar | C4 | -- | **C4 -- drop the derived columns.** | open | -- | pay_calendar:C2 / pay_calendar:C3 |
 | pay_calendar | C5 | -- | **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** The DECOMPOSED PARENT, split 2026-08-09; ticks with the last of its leaves | open | -- | pay_calendar:C4 / recurrence:R5 |
 | pay_calendar | C5a | recurrence:R-F10 (ticked by it) | **C5a -- delete what is now unconstructible.** Deletion-only; the recurrence arc's 430-shape baseline stays byte-identical. It deletes no VISIBILITY -- see P16 | open | -- | pay_calendar:C4 |
 | pay_calendar | C5b | -- | **C5b -- a paycheck may owe one template more than once.** `should_skip_period` becomes occurrence-aware; `refuse_unstorable_repeats` retires. Closes **P16** | open | -- | recurrence:R5 |
 | pay_calendar | C6 | -- | **C6 -- a payday may be inserted mid-schedule.** | open | -- | pay_calendar:C4 / recurrence:R7c |
 | pay_calendar | C7 | -- | **C7 -- the ledger entry derives its paycheck.** Rules `journal_entries.pay_period_id`, P1's defect on the ledger header. Closes **P18** | open | -- | pay_calendar:C4 |
+| pay_calendar | C8 | -- | **C8 -- the forecast cadence gets ONE control.** Recording paydays and setting the forward cadence are two operations welded onto one form on generate / regenerate / reset; after C4 the column's only job is projecting past the last recorded payday, so it is a forecast setting rather than a property of any batch. C3-b took the extend door's half by DELETING its input (**P29**) and the developer ruled the rest is a UX step, not a writer step. Owns **P30** | open | -- | pay_calendar:C4 |
 | credit_card | CC0a | -- | **CC0a** `feat(ref): account types carry a revolving-credit kind` -- migration adds | open | -- | balance:X-f4 / balance:X-am |
 | credit_card | CC0b | -- | **CC0b** `feat(cards): budget.credit_card_params satellite` -- model + migration as specced in | open | -- | balance:X-f4 / balance:X-am |
 | credit_card | CC0c | -- | **CC0c** `feat(cards): card params setup flow` -- create/update routes + Marshmallow schema | open | -- | balance:X-f4 / balance:X-am |
@@ -135,7 +152,12 @@ remedies. This is the predicate that would have caught `P3` / `N-123`, where one
 deletes what the other's keeps. A ruled fork's defect row is owned by the remedy that won, and the
 gate checks that too: a ruling nobody re-points is a ruling that decided nothing.
 
+**`pay_calendar:P3` = `balance:N-123` LEFT this table on 2026-08-10**, and how it left is the point:
+it was ruled to `balance:X-ad` on 2026-08-09, that remedy SHIPPED as `X-ad-a` (`2a4eb477`), and the
+defect row closed with it. A fork whose defect no longer exists binds nothing -- the gate says so,
+and a line kept "for the record" would be a fork about nothing. The record lives where the work
+does: that step's entry, the `P3` section of the pay-calendar plan, and the commit.
+
 | defect | competing remedies | ruled |
 |---|---|---|
-| pay_calendar:P3 = balance:N-123 | balance:X-ad (R-DB: DELETE the bootstrap payday) **vs** pay_calendar:C3 (KEEP it, beside the real payday) | **balance:X-ad**, 2026-08-09 -- delete it, and registration asks for the LAST payday, not the next |
 | pay_calendar:P16 | pay_calendar:C5b (make should_skip_period occurrence-aware) **vs** pay_calendar:C3 (refuse an over-long period at the writer) | **pay_calendar:C5b**, 2026-08-09 -- occurrence-aware; the writer option would refuse legitimate monthly schedules. Named `C5` when ruled; C5 DECOMPOSED the same day and the winning remedy is its `C5b` leaf, so both cells follow the work |

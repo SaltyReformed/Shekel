@@ -25,6 +25,8 @@ from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
     append_balance_assertion,
+    create_account_of_type,
+    create_loan_account,
     settle_instant_on,
 )
 from app.models.interest_params import InterestParams
@@ -37,8 +39,18 @@ from app.services import (
     balance_at,
     cash_ledger,
     pay_period_service,
+    pay_period_write,
 )
 from app.services.auth_service import hash_password
+
+
+#: The out-of-band swap that carries the balance acknowledgement into
+#: ``base.html``'s single mount.  Spelled once because three tests slice the
+#: response on it: the swap STYLE is load-bearing, not incidental -- an
+#: outerHTML swap of the mount destroys a still-visible predecessor, which is
+#: finding N-206, so a test that matched only the mount NAME would keep passing
+#: through the regression this constant exists to catch.
+_ACK_SWAP = 'hx-swap-oob="beforeend:#anchor-ack-mount"'
 
 
 def _create_other_user_account():
@@ -1717,13 +1729,14 @@ class TestTheReconcileRoute:
     it names is unchanged and still real: reconciling account A must not touch
     account B's purchases.  The exhaustive scoping matrix (another user, a
     credit purchase, a settled parent, an already-recorded entry) is graded at
-    the service in ``test_services/test_entry_service.py``; what is graded here
+    the service in ``test_services/test_reconcile_service.py``; what is graded here
     is the ROUTE -- that it resolves the assertion day itself, refuses a
     non-owner, and commits.
     """
 
     def _make_grocery_txn_with_entries(
         self, seed_user, seed_periods_today, entries, account=None,
+        name="Groceries",
     ):
         """Create a tracked grocery transaction with the given entries.
 
@@ -1738,6 +1751,10 @@ class TestTheReconcileRoute:
                 to.  Defaults to the seed_user's primary checking
                 account; pass a second account to exercise the
                 per-account scope of the reconcile.
+            name: the envelope's name, on both the template and the row.
+                Defaults to "Groceries"; pass a second name to exercise the
+                per-envelope GROUPING (plan step X-f2-c1), which needs two
+                distinguishable blocks in one panel.
 
         Returns:
             The Transaction object.
@@ -1756,7 +1773,7 @@ class TestTheReconcileRoute:
             account_id=account.id,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
-            name="Groceries",
+            name=name,
             default_amount=Decimal("500.00"),
             is_envelope=True,
         )
@@ -1769,7 +1786,7 @@ class TestTheReconcileRoute:
             scenario_id=seed_user["scenario"].id,
             account_id=account.id,
             status_id=projected.id,
-            name="Groceries",
+            name=name,
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
             estimated_amount=Decimal("500.00"),
@@ -1891,9 +1908,22 @@ class TestTheReconcileRoute:
             # and the dashboard's copy was destroyed by the ``balanceChanged``
             # refresh this same response fires (finding N-199).  The mount
             # asserted below is what makes five a property of the structure.
-            assert 'id="anchor-ack-mount"' in html, (
+            #
+            # **It TARGETS the mount rather than carrying its id, since plan
+            # step X-f2-b** (finding N-206).  The swap was an outerHTML
+            # replacement of ``#anchor-ack-mount``, so a second back-dated save
+            # inside the 8s autohide window destroyed the first toast; it
+            # APPENDS now.  What is graded is unchanged -- the acknowledgement
+            # reaches the ONE global mount rather than a per-surface element --
+            # and the marker for it is the swap attribute that names the mount.
+            assert _ACK_SWAP in html, (
                 "the acknowledgement must ride the global base.html mount, "
                 "not a per-surface element only some surfaces carry"
+            )
+            assert 'id="anchor-ack-mount"' not in html, (
+                "the fragment must APPEND into the mount, never re-emit it: "
+                "re-emitting IS the outerHTML swap that destroys a "
+                "still-visible predecessor (N-206)"
             )
             # **The negatives are scoped to the acknowledgement fragment, not
             # to the whole body, and that is load-bearing.**  On the grid the
@@ -1904,17 +1934,17 @@ class TestTheReconcileRoute:
             # fail the honest code, which is a control that fires on the truth.
             #
             # The as-of snippet is REMOVED before slicing rather than the
-            # slice being taken on faith.  Taking everything after the mount
-            # id makes the negatives depend on the order the route
+            # slice being taken on faith.  Taking everything after the swap
+            # marker makes the negatives depend on the order the route
             # concatenates its fragments (``html + as_of + feedback``): move
             # the acknowledgement earlier and ``f"as of {today}" not in ack``
             # would silently start grading the as-of snippet instead, which is
             # a control that stops testing its own subject without failing.
-            assert html.count('id="anchor-ack-mount"') == 1
+            assert html.count(_ACK_SWAP) == 1
             ack = re.sub(
                 r'<small[^>]*id="anchor-as-of".*?</small>', "", html,
                 flags=re.DOTALL,
-            ).split('id="anchor-ack-mount"', 1)[1]
+            ).split(_ACK_SWAP, 1)[1]
             assert "Balance recorded" in ack
             # **The attribute that makes the toast VISIBLE, graded** -- the
             # whole feature hangs on one token and nothing saw it.  Vendored
@@ -1949,6 +1979,182 @@ class TestTheReconcileRoute:
                 "the acknowledgement must name the SUBMITTED balance, not the "
                 "one that still governs"
             )
+
+    def test_re_recording_the_same_balance_later_is_acknowledged(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A real write that changes no figure says so (finding **N-204**).
+
+        The state the OLD predicate could not see, and the reason the
+        acknowledgement stopped being the reconcile prompt's complement.
+        Re-record the balance that already governs, for a LATER day, with
+        nothing outstanding: a row IS appended (the day differs, so ruling
+        R-EQ's duplicate test does not fire), the coverage boundary MOVES, and
+        the balance cell re-renders to the figure it already showed -- so the
+        submission was the boundary, took the prompt branch, and the prompt was
+        empty.  Nothing at all reached the screen.
+
+        Measured on production: this exact shape, an equal balance re-asserted
+        on a later day, occurs once in the real Checking account's 57
+        assertions.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            statement_day = display_today() - timedelta(days=6)
+
+            self._true_up(
+                auth_client, acct_id, "1500.00", observed_on=statement_day,
+            )
+            response = self._true_up(
+                auth_client, acct_id, "1500.00", observed_on=display_today(),
+            )
+
+            html = response.data.decode()
+            # A row really was written -- the coverage boundary moved -- so
+            # this is a write that produced no visible change, not a no-op.
+            assert (
+                cash_ledger.reconciled_through(acct_id).observed_day
+                == display_today()
+            )
+            assert "data-modal-auto-show" not in html, (
+                "nothing is outstanding, so the prompt is empty and the "
+                "acknowledgement is the only thing that can speak"
+            )
+            assert _ACK_SWAP in html
+            ack = html.split(_ACK_SWAP, 1)[1]
+            assert "Balance recorded" in ack
+            assert "$1,500.00" in ack
+
+    def test_a_write_that_moves_the_figure_is_not_acknowledged(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The non-vacuity control for the case above.
+
+        Identical fixture and identical days; only the submitted BALANCE
+        differs, so the cell re-renders to a new figure and IS its own
+        acknowledgement.  Without this, firing the toast unconditionally would
+        pass the test above while burying every ordinary true-up under a
+        redundant confirmation.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            statement_day = display_today() - timedelta(days=6)
+
+            self._true_up(
+                auth_client, acct_id, "1500.00", observed_on=statement_day,
+            )
+            response = self._true_up(
+                auth_client, acct_id, "1600.00", observed_on=display_today(),
+            )
+
+            assert _ACK_SWAP not in response.data.decode(), (
+                "the balance cell already shows the new figure, so a toast "
+                "repeating it is noise"
+            )
+
+    def test_the_prompt_still_wins_when_there_is_something_to_reconcile(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A visible prompt IS the acknowledgement, so the toast stays quiet.
+
+        The exclusivity, graded on the one state where the re-key could have
+        produced BOTH: the figure does not move (so the toast's first clause
+        holds) and the submission is the coverage boundary with a purchase
+        outstanding (so the prompt opens).  The prompt is captioned with the
+        balance and day just recorded, which is why it discharges the
+        acknowledgement rather than competing with it.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+            self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("120.00", today - timedelta(days=2), False, None)],
+            )
+            self._true_up(
+                auth_client, acct_id, "1500.00",
+                observed_on=today - timedelta(days=6),
+            )
+            response = self._true_up(
+                auth_client, acct_id, "1500.00", observed_on=today,
+            )
+
+            html = response.data.decode()
+            assert "data-modal-auto-show" in html
+            assert _ACK_SWAP not in html, (
+                "the prompt names the balance and day just recorded, so a "
+                "toast beside it says the same thing twice"
+            )
+
+    def test_a_blank_date_box_is_acknowledged_for_TODAY(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The acknowledgement names the resolved day, not a guess.
+
+        The one arm of the day the suite did not grade.  A blank date box
+        carries no day; the write door resolves it to the user's today, and the
+        route may not re-read the clock to name it -- so it reads the day back
+        off the assertion that GOVERNS after the write.  A mutation naming any
+        other day (the account's ``created_at``, the previous assertion's day)
+        renders a wrong date under a correct balance, which is worse than
+        silence: it affirmatively tells the user their record landed on a day
+        it did not.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+
+            self._true_up(
+                auth_client, acct_id, "1500.00",
+                observed_on=today - timedelta(days=6),
+            )
+            # No ``observed_on`` at all -- the shape an older client submits,
+            # and the one the fallback exists for.
+            response = self._true_up(auth_client, acct_id, "1500.00")
+
+            ack = response.data.decode().split(_ACK_SWAP, 1)[1]
+            assert f"as of {today.strftime('%b %-d, %Y')}" in ack
+            assert (
+                f"as of {(today - timedelta(days=6)).strftime('%b %-d, %Y')}"
+                not in ack
+            ), "a blank date box means TODAY, not the day that governed before"
+
+    def test_an_idempotent_re_assert_does_not_claim_to_have_recorded(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Ruling R-EQ's UNCHANGED outcome gets its own copy.
+
+        Submitting the governing balance for the governing DAY writes nothing
+        and is rolled back, while the route reports success.  That state
+        reaches the acknowledgement under the re-keyed predicate -- the figure
+        did not move and the prompt is empty -- so the copy has to say what
+        happened.  "Balance recorded" over a write that wrote nothing is the
+        same class of untruth the acknowledgement exists to remove.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+
+            self._true_up(auth_client, acct_id, "1500.00", observed_on=today)
+            before = db.session.query(AccountAnchorHistory).filter_by(
+                account_id=acct_id,
+            ).count()
+            response = self._true_up(
+                auth_client, acct_id, "1500.00", observed_on=today,
+            )
+
+            # Nothing was written, which is the premise of the copy below.
+            assert db.session.query(AccountAnchorHistory).filter_by(
+                account_id=acct_id,
+            ).count() == before
+
+            ack = response.data.decode().split(_ACK_SWAP, 1)[1]
+            assert "Balance confirmed" in ack
+            assert "Balance recorded" not in ack, (
+                "nothing was recorded -- ruling R-EQ rolled the submission "
+                "back -- so the copy must not say it was"
+            )
+            assert "$1,500.00" in ack
 
     @pytest.mark.parametrize(
         "revert",
@@ -2040,8 +2246,11 @@ class TestTheReconcileRoute:
             entries = self._entries_of(txn.id)
             assert len(entries) == 3
             assert all(e.settled_on is None for e in entries)
-            # The prompt rides along on the true-up's own response.
-            assert b"Tick the ones your statement shows" in response.data
+            # The prompt rides along on the true-up's own response.  The copy
+            # widened at plan step X-f2-c2 (ruling R-FD: the panel offers
+            # deposits too, so it cannot say "purchases"); what this asserts is
+            # unchanged -- that the prompt is IN the true-up's own body.
+            assert b"Tick everything your statement shows" in response.data
 
     def test_ticking_a_purchase_stamps_the_asserted_day(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -2132,7 +2341,15 @@ class TestTheReconcileRoute:
             listed = auth_client.get(
                 f"/accounts/{seed_user['account'].id}/reconcile",
             )
-            assert b"50.00" not in listed.data
+            # Asserted on the entry's OWN checkbox, not on its amount as a
+            # substring.  The panel offers the envelope's close too since plan
+            # step X-f2-c2, and that row's figure is sum(entries) = $50.00, so
+            # a ``b"50.00" not in`` assertion now reads the wrong row's money
+            # and would pass or fail for reasons unrelated to this bound.
+            assert (
+                f'name="entry_ids" value="{entry_id}"'.encode()
+                not in listed.data
+            )
 
             response = auth_client.post(
                 f"/accounts/{seed_user['account'].id}/reconcile",
@@ -2275,9 +2492,11 @@ class TestTheReconcileRoute:
         each trues up through the PATCH route and ``apply_anchor_true_up``
         stamps ``display_today()``.  So none of them can tell
         ``cash_ledger.reconciled_through(account.id)`` apart from
-        ``display_today()`` -- measured: substituting the latter in
-        ``accounts.anchor.reconcile_purchases`` left the whole 7,721-test suite
-        green.  This is the case that separates them, and it is the only one.
+        ``display_today()`` -- measured: substituting the latter in the POST
+        door (then ``accounts.anchor.reconcile_purchases``, now
+        ``accounts.reconcile.record_reconciliation``) left the whole 7,721-test
+        suite green.  This is the case that separates them, and it is the only
+        one.
 
         ``observed_on`` is USER-SUPPLIED (plan step 2), so a back-dated
         assertion is an ordinary state: "my statement is dated the 3rd, not
@@ -2289,9 +2508,10 @@ class TestTheReconcileRoute:
         purchase would get ``settled_on = today``, which is AFTER the asserted
         day, so ``ReconciledThrough.covers`` answers False, the reservation never
         drops, and the projection stays low by the whole purchase.  Worse, the
-        row now fails ``_outstanding_scope``'s ``settled_on IS NULL`` clause, so
-        the panel can never offer it again -- the user cannot fix it from the
-        surface that broke it.
+        row now fails the ``settled_on IS NULL`` clause of
+        ``reconcile_service._purchases._outstanding_scope``, so the panel can
+        never offer it again -- the user cannot fix it from the surface that
+        broke it.
         """
         with app.app_context():
             account = seed_user["account"]
@@ -2500,6 +2720,361 @@ class TestTheReconcileRoute:
             by_id = {e.id: e for e in self._entries_of(txn.id)}
             assert by_id[ticked_id].settled_on == display_today()
             assert by_id[untouched_id].settled_on is None
+
+    def test_the_panel_404s_for_an_account_this_page_does_not_serve(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Finding **N-216**: both reconcile doors take the page's kind gate.
+
+        The cash detail page and its other three fragments all resolve through
+        ``_cash_page.load_cash_account_or_404``, which 404s the kinds this page
+        does not serve; these two routes guarded on OWNERSHIP alone, so
+        ``GET /accounts/<loan id>/reconcile`` rendered a cash-reconciliation
+        panel for an amortizing account and answered "every purchase recorded
+        on this account has been matched to your bank" -- a sentence that is
+        not about a loan.
+
+        **A 200 with an empty list is what it did, which is why a
+        content assertion could not have caught it.** The list is empty because
+        a loan's ``account_anchor_history`` carries only its origination row, so
+        the offer set's date bound admits nothing: a property of the DATA, and
+        one plan step X-f2-c2 removes when the set widens to transactions and a
+        loan's projected transfer shadows become tickable. The status code is
+        therefore the only honest oracle here.
+
+        Both doors are asserted: a READ that rendered the panel is the leak, and
+        a WRITE that accepted a tick against a loan is the money.
+        """
+        with app.app_context():
+            loan = create_loan_account(seed_user, db.session, name="Van Loan")
+            db.session.commit()
+            loan_id = loan.id
+
+        assert auth_client.get(
+            f"/accounts/{loan_id}/reconcile",
+        ).status_code == 404
+        assert auth_client.post(
+            f"/accounts/{loan_id}/reconcile",
+            data={"entry_ids": ["1"]},
+        ).status_code == 404
+
+    def test_a_true_up_on_a_kind_this_panel_refuses_prompts_NOTHING(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Finding **N-216**'s THIRD door, and the regression the first fix made.
+
+        The reconcile panel has three doors, not two: the two routes, and the
+        post-true-up modal ``prompt_fragment`` mounts out of band.  The anchor
+        editor opens on every kind except an amortizing one, so a 401(k) or
+        Property true-up reaches that modal -- and once the two ROUTES 404'd
+        those kinds, the modal still rendered with its checkboxes while its
+        submit button POSTed to a door that refused.  **htmx swaps only 2xx**,
+        so the button did nothing, silently and forever: strictly worse than
+        the state before the gate, and the exact failure
+        ``app/error_handlers.py`` refuses to ship for a mutating fragment.
+
+        The premise is asserted, not assumed: the true-up itself must SUCCEED
+        (200) on this kind, or the modal's absence would prove nothing.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            retirement = create_account_of_type(
+                seed_user, db.session, "401(k)", "Empower 401(k)",
+                anchor_balance=Decimal("50000.00"),
+            )
+            db.session.commit()
+            retirement_id = retirement.id
+            # An outstanding purchase ON that account, so the offer set is
+            # non-empty and an ungated modal would really render.
+            self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("40.00", past, False, None)],
+                account=retirement,
+            )
+
+            trued_up = self._true_up(auth_client, retirement_id, "51000.00")
+
+            assert trued_up.status_code == 200
+            body = trued_up.data.decode()
+            assert "data-modal-auto-show" not in body
+            assert "Mark ticked as posted" not in body
+
+    def test_purchases_are_grouped_under_their_own_envelope(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Ruling **R-EW**: a purchase nests under the thing it belongs to.
+
+        The flat list this replaced named each purchase's parent in a trailing
+        fragment on its own line, so two purchases against one envelope repeated
+        that envelope's name twice and a purchase against another sat between
+        them under whatever purchase date ordered it. Grouped, each envelope's
+        name appears ONCE and its purchases are contiguous beneath it.
+
+        Graded on the rendered document rather than on the producer, because the
+        producer's grouping is already pinned in
+        ``test_services/test_reconcile_service.py`` and what this asserts is that
+        the panel consumes it: the name appears exactly once per envelope, each
+        block carries its own subtotal, and every purchase is still individually
+        tickable (the two acts stay independent, R-EW's second half).
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            groceries = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [
+                    ("40.00", past, False, None),
+                    ("60.00", past, False, None),
+                ],
+            )
+            gas = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("25.00", past, False, None)],
+                name="Gas",
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            body = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+            ).data.decode()
+
+            # (i) Each block names itself ONCE, not once per purchase --
+            # which is the whole difference between a heading and a trailing
+            # fragment on every line.
+            assert body.count("Groceries") == 1
+            assert body.count("Gas") == 1
+            # (ii) Its own subtotal: 40.00 + 60.00 = 100.00, hand-computed.
+            assert "$100.00" in body
+            # (iii) Every purchase is still its OWN tick (R-EW: the two acts
+            # stay independent).
+            grocery_ids = [e.id for e in self._entries_of(groceries.id)]
+            gas_ids = [e.id for e in self._entries_of(gas.id)]
+            for entry_id in grocery_ids + gas_ids:
+                assert f'value="{entry_id}"' in body
+            # (iv) And they are CONTIGUOUS beneath their own heading, which is
+            # what "nested" means and what (i) alone does not prove: a flat
+            # list that merely printed each name once would interleave.  Read
+            # off the rendered document by position rather than asserted about
+            # markup, so a restyle does not fail it and a re-ordering does.
+            at = body.index
+            assert at("Groceries") < min(
+                at(f'value="{i}"') for i in grocery_ids
+            )
+            assert max(
+                at(f'value="{i}"') for i in grocery_ids
+            ) < at("Gas") < min(at(f'value="{i}"') for i in gas_ids)
+
+    # ── Plan step X-f2-c2: the door settles ROWS too ──────────────
+
+    def test_one_POST_settles_a_purchase_AND_its_parents_close(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The ORDER of the two writers, graded end to end.
+
+        **This is the control for the defect the ordering exists to prevent.**
+        The purchase arm's scope requires a PROJECTED parent, so settling the
+        envelope's close FIRST takes that parent out of scope and every ticked
+        purchase on it is silently skipped -- reported as success, with the
+        purchases still reading outstanding on the next render.  Ticking a whole
+        block at once is the ordinary way to walk a statement, not an exotic
+        one.
+
+        Shown to FIRE: swapping the two service calls in
+        ``record_reconciliation`` leaves ``settled_on`` NULL on the purchase
+        while the envelope settles.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [("106.86", past, False, None)],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+            entry_id = self._entries_of(txn.id)[0].id
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={
+                    "entry_ids": [str(entry_id)],
+                    "transaction_ids": [str(txn.id)],
+                },
+            )
+
+            assert response.status_code == 200
+            db.session.expire_all()
+            assert self._entries_of(txn.id)[0].settled_on == display_today()
+            settled = db.session.get(Transaction, txn.id)
+            assert settled.settled_on == display_today()
+            assert settled.actual_amount == Decimal("106.86")
+
+    def test_a_submitted_amount_box_corrects_what_the_row_books(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Ruling **R-FB**, through the real form field.
+
+        The panel renders ``actual_amount-<id>`` for a correctable row; the
+        route pairs it back to its own row by NAME rather than by position, so
+        this grades the pairing as well as the write.  An envelope with no
+        entries is the correctable case (ruling **R-FF**).
+        """
+        with app.app_context():
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={
+                    "transaction_ids": [str(txn.id)],
+                    f"actual_amount-{txn.id}": "412.09",
+                },
+            )
+
+            assert response.status_code == 200
+            db.session.expire_all()
+            settled = db.session.get(Transaction, txn.id)
+            assert settled.actual_amount == Decimal("412.09")
+            assert settled.estimated_amount == Decimal("500.00")
+
+    def test_a_malformed_amount_refuses_and_commits_NOTHING(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The panel's rejection surface, and the atomicity behind it.
+
+        A crafted POST can send anything; the browser's ``type="number"`` is a
+        convenience, not a boundary.  Without the designed refusal this is an
+        unhandled Marshmallow error -- a 500 on a write door.
+
+        **The ticked purchase must not survive either**, which is what makes
+        this an atomicity control rather than a validation one: both writers
+        run inside one transaction, so a refusal rolls back the half that had
+        already succeeded.  It answers 400 WITH the designed-fragment header,
+        because htmx leaves a bare 4xx unswapped and the button would read as
+        broken.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [("106.86", past, False, None)],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+            entry_id = self._entries_of(txn.id)[0].id
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={
+                    "entry_ids": [str(entry_id)],
+                    "transaction_ids": [str(txn.id)],
+                    f"actual_amount-{txn.id}": "-12",
+                },
+            )
+
+            assert response.status_code == 400
+            assert response.headers["Shekel-Designed-Fragment"] == "1"
+            db.session.expire_all()
+            assert self._entries_of(txn.id)[0].settled_on is None
+            assert db.session.get(Transaction, txn.id).settled_on is None
+
+    def test_a_tick_that_landed_on_nothing_SAYS_so(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A submission the scope dropped is reported, not rendered as success.
+
+        Both arms drop an out-of-scope id silently -- the set-operation form of
+        "404 for not-found and not-yours" -- and the ordinary way to reach it is
+        a second device settling the same rows while a statement is being
+        walked.  For the purchase arm that hides a column stamp; for this one it
+        hides a status change, an amount and a ledger posting, so "saved" would
+        be a false sentence about money.
+
+        Shown to FIRE: dropping the notice renders the plain success panel.
+        """
+        with app.app_context():
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+            # Settle it out from under the panel, exactly as another device
+            # would, then submit the tick the stale panel still shows.
+            auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"transaction_ids": [str(txn.id)]},
+            )
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"transaction_ids": [str(txn.id)]},
+            )
+
+            assert response.status_code == 200
+            assert b"had already been settled" in response.data or (
+                b"changed while you were reconciling" in response.data
+            )
+
+    def test_a_correctable_row_INSIDE_a_block_still_gets_its_box(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Ruling **R-FF** is honoured in BOTH renderings of a settle row.
+
+        The panel had two copies of that row and read ``is_correctable`` in only
+        one, so a block with purchases printed a static figure whatever the
+        producer said.  Reachable: a template's ``is_envelope`` is editable, so
+        turning purchase-tracking off after its rows carry entries leaves a
+        block with children whose settle IS correctable -- and the correction
+        box vanished silently, on the screen ruling R-FB added it to.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [("50.00", past, False, None)],
+            )
+            # Purchase-tracking off, entries already recorded.
+            txn.template.is_envelope = False
+            db.session.commit()
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            body = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+            ).data.decode()
+
+            # The entry checkbox proves the block took the WITH-CHILDREN arm,
+            # which is the arm that used to ignore the flag.
+            assert 'name="entry_ids" value="' in body
+            assert f'name="actual_amount-{txn.id}"' in body
+
+    def test_the_write_door_still_404s_a_kind_this_panel_does_not_serve(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Finding **N-216**'s gate, re-graded now that the door writes more.
+
+        The kind gate ran before the offer set widened, so its own oracle was
+        the status code and nothing else -- a loan answered 200 with an empty
+        list only because a loan's ``account_anchor_history`` carries just its
+        origination row.  X-f2-c2 removes that accident: a loan's projected
+        rows would now be offered, so the gate is the only thing refusing.
+        """
+        with app.app_context():
+            # The gate's own predicate is ``has_amortization`` (plus
+            # appreciation and the two investment categories), so the fixture
+            # picks the type by THAT column rather than by a name.
+            loan_type = (
+                db.session.query(AccountType)
+                .filter_by(has_amortization=True).first()
+            )
+            loan = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    name="Van Loan",
+                    account_type_id=loan_type.id,
+                    anchor_balance=Decimal("9000.00"),
+                ),
+            )
+            db.session.commit()
+
+            assert auth_client.get(
+                f"/accounts/{loan.id}/reconcile",
+            ).status_code == 404
+            assert auth_client.post(
+                f"/accounts/{loan.id}/reconcile", data={},
+            ).status_code == 404
 
 
 # ── Account Type CRUD ─────────────────────────────────────────────
@@ -3886,10 +4461,10 @@ class TestCheckingDetail:
     def test_checking_detail_page_renders(self, app, auth_client, seed_user):
         """GET /accounts/<id>/checking renders the detail page with account name and balance."""
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -3912,10 +4487,10 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Salary"]
 
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=27,
+                first_payday=display_today(),
+                num_periods=27, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -3978,10 +4553,10 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Salary"]
 
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=27,
+                first_payday=display_today(),
+                num_periods=27, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -4063,10 +4638,10 @@ class TestCheckingDetail:
     ):
         """Checking detail with no transactions shows flat balance at anchor amount."""
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=27,
+                first_payday=display_today(),
+                num_periods=27, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -4082,10 +4657,10 @@ class TestCheckingDetail:
     ):
         """Short horizon: 3-month projection available, 12-month projection missing."""
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -4111,10 +4686,10 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Rent"]
 
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -4165,10 +4740,10 @@ class TestCheckingDetail:
         # test convention.
         from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -4569,10 +5144,10 @@ class TestCheckingDetailCanonicalProducer:
             # The CALL is the setup: it creates the ten periods this
             # page projects across.  The return value is unused since
             # the anchor no longer names a period.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
 
             checking_type = db.session.query(AccountType).filter_by(
@@ -4710,10 +5285,10 @@ class TestCheckingDashboardLink:
         with app.app_context():
             # The CALL is the setup: the dashboard can only compute a
             # balance for the seed account across periods that exist.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             db.session.commit()
 
@@ -4739,10 +5314,10 @@ class TestCheckingDashboardLink:
         with app.app_context():
             # The CALL is the setup: the dashboard can only compute a
             # balance for either card across periods that exist.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
 
             # Create a savings account.
@@ -4835,10 +5410,10 @@ class TestCashDetailContext:
         balances are the hand-computed 5000 + n*500.  Returns
         ``(account, periods)``.
         """
-        periods = pay_period_service.generate_pay_periods(
+        periods = pay_period_write.record_paydays(
             user_id=seed_user["user"].id,
-            start_date=display_today(),
-            num_periods=num_periods,
+            first_payday=display_today(),
+            num_periods=num_periods, cadence_days=14,
         )
         checking_type = db.session.query(AccountType).filter_by(
             name="Checking",
@@ -5014,10 +5589,10 @@ class TestCashDetailContext:
         with app.app_context():
             # The CALL is the setup: the next-year window needs a year
             # of periods to sum interest across.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=30,
+                first_payday=display_today(),
+                num_periods=30, cadence_days=14,
             )
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
             acct = account_service.create_account(
@@ -5057,10 +5632,10 @@ class TestCashDetailContext:
         # test convention.
         from app.services.balance_at import _kernel as net_worth_kernel  # pylint: disable=import-outside-toplevel
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=33,
+                first_payday=display_today(),
+                num_periods=33, cadence_days=14,
             )
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
             acct = account_service.create_account(
@@ -6107,10 +6682,10 @@ class TestCashDetailClickToEditHero:
         with app.app_context():
             # The CALL is the setup: it creates the ten periods the
             # band's horizon chips read across.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             checking_type = db.session.query(AccountType).filter_by(
                 name="Checking",
@@ -7643,3 +8218,305 @@ class TestAnchorDifference:
 
             assert response.status_code == 404
             assert b"Your records" not in response.data
+
+
+class TestTheBalanceHistoryCard:
+    """The durable record of a balance assertion -- plan step X-f2-b (R-EV).
+
+    The card closes finding **N-205**: before it, the only evidence a
+    back-dated assertion landed was an 8-second toast, and no template read
+    ``AccountAnchorHistory`` at all except the GOVERNING assertion's "as of"
+    caption -- which by definition is never the back-dated row.
+
+    Every figure is graded at the producer
+    (``test_services/test_balance_at.py::TestCashAnchorHistory``); what is
+    graded HERE is the route's own three decisions -- which rows are shown by
+    default, that the card is reachable only by its owner, and that it refreshes
+    when a write appends to it.
+    """
+
+    @staticmethod
+    def _assert_balance(auth_client, account_id, balance, observed_on=None):
+        """Record a balance through the real PATCH route."""
+        data = {"anchor_balance": balance}
+        if observed_on is not None:
+            data["observed_on"] = observed_on.isoformat()
+        response = auth_client.patch(
+            f"/accounts/{account_id}/true-up", data=data,
+        )
+        assert response.status_code == 200
+
+    def test_the_page_carries_the_log_and_refreshes_it_on_a_write(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The card renders on the page and re-fetches on ``balanceChanged``.
+
+        The refresh is not decoration: a true-up APPENDS an assertion, so a
+        card left un-refreshed would omit the very row the user just recorded
+        -- the defect the card exists to close, one layer up.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            self._assert_balance(auth_client, acct_id, "1234.56")
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/details",
+            ).data.decode()
+
+            assert "Balance history" in html
+            assert f'id="balance-history-{acct_id}"' in html
+            assert f"/accounts/{acct_id}/balance-history" in html
+            region = html.split(f'id="balance-history-{acct_id}"', 1)[1]
+            assert 'hx-trigger="balanceChanged from:body"' in region.split(
+                "</div>", 1,
+            )[0]
+            assert "$1,234.56" in html
+
+    def test_the_fragment_shows_a_write_the_page_predates(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The refresh target really does pick up a newly appended row.
+
+        The region's trigger is asserted above; this is the other half -- that
+        what it fetches has moved.  Without it a card wired to a stale producer
+        would pass the markup test and still show yesterday's log forever.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            before = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+            assert "$4,321.00" not in before
+
+            self._assert_balance(auth_client, acct_id, "4321.00")
+
+            after = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+            assert "$4,321.00" in after
+
+    def test_the_default_view_is_capped_and_says_what_it_hides(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Past twelve rows the card discloses the rest rather than growing.
+
+        The real Checking account carries 57 assertions over 133 days and grows
+        by about 13 a month, so the loan twin's "render every row" shape -- it
+        has ONE anchor -- would make the log the page's dominant element
+        (developer ruling 1, 2026-08-10).
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+            # 14 true-ups on distinct days, plus the account's opening = 15.
+            for offset in range(14, 0, -1):
+                self._assert_balance(
+                    auth_client, acct_id, f"{1000 + offset}.00",
+                    observed_on=today - timedelta(days=offset),
+                )
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+
+            assert html.count("<tr>") == 1 + 15, (
+                "every assertion is in the DOM -- the disclosure hides rows, "
+                "it does not drop them"
+            )
+            assert "Show all 15" in html
+            assert "12 of 15 recorded" in html
+            # The rows past the cap are behind the collapse rather than gone.
+            hidden = html.split('class="collapse"', 1)[1]
+            assert hidden.count("<tr>") == 3
+
+    def test_the_rows_shown_are_the_most_recently_RECORDED(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A back-dated write is visible without expanding the disclosure.
+
+        The card's whole job is giving that write a retrieval path (**N-205**),
+        and sorting by the day a balance was TRUE defeats it: a balance
+        recorded today for a day three weeks back sits at that day's position,
+        which on the real Checking account is 40 rows down.  So the default
+        view is chosen by ``recorded_on`` and rendered in ``observed_on`` order.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+            for offset in range(14, 0, -1):
+                self._assert_balance(
+                    auth_client, acct_id, f"{2000 + offset}.00",
+                    observed_on=today - timedelta(days=offset),
+                )
+            # NOW record an old statement.  Its ``observed_on`` is older than
+            # every row above, so an ``observed_on``-ranked cap would bury it.
+            self._assert_balance(
+                auth_client, acct_id, "1777.77",
+                observed_on=today - timedelta(days=30),
+            )
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+            shown = html.split('class="collapse"', 1)[0]
+
+            assert "$1,777.77" in shown, (
+                "the row just recorded must be visible without expanding, or "
+                "the card does not answer the question it exists for"
+            )
+            # And it announces that it is back-dated, so it is not read as a
+            # balance that was true today.
+            #
+            # **Scoped to the row under test.**  A bare ``"entered" in shown``
+            # is near-vacuous here: every row in this fixture is back-dated by
+            # construction, so the caption is present whether or not THIS row
+            # carries one.  Slicing to the cell that holds the figure is what
+            # makes the assertion about the row it names.
+            row = shown.split("$1,777.77", 1)[0].rsplit("<tr>", 1)[1]
+            assert f"entered {today.strftime('%b %-d, %Y')}" in row, (
+                "the back-dated row must name the day it was TYPED, or a "
+                "reader cannot tell it from a balance that was true that day"
+            )
+
+    def test_an_ordinary_row_does_not_claim_to_be_back_dated(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The non-vacuity control for the caption above.
+
+        A same-day true-up leaves the two clocks equal, so the caption must be
+        absent -- one that fired on every row would stop distinguishing
+        anything.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            self._assert_balance(
+                auth_client, acct_id, "1500.00", observed_on=display_today(),
+            )
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+
+            assert "$1,500.00" in html
+            assert "entered" not in html
+
+    def test_a_modelled_account_shows_no_reconciliation_columns(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """An HYSA logs what was declared and claims no reconciliation.
+
+        The walk sees recorded CASH only, so an accruing account's difference
+        would name interest as untracked spend -- on production the HYSA's one
+        row would read $4,863.56 against a $5,363.56 balance (finding N-213).
+        The log itself still renders, because "what did I declare, and when" is
+        a fact for every kind.
+        """
+        with app.app_context():
+            hysa_type = db.session.query(AccountType).filter_by(
+                name="HYSA",
+            ).one()
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=hysa_type.id,
+                    name="HYSA History",
+                    anchor_balance=Decimal("5000.00"),
+                ),
+            )
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.04500"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
+            db.session.commit()
+
+            html = auth_client.get(
+                f"/accounts/{acct.id}/balance-history",
+            ).data.decode()
+
+            assert "$5,000.00" in html
+            assert "Ledger" not in html
+            assert "Correction" not in html
+            assert "nothing here to reconcile against" in html
+
+    def test_a_plain_account_shows_them(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The non-vacuity control for the case above.
+
+        Same route, same fixture shape, only the KIND differs -- so the missing
+        columns there are a property of the account rather than of the card
+        never rendering them at all.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            self._assert_balance(auth_client, acct_id, "1500.00")
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+
+            assert "Ledger" in html
+            assert "Correction" in html
+
+    def test_the_opening_row_publishes_no_difference(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The opening is badged and its reconciliation cells are withheld.
+
+        Its "ledger" is the sum of rows dated before the account existed
+        (open finding **N-37**) and its gap is opening EQUITY, the figure plan
+        step X-f5 books -- not a correction, so the card refuses to caption it
+        as one.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+
+            assert "Opening" in html
+            # The lone row is the opening, so every reconciliation cell on the
+            # page is the withheld dash.
+            assert html.count(">--<") == 2
+
+    def test_a_companion_cannot_reach_the_card(
+        self, app, companion_client, seed_user, seed_periods_today,
+    ):
+        """The owner-role decorator on the fragment is graded, not assumed.
+
+        The COMPANION is the case that matters rather than an unrelated
+        stranger, for the reason the sibling reconcile route's twin gives: a
+        companion is authenticated AND holds granted access to this owner's
+        transactions, so ``@require_owner`` refusing them is a real decision.
+        This card publishes MORE than that panel does -- every balance the
+        owner has ever recorded, with the day each was entered.
+
+        404 rather than 403, per the project's security response rule, so the
+        status cannot be used as an existence oracle.
+        """
+        with app.app_context():
+            account_id = seed_user["account"].id
+
+        assert companion_client.get(
+            f"/accounts/{account_id}/balance-history",
+        ).status_code == 404
+
+    def test_another_users_account_is_not_reachable(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """404 for both "not found" and "not yours" (the security rule).
+
+        The card publishes an account's whole balance history, so an
+        unscoped read here would leak more than most: every figure the owner
+        has ever recorded, with dates.
+        """
+        with app.app_context():
+            other = _create_other_user_account()
+            response = auth_client.get(
+                f"/accounts/{other['account'].id}/balance-history",
+            )
+            assert response.status_code == 404

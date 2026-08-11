@@ -126,6 +126,52 @@ document.body.addEventListener("htmx:afterRequest", function(event) {
   }
 });
 
+// Dispose Bootstrap component instances on markup a swap is about to
+// DESTROY (plan step X-f2-b, finding N-206's class one level up).
+//
+// Bootstrap keys every component instance in an element-keyed `Map` (its
+// dom/data.js -- a Map, verified in the vendored bundle, NOT a WeakMap), so an
+// element removed by an htmx swap while carrying an instance is retained by
+// that map forever, with the whole subtree hanging off it.
+//
+// MEASURED, not theorised, via CDP `Performance.getMetrics` with a forced GC
+// between samples: expanding the cash detail page's Balance history disclosure
+// and refreshing the card five times retained 4,592 DOM nodes -- about 918 per
+// cycle, the detached <tbody> of 46 rows.  Five refreshes WITHOUT expanding
+// moved the counter by -2, so the retention is exactly the Collapse instance.
+//
+// The three types here are the ones this file ATTACHES to swappable content:
+// the afterSwap handler below creates a Popover and a Tooltip per swap and has
+// never disposed the previous ones, which is the same leak already live.
+// Modal and Toast are deliberately absent: the modal mount leaves its markup
+// in place on purpose, and a toast now disposes itself on `hidden.bs.toast`.
+//
+// Disposal is safe because none of the three holds state that must survive the
+// swap: a Collapse's state IS the `show` class, which the replacement markup
+// re-declares.
+document.body.addEventListener("htmx:beforeSwap", function(event) {
+  const target = event.detail && event.detail.target;
+  if (!target || !target.querySelectorAll) {
+    return;
+  }
+  // ``.collapse`` is the COLLAPSIBLE element (Bootstrap's data-api puts the
+  // instance there, never on the button that toggles it); the two
+  // ``data-bs-toggle`` selectors are the popover / tooltip anchors, which DO
+  // carry their own.
+  target.querySelectorAll(
+    '.collapse, [data-bs-toggle="popover"], [data-bs-toggle="tooltip"]',
+  ).forEach(function(el) {
+    [bootstrap.Collapse, bootstrap.Popover, bootstrap.Tooltip].forEach(
+      function(Component) {
+        const instance = Component.getInstance(el);
+        if (instance) {
+          instance.dispose();
+        }
+      },
+    );
+  });
+});
+
 // Consolidated htmx:afterSwap handler -- save flash, popover close, focus restore.
 document.body.addEventListener("htmx:afterSwap", function(event) {
   const el = event.detail.elt;
@@ -206,12 +252,44 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
     // page load to be shown by, and without this it would swap in and
     // stay invisible (.toast is display:none until .show).
     //
-    // Marked by ``data-toast-auto-show`` rather than matching .toast, so
-    // an unrelated swap that happens to carry toast markup cannot
-    // re-show a toast the user already dismissed.  Delay and autohide
-    // come from the element's own data-bs-* attributes.
-    target.querySelectorAll('[data-toast-auto-show]').forEach(function(toastEl) {
-      bootstrap.Toast.getOrCreateInstance(toastEl).show();
+    // Marked by ``data-toast-auto-show`` rather than matching .toast, so a
+    // swap that happens to carry toast markup cannot re-show a toast the user
+    // already dismissed.  Delay and autohide come from the element's own
+    // data-bs-* attributes.
+    //
+    // **It searches the DOCUMENT, not the settled element, and that is plan
+    // step X-f2-b.**  Scoping it to ``target`` worked only while the
+    // acknowledgement's swap was ``hx-swap-oob="true"``: that is an outerHTML
+    // swap, so the settled element WAS the toast's container and htmx fired an
+    // ``afterSwap`` naming it.  Finding N-206 changed the swap to
+    // ``beforeend:``, and htmx dispatches no per-element ``afterSwap`` for a
+    // non-outerHTML out-of-band swap (``He``/``a`` in htmx.min.js insert the
+    // nodes and fire ``htmx:oobAfterSwap`` on the REQUESTING element instead).
+    // A container-scoped query therefore missed the appended toast entirely,
+    // leaving it in the DOM and permanently invisible -- N-199's exact
+    // symptom, reproduced in a live browser before it shipped.
+    //
+    // The un-instantiated guard is what keeps a document-wide query safe, and
+    // it is the same shape the popover / tooltip initializers above use: a
+    // toast that has already been shown carries a Bootstrap instance, and one
+    // the user dismissed is GONE, because each toast now removes itself.
+    //
+    // Each toast DISPOSES AND REMOVES ITSELF once hidden (finding N-206).  The
+    // acknowledgement appends rather than replacing its mount, so without this
+    // the mount would accumulate one dead node per save; and Bootstrap keys
+    // its instances off the element in a Data map that a plain remove() leaves
+    // populated, with the autohide setTimeout still armed to fire hide() on a
+    // detached node.  Disposing first and removing after clears both.
+    document.querySelectorAll('[data-toast-auto-show]').forEach(function(toastEl) {
+      if (bootstrap.Toast.getInstance(toastEl)) {
+        return;
+      }
+      var toast = bootstrap.Toast.getOrCreateInstance(toastEl);
+      toastEl.addEventListener('hidden.bs.toast', function() {
+        toast.dispose();
+        toastEl.remove();
+      }, { once: true });
+      toast.show();
     });
   }
 });

@@ -604,7 +604,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
     AccountType, FilingStatus, RecurrencePattern, Status, TransactionType,
 )
-from app.services import account_service
+from app.services import account_service, pay_period_write
 from app.services.auth_service import hash_password
 from tests._test_helpers import (
     bind_db_clock_rewriter,
@@ -986,9 +986,9 @@ def bare_periods(app, db, bare_user):
     """
     from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=bare_user["user"].id,
-        start_date=date(2026, 1, 2),
+        first_payday=date(2026, 1, 2),
         num_periods=10,
         cadence_days=14,
     )
@@ -1252,9 +1252,9 @@ def seed_periods(app, db, seed_user):
     """
     from app.services import pay_period_service
 
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=date(2026, 1, 2),
+        first_payday=date(2026, 1, 2),
         num_periods=10,
         cadence_days=14,
     )
@@ -1303,9 +1303,9 @@ def seed_periods_today(app, db, seed_user):
     """
     from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=_today_relative_start_date(),
+        first_payday=_today_relative_start_date(),
         num_periods=10,
         cadence_days=14,
     )
@@ -2199,9 +2199,9 @@ def seed_periods_52(app, db, seed_user):
     """
     from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=date(2026, 1, 2),
+        first_payday=date(2026, 1, 2),
         num_periods=52,
         cadence_days=14,
     )
@@ -2319,9 +2319,9 @@ def seed_second_periods(app, db, seed_second_user):
     """
     from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=seed_second_user["user"].id,
-        start_date=date(2026, 1, 2),
+        first_payday=date(2026, 1, 2),
         num_periods=10,
         cadence_days=14,
     )

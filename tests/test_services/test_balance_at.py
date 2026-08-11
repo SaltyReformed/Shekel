@@ -46,7 +46,7 @@ from app.enums import (
     StatusEnum,
     TxnTypeEnum,
 )
-from app.models.account import Account
+from app.models.account import Account, AccountAnchorHistory
 from app.models.interest_params import InterestParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, CalcMethod, DeductionTiming
@@ -84,6 +84,7 @@ from app.services.balance_at._resolution import (
 )
 from tests._test_helpers import (
     add_txn,
+    append_balance_assertion,
     create_account_of_type,
     create_hysa_account,
     create_loan_account,
@@ -5247,4 +5248,328 @@ class TestRecordsBalanceAt:
                 balance_at.records_balance_at(
                     seed_user["account"], ctx,
                     datetime(day.year, day.month, day.day),
+                )
+
+
+
+
+class TestCashAnchorHistory:
+    """``cash_anchor_history`` is the account's assertion LOG (ruling R-EV).
+
+    Plan step **X-f2-b**.  Every column is a field the cash walk already
+    publishes, so what these tests pin is not arithmetic the walk owns but the
+    three rules this entry adds on top of it: the ORDER the card reads in,
+    WHERE the ledger / difference pair is withheld, and that the withholding
+    flag is read from the account's KIND rather than inferred from the rows.
+
+    The seeded Checking opens at ``$1,000.00``, re-homed by
+    ``seed_periods_today`` onto period 0's start day, so every figure below is
+    that opening plus what these tests put after it.
+    """
+
+    def test_rows_are_newest_first_and_each_carries_the_walk_s_figures(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Two declarations read back newest-first with hand-computed cells.
+
+        The figures are computed here rather than read back from a producer.
+        The account opens at $1,000.00; one settled $125.00 expense lands in
+        period 1; then $500.00 is declared for period 1's last day and $400.00
+        for period 2's.  So the $500.00 row's ledger is ``1000.00 - 125.00 =
+        875.00`` and its difference ``500.00 - 875.00 = -375.00``; the $400.00
+        row sees the $500.00 reset and nothing since, so its ledger is
+        ``500.00`` and its difference ``-100.00``.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = seed_user["account"]
+            periods = pay_period_service.get_all_periods(user_id)
+
+            create_settled_cash_transaction(
+                seed_user, db.session, periods[1], Decimal("125.00"),
+                account=account, name="Recorded spend",
+                settled_on=periods[1].start_date,
+            )
+            db.session.commit()
+
+            for balance, day in (
+                (Decimal("500.00"), periods[1].end_date),
+                (Decimal("400.00"), periods[2].end_date),
+            ):
+                anchor_service.apply_anchor_true_up(
+                    account=account, new_balance=balance, observed_on=day,
+                )
+                db.session.commit()
+
+            history = balance_at.cash_anchor_history(
+                account, balance_at.BalanceContext.build(user_id),
+            )
+
+            assert history.reconcilable is True
+            assert [row.observed_on for row in history.rows] == [
+                periods[2].end_date,
+                periods[1].end_date,
+                # ``seed_periods_today`` drops the 2024 bootstrap period and
+                # re-homes the opening assertion onto period 0
+                # (``_drop_seed_user_bootstrap``), so the opening is dated
+                # here rather than at the fixture's bootstrap day.
+                periods[0].start_date,
+            ]
+            assert [row.recorded for row in history.rows] == [
+                Decimal("400.00"), Decimal("500.00"), Decimal("1000.00"),
+            ]
+            assert [row.ledger for row in history.rows] == [
+                Decimal("500.00"), Decimal("875.00"), None,
+            ]
+            assert [row.correction for row in history.rows] == [
+                Decimal("-100.00"), Decimal("-375.00"), None,
+            ]
+            assert [row.is_opening for row in history.rows] == [
+                False, False, True,
+            ]
+
+    def test_the_opening_row_withholds_the_pair_it_cannot_caption(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The opening publishes its balance and NOTHING about a difference.
+
+        Its ``balance_before`` is the sum of rows dated before the account's
+        first assertion, replayed from a zero seed, and what a reader should
+        answer there is open finding **N-37**.  Measured on production Checking
+        that is ``$2,057.42`` against a ``$2,746.58`` opening, whose
+        ``$689.16`` difference is the account's opening EQUITY (the figure plan
+        step X-f5 books), not a correction -- so the pair is withheld rather
+        than rendered.
+
+        Seeded with the production SHAPE: a settled row dated BEFORE the
+        opening assertion, which is what makes ``balance_before`` non-zero and
+        this test non-vacuous.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            periods = pay_period_service.get_all_periods(user_id)
+            later = create_account_of_type(
+                seed_user, db.session, "Checking", "Statement Checking",
+                anchor_balance=Decimal("2746.58"),
+                observed_on=periods[2].start_date,
+            )
+            create_settled_cash_transaction(
+                seed_user, db.session, periods[0], Decimal("300.00"),
+                account=later, is_income=True, name="Pre-opening income",
+                settled_on=periods[0].start_date,
+            )
+            db.session.commit()
+
+            ctx = balance_at.BalanceContext.build(user_id)
+            history = balance_at.cash_anchor_history(later, ctx)
+            opening = history.rows[-1]
+
+            assert opening.is_opening is True
+            assert opening.observed_on == periods[2].start_date
+            assert opening.recorded == Decimal("2746.58")
+            assert opening.ledger is None
+            assert opening.correction is None
+            # Non-vacuity: the walk really does hold a non-zero figure there,
+            # so ``None`` is this entry WITHHOLDING one rather than the walk
+            # having nothing to report.
+            walk = cash_ledger.walk_cash_ledger(later.id, ctx.scenario_id)
+            assert walk.anchor_corrections[0].balance_before == Decimal(
+                "300.00",
+            )
+
+    def test_a_modelled_account_withholds_the_pair_on_every_row(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An HYSA logs what was declared and claims no reconciliation.
+
+        The walk sees recorded CASH only, so an accruing account's difference
+        would name interest as untracked spend -- measured on production, the
+        HYSA's one row reads ``$4,863.56`` against a ``$5,363.56`` balance, and
+        the Money Market's two true-ups are ``$15.01`` / ``$15.24``, which is
+        interest.  The rows still exist, because "what did I declare, and when"
+        is a fact for every kind and is the retrieval path finding **N-205** is
+        about.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            periods = pay_period_service.get_all_periods(user_id)
+            hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
+            anchor_service.apply_anchor_true_up(
+                account=hysa, new_balance=Decimal("5100.00"),
+                observed_on=periods[2].end_date,
+            )
+            db.session.commit()
+
+            history = balance_at.cash_anchor_history(
+                hysa, balance_at.BalanceContext.build(user_id),
+            )
+
+            assert history.reconcilable is False
+            assert [row.recorded for row in history.rows] == [
+                Decimal("5100.00"), Decimal("5000.00"),
+            ]
+            # EVERY row, not merely the opening: the true-up above is a
+            # non-opening row and its pair is withheld too.
+            assert history.rows[0].is_opening is False
+            assert all(row.ledger is None for row in history.rows)
+            assert all(row.correction is None for row in history.rows)
+            # Non-vacuity: the PLAIN account beside it does publish a pair for
+            # its own non-opening row, so the withholding above is a property
+            # of the KIND rather than of the fixture.
+            anchor_service.apply_anchor_true_up(
+                account=seed_user["account"], new_balance=Decimal("900.00"),
+                observed_on=periods[2].end_date,
+            )
+            db.session.commit()
+            plain = balance_at.cash_anchor_history(
+                seed_user["account"], balance_at.BalanceContext.build(user_id),
+            )
+            assert plain.reconcilable is True
+            assert plain.rows[0].correction == Decimal("-100.00")
+
+    def test_reconcilable_reads_the_kind_not_the_rows(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A PLAIN account with ONE assertion still reconciles.
+
+        The trap this test exists for: ``any(row.correction is not None)``
+        looks like a serviceable definition of ``reconcilable`` and is wrong
+        exactly here.  Such an account's only row is its opening, whose pair is
+        withheld for the ruled reason -- so an inferred flag would hide the
+        columns on an account that reconciles perfectly well, and every freshly
+        created checking account would render the wrong card.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            fresh = create_account_of_type(
+                seed_user, db.session, "Checking", "Second Checking",
+                anchor_balance=Decimal("250.00"),
+            )
+            db.session.commit()
+
+            history = balance_at.cash_anchor_history(
+                fresh, balance_at.BalanceContext.build(user_id),
+            )
+
+            assert [row.is_opening for row in history.rows] == [True]
+            assert history.rows[0].correction is None
+            assert history.reconcilable is True
+
+    def test_a_back_dated_row_carries_the_day_it_was_entered(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """``recorded_on`` separates when a balance was TRUE from when it was typed.
+
+        Sorted by ``observed_on`` a back-dated row sits at its past day's
+        position -- 40 rows down on the real Checking account -- so without
+        this field the card cannot show that the write the user just made
+        landed, which is the whole of finding **N-205**.  An ordinary same-day
+        true-up must leave the two EQUAL, or the caption would fire on every
+        row.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = seed_user["account"]
+            periods = pay_period_service.get_all_periods(user_id)
+            back_day = periods[1].end_date
+            typed_day = periods[3].start_date
+
+            append_balance_assertion(
+                db.session, account, periods[1], Decimal("640.00"),
+                settle_instant_on(back_day),
+                recorded_at=settle_instant_on(typed_day),
+            )
+            append_balance_assertion(
+                db.session, account, periods[2], Decimal("710.00"),
+                settle_instant_on(periods[2].end_date),
+            )
+            db.session.commit()
+
+            history = balance_at.cash_anchor_history(
+                account, balance_at.BalanceContext.build(user_id),
+            )
+            by_day = {row.observed_on: row for row in history.rows}
+
+            assert by_day[back_day].recorded_on == typed_day
+            assert by_day[back_day].recorded_on != back_day
+            same_day = by_day[periods[2].end_date]
+            assert same_day.recorded_on == same_day.observed_on
+
+    def test_three_declarations_on_one_day_all_appear_and_chain(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A day is not a key, and the card must show every row it carries.
+
+        Production Checking recorded THREE balances on 2026-04-15 with no
+        transaction between them ($1,172.44 / $1,133.47 / $1,087.61), and each
+        row's ledger is the row before it -- so a card keyed on the day, or one
+        that de-duplicated, would drop two real corrections.  Reproduced with
+        the same shape: against the $1,000.00 opening and no settled row, the
+        first declaration's ledger is $1,000.00 and each later one's is its
+        predecessor's declared balance.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = seed_user["account"]
+            day = pay_period_service.get_all_periods(user_id)[1].end_date
+
+            for balance in (Decimal("1172.44"), Decimal("1133.47"),
+                            Decimal("1087.61")):
+                anchor_service.apply_anchor_true_up(
+                    account=account, new_balance=balance, observed_on=day,
+                )
+                db.session.commit()
+
+            history = balance_at.cash_anchor_history(
+                account, balance_at.BalanceContext.build(user_id),
+            )
+            same_day = [row for row in history.rows if row.observed_on == day]
+
+            assert [row.recorded for row in same_day] == [
+                Decimal("1087.61"), Decimal("1133.47"), Decimal("1172.44"),
+            ]
+            # Newest first, so each row's ledger is the NEXT row's recorded
+            # balance: a later assertion on one day carries the earlier one's
+            # reset inside it.
+            assert [row.ledger for row in same_day] == [
+                Decimal("1133.47"), Decimal("1172.44"), Decimal("1000.00"),
+            ]
+            assert [row.correction for row in same_day] == [
+                Decimal("-45.86"), Decimal("-38.97"), Decimal("172.44"),
+            ]
+
+    def test_an_account_with_no_assertion_logs_nothing_rather_than_raising(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An empty log is answered, not raised.
+
+        Production-unreachable (``account_service.create_account`` and
+        migration ``cfb15e782f86`` guarantee an opening row), and asserted
+        anyway because the alternative -- a card that 500s on a state the
+        database can hold -- is the failure mode this arc keeps closing on the
+        read side.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = seed_user["account"]
+            db.session.query(AccountAnchorHistory).filter(
+                AccountAnchorHistory.account_id == account.id,
+            ).delete()
+            db.session.commit()
+
+            history = balance_at.cash_anchor_history(
+                account, balance_at.BalanceContext.build(user_id),
+            )
+
+            assert history.rows == []
+            assert history.reconcilable is True
+
+    def test_it_refuses_a_context_with_no_scenario(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """No baseline is a loud refusal, like every other seam entry."""
+        with app.app_context():
+            with pytest.raises(ValueError):
+                balance_at.cash_anchor_history(
+                    seed_user["account"], _no_baseline(seed_user["user"].id),
                 )

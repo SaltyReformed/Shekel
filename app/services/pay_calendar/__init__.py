@@ -44,10 +44,31 @@ derivation honest: :mod:`._derive` is private, so every consumer depends on
 this public surface and the W9910 gate (``shekel-private-module-import``) says
 so structurally rather than by convention.
 
-Boundary discipline (``CLAUDE.md``): no Flask symbol, no database session, no
-clock.  Everything here is a pure function of values a caller supplies.
+Boundary discipline (``CLAUDE.md``), stated PER MODULE because plan step C2-b1
+made one of them impure and a claim about "the package" would then be false of
+part of it:
+
+* :mod:`._derive` and :mod:`._calendar` -- no Flask symbol, no database
+  session, no clock.  Every answer is a pure function of values a caller
+  supplies, and that is load-bearing rather than tidy: it is what lets C1's
+  harness drive the derivation over production's real 61 paydays and over a
+  generated sweep with no database, so the two runs exercise the same code.
+* :mod:`._loader` -- holds the session, and ONLY the session.  It reads an
+  owner's paydays and cadence and hands them to the pure half; it computes
+  nothing.  One module is the whole impure surface, which is what makes the
+  boundary a file rather than a convention.
 """
 
+from ._calendar import (
+    PayCalendar,
+    PeriodWindow,
+    containing_period,
+    earliest_start_in_month,
+    final_covered_day,
+    latest_started_period,
+    opening_payday,
+    period_by_id,
+)
 from ._derive import (
     MAX_CADENCE_DAYS,
     MIN_CADENCE_DAYS,
@@ -55,11 +76,21 @@ from ._derive import (
     PayCalendarError,
     derive_periods,
 )
+from ._loader import calendar_for
 
 __all__ = [
     "MAX_CADENCE_DAYS",
     "MIN_CADENCE_DAYS",
     "DerivedPeriod",
+    "PayCalendar",
     "PayCalendarError",
+    "PeriodWindow",
+    "calendar_for",
+    "containing_period",
     "derive_periods",
+    "earliest_start_in_month",
+    "final_covered_day",
+    "latest_started_period",
+    "opening_payday",
+    "period_by_id",
 ]

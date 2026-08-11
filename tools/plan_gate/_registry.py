@@ -51,6 +51,17 @@ UNESCAPED_PIPE_RX = re.compile(r"(?<!\\)\|")
 
 STATED_COUNT_RX = re.compile(r"\*\*The ledger stands at (?P<count>\d+) rows?\.?\*\*")
 
+#: ``steps.md``'s own two self-counts, graded from 2026-08-11 by
+#: :func:`steps_stated_count_violation`.  Both had gone stale by then, which is
+#: what rule 3 already says about the sibling registry.  The patterns are
+#: deliberately anchored on the LIVE wording -- a pattern that matches nothing
+#: reads as "no count is claimed" and passes, which is the failure mode the
+#: balance README's own row-count arm shipped with.
+STEPS_COUNT_RX = re.compile(r"\*\*(?P<total>\d+) steps?, (?P<open>\d+) open\.?\*\*")
+BLOCKED_GRAPH_RX = re.compile(
+    r"holds (?P<edges>\d+) edges? over (?P<rows>\d+) rows?",
+)
+
 #: A ``steps.md`` ``commit`` cell naming a hash: the WHOLE cell is one
 #: backticked sha.  The shape comes from :data:`_plan_gate.COMMIT_SHA` so the
 #: index and the specifications cannot disagree about what a hash is; the
@@ -303,6 +314,74 @@ def stated_count_violation() -> str | None:
             f"{actual} (conventions.md rule 3)"
         )
     return None
+
+
+def steps_stated_count_violation() -> list[str]:
+    """Rule 3, on the registry that stated its size and was NOT graded.
+
+    **``ledger.md``'s count has been checked since rule 3 was written and
+    ``steps.md``'s two were not**, so both of its counts went stale exactly the
+    way rule 3 exists to prevent -- and did, measured on 2026-08-11: the header
+    read "112 steps, 96 open" against a table holding 113 and 95, wrong in BOTH
+    directions inside one merge, because one session appended a step while
+    another ticked one.  A cold reader is told what may start now by a number
+    the gate had no opinion about.
+
+    Two sentences are graded, and they are separate arms because they go stale
+    for different reasons: the SIZE moves when a step is appended, the OPEN
+    count when one is ticked, and the GRAPH size when a ``blocked by`` edge is
+    written.  A single arm reporting "something is off" would send a reader to
+    re-derive all three.
+
+    Returns:
+        One message per disagreement; empty when the header is true.
+    """
+    text = STEPS.read_text()
+    problems: list[str] = []
+    rows = step_rows()
+
+    match = STEPS_COUNT_RX.search(text)
+    if match is None:
+        problems.append(
+            "steps.md states no step count.  conventions.md rule 3 requires "
+            "the sentence '**N steps, M open.**'",
+        )
+    else:
+        stated_total = int(match.group("total"))
+        stated_open = int(match.group("open"))
+        actual_open = sum(1 for row in rows if row.state.lower() == "open")
+        if stated_total != len(rows):
+            problems.append(
+                f"steps.md says it holds {stated_total} steps and the table "
+                f"holds {len(rows)} (conventions.md rule 3)",
+            )
+        if stated_open != actual_open:
+            problems.append(
+                f"steps.md says {stated_open} are open and {actual_open} are "
+                f"(conventions.md rule 3)",
+            )
+
+    graph = BLOCKED_GRAPH_RX.search(text)
+    if graph is None:
+        problems.append(
+            "steps.md states no `blocked by` graph size.  conventions.md "
+            "rule 3 requires the phrase 'holds N edges over M rows'",
+        )
+    else:
+        edges = sum(len(row.blocked_keys()) for row in rows)
+        carriers = sum(1 for row in rows if row.blocked_keys())
+        if int(graph.group("edges")) != edges:
+            problems.append(
+                f"steps.md says the graph holds {graph.group('edges')} edges "
+                f"and it holds {edges} (conventions.md rule 3)",
+            )
+        if int(graph.group("rows")) != carriers:
+            problems.append(
+                f"steps.md says those edges span {graph.group('rows')} rows "
+                f"and they span {carriers} (conventions.md rule 3)",
+            )
+
+    return problems
 
 
 def owner_violations() -> list[str]:
