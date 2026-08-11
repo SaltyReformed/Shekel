@@ -642,7 +642,7 @@ class TestEnvelopePostingLifecycle:
 
         The parent is SETTLED, so ``record_settled_days`` is deliberately not
         the door used here -- its outstanding scope admits only projected
-        parents (``reconcile_service._outstanding_scope``), which
+        parents (``reconcile_service._purchases._outstanding_scope``), which
         ``test_reconcile_service.py`` pins directly.  ``update_entry`` is the door a
         user has for a purchase on an already-settled envelope.
         """

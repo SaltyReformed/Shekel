@@ -195,8 +195,10 @@ def _reject_future_purchase_date(purchased_on: date) -> None:
     so the boundary cannot hold on one and not the other -- the same
     both-doors-one-derivation shape ruling R-C's origination guard uses.
 
-    **Why the source and not the reader** (plan
-    ``docs/audits/balance_architecture/README.md``, ruling R-M).  A future
+    **Why the source and not the reader** (ruling R-M, whose work shipped at
+    plan step S1-c, so it is recorded in
+    ``docs/audits/balance_architecture/archive/phase_x_as_built_2026-08-04.md``
+    Section 3 rather than in the live README).  A future
     purchase is not merely odd data: it moves a rendered balance.  The
     projection holds back
     ``max(estimated - settled_debit - credit, outstanding_debit)`` for a

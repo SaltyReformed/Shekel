@@ -716,6 +716,79 @@ class TestTransactionStaleFormPrevention:
             persisted = db.session.get(Transaction, txn_id)
             assert persisted.estimated_amount == amount_before
 
+    def test_mark_done_catches_a_stale_settle_as_409(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A race during a mark-done settle is a 409, not an unhandled 500.
+
+        New coverage at plan step X-f2-c2, on a door that had none: the sibling
+        above grades the PATCH edit, and nothing graded ``mark-done``.  The row
+        is envelope-tracked WITH an entry so the settle takes the
+        ``settle_from_entries`` branch rather than the manual one.
+
+        The race is engineered exactly as
+        :meth:`test_route_catches_stale_data_error_as_409` does -- a
+        ``before_update`` mapper event bumps the row's version from a separate
+        connection during the UPDATE, defeating the version-pinned WHERE.
+        Shown to FIRE: deleting ``mark_done``'s ``except StaleDataError`` arm
+        fails it.
+
+        **It is deliberately NOT labelled the control for that step's
+        exception-topology change, because it is not one, and the measurement
+        is worth more than the label.**  Folding the settle into one verb put
+        the amount-and-status phase inside the ``StaleDataError`` /
+        ``IntegrityError`` net it used to sit outside, and the obvious claim --
+        "that fixes a reachable 500" -- was tested against the pre-change route
+        reconstructed from git and found FALSE: this test passes on both
+        topologies.  The reason is worth recording, because it is not visible
+        by reading the phases.  **The first flush of a settle is
+        ``txn.status.is_settled``**, the ARGUMENT to the posting reconcile,
+        evaluated after ``apply_status_change`` has both dirtied the row and
+        expired its ``status`` relationship -- so the refresh autoflushes.  In
+        both topologies that expression sits inside the net.  Everything
+        earlier reads columns or already-loaded relationships: ``txn.entries``
+        loads while the row is still clean, and ``settle_from_entries``'
+        ``txn.pay_period.user_id`` is loaded by the route's own fetch, which
+        that helper's comment already states.
+        """
+        from sqlalchemy import event  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            _template, txn = _make_envelope_template_and_txn(
+                seed_user, seed_periods[0],
+            )
+            txn_id = txn.id
+            _make_entry(txn_id, seed_user["user"].id)
+            status_before = txn.status_id
+
+            fired = {"flag": False}
+
+            def make_stale(_mapper, _connection, target):
+                if fired["flag"] or target.id != txn_id:
+                    return
+                fired["flag"] = True
+                _bump_version_outside_session(
+                    "budget", "transactions", txn_id,
+                )
+
+            event.listen(Transaction, "before_update", make_stale)
+            try:
+                response = auth_client.post(
+                    f"/transactions/{txn_id}/mark-done",
+                )
+            finally:
+                event.remove(Transaction, "before_update", make_stale)
+
+            # The listener must have reached the row, or this is grading an
+            # ordinary settle and would pass over the defect it exists for.
+            assert fired["flag"], "the race never fired -- the control is dead"
+            assert response.status_code == 409, response.data
+
+            db.session.expire_all()
+            persisted = db.session.get(Transaction, txn_id)
+            assert persisted.status_id == status_before
+            assert persisted.settled_on is None
+
 
 # ═════════════════════════════════════════════════════════════════════
 # Stale-form prevention -- HTMX endpoints (Transfer)

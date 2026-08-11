@@ -6,6 +6,27 @@ routes and services.  Each function mutates a Transaction in place
 and leaves the session/commit lifecycle to the caller, matching the
 pattern in ``app/services/entry_service.py``.
 
+**Two settle entry points, and the difference is deliberate.**
+:func:`settle_transaction` is ruling **R-FA**'s verb -- what settling a row
+MEANS, amount and status and ledger together.  :func:`settle_from_entries` is
+the envelope PRIMITIVE underneath it, and it stays public for
+``carry_forward_service``, which settles a BATCH and must reconcile the ledger
+after its ``no_autoflush`` block, so it owns that act itself.
+
+**THREE doors settle a transaction, not two, and only two of them are on this
+verb.**  Saying so here rather than letting the next leaf discover it: the
+grid's Mark Paid calls the verb, the reconcile panel's tick will at plan step
+X-f2-c2, and ``routes/transactions/mutations._apply_regular_update`` -- the
+Status dropdown on the full-edit popover -- does NOT.  That third door flips
+the status through the seam and reconciles, but never consults the entries, so
+an envelope-tracked row with a `$25` purchase against a `$400` estimate books
+`$25` through Mark Paid and **`$400`** through the dropdown, from two controls
+in the same card.  Measured on both this tree and the merge-base, so it is
+PRE-EXISTING and neither caused nor worsened here; ruling **R-FA** named "two
+route branches" and there were three.  It is a live money defect with its own
+ledger row and its own step, because routing it onto this verb CHANGES what a
+full-edit Save books and so cannot ride inside a zero-money commit.
+
 Architecture:
   - No Flask imports.  Receives ORM objects, mutates them, and
     raises domain exceptions on precondition violation.
@@ -13,15 +34,19 @@ Architecture:
     to ``app.services.entry_service.compute_actual_from_entries``).
   - Does NOT flush or commit -- the caller owns the transaction
     boundary so the helper can safely participate in larger atomic
-    operations (e.g. the carry-forward batch in Phase 4).
+    operations (e.g. the carry-forward batch in Phase 4).  The ledger
+    reconcile :func:`settle_transaction` runs FLUSHES; it still does not
+    commit.
 """
 
 import logging
+from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
+from app.services import posting_service
 from app.services.entry_service import compute_actual_from_entries
 from app.services.status_seam import apply_status_change
 from app.utils.log_events import (
@@ -33,15 +58,166 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
+def settled_status_id(txn: Transaction) -> int:
+    """Return the settled status a row of this TYPE takes.
+
+    Income is Received and everything else is Paid.  It is a display
+    convention rather than a balance one -- every reader of the settled band
+    consumes ``settled_status_ids()`` as a SET and cannot tell the members
+    apart -- but it is a convention with TWO former spellings, which is one
+    too many for a rule that decides a stored column.
+
+    **Both spellings were live and they agreed by reading.**
+    ``app/routes/transactions/mutations.py:mark_done`` picked the id and
+    handed it down, and :func:`settle_from_entries` re-derived the same id
+    from the same predicate, its own comment naming the route as the thing it
+    "mirrors" -- Section 8's "two spellings that agree by reading are two
+    answers until one is deleted", on a money-adjacent rule.  Ruling **R-FA**
+    forced the question by giving the reconcile tick the same settle as the
+    grid's Mark Paid: a third door would have made it three.
+
+    A transfer SHADOW never reaches here.  Its settle goes through
+    ``transfer_service.update_transfer``, which sets Paid on both legs
+    because the income/expense split is meaningless for a pair whose whole
+    point is that one leg is each.
+
+    Args:
+        txn: The transaction about to settle.  Read for ``is_income`` only.
+
+    Returns:
+        The ``ref.statuses.id`` for Received or Paid.
+    """
+    if txn.is_income:
+        return ref_cache.status_id(StatusEnum.RECEIVED)
+    return ref_cache.status_id(StatusEnum.DONE)
+
+
+def settle_transaction(
+    txn: Transaction, *, actual_amount: Decimal | None = None,
+) -> None:
+    """Settle one regular transaction -- what "the money moved" MEANS for a row.
+
+    **Ruling R-FA's verb.**  The rule lived in a ROUTE branch
+    (``mutations.py:_mark_done_regular``) until plan step X-f2-c2, which needs
+    the reconcile panel's tick to settle a row the SAME way the grid's Mark
+    Paid does.  The two alternatives R-FA rejected were the reconcile writer
+    re-stating the amount rule -- this arc's own root cause 1, on a money rule
+    -- and the tick calling the mark-done HTTP endpoint per row, which has no
+    atomicity and no channel for a statement date.  So the rule left the route
+    and both doors call it.
+
+    Three acts, in this order and the order matters:
+
+    1. **The amount.**  An envelope-tracked row WITH entries settles at
+       ``sum(entries)`` (:func:`settle_from_entries`) and ignores any
+       *actual_amount* offered, because its entries ARE the record of what it
+       cost.  Everything else keeps its stored ``estimated_amount`` unless the
+       caller supplies an actual.  **The ``and txn.entries`` half is
+       load-bearing**, and production says so: ``Kayla's Spending Money``
+       carries no entries at all, so settling it from entries unconditionally
+       would book ``$0.00`` against its ``$100.00`` estimate.
+    2. **The status**, through the single seam, so the transition is verified
+       and the settle day stamped by the one door that owns both.
+    3. **The ledger**, reconciled LAST, so it reads the final amount rather
+       than the estimate -- the discipline ``transfer_service.update_transfer``
+       documents and the reason the reconcile is not at the status flip.
+
+    **Why act 3 is inside this verb and not left to the caller.**  Every
+    settle door must reconcile, and a door that forgets posts nothing while
+    reporting success -- an argument a caller can get wrong is a defect, not a
+    contract (Section 8).  ``carry_forward_service`` genuinely cannot use this
+    verb: it settles a BATCH and must reconcile after its ``no_autoflush``
+    block so ``_emit_balanced_entry``'s flush lands on the batch's index-safe
+    final state, so it keeps calling :func:`settle_from_entries` directly and
+    owns its own reconcile.  That is the layering: the primitive for a batch,
+    this verb for a settle.  It is not the ONLY non-caller -- the full-edit
+    Status dropdown is a third settle door that is on neither, which is a
+    defect rather than a layering choice; see this module's docstring.
+
+    **What it does NOT take is a settle DAY, deliberately.**  X-f2-c2's money
+    commit is what gives the tick a statement date to stamp, and adding the
+    parameter before it has a caller is what ruling **R-EC** deleted from
+    :func:`settle_from_entries` under rule 13.  Until then the seam's own rule
+    holds: the user's today on first entry to the settled band, preserved on
+    re-entry.
+
+    Does NOT commit -- the caller owns the session boundary.
+
+    **The shadow refusal is THIS function's, and the first draft borrowed it
+    from a branch a shadow never reaches.**  That draft said
+    :func:`settle_from_entries` refuses one by precondition -- true of that
+    helper, and unreachable here: a shadow carries no ``template_id`` and no
+    ``is_envelope``, so ``tracks_purchases`` is False and a shadow always takes
+    the MANUAL branch, where nothing looked at ``transfer_id``.  An adversarial
+    review ran it and settled one leg of a pair: expense shadow Paid, income
+    shadow still Projected, parent transfer still Projected -- ``CLAUDE.md``
+    transfer invariants **3** and **4** broken in one call, and silently,
+    because ``sync_transaction_postings`` returns ``[]`` for a shadow so the
+    ledger stays flat while the grid shows one leg settled.  No caller can
+    reach it today (``mark_done`` routes a shadow to ``_mark_done_shadow``
+    first), but this is a PUBLIC verb documented as what a door calls, and
+    X-f2-c3 puts transfer shadows in the reconcile panel.  A verb owns its own
+    preconditions.
+
+    Args:
+        txn: The transaction to settle.  Must be a REGULAR row -- a shadow is
+            REFUSED here, because a transfer settles through
+            ``transfer_service.update_transfer`` so both legs and the parent
+            move together.
+        actual_amount: What the row actually cost, when the caller knows.
+            ``None`` leaves the column untouched, which is the one-click path.
+            **No form submits it today** -- measured: ``name="actual_amount"``
+            appears only on the full-edit and full-create templates, which
+            PATCH and POST the transaction rather than posting mark-done, and
+            no JS composes it -- so ``MarkDoneSchema``'s field is a channel
+            the UI has never used.  Ruling **R-FB** is what gives it a first
+            real caller: a BILL's tick may correct its amount, prefilled, and
+            an envelope's close may not.
+
+    Raises:
+        ValidationError: On a transfer shadow, from the envelope branch's
+            preconditions, or from an illegal transition.  All are 400s at the
+            route.
+        PostingError: From act 3, on a broken ledger invariant.  Deliberately
+            NOT a sibling of ``ValidationError`` -- it must fail loud rather
+            than render as a designed refusal.
+    """
+    # Checked FIRST and before any mutation, so a refused call leaves the row
+    # untouched -- the ordering ``status_seam.apply_status_change`` uses for
+    # its own three refusals, and for the same reason.
+    if txn.transfer_id is not None:
+        raise ValidationError(
+            f"Transaction {txn.id} is a transfer shadow; "
+            "transfers settle via transfer_service.update_transfer so both "
+            "legs and the parent move together.",
+        )
+
+    if txn.tracks_purchases and txn.entries:
+        settle_from_entries(txn)
+    else:
+        apply_status_change(txn, settled_status_id(txn))
+        # Applied AFTER the seam so act 3 below reads the final actual amount
+        # rather than the pre-settle estimate (the 2.8b HIGH, forward
+        # direction).
+        if actual_amount is not None:
+            txn.actual_amount = actual_amount
+
+    posting_service.sync_transaction_postings(
+        txn, settled=txn.status.is_settled,
+    )
+
+
 def settle_from_entries(txn: Transaction) -> None:
     """Settle a tracked-envelope transaction at sum(entries).
 
-    Drives the entry-sum branch of the manual ``mark_done`` route and
-    the source-side settlement step of the carry-forward envelope
-    branch (see ``docs/carry-forward-aftermath-design.md`` Option F).
-    Both call sites need the same three writes -- ``status_id``, the
-    settle day, and ``actual_amount`` -- so the logic lives here as a
-    single source of truth.
+    The envelope PRIMITIVE: the three writes an envelope's close needs --
+    ``status_id``, the settle day, and ``actual_amount`` -- as a single source
+    of truth.  It is reached two ways, and the split is
+    :func:`settle_transaction`'s docstring: every DOOR settles through that
+    verb, which chooses this branch when the row is envelope-tracked and has
+    entries, while ``carry_forward_service._execute`` calls this directly
+    because it settles a batch and owes its ledger reconcile a different
+    moment (see ``docs/carry-forward-aftermath-design.md`` Option F).
 
     Effect on *txn* (in place):
       - ``actual_amount`` is set to ``sum(e.amount for e in txn.entries)``,
@@ -141,14 +317,7 @@ def settle_from_entries(txn: Transaction) -> None:
             "mutable status (Projected).",
         )
 
-    # Determine the destination status from the transaction type.
-    # Mirrors the income/expense split in
-    # app/routes/transactions/mutations.py:mark_done so the helper produces
-    # an identical observable result on tracked-envelope rows.
-    if txn.is_income:
-        new_status_id = ref_cache.status_id(StatusEnum.RECEIVED)
-    else:
-        new_status_id = ref_cache.status_id(StatusEnum.DONE)
+    new_status_id = settled_status_id(txn)
 
     # Route the status mechanics (transition check, status_id, settled_on,
     # status expire) through the single seam so this helper cannot drift from
