@@ -16,9 +16,126 @@ Architecture (``CLAUDE.md``):
   - All monetary values are :class:`~decimal.Decimal`.
 """
 
+import enum
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+
+
+class OfferKind(enum.Enum):
+    """What a block IS, for the two rules ruling **R-FC** puts on the order.
+
+    The panel is ONE collection of blocks (R-FC rejected two held side by side),
+    and two of that ruling's three presentational rules are about this value:
+    the ordering key gains a kind term so like sits with like, and a section
+    label is emitted where the kind changes.  The third -- a childless block
+    prints inline -- is a property of the block's contents, not of its kind.
+
+    **Each ARM TAGS its own offers with a kind; nothing DERIVES one.**  A first
+    version of this classified a block by reading its contents -- purchases
+    means envelope, correctable means bill -- and that was wrong twice.  An
+    INCOME row is never purchase-tracked, so it came out ``BILL`` and rendered
+    under a heading reading "Bills" three lines below a summary counting it as a
+    deposit: production's `$1,958.87` FSA reimbursement, captioned against
+    itself on the one screen read beside a paper statement.  And a transfer
+    shadow is childless and correctable too, so it is INDISTINGUISHABLE from a
+    bill by those proxies -- meaning plan step X-f2-c3 would have had to rewrite
+    the derivation inside a money commit, which is the exact rewrite R-FC and
+    **R-EY** exist to prevent.  An arm knows what it produced; a renderer
+    guessing from shape does not.
+
+    **The member's VALUE is the section heading the panel prints**, and
+    :attr:`section_label` says so at the call site, because a bare ``.value``
+    does not tell a reader the string is user-visible copy.
+
+    **The definition ORDER is the section order**, so plan step X-f2-c3 adds
+    ``TRANSFER`` below and sets it on its own offers -- an addition, not an
+    edit.  A rank map beside the class would be a second place to edit, and an
+    omission there sorts a whole section to the wrong end rather than failing.
+
+    It is a service-tier classification and not a ``ref`` table, so it carries
+    no id and nothing compares it to a string: the assembler reads
+    :attr:`rank`, the template reads a label the assembler already resolved.
+    """
+
+    ENVELOPE = "Envelopes"
+    BILL = "Bills"
+    DEPOSIT = "Deposits"
+
+    @property
+    def rank(self) -> int:
+        """Return this kind's position in the panel's section order.
+
+        Returns:
+            The member's index in its own class's definition order, resolved
+            through a map built once at import rather than by rebuilding the
+            member list inside every sort comparison.
+        """
+        return _KIND_RANK[self]
+
+    @property
+    def section_label(self) -> str:
+        """Return the heading the panel prints above this kind's first block.
+
+        Returns:
+            The user-visible section heading.
+        """
+        return self.value
+
+
+#: Definition order, resolved once.  Derived from the class rather than written
+#: out, so a new member cannot be added without a rank -- the failure mode a
+#: hand-maintained map has is a silent mis-sort, not an error.
+_KIND_RANK = {kind: index for index, kind in enumerate(OfferKind)}
+
+
+@dataclass(frozen=True)
+class OutstandingTransaction:
+    """The source ROW itself, offered -- the envelope's close, or a bill.
+
+    The TRANSACTION arm's offer (plan step X-f2-c2, ruling **R-FA**), beside
+    the purchase arm's :class:`OutstandingPurchase`.  Ticking one settles the
+    row through ``transaction_service.settle_transaction`` -- the same verb the
+    grid's Mark Paid calls -- stamping the statement's own day.
+
+    Attributes:
+        transaction_id: The ``budget.transactions`` id, and the value the tick
+            posts back.  Re-scoped by the arm's writer rather than trusted, so
+            publishing it grants nothing.
+        attributed_on: The day the PROJECTION lands this row on -- its
+            ``due_date``, falling back to its pay period's start and clamped
+            into that period (:func:`~app.utils.dates.attribution_date`).  It
+            is the day the panel captions the row with, and the same day the
+            offer's own bound is measured against, so a row cannot be offered
+            under a caption that disagrees with why it was offered.
+        amount: **What ticking this row will BOOK**, resolved by
+            ``transaction_service.settle_amount`` rather than read off a
+            column.  The panel showing a figure the verb would not book is this
+            arc's own root cause 1 applied to a screen, and it is why this
+            field is not ``effective_amount``.
+        is_correctable: Whether the panel renders :attr:`amount` as an editable
+            input (ruling **R-FB**, sharpened by **R-FF**): true exactly when
+            the settle verb takes its MANUAL branch, i.e. the row is not
+            (envelope-tracked AND carrying entries).  Read off
+            ``transaction_service.settles_from_entries`` so the panel cannot
+            offer a box for a value the verb would ignore.
+        is_income: Whether this row is money ARRIVING.  The panel counts
+            deposits separately from payments (ruling **R-FD**) because a
+            deposit and a bill do not sum to anything a reader wants.
+        kind: The section this offer puts its block in, TAGGED by the arm that
+            produced it rather than derived downstream -- see
+            :class:`OfferKind` for the two defects deriving it caused.  This
+            arm sets ``DEPOSIT`` for income, ``ENVELOPE`` for a purchase-tracked
+            row and ``BILL`` for the rest; plan step X-f2-c3's arm will set
+            ``TRANSFER`` on every offer it makes.
+    """
+
+    transaction_id: int
+    attributed_on: date
+    amount: Decimal
+    is_correctable: bool
+    is_income: bool
+    kind: OfferKind
 
 
 @dataclass(frozen=True)
@@ -84,12 +201,28 @@ class OutstandingGroup:
             creates the heading is the leaf that has to resolve it.
         period_end: Its last day, so the caption is a span rather than a date
             the user has to look up.
-        purchases: Its outstanding purchases, oldest first.  Never empty -- a
-            parent with nothing outstanding is not a block, and
-            :func:`app.services.reconcile_service.outstanding_set` does not
-            build one.
-        total: The sum of :attr:`purchases`, quantised by the source amounts
-            rather than by any arithmetic here.
+        purchases: Its outstanding purchases, oldest first.  **May be EMPTY
+            since plan step X-f2-c2**, and ruling **R-FC** is what that means
+            for the screen: a childless block prints its name inline as one row
+            rather than as a heading above a one-item list.  A bill is always
+            childless; an envelope is childless when nothing it holds is
+            outstanding but the row itself is.  A block with neither purchases
+            nor a :attr:`settle` offer is never built.
+        settle: The parent's OWN tick, or ``None`` when the row itself is not
+            offerable -- the everyday mid-period case, where an envelope holds
+            outstanding purchases but its own attribution day has not passed.
+        section_label: The heading to print ABOVE this block, or ``None`` when
+            the block continues the previous one's section.  Resolved by the
+            assembler rather than in the template because it is a function of
+            the ORDER, which the assembler owns; a template deriving it would
+            re-read the previous element by index, and index arithmetic over a
+            sorted list is how a section heading silently stops appearing.
+
+    :attr:`kind` and :attr:`total` are PROPERTIES rather than fields, and that
+    is the same normalization rule this arc applies to the database: both are
+    functions of :attr:`purchases` and :attr:`settle`, so storing them beside
+    their own inputs would be two values that can come to disagree inside one
+    frozen object.
     """
 
     transaction_id: int
@@ -97,50 +230,149 @@ class OutstandingGroup:
     period_start: date
     period_end: date
     purchases: "tuple[OutstandingPurchase, ...]"
-    total: Decimal
+    settle: "OutstandingTransaction | None"
+    section_label: "str | None"
+
+    @property
+    def kind(self) -> OfferKind:
+        """Return which section this block belongs in (ruling **R-FC**).
+
+        **Read off the offers wherever there is one to read.**  A block
+        carrying its parent's own tick takes that offer's tag, which the arm
+        that produced it set.  A block of purchases alone has no tag to read,
+        so it falls back to ENVELOPE.
+
+        **That fallback is a DERIVATION and it is not guaranteed sound**, which
+        an earlier draft of this docstring claimed on a citation that does not
+        hold: it said both entry write doors refuse a parent that is not
+        purchase-tracked, and ``entry_service.update_entry`` has no such guard
+        -- it validates the field names and ownership and nothing else.  Only
+        ``create_entry`` checks ``tracks_purchases``, so the guarantee is
+        "it carried entries WHEN THEY WERE WRITTEN", and a template's
+        ``is_envelope`` is editable afterwards (the panel's own ``settle_row``
+        macro says so).  A de-enveloped parent still holding entries therefore
+        sections as an ENVELOPE here and as a ``BILL`` the moment its own close
+        becomes offerable -- a mis-section, no wrong figure.  Left as a
+        derivation rather than fixed here because the repair belongs with the
+        arms: the purchase arm knows its parent and should TAG its blocks like
+        the other arm does, which is plan step X-f2-c3's extraction (finding
+        **N-225**).
+
+        **The settle's tag wins over the purchases**, and the case is real: an
+        envelope with outstanding purchases AND an overdue close is one block,
+        and its arm tagged it ``ENVELOPE`` -- the same answer.  Where they could
+        differ is where the tag is the more specific fact.
+
+        Returns:
+            This block's :class:`OfferKind`.
+        """
+        if self.settle is not None:
+            return self.settle.kind
+        return OfferKind.ENVELOPE
+
+    @property
+    def settle_closes_an_envelope(self) -> bool:
+        """Return whether ticking this block's own row CLOSES an envelope.
+
+        The panel's copy needs the distinction because the two acts are not
+        alike: settling a bill records that the bank took a figure, while
+        closing an envelope ENDS a budget line -- it releases the unspent
+        remainder and makes every later purchase against that row inert, since
+        the entry reservation prices only Projected parents.  A row that reads
+        as an observation when it is an act is how a user ticks away a period
+        they were still spending in.
+
+        Published as a boolean rather than letting the template compare
+        :attr:`kind` to an enum member: reference-style values drive logic
+        through ids and predicates here, never through a name a template
+        matches on.
+
+        Returns:
+            True for an ENVELOPE block that carries its parent's own tick.
+        """
+        return self.settle is not None and self.kind is OfferKind.ENVELOPE
+
+    @property
+    def total(self) -> Decimal:
+        """Return the sum of :attr:`purchases`.
+
+        **It is the PURCHASES' total and not the block's**, deliberately: an
+        envelope settles at sum(entries), so adding :attr:`settle`'s amount to
+        this would report `$200` against `$100` of money for a `$100` envelope
+        holding two `$40` / `$60` purchases.  The panel prints this beside the
+        heading of a block that HAS children and prints :attr:`settle`'s own
+        amount on the settle row; the two are different units and are never
+        summed.
+
+        Returns:
+            The sum, quantised by the source amounts rather than by any
+            arithmetic here.  ``Decimal("0.00")`` for a childless block, which
+            the panel does not render.
+        """
+        return sum(
+            (purchase.amount for purchase in self.purchases), Decimal("0.00"),
+        )
 
 
 @dataclass(frozen=True)
 class OutstandingSet:
-    """The PURCHASES a statement of one civil day could still settle, grouped.
+    """What a statement of one civil day could still settle, grouped.
 
-    **Its scope is purchases, and every field says so** (ruling R-EW widens the
-    OFFER to bills, the parent's own close and transfer shadows at plan steps
-    X-f2-c2 and X-f2-c3; this leaf ships the first of the four).  A field called
-    ``total`` here would be read by the next leaf as "the sum of every tickable
-    row", and that figure DOUBLE-COUNTS the moment the close tick joins: an
-    envelope settles at ``sum(entries)`` (ruling **R-FA**), so counting its two
-    `$40` / `$60` purchases AND its `$100` close reports `$200` against `$100`
-    of money.  Naming the fields for what they hold is what stops the next leaf
-    implementing a wrong definition literally.
+    **There are THREE tallies and deliberately no fourth that sums them**
+    (ruling **R-FA**, extended by **R-FD**).  A single ``total`` double-counts
+    the moment the close tick joins the purchases: an envelope settles at
+    ``sum(entries)``, so counting its two `$40` / `$60` purchases AND its `$100`
+    close reports `$200` against `$100` of money.  And a payment and a deposit
+    do not sum to anything a reader wants.  Naming each tally for exactly what
+    it holds is what stops a later leaf implementing a wrong definition
+    literally -- which is what the field named ``total`` here was going to be.
 
     Attributes:
-        groups: One block per parent carrying outstanding purchases, ordered by
-            that parent's oldest outstanding purchase so the block a user is
-            most likely looking for is first.
-        purchase_count: How many purchases the set offers.  Computed here and
-            not in the template because it is the figure the panel's copy
-            pluralises on, and money-adjacent counting belongs on the services
-            side of the boundary.
+        groups: One block per parent with something outstanding, ordered by
+            kind and then by the oldest offer the block carries (ruling
+            **R-FC**).
+        purchase_count: How many PURCHASES the set offers -- entries whose
+            posting day has not been recorded.  Ticking one moves no money on
+            its own; it releases that much of its envelope's reservation.
         purchase_total: The sum of those purchases.
+        payment_count: How many EXPENSE rows the set offers -- an envelope's
+            own close, or a bill.  Ticking one settles the row.
+        payment_total: What those rows would book.
+        deposit_count: How many INCOME rows the set offers -- money the
+            projection is still waiting to arrive (ruling **R-FD**).
+        deposit_total: What those rows would book.
+
+    Counting lives here and not in the template because these are the figures
+    the panel's copy pluralises on, and money-adjacent counting belongs on the
+    services side of the boundary.
     """
 
     groups: "tuple[OutstandingGroup, ...]"
     purchase_count: int
     purchase_total: Decimal
+    payment_count: int
+    payment_total: Decimal
+    deposit_count: int
+    deposit_total: Decimal
 
     @classmethod
     def empty(cls) -> "OutstandingSet":
         """Return the set for an account with nothing to reconcile.
 
         The ROUTE's shape for an account carrying no assertion at all: there is
-        no day for a purchase to be inside of, so the producer is never asked.
-        It is a constructor here rather than a literal there because the zero
-        is MONEY, and the services boundary is where money is built (a route
+        no day for anything to be inside of, so the producer is never asked.
+        It is a constructor here rather than a literal there because the zeros
+        are MONEY, and the services boundary is where money is built (a route
         composing ``Decimal("0.00")`` is the shape ``outstanding_total`` had
         before plan step X-f2-c1, and it is how a caller ends up quantising).
         """
-        return cls(groups=(), purchase_count=0, purchase_total=Decimal("0.00"))
+        zero = Decimal("0.00")
+        return cls(
+            groups=(),
+            purchase_count=0, purchase_total=zero,
+            payment_count=0, payment_total=zero,
+            deposit_count=0, deposit_total=zero,
+        )
 
     @property
     def is_empty(self) -> bool:
@@ -150,15 +382,53 @@ class OutstandingSet:
         the panel answers with its "nothing is being held back twice" copy
         rather than an empty form.
 
-        **Read off the COUNT, not off ``groups``**, and the difference is a
-        wrong empty state rather than a style point.  ``not self.groups`` is
-        the same answer as this ONLY while purchases are the whole offer set:
-        the moment X-f2-c2 adds a kind that does not arrive inside a group, it
-        answers True for a panel with things to offer and suppresses them
-        behind the "nothing is being held back twice" copy.  Whether bills DO
-        arrive outside a group is the open shape question
-        (:mod:`app.services.reconcile_service._assemble`); this accessor is
-        written so that either answer is safe, because one definition of empty
-        -- "nothing to tick" -- survives both.
+        **Read off the COUNTS, not off ``groups``**, and the difference is a
+        wrong empty state rather than a style point.  This accessor was written
+        at plan step X-f2-c1 against ``purchase_count`` alone, with its own
+        docstring predicting that the next leaf would add a kind arriving from
+        somewhere other than a purchase -- so extending the sum here is that
+        prediction coming true, not a rewrite.  ``not self.groups`` remains
+        wrong for a different reason each leaf; "nothing to tick" survives all
+        of them.
         """
-        return self.purchase_count == 0
+        return (
+            self.purchase_count == 0
+            and self.payment_count == 0
+            and self.deposit_count == 0
+        )
+
+
+@dataclass(frozen=True)
+class ReconcileSubmission:
+    """One statement's worth of ticks, as the write union receives it.
+
+    A parameter object rather than six arguments, for the reason
+    ``docs/coding-standards.md`` gives and ``AccountSpec`` / ``TransferSpec``
+    already follow: every field is read by more than one arm, and a six-argument
+    signature is a signature whose call sites can transpose two ids of the same
+    type without anything noticing.
+
+    It is a VALUE and carries no behaviour: the route parses and owner-scopes
+    it, :func:`~app.services.reconcile_service.record_reconciliation` runs the
+    arms over it in the one order that works.
+
+    Attributes:
+        owner_id: The user_id whose rows these must be.  Every arm re-scopes on
+            it rather than trusting the ids.
+        account_id: The cash account whose balance was asserted.
+        entry_ids: The purchase entry ids the user ticked.
+        transaction_ids: The source-row ids the user ticked.
+        corrections: ``{transaction id: amount}`` from the panel's amount
+            boxes.  Passed through: the arm decides which of them it may READ
+            (ruling **R-FF**) and the settle verb decides whether each is a
+            correction or an echo of the prefill.
+        observed_on: The civil day the asserted balance was true for, and the
+            day every settled row records its money as having moved.
+    """
+
+    owner_id: int
+    account_id: int
+    entry_ids: "set[int]"
+    transaction_ids: "set[int]"
+    corrections: "dict[int, Decimal]"
+    observed_on: date
