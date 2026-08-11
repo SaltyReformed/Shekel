@@ -318,13 +318,36 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   than a compensating layer -- X-ar must keep that column, not undo this one. Figure-neutral on
   production (0 rows, `$0.00`); **51 rows / `$4,897.50`** on a clone after one un-regenerated 3%
   raise. Also fixed at `41f678e5`. Opened **N-224**.
+* [x] **X-as** `ffb9514c` a tax year resolves to the latest CONFIGURED year's rules at or before it,
+  PER CONFIG KIND, never to the clock's year -- which on 2027-01-01 resolved to NOTHING and dropped
+  **$8,460.50** of withholding out of the projection (`$10,914.93` with that day's top-up), because
+  the engine reads a missing `fica_config` as zero Social Security. **X-ar's PRECONDITION**: a stored
+  derived amount is reconcilable only when its inputs are enumerable, and "what day is it" has no
+  write to hang a trigger on. Opened **N-235**, **N-236**.
 * [ ] **X-ar** `refactor(cash): a projected row's amount has ONE answer` (**R-FE**) -- closes
   **N-40** and **N-224**. `transactions.estimated_amount` is a CACHE of a derivation and
   `income_service.live_projected_net` repairs it at READ time without writing back, so readers and
   writers hold two answers with no reconciler. Make the stored amount authoritative, keep it true
-  with a reconciler run on every input change AND at deploy (the pattern
-  `backfill_all_account_anchor_postings_after_migration` already ships), then DELETE
-  `live_amount_overrides`, `ProjectedBasis.amount_overrides` and the `sum_projected` override thread.
+  with a reconciler run on every input change, then DELETE `live_amount_overrides`,
+  `ProjectedBasis.amount_overrides` and the `sum_projected` override thread.
+  **Two of its stated premises were REFUTED by tracing 2026-08-11 and the step is corrected rather
+  than re-scoped.** (a) "No reconciler" is too strong: `transaction_service._reconcile_cached_amount`
+  writes the cache at every settle (X-aq) and `routes/salary/_helpers._regenerate_salary_transactions`
+  rebuilds the rows from 12 salary write doors. What has no trigger is a PAY-PERIOD write, a clock
+  change and a code change -- and `pay_period_write` is one door since C3-b, so completing the set is
+  small. (b) "A reconciler AT DEPLOY" is refused: a blind re-derive would have written X-as's
+  `$8,460.50` permanently into 66 rows on the first deploy after New Year. The deploy-time step
+  CHECKS and refuses; a derivation change ships its backfill in the migration.
+  **It also needs its input set SHRUNK first**: `_gross_biweekly_for_period` groups the rounding
+  residue over "the periods that exist in this calendar year" and falls back to half-up under 26, so
+  extending the schedule retroactively rewrites earlier rows -- measured at 6 rows / `$0.06` after
+  one rolling top-up. Horizon-dependence with no business meaning is recurrence **D10**'s class.
+  **The LOAN half awaits a developer decision and is NOT in this step's scope**: it is dormant on
+  production
+  (`budget.loan_payment_settings` is EMPTY -- both loan payments predate migration `c2a2c508e103`,
+  which deliberately did not backfill), and its derivation reads `date.today()` through
+  `_resolve_loan_basis`, so no stored value can be kept true until a ruling puts a shadow's P&I on
+  its own DUE date as ruling D5 already put its escrow.
 * [ ] **X-f2-c** the OUTSTANDING SET, widened (**R-EW**) -- the panel offers everything the statement
   can settle, and ticking stamps the STATEMENT date. This is **N-172**'s churn on the transaction
   side. Measured on production over all 53 assertion DAYS (57 assertion ROWS -- the two figures are
@@ -681,6 +704,16 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
 
 ### Phase X -- the gate and vocabulary residue
 
+* [ ] **X-at** `feat(salary): a substituted tax year says so, and a new year can be entered` --
+  closes **N-235**, **N-236**. X-as makes an unconfigured year resolve to the latest configured
+  year's rules, which is the only available answer and a correct one; what it does not do is SAY so.
+  `/analytics/taxes?year=YYYY` accepts any year in `[2000, 2100]`, so a 2019 request renders its
+  refund hero, W-2 preview and Schedule A against another year's law with nothing on the page saying
+  which, and the only record is a DEBUG line. Carry the resolved year out of the resolver and render
+  it. Its second half is the door that is missing entirely: nothing in `app/` creates a
+  `TaxBracketSet` outside the signup seed, so the settings screen can write a year's state and FICA
+  rows and never its brackets -- it cannot finish the year it starts, and a user following next
+  year's IRS release has nowhere to put it.
 * [ ] **X-ag** `feat(pylint): lax digit acceptance is refused, not remembered` -- closes **N-139**.
   X-ae converted every submitted-id surface it found and the AST now finds exactly one digit-
   predicate call site in `app/` and `scripts/` (the implementation of the replacement). Nothing stops

@@ -48,7 +48,7 @@ sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**113 steps, 95 open.** The dependency graph holds 94 edges over 59 rows.
+**115 steps, 96 open.** The dependency graph holds 94 edges over 59 rows.
 
 ## The order
 
@@ -136,6 +136,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | E2-n | -- | Make the move and delete the registry, with `_FENCED_MODULE_RULINGS` as the LAST commit rather than the first. Its decomposition is decided from #78's trace. | #79 | -- | NOW |
 | balance | G1 | -- | Trace each allowlist entry to its real cause, then stop the ledger-model and balance-seam fences carrying name lists. Closes **N-147**. | #80 | -- | NOW |
 | balance | G2 | -- | Build the `Money` and `DisplayLabel` value types that retire W9901, W9904 and W9902, taking the small label half first. Phase G runs INSIDE E2 by ruling R-DQ. | #81 | -- | NOW |
+| balance | X-at | -- | Surface which tax year a figure was actually computed against, and give a new year's bracket set a write door, so the resolver's substitution stops being invisible and the settings screen can finish the year it starts. Closes **N-235**, **N-236**. | #82 | -- | NOW |
 
 ## Containers
 
@@ -172,6 +173,7 @@ The fuller as-built entries are in each arc's archive.
 | balance | X-aq | -- | A settle books the freshest figure for the row, resolved in the VERB so every settle door agrees (**R-FE**, amended by **R-FH** to write the cache). Opened **N-224**. | SHIPPED | `9cabc206` | -- |
 | balance | X-f2-c2 | -- | The TRANSACTION twin: the envelope's close, bills and income settled on the STATEMENT date through the service-tier verb. Closed **N-222**, **N-223**, **N-227**; opened **N-225**-**N-233**. | SHIPPED | `d23b55fd` | balance:X-f2-c1 / balance:X-aq (the panel must not display a figure the grid contradicts; R-FE) |
 | balance | X-ad-a | -- | Registration ASKS for the most recent payday, the cadence and the horizon; the bootstrap payday is DELETED. Closed **N-123** (= `pay_calendar:P3`). | SHIPPED | `2a4eb477` | -- |
+| balance | X-as | -- | A tax year resolves to the latest CONFIGURED year's rules at or before it, per config kind, instead of to the clock's year -- which on 2027-01-01 resolved to nothing and dropped $8,460.50 of withholding out of the projection. Opened **N-235**, **N-236**. | SHIPPED | `ffb9514c` | -- |
 | recurrence | R1-R3 | -- | Oracle, vocabulary, subtypes, write door, `Once` retired, forward engine. Archived to `historical/recurrence_as_built_2026-08-05.md`. | SHIPPED | `4b5c577b` | -- |
 | recurrence | R4a | -- | The forward cutover, three commits, archived to `historical/recurrence_as_built_2026-08-08.md`. Closed **D3**, **D5**, **D22**, **D25**, **D7**. | SHIPPED | `1836a928` | -- |
 | recurrence | R7a-1 | -- | The Recurrence cell became one function over `(interval, unit)`. Closed **D17**. | SHIPPED | `6fed14af` | -- |
