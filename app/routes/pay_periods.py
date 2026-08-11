@@ -17,7 +17,6 @@ from app.utils.auth_helpers import require_owner
 
 from app.extensions import db
 from app.exceptions import (
-    PayPeriodCoverageWithdrawn,
     PayPeriodDiscardRequired,
     PayPeriodLocked,
     PayPeriodResetBlocked,
@@ -93,17 +92,6 @@ def generate():
             num_periods=data["num_periods"],
             cadence_days=data["cadence_days"],
         )
-    except PayPeriodCoverageWithdrawn as exc:
-        # A schedule whose horizon this batch would pull BACK past a dated row
-        # (plan step C3-b).  Reachable here and not at extend: this form takes
-        # a free start date, so it can shorten the schedule's coverage as well
-        # as move it forward.  Rendered under its own key rather than on
-        # ``start_date`` because the cause is the three fields together -- a
-        # later payday, too few periods, or a shorter cadence each produce it.
-        db.session.rollback()
-        return render_template(
-            "pay_periods/generate.html", errors={"schedule": [str(exc)]},
-        ), 422
     except ValidationError as exc:
         # Forward-only rule (ruling R-PC1, plan step C3-b): a payday that would
         # land BETWEEN two existing ones is rejected.  Surfaced on the
@@ -147,20 +135,12 @@ def extend():
         new_periods = pay_period_admin.extend_pay_periods(
             current_user.id, data["num_periods"],
         )
-    except (PayPeriodCoverageWithdrawn, ValidationError) as exc:
+    except ValidationError as exc:
         # Rolled back before the redirect: ``extend_pay_periods`` takes the
         # per-user advisory lock and may have flushed the repopulation pass
         # before a later statement refused, and the page this redirects to
         # reads the owner's schedule back.
         db.session.rollback()
-        # The coverage refusal is caught here even though an APPEND cannot
-        # trigger it -- a batch that only widens the covered interval short-
-        # circuits the rule before it reads a row.  It is caught because that
-        # argument rests on the stored cadence matching the schedule it
-        # generated, which plan step C3-b's cadence rule establishes GOING
-        # FORWARD; an owner whose rows predate it can hold a last period longer
-        # than the cadence now projects, and a schedule button is the right
-        # place for that to be a message rather than a stack trace.
         flash(str(exc), "danger")
         return _pay_periods_redirect()
 
@@ -186,8 +166,7 @@ def truncate():
             confirm_discard=data["confirm_discard"],
         )
     except (
-        PayPeriodLocked, PayPeriodUnresolved, PayPeriodCoverageWithdrawn,
-        ValidationError,
+        PayPeriodLocked, PayPeriodUnresolved, ValidationError,
     ) as exc:
         # ``PayPeriodUnresolved`` is the service refusing an id that names no
         # pay period of this user's (plan step C3-a): a forged one, another
@@ -205,14 +184,6 @@ def truncate():
         # this door is not an existence oracle.  Which case it was is recorded
         # in the ACCESS log instead (``_log_unresolved_period``).
         #
-        # ``PayPeriodCoverageWithdrawn`` is plan step C3-b's: removing the tail
-        # shortens the new last paycheck to its cadence projection, and a row
-        # filed in it but dated in the days that projection gives up would be
-        # counted against its paycheck while the running balance stopped
-        # stepping for it.  It flashes rather than offering a confirm panel
-        # BECAUSE it is not a discard: nothing would be lost, a figure would
-        # simply be wrong, so there is nothing for the user to accept.
-        #
         # ``ValidationError`` is new to this door at plan step C3-b and was
         # an unhandled 500 until an adversarial review found it: the writer now
         # reads the stored cadence to re-project the surviving last period, and
@@ -221,7 +192,7 @@ def truncate():
         # such a value, and a schedule button is the right place for it to be a
         # message.
         #
-        # All four refuse BEFORE the ``DELETE``, so nothing durable is staged;
+        # All three refuse BEFORE the ``DELETE``, so nothing durable is staged;
         # the rollback is for the page this redirects to, which reads the
         # owner's schedule back and should read committed state.
         db.session.rollback()
@@ -258,9 +229,7 @@ def regenerate():
             current_user.id, data["new_start_date"], data["num_periods"],
             data["cadence_days"], confirm_discard=data["confirm_discard"],
         )
-    except (
-        PayPeriodLocked, PayPeriodCoverageWithdrawn, ValidationError,
-    ) as exc:
+    except (PayPeriodLocked, ValidationError) as exc:
         # Rolled back for the reason the generate route states, and here it is
         # not a nicety: ``regenerate_pay_periods`` DELETES the rebuildable tail
         # before the writer validates the new start, so a refusal raised after

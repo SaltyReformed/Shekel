@@ -55,22 +55,53 @@ hole and says so at WARNING; where the disagreement runs the OTHER way -- an
 overlap, which no writer here can produce -- it refuses instead of guessing
 (:func:`_write_derivation`).
 
-The two refusals, and why they are TWO
-======================================
+The one refusal, and why the second was DELETED
+==============================================
 
 Plan ruling **R-PC1** stated ONE rule -- "the last paycheck must hold no row
 dated on or after the new payday".  Tracing it against ``shekel-prod-db`` found
-it wrong in both directions, so the developer ruled it into two (2026-08-10),
-and a neutral adversarial review then corrected both.  Each function carries
-its own argument and its own correction; what belongs here is only which is
-which, because they have different LIFETIMES:
+it wrong in both directions, so the developer ruled it into two (2026-08-10): a
+structural floor and a financial coverage rule.  What survives is the floor.
 
-1. :func:`_reject_backward_payday` -- **structural, and TEMPORARY.**  A new
-   payday may not land inside a paycheck the owner already has.  Its only job
-   is keeping plan step **C6**'s mid-schedule insert closed, and **C6 removes
-   it.**
-2. :func:`_reject_coverage_withdrawal` -- **financial.**  No write may take
-   coverage away from a day a SETTLED row's money moved on.
+:func:`_reject_backward_payday` -- **structural, and TEMPORARY.**  A new payday
+may not land inside a paycheck the owner already has.  Its only job is keeping
+plan step **C6**'s mid-schedule insert closed, and **C6 removes it.**
+
+**The coverage rule was DELETED (developer ruling 2026-08-11), and the argument
+is recorded because this module could re-derive it.**  It refused any write
+that moved a day from COVERED to UNCOVERED underneath a SETTLED row filed in a
+surviving period, and it was approved on the claim that stranding such a day
+reproduces ``balance:N-128`` -- the two halves of the cash period view
+disagreeing.  **That claim was false, and it was the whole of the case for the
+rule.**  ``_cash_periods._assemble_figures`` values each column at that
+period's OWN ``end_date`` and computes ``period_timing`` as ``moved - net``, so
+a settle day past the last reported end is absent from BOTH sides of ruling
+R-K's identity and cancels.  The money reports as a timing remainder -- the row
+ruling R-DH split out to carry precisely this -- and the balance is right
+either way: on that end date the bank had genuinely not taken it.  Pinned by
+``test_cash_period_view.py``'s
+``test_a_settle_day_past_the_window_keeps_every_column_exact``, and driven on a
+production CLONE: retiring 58 of 61 periods strands three real rows totalling
+``$177.47`` and every surviving column reconciles to the cent.
+
+**Two things that are NOT evidence for it, stated because the first draft of
+this paragraph offered both.**  Production has never been in the refused state
+-- **0** settled rows fall outside its schedule's coverage -- so production is
+silent on this rule rather than supporting its removal.  What production shows
+is the DESIGN it rests on: 21 of 160 settled rows settle outside their OWN
+paycheck (measured 2026-08-11), carried by the remainder with nothing refusing.
+And the refusal's message offered THREE remedies, not one -- re-date the row,
+move it, or choose a schedule that still covers the day.  The first two falsify
+when money moved; the third is declining the edit.  **The measured COST is what
+decided it**: 5 of the owner's 61 truncation points refused, one over three
+rows that cleared the bank ONE day late.
+
+**"Outside the reported window" is not a windowing nicety on the load-bearing
+surface**: ``routes/grid.py`` passes the owner's COMPLETE period set, so there
+the phrase means "outside every paycheck they have".  The identity holds all
+the same -- it is a property of where each column is valued, not of how the
+window was chosen -- but the reassurance must not be read as "only a partial
+view sees this".
 
 The cadence rule
 ================
@@ -102,19 +133,11 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import or_
-
-from app.exceptions import (
-    PayPeriodCoverageWithdrawn,
-    PayPeriodOverlapStored,
-    ValidationError,
-)
+from app.exceptions import PayPeriodOverlapStored, ValidationError
 from app.extensions import db
 from app.models.pay_period import MIN_MATERIALISABLE_CADENCE_DAYS, PayPeriod
-from app.models.transaction import Transaction
 from app.services import pay_schedule_service
 from app.services.pay_calendar import DerivedPeriod, derive_periods
-from app.utils.balance_predicates import settled_status_ids
 from app.utils.log_events import (
     BUSINESS,
     EVT_PAY_PERIODS_GENERATED,
@@ -140,33 +163,6 @@ logger = logging.getLogger(__name__)
 #: four form fields came to hold four literals.
 PERIOD_BATCH_MIN = 1
 PERIOD_BATCH_MAX = 260
-
-
-@dataclass(frozen=True)
-class StrandedRow:
-    """One row a pending write would leave on a day no paycheck covers.
-
-    Carried on :class:`~app.exceptions.PayPeriodCoverageWithdrawn` so the
-    refusal names what it is protecting rather than describing a rule.  Every
-    field is what a user needs to find the row and correct it.
-
-    Attributes:
-        kind: Which table the row is in.  ``"transaction"`` is the only value
-            today, and the field is kept because a transfer's shadows are
-            transactions: a stranded shadow names a row the user knows as a
-            TRANSFER, and whoever renders this next needs somewhere to say so.
-        row_id: The row's primary key.
-        clock: Which of the row's dates falls outside.  ``"settled_on"`` is the
-            only value, and it is named rather than assumed because the row
-            carries two dates and only this one reaches a reader raw -- see
-            :func:`_rows_dated_outside`.
-        day: The clock's value -- the day that would stop being covered.
-    """
-
-    kind: str
-    row_id: int
-    clock: str
-    day: date
 
 
 def reject_unmaterialisable_batch(num_periods: int, cadence_days: int) -> None:
@@ -262,11 +258,14 @@ def record_paydays(
     **``retiring`` is what makes regenerate and reset ONE operation**, and an
     adversarial review of this step is why it exists.  Those two doors replace a
     span: they drop periods and record others, and applying the halves through
-    two separate calls asked the coverage rule about an interval that existed
-    for one statement.  A settled row that cleared a week after its own paycheck
-    then refused every regenerate, naming a day the rebuilt schedule covers.
-    Handing both halves to one call means the rule is asked about the state the
-    operation actually leaves behind.
+    two separate calls derived, refused against and MATERIALISED an interval
+    that existed for one statement -- the schedule minus its tail, before the
+    rebuild that is the whole point of the door.  Handing both halves to one
+    call means every refusal, and the derivation itself, see the state the
+    operation actually leaves behind.  The rule that measured this (the
+    coverage rule, deleted 2026-08-11) is gone; the reason it is ONE call is
+    not, because :func:`_write_derivation` would otherwise re-materialise the
+    whole calendar twice per rebuild and log the intermediate shape as a repair.
 
     It replaced ``pay_period_service.generate_pay_periods`` at plan step C3-b,
     and the difference is what the step is about: that function AUTHORED
@@ -310,8 +309,6 @@ def record_paydays(
             (:func:`reject_unmaterialisable_batch`); or the batch's earliest new
             payday falls before the forward-only floor
             (:func:`_reject_backward_payday`).
-        PayPeriodCoverageWithdrawn: Re-materialising would leave a filed row on
-            a day no paycheck covers (:func:`_reject_coverage_withdrawal`).
         ValidationError: Raised by
             :func:`~app.services.pay_schedule_service.upsert_schedule` when
             *cadence_days* falls outside ``ck_pay_schedule_cadence_range``.
@@ -399,7 +396,7 @@ def retire_paydays(
     Args:
         user_id: The owning user's id.
         periods: ALL the owner's periods, read by the caller under its advisory
-            lock -- the snapshot both the coverage rule and the delete are
+            lock -- the snapshot the delete and the re-materialisation are both
             evaluated against, so the two cannot see different sets.
         doomed: The subset to delete.  Empty is a legal, idempotent no-op.
 
@@ -407,9 +404,14 @@ def retire_paydays(
         The number of pay periods deleted.
 
     Raises:
-        PayPeriodCoverageWithdrawn: The delete would leave a filed row in a
-            SURVIVING period on a day no paycheck covers.  Nothing is deleted:
-            the check runs before the ``DELETE``.
+        PayPeriodOverlapStored: A surviving row's stored end runs past its
+            successor's payday -- a state no writer here can produce, so
+            reaching it means the rows were edited outside this module
+            (:func:`_write_derivation`).  This one raises AFTER the ``DELETE``
+            has been issued, unlike the refusals in :func:`record_paydays`, and
+            no route catches it: it is deliberately a 500, and nothing durable
+            follows because this module never commits and the failed request's
+            session is discarded without one.
     """
     doomed_ids = {period.id for period in doomed}
     if not doomed_ids:
@@ -433,20 +435,28 @@ class _PaydayChange:
     **Every door that writes composes into this, and an adversarial review of
     plan step C3-b is why it exists.**  ``retire_paydays`` and
     ``record_paydays`` used to apply their halves separately, so regenerate --
-    which retires a tail and records a new one -- evaluated the coverage rule
-    against an interval that existed for one statement and was then widened
-    again by the rebuild that is the whole point of the door.  Measured: a
-    settled row that cleared a week after its own paycheck refused every
-    regenerate, naming a day the rebuilt schedule covers comfortably.
+    which retires a tail and records a new one -- derived, judged and
+    MATERIALISED an interval that existed for one statement and was then widened
+    again by the rebuild that is the whole point of the door.
 
-    A rule about the final state has to be asked about the final state.  So the
-    two halves arrive together, the derivation is taken once over
-    ``keep + recording``, and both refusals are asked of that one answer.
+    A claim about the final state has to be evaluated against the final state.
+    So the two halves arrive together, the derivation is taken ONCE over
+    ``keep + recording``, and every refusal is asked of that one answer.  The
+    rule whose false refusals measured this is gone (the coverage rule, deleted
+    2026-08-11); the composition is not, and the remaining reason is
+    :func:`_write_derivation`.  Applied separately it runs twice per rebuild,
+    and the first pass shortens the newly-last survivor to a cadence projection
+    -- a genuine rewrite, logged at WARNING as a schedule that "disagreed with
+    the owner's paydays" -- which the second pass immediately undoes.  One call,
+    one derivation, no phantom repair in the log.
 
     Attributes:
         user_id: The owning user.
         current: Every row the owner has NOW, read by the caller under its
-            advisory lock.  The BEFORE side of the coverage rule.
+            advisory lock.  Two things are read off it and both need the BEFORE
+            set: which ids are being retired, and which payday was previously
+            last (the one row :func:`_write_derivation` exempts from the overlap
+            refusal, because its end was a projection).
         keep: The subset that survives -- ``current`` less whatever is being
             retired.  Whatever is not in it is deleted.
         recording: The paydays to create, already filtered of any that exist.
@@ -464,22 +474,26 @@ class _PaydayChange:
 def _apply(change: _PaydayChange) -> "list[PayPeriod]":
     """Carry out one payday change: refuse, delete, persist, materialise.
 
-    **Every refusal happens before the first durable statement**, which is what
-    lets truncate keep promising it deletes nothing on a refusal and what makes
-    the module docstring's "a refusal leaves nothing behind" true of this
-    module rather than of its callers.  The order is forced:
+    **Every refusal a route RENDERS happens before the ``DELETE``**, which is
+    what lets truncate keep promising it deletes nothing on a refusal and what
+    makes the module docstring's "a refusal leaves nothing behind" true of this
+    module rather than of its callers.  Step 1 carries all of them.  The one
+    exception is :class:`PayPeriodOverlapStored`, raised from step 4: no route
+    catches it, deliberately -- it means the rows were edited outside this
+    module, and it is a 500 rather than a message.  The order is forced:
 
-    1. Derive the calendar the operation would leave behind.  The cadence is
-       the one this change PERSISTS when it records a payday, and the stored
-       one otherwise -- read before the upsert rather than after it, because
-       ``upsert_schedule`` stores the argument verbatim, so the two are the
-       same value and only one of them is durable.
-    2. Refuse a coverage withdrawal (:func:`_reject_coverage_withdrawal`).
-    3. DELETE what is retired -- one bulk statement, scoped by OWNER as well as
+    1. Bound the cadence, then derive the calendar the operation would leave
+       behind.  The cadence is the one this change PERSISTS when it records a
+       payday, and the stored one otherwise -- read before the upsert rather
+       than after it, because ``upsert_schedule`` stores the argument verbatim,
+       so the two are the same value and only one of them is durable.  Both
+       cadence refusals and ``derive_periods``' own live here, ahead of every
+       statement.
+    2. DELETE what is retired -- one bulk statement, scoped by OWNER as well as
        by id, so the scoping is structural rather than a property of the two
        callers that happen to pass owner-scoped lists.
-    4. Persist the cadence (the rule: only a batch that RECORDS a payday).
-    5. Write the derivation onto every surviving and new row.
+    3. Persist the cadence (the rule: only a batch that RECORDS a payday).
+    4. Write the derivation onto every surviving and new row.
 
     ``expire_all`` runs LAST, and only when something was deleted: the
     survivors' loaded attributes are untouched by the ``DELETE``, so writing the
@@ -495,13 +509,10 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
     Raises:
         ValidationError: The cadence the horizon would project at is one no
             stored ``end_date`` can express, or ``upsert_schedule`` refuses it.
-        PayPeriodCoverageWithdrawn: The result would leave a settled row's cash
-            day covered by no paycheck.
         PayPeriodOverlapStored: A surviving row's stored end runs past its
             successor's payday, which no writer here can produce.
     """
     by_payday = {period.start_date: period for period in change.keep}
-    before_spans = [(p.start_date, p.end_date) for p in change.current]
     horizon_cadence = (
         change.cadence_days if change.recording
         else _horizon_cadence(change.user_id)
@@ -523,8 +534,6 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
         + [(None, payday) for payday in change.recording],
         horizon_cadence,
     )
-    _reject_coverage_withdrawal(derived, by_payday, before_spans)
-
     keep_ids = {period.id for period in change.keep}
     retiring_ids = [
         period.id for period in change.current if period.id not in keep_ids
@@ -728,144 +737,6 @@ def _reject_backward_payday(
             f"app cannot yet do safely.  Choose a later date, or rebuild the "
             f"tail from the payday you want."
         )
-
-
-def _reject_coverage_withdrawal(
-    derived: "tuple[DerivedPeriod, ...]",
-    keep_by_payday: "dict[date, PayPeriod]",
-    before_spans: "list[tuple[date, date]]",
-) -> None:
-    """Refuse a write that takes coverage away from a settled row's cash day.
-
-    **The financial half of ruling R-PC1, narrowed twice by an adversarial
-    review of this step, and the narrowing is worth stating because the first
-    version of this docstring claimed a defect it does not defend.**
-
-    A pay period is an interval; a settled row filed in one carries a
-    ``settled_on`` of its own, and it is not required to fall inside it --
-    production has 38 rows dated outside their own paycheck, up to 26 days
-    early and 17 late, and ``utils.dates.attribution_date`` clamps every one on
-    render.  That state is accepted.  What this refuses is the write that moves
-    such a day from COVERED to UNCOVERED, after which
-    ``_cash_periods._budget_legs`` keeps counting the row against the paycheck
-    it is FILED in while ``_cash_sums`` -- keyed on
-    ``spans.containing(fact.settled_on)`` -- no longer has a column to place its
-    money in.
-
-    **It is NOT ``balance:N-128``, and saying so is the correction.**  That
-    finding is a day inside a HOLE, and the identity it breaks
-    (``balance delta == moved``) survives a day OUTSIDE the reported window:
-    ``_period_balances`` samples at each period's ``end_date``, so a fact past
-    the last one is absent from both sides and cancels.  A hole inside the
-    window is what does not cancel -- and the derivation this writer
-    materialises tiles, so no write can produce one.  What survives here is
-    smaller and worth naming honestly: the row's money leaves its column into
-    ``period_timing``, and the schedule's last balance stops stepping for it.
-
-    **Derived periods TILE**, so coverage after the write is the single interval
-    ``[first payday, last end]`` and the test is two comparisons rather than a
-    scan.  Coverage BEFORE may have holes, which is why it arrives as a span
-    list: a day inside a pre-existing hole was already uncovered, so a write
-    that leaves it uncovered has taken nothing away.
-
-    **The common case costs zero queries, and since the forward-only floor took
-    its final shape most of the remaining cases do too.**  Every append widens
-    the interval, so the containment check short-circuits before any row is
-    read -- and the floor now refuses a payday that would land inside an
-    existing paycheck at all, so :func:`record_paydays` cannot shorten one.
-    What is left is :func:`retire_paydays` dropping the new last period back to
-    its cadence projection, and a legacy owner whose stored cadence is shorter
-    than the schedule it generated.
-
-    Args:
-        derived: The calendar as it would stand after the write.
-        keep_by_payday: The owner's SURVIVING periods keyed by payday.  Rows in
-            periods that are about to be deleted are not considered: they
-            CASCADE with them.
-        before_spans: ``(start_date, end_date)`` for every period the owner has
-            NOW, holes and all.
-
-    Raises:
-        PayPeriodCoverageWithdrawn: At least one filed row's clock falls on a
-            day that is covered now and would not be afterwards.
-    """
-    # Nothing survives (a wipe), or the owner had nothing to begin with: no
-    # filed row can outlive its period, because the CASCADE takes it.  This is
-    # also what makes ``derived`` non-empty below without a second test --
-    # a non-empty ``keep_by_payday`` derives at least one period.
-    if not keep_by_payday or not before_spans:
-        return
-    covered_lo, covered_hi = derived[0].start_date, derived[-1].end_date
-    if covered_lo <= min(s for s, _ in before_spans) and (
-        covered_hi >= max(e for _, e in before_spans)
-    ):
-        # The new coverage contains the old outer bounds, and the new coverage
-        # has no holes, so no day can have lost cover.
-        return
-
-    keep_ids = [period.id for period in keep_by_payday.values()]
-    stranded = [
-        row
-        for row in _rows_dated_outside(keep_ids, covered_lo, covered_hi)
-        if any(start <= row.day <= end for start, end in before_spans)
-    ]
-    if stranded:
-        raise PayPeriodCoverageWithdrawn(stranded, covered_lo, covered_hi)
-
-
-def _rows_dated_outside(
-    keep_ids: "list[int]", covered_lo: date, covered_hi: date,
-) -> "list[StrandedRow]":
-    """Return every SETTLED row whose settle day falls outside the coverage.
-
-    **One clock and one table, and an adversarial review of this step cut it
-    down to that.**  The first cut also scanned ``due_date``, on both
-    ``budget.transactions`` and ``budget.transfers``, reasoning that a
-    still-projected row's money is placed by its planned day.  It is -- but that
-    day is ``attribution_date(txn.due_date, period.start_date, period.end_date)``
-    (``balance_at/_cash_fold.py``), CLAMPED into the row's own period and
-    floored at ``as_of + 1``.  A projected row's money therefore always lands
-    inside a covered span whatever its raw ``due_date`` says, so refusing on
-    that column was a refusal about a value no reader consults -- exactly the
-    over-strictness ruling R-PC1 was split to remove, reintroduced on the other
-    clock.  Only a SETTLED row carries a raw day into
-    ``_cash_sums``: ``spans.containing(fact.settled_on)``.
-
-    Dropping the ``budget.transfers`` scan with it costs nothing, and the
-    reasoning is worth keeping because it is not obvious: a transfer has no
-    ``settled_on`` COLUMN at all (``models/transfer.py``) -- the day lives on
-    its two shadow TRANSACTIONS, which this scan already reads on their own
-    ``pay_period_id``.  So the parent table carries no clock this rule can act
-    on, and reading it added a query rather than a guarantee.
-
-    Soft-deleted rows are excluded: they contribute to no figure on any surface,
-    so a day only they fall on is not a day anything would drop.
-
-    Args:
-        keep_ids: The surviving periods' ids.
-        covered_lo: First day the post-write calendar covers.
-        covered_hi: Last day it covers.
-
-    Returns:
-        One :class:`StrandedRow` per settled row whose settle day is outside
-        the interval, in no particular order.
-    """
-    rows = db.session.query(
-        Transaction.id, Transaction.settled_on,
-    ).filter(
-        Transaction.pay_period_id.in_(keep_ids),
-        Transaction.is_deleted.is_(False),
-        Transaction.status_id.in_(settled_status_ids()),
-        Transaction.settled_on.isnot(None),
-        or_(
-            Transaction.settled_on < covered_lo,
-            Transaction.settled_on > covered_hi,
-        ),
-    ).all()
-    return [
-        StrandedRow("transaction", row_id, "settled_on", settled_on)
-        for row_id, settled_on in rows
-    ]
 
 
 def _write_derivation(

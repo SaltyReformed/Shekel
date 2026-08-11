@@ -14,8 +14,20 @@ from app.enums import StatusEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
+from app.models.transaction import Transaction
 from app.services import pay_period_write
 from tests._test_helpers import add_txn, freeze_today
+
+
+def _spans(session, user_id):
+    """Return the owner's ``(start_date, end_date)`` spans, payday ascending."""
+    return [
+        (period.start_date, period.end_date)
+        for period in session.query(PayPeriod)
+        .filter_by(user_id=user_id)
+        .order_by(PayPeriod.start_date)
+        .all()
+    ]
 
 
 # ── Tests ────────────────────────────────────────────────────────────
@@ -270,18 +282,23 @@ class TestPayPeriodNegativePaths:
             assert count == 0
 
 
-class TestTheCoverageRefusalReachesEveryDoor:
-    """Plan step C3-b's new refusal has a handler on every route that can raise it.
 
-    Added because an adversarial review of that step found four new
-    ``except PayPeriodCoverageWithdrawn`` handlers and no route test for any of
-    them -- so "the user sees a message" rested on reading the code.  Two of
-    them are unreachable in practice (an append widens coverage), which is
-    exactly why the two that ARE reachable need a test rather than an argument.
+class TestShorteningTheSchedulePastASettledDayGoesThrough:
+    """The doors that used to refuse a coverage withdrawal now carry it out.
 
-    The generate handler additionally renders a NEW error key, ``schedule``,
-    which no template had been asked for before; the first assertion is that
-    the page renders it rather than swallowing it.
+    **Plan step C3-b shipped a refusal on four routes and the developer deleted
+    it 2026-08-11**, because the defect it named was not one: a settled row's
+    cash day falling outside the reported window is absent from BOTH sides of
+    ruling R-K's identity and reports as the ``period_timing`` remainder
+    (``test_cash_period_view.py``:
+    ``test_a_settle_day_past_the_window_keeps_every_column_exact``).  What the
+    refusal cost was real -- 5 of production's 61 truncation points blocked,
+    with re-dating a settled row as the only way past.
+
+    Graded at the ROUTE and not only at the service, for the reason the class
+    it replaces existed: "the user can now do this" rested on reading the
+    handler list, and a stale ``except`` clause would have kept flashing a
+    refusal no service raises.
     """
 
     def _settled_row_past(self, db_session, seed_user, period, day):
@@ -292,16 +309,24 @@ class TestTheCoverageRefusalReachesEveryDoor:
             settled_on=day,
         )
 
-    def test_truncate_flashes_it_and_deletes_nothing(
+    def test_truncate_removes_the_tail_and_keeps_the_stranded_row(
         self, app, db, auth_client, seed_user, seed_periods, monkeypatch,
     ):
-        """The reachable door: removing the tail shortens the kept paycheck."""
+        """The door the refusal actually blocked.
+
+        A payday at 2026-07-01 stretches the last seeded paycheck to
+        2026-06-30, and a settled row inside it cleared 2026-06-15.  Truncating
+        the successor away drops that paycheck back to 2026-05-21, so the
+        settle day ends up covered by nothing.  The tail goes, the row stays
+        exactly as it was, and the page reports success rather than the day.
+        """
         freeze_today(monkeypatch, date(2025, 12, 1))
         with app.app_context():
             user_id = seed_user["user"].id
-            self._settled_row_past(
+            row = self._settled_row_past(
                 db.session, seed_user, seed_periods[-1], date(2026, 6, 15),
             )
+            row_id = row.id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 7, 1),
                 num_periods=1, cadence_days=14,
@@ -317,34 +342,40 @@ class TestTheCoverageRefusalReachesEveryDoor:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"2026-06-15" in resp.data
+            assert b"2026-06-15" not in resp.data
             assert db.session.query(PayPeriod).filter_by(
                 user_id=user_id,
-            ).count() == before
+            ).count() == before - 1
+            survivor = db.session.get(Transaction, row_id)
+            assert survivor.settled_on == date(2026, 6, 15)
+            assert survivor.pay_period_id == seed_periods[-1].id
 
-    def test_generate_renders_it_under_its_own_key(
+    def test_generate_accepts_a_batch_that_pulls_the_horizon_back(
         self, app, db, auth_client, seed_user, seed_periods, monkeypatch,
     ):
-        """The 422 body carries the message, under the ``schedule`` key.
+        """The legacy-data door, which returned 422 under its own error key.
 
-        **This door needs LEGACY data to reach the refusal at all**, and saying
+        **This shape needs LEGACY data to reach the write at all**, and saying
         so is the point: after the forward-only floor became one full cadence,
-        a batch that only ADDS paydays always widens the covered interval --
-        the new horizon is at least a cadence past the old one -- so the rule
-        short-circuits.  What can still get behind a settled row is a stored
-        cadence SHORTER than the schedule it generated, which no door can now
-        create (the cadence rule) and which pre-C3-b data carries (finding
-        **P28**).  The schedule row is edited directly to build it.
+        a batch that only ADDS paydays always widens the covered interval.
+        What can still pull the horizon back is a stored cadence SHORTER than
+        the schedule it generated, which no door can now create (the cadence
+        rule) and which pre-C3-b data carries (finding **P28**).  The schedule
+        row is edited directly to build it.
+
+        The 180-day paycheck ends 2026-12-27 and holds a row that cleared
+        2026-08-15; recording 2026-07-03 at cadence 2 pulls the horizon back to
+        2026-07-04, past it.  That is now a redirect and a created period, not
+        a 422 -- and the ``schedule`` error key the refusal introduced has no
+        remaining producer.
         """
         freeze_today(monkeypatch, date(2025, 12, 1))
         with app.app_context():
             user_id = seed_user["user"].id
-            # The row settles inside the 180-day paycheck's span, so it is
-            # covered BEFORE and not after: a cadence of 2 pulls the horizon
-            # back to 2026-07-04.
-            self._settled_row_past(
+            row = self._settled_row_past(
                 db.session, seed_user, seed_periods[-1], date(2026, 8, 15),
             )
+            row_id, home_period_id = row.id, seed_periods[-1].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 7, 1),
                 num_periods=1, cadence_days=180,
@@ -353,12 +384,28 @@ class TestTheCoverageRefusalReachesEveryDoor:
                 {"cadence_days": 2}, synchronize_session=False,
             )
             db.session.commit()
+            before = db.session.query(PayPeriod).filter_by(
+                user_id=user_id,
+            ).count()
+            spans = _spans(db.session, user_id)
+            assert any(start <= date(2026, 8, 15) <= end for start, end in spans)
 
             resp = auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-07-03", "num_periods": "1",
                 "cadence_days": "2",
             })
 
-            assert resp.status_code == 422
-            assert b"Schedule:" in resp.data
-            assert b"2026-08-15" in resp.data
+            assert resp.status_code == 302
+            assert db.session.query(PayPeriod).filter_by(
+                user_id=user_id,
+            ).count() == before + 1
+            # The horizon really did move BACK past the settled day -- without
+            # this the test would pass even if the write stranded nothing.
+            spans = _spans(db.session, user_id)
+            assert max(end for _start, end in spans) == date(2026, 7, 4)
+            assert not any(
+                start <= date(2026, 8, 15) <= end for start, end in spans
+            )
+            survivor = db.session.get(Transaction, row_id)
+            assert survivor.settled_on == date(2026, 8, 15)
+            assert survivor.pay_period_id == home_period_id

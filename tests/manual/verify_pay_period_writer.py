@@ -57,7 +57,6 @@ from app import create_app  # noqa: E402
 from app.extensions import db  # noqa: E402
 from app.models.pay_period import PayPeriod  # noqa: E402
 from app.exceptions import (  # noqa: E402
-    PayPeriodCoverageWithdrawn,
     PayPeriodOverlapStored,
     ValidationError,
 )
@@ -66,8 +65,13 @@ from app.services.pay_calendar import PayCalendarError, derive_periods  # noqa: 
 
 #: Everything the writer's doors may legitimately refuse with.  Named so the
 #: catch below is a set rather than a category (project rule 1).
+#:
+#: ``PayPeriodCoverageWithdrawn`` was a fourth member until the developer
+#: deleted the coverage rule (2026-08-11).  A settled row's cash day falling
+#: outside the shortened schedule is no longer a refusal, so the retire-the-tail
+#: door below now CARRIES OUT that state on any owner who has one rather than
+#: reporting a refusal -- which is exactly what this script should measure.
 _REFUSALS = (
-    PayPeriodCoverageWithdrawn,
     PayPeriodOverlapStored,
     ValidationError,
     PayCalendarError,

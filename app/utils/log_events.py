@@ -369,19 +369,6 @@ EVT_PAY_PERIODS_GENERATED = _register(
     "pay_periods_generated", BUSINESS,
     "Pay-period service created one or more new biweekly periods.",
 )
-EVT_PAY_PERIODS_TOPUP_REFUSED = _register(
-    "pay_periods_topup_refused", BUSINESS,
-    "The rolling-window top-up could not append without pulling the schedule's "
-    "coverage back past a dated row, so it created nothing and the page it runs "
-    "on rendered anyway (plan step C3-b).  The top-up is an opportunistic write "
-    "on a READ path -- /grid and /dashboard call it with no handler -- so it "
-    "declines rather than 500s, and this event is how that decision is visible. "
-    "The owner's schedule has STOPPED GROWING until someone acts: their Extend "
-    "button raises the same refusal with the offending rows named.  It needs a "
-    "last period longer than the stored cadence now projects, which no door can "
-    "create since this step's cadence rule, so it names pre-C3-b data.  ALERT "
-    "ON IT.",
-)
 EVT_PAY_PERIODS_REMATERIALISED = _register(
     "pay_periods_rematerialised", BUSINESS,
     "A stored pay period's end_date or period_index disagreed with the owner's "

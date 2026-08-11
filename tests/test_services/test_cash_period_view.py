@@ -691,6 +691,90 @@ class TestTheIdentityHoldsOnEveryPeriod:
         for period, balance_delta, explained in rows:
             assert balance_delta == explained, f"period {period.period_index}"
 
+    def test_a_settle_day_past_the_window_keeps_every_column_exact(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """A day off the TOP of the schedule breaks nothing, and this is why.
+
+        **The measurement that deleted pay_calendar C3-b's coverage rule**
+        (developer ruling 2026-08-11).  That rule refused any schedule write
+        which moved a day from covered to uncovered underneath a settled row,
+        on the claim that stranding one reproduces ``balance:N-128``.  It does
+        not, and the shape below is the one a truncate actually leaves: a
+        CONTIGUOUS prefix of the schedule, with a settled row filed inside it
+        whose money moved after the prefix ends.
+
+        Reports periods 0-2 (2026-01-02 to 2026-02-12) with a ``$250.00``
+        expense budgeted to period 2 and settled 2026-03-20 -- past the last
+        reported ``end_date``, exactly as it would be after truncating the tail
+        away.
+
+        Hand-computed.  Periods 0 and 1 hold nothing: every figure ``$0.00``
+        against a ``$1,000.00`` balance.  Period 2 budgets the ``$250.00``
+        (net ``-$250.00``) while nothing moves inside its span, so its
+        ``period_timing`` is ``+$250.00`` and the two cancel.  Its balance is
+        ``$1,000.00`` and NOT ``$750.00``, and that is the financial claim: on
+        2026-02-12 the bank had genuinely not taken the money yet, so a
+        schedule that stops there is right to show it unspent.  The money is
+        not lost either -- reported over the FULL ten periods it lands in
+        period 5, whose span contains 2026-03-20.
+
+        ``_period_balances`` sampling at each period's OWN ``end_date`` is what
+        makes this cancel: the fact is absent from both sides of the identity.
+        Only a day in a HOLE between two reported columns fails to cancel, and
+        the derivation ``pay_period_write`` materialises TILES, so no writer can
+        produce one -- which is the whole reason the refusal had nothing left to
+        protect.
+
+        **A still-PROJECTED row rides along, and an adversarial review asked
+        for it**: after a real truncate the reader's ``as_of`` is past the new
+        horizon, so ruling R-G clamps every unpaid row to ``as_of + 1`` and
+        lands it outside every column too.  The ``$100.00`` bill below is that
+        second cause, in the SAME cell as the stranded settled row -- which is
+        what the post-truncate grid actually renders, and a seed with only
+        settled money could not see it.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        as_of = date(2026, 4, 2)
+        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
+        create_settled_cash_transaction(
+            seed_user, db.session, seed_periods[2], Decimal("250.00"),
+            settled_on=date(2026, 3, 20), name="cleared after the tail was cut",
+        )
+        add_txn(
+            db.session, seed_user, seed_periods[2], "still unpaid", "100.00",
+            due_date=seed_periods[2].start_date,
+        )
+        db.session.commit()
+
+        window = seed_periods[:3]
+        figures = _view(account, scenario, window, as_of=as_of)
+        for period in window[:2]:
+            assert figures[period.id].net == Decimal("0.00")
+            assert figures[period.id].period_timing == Decimal("0.00")
+            assert figures[period.id].balance == Decimal("1000.00")
+        stranded_column = figures[seed_periods[2].id]
+        # $250.00 settled away from the window + $100.00 clamped out of it.
+        assert stranded_column.expense == Decimal("350.00")
+        assert stranded_column.net == Decimal("-350.00")
+        assert stranded_column.period_timing == Decimal("350.00")
+        assert stranded_column.book_vs_bank == Decimal("0.00")
+        # The bank had not taken it on 2026-02-12, so the balance must not move.
+        assert stranded_column.balance == Decimal("1000.00")
+
+        rows = _identity_holds(account, scenario, window, as_of=as_of)
+        assert len(rows) == 3  # the loop is not vacuous
+        for period, balance_delta, explained in rows:
+            assert balance_delta == explained, f"period {period.period_index}"
+
+        # Nothing was lost: over the whole schedule the money reports in the
+        # column whose span actually contains 2026-03-20.
+        full = _view(account, scenario, seed_periods, as_of=as_of)
+        assert seed_periods[5].start_date <= date(2026, 3, 20)
+        assert date(2026, 3, 20) <= seed_periods[5].end_date
+        assert full[seed_periods[5].id].period_timing == Decimal("-250.00")
+        assert full[seed_periods[5].id].balance == Decimal("750.00")
+
     def test_an_empty_period_reports_zeros_against_its_folded_balance(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument

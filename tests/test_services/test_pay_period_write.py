@@ -14,10 +14,12 @@ refusal ones, and the classes below them are C3-b's own.
   ``pay_calendar.derive_periods`` over the owner's WHOLE payday set, every
   write, so the columns cannot disagree with the paydays they derive from --
   which is what makes plan step C4's ``DROP COLUMN`` a no-op.
-* The old batch guard ``_reject_overlapping_batch`` split into TWO rules with
-  different lifetimes: a forward-only FLOOR that exists only to keep plan step
-  C6's mid-schedule insert closed, and a COVERAGE rule that refuses a write
-  which would take a filed row's money-day out of every paycheck.
+* The old batch guard ``_reject_overlapping_batch`` split into TWO rules, and
+  only ONE survives.  The forward-only FLOOR stays, and exists only to keep plan
+  step C6's mid-schedule insert closed.  The COVERAGE rule -- which refused a
+  write that would take a filed row's money-day out of every paycheck -- was
+  DELETED by developer ruling 2026-08-11; ``TestACoverageWithdrawalIsAccepted``
+  is what grades the state it used to refuse.
 * A batch that records at least one payday persists its cadence; one that
   records none leaves it alone (findings **P12**, **P29**).
 
@@ -32,12 +34,9 @@ from decimal import Decimal
 
 import pytest
 
-from app.exceptions import (
-    PayPeriodCoverageWithdrawn,
-    ValidationError,
-)
+from app.exceptions import ValidationError
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.models.pay_period import MIN_MATERIALISABLE_CADENCE_DAYS, PayPeriod
 from app.models.pay_schedule import CADENCE_DAYS_MIN, PaySchedule
 from app.models.transaction import Transaction
@@ -623,26 +622,35 @@ class TestItMaterialisesTheWholeDerivation:
             )
 
 
-class TestTheCoverageRule:
-    """Ruling **R-PC1**'s financial half, as an adversarial review narrowed it.
+class TestACoverageWithdrawalIsAccepted:
+    """Shortening the schedule past a settled row's cash day is ALLOWED.
 
-    A settled row's ``settled_on`` need not fall inside its own paycheck --
-    production has rows up to 26 days early and 17 late -- and that is accepted.
-    What is refused is a write that moves such a day from COVERED to UNCOVERED,
-    after which ``_budget_legs`` keeps counting the row against the paycheck it
-    is FILED in while ``_cash_sums`` has no column to place its money in.
+    **Ruling R-PC1's financial half was DELETED (developer, 2026-08-11), and
+    this class is what replaced it.**  It refused any write that moved a day
+    from COVERED to UNCOVERED underneath a SETTLED row filed in a surviving
+    period, on the claim that stranding such a day reproduces ``balance:N-128``
+    -- the two halves of the cash period view disagreeing.  The claim was false.
 
-    **Two things this rule is NOT, both stated because the first cut claimed
-    them.**  It is not ``balance:N-128``: that identity break needs a day in a
-    HOLE INSIDE the reported window, and the derivation this writer materialises
-    tiles, so no write can produce one.  And it does not read ``due_date``: a
-    projected row's money is placed by
-    ``attribution_date(due_date, period.start, period.end)``, clamped into its
-    own period, so no raw ``due_date`` reaches a reader.
+    ``_cash_periods._assemble_figures`` values each column at that period's OWN
+    ``end_date`` and computes ``period_timing`` as ``moved - net``, so a settle
+    day past the last reported end is absent from BOTH sides of ruling R-K's
+    identity and cancels.  The money reports as a timing remainder -- the row
+    ruling R-DH split out to carry exactly this -- and the balance is right
+    either way: on the shortened schedule's last day the bank genuinely had not
+    taken the money yet.  ``test_cash_period_view.py``'s
+    ``test_a_settle_day_past_the_window_keeps_every_column_exact`` is the
+    arithmetic; these are the doors.
 
-    Since the forward-only floor became one full cadence, ``record_paydays``
-    cannot shorten a paycheck at all -- so every case below reaches the rule
-    through ``retire_paydays`` or through a legacy stored cadence.
+    **Production is SILENT on this rule rather than supporting its removal**, and
+    an adversarial review had to point that out: **0** of its settled rows fall
+    outside the schedule's coverage, so the refused state has never occurred
+    there.  What production shows is the design the deletion rests on -- 21 of
+    160 settled rows settle outside their OWN paycheck (2026-08-11), carried by
+    the remainder with nothing refusing.  What decided it is the measured COST:
+    5 of the owner's 61 truncation points refused, one over three rows totalling
+    ``$177.47`` that cleared the bank ONE day late.  Its message offered three
+    ways out -- re-date the row, move it, or abandon the schedule change -- the
+    first two of which falsify when money moved.
     """
 
     #: ``seed_periods``' last paycheck: payday 2026-05-08, covering to
@@ -651,12 +659,12 @@ class TestTheCoverageRule:
     _LAST_PAYDAY = date(2026, 5, 8)
     _LAST_COVERED = date(2026, 5, 21)
 
-    def _settled_row(self, db_session, seed_user, period, day, deleted=False):
+    def _settled_row(self, db_session, seed_user, period, day):
         """File a SETTLED row in *period* whose money moved on *day*."""
         return add_txn(
             db_session, seed_user, period, "Insurance renewal", "340.00",
             status_enum=StatusEnum.DONE, due_date=period.start_date,
-            settled_on=day, is_deleted=deleted,
+            settled_on=day,
         )
 
     def test_an_append_past_a_late_row_is_ACCEPTED(
@@ -692,25 +700,27 @@ class TestTheCoverageRule:
             assert rows[-2] == (self._LAST_PAYDAY, self._LAST_COVERED, 9)
             assert rows[-1] == (date(2026, 5, 22), date(2026, 6, 4), 10)
 
-    def test_a_truncate_that_strands_a_row_is_REFUSED_and_deletes_nothing(
+    def test_a_truncate_that_strands_a_settled_row_is_ACCEPTED(
         self, app, db, seed_user, seed_periods,
     ):
-        """The half R-PC1's first wording MISSED entirely.
+        """The case the deleted rule refused, and it must now go through.
 
         A payday recorded at 2026-07-01 stretches the 2026-05-08 paycheck to
         2026-06-30, and it holds a row that SETTLED 2026-06-15.  Truncating
         that successor away drops the paycheck back to its cadence projection,
-        2026-05-21 -- and 2026-06-15 then belongs to no paycheck, so the grid
-        keeps counting the row against May while the running balance stops
-        stepping for it.  Refused, and the delete does not run: the check is
-        BEFORE the ``DELETE``, which is what lets truncate keep promising it
-        deletes nothing on a refusal.
+        2026-05-21, so 2026-06-15 belongs to no paycheck afterwards.
+
+        The truncate runs.  The row is NOT touched -- it keeps its period, its
+        settle day and its existence -- because the schedule shrinking is not a
+        fact about when the bank moved money, and re-dating it to satisfy a
+        calendar edit would falsify the one clock the ledger reads.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            self._settled_row(
+            row = self._settled_row(
                 db.session, seed_user, seed_periods[-1], date(2026, 6, 15),
             )
+            row_id, home_period_id = row.id, seed_periods[-1].id
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 7, 1),
                 num_periods=1, cadence_days=14,
@@ -720,26 +730,33 @@ class TestTheCoverageRule:
                 self._LAST_PAYDAY, date(2026, 6, 30), 9,
             )
 
-            with pytest.raises(PayPeriodCoverageWithdrawn) as excinfo:
-                pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_period_id=seed_periods[-1].id,
-                    confirm_discard=True,
-                )
-            db.session.rollback()
+            deleted = pay_period_admin.truncate_pay_periods(
+                user_id, keep_through_period_id=seed_periods[-1].id,
+                confirm_discard=True,
+            )
+            db.session.commit()
 
-            assert "2026-06-15" in str(excinfo.value)
-            assert [row.clock for row in excinfo.value.stranded] == ["settled_on"]
-            assert len(pay_period_service.get_all_periods(user_id)) == 11
+            assert deleted == 1
+            assert _paydays(user_id)[-1] == (
+                self._LAST_PAYDAY, self._LAST_COVERED, 9,
+            )
+            survivor = db.session.get(Transaction, row_id)
+            assert survivor is not None
+            assert survivor.pay_period_id == home_period_id
+            # The settle day is now outside every paycheck, and untouched.
+            assert survivor.settled_on == date(2026, 6, 15)
 
     def test_a_truncate_that_strands_NOTHING_is_accepted(
         self, app, db, seed_user, seed_periods,
     ):
-        """The control: shortening is not itself the offence.
+        """The control, and the point is that it reads IDENTICALLY to the above.
 
         Same truncate, and the row settled 2026-05-20 -- a day the shortened
-        paycheck still covers -- so nothing is withdrawn and the delete runs.
-        Without this, a rule that refused every shortening would pass the test
-        above.
+        paycheck still covers.  It was the accepted half of a pair the rule
+        split; it is now simply the same outcome, which is what "the writer has
+        no opinion about a settled row's cash day" means.  Kept rather than
+        merged so a future rule that starts discriminating on that day again
+        fails one of the two.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -763,76 +780,19 @@ class TestTheCoverageRule:
                 self._LAST_PAYDAY, self._LAST_COVERED, 9,
             )
 
-    def test_a_PROJECTED_rows_due_date_withdraws_nothing(
+    def test_a_stranded_TRANSFER_keeps_both_shadows_and_its_settle_day(
         self, app, db, seed_user, seed_periods,
     ):
-        """``due_date`` is not read, and this is the control for that.
-
-        The first cut scanned it, and an adversarial review showed the scan
-        protects nothing: a projected row's money is placed by
-        ``attribution_date(due_date, period.start, period.end)``, CLAMPED into
-        its own period and floored at ``as_of + 1``, so no raw ``due_date``
-        reaches ``_cash_sums``.  Refusing on it was the same over-strictness
-        R-PC1 was split to remove, on the other clock -- and it fired here, on
-        a truncate nowhere near the row.
-        """
-        with app.app_context():
-            user_id = seed_user["user"].id
-            add_txn(
-                db.session, seed_user, seed_periods[-1], "Tuition", "2100.00",
-                due_date=date(2026, 6, 15),
-            )
-            pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 7, 1),
-                num_periods=1, cadence_days=14,
-            )
-            db.session.commit()
-
-            deleted = pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_period_id=seed_periods[-1].id,
-                confirm_discard=True,
-            )
-            db.session.commit()
-
-            assert deleted == 1
-            assert _paydays(user_id)[-1] == (
-                self._LAST_PAYDAY, self._LAST_COVERED, 9,
-            )
-
-    def test_a_soft_deleted_row_withdraws_nothing(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A row nothing renders is not a row a coverage change can strand."""
-        with app.app_context():
-            user_id = seed_user["user"].id
-            self._settled_row(
-                db.session, seed_user, seed_periods[-1], date(2026, 6, 15),
-                deleted=True,
-            )
-            pay_period_write.record_paydays(
-                user_id=user_id, first_payday=date(2026, 7, 1),
-                num_periods=1, cadence_days=14,
-            )
-            db.session.commit()
-
-            deleted = pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_period_id=seed_periods[-1].id,
-                confirm_discard=True,
-            )
-            db.session.commit()
-
-            assert deleted == 1
-
-    def test_a_transfers_settle_day_is_seen_through_its_shadow(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A transfer strands through its SHADOW, which is a transaction.
+        """The transfer invariants survive a truncate that strands the pair.
 
         A transfer has no ``settled_on`` COLUMN -- the day lives on its two
-        shadow ``Transaction`` rows (Transfer Invariant 3) -- so the one scan
-        over ``budget.transactions`` already sees it, and the parent table
-        carries no clock this rule could act on.  The first cut queried
-        ``budget.transfers`` as well; that was a query rather than a guarantee.
+        shadow ``Transaction`` rows (Transfer Invariant 3) -- so a shortening
+        that puts that day outside every paycheck touches BOTH shadows at once.
+        Graded here rather than left to the transaction case because the failure
+        mode is different: a writer that "repaired" a stranded row by moving or
+        deleting it would break Invariants 1 and 2 (exactly two shadows, never
+        orphaned) on this shape while looking correct on the other.  The writer
+        touches neither, which is what makes that unreachable.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -849,8 +809,9 @@ class TestTheCoverageRule:
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 category_id=None,
             ))
+            xfer_id = xfer.id
             db.session.query(Transaction).filter_by(
-                transfer_id=xfer.id,
+                transfer_id=xfer_id,
             ).update({"settled_on": date(2026, 6, 15)}, synchronize_session=False)
             pay_period_write.record_paydays(
                 user_id=user_id, first_payday=date(2026, 7, 1),
@@ -858,31 +819,48 @@ class TestTheCoverageRule:
             )
             db.session.commit()
 
-            with pytest.raises(PayPeriodCoverageWithdrawn) as excinfo:
-                pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_period_id=seed_periods[-1].id,
-                    confirm_discard=True,
-                )
-            db.session.rollback()
+            deleted = pay_period_admin.truncate_pay_periods(
+                user_id, keep_through_period_id=seed_periods[-1].id,
+                confirm_discard=True,
+            )
+            db.session.commit()
 
-            # Both shadows carry the day, so both are named.
-            assert len(excinfo.value.stranded) == 2
-            assert {row.kind for row in excinfo.value.stranded} == {"transaction"}
+            assert deleted == 1
+            assert _paydays(user_id)[-1] == (
+                self._LAST_PAYDAY, self._LAST_COVERED, 9,
+            )
+            assert db.session.get(Transfer, xfer_id) is not None
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id,
+            ).all()
+            # Invariant 1 is "one EXPENSE and one INCOME", so the pair's SHAPE
+            # is asserted and not just its size -- two expense shadows would
+            # satisfy a bare count while breaking the invariant this names.
+            assert len(shadows) == 2
+            assert {shadow.transaction_type_id for shadow in shadows} == {
+                ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            }
+            assert {shadow.settled_on for shadow in shadows} == {date(2026, 6, 15)}
 
-    def test_a_REGENERATE_that_restores_the_coverage_is_ACCEPTED(
-        self, app, db, seed_user, seed_periods, monkeypatch,
+    def test_a_REGENERATE_derives_ONCE_over_the_end_state(
+        self, app, db, seed_user, seed_periods, monkeypatch, caplog,
     ):
-        """The false refusal an adversarial review of this step measured.
+        """Retire and record are ONE write, and this is what that buys.
 
         Regenerate RETIRES a tail and RECORDS a new one.  While those were two
-        write calls, the coverage rule was asked about the schedule BETWEEN
-        them -- an interval that exists for one statement -- so a settled row
-        that cleared after its own paycheck refused every regenerate, naming a
-        day the rebuilt schedule covers comfortably.  The user could not
-        rebuild at all until they re-dated a row the operation never
-        threatened.
+        write calls, everything downstream saw the schedule BETWEEN them -- an
+        interval that exists for one statement -- and the deleted coverage rule
+        measured it as a false refusal: a settled row that cleared after its own
+        paycheck refused every regenerate, naming a day the rebuilt schedule
+        covers comfortably.
 
-        The two halves are now one write, so the rule sees the end state.
+        That rule is gone; the composition is not, because
+        ``_write_derivation`` still runs against whatever it is handed.  Applied
+        separately it shortens the newly-last survivor to a cadence projection
+        and logs a WARNING repair, then immediately undoes both.  One call, one
+        derivation, and the intermediate shape is never materialised.
+
         Today is pinned inside the 2026-03-13 paycheck so that regenerate
         RETAINS it (with the five before it) and rebuilds from 2026-03-27: the
         retained schedule covers only to 2026-03-26 for one statement, and the
@@ -901,9 +879,12 @@ class TestTheCoverageRule:
             )
             db.session.commit()
 
-            pay_period_admin.regenerate_pay_periods(
-                user_id, date(2026, 3, 27), 8, 14, confirm_discard=True,
-            )
+            with caplog.at_level(
+                "WARNING", logger="app.services.pay_period_write",
+            ):
+                pay_period_admin.regenerate_pay_periods(
+                    user_id, date(2026, 3, 27), 8, 14, confirm_discard=True,
+                )
             db.session.commit()
 
             rows = _paydays(user_id)
@@ -912,29 +893,42 @@ class TestTheCoverageRule:
             assert any(
                 start <= date(2026, 6, 15) <= end for start, end, _index in rows
             )
+            # And the retained tail was never materialised at its intermediate
+            # shape: a two-call regenerate rewrites 2026-03-13's end to the
+            # cadence projection and logs that as a repair before undoing it.
+            assert [
+                record for record in caplog.records
+                if getattr(record, "event", None) == "pay_periods_rematerialised"
+            ] == []
 
-    def test_the_rolling_topup_declines_rather_than_raising(
-        self, app, db, seed_user, seed_periods, caplog,
+    def test_the_rolling_topup_APPENDS_where_it_used_to_decline(
+        self, app, db, seed_user, seed_periods,
     ):
-        """An opportunistic write on a READ path may not crash the page.
+        """The read-path write has nothing left to swallow.
 
-        ``/grid`` and ``/dashboard`` call the top-up with no handler, so a
-        refusal there would be an unhandled 500 on both.  It declines instead,
-        creates nothing, and says so at WARNING -- the owner's own Extend
-        button raises the same refusal with the rows named.
+        ``/grid`` and ``/dashboard`` call the top-up with no handler of their
+        own, so anything raised inside it is a 500 on both of the app's main
+        screens.  The deleted coverage rule COULD raise here, which is why
+        ``top_up_rolling_window`` carried a ``try/except`` and an event
+        (``pay_periods_topup_refused``) whose whole purpose was to turn a
+        business refusal into a silent no-op on a read path.  An opportunistic
+        writer needing a swallow was the clearest evidence the rule did not
+        belong there; both are gone, and the top-up simply appends.
 
-        The state needs a stored cadence SHORTER than the schedule it
-        generated, which no door can create since this step's cadence rule; it
-        is built here by editing the schedule row directly, which is the shape
+        The state that used to trip it needs a stored cadence SHORTER than the
+        schedule it generated -- no door can create that since C3-b's cadence
+        rule, so it is built by editing the schedule row directly, the shape
         pre-C3-b data carries (finding **P28**).  With cadence 3 the append
         lands 2026-05-11 and pulls the last paycheck's end back to 2026-05-10,
-        stranding the row that settled 2026-05-18.
+        leaving the row that settled 2026-05-18 outside every paycheck.  The
+        row is untouched and the window fills.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            self._settled_row(
+            row = self._settled_row(
                 db.session, seed_user, seed_periods[-1], date(2026, 5, 18),
             )
+            row_id = row.id
             pay_schedule_service.set_rolling(
                 user_id, enabled=True, target_periods=11,
             )
@@ -943,20 +937,22 @@ class TestTheCoverageRule:
             )
             db.session.commit()
 
-            with caplog.at_level(
-                "WARNING", logger="app.services.pay_period_admin",
-            ):
-                created = pay_period_admin.top_up_rolling_window(
-                    user_id, as_of=date(2026, 1, 5),
-                )
+            created = pay_period_admin.top_up_rolling_window(
+                user_id, as_of=date(2026, 1, 5),
+            )
+            db.session.commit()
 
-            assert created == 0
-            declined = [
-                record for record in caplog.records
-                if getattr(record, "event", None) == "pay_periods_topup_refused"
-            ]
-            assert len(declined) == 1
-            assert declined[0].stranded == 1
+            assert created == 1
+            rows = _paydays(user_id)
+            assert rows[-1] == (date(2026, 5, 11), date(2026, 5, 13), 10)
+            # The previous last paycheck gave up 2026-05-11..2026-05-21 to the
+            # append, so the settle day below is now covered by nothing.
+            assert rows[-2] == (self._LAST_PAYDAY, date(2026, 5, 10), 9)
+            survivor = db.session.get(Transaction, row_id)
+            assert survivor.settled_on == date(2026, 5, 18)
+            assert not any(
+                start <= date(2026, 5, 18) <= end for start, end, _index in rows
+            )
 
 
 class TestTheCadenceRule:

@@ -32,7 +32,6 @@ from operator import attrgetter
 from sqlalchemy import or_
 
 from app.exceptions import (
-    PayPeriodCoverageWithdrawn,
     PayPeriodDiscardRequired,
     PayPeriodLocked,
     PayPeriodResetBlocked,
@@ -63,8 +62,6 @@ from app.services.recurrence import (
 from app.utils.balance_predicates import is_projected_clause, settled_status_ids
 from app.utils.log_events import (
     ACCESS,
-    BUSINESS,
-    EVT_PAY_PERIODS_TOPUP_REFUSED,
     EVT_RESOURCE_NOT_FOUND,
     log_event,
 )
@@ -110,9 +107,6 @@ def extend_pay_periods(user_id, num_periods):
         ValidationError: When the user has no existing periods to extend
             from (they must generate first), or when ``record_paydays``
             refuses the batch.
-        PayPeriodCoverageWithdrawn: Never in practice, and it is not caught
-            here so that "never" is testable rather than assumed: an append
-            widens the covered interval, so no day can lose cover.
     """
     # Serialize against concurrent structural mutations for this user so the
     # latest payday is read under the lock and the append cannot race another
@@ -182,13 +176,15 @@ def truncate_pay_periods(
     :func:`~app.services.pay_period_write.retire_paydays` since plan step C3-b;
     the two gates below are what THIS door contributes.
 
-    **A third refusal can reach the caller and it is not this module's**
-    (plan step C3-b): removing the tail shortens the new last period to its
-    cadence projection, and a row filed in it but dated in the days that
-    projection gives up would be counted against its paycheck while the running
-    balance stopped stepping for it.  ``retire_paydays`` refuses that as
-    :class:`~app.exceptions.PayPeriodCoverageWithdrawn`, before deleting
-    anything.
+    **Shortening the schedule can leave a settled row's cash day outside it,
+    and that is ACCEPTED** (developer ruling 2026-08-11, which deleted the rule
+    that refused it).  Removing the tail drops the new last period back to its
+    cadence projection, so a row filed in a surviving period but settled in the
+    days that projection gives up keeps counting against its paycheck while no
+    column holds the day its money moved.  ``_cash_periods`` reports that as the
+    ``period_timing`` remainder ruling R-DH split out for it, every column's
+    identity stays exact, and the balance is right either way -- on the new last
+    ``end_date`` the bank genuinely had not taken the money yet.
 
     **The named period is always KEPT, so THIS DOOR can never empty a
     schedule**, which three docstrings elsewhere rest on.  "This door" rather
@@ -449,8 +445,6 @@ def regenerate_pay_periods(
             ``confirm_discard`` is False.
         ValidationError: ``new_start_date`` falls before the forward-only floor
             (``record_paydays``' rule).
-        PayPeriodCoverageWithdrawn: The rebuilt tail would leave a row filed in
-            a retained period on a day the new calendar does not cover.
     """
     # Serialize the whole rebuild -- boundary computation through the
     # truncate + regenerate -- for this user; re-entrant with the lock
@@ -465,11 +459,14 @@ def regenerate_pay_periods(
     periods = pay_period_service.get_all_periods(user_id)
     kept = _regenerate_keep_through_period(periods)
     # ONE write, and an adversarial review of plan step C3-b is why.  The
-    # truncate and the rebuild used to be two calls, so the writer's coverage
-    # rule was asked about the schedule BETWEEN them -- an interval this door
-    # then widens again -- and refused rebuilds that restore the very days it
-    # named.  The gate below still decides WHICH periods may go; the writer
-    # carries the delete out beside the create so the rule sees the end state.
+    # truncate and the rebuild used to be two calls, so everything downstream
+    # saw the schedule BETWEEN them -- an interval this door then widens again.
+    # The rule that measured it (the coverage rule) was deleted 2026-08-11; the
+    # composition stays, because ``_write_derivation`` would otherwise
+    # materialise that intermediate shape, shortening the newly-last survivor
+    # to a cadence projection and logging it as a repair before undoing both.
+    # The gate below still decides WHICH periods may go; the writer carries the
+    # delete out beside the create so one derivation sees the end state.
     doomed = _gate_deletable_tail(periods, kept, confirm_discard)
     new_periods = pay_period_write.record_paydays(
         user_id, new_start_date, num_periods, cadence_days, retiring=doomed,
@@ -606,10 +603,9 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     anchored_rule_ids = _rule_ids_with_start_period(user_id)
 
     # Wipe ALL the user's periods (the cascade handles the dependents) and
-    # build the new schedule in ONE write, so the writer sees the end state
-    # rather than the period-less moment between them.  Nothing survives the
-    # wipe, so the coverage rule has no filed row to protect: every dated row
-    # CASCADEs with its period.
+    # build the new schedule in ONE write, so the writer derives and
+    # materialises the end state rather than the period-less moment between
+    # them.
     periods = pay_period_service.get_all_periods(user_id)
     new_periods = pay_period_write.record_paydays(
         user_id, new_start_date, num_periods, cadence_days, retiring=periods,
@@ -691,28 +687,27 @@ def top_up_rolling_window(user_id, as_of=None):
     if deficit <= 0:
         return 0
 
-    try:
-        new_periods = extend_pay_periods(user_id, deficit)
-    except PayPeriodCoverageWithdrawn as exc:
-        # An opportunistic write on a READ path may not crash the page it runs
-        # on.  ``/grid`` and ``/dashboard`` call this with no handler, so a
-        # refusal here would be an unhandled 500 on both of the app's main
-        # screens, permanently, for the one owner it applies to -- which is the
-        # failure mode plan step C3-b's coverage rule was shaped to avoid, not
-        # to cause.  Declining to append creates no wrong figure: it leaves the
-        # schedule exactly as it was.  The WARNING is what keeps it from being
-        # silent, and the owner's own Extend button raises the same refusal
-        # with the offending rows named.
-        log_event(
-            logger, logging.WARNING, EVT_PAY_PERIODS_TOPUP_REFUSED, BUSINESS,
-            "Rolling-window top-up declined: appending would withdraw coverage",
-            user_id=user_id,
-            deficit=deficit,
-            stranded=len(exc.stranded),
-            reason=str(exc),
-        )
-        return 0
-    return len(new_periods)
+    # No handler.  This is an opportunistic write on a READ path -- ``/grid``
+    # and ``/dashboard`` call it with no handler of their own -- so anything
+    # raised here is a 500 on both of the app's main screens.
+    #
+    # The FORWARD-ONLY floor passes by construction: the batch continues the
+    # stored cadence and every payday it records falls after the last existing
+    # one.  That is the only refusal this comment can prove, and a first draft
+    # of it claimed all of them -- caught by an adversarial review of the
+    # coverage-rule deletion, which reached the 500 by running it.
+    # ``reject_unmaterialisable_batch`` still refuses a STORED cadence below
+    # ``MIN_MATERIALISABLE_CADENCE_DAYS``, and ``ck_pay_schedule_cadence_range``
+    # admits 1, so a legacy owner holding one 500s here on both screens,
+    # permanently.  That is ledger row **pay_calendar:P33**, owned by C4 -- the
+    # step that drops the stored ``end_date`` this floor exists to protect and
+    # legalises a one-day cycle -- and it is NOT swallowed here meanwhile,
+    # because the state is a schedule this app cannot render rather than a
+    # refusal to shrug off.  The refusal that USED to reach this line (the
+    # coverage rule, deleted 2026-08-11) was swallowed with a WARNING, and an
+    # opportunistic writer needing a swallow was the clearest evidence that
+    # rule did not belong on a read path.
+    return len(extend_pay_periods(user_id, deficit))
 
 
 def _future_period_count(user_id, as_of):
