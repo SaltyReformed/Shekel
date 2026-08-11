@@ -19,7 +19,7 @@ from app.models.category import Category
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.services import transfer_service
+from app.services import pay_period_write, transfer_service
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import create_loan_account
@@ -367,9 +367,9 @@ class TestCreateTransferValidation:
             # Create a period for the second user.
             from app.services import pay_period_service
             from datetime import date
-            other_periods = pay_period_service.generate_pay_periods(
+            other_periods = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=2,
                 cadence_days=14,
             )
@@ -590,9 +590,9 @@ class TestUpdateTransfer:
 
             from app.services import pay_period_service
             from datetime import date
-            other_periods = pay_period_service.generate_pay_periods(
+            other_periods = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
-                start_date=date(2026, 6, 1),
+                first_payday=date(2026, 6, 1),
                 num_periods=2,
                 cadence_days=14,
             )

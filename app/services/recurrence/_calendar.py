@@ -18,18 +18,21 @@ pay-period API; the general one is :mod:`app.services.pay_period_service`, and
 widening this to mirror it would put a second schedule reader in the tree.
 
 **Period order is by ``period_index``, and that is also date order.**
-``pay_period_service._reject_overlapping_batch`` enforces a forward-only
-invariant -- a new batch must start strictly after the latest existing
-``end_date`` -- so index order and calendar order cannot disagree.  Plan step
-R3's placement searches BISECT on that order, which turns the invariant from
-a documented assumption into a load-bearing one, so :meth:`__post_init__`
-CHECKS it: an out-of-order or overlapping schedule would otherwise place a
-row in the wrong pay period silently, which is the failure mode
-``_reject_overlapping_batch``'s own docstring names for the cash fold's
-identical bisect (``balance_at._cash_periods._PeriodSpans``).
+Since plan step **C3-b** ``pay_period_write`` reads both stored columns off
+``pay_calendar.derive_periods``, where the ordinal IS the position in payday
+order -- so index order and calendar order cannot disagree by construction
+rather than by a guard.  (Before it, ``pay_period_service``'s
+``_reject_overlapping_batch`` held the property as an invariant: a new batch
+had to start strictly after the latest existing ``end_date``.)  Plan step R3's
+placement searches BISECT on that order, which turns the property into a
+load-bearing one, so :meth:`__post_init__` CHECKS it: an out-of-order or
+overlapping schedule would otherwise place a row in the wrong pay period
+silently, the same failure mode the cash fold's identical bisect carries
+(``balance_at._cash_periods._PeriodSpans``).
 
-What the invariant does NOT promise is CONTIGUITY: it rejects overlaps, not
-gaps, so a schedule may leave a date covered by no period at all (finding D7).
+What the derivation does NOT promise for data written BEFORE C3-b is
+CONTIGUITY: the old guard rejected overlaps, not gaps, so such a schedule may
+leave a date covered by no period at all (finding D7).
 Nothing here assumes otherwise --
 :meth:`PeriodCalendar.earliest_start_in_month` takes a minimum over the periods
 that exist rather than indexing into a walk, and
@@ -69,11 +72,11 @@ _REPAIR_HINT = (
 class RecurrenceScheduleError(ShekelError, ValueError):
     """A pay-period schedule cannot be searched by date.
 
-    A broken invariant, not user input: ``pay_period_service`` is the only
-    writer of ``budget.pay_periods`` rows and its
-    ``_reject_overlapping_batch`` already refuses the states this names, so
-    reaching a user as a 500 is the correct disposition -- there is no form
-    field to flash it against and no safe answer to give instead.
+    A broken invariant, not user input: ``pay_period_write`` is the only writer
+    of ``budget.pay_periods`` rows and the derivation it materialises cannot
+    express the states this names, so reaching a user as a 500 is the correct
+    disposition -- there is no form field to flash it against and no safe
+    answer to give instead.
 
     Also a ``ValueError`` because it is raised from
     :meth:`PeriodCalendar.__post_init__`, where Python's own contract for a
@@ -142,9 +145,10 @@ class PeriodCalendar:
     def __post_init__(self) -> None:
         """Refuse a schedule whose periods do not tile the calendar forward.
 
-        The invariant ``pay_period_service._reject_overlapping_batch``
-        enforces at the write door, checked again at the value boundary
-        because plan step R3's placement searches DEPEND on it: they bisect
+        The property ``pay_period_write`` gets by construction at the write
+        door (its stored columns come from the derivation), checked again at
+        the value boundary because plan step R3's placement searches DEPEND on
+        it: they bisect
         over ``periods`` keyed on ``start_date``, so a schedule whose index
         order disagrees with its date order returns a plausible WRONG period
         rather than an error, and a generated bill lands in a paycheck the
@@ -182,8 +186,9 @@ class PeriodCalendar:
                     f"{earlier.period_index}'s last covered day "
                     f"{earlier.end_date}.  Index order must also be date "
                     f"order and periods must not overlap "
-                    f"(pay_period_service._reject_overlapping_batch enforces "
-                    f"this on write); a date search over an overlapping "
+                    f"(pay_period_write materialises both columns from the "
+                    f"payday derivation, which cannot express either state); a "
+                    f"date search over an overlapping "
                     f"schedule returns a plausible wrong pay period instead "
                     f"of an error.  {_REPAIR_HINT}"
                 )

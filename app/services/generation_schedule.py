@@ -231,8 +231,8 @@ class GenerationSchedule:
             write_periods: The periods this pass may write into.  Must already
                 be flushed -- an unsaved period has no id to match against a
                 schedule read back from the database.
-                ``pay_period_service.generate_pay_periods`` flushes before
-                returning, so every repopulation caller already satisfies this.
+                ``pay_period_write.record_paydays`` flushes before returning,
+                so every repopulation caller already satisfies this.
 
         Returns:
             The schedule, its window covering exactly *write_periods*.

@@ -174,10 +174,13 @@ def derive_periods(
     ``utils.dates.attribution_date`` clamps it -- so the damage is a row
     silently RENDERED on a different day, which is plan finding P10's shape
     reached through a door P10 does not cover.  ``_reject_overlapping_batch``
-    blocks that write today because it compares against the stored end; plan
-    step C3 deletes it, so the rule has to be re-established there.  The
-    derivation states the property and does not police it: it is a function of
-    a payday set, and which sets a user may write is the writer's question.
+    blocked that write by comparing against the stored end; plan step **C3-b**
+    replaced it, and the rule was re-established there as
+    ``pay_period_write._reject_coverage_withdrawal`` -- which refuses the write
+    only when a filed row's own day is in the days the shortening gives up,
+    rather than refusing every shortening.  The derivation states the property
+    and does not police it: it is a function of a payday set, and which sets a
+    user may write is the writer's question.
 
     Order and duplication are handled HERE rather than trusted, because the
     result's whole value is that index order and date order cannot disagree:

@@ -564,11 +564,13 @@ class PayCalendar:
         matches its ``start_date`` order.  Drop the second half and they part
         company on 800 of 872 probed days: the old chain reduced by INDEX (its
         fallbacks took ``max(period_index)`` and its last resort ``periods[0]``)
-        while this reduces by DATE.  Both halves are held by
-        ``pay_period_service`` today -- the batch guard
-        ``_reject_overlapping_batch`` and the tail-append at ``max_index + 1``
-        -- and plan step **C3** deletes the first, which is safe only because
-        the chain that needed it dies here.  Where the two DO differ this one is
+        while this reduces by DATE.  Both halves were held by
+        ``pay_period_service`` -- the batch guard ``_reject_overlapping_batch``
+        and the tail-append at ``max_index + 1`` -- until plan step **C3-b**
+        moved the writer to ``pay_period_write``, where neither survives as
+        stated: an ordinal is no longer ASSIGNED at all, it is read off the
+        derivation, so it cannot disagree with date order.  Where the two DO
+        differ this one is
         right: it searches a calendar whose index is DERIVED from date order, so
         no stored ordinal can disagree with its own dates.
 

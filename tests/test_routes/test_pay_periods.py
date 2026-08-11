@@ -8,8 +8,14 @@ Tests for the pay period generation form and endpoint:
   - Double-submit (duplicates skipped by service)
 """
 
+from datetime import date
+
+from app.enums import StatusEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
+from app.models.pay_schedule import PaySchedule
+from app.services import pay_period_write
+from tests._test_helpers import add_txn, freeze_today
 
 
 # ── Tests ────────────────────────────────────────────────────────────
@@ -112,9 +118,14 @@ class TestPayPeriodGenerate:
             assert second_count == 5
 
     def test_generate_offset_start_rejected_422(self, app, bare_auth_client, bare_user):
-        """A second batch whose start predates the existing schedule returns
-        422 with the forward-only error and creates nothing (DH-#39, bound
-        tightened to the latest END date by fix I)."""
+        """A payday between two existing ones returns 422 and creates nothing.
+
+        Ruling **R-PC1**'s forward-only rule, through the route.  The bound is
+        the latest PAYDAY plus ``MIN_MATERIALISABLE_CADENCE_DAYS`` since plan
+        step C3-b -- it was the latest ``end_date``, a column plan step C4
+        drops -- and what it now refuses is exactly the mid-schedule insert
+        plan step C6 defers.
+        """
         with app.app_context():
             user_id = bare_user["user"].id
             # First schedule: Jun 1 biweekly x5 -> last period Jul 27 - Aug 9.
@@ -126,17 +137,20 @@ class TestPayPeriodGenerate:
                 user_id=user_id,
             ).count() == 5
 
-            # Offset second batch starting Jun 8 lands within the existing
-            # coverage -- rejected before anything is written.
+            # Jun 8 lands between the Jun 1 and Jun 15 paydays, so it would
+            # split that paycheck in half -- rejected before anything is
+            # written.  The latest payday is 2026-07-27, so the floor is
+            # 2026-07-29.
             resp = bare_auth_client.post("/pay-periods/generate", data={
                 "start_date": "2026-06-08", "num_periods": "5",
                 "cadence_days": "14",
             })
             assert resp.status_code == 422
-            # Message now names the latest existing END date as the bound
-            # (fix I): the guard compares against period coverage, not the
-            # latest start date.
-            assert b"must start after your latest existing period ends" in resp.data
+            # The message names the FLOOR and the payday it is measured
+            # from, both of which survive plan step C4.  The latest payday is
+            # 2026-07-27 and the cadence is 14, so the floor is 2026-08-10.
+            assert b"must fall on or after 2026-08-10" in resp.data
+            assert b"2026-07-27" in resp.data
             # Nothing created -- still exactly the original 5.
             assert db.session.query(PayPeriod).filter_by(
                 user_id=user_id,
@@ -254,3 +268,97 @@ class TestPayPeriodNegativePaths:
                 user_id=bare_user["user"].id,
             ).count()
             assert count == 0
+
+
+class TestTheCoverageRefusalReachesEveryDoor:
+    """Plan step C3-b's new refusal has a handler on every route that can raise it.
+
+    Added because an adversarial review of that step found four new
+    ``except PayPeriodCoverageWithdrawn`` handlers and no route test for any of
+    them -- so "the user sees a message" rested on reading the code.  Two of
+    them are unreachable in practice (an append widens coverage), which is
+    exactly why the two that ARE reachable need a test rather than an argument.
+
+    The generate handler additionally renders a NEW error key, ``schedule``,
+    which no template had been asked for before; the first assertion is that
+    the page renders it rather than swallowing it.
+    """
+
+    def _settled_row_past(self, db_session, seed_user, period, day):
+        """File a SETTLED row in *period* whose money moved on *day*."""
+        return add_txn(
+            db_session, seed_user, period, "Tuition", "2100.00",
+            status_enum=StatusEnum.DONE, due_date=period.start_date,
+            settled_on=day,
+        )
+
+    def test_truncate_flashes_it_and_deletes_nothing(
+        self, app, db, auth_client, seed_user, seed_periods, monkeypatch,
+    ):
+        """The reachable door: removing the tail shortens the kept paycheck."""
+        freeze_today(monkeypatch, date(2025, 12, 1))
+        with app.app_context():
+            user_id = seed_user["user"].id
+            self._settled_row_past(
+                db.session, seed_user, seed_periods[-1], date(2026, 6, 15),
+            )
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 7, 1),
+                num_periods=1, cadence_days=14,
+            )
+            db.session.commit()
+            before = db.session.query(PayPeriod).filter_by(
+                user_id=user_id,
+            ).count()
+
+            resp = auth_client.post("/pay-periods/truncate", data={
+                "keep_through_period_id": str(seed_periods[-1].id),
+                "confirm_discard": "true",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"2026-06-15" in resp.data
+            assert db.session.query(PayPeriod).filter_by(
+                user_id=user_id,
+            ).count() == before
+
+    def test_generate_renders_it_under_its_own_key(
+        self, app, db, auth_client, seed_user, seed_periods, monkeypatch,
+    ):
+        """The 422 body carries the message, under the ``schedule`` key.
+
+        **This door needs LEGACY data to reach the refusal at all**, and saying
+        so is the point: after the forward-only floor became one full cadence,
+        a batch that only ADDS paydays always widens the covered interval --
+        the new horizon is at least a cadence past the old one -- so the rule
+        short-circuits.  What can still get behind a settled row is a stored
+        cadence SHORTER than the schedule it generated, which no door can now
+        create (the cadence rule) and which pre-C3-b data carries (finding
+        **P28**).  The schedule row is edited directly to build it.
+        """
+        freeze_today(monkeypatch, date(2025, 12, 1))
+        with app.app_context():
+            user_id = seed_user["user"].id
+            # The row settles inside the 180-day paycheck's span, so it is
+            # covered BEFORE and not after: a cadence of 2 pulls the horizon
+            # back to 2026-07-04.
+            self._settled_row_past(
+                db.session, seed_user, seed_periods[-1], date(2026, 8, 15),
+            )
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 7, 1),
+                num_periods=1, cadence_days=180,
+            )
+            db.session.query(PaySchedule).filter_by(user_id=user_id).update(
+                {"cadence_days": 2}, synchronize_session=False,
+            )
+            db.session.commit()
+
+            resp = auth_client.post("/pay-periods/generate", data={
+                "start_date": "2026-07-03", "num_periods": "1",
+                "cadence_days": "2",
+            })
+
+            assert resp.status_code == 422
+            assert b"Schedule:" in resp.data
+            assert b"2026-08-15" in resp.data

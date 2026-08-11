@@ -30,6 +30,7 @@ from app.models.transaction import Transaction
 from app.services import (
     pay_period_admin,
     pay_period_service,
+    pay_period_write,
     pay_schedule_service,
     period_population,
 )
@@ -50,6 +51,17 @@ from tests._test_helpers import (
 FROZEN_TODAY = date(2026, 6, 15)
 _FUTURE_START = date(2026, 7, 3)  # first payday after the frozen today
 
+#: ``seed_user``'s 2024 bootstrap paycheck counts toward the rolling target,
+#: and since plan step **C3-b** it always will.  Its stored end was
+#: 2024-01-18 -- long past ``FROZEN_TODAY``, so ``_future_period_count``
+#: skipped it -- but the writer now materialises the payday derivation, in
+#: which a period ends the day before the NEXT payday.  With the next payday
+#: at 2026-07-03 the bootstrap covers 2024-01-05..2026-07-02, which CONTAINS
+#: the frozen today, so it is the current period rather than a historical one.
+#: That is ledger row **P27**'s absorption working as ruled, on the fixture
+#: this suite happens to build; the deficit arithmetic below counts it.
+_BOOTSTRAP_IN_WINDOW = 1
+
 
 @pytest.fixture(autouse=True)
 def _freeze(monkeypatch):
@@ -59,9 +71,9 @@ def _freeze(monkeypatch):
 
 def _future_periods(db_session, seed_user, count, start=_FUTURE_START):
     """Generate `count` biweekly future periods (indices 1..count)."""
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=start,
+        first_payday=start,
         num_periods=count,
         cadence_days=14,
     )
@@ -151,8 +163,8 @@ class TestTopUpFastPaths:
         user_id = seed_user["user"].id
         with app.app_context():
             # 06-08..06-21 contains the frozen today (06-15).
-            pay_period_service.generate_pay_periods(
-                user_id=user_id, start_date=date(2026, 6, 8),
+            pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 6, 8),
                 num_periods=1, cadence_days=14,
             )
             db.session.commit()
@@ -172,13 +184,14 @@ class TestTopUpDeficitPath:
         user_id = seed_user["user"].id
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)  # idx 1..3 future
-            _enable_rolling(db.session, user_id, target=5)  # deficit 2
+            _enable_rolling(db.session, user_id, target=5)
             result, statements = capture_sql_statements(
                 lambda: pay_period_admin.top_up_rolling_window(user_id)
             )
             db.session.commit()
 
-            assert result == 2  # 5 target - 3 future
+            # 5 target - (3 future + the absorbed bootstrap, now current).
+            assert result == 5 - (3 + _BOOTSTRAP_IN_WINDOW)
             assert took_advisory_lock(statements)
             # The window now holds exactly the target.
             assert _future_count(db.session, user_id) == 5
@@ -197,7 +210,7 @@ class TestTopUpDeficitPath:
             db.session.commit()
             second = pay_period_admin.top_up_rolling_window(user_id)
             db.session.commit()
-            assert first == 2
+            assert first == 5 - (3 + _BOOTSTRAP_IN_WINDOW)
             assert second == 0
             assert _future_count(db.session, user_id) == 5
             assert_pay_period_invariants(db.session, user_id)
@@ -214,8 +227,10 @@ class TestTopUpDeficitPath:
                 p.period_index
                 for p in pay_period_service.get_all_periods(user_id)
             )
-            # bootstrap 0 + idx 1..6 -> 0..6, no duplicates.
-            assert indices == list(range(0, 7))
+            # bootstrap 0 + the 2 seeded + the 3 topped up -> 0..5, no
+            # duplicates.  The bootstrap counts toward the target of 6, so the
+            # deficit is 3 rather than 4.
+            assert indices == list(range(0, 6))
 
     def test_new_periods_get_recurring_rows(self, app, db, seed_user):
         """Topped-up periods are repopulated with active templates' rows."""
@@ -224,11 +239,11 @@ class TestTopUpDeficitPath:
             _future_periods(db.session, seed_user, count=2)
             make_expense_template(db.session, seed_user, amount="1200.00")
             db.session.commit()
-            _enable_rolling(db.session, user_id, target=5)  # deficit 3
+            _enable_rolling(db.session, user_id, target=5)
             created = pay_period_admin.top_up_rolling_window(user_id)
             db.session.commit()
-            assert created == 3
-            new_periods = pay_period_service.get_all_periods(user_id)[-3:]
+            assert created == 5 - (2 + _BOOTSTRAP_IN_WINDOW)
+            new_periods = pay_period_service.get_all_periods(user_id)[-created:]
             for period in new_periods:
                 txns = (
                     db.session.query(Transaction)
@@ -241,11 +256,17 @@ class TestTopUpDeficitPath:
     def test_balances_correct_after_topup(self, app, db, seed_user):
         """Discipline 2: as-of balances continue correctly into the new window.
 
-        Anchor $1000 at index 0 (no expense).  A $1200 every-period
-        expense fills indices 1..3, so the projected end balance at index
-        N is 1000 - N*1200.  Rolling target 5 tops up indices 4..5 with
-        the same expense, so the projection continues to 1000 - 5*1200 in
-        the new window while the retained window is untouched.
+        Anchor $1000 at index 0 (no expense).  A $1200 every-period expense
+        fills indices 1..3, so the projected end balance at index N is
+        1000 - N*1200.  Rolling target 5 tops up index 4 with the same
+        expense, so the projection continues to 1000 - 4*1200 in the new
+        window while the retained window is untouched.
+
+        **The deficit is ONE, not two, and plan step C3-b is why**: the
+        absorbed bootstrap paycheck now contains ``FROZEN_TODAY`` and counts
+        toward the target (see :data:`_BOOTSTRAP_IN_WINDOW`).  The figures
+        move with it -- the point of this test is that the projection
+        CONTINUES through the top-up, not how many periods it added.
         """
         account = seed_user["account"]
         scen = seed_user["scenario"].id
@@ -264,16 +285,16 @@ class TestTopUpDeficitPath:
             )
             assert retained == Decimal("-1400.00")
 
-            _enable_rolling(db.session, user_id, target=5)  # deficit 2 -> idx 4,5
+            _enable_rolling(db.session, user_id, target=5)
             created = pay_period_admin.top_up_rolling_window(user_id)
             db.session.commit()
-            assert created == 2
+            assert created == 5 - (3 + _BOOTSTRAP_IN_WINDOW)
 
-            # New window: the projection continues to 1000 - 5*1200.
-            new_last = pay_period_service.get_all_periods(user_id)[-1]  # idx 5
+            # New window: the projection continues to 1000 - 4*1200.
+            new_last = pay_period_service.get_all_periods(user_id)[-1]  # idx 4
             assert seam_cash_balance_at(
                 account, scen, new_last.end_date,
-            ) == Decimal("-5000.00")
+            ) == Decimal("-3800.00")
             # Retained window untouched.
             assert seam_cash_balance_at(
                 account, scen, periods[1].end_date,

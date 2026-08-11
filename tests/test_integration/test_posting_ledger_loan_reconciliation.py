@@ -152,7 +152,7 @@ from app.models.loan_features import RateHistory
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import anchor_service, balance_at, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver, pay_period_service, posting_service, transfer_service
+from app.services import anchor_service, balance_at, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver, pay_period_service, pay_period_write, posting_service, transfer_service
 from app.services.loan_resolver._periods import _replay_from_anchor
 from app.utils.money import round_money
 from app.services.balance_at import _kernel as net_worth_kernel
@@ -378,8 +378,8 @@ def _seed_boundary_loan(bare_user):
         accept, the Checking account to pay from, and the ordered pay periods.
     """
     user_id = bare_user["user"].id
-    periods = pay_period_service.generate_pay_periods(
-        user_id=user_id, start_date=date(2025, 12, 25),
+    periods = pay_period_write.record_paydays(
+        user_id=user_id, first_payday=date(2025, 12, 25),
         num_periods=6, cadence_days=14,
     )
     _db.session.flush()
@@ -2899,9 +2899,9 @@ class TestLatePaidPaymentDating:
 
             # Two extra periods so a FUTURE period exists that ends before the
             # mis-derived 2026-06-05 date -- the window the rise appears in.
-            future_periods = pay_period_service.generate_pay_periods(
+            future_periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 5, 22), num_periods=2, cadence_days=14,
+                first_payday=date(2026, 5, 22), num_periods=2, cadence_days=14,
             )
             db.session.flush()
             periods = list(seed_periods) + list(future_periods)

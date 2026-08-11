@@ -21,10 +21,14 @@ TILES, so day-in-a-hole answers differ by construction (ledger row **P27**,
 measured at 55 shapes across 53 tests of this suite).  And the stored CADENCE
 may outlive the stored ``end_date`` it generated, which moves the derived
 horizon and only the derived horizon (row **P28**).  The second one matters
-most here because this suite cannot see it by accident: no fixture writes a
-``budget.pay_schedule`` row, so ``resolve_cadence`` falls back to the exact
-inverse of the generator's arithmetic and every horizon comparison agrees for
-free.  Each divergence has its own named control.
+most here because this suite cannot see it by accident: every horizon
+comparison is arithmetically forced to agree.  It was forced through
+``resolve_cadence``'s fallback -- no fixture wrote a ``budget.pay_schedule``
+row, so the cadence came back as the exact inverse of the generator's
+arithmetic -- and since plan step **C3-b** it is forced through the cadence
+rule instead, which stores the very cadence the batch generated at.  Each
+divergence has its own named control, and the two tests that need the
+row-less state now DELETE the row rather than relying on nothing creating it.
 
 The contiguous shape is the ``seed_periods`` fixture, which drops ``seed_user``'s
 2024 bootstrap period and RENUMBERS what is left.  That renumbering matters: an
@@ -43,9 +47,11 @@ from inspect import signature
 import pytest
 
 from app.models.pay_period import PayPeriod
-from app.services import pay_period_service, pay_schedule_service
+from app.models.pay_schedule import PaySchedule
+from app.services import pay_period_service, pay_period_write, pay_schedule_service
 from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.recurrence import PeriodCalendar
+from tests._test_helpers import open_calendar_hole
 
 #: ``seed_periods``' first payday, restated so the assertions below name a value
 #: rather than a bare literal.  Changing the fixture without changing this is
@@ -60,27 +66,36 @@ CADENCE = 14
 PERIOD_COUNT = 10
 
 
-def _gapped_schedule(db_session, user_id):
-    """Generate the 2026 schedule and KEEP the 2024 bootstrap ahead of it.
+def _gapped_schedule(db_session, user_id, bootstrap_period):
+    """Generate the 2026 schedule and re-open the 2024 bootstrap's hole.
 
-    The shape plan finding **P2** describes and ``_reject_overlapping_batch``
-    accepts, because it refuses OVERLAPS and not GAPS: a stored hole between the
-    bootstrap period's end and the first real payday.  A test wanting the hole
-    opts in here; every other test takes ``seed_periods``.
+    The shape plan finding **P2** describes: a stored hole between the
+    bootstrap period's end and the first real payday.  The batch guard of the
+    day, ``_reject_overlapping_batch``, ACCEPTED it because it refused OVERLAPS
+    and not GAPS.  **Plan step C3-b's writer does not**: it materialises the
+    payday derivation, in which the bootstrap period ends the day before the
+    first real payday, so the generate below now ABSORBS the hole.
+    ``open_calendar_hole`` writes the stored end back down, which is how this
+    state is reached from here on -- and in the wild it is data written before
+    C3-b.  A test wanting the hole opts in here; every other test takes
+    ``seed_periods``.
 
     Args:
         db_session: The session.
         user_id: The owning user.
+        bootstrap_period: The 2024 bootstrap period the hole opens after.
 
     Returns:
         The generated :class:`~app.models.pay_period.PayPeriod` rows.
     """
-    periods = pay_period_service.generate_pay_periods(
+    stored_end = bootstrap_period.end_date
+    periods = pay_period_write.record_paydays(
         user_id=user_id,
-        start_date=FIRST_PAYDAY,
+        first_payday=FIRST_PAYDAY,
         num_periods=PERIOD_COUNT,
         cadence_days=CADENCE,
     )
+    open_calendar_hole(db_session, bootstrap_period, stored_end)
     db_session.commit()
     return periods
 
@@ -131,9 +146,9 @@ class TestItLoadsTheOwnersWholeSchedule:
         """
         with app.app_context():
             second = seed_second_user["user"].id
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=second,
-                start_date=FIRST_PAYDAY + timedelta(days=7),
+                first_payday=FIRST_PAYDAY + timedelta(days=7),
                 num_periods=3,
                 cadence_days=CADENCE,
             )
@@ -167,6 +182,14 @@ class TestItLoadsTheOwnersWholeSchedule:
         with app.app_context():
             user_id = seed_user["user"].id
             db.session.query(PayPeriod).filter_by(user_id=user_id).delete(
+                synchronize_session=False,
+            )
+            # The schedule ROW goes too, and since plan step C3-b it has to be
+            # said: the cadence rule makes every batch that records a payday
+            # store one, so "no paydays" no longer implies "no cadence".  The
+            # owner this test is about has neither -- a brand-new sign-up
+            # before their first generate.
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete(
                 synchronize_session=False,
             )
             db.session.commit()
@@ -226,7 +249,7 @@ class TestTheEndsAreDerivedRatherThanRead:
             user_id = seed_user["user"].id
             bootstrap_start = seed_user["bootstrap_period"].start_date
             stored_end = seed_user["bootstrap_period"].end_date
-            _gapped_schedule(db.session, user_id)
+            _gapped_schedule(db.session, user_id, seed_user["bootstrap_period"])
 
             calendar = calendar_for(user_id)
             first = calendar.periods[0]
@@ -283,15 +306,26 @@ class TestTheCadenceComesFromTheScheduleService:
 
             assert calendar_for(user_id).cadence_days == CADENCE + 7
 
-    def test_it_infers_the_cadence_when_no_schedule_row_exists(self, app, seed_user):
+    def test_it_infers_the_cadence_when_no_schedule_row_exists(
+        self, app, db, seed_user,
+    ):
         """P8's circular fallback, reached rather than reimplemented.
 
-        No fixture in this suite writes a ``budget.pay_schedule`` row, so this
-        is the path every other test here takes -- worth saying out loud,
-        because the loader would look correct while silently defaulting.
+        **The row is DELETED here, and until plan step C3-b it did not have to
+        be.**  No fixture in this suite wrote a ``budget.pay_schedule`` row, so
+        this was the path every other test took; C3-b's cadence rule makes
+        every batch that records a payday store one, so the state finding
+        **P8** is about now has to be constructed on purpose.  That is the
+        finding narrowing rather than the test weakening: no door can produce a
+        payday-bearing owner without a cadence any more, so what is left is
+        legacy data, and this is what the loader does with it.
         """
         with app.app_context():
             user_id = seed_user["user"].id
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete(
+                synchronize_session=False,
+            )
+            db.session.commit()
 
             assert pay_schedule_service.get_schedule(user_id) is None
             assert calendar_for(user_id).cadence_days == CADENCE
@@ -444,7 +478,7 @@ class TestItAnswersWhatTheRecurrenceCalendarAnswers:
         with app.app_context():
             user_id = seed_user["user"].id
             stored_end = seed_user["bootstrap_period"].end_date
-            _gapped_schedule(db.session, user_id)
+            _gapped_schedule(db.session, user_id, seed_user["bootstrap_period"])
 
             new, old = self._both(user_id)
             in_the_hole = stored_end + timedelta(days=30)

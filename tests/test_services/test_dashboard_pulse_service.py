@@ -36,7 +36,7 @@ from app.models.account import AccountAnchorHistory
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
-from app.services import account_service, cash_ledger, dashboard_pulse_service
+from app.services import account_service, cash_ledger, dashboard_pulse_service, pay_period_write
 from app.services import transfer_service
 from app.services import balance_at, pay_period_service, savings_dashboard_service
 from app.services.balance_at import BalanceContext
@@ -178,9 +178,9 @@ class TestPulseHero:
         2026-03-20.  ``_next_paycheck_date`` returns None.
         """
         with app.app_context():
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2024, 2, 2),
+                first_payday=date(2024, 2, 2),
                 num_periods=5,
                 cadence_days=14,
             )
@@ -282,9 +282,9 @@ class TestPulseChart:
         13 points (the current period plus the next 12).
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=20,
                 cadence_days=14,
             )
@@ -402,9 +402,9 @@ class TestPulseTrough:
         (forward[0]) period's index.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=15,
                 cadence_days=14,
             )
@@ -513,9 +513,9 @@ class TestPulsePeak:
         current (forward[0]) period's index.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=15,
                 cadence_days=14,
             )
@@ -781,9 +781,9 @@ class TestPulseStillDue:
         fallback line then).
         """
         with app.app_context():
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=6,
                 cadence_days=14,
             )

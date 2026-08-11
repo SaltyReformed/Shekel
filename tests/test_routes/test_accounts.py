@@ -39,6 +39,7 @@ from app.services import (
     balance_at,
     cash_ledger,
     pay_period_service,
+    pay_period_write,
 )
 from app.services.auth_service import hash_password
 
@@ -4232,10 +4233,10 @@ class TestCheckingDetail:
     def test_checking_detail_page_renders(self, app, auth_client, seed_user):
         """GET /accounts/<id>/checking renders the detail page with account name and balance."""
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -4258,10 +4259,10 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Salary"]
 
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=27,
+                first_payday=display_today(),
+                num_periods=27, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -4324,10 +4325,10 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Salary"]
 
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=27,
+                first_payday=display_today(),
+                num_periods=27, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -4409,10 +4410,10 @@ class TestCheckingDetail:
     ):
         """Checking detail with no transactions shows flat balance at anchor amount."""
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=27,
+                first_payday=display_today(),
+                num_periods=27, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -4428,10 +4429,10 @@ class TestCheckingDetail:
     ):
         """Short horizon: 3-month projection available, 12-month projection missing."""
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -4457,10 +4458,10 @@ class TestCheckingDetail:
             scenario = seed_user["scenario"]
             category = seed_user["categories"]["Rent"]
 
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
@@ -4511,10 +4512,10 @@ class TestCheckingDetail:
         # test convention.
         from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             acct = self._create_checking_account(seed_user, periods)
             db.session.commit()
@@ -4915,10 +4916,10 @@ class TestCheckingDetailCanonicalProducer:
             # The CALL is the setup: it creates the ten periods this
             # page projects across.  The return value is unused since
             # the anchor no longer names a period.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
 
             checking_type = db.session.query(AccountType).filter_by(
@@ -5056,10 +5057,10 @@ class TestCheckingDashboardLink:
         with app.app_context():
             # The CALL is the setup: the dashboard can only compute a
             # balance for the seed account across periods that exist.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             db.session.commit()
 
@@ -5085,10 +5086,10 @@ class TestCheckingDashboardLink:
         with app.app_context():
             # The CALL is the setup: the dashboard can only compute a
             # balance for either card across periods that exist.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
 
             # Create a savings account.
@@ -5181,10 +5182,10 @@ class TestCashDetailContext:
         balances are the hand-computed 5000 + n*500.  Returns
         ``(account, periods)``.
         """
-        periods = pay_period_service.generate_pay_periods(
+        periods = pay_period_write.record_paydays(
             user_id=seed_user["user"].id,
-            start_date=display_today(),
-            num_periods=num_periods,
+            first_payday=display_today(),
+            num_periods=num_periods, cadence_days=14,
         )
         checking_type = db.session.query(AccountType).filter_by(
             name="Checking",
@@ -5360,10 +5361,10 @@ class TestCashDetailContext:
         with app.app_context():
             # The CALL is the setup: the next-year window needs a year
             # of periods to sum interest across.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=30,
+                first_payday=display_today(),
+                num_periods=30, cadence_days=14,
             )
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
             acct = account_service.create_account(
@@ -5403,10 +5404,10 @@ class TestCashDetailContext:
         # test convention.
         from app.services.balance_at import _kernel as net_worth_kernel  # pylint: disable=import-outside-toplevel
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=33,
+                first_payday=display_today(),
+                num_periods=33, cadence_days=14,
             )
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
             acct = account_service.create_account(
@@ -6453,10 +6454,10 @@ class TestCashDetailClickToEditHero:
         with app.app_context():
             # The CALL is the setup: it creates the ten periods the
             # band's horizon chips read across.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=display_today(),
-                num_periods=10,
+                first_payday=display_today(),
+                num_periods=10, cadence_days=14,
             )
             checking_type = db.session.query(AccountType).filter_by(
                 name="Checking",

@@ -20,7 +20,8 @@ from datetime import date
 import pytest
 
 from app.exceptions import ValidationError
-from app.services import pay_period_service, pay_schedule_service
+from app.models.pay_schedule import PaySchedule
+from app.services import pay_period_service, pay_period_write, pay_schedule_service
 
 
 class TestGetSchedule:
@@ -222,18 +223,27 @@ class TestResolveCadence:
     def test_infers_from_last_period_when_no_schedule(self, app, db, bare_user):
         """A legacy user with periods but no row infers cadence from length.
 
-        ``generate_pay_periods`` sets ``end_date = start + (cadence - 1)``,
-        so a 9-day cadence yields ``(end - start).days + 1 == 9``.  Using
-        9 -- distinct from both the 14-day default and the 52 horizon --
-        proves the value comes from the period length, not a default.
+        The LAST period's end is ``start + (cadence - 1)``, so a 9-day
+        cadence yields ``(end - start).days + 1 == 9``.  Using 9 -- distinct
+        from both the 14-day default and the 52 horizon -- proves the value
+        comes from the period length, not a default.
+
+        **The schedule row is deleted to reach this at all**, and plan step
+        C3-b is why: the cadence rule makes every batch that records a payday
+        store one, so no door can now leave an owner with paydays and no
+        cadence.  Finding **P8**'s state is legacy data from here on, and this
+        is the fallback that reads it.
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 3, 1),
+                first_payday=date(2026, 3, 1),
                 num_periods=4,
                 cadence_days=9,
+            )
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete(
+                synchronize_session=False,
             )
             db.session.flush()
             assert pay_schedule_service.get_schedule(user_id) is None

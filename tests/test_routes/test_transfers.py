@@ -21,7 +21,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.user import User, UserSettings
 from app.models.scenario import Scenario
 from app.models.ref import AccountType, RecurrencePattern, Status
-from app.services import balance_at
+from app.services import balance_at, pay_period_write
 from app.services.balance_at import BalanceContext
 from app.services import transfer_service
 from app.services.auth_service import hash_password
@@ -185,9 +185,9 @@ def _create_other_user_with_template():
 
     from app.services import pay_period_service
     from datetime import date
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=other_user.id,
-        start_date=date(2026, 1, 2),
+        first_payday=date(2026, 1, 2),
         num_periods=3,
         cadence_days=14,
     )
@@ -2156,9 +2156,9 @@ def _create_second_user_transfer(second_user_data):
     db.session.add(savings)
     db.session.flush()
 
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=second_user_data["user"].id,
-        start_date=_date(2026, 1, 2),
+        first_payday=_date(2026, 1, 2),
         num_periods=3,
         cadence_days=14,
     )

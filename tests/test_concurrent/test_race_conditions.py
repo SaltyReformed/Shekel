@@ -608,7 +608,7 @@ class TestConcurrentRollingTopUp:
             db.session.commit()
 
         def _extend():
-            pay_period_admin.extend_pay_periods(user_id, 3, cadence_days=14)
+            pay_period_admin.extend_pay_periods(user_id, 3)
             db.session.commit()
 
         _run_concurrent(app, _topup, _extend)

@@ -39,6 +39,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services import (
     carry_forward_service,
     credit_workflow,
+    pay_period_write,
 )
 from app.services import account_service
 
@@ -931,9 +932,9 @@ class TestAuthEdgeCases:
         with app.app_context():
             # Create a pay period for user 2.
             from app.services import pay_period_service
-            periods2 = pay_period_service.generate_pay_periods(
+            periods2 = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=2,
                 cadence_days=14,
             )

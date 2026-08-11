@@ -25,6 +25,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.services import (
     account_service,
     pay_period_service,
+    pay_period_write,
     reconcile_service,
     status_seam,
 )
@@ -331,9 +332,9 @@ class TestTheOutstandingSet:
         isolated by the test below, which is the only shape that can.
         """
         with app.app_context():
-            other_period = pay_period_service.generate_pay_periods(
+            other_period = pay_period_write.record_paydays(
                 user_id=seed_second_user["user"].id,
-                start_date=date(2026, 1, 2), num_periods=1, cadence_days=14,
+                first_payday=date(2026, 1, 2), num_periods=1, cadence_days=14,
             )[0]
             other_txn = Transaction(
                 pay_period_id=other_period.id,
@@ -389,9 +390,9 @@ class TestTheOutstandingSet:
         non-NULL, that user's own panel would stop offering it.
         """
         with app.app_context():
-            other_period = pay_period_service.generate_pay_periods(
+            other_period = pay_period_write.record_paydays(
                 user_id=seed_second_user["user"].id,
-                start_date=date(2026, 1, 2), num_periods=1, cadence_days=14,
+                first_payday=date(2026, 1, 2), num_periods=1, cadence_days=14,
             )[0]
             crossed = Transaction(
                 # THIS user's account ...

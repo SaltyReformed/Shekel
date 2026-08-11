@@ -17,7 +17,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
-from app.services import entry_service
+from app.services import entry_service, pay_period_write
 from app.services.auth_service import hash_password
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.exceptions import NotFoundError, ValidationError
@@ -537,9 +537,9 @@ class TestCompanionAccess:
             )
             from app.models.pay_period import PayPeriod
 
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_second_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=3,
                 cadence_days=14,
             )

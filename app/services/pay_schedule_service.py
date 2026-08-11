@@ -202,11 +202,19 @@ def resolve_cadence(user_id: int) -> int | None:
     Prefers the persisted ``pay_schedule.cadence_days``.  A legacy user
     who has periods but no schedule row (they generated before this
     table existed) falls back to inferring the cadence from the last
-    period's length: :func:`pay_period_service.generate_pay_periods`
-    sets ``end_date = start_date + (cadence_days - 1)``, so the cadence
-    is ``(end_date - start_date).days + 1``.  The last period is the
+    period's length: the LAST period's end is
+    ``start_date + (cadence_days - 1)``, so the cadence is
+    ``(end_date - start_date).days + 1``.  The last period is the
     highest ``period_index`` -- the one a forward extend continues
     from -- so its length is the right cadence to continue with.
+
+    **The fallback is CIRCULAR and pay-calendar finding P8 owns that**: since
+    plan step C3-b :func:`app.services.pay_period_write.record_paydays` derives
+    that same last end FROM this answer, so for a schedule-row-less owner this
+    reads back the value it produced.  It is a fixed point rather than a drift,
+    and no door can create such an owner any more -- every batch that records a
+    payday upserts the row (the cadence rule) -- so it names legacy data only.
+    Plan step C4 removes the fallback with the column it reads.
 
     Args:
         user_id: The owning user's id.

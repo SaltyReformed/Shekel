@@ -209,7 +209,7 @@ class RecurrenceWindowError(ShekelError):
       is a route-layer hole or a probe;
     * the caller passed an UNSAVED period, which has no id to match against a
       schedule read back from the database.  The repopulation paths flush
-      before populating (``pay_period_service.generate_pay_periods``), so an
+      before populating (``pay_period_write.record_paydays``), so an
       unsaved period here means a caller skipped that.
 
     Raised rather than skipped because both alternatives are silent: a window
@@ -315,6 +315,113 @@ class PayPeriodUnresolved(ShekelError):
             f"Pay period {period_id} is not one of yours, or no longer "
             f"exists. Reload the pay-periods settings page and choose the "
             f"period to keep through from the current list."
+        )
+
+
+class PayPeriodCoverageWithdrawn(ShekelError):
+    """A schedule write would leave a filed row on a day no paycheck covers.
+
+    Raised by ``pay_period_write`` (plan step C3-b, the financial half of ruling
+    **R-PC1**) when re-materialising the owner's calendar would move a day from
+    COVERED to UNCOVERED underneath a row that is filed in a surviving period
+    and dated on that day.  The operation writes nothing.
+
+    **Why that transition and no other.**  A row's ``due_date`` / ``settled_on``
+    is not required to fall inside its own paycheck -- production has 38 that do
+    not, up to 26 days early and 17 late -- and ``utils.dates.attribution_date``
+    clamps every one on render.  That is an accepted state.  What is not
+    accepted is the two halves of the period view disagreeing:
+    ``balance_at._cash_periods._budget_legs`` counts a row against the paycheck
+    it is FILED in, while ``_cash_sums`` places its money by the day it MOVED,
+    and a day no period covers has no column to place it in.  The row is then
+    counted on one side and dropped on the other, which is ``balance:N-128``,
+    measured at ``-$140.63``.
+
+    **Not overridable, unlike the discard gate.**  ``confirm_discard`` asks the
+    user to accept losing rows they can see; there is nothing to see here.  The
+    outcome is a figure that is wrong by the row's amount on a page that gives
+    no sign of it, so the remedy is to re-date or move the row, which the message
+    names.
+
+    Its own class rather than a bare :class:`ValidationError`, for
+    :class:`PayPeriodUnresolved`'s reason: the truncate route has to catch it,
+    and a catch on the generic base would render any future business-rule
+    refusal raised below it as advice about a dropdown.
+
+    Attributes:
+        stranded: The ``pay_period_write.StrandedRow`` records -- one per
+            (row, clock) pair, so a row whose BOTH dates fall outside appears
+            twice.
+        covered_lo: First day the rebuilt schedule would cover.
+        covered_hi: Last day it would cover.
+    """
+
+    #: How many stranded rows the message names before summarising the rest.
+    #: Enough to make a small mistake actionable without turning a flash
+    #: message into a report.
+    NAMED_LIMIT = 5
+
+    def __init__(self, stranded, covered_lo, covered_hi):
+        self.stranded = stranded
+        self.covered_lo = covered_lo
+        self.covered_hi = covered_hi
+        named = ", ".join(
+            f"{row.kind} {row.row_id} ({row.clock} {row.day.isoformat()})"
+            for row in stranded[: self.NAMED_LIMIT]
+        )
+        if len(stranded) > self.NAMED_LIMIT:
+            named += f", and {len(stranded) - self.NAMED_LIMIT} more"
+        super().__init__(
+            f"This change would leave {len(stranded)} dated item(s) on days "
+            f"your schedule would no longer cover (it would run "
+            f"{covered_lo.isoformat()} to {covered_hi.isoformat()}): {named}.  "
+            f"Each would still count against its paycheck while your running "
+            f"balance stopped stepping for it, so the two would disagree with "
+            f"nothing on screen saying so.  Re-date or move those items first, "
+            f"or choose a schedule that still covers their days."
+        )
+
+
+class PayPeriodOverlapStored(ShekelError):
+    """A stored pay period covers days its successor's payday already claims.
+
+    Raised by ``pay_period_write._write_derivation`` (plan step C3-b) when a
+    non-last period's stored ``end_date`` is LATER than the day before the next
+    payday.  Two periods then cover the same days, which is the state
+    ``uq_pay_periods_user_index`` and three runtime fences exist to catch and
+    which no writer in this app's history could produce.  Nothing is written.
+
+    **It is not the mirror of a hole, and that is why it raises where a hole
+    repairs.**  A stored end BELOW the derivation is days the owner's paydays
+    cover and the column does not, so materialising the derivation LENGTHENS
+    the period and can only pull a row's money back into a column it belongs
+    in.  Above it, the two values contradict each other and rewriting the
+    column SHORTENS a period -- possibly one holding settled money -- on the
+    strength of a guess about which value is right.  A broken invariant, not
+    user input: no form can produce it and no route catches this, because the
+    right disposition is a stack trace naming the row.
+
+    Attributes:
+        period_id: The ``budget.pay_periods.id`` that overlaps.
+        payday: Its ``start_date``.
+        stored_end: The ``end_date`` on the row.
+        derived_end: The day before the next payday -- what the row's own
+            successor says its end must be.
+    """
+
+    def __init__(self, period_id, payday, stored_end, derived_end):
+        self.period_id = period_id
+        self.payday = payday
+        self.stored_end = stored_end
+        self.derived_end = derived_end
+        super().__init__(
+            f"Pay period {period_id} (payday {payday.isoformat()}) is stored "
+            f"ending {stored_end.isoformat()}, past {derived_end.isoformat()} "
+            f"-- the day before the next payday -- so it overlaps the period "
+            f"after it.  Refusing to rewrite the column: shortening a period "
+            f"that may hold settled money, to resolve a contradiction this "
+            f"writer cannot have created, needs a person to decide which value "
+            f"is right."
         )
 
 
