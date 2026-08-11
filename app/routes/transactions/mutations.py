@@ -509,23 +509,52 @@ def delete_transaction(txn_id):
     return "", 200, {"HX-Trigger": "balanceChanged"}
 
 
-def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
+def _mark_done_regular(txn, txn_id, actual_amount, target):
     """Settle a regular (non-shadow) transaction.
 
-    Envelope-tracked rows with entries settle at the entry sum via
-    :func:`transaction_service.settle_from_entries` (the single source
-    of truth shared with carry-forward); all others take the manual flow
-    -- a state-machine-guarded status flip to *status_id* plus an
-    optional manual ``actual_amount`` -- then commit under the
-    optimistic lock.
+    **The rule this used to hold is now a SERVICE verb** --
+    :func:`transaction_service.settle_transaction`, ruling **R-FA** -- because
+    plan step X-f2-c2 gives the reconcile panel's tick the same settle, and
+    two doors restating one money rule is this arc's own root cause 1.  What
+    is left here is the HTTP shape: which surface renders, and which of the
+    three designed responses a failure takes.
+
+    **The three excepts now cover the WHOLE settle, and what that changes was
+    MEASURED rather than argued.**  This handler used to run the
+    amount-and-status phase under an ``except ValidationError`` and the
+    reconcile-and-commit phase under ``except StaleDataError / IntegrityError``
+    -- a split that came from the order the phases were written in, not from a
+    decision, and one no caller of a single verb could be expected to
+    reproduce.  It is unified here because an argument a caller can get wrong
+    is a defect rather than a contract, and X-f2-c2's reconcile writer calls
+    the same verb in a loop.
+
+    **It fixes no live defect, and the first draft of this paragraph claimed it
+    did.**  Reconstructing the pre-change route from git and running the new
+    control against it shows the same 409 both ways.  The reason is not visible
+    by reading the phases: the FIRST flush of a settle is
+    ``txn.status.is_settled``, the argument to the posting reconcile, because
+    ``apply_status_change`` both dirties the row and expires ``status``, so
+    reading it back refreshes and autoflushes.  That expression is inside the
+    net under either topology, and everything before it reads columns or
+    already-loaded relationships.  Recorded at
+    ``TestTransactionStaleFormPrevention.test_mark_done_catches_a_stale_settle_as_409``.
+
+    Nothing moves the other way either: the reconcile raises ``PostingError``,
+    a SIBLING of ``ValidationError`` under ``ShekelError`` rather than a
+    subclass, so a broken ledger invariant still fails loud instead of
+    rendering as a designed refusal -- and no module in the reconcile's import
+    closure raises ``ValidationError`` at all (measured across
+    ``posting_service``, ``posting_reads``, ``_posting_write``,
+    ``ledger_account_service`` and ``user_write_lock``).
 
     Args:
         txn: The Transaction being settled.
         txn_id: The transaction's id, for stale-conflict logging.
-        status_id: The settled status id ('received' for income, 'done'
-            for expenses) used by the manual branch.
         actual_amount: Optional manual actual amount from the form, or
-            ``None`` to leave ``actual_amount`` untouched.
+            ``None`` to leave ``actual_amount`` untouched.  The verb ignores
+            it for an envelope-tracked row with entries, whose entries ARE
+            the record of what it cost.
         target: The :class:`_RenderTarget` describing the response
             surface (mobile card vs desktop cell).
 
@@ -534,63 +563,18 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
         conflict surface on a concurrent commit, or a 400 on a bad FK or
         a rejected transition.
     """
-    # Auto-populate actual from entries for envelope-tracked transactions
-    # with at least one entry.  Entry sum takes precedence over any manual
-    # actual_amount from the form (scope doc section 4.2).  When no entries
-    # exist (or the template is not envelope-tracked), fall through to the
-    # manual flow so non-tracked and empty-tracked transactions behave
-    # identically to pre-entry behavior -- the form's optional
-    # ``actual_amount`` is honoured and a missing value leaves
-    # ``txn.actual_amount`` untouched.
-    #
-    # The envelope-with-entries branch routes through
-    # ``transaction_service.settle_from_entries`` so the manual mark-done
-    # path and the carry-forward envelope branch (Phase 4) share a single
-    # source of truth for "settle a tracked row at sum(entries)."  The
-    # helper writes ``status_id``, ``settled_on``, and ``actual_amount``
-    # together; the route does not need to set them itself in this branch.
-    if txn.tracks_purchases and txn.entries:
-        try:
-            transaction_service.settle_from_entries(txn)
-        except ValidationError as exc:
-            return _error_transaction_response(txn_id, str(exc), target)
-    else:
-        # Manual settle: route the status flip through the single status seam
-        # (state-machine check + status_id + settled_on stamp + status expire).  The
-        # envelope branch above reaches the same seam via
-        # ``settle_from_entries``.  Only Projected (or the identity edge from
-        # Paid/Received) can transition into Paid/Received; an illegal move
-        # raises ValidationError, surfaced as 400.  Audit reference: F-047 /
-        # F-161 follow-up to commit C-21.
-        try:
-            status_seam.apply_status_change(txn, status_id)
-        except ValidationError as exc:
-            # The illegal-transition case a stale surface can still
-            # reach (e.g. a Mark Paid tap on a card another device
-            # just cancelled) -- the designed fragment shows current
-            # state plus the reason (grid audit D2, ruled 2026-07-11).
-            return _error_transaction_response(txn_id, str(exc), target)
-        # Accept an optional manual actual amount from the form.  Applied AFTER
-        # the seam so Commit 6's posting reconcile (the last step) reads the
-        # final actual_amount, not the pre-edit estimate.
-        if actual_amount is not None:
-            txn.actual_amount = actual_amount
-
     try:
-        # Posting ledger reconcile (Build-Order Step 3): both branches above
-        # leave the row in its final settled state -- the envelope branch via
-        # settle_from_entries (status + actual = sum(entries)), the manual
-        # branch via the seam plus the optional manual actual_amount -- so
-        # reconcile the double-entry ledger to that confirmed effect as the
-        # last step (the transfer pattern: post after every field is applied).
-        # A manual actual_amount therefore posts the ACTUAL, not the estimate
-        # (the 2.8b HIGH, forward direction).  Inside the StaleDataError net:
-        # the reconcile's flush autoflushes the version-pinned row, so a
-        # concurrent commit surfaces as a 409, not a 500.
-        posting_service.sync_transaction_postings(
-            txn, settled=txn.status.is_settled,
+        transaction_service.settle_transaction(
+            txn, actual_amount=actual_amount,
         )
         db.session.commit()
+    except ValidationError as exc:
+        # The envelope branch's preconditions, and the illegal-transition case
+        # a stale surface can still reach (e.g. a Mark Paid tap on a card
+        # another device just cancelled) -- the designed fragment shows
+        # current state plus the reason (grid audit D2, ruled 2026-07-11).
+        # Audit reference: F-047 / F-161 follow-up to commit C-21.
+        return _error_transaction_response(txn_id, str(exc), target)
     except StaleDataError:
         logger.info(
             "Stale-data conflict on mark_done id=%d", txn_id,
@@ -600,8 +584,14 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
         return _error_transaction_response(
             txn_id, _INVALID_REFERENCE_MSG, target,
         )
+    # The status the row LANDED in, read off the row rather than from a value
+    # the caller computed: the verb owns the income/expense pick now
+    # (``transaction_service.settled_status_id``), and logging a requested id
+    # beside a row that took a different one is how a log stops being
+    # evidence.
     logger.info(
-        "user_id=%d marked transaction %d status_id=%d", current_user.id, txn_id, status_id
+        "user_id=%d marked transaction %d status_id=%d",
+        current_user.id, txn_id, txn.status_id,
     )
 
     return _mark_done_success_response(txn, target)
@@ -670,18 +660,21 @@ def mark_done(txn_id):
         )
     actual_amount = mark_done_data.get("actual_amount")
 
-    # Income uses 'received', expenses use 'done'.
-    if txn.is_income:
-        status_id = ref_cache.status_id(StatusEnum.RECEIVED)
-    else:
-        status_id = ref_cache.status_id(StatusEnum.DONE)
+    # The income/expense status pick is NOT made here.  It used to be, and
+    # ``transaction_service.settle_from_entries`` re-derived the same id from
+    # the same predicate with a comment saying it "mirrors" this line -- two
+    # spellings of one rule that agreed by reading.  It is now
+    # ``transaction_service.settled_status_id``, inside the verb, and the
+    # shadow branch below never wanted it: ``transfer_service`` sets Paid on
+    # both legs, because the split is meaningless for a pair whose whole point
+    # is that one leg is each.
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
         return _mark_done_shadow(txn, txn_id, actual_amount, target)
     # --- End guard ---
 
-    return _mark_done_regular(txn, txn_id, status_id, actual_amount, target)
+    return _mark_done_regular(txn, txn_id, actual_amount, target)
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-credit", methods=["POST"])

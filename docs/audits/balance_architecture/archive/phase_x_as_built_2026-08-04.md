@@ -170,6 +170,7 @@ in the plan document's git history at the commit that recorded it.
 | **R-F** | -- | Phase X ships FOLD-FIRST, not partition-patch-first |
 | **R-H** | -- | ONE walk, designed for both consumers from the start |
 | **R-J** | 2026-07-25 | A loan is refused at the SOURCE; the cash producers stay TOTAL and kind-blind |
+| **R-M** | 2026-07-25, amended 2026-08-01 | The column SPLITS rather than the guard bending: `purchased_on` is the day of purchase, `settled_on` the day the bank was seen to take it |
 | **R-P** | 2026-07-26 | Every surface that renders the subtotal figures renders ruling R-O's row, on R-O's own non-zero rule |
 | **R-R** | 2026-07-26 | A contribution is partitioned by SOURCE, so the two feeds are disjoint BY CONSTRUCTION and there is no de-dup rule to get wrong |
 | **R-V** | 2026-07-26 | Plan step X-c2c3 is CANCELLED; X-g replaces the modeled bases outright, and no compensator ships in the meantime |
@@ -245,6 +246,15 @@ in the plan document's git history at the commit that recorded it.
 | **R-DL** | 2026-08-02 | The anchor reconcile resolves its two ledger accounts ONCE per account rather than once per correction, and the fix rides INSIDE X-d |
 | **R-DX** | 2026-08-03 | The IDENTITY invariants go to the DATABASE tier where they CAN go |
 | **R-DZ** | 2026-08-03 | R2 for anchor corrections is a KEY-SHAPE change with NO migration in it, and it ships FIRST, alone, as plan step X-ai-r |
+| **R-DB** | 2026-07-31, DEEPER than recommended | Registration STOPS creating a bootstrap pay period |
+| **R-EC** | 2026-08-03 | `transactions.paid_at` is REPLACED by `transactions.settled_on`, not joined by it: the column stores the CIVIL DAY and the click instant is deleted |
+| **R-ED** | 2026-08-03 | The settle day is EDITABLE on a finalised row, and it is POSTING-RELEVANT |
+| **R-EF** | 2026-08-03 | The settle-day door ships on BOTH forms, because the transaction door alone corrects NOTHING |
+| **R-EG** | 2026-08-03 | A settle day submitted alongside a REVERT is dropped at the door, not refused |
+| **R-EI** | 2026-08-03 | The true-up editor's statement date goes on a SECOND LINE |
+| **R-EJ** | 2026-08-03 | A settle day in the FUTURE is refused, at the seam |
+| **R-EL** | 2026-08-04 | A settle day BELOW the schedule is refused, at the same seam and by the same bound an anchor observation already uses |
+| **R-EP** | 2026-08-04 | "As of when was this balance asserted" gets ONE source: the assertion's own `observed_on` |
 ## 4. What this record deliberately does not carry
 
 * **The running-state narrative.** ~1,000 lines of "X-n is DONE" entries with their measurements,

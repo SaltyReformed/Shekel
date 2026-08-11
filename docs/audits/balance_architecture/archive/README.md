@@ -16,8 +16,13 @@ to them with full force. Section 9 rule 5 of the live document now requires the 
 
 **Start here for the CASH half:** `phase_x_as_built_2026-08-04.md` for anything from X-c2c4
 onward, and `cash_arc_as_built_2026-07-27.md` for X-a through X-g3b before it. **"Shipped" here
-does not mean "deployed"** -- though as of 2026-08-05 the two coincide for everything in these
-records. Everything through Section 1 is in production (PR #65, merge `69a527cd`, and the per-step
+does not mean "deployed", and since 2026-08-10 the two NO LONGER coincide.** This sentence used to
+end "though as of 2026-08-05 the two coincide for everything in these records", which stopped being
+true the moment a dev-only step's ruling was archived: **`R-DB`'s remedy is `X-ad-a` (`2a4eb477`),
+which is not an ancestor of `origin/main`**. Verify with `git merge-base --is-ancestor <hash>
+origin/main` rather than reading this paragraph -- a stored claim about what production runs is a
+derived value beside no reconciler, which is the root cause several of these records exist to
+remove. Everything through Section 1 is in production (PR #65, merge `69a527cd`, and the per-step
 PRs that record names), and **Section 1a's X-f1 cluster shipped too** -- PR #83, merge `8d812662`,
 migration head `b5e3d9c1a7f2`. **Phase X is still IN FLIGHT**, so these are shipped-so-far records;
 the remaining steps are live in `../README.md`. The earlier record also holds the plan of record's whole running-state narrative
