@@ -47,6 +47,7 @@ from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services import posting_service
+from app.services.cash_ledger import live_amount_overrides
 from app.services.entry_service import compute_actual_from_entries
 from app.services.status_seam import apply_status_change
 from app.utils.log_events import (
@@ -108,14 +109,22 @@ def settle_transaction(
 
     Three acts, in this order and the order matters:
 
-    1. **The amount.**  An envelope-tracked row WITH entries settles at
-       ``sum(entries)`` (:func:`settle_from_entries`) and ignores any
-       *actual_amount* offered, because its entries ARE the record of what it
-       cost.  Everything else keeps its stored ``estimated_amount`` unless the
-       caller supplies an actual.  **The ``and txn.entries`` half is
-       load-bearing**, and production says so: ``Kayla's Spending Money``
-       carries no entries at all, so settling it from entries unconditionally
-       would book ``$0.00`` against its ``$100.00`` estimate.
+    1. **The amount, which is the FRESHEST derivation of what this row is
+       worth** (ruling **R-FE**, plan step X-aq).  A caller-supplied
+       *actual_amount* wins -- it is the figure a human read off a statement.
+       Absent one, an envelope-tracked row WITH entries settles at
+       ``sum(entries)`` (:func:`settle_from_entries`), because its entries ARE
+       the record of what it cost; everything else takes
+       :func:`_freshest_amount`, which prefers the projection's own live
+       derivation over the stored cache and answers ``None`` -- leave the
+       column alone -- whenever the two agree or no live seam applies.
+       **The ``and txn.entries`` half is load-bearing**, and production says
+       so: ``Kayla's Spending Money`` carries no entries at all, so settling it
+       from entries unconditionally would book ``$0.00`` against its
+       ``$100.00`` estimate.  **Why the rule is HERE and not at each door**: it
+       decides money, three doors settle a row, and a door that picks its own
+       figure is how one row comes to book two amounts depending on which
+       control the user pressed.
     2. **The status**, through the single seam, so the transition is verified
        and the settle day stamped by the one door that owns both.
     3. **The ledger**, reconciled LAST, so it reads the final amount rather
@@ -164,15 +173,17 @@ def settle_transaction(
             REFUSED here, because a transfer settles through
             ``transfer_service.update_transfer`` so both legs and the parent
             move together.
-        actual_amount: What the row actually cost, when the caller knows.
-            ``None`` leaves the column untouched, which is the one-click path.
-            **No form submits it today** -- measured: ``name="actual_amount"``
-            appears only on the full-edit and full-create templates, which
-            PATCH and POST the transaction rather than posting mark-done, and
-            no JS composes it -- so ``MarkDoneSchema``'s field is a channel
-            the UI has never used.  Ruling **R-FB** is what gives it a first
-            real caller: a BILL's tick may correct its amount, prefilled, and
-            an envelope's close may not.
+        actual_amount: What the row actually cost, when the CALLER knows --
+            i.e. a figure a human supplied.  ``None`` does NOT mean "keep the
+            stored amount": it means "nobody typed one", and act 1 then asks
+            :func:`_freshest_amount` what the projection is holding.  **No form
+            submits it today** -- measured: ``name="actual_amount"`` appears
+            only on the full-edit and full-create templates, which PATCH and
+            POST the transaction rather than posting mark-done, and no JS
+            composes it -- so ``MarkDoneSchema``'s field is a channel the UI
+            has never used.  Ruling **R-FB** is what gives it a first real
+            caller: a BILL's tick may correct its amount, prefilled, and an
+            envelope's close may not.
 
     Raises:
         ValidationError: On a transfer shadow, from the envelope branch's
@@ -195,16 +206,78 @@ def settle_transaction(
     if txn.tracks_purchases and txn.entries:
         settle_from_entries(txn)
     else:
+        # Resolved BEFORE the seam, because the projection's own rule is
+        # Projected-only: ``live_projected_net`` drops a row the moment its
+        # status leaves that band, so asking after the flip always answers
+        # "nothing fresher" and the verb would silently book the cache.
+        booked = (
+            actual_amount if actual_amount is not None
+            else _freshest_amount(txn)
+        )
         apply_status_change(txn, settled_status_id(txn))
         # Applied AFTER the seam so act 3 below reads the final actual amount
         # rather than the pre-settle estimate (the 2.8b HIGH, forward
         # direction).
-        if actual_amount is not None:
-            txn.actual_amount = actual_amount
+        if booked is not None:
+            txn.actual_amount = booked
 
     posting_service.sync_transaction_postings(
         txn, settled=txn.status.is_settled,
     )
+
+
+def _freshest_amount(txn: Transaction) -> Decimal | None:
+    """Return the amount a settle should book, or ``None`` to leave the column.
+
+    **Ruling R-FE's rule, and it exists because the app holds TWO answers to
+    what a projected row is worth** (finding **N-224**).
+    ``transactions.estimated_amount`` is a CACHE of a derivation:
+    :func:`app.services.income_service.live_projected_net` recomputes a
+    salary-linked paycheck at READ time and writes nothing back, so every
+    balance surface shows the live figure while every settle door used to book
+    the stored one.  A settle for a figure the projection was not holding moves
+    the projected end balance by the difference -- which is exactly the
+    invariant ruling R-DH (c) states and plan step X-f3 is ship-gated on.
+
+    So this asks the projection's OWN override map
+    (:func:`app.services.cash_ledger.live_amount_overrides`) rather than
+    restating which rows have a live value.  It is the same expression
+    :func:`app.services.cash_ledger.income_amount` evaluates one tier down --
+    "the override when present, else ``effective_amount``" -- asked for one row
+    instead of reduced over a period, and plan step **X-ar** deletes both by
+    making the stored amount authoritative.
+
+    **It costs nothing on the rows it does not apply to.**  Both halves of the
+    override map filter their candidates in Python first and return an empty
+    dict with NO query: the loan half wants ``transfer_id IS NOT NULL``, which
+    :func:`settle_transaction` has already refused, and the salary half wants a
+    Projected, non-overridden, template-linked income row.  An expense, an
+    ad-hoc row, an already-settled row and a manually-overridden paycheck each
+    leave here after two list comprehensions.
+
+    **It answers ``None`` when the live figure EQUALS the stored one**, and that
+    is not an optimisation.  Writing ``actual_amount`` unconditionally would
+    populate a column that is NULL on every uncorrected row, destroying the one
+    signal that says a human typed a figure -- the signal ruling R-FB's own
+    measurement is made of ("11 of 93 settled bills carry a hand-typed
+    correction").  Leaving the column alone keeps a settle for the expected
+    amount indistinguishable from what it is.
+
+    Args:
+        txn: The row about to settle, still in its pre-settle status.  Read for
+            its account, scenario, and the fields the override map's candidate
+            filters test; not mutated.
+
+    Returns:
+        The live amount when one exists and differs from what the row would
+        otherwise book, else ``None``.
+    """
+    live = live_amount_overrides(
+        txn.account, txn.scenario_id, [txn],
+    ).get(txn.id)
+    if live is None or live == txn.effective_amount:
+        return None
+    return live
 
 
 def settle_from_entries(txn: Transaction) -> None:

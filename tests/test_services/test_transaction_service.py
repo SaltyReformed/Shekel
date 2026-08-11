@@ -768,3 +768,223 @@ class TestSettleTransactionTheVerb:
             transaction_service.settle_transaction(income)
             assert expense.status_id == ref_cache.status_id(StatusEnum.DONE)
             assert income.status_id == ref_cache.status_id(StatusEnum.RECEIVED)
+
+
+class TestASettleBooksTheFreshestFigure:
+    """Plan step **X-aq**, ruling **R-FE**, finding **N-224**.
+
+    **The defect these grade is two answers to one question.**
+    ``transactions.estimated_amount`` is a CACHE of a derivation, and
+    ``income_service.live_projected_net`` recomputes a salary-linked paycheck at
+    READ time without writing back -- so every balance surface showed the live
+    figure while every settle door booked the stored one, and settling moved the
+    projected end balance by the difference.  That is the exact invariant ruling
+    R-DH (c) states and plan step X-f3 is ship-gated on.
+
+    The setup is the sibling suite's, so the expected net is not invented here:
+    a ``$104,000`` profile over 26 periods with no tax configs seeded nets
+    ``$4,000.00`` a period, which
+    ``test_income_service.TestLiveProjectedNet.test_recomputes_live_ignoring_stored_amount``
+    pins independently.  Every row below stores ``$1.00`` against it, so a test
+    that passed by reading the cache would have to report ``$1.00``.
+    """
+
+    @staticmethod
+    def _salary_row(seed_user, period, *, estimated="1.00", is_override=False):
+        """Return a Projected income row whose template IS a salary profile."""
+        # pylint: disable=import-outside-toplevel  -- the salary models are not
+        # part of this module's subject and importing them at the top would put
+        # the paycheck stack on every transaction-service test's load path.
+        from app.models.ref import FilingStatus
+        from app.models.salary_profile import SalaryProfile
+
+        filing = db.session.query(FilingStatus).first()
+        profile = SalaryProfile(
+            user_id=seed_user["user"].id,
+            scenario_id=seed_user["scenario"].id,
+            filing_status_id=filing.id,
+            name="X-aq Salary",
+            annual_salary=Decimal("104000.00"),
+            state_code="NC",
+            pay_periods_per_year=26,
+            is_active=True,
+        )
+        db.session.add(profile)
+        db.session.flush()
+
+        template = _make_envelope_template(seed_user, txn_type_name="Income")
+        template.is_envelope = False
+        profile.template_id = template.id
+        db.session.flush()
+
+        txn = _make_projected_txn(
+            seed_user, period, template=template, estimated_amount=estimated,
+        )
+        txn.is_override = is_override
+        db.session.flush()
+        return txn
+
+    def test_a_stale_estimate_settles_at_the_live_figure(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The row books ``$4,000.00``, not the ``$1.00`` in its column.
+
+        The headline of X-aq.  Before it, this settle booked ``$1.00`` while
+        the grid cell beside it read ``$4,000.00`` -- ``$3,999.00`` of income
+        deleted from the projection by pressing Mark Paid.
+        """
+        with app.app_context():
+            txn = self._salary_row(seed_user, seed_periods[0])
+            db.session.commit()
+
+            transaction_service.settle_transaction(txn)
+
+            assert txn.actual_amount == Decimal("4000.00")
+            assert txn.effective_amount == Decimal("4000.00")
+            assert txn.status_id == ref_cache.status_id(StatusEnum.RECEIVED)
+
+    def test_a_supplied_actual_still_wins_over_the_live_figure(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A figure a human typed beats every derivation.
+
+        The precedence half of act 1 and the reason X-f2-c2's correctable box
+        (ruling **R-FB**) is safe: the panel's prefilled amount is what the
+        statement says, and a live recompute must not overwrite it.
+        """
+        with app.app_context():
+            txn = self._salary_row(seed_user, seed_periods[0])
+            db.session.commit()
+
+            transaction_service.settle_transaction(
+                txn, actual_amount=Decimal("3912.44"),
+            )
+
+            assert txn.actual_amount == Decimal("3912.44")
+
+    def test_an_overridden_row_is_not_re_derived(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``is_override`` means the user set this amount, so nothing recomputes.
+
+        The rule is the projection's own -- ``live_projected_net`` drops an
+        overridden row -- and this verb inherits it by ASKING that producer
+        rather than restating which rows carry a live value.  Stored
+        ``$1,234.56`` settles at ``$1,234.56`` with the column left NULL.
+        """
+        with app.app_context():
+            txn = self._salary_row(
+                seed_user, seed_periods[0],
+                estimated="1234.56", is_override=True,
+            )
+            db.session.commit()
+
+            transaction_service.settle_transaction(txn)
+
+            assert txn.actual_amount is None
+            assert txn.effective_amount == Decimal("1234.56")
+
+    def test_an_agreeing_live_figure_leaves_the_column_null(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Nothing is written when the two answers already agree.
+
+        **Not an optimisation -- a signal.**  ``actual_amount`` is NULL on every
+        uncorrected row, which is what makes "a human typed a figure here"
+        readable at all; ruling R-FB's own production measurement ("11 of 93
+        settled bills carry a hand-typed correction") is made of exactly that
+        NULL.  Storing ``$4,000.00`` into the actual because the derivation
+        agreed would erase it.
+        """
+        with app.app_context():
+            txn = self._salary_row(
+                seed_user, seed_periods[0], estimated="4000.00",
+            )
+            db.session.commit()
+
+            transaction_service.settle_transaction(txn)
+
+            assert txn.actual_amount is None
+            assert txn.effective_amount == Decimal("4000.00")
+
+    def test_a_row_with_no_live_seam_is_untouched(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An ordinary bill is not a candidate, so X-aq writes nothing.
+
+        The blast-radius control.  ``live_projected_net`` wants an income row
+        linked to an active profile and ``live_loan_transfer_amounts`` wants a
+        transfer shadow, so an expense on a plain template matches neither and
+        the settle is byte-identical to its pre-X-aq behaviour.
+        """
+        with app.app_context():
+            template = _make_envelope_template(seed_user)
+            template.is_envelope = False
+            txn = _make_projected_txn(seed_user, seed_periods[0],
+                                      template=template)
+            db.session.commit()
+
+            transaction_service.settle_transaction(txn)
+
+            assert txn.actual_amount is None
+            assert txn.effective_amount == Decimal("500.00")
+
+    def test_an_envelope_with_entries_still_settles_at_its_entries(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The envelope branch is untouched: entries beat every derivation.
+
+        Act 1's ordering, re-graded from the X-aq side.  A row that is BOTH
+        envelope-tracked with entries AND income keeps ``sum(entries)`` -- the
+        freshest answer for an envelope is its own record of what it cost, not
+        a recompute of what it was expected to be.
+        """
+        with app.app_context():
+            template = _make_envelope_template(seed_user,
+                                               txn_type_name="Income")
+            txn = _make_projected_txn(seed_user, seed_periods[0],
+                                      template=template)
+            db.session.flush()
+            _make_entry(txn.id, seed_user["user"].id,
+                        Decimal("12.34"), "Refund")
+            db.session.commit()
+
+            transaction_service.settle_transaction(txn)
+
+            assert txn.actual_amount == Decimal("12.34")
+
+    def test_the_live_figure_is_resolved_BEFORE_the_status_flip(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Order is load-bearing, and this is the control that says so.
+
+        ``live_projected_net`` filters to Projected rows, so a verb that asked
+        AFTER ``apply_status_change`` would always be handed an empty map and
+        would silently book the cache -- passing every other test in this class
+        except this one.  Grading it as an ORDER rather than as an outcome:
+        the row is Projected at the moment the resolver is called.
+
+        Shown to FIRE: moving the ``_freshest_amount`` call below
+        ``apply_status_change`` books ``$1.00``.
+        """
+        with app.app_context():
+            txn = self._salary_row(seed_user, seed_periods[0])
+            db.session.commit()
+
+            seen_status = []
+            real = transaction_service._freshest_amount  # noqa: SLF001
+
+            def _spy(row):
+                seen_status.append(row.status_id)
+                return real(row)
+
+            transaction_service._freshest_amount = _spy  # noqa: SLF001
+            try:
+                transaction_service.settle_transaction(txn)
+            finally:
+                transaction_service._freshest_amount = real  # noqa: SLF001
+
+            assert seen_status == [
+                ref_cache.status_id(StatusEnum.PROJECTED),
+            ]
+            assert txn.actual_amount == Decimal("4000.00")
