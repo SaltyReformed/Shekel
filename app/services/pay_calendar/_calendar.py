@@ -8,11 +8,14 @@ and ``recurrence:R-F12``.
 ``app/`` called this at all -- that was C2-a's leaf boundary.  C1 built the
 derivation and proved it byte-identical against production's 61 paydays before
 anything read it; C2-a built the value and proved it the same way.  The cutover
-leaves then move one consumer package each, and **C2-d took the first**: both
+leaves then move one consumer package each.  **C2-d took the first**: both
 anchor-correction posting writers file every ledger entry's ``pay_period_id``
-through :meth:`PayCalendar.filing_period`.  ``C2-b2`` (the recurrence engine),
-``C2-c`` (the cash period view), ``C2-e`` (the projection axis) and ``C2-f``
-(``pay_period_service``'s readers) remain.
+through :meth:`PayCalendar.filing_period`.  **C2-b2 took the second**: the
+recurrence engine resolves, walks and places against this value, and the
+``PeriodCalendar`` it used -- which COPIED each period's stored end and ordinal
+-- was deleted with the fences it carried.  ``C2-c`` (the cash period view),
+``C2-e`` (the projection axis) and ``C2-f`` (``pay_period_service``'s readers)
+remain.
 
 Why the value exists at all: an AST census on 2026-08-10 found **SIX**
 implementations of "which pay period contains this date" in ``app/`` -- ledger
@@ -30,11 +33,10 @@ and they are named here so a caller has to choose:
 question                              method
 ===================================== ==================================
 which SAVED paycheck covers this day  :meth:`PayCalendar.period_containing`
-                                      -- ``None`` in a hole or outside,
-                                      which is what the recurrence engine
-                                      needs to tell a schedule hole from
-                                      "the schedule has not reached there
-                                      yet"
+                                      -- ``None`` only BEFORE the first
+                                      payday or PAST the horizon; these
+                                      periods tile, so a hole is not a
+                                      third case (ledger row **P25**)
 which span covers this day, saved or  :meth:`PayCalendar.span_containing`
 projected                             -- TOTAL from the first payday on
 which SAVED paycheck does a record    :meth:`PayCalendar.filing_period`

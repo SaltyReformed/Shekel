@@ -28,8 +28,8 @@ import pytest
 from app import ref_cache
 from app.enums import RecurrencePatternEnum
 from app.models.recurrence_rule import RecurrenceRule
+from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
-    PeriodCalendar,
     RecurrenceResolutionError,
     read_rule,
     resolved_recurrence,
@@ -179,7 +179,9 @@ class TestTheEmptySchedule:
         has, and a 500 for a state no rule is wrong about would be a fence.
         """
         with app.app_context():
-            empty = PeriodCalendar(user_id=_USER_ID, periods=())
+            empty = PayCalendar.from_paydays(
+                paydays=(), cadence_days=None, user_id=_USER_ID,
+            )
             rule = _rule(RecurrencePatternEnum.MONTHLY, day_of_month=22)
 
             assert resolved_recurrence(rule, empty) is None
@@ -187,7 +189,9 @@ class TestTheEmptySchedule:
     def test_read_rule_answers_both_halves_empty(self, app):
         """No meaning and no placements, never a meaning without placements."""
         with app.app_context():
-            empty = PeriodCalendar(user_id=_USER_ID, periods=())
+            empty = PayCalendar.from_paydays(
+                paydays=(), cadence_days=None, user_id=_USER_ID,
+            )
             rule = _rule(RecurrencePatternEnum.EVERY_PERIOD)
 
             reading = read_rule(rule, empty)
@@ -198,7 +202,9 @@ class TestTheEmptySchedule:
     def test_the_projection_answers_empty_too(self, app):
         """The shape three surfaces and the baseline take is unchanged."""
         with app.app_context():
-            empty = PeriodCalendar(user_id=_USER_ID, periods=())
+            empty = PayCalendar.from_paydays(
+                paydays=(), cadence_days=None, user_id=_USER_ID,
+            )
             rule = _rule(RecurrencePatternEnum.EVERY_PERIOD)
 
             assert rule_occurrences(rule, empty) == ()

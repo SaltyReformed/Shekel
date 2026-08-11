@@ -37,7 +37,8 @@ from app.routes.loan._helpers import (
     _transfer_schema,
 )
 from app.services import escrow_calculator, loan_loaders, loan_recurrence_sync
-from app.services.recurrence import RecurrenceSpec, author_rule, calendar_for
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import RecurrenceSpec, author_rule
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )

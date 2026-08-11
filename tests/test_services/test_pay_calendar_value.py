@@ -21,9 +21,10 @@ written at the edges rather than in the middle:
   while four docstrings cited it as proof; plan step C2-d landed it here,
   along with the counterexample that states the equivalence's PRECONDITION
   (index order must agree with date order) rather than leaving it implied;
-* the TILING invariant is asserted directly, because it is what makes the
+* the TILING invariant is asserted directly, because it is what made the
   recurrence arc's ``PeriodCalendar.__post_init__`` refusals unconstructible
-  rather than merely unused;
+  rather than merely unused -- plan step C2-b2 then deleted that class, so this
+  is now the only place the property is asserted at all;
 * a WINDOW keeps the ends the whole calendar derived (ledger row **P14**), and
   the control shows the value a window would report if it were re-derived --
   the ``$150,000.00`` shape;
@@ -187,9 +188,11 @@ class TestThePeriodsTile:
     ):
         """Consecutive paydays define adjacent intervals, by construction.
 
-        This is what makes the recurrence arc's ``PeriodCalendar.__post_init__``
+        This is what made the recurrence arc's ``PeriodCalendar.__post_init__``
         refusals -- an overlapping or reversed schedule -- unconstructible here
-        rather than merely unchecked.  A fence with no subject left.
+        rather than merely unchecked; plan step **C2-b2** then deleted that
+        class, so this assertion is what the property rests on now.  A fence
+        whose subject went, followed by the fence.
         """
         cal = calendar(paydays, cadence)
         day = cal.opening_bound()

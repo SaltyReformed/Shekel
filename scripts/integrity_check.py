@@ -325,7 +325,7 @@ def check_balance_anomalies(session):
 
     Returns:
         List of CheckResult for the surviving balance/anchor checks
-        (BA-01 critical; BA-03, BA-04, BA-05, BA-06 warnings.  BA-02 was
+        (BA-01 critical; BA-03, BA-04, BA-05, BA-06, BA-07 warnings.  BA-02 was
         deleted with the anchor cache columns at plan step X-f1c3c).
     """
     checks = [
@@ -434,6 +434,59 @@ def check_balance_anomalies(session):
             WHERE prev_balance IS NOT NULL
               AND prev_balance != 0
               AND ABS(anchor_balance - prev_balance) / ABS(prev_balance) > 0.5
+        """),
+        # BA-07 is the visibility plan step C2-b2 took away, asked as a query.
+        # A day covered by no pay period used to surface at GENERATION time:
+        # the recurrence engine answered ``PlacementOutcome.SCHEDULE_GAP`` and
+        # logged ``EVT_RECURRENCE_OCCURRENCE_UNPLACED`` naming the orphaned
+        # dates.  C2-b2 pointed that engine at the DERIVED calendar, in which a
+        # period ends the day before the next payday, so the preceding paycheck
+        # ABSORBS such a day and the engine reports nothing (plan ledger row
+        # **P27**).  The absorption is the ruled model working; what it must
+        # not also do is make the underlying rows unobservable.
+        #
+        # It is a QUERY rather than a write refusal for the reason this arc
+        # keeps reaching, and BA-06 states above: the condition is DERIVABLE
+        # from the schedule, so recording it at write time would store a
+        # computed claim beside no reconciler.  Asked here it is always
+        # current, covers every owner, and reports the state however it arose
+        # -- which since plan step C3-b can only be rows written before it, or
+        # written directly.
+        #
+        # WARNING rather than critical: every surface still renders, the money
+        # is not wrong, and the owner's next schedule write repairs it.  It
+        # sits beside BA-03 (an ordinal gap) and BA-04 (a date overlap) because
+        # it is a third member of that family that neither of them can see -- a
+        # shortened ``end_date`` leaves the ordinals contiguous and nothing
+        # overlapping.  **Plan step C4 deletes all three**, when ``end_date``
+        # stops being stored and a hole has nowhere left to live.
+        #
+        # **It covers ONE of the three ways a stored column can disagree with
+        # the payday derivation, and saying which is the honest form** (an
+        # adversarial review of C2-b2 measured all three; the full statement is
+        # in ``app/services/recurrence/_occurrence.py``'s module docstring).
+        # This sees a hole between two ADJACENT periods -- row **P27**.  It
+        # cannot see row **P28**, the stored cadence disagreeing with the LAST
+        # period's stored end, because the last row has no successor to compare
+        # against; nor row **P26**, a stored ordinal that is dense but not
+        # ``0..n-1``, which BA-03 also passes because it tests for a GAP in the
+        # sequence and not for its origin.  Both remaining classes are owned by
+        # plan step C4, which drops the columns they live in.
+        ("BA-07", "warning",
+         "Pay period date gaps (a day covered by no pay period)", """
+            WITH spans AS (
+                SELECT user_id, end_date,
+                       LEAD(start_date) OVER (
+                           PARTITION BY user_id ORDER BY start_date
+                       ) AS next_start
+                FROM budget.pay_periods
+            )
+            SELECT user_id, end_date AS last_covered_day,
+                   next_start AS next_payday,
+                   next_start - end_date - 1 AS uncovered_days
+            FROM spans
+            WHERE next_start IS NOT NULL
+              AND next_start > end_date + 1
         """),
     ]
     return [

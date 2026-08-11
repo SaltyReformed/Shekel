@@ -32,7 +32,8 @@ from app.services import (
     pay_period_service,
     recurrence_engine,
 )
-from app.services.recurrence import RecurrenceSpec, author_rule, calendar_for
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import RecurrenceSpec, author_rule
 from app.services.generation_schedule import GenerationSchedule
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year

@@ -714,6 +714,52 @@ class TestAWindowMustBelongToTheOwner:
                     seed_user["user"].id, [unsaved],
                 )
 
+    def test_a_stored_ordinal_out_of_payday_order_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The check plan step C2-b2 gave a new subject, exercised.
+
+        ``periods`` is read ordered by the stored ``period_index`` and
+        ``calendar`` by payday, so the two agree only while the stored ordinal
+        agrees with payday order.  C2-b2 made that a real comparison rather
+        than a tautology -- before it, the calendar was built FROM ``periods``
+        and could not disagree -- and an adversarial review pointed out the
+        raise had no test at all, which is the shape this class's own docstring
+        warns about.
+
+        The state is legacy or direct-DB only: ``pay_period_write`` writes
+        ``period_index`` from the derivation, where it IS the position in
+        payday order.  Reaching it silently would re-phase every
+        ``Every N Periods`` rule for this owner, so it is refused.
+
+        The swap parks one row on a spare ordinal and FLUSHES between each
+        step: ``uq_pay_periods_user_index`` is checked per statement, so a
+        direct exchange collides inside the one flush that would carry both
+        ``UPDATE`` statements.
+        """
+        with app.app_context():
+            rows = pay_period_service.get_all_periods(seed_user["user"].id)
+            first, second = rows[0], rows[1]
+            first_index, second_index = first.period_index, second.period_index
+            spare = max(row.period_index for row in rows) + 1
+
+            first.period_index = spare
+            db.session.flush()
+            second.period_index = first_index
+            db.session.flush()
+            first.period_index = second_index
+            db.session.flush()
+
+            # The premise: the stored ordinal now disagrees with payday order.
+            reread = pay_period_service.get_all_periods(seed_user["user"].id)
+            assert reread[0].id == second.id
+            assert reread[0].start_date > reread[1].start_date
+
+            with pytest.raises(
+                RecurrenceWindowError, match="not the same periods",
+            ):
+                GenerationSchedule.for_user(seed_user["user"].id)
+
     def test_the_whole_schedule_is_loaded_not_taken_from_the_caller(
         self, app, db, seed_user, seed_periods,
     ):

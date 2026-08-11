@@ -32,7 +32,6 @@ R7c, where the form starts collecting them.
 What this package offers
 ------------------------
 
-* :func:`calendar_for` -- load an owner's schedule once, thread it.
 * :func:`resolve` -- ``(spec, calendar) -> ResolvedRecurrence``, the two-axis
   meaning.  Pure: no Flask, no ORM, no clock, no database.
 * :func:`author_rule` / :func:`reauthor_rule` / :func:`build_transient_rule`
@@ -41,8 +40,8 @@ What this package offers
 * :func:`occurrences` / :func:`place` / :func:`occurrence_placements` -- the
   forward occurrence engine (plan step R3), AUTHORITATIVE since plan step R4a,
   so every pay period the application generates a row into is selected here.
-  An occurrence with no pay period says WHICH of the two "no period" answers
-  it is (:class:`PlacementOutcome`).
+  An occurrence with no pay period means the SAVED schedule does not reach it,
+  which since plan step C2-b2 is the only way to get one.
 * :func:`recurrence_spec` / :func:`read_rule` / :func:`resolved_recurrence` /
   :func:`rule_occurrences` / :func:`placed_periods` -- the READ door,
   symmetric with the write door: a rule's authored state back out, the one
@@ -58,18 +57,13 @@ What this package offers
 What lives where
 ----------------
 
-* ``_calendar`` -- :class:`PeriodCalendar`, the pay-period schedule reduced to
-  the questions the derivation and the occurrence engine ask -- its opening
-  bound and horizon, one period by id, a month's earliest payday, and the two
-  placement searches -- plus its owner, so a resolution against the wrong
-  user's schedule is refused rather than silently wrong.  It also REFUSES a
-  schedule whose periods overlap or run backwards, because the placement
-  searches bisect over that order.
 * ``_resolution`` -- :class:`RecurrenceSpec`, :class:`ResolvedRecurrence` and
   :func:`resolve`, the pure derivation.
-* ``_authoring`` -- the WRITE door: load the schedule, refuse the
-  unresolvable, write the authored spec.  The only module here that holds a
-  session.
+* ``_authoring`` -- the WRITE door: refuse the unresolvable, write the
+  authored spec.  The only module here that holds a session.  The SCHEDULE it
+  resolves against is :class:`~app.services.pay_calendar.PayCalendar`, loaded
+  through that package's one door -- this package held a second calendar type
+  and a second loader until plan step **C2-b2** deleted both.
 * ``_occurrence`` -- the forward occurrence engine: walk the cadence, place
   each occurrence on a pay period.  Consumes :class:`ResolvedRecurrence`.
 * ``_reading`` -- the READ door: a stored rule's authored state, its
@@ -99,13 +93,7 @@ nothing -- nothing above the door does.
 from app.services.recurrence._authoring import (
     author_rule,
     build_transient_rule,
-    calendar_for,
     reauthor_rule,
-)
-from app.services.recurrence._calendar import (
-    PeriodCalendar,
-    RecurrenceScheduleError,
-    SchedulePeriod,
 )
 from app.services.recurrence._describe import (
     RecurrenceDescription,
@@ -114,7 +102,6 @@ from app.services.recurrence._describe import (
 )
 from app.services.recurrence._occurrence import (
     OccurrencePlacement,
-    PlacementOutcome,
     RecurrenceGenerationError,
     occurrence_placements,
     occurrences,
@@ -148,20 +135,15 @@ __all__ = [
     "UNAVAILABLE_PATTERN_MESSAGE",
     "OccurrencePlacement",
     "PatternChoice",
-    "PeriodCalendar",
-    "PlacementOutcome",
     "RecurrenceDescription",
     "RecurrenceDescriptionError",
     "RecurrenceGenerationError",
     "RecurrenceResolutionError",
-    "RecurrenceScheduleError",
     "RecurrenceSpec",
     "ResolvedRecurrence",
     "RuleReading",
-    "SchedulePeriod",
     "author_rule",
     "build_transient_rule",
-    "calendar_for",
     "describe",
     "modelled_pattern",
     "occurrence_placements",

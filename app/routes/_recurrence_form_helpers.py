@@ -70,12 +70,12 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.routes._commit_helpers import StaleConflictContext
 from app.routes._redirect_target import RedirectTarget
+from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     UNAVAILABLE_PATTERN_MESSAGE,
     PatternChoice,
     RecurrenceSpec,
     author_rule,
-    calendar_for,
     modelled_pattern,
     pattern_choices_for,
     reauthor_rule,

@@ -45,11 +45,11 @@ from app.models.recurrence_anchors import RecurrenceMonthAnchor
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import FilingStatus
 from app.services import loan_recurrence_sync, pay_period_admin
+from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     RecurrenceSpec,
     ResolvedRecurrence,
     author_rule,
-    calendar_for,
     reauthor_rule,
     recurrence_spec,
     resolve,

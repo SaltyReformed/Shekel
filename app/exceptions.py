@@ -201,8 +201,7 @@ class RecurrenceWindowError(ShekelError):
     A broken invariant rather than user input.
     :class:`~app.services.generation_schedule.GenerationSchedule` loads the
     owner's whole schedule itself and takes only the WINDOW from its caller
-    (plan step R4b), so the two can disagree in exactly two ways, and both are
-    bugs:
+    (plan step R4b), so the ways the two can disagree are all bugs:
 
     * the caller paired one user's template with another user's pay period --
       every path already ownership-checks before reaching generation, so this
@@ -211,6 +210,17 @@ class RecurrenceWindowError(ShekelError):
       schedule read back from the database.  The repopulation paths flush
       before populating (``pay_period_write.record_paydays``), so an
       unsaved period here means a caller skipped that.
+    * **the schedule and the calendar describe different periods**, which plan
+      step **C2-b2** added by taking the calendar from
+      ``pay_calendar.calendar_for`` rather than building it from the rows this
+      class already loaded.  Two reads, two READ COMMITTED snapshots, so a
+      concurrent schedule write between them lands here -- and so does a stored
+      ``period_index`` whose order disagrees with its own payday order, because
+      the two reads order by different columns.  The first is a race the loud
+      answer is right for; the second is corrupt legacy data that would
+      otherwise silently re-phase every ``Every N Periods`` rule.
+      An earlier revision of this docstring said "exactly two ways" and was
+      left stale by that step; an adversarial review caught it.
 
     Raised rather than skipped because both alternatives are silent: a window
     period the schedule does not contain simply matches nothing, and the pass

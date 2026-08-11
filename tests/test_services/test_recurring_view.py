@@ -30,8 +30,8 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service, recurring_view
 from app.services.obligations_aggregator import committed_monthly
+from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.recurrence import (
-    PeriodCalendar,
     RecurrenceResolutionError,
     read_rule,
 )
@@ -48,21 +48,26 @@ from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
 
 def _calendar(periods):
-    """Return the owner's schedule as the resolver reads it.
+    """Return the owner's schedule as the surface reads it.
 
     ``recurring_view.build_view`` takes a
-    :class:`~app.services.recurrence.PeriodCalendar` rather than a period list
+    :class:`~app.services.pay_calendar.PayCalendar` rather than a period list
     since plan step R4b-1: a recurrence's next date is measured against the
     OWNER's schedule, so the surface has to be handed that schedule rather
     than rebuild one per row.
 
+    **Loaded through the one door since plan step C2-b2**, rather than built
+    from the rows the caller happens to hold.  ``calendar_for`` reads the whole
+    payday set and the owner's cadence and derives the rest, so the calendar a
+    test hands the surface is the one the route would.
+
     Args:
-        periods: The owner's pay periods, in ``period_index`` order.
+        periods: The owner's pay periods -- read only for whose they are.
 
     Returns:
-        The :class:`~app.services.recurrence.PeriodCalendar` for their owner.
+        The :class:`~app.services.pay_calendar.PayCalendar` for their owner.
     """
-    return PeriodCalendar.from_pay_periods(periods, periods[0].user_id)
+    return calendar_for(periods[0].user_id)
 
 
 def _create_rule(seed_user, pattern_enum, *, interval_n=1,
@@ -797,7 +802,9 @@ class TestNoneMeansDoesNotRepeat:
             day_of_month=2, month_of_year=3,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("60.00"))
-        empty = PeriodCalendar(user_id=seed_user["user"].id, periods=())
+        empty = PayCalendar.from_paydays(
+            paydays=(), cadence_days=None, user_id=seed_user["user"].id,
+        )
 
         with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
             recurring_view.build_view([], [tmpl], [], empty, date.today())
@@ -812,7 +819,9 @@ class TestNoneMeansDoesNotRepeat:
         tmpl = _create_expense(seed_user, rule, Decimal("25.00"))
         tmpl.is_active = False
         db.session.flush()
-        empty = PeriodCalendar(user_id=seed_user["user"].id, periods=())
+        empty = PayCalendar.from_paydays(
+            paydays=(), cadence_days=None, user_id=seed_user["user"].id,
+        )
 
         with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
             recurring_view.build_archived_rows([tmpl], empty)
@@ -826,7 +835,9 @@ class TestNoneMeansDoesNotRepeat:
         two cases above while breaking the only state ``None`` may describe.
         """
         tmpl = _create_expense(seed_user, None, Decimal("25.00"))
-        empty = PeriodCalendar(user_id=seed_user["user"].id, periods=())
+        empty = PayCalendar.from_paydays(
+            paydays=(), cadence_days=None, user_id=seed_user["user"].id,
+        )
 
         view = recurring_view.build_view([], [tmpl], [], empty, date.today())
 

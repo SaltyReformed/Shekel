@@ -83,15 +83,27 @@ class PayCalendarError(ShekelError, ValueError):
     where that is Python's own contract; a caller catching either name gets it.
 
     It is NOT the successor of ``recurrence._calendar.RecurrenceScheduleError``,
-    and saying so is a correction the review of C1 made.  That class refuses an
-    overlapping or reversed SCHEDULE at the value boundary, and the plan retires
-    it rather than relocating it: plan step **C2-b2** deletes the class that
-    holds its only two raise sites, because the states they police stop being
+    and saying so is a correction the review of C1 made.  That class refused an
+    overlapping or reversed SCHEDULE at the value boundary, and the plan retired
+    it rather than relocating it: plan step **C2-b2** DELETED the class that
+    held its only two raise sites, because the states they policed stopped being
     expressible once the periods are DERIVED.  (An earlier draft of this
     paragraph credited that deletion to C5a, which had it on its list until the
     C2-b decomposition measured that the class dies three leaves earlier.)
     What this class refuses is different -- a payday SET or a cadence that
     cannot define a calendar in the first place.
+
+    **One of those refusals is reachable from a PAGE rather than from a
+    caller**, which the deleted class had no equivalent of and which plan step
+    C2-b2 therefore introduced.  :func:`~._loader.calendar_for` resolves the
+    cadence through ``pay_schedule_service.resolve_cadence``, whose legacy
+    fallback infers it from the last period's stored length -- bounded below by
+    ``ck_pay_periods_date_order`` and NOT bounded above.  A hand-written period
+    spanning more than a year therefore refuses the calendar, which now means a
+    500 on every page that reads the owner's recurrences.  Failing loud is
+    still right (the alternative is projecting a horizon off a value no write
+    door could have produced), and plan step C4 removes the fallback with the
+    column it reads.
     """
 
 

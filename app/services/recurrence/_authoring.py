@@ -32,33 +32,12 @@ boundary.
 """
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
-from app.services import pay_period_service
-from app.services.recurrence._calendar import PeriodCalendar
+from app.services.pay_calendar import PayCalendar
 from app.services.recurrence._resolution import RecurrenceSpec, resolve
 
 
-def calendar_for(user_id: int) -> PeriodCalendar:
-    """Load the owner's pay-period schedule for a resolution.
-
-    A separate call rather than a lookup hidden inside :func:`author_rule` so
-    a caller authoring MANY rules loads the schedule once and threads it --
-    ``pay_period_admin._repoint_recurrence_rules`` re-authors a batch of rules
-    at once, and a per-rule query there would be the same read repeated N
-    times for one answer.
-
-    Args:
-        user_id: The owning user.
-
-    Returns:
-        The owner's :class:`~app.services.recurrence._calendar.PeriodCalendar`.
-    """
-    return PeriodCalendar.from_pay_periods(
-        pay_period_service.get_all_periods(user_id), user_id,
-    )
-
-
 def _author(
-    rule: RecurrenceRule, spec: RecurrenceSpec, calendar: PeriodCalendar,
+    rule: RecurrenceRule, spec: RecurrenceSpec, calendar: PayCalendar,
 ) -> None:
     """Write *spec* onto *rule*, with the derived phase filled in.
 
@@ -105,7 +84,7 @@ def _author(
 
 
 def build_transient_rule(
-    spec: RecurrenceSpec, calendar: PeriodCalendar,
+    spec: RecurrenceSpec, calendar: PayCalendar,
 ) -> RecurrenceRule:
     """Build a resolved rule WITHOUT adding it to the session.
 
@@ -131,7 +110,7 @@ def build_transient_rule(
 
 
 def author_rule(
-    spec: RecurrenceSpec, calendar: PeriodCalendar,
+    spec: RecurrenceSpec, calendar: PayCalendar,
 ) -> RecurrenceRule:
     """Create a recurrence rule and flush it, so it carries an id.
 
@@ -157,7 +136,7 @@ def author_rule(
 
 
 def reauthor_rule(
-    rule: RecurrenceRule, spec: RecurrenceSpec, calendar: PeriodCalendar,
+    rule: RecurrenceRule, spec: RecurrenceSpec, calendar: PayCalendar,
 ) -> None:
     """Replace an existing rule's entire authored state, in place.
 

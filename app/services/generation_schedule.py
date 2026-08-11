@@ -26,7 +26,7 @@ from types import MappingProxyType
 from app.exceptions import RecurrenceWindowError
 from app.models.pay_period import PayPeriod
 from app.services import pay_period_service
-from app.services.recurrence import PeriodCalendar
+from app.services.pay_calendar import PayCalendar, calendar_for
 
 
 @dataclass(frozen=True)
@@ -82,10 +82,14 @@ class GenerationSchedule:
         periods: The owner's whole schedule as ORM rows, in ``period_index``
             order.  This is what the paycheck calculator means by
             ``all_periods``.
-        calendar: The resolver's view of those same rows
-            (:class:`~app.services.recurrence.PeriodCalendar`), built FROM
-            them rather than loaded separately, so the two cannot come to
-            describe different schedules.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
+            loaded through that package's one door.  It USED to be built from
+            *periods* rather than loaded, on the ground that two reads could
+            describe different schedules; plan step **C2-b2** inverted that,
+            because the door takes no window argument and so cannot be handed
+            a slice at all.  What was a construction rule is now a property of
+            the only way to get one, and :meth:`__post_init__`'s first check
+            became the cross-read consistency assert it describes.
         write_periods: The periods this pass may write into, keyed by
             ``budget.pay_periods.id``.  A read-only mapping, and always a
             subset of *periods*.  Keyed by id rather than held as a list
@@ -96,7 +100,7 @@ class GenerationSchedule:
     """
 
     periods: tuple[PayPeriod, ...]
-    calendar: PeriodCalendar
+    calendar: PayCalendar
     write_periods: Mapping[int, PayPeriod]
 
     def __post_init__(self) -> None:
@@ -106,12 +110,19 @@ class GenerationSchedule:
         end unconstructible rather than merely discouraged:
 
         1. **The calendar IS the schedule.**  ``calendar`` must carry exactly
-           ``periods``, in order.  This is the D22 shape stated as a
-           predicate: resolving against a NARROWED calendar beside a matching
-           window is what made an extend re-read every rule as though the
-           owner's pay history began at the new batch.  Checking only the
-           window (the first draft) left that shape legal -- an adversarial
-           review reconstructed it in three lines and every check passed.
+           ``periods``, in the same order.  It was written for the D22 shape
+           -- resolving against a NARROWED calendar beside a matching window,
+           which made an extend re-read every rule as though the owner's pay
+           history began at the new batch -- and since plan step **C2-b2**
+           that shape is unconstructible: the calendar comes from
+           :func:`~app.services.pay_calendar.calendar_for`, which has no
+           window argument.  What the check still catches is real and is why
+           it stays: the two reads are separate statements under READ
+           COMMITTED, so a concurrent schedule write between them is visible
+           here, and a STORED ``period_index`` whose order disagrees with its
+           own payday order (legacy data, which the derived ordinal cannot
+           reproduce) is refused rather than silently re-phasing every
+           ``Every N Periods`` rule.
         2. **The window is part of the schedule.**  A row written into a
            period the rule was never resolved against is a row placed by
            nothing: the occurrence walk cannot have named it.  The only ways
@@ -143,11 +154,17 @@ class GenerationSchedule:
             raise RecurrenceWindowError(
                 f"the calendar describes {len(calendar_ids)} pay period(s) and "
                 f"the schedule {len(schedule_ids)}, or they are not the same "
-                f"periods in the same order.  The calendar is what a rule is "
-                f"RESOLVED against and the schedule is what the paycheck "
-                f"calculator reads, so a narrower calendar beside a wider "
-                f"schedule silently re-reads every rule against a pay history "
-                f"the owner does not have -- plan defect D22."
+                f"periods in the same order.  These are two reads of "
+                f"budget.pay_periods -- one ordered by the stored "
+                f"period_index, one by payday -- so they disagree when a "
+                f"concurrent write lands between them, or when a stored "
+                f"ordinal's order disagrees with its own payday order.  The "
+                f"second would silently re-phase every Every N Periods rule "
+                f"for this owner, so it is refused rather than answered.  "
+                f"Rebuild the schedule with the pay-period reset, which "
+                f"refuses when any transaction is already settled -- an owner "
+                f"with settled history needs the budget.pay_periods rows "
+                f"corrected directly."
             )
         owned = set(schedule_ids)
         stray = sorted(
@@ -189,7 +206,7 @@ class GenerationSchedule:
         periods = tuple(pay_period_service.get_all_periods(user_id))
         return cls(
             periods=periods,
-            calendar=PeriodCalendar.from_pay_periods(periods, user_id),
+            calendar=calendar_for(user_id),
             write_periods=MappingProxyType(choose_window(periods)),
         )
 

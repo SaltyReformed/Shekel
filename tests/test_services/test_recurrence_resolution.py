@@ -2,7 +2,7 @@
 
 ``app.services.recurrence.resolve`` is the one place the closed ``pattern_id``
 vocabulary becomes the two-axis one, and it is pure: a spec and a
-:class:`~app.services.recurrence.PeriodCalendar` in, a
+:class:`~app.services.pay_calendar.PayCalendar` in, a
 :class:`~app.services.recurrence.ResolvedRecurrence` out.  So every case below
 is exercised at EXACT dates against a hand-built schedule -- no database, no
 clock -- and each assertion carries the arithmetic that produces it.
@@ -49,11 +49,10 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.ref import RecurrencePattern
+from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
-    PeriodCalendar,
     RecurrenceResolutionError,
     RecurrenceSpec,
-    SchedulePeriod,
     occurrence_placements,
     resolve,
 )
@@ -82,11 +81,14 @@ def build_calendar(
     cadence_days: int = _CADENCE_DAYS,
     count: int = _PERIOD_COUNT,
     user_id: int = _USER_ID,
-) -> PeriodCalendar:
+) -> PayCalendar:
     """Return a contiguous calendar, built the way the app builds one.
 
-    Mirrors ``pay_period_service.generate_pay_periods``: each period ends
-    ``cadence_days - 1`` after it starts and the next opens the following day.
+    Hands over the PAYDAYS and lets the value derive the rest, which is what
+    ``pay_calendar.calendar_for`` does: each period ends the day before the
+    next payday, and the last one ``cadence_days - 1`` after its own.  On a
+    contiguous run those two rules coincide, so this reproduces exactly the
+    schedule ``pay_period_write.record_paydays`` materialises.
     ``period_id`` is ``index + 1`` so a test can name a start period by the
     same number it names its index by.
 
@@ -98,19 +100,16 @@ def build_calendar(
             against the spec's.
 
     Returns:
-        The :class:`~app.services.recurrence.PeriodCalendar`.
+        The :class:`~app.services.pay_calendar.PayCalendar`.
     """
-    return PeriodCalendar(user_id=user_id, periods=tuple(
-        SchedulePeriod(
-            period_id=index + 1,
-            period_index=index,
-            start_date=first_payday + timedelta(days=cadence_days * index),
-            end_date=first_payday + timedelta(
-                days=cadence_days * index + cadence_days - 1,
-            ),
-        )
-        for index in range(count)
-    ))
+    return PayCalendar.from_paydays(
+        paydays=[
+            (index + 1, first_payday + timedelta(days=cadence_days * index))
+            for index in range(count)
+        ],
+        cadence_days=cadence_days,
+        user_id=user_id,
+    )
 
 
 def spec_for(pattern: RecurrencePatternEnum, **overrides) -> RecurrenceSpec:
@@ -868,7 +867,7 @@ class TestTheTwoVocabulariesAgree:
 
     @staticmethod
     def assert_anchor_is_in_phase(
-        spec: RecurrenceSpec, calendar: PeriodCalendar,
+        spec: RecurrenceSpec, calendar: PayCalendar,
     ) -> None:
         """Assert the anchor's own period is one the old engine fires on.
 
@@ -1131,33 +1130,46 @@ class TestRefusals:
         spec = spec_for(RecurrencePatternEnum.MONTHLY, day_of_month=15)
 
         with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
-            resolve(spec, PeriodCalendar(user_id=1, periods=()))
+            resolve(spec, PayCalendar.from_paydays(
+                paydays=(), cadence_days=None, user_id=1,
+            ))
 
 
 @pytest.mark.usefixtures("app")
 class TestScheduleShapes:
-    """The calendar's own assumptions, at shapes the app permits."""
+    """The calendar's own answers, at shapes the app permits."""
 
-    def test_a_gap_in_the_schedule_does_not_break_the_month_lookup(self):
-        """Pay periods are NOT contiguous by construction (finding D7).
+    def test_a_month_with_no_payday_in_it_has_no_earliest_start(self):
+        """A month the schedule opens no period in simply has no payday.
 
-        ``pay_period_service._reject_overlapping_batch`` requires only that a
-        new batch start AFTER the latest existing ``end_date``, so a user who
-        generates their real schedule later than the period registration
-        bootstrapped leaves a gap.  ``earliest_start_in_month`` takes a
-        minimum over the periods that exist rather than walking, so a month
-        the gap swallows simply has no payday.
+        ``earliest_start_in_month`` takes a minimum over the periods that
+        exist rather than walking a cadence, so a month with no payday answers
+        ``None`` rather than inventing one.  ``Monthly First`` is what asks:
+        that pattern fires on a month's FIRST paycheck, so whether a month can
+        honour it depends on whether one lands there.
+
+        **Built from a long PAYDAY interval rather than from a schedule GAP**,
+        which is the correction plan step C2-b2 makes here.  This test used to
+        splice a bootstrap period in front of the real schedule and call the
+        months between them a hole (finding D7); a calendar now derives each
+        end from the next payday, so those days belong to the bootstrap
+        paycheck and there is no hole to test with.  What survives is the fact
+        the assertion was always about: February holds no payday.
         """
-        bootstrap = SchedulePeriod(
-            period_id=1, period_index=0,
-            start_date=date(2026, 1, 5), end_date=date(2026, 1, 18),
+        calendar = PayCalendar.from_paydays(
+            paydays=[(1, date(2026, 1, 5)), (2, date(2026, 3, 26))],
+            cadence_days=14,
+            user_id=1,
         )
-        real = build_calendar()
-        calendar = PeriodCalendar(user_id=1, periods=(bootstrap,) + real.periods)
 
         assert calendar.earliest_start_in_month(2026, 1) == date(2026, 1, 5)
         assert calendar.earliest_start_in_month(2026, 2) is None
         assert calendar.opening_bound() == date(2026, 1, 5)
+        # And the days February holds still belong to a paycheck: the January
+        # one runs to the day before the next payday.
+        assert calendar.period_containing(
+            date(2026, 2, 14),
+        ).start_date == date(2026, 1, 5)
 
     def test_a_ninety_day_cadence_resolves_a_monthly_rule(self):
         """A cadence longer than a month leaves months with no payday at all.

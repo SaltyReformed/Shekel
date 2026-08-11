@@ -400,22 +400,6 @@ EVT_RECURRENCE_CONFLICTS_RESOLVED = _register(
     "recurrence_conflicts_resolved", BUSINESS,
     "User resolved override/delete conflicts after a regeneration.",
 )
-EVT_RECURRENCE_OCCURRENCE_UNPLACED = _register(
-    "recurrence_occurrence_unplaced", BUSINESS,
-    "A recurring definition falls on a date the owner's pay schedule covers "
-    "with NO pay period, so the occurrence was logged and skipped (plan ledger "
-    "row D7, developer ruling 2026-08-08).  The obligation is real and has no "
-    "paycheck to live in.  It WAS reachable because the batch guard of the day, "
-    "pay_period_service._reject_overlapping_batch, rejected overlapping batches "
-    "and not GAPPED ones (finding F-10).  **Both generators of a hole are now "
-    "closed**: balance:X-ad-a deleted the registration bootstrap payday, and "
-    "pay-calendar C3-b replaced that guard with pay_period_write, which "
-    "materialises the payday derivation -- under which a period ends the day "
-    "before the next payday, so no writer can leave a hole and any write "
-    "through it repairs one.  Production has none either (all 61 periods "
-    "contiguous, measured 2026-08-08).  A firing therefore names data written "
-    "before those steps that no schedule write has yet touched -- alert on it.",
-)
 EVT_RECURRENCE_RULE_NOT_EXCLUSIVE = _register(
     "recurrence_rule_not_exclusive", BUSINESS,
     "A template cleared its recurrence, but the rule row was not exclusively "

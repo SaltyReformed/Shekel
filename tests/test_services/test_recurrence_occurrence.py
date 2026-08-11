@@ -61,12 +61,10 @@ from app.enums import (
     PeriodPlacementEnum,
     RecurrenceUnitEnum,
 )
+from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
-    PeriodCalendar,
     RecurrenceGenerationError,
-    RecurrenceScheduleError,
     ResolvedRecurrence,
-    SchedulePeriod,
     occurrence_placements,
     occurrences,
     place,
@@ -148,11 +146,12 @@ _LONG_CADENCE_DIVERGENCES: dict[
 #: against a horizon of 2027-01-10, so January 2027's occurrence is emitted and
 #: unplaced.
 #:
-#: **Every one of them is ``BEYOND_THE_SCHEDULE``, not ``SCHEDULE_GAP``**, and
-#: the distinction is plan step R4b-2's (:class:`PlacementOutcome`).  Both
-#: baseline schedules are contiguous, so no hole exists to fall in; conflating
-#: the two is what made generation's first draft report a healthy schedule as
-#: corrupt.
+#: **Every one of them is the ordinary tail rather than a schedule HOLE**, a
+#: distinction plan step R4b-2 introduced as :class:`PlacementOutcome` and plan
+#: step C2-b2 dissolved: derived periods tile their covered span, so a hole is
+#: unconstructible and ``period is None`` has one meaning.  Both baseline
+#: schedules were contiguous anyway; conflating the two is what made
+#: generation's first draft report a healthy schedule as corrupt.
 _EXPECTED_UNPLACED: dict[str, list[date]] = {
     "monthly_first": [date(2027, 1, 1)],
     "long_cadence.monthly_first": [
@@ -231,7 +230,7 @@ def resolved_value(
 
 
 def dates_through(
-    resolved: ResolvedRecurrence, calendar: PeriodCalendar, through: date,
+    resolved: ResolvedRecurrence, calendar: PayCalendar, through: date,
 ) -> list[date]:
     """Return the rule's occurrence dates through *through*.
 
@@ -248,7 +247,7 @@ def dates_through(
 
 def placed_indices(
     resolved: ResolvedRecurrence,
-    calendar: PeriodCalendar,
+    calendar: PayCalendar,
     **kwargs,
 ) -> list[int]:
     """Return the period indices the rule's placed occurrences land in.
@@ -351,6 +350,45 @@ def _baseline_schedules() -> tuple[list, list]:
     )
 
 
+def _empty_calendar() -> PayCalendar:
+    """Return the calendar of an owner with no paydays at all.
+
+    ``cadence_days`` is ``None``, which plan step C2-b1 made legal beside an
+    empty payday set and only there: with no last period there is no projected
+    end for it to feed, so the value is provably unread.
+
+    Returns:
+        The empty :class:`~app.services.pay_calendar.PayCalendar`.
+    """
+    return PayCalendar.from_paydays(
+        paydays=(), cadence_days=None, user_id=_USER_ID,
+    )
+
+
+def _baseline_calendars(biweekly, long_cadence):
+    """Return ``{long_cadence flag: PayCalendar}`` for the two baseline schedules.
+
+    Each calendar states the cadence its schedule was generated at, which plan
+    step C2-b2 made an input: a period's last covered day is derived from the
+    NEXT payday, and the last one's from the owner's cadence.
+
+    Args:
+        biweekly: The 14-day baseline schedule.
+        long_cadence: The 90-day baseline schedule.
+
+    Returns:
+        The two calendars, keyed by ``RuleShape.long_cadence``.
+    """
+    return {
+        False: recurrence_baseline.build_shape_calendar(
+            biweekly, recurrence_baseline.SCHEDULE_CADENCE_DAYS,
+        ),
+        True: recurrence_baseline.build_shape_calendar(
+            long_cadence, recurrence_baseline.LONG_CADENCE_DAYS,
+        ),
+    }
+
+
 def _new_engine_placements() -> dict[str, list[tuple[date, int | None]]]:
     """Drive the NEW engine through every baseline shape.
 
@@ -368,10 +406,7 @@ def _new_engine_placements() -> dict[str, list[tuple[date, int | None]]]:
         duplicates kept and in occurrence order.
     """
     biweekly, long_cadence = _baseline_schedules()
-    calendars = {
-        False: recurrence_baseline.build_shape_calendar(biweekly),
-        True: recurrence_baseline.build_shape_calendar(long_cadence),
-    }
+    calendars = _baseline_calendars(biweekly, long_cadence)
     answers = {}
     for shape in recurrence_baseline.build_shapes():
         calendar = calendars[shape.long_cadence]
@@ -455,7 +490,7 @@ class TestTheParallelRun:
 
         What it asserts now is not tautological, and the difference is the
         adapter: the snapshot is captured through
-        ``recurrence.rule_occurrences``, whose callers map ``SchedulePeriod``
+        ``recurrence.rule_occurrences``, whose callers map ``DerivedPeriod``
         values back to the caller's own period rows, applies the per-call
         ``effective_from`` floor, and preserves occurrence order including
         repeats.  This side drives ``resolve`` and ``occurrence_placements``
@@ -592,7 +627,9 @@ class TestTheParallelRun:
         stride-and-bisect, so agreement is evidence rather than tautology.
         """
         _biweekly, long_periods = _baseline_schedules()
-        calendar = recurrence_baseline.build_shape_calendar(long_periods)
+        calendar = recurrence_baseline.build_shape_calendar(
+            long_periods, recurrence_baseline.LONG_CADENCE_DAYS,
+        )
         placements = _new_engine_placements()
         first_day = long_periods[0].start_date
         last_day = calendar.horizon()
@@ -696,10 +733,7 @@ class TestTheParallelRun:
         first month and nothing else would say so.
         """
         biweekly, long_cadence = _baseline_schedules()
-        calendars = {
-            False: recurrence_baseline.build_shape_calendar(biweekly),
-            True: recurrence_baseline.build_shape_calendar(long_cadence),
-        }
+        calendars = _baseline_calendars(biweekly, long_cadence)
         checked = 0
         skipped = []
         for shape in recurrence_baseline.build_shapes():
@@ -746,10 +780,7 @@ class TestTheParallelRun:
             False: {period.start_date for period in biweekly},
             True: {period.start_date for period in long_cadence},
         }
-        calendars = {
-            False: recurrence_baseline.build_shape_calendar(biweekly),
-            True: recurrence_baseline.build_shape_calendar(long_cadence),
-        }
+        calendars = _baseline_calendars(biweekly, long_cadence)
         checked = 0
         for shape in recurrence_baseline.build_shapes():
             calendar = calendars[shape.long_cadence]
@@ -1194,26 +1225,43 @@ class TestTheClosingBounds:
     def test_max_occurrences_counts_occurrences_not_placed_rows(self):
         """"Stop after N" is a property of the rule, not of the schedule.
 
-        An occurrence that lands in a schedule gap still counts: the rule says
-        the bill occurs, and whether the user's pay periods can host it is a
-        different question.  Counting placed rows instead would silently
-        extend a count-bounded rule past its own bound.
+        An occurrence the schedule cannot host still counts: the rule says the
+        bill occurs, and whether the user's pay periods reach it is a different
+        question.  Counting placed rows instead would silently extend a
+        count-bounded rule past its own bound.
+
+        **The unplaceable occurrence is one PAST THE HORIZON**, which since plan
+        step C2-b2 is the only kind there is: this case used to be built on a
+        schedule with a hole in it, and derived periods tile their covered span
+        so a hole is unconstructible.  ``through`` is stated explicitly because
+        the default stops at the horizon, where nothing unplaceable is emitted
+        at all.
         """
-        calendar = _gapped_calendar()
+        calendar = PayCalendar.from_paydays(
+            paydays=[(1, date(2026, 1, 1)), (2, date(2026, 1, 15))],
+            cadence_days=14,
+            user_id=_USER_ID,
+        )
         value = resolved_value(
             unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 1, 20),
             max_occurrences=2,
         )
 
-        placements = occurrence_placements(value, calendar)
+        placements = occurrence_placements(
+            value, calendar, through=date(2026, 6, 1),
+        )
 
+        assert calendar.horizon() == date(2026, 1, 28)
         assert [item.occurrence for item in placements] == [
             date(2026, 1, 20), date(2026, 2, 20),
         ]
-        # The February occurrence falls in the gap and places nowhere, but it
-        # still consumed one of the two.
+        # The February occurrence is past the horizon and places nowhere, but
+        # it still consumed one of the two -- and the bound stopped the walk
+        # there rather than letting March through.
         assert placements[1].period is None
-        assert placed_indices(value, calendar) == [1]
+        assert placed_indices(
+            value, calendar, through=date(2026, 6, 1),
+        ) == [1]
 
     def test_a_window_ending_before_the_anchor_emits_nothing(self):
         """Nothing before the first occurrence can ever be generated."""
@@ -1223,32 +1271,6 @@ class TestTheClosingBounds:
         )
 
         assert dates_through(value, calendar, date(2026, 4, 14)) == []
-
-
-def _gapped_calendar() -> PeriodCalendar:
-    """Return a schedule with a real hole in it (finding D7).
-
-    Two January periods, then a month of nothing, then two March periods.
-    ``pay_period_service._reject_overlapping_batch`` rejects OVERLAPS, not
-    gaps, so this is a schedule the application can actually produce.
-
-    Returns:
-        The gapped :class:`~app.services.recurrence.PeriodCalendar`.
-    """
-    spans = (
-        (0, date(2026, 1, 1), date(2026, 1, 14)),
-        (1, date(2026, 1, 15), date(2026, 1, 28)),
-        # 2026-01-29 .. 2026-02-28 is covered by no period at all.
-        (2, date(2026, 3, 1), date(2026, 3, 14)),
-        (3, date(2026, 3, 15), date(2026, 3, 28)),
-    )
-    return PeriodCalendar(user_id=_USER_ID, periods=tuple(
-        SchedulePeriod(
-            period_id=index + 1, period_index=index,
-            start_date=start, end_date=end,
-        )
-        for index, start, end in spans
-    ))
 
 
 @pytest.mark.usefixtures("app")
@@ -1264,18 +1286,6 @@ class TestPlacement:
                 day, calendar, PeriodPlacementEnum.CONTAINING_DATE,
             )
             assert found is not None and found.period_index == 1, day
-
-    def test_containing_date_answers_none_for_a_day_in_a_gap(self):
-        """Finding D7: a date the schedule does not cover has no period.
-
-        The alternative -- pulling the row into the neighbouring paycheck --
-        would put real money in a period whose span does not contain it.
-        """
-        calendar = _gapped_calendar()
-
-        assert place(
-            date(2026, 2, 20), calendar, PeriodPlacementEnum.CONTAINING_DATE,
-        ) is None
 
     def test_containing_date_answers_none_outside_the_schedule(self):
         """Before the first payday and after the horizon both answer None."""
@@ -1307,14 +1317,22 @@ class TestPlacement:
         two could in principle drift.  They cannot -- both go through
         ``_placement_search`` -- and this asserts it over both placements
         rather than leaving it to a reader of the source.
+
+        The window runs PAST the horizon so the comparison covers the unplaced
+        answer as well as the placed one; stopping at the default would compare
+        only the cases where both return a period.
         """
-        calendar = _gapped_calendar()
+        calendar = build_calendar()
         for placement in PeriodPlacementEnum:
             value = resolved_value(
-                unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 1, 20),
+                unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2028, 5, 20),
                 placement=placement,
             )
-            for item in occurrence_placements(value, calendar):
+            items = occurrence_placements(
+                value, calendar, through=date(2028, 10, 20),
+            )
+            assert any(item.period is None for item in items), placement
+            for item in items:
                 assert item.period == place(
                     item.occurrence, calendar, placement,
                 ), (placement, item.occurrence)
@@ -1330,31 +1348,15 @@ class TestPlacement:
 
 
 @pytest.mark.usefixtures("app")
-class TestScheduleGapsAndTheHorizon:
-    """Finding D7, and what the default generation window means."""
+class TestTheGenerationWindowAndTheHorizon:
+    """What the default generation window means, and what lies past it.
 
-    def test_an_occurrence_in_a_gap_is_reported_rather_than_dropped(self):
-        """The composition names the hole instead of hiding it.
-
-        Its callers project onto periods, so an occurrence with nowhere
-        to live simply never appears -- indistinguishable from a rule that
-        does not fire.  Here it appears with ``period=None``, which is what
-        lets plan step R4 log a schedule hole instead of losing a bill.
-        """
-        calendar = _gapped_calendar()
-        value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 1, 20),
-        )
-
-        placements = occurrence_placements(value, calendar)
-
-        assert [item.occurrence for item in placements] == [
-            date(2026, 1, 20), date(2026, 2, 20), date(2026, 3, 20),
-        ]
-        assert [
-            None if item.period is None else item.period.period_index
-            for item in placements
-        ] == [1, None, 3]
+    **This class used to open on finding D7** -- an occurrence falling in a
+    schedule HOLE, reported with ``period=None`` rather than dropped.  Plan step
+    C2-b2 made that state unconstructible (derived periods tile their covered
+    span), so the one remaining way to be unplaced is to lie past the horizon,
+    which is what the rest of this class was already about.
+    """
 
     def test_the_default_window_ends_at_the_schedules_horizon(self):
         """Past the last covered day no placement can succeed, so none is asked."""
@@ -1398,7 +1400,7 @@ class TestScheduleGapsAndTheHorizon:
         than raising because "generate nothing" is what
         ``generate_for_template`` does today for an empty period list.
         """
-        calendar = PeriodCalendar(user_id=_USER_ID, periods=())
+        calendar = _empty_calendar()
         value = resolved_value(
             unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
         )
@@ -1533,7 +1535,7 @@ class TestRefusals:
         silently accepted there and raised everywhere else.  The guards now run
         first.
         """
-        empty = PeriodCalendar(user_id=_USER_ID, periods=())
+        empty = _empty_calendar()
         value = resolved_value(
             unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
             **broken,
@@ -1544,7 +1546,7 @@ class TestRefusals:
 
     def test_an_empty_schedule_does_not_excuse_a_broken_placement(self):
         """Same, for the placement axis, which resolves before the walk."""
-        empty = PeriodCalendar(user_id=_USER_ID, periods=())
+        empty = _empty_calendar()
         value = resolved_value(
             unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
             placement=object(),
@@ -1556,7 +1558,7 @@ class TestRefusals:
 
 @pytest.mark.usefixtures("app")
 class TestTheScheduleSearches:
-    """``PeriodCalendar``'s new surface, and the invariant it now enforces."""
+    """The calendar surface the occurrence engine reads, and its tiling."""
 
     def test_the_horizon_is_the_last_covered_day(self):
         """The symmetric partner of ``opening_bound``."""
@@ -1568,41 +1570,45 @@ class TestTheScheduleSearches:
 
     def test_an_empty_schedule_has_no_horizon(self):
         """``None`` rather than a fabricated date."""
-        assert PeriodCalendar(user_id=_USER_ID, periods=()).horizon() is None
+        assert _empty_calendar().horizon() is None
 
-    def test_a_gapped_schedule_is_accepted(self):
-        """Gaps are legal -- the generator rejects overlaps, not holes."""
-        calendar = _gapped_calendar()
+    def test_the_covered_span_has_no_hole_in_it(self):
+        """A gapped, overlapping or reversed schedule is UNCONSTRUCTIBLE.
 
-        assert len(calendar.periods) == 4
-        assert calendar.horizon() == date(2026, 3, 28)
+        **This replaces three tests plan step C2-b2 made unwritable.**  They
+        built a calendar from stored spans -- one with a hole, one overlapping,
+        one running backwards -- and asserted that the first was accepted and
+        the other two raised ``RecurrenceScheduleError``.  A calendar now holds
+        PAYDAYS and derives every end from the next one, so none of the three
+        states can be expressed as an input at all, and the refusals were
+        deleted with the class that raised them.  What is left to assert is the
+        property they were policing, which is now a consequence of the
+        construction: consecutive paydays tile ``[opening, horizon]``.
 
-    def test_an_overlapping_schedule_is_refused(self):
-        """Two periods covering one day give the searches two answers.
-
-        The invariant ``pay_period_service._reject_overlapping_batch``
-        enforces on write, checked again at the value boundary because the
-        placement searches BISECT: an overlapping schedule would return a
-        plausible wrong paycheck instead of an error.
+        The derivation's own refusals -- a duplicate payday, a bad cadence --
+        are graded by ``tests/test_services/test_pay_calendar_value.py``, which
+        also holds the tiling proof over every shape a calendar can take.  This
+        is the recurrence engine's own stake in it: the searches BISECT, so a
+        day inside the span that answered ``None`` would seat a bill in a
+        plausible wrong paycheck.
         """
-        with pytest.raises(RecurrenceScheduleError, match="on or before"):
-            PeriodCalendar(user_id=_USER_ID, periods=(
-                SchedulePeriod(
-                    period_id=1, period_index=0,
-                    start_date=date(2026, 1, 1), end_date=date(2026, 1, 14),
-                ),
-                SchedulePeriod(
-                    period_id=2, period_index=1,
-                    start_date=date(2026, 1, 14), end_date=date(2026, 1, 27),
-                ),
-            ))
+        # Paydays 21 days apart at a stored cadence of 14: the middle period
+        # runs to the day before the NEXT payday, not to payday + 13, which is
+        # exactly the shape that used to leave a week uncovered.
+        calendar = PayCalendar.from_paydays(
+            paydays=[
+                (1, date(2026, 1, 1)),
+                (2, date(2026, 1, 22)),
+                (3, date(2026, 2, 12)),
+            ],
+            cadence_days=14,
+            user_id=_USER_ID,
+        )
 
-    def test_a_period_ending_before_it_starts_is_refused(self):
-        """A period covering no day cannot be searched by date."""
-        with pytest.raises(RecurrenceScheduleError, match="covers no day"):
-            PeriodCalendar(user_id=_USER_ID, periods=(
-                SchedulePeriod(
-                    period_id=1, period_index=0,
-                    start_date=date(2026, 1, 14), end_date=date(2026, 1, 1),
-                ),
-            ))
+        day = calendar.opening_bound()
+        while day <= calendar.horizon():
+            assert calendar.period_containing(day) is not None, (
+                f"{day} is inside the covered span and seats in no period"
+            )
+            day += timedelta(days=1)
+        assert calendar.horizon() == date(2026, 2, 25)

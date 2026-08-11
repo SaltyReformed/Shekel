@@ -40,12 +40,12 @@ from app.models.ref import AccountType, RecurrencePattern
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
+from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     UNAVAILABLE_PATTERN_LABEL,
     UNAVAILABLE_PATTERN_MESSAGE,
     RecurrenceResolutionError,
     RecurrenceSpec,
-    calendar_for,
     pattern_choices,
     resolve,
 )

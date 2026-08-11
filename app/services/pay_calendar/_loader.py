@@ -11,18 +11,14 @@ convention, and the package's public surface hides it behind
 **Nothing in ``app/`` called this until plan step C2-d**, which is the leaf
 boundary C2-b1 shipped it behind -- the same technique C1 and C2-a used, so the
 loader was proven on its own against a real schedule rather than inside a
-commit that also moved every consumer.  **C2-d is that first consumer**: both
+commit that also moved every consumer.  **C2-d was that first consumer**: both
 anchor-correction posting writers reach it through
-:func:`app.services._posting_reconcile.filing_calendar_for`.  Still to come:
-C2-b2 points the ten ``recurrence.calendar_for`` call sites here and deletes the
-calendar they use today, and C2-c / C2-e / C2-f bring the cash view, the
-projection axis and ``pay_period_service``'s readers.
-
-**Two functions named ``calendar_for`` live under ``app.services`` until
-C2-b2**, this one and ``recurrence._authoring.calendar_for``, and they return
-different types (:class:`~._calendar.PayCalendar` against the recurrence arc's
-``PeriodCalendar``).  Import the package rather than the bare name where the
-distinction could be missed; C2-b2 deletes the other.
+:func:`app.services._posting_reconcile.filing_calendar_for`.  **C2-b2 then
+brought the recurrence engine** -- its ten ``recurrence.calendar_for`` call
+sites now name this function, and the second calendar type and second loader
+they used were deleted, so ``calendar_for`` is one name under ``app.services``
+again.  Still to come: C2-c / C2-e / C2-f bring the cash view, the projection
+axis and ``pay_period_service``'s readers.
 
 **Why it does NOT call ``pay_period_service.get_all_periods``**, which is the
 obvious spelling and is the one this must avoid.  Plan step C2-f points that

@@ -978,9 +978,10 @@ IRREGULAR_SHAPES: "tuple[IrregularShape, ...]" = (
             "table constraint keeps it out -- uq_pay_periods_user_index "
             "refuses a DUPLICATE ordinal and ck_pay_periods_positive_index a "
             "NEGATIVE one, and 0 and 1 here are neither.  What refuses it is "
-            "PeriodCalendar.__post_init__ at the value boundary and "
-            "_pp_assert_structure in the suite, both of which C4 and C5 "
-            "delete.  Derived, the ordinal IS the payday order -- and the row "
+            "_pp_assert_structure in the suite, which C4 deletes -- the "
+            "recurrence arc's own value-boundary refusal went at C2-b2 with "
+            "the class that held it.  Derived, the ordinal IS the payday "
+            "order -- and the row "
             "IDs prove it, running 2 then 1 down the derived calendar."
         ),
         cadence_days=14,

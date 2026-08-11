@@ -30,8 +30,9 @@ Plan step R2e-3 deleted it: "does not recur" is ``recurrence_rule_id IS NULL``
 on either template kind, which never reaches this module at all.
 
 Pure: no Flask, no ORM, no clock, no database.  Its two inputs are the
-authored spec and the owner's :class:`~app.services.recurrence._calendar.PeriodCalendar`,
-so every derivation below can be exercised at exact dates.
+authored spec and the owner's
+:class:`~app.services.pay_calendar.PayCalendar`, so every derivation below can
+be exercised at exact dates.
 
 The four derivations
 --------------------
@@ -127,7 +128,7 @@ from app.enums import (
     RecurrenceUnitEnum,
 )
 from app.exceptions import ShekelError
-from app.services.recurrence._calendar import PeriodCalendar, SchedulePeriod
+from app.services.pay_calendar import DerivedPeriod, PayCalendar
 from app.services.recurrence._months import (
     MONTHS_PER_YEAR,
     month_ordinal,
@@ -467,8 +468,8 @@ def _pattern_member(pattern_id: int) -> RecurrencePatternEnum:
 
 def _effective_start(
     spec: RecurrenceSpec,
-    calendar: PeriodCalendar,
-    start_period: SchedulePeriod | None,
+    calendar: PayCalendar,
+    start_period: DerivedPeriod | None,
 ) -> date:
     """Return the date this rule's first occurrence is measured from.
 
@@ -569,7 +570,7 @@ def _next_month_first(day: date) -> date:
     return date(day.year, day.month + 1, 1)
 
 
-def _first_of_month_anchor(calendar: PeriodCalendar, effective: date) -> date:
+def _first_of_month_anchor(calendar: PayCalendar, effective: date) -> date:
     """Return the 1st of the first month whose own first paycheck qualifies.
 
     Derivation 4 in the module docstring, answered by SCANNING the schedule's
@@ -623,7 +624,7 @@ def _first_of_month_anchor(calendar: PeriodCalendar, effective: date) -> date:
 
 
 def _phased_period_anchor(
-    calendar: PeriodCalendar, effective: date, interval_n: int, offset: int,
+    calendar: PayCalendar, effective: date, interval_n: int, offset: int,
 ) -> date:
     """Return the first period start at or after *effective* in the phase.
 
@@ -665,7 +666,7 @@ def _phased_period_anchor(
 def _resolve_anchor(
     spec: RecurrenceSpec,
     derivation: _PatternDerivation,
-    calendar: PeriodCalendar,
+    calendar: PayCalendar,
     effective: date,
     phase: tuple[int, int],
 ) -> tuple[date, int | None]:
@@ -743,7 +744,7 @@ def _month_anchor_day(
     return None
 
 
-def _require_owner(spec: RecurrenceSpec, calendar: PeriodCalendar) -> None:
+def _require_owner(spec: RecurrenceSpec, calendar: PayCalendar) -> None:
     """Refuse a spec resolved against somebody else's schedule.
 
     An anchor is measured against a pay-period schedule, so pairing a rule
@@ -900,7 +901,7 @@ def _derive_offset_periods(
     spec: RecurrenceSpec,
     pattern: RecurrencePatternEnum,
     interval_n: int,
-    start_period: SchedulePeriod | None,
+    start_period: DerivedPeriod | None,
 ) -> int:
     """Return the ``offset_periods`` phase an authored recurrence fires on.
 
@@ -934,7 +935,7 @@ def _derive_offset_periods(
     return start_period.period_index % interval_n
 
 
-def resolve(spec: RecurrenceSpec, calendar: PeriodCalendar) -> ResolvedRecurrence:
+def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
     """Resolve an authored recurrence into its two-axis meaning.
 
     The single producer of that value.  Nothing persists what it returns --

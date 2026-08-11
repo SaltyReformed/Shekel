@@ -2,33 +2,29 @@
 
 ``pay_calendar.calendar_for`` is the only impure thing in an otherwise pure
 package: it reads an owner's paydays and cadence and hands them to the
-derivation.  Nothing in ``app/`` calls it yet -- plan step C2-b2 points the ten
-``recurrence.calendar_for`` sites here -- so this module is where it is proven,
-BEFORE any consumer depends on it.  That ordering is the whole point of the
-decomposition, and it is the technique C1 and C2-a used.
+derivation.  It was proven here BEFORE any consumer depended on it -- nothing
+in ``app/`` called it until plan step C2-d, and plan step **C2-b2** then moved
+the ten ``recurrence.calendar_for`` sites onto it and deleted the calendar they
+used.  That ordering is the whole point of the decomposition, and it is the
+technique C1 and C2-a used.
 
-**The equivalence oracle is the load-bearing test here** and it is deliberately
-temporary: ``TestItAnswersWhatTheRecurrenceCalendarAnswers`` drives the loaded
+**The equivalence oracle that used to be the load-bearing test here is GONE**,
+and its going is plan step C2-b2.  It drove the loaded
 :class:`~app.services.pay_calendar.PayCalendar` and the
-``recurrence.PeriodCalendar`` that C2-b2 deletes side by side over a real
-schedule, so the cutover is a proven swap rather than a hopeful one.  It retires
-with the class it compares against, exactly as C1's harness retires at C4.
+``recurrence.PeriodCalendar`` side by side over a real schedule so the cutover
+would be a proven swap rather than a hopeful one; the cutover deleted the class
+it compared against, exactly as its own docstring said it would.
 
-**The TWO shapes where they diverge are pinned rather than avoided**, and there
-being two is an adversarial review's correction to a docstring that named one.
-A stored schedule may hold a HOLE (plan finding P2) and the derived calendar
-TILES, so day-in-a-hole answers differ by construction (ledger row **P27**,
-measured at 55 shapes across 53 tests of this suite).  And the stored CADENCE
-may outlive the stored ``end_date`` it generated, which moves the derived
-horizon and only the derived horizon (row **P28**).  The second one matters
-most here because this suite cannot see it by accident: every horizon
-comparison is arithmetically forced to agree.  It was forced through
-``resolve_cadence``'s fallback -- no fixture wrote a ``budget.pay_schedule``
-row, so the cadence came back as the exact inverse of the generator's
-arithmetic -- and since plan step **C3-b** it is forced through the cadence
-rule instead, which stores the very cadence the batch generated at.  Each
-divergence has its own named control, and the two tests that need the
-row-less state now DELETE the row rather than relying on nothing creating it.
+**The TWO shapes where the derivation and the stored COLUMNS diverge outlive
+it**, restated against those columns so nothing depends on a second value
+object: a stored HOLE is absorbed rather than reproduced (ledger row **P27**),
+and the stored CADENCE moves the derived horizon while the stored ``end_date``
+stays put (row **P28**).  The second matters most because this suite cannot see
+it by accident: on a generated schedule the horizon agrees by ARITHMETIC,
+whatever the loader does with the cadence -- ``resolve_cadence`` answers the
+cadence the batch was generated at and ``end = start + cadence - 1`` is its
+exact inverse.  Both controls die at plan step **C4** with the columns they
+read.
 
 The contiguous shape is the ``seed_periods`` fixture, which drops ``seed_user``'s
 2024 bootstrap period and RENUMBERS what is left.  That renumbering matters: an
@@ -50,7 +46,6 @@ from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
 from app.services import pay_period_service, pay_period_write, pay_schedule_service
 from app.services.pay_calendar import PayCalendar, calendar_for
-from app.services.recurrence import PeriodCalendar
 from tests._test_helpers import open_calendar_hole
 
 #: ``seed_periods``' first payday, restated so the assertions below name a value
@@ -354,179 +349,121 @@ class TestTheCadenceComesFromTheScheduleService:
             assert after.horizon() == before.horizon() + timedelta(days=7)
 
 
-class TestItAnswersWhatTheRecurrenceCalendarAnswers:
-    """The equivalence oracle for plan step C2-b2's cutover.
+class TestTheDerivedCalendarDivergesFromTheStoredColumns:
+    """The TWO shapes where the derivation and the stored columns part company.
 
-    Every question ``PeriodCalendar`` exposes, asked of both values over a real
-    schedule.  It is what makes the cutover a proven swap; it retires with the
-    class it compares against.
+    **What used to sit here was an equivalence ORACLE** -- every question the
+    recurrence arc's ``PeriodCalendar`` exposed, asked of both values over a
+    real schedule, so plan step C2-b2's cutover would be a proven swap rather
+    than a hopeful one.  It retired with the class it compared against, exactly
+    as its own docstring said it would; the cutover it was written for is what
+    deleted it.
+
+    **The two DIVERGENCE controls survive it, and they are the half that has to
+    outlive the oracle.**  Both are measured against the stored columns rather
+    than against a second value object, so neither depends on a class existing:
+
+    * a stored HOLE is ABSORBED rather than reproduced (ledger row **P27**);
+    * the stored CADENCE moves the derived horizon while the stored
+      ``end_date`` stays where it was (row **P28**).
+
+    Both die at plan step **C4**, with the columns they compare against.
     """
 
-    @staticmethod
-    def _both(user_id):
-        """Return the two calendars for *user_id*, built the two ways.
-
-        Args:
-            user_id: The owning user.
-
-        Returns:
-            A ``(PayCalendar, PeriodCalendar)`` pair.
-        """
-        return (
-            calendar_for(user_id),
-            PeriodCalendar.from_pay_periods(
-                pay_period_service.get_all_periods(user_id), user_id,
-            ),
-        )
-
-    @pytest.mark.usefixtures("seed_periods")
-    def test_the_bounds_agree(self, app, seed_user):
-        """``opening_bound`` and ``horizon`` bound every generation pass."""
-        with app.app_context():
-            new, old = self._both(seed_user["user"].id)
-
-            assert new.opening_bound() == old.opening_bound()
-            assert new.horizon() == old.horizon()
-
-    @pytest.mark.usefixtures("seed_periods")
-    def test_every_day_of_the_schedule_places_identically(self, app, seed_user):
-        """The two placement searches, over every covered day plus a margin.
-
-        Walked day by day rather than sampled: the disagreements this oracle
-        exists to catch are at period BOUNDARIES, and a sampler stepping by
-        anything but one day could step over every one of them.
-        """
-        with app.app_context():
-            new, old = self._both(seed_user["user"].id)
-
-            day = new.opening_bound() - timedelta(days=5)
-            last = new.horizon() + timedelta(days=5)
-            checked = 0
-            while day <= last:
-                mine, theirs = new.period_containing(day), old.period_containing(day)
-                assert (mine is None) == (theirs is None), day
-                if mine is not None:
-                    assert mine.period_id == theirs.period_id, day
-                    assert mine.start_date == theirs.start_date, day
-                    assert mine.end_date == theirs.end_date, day
-                    assert mine.period_index == theirs.period_index, day
-
-                mine = new.period_starting_on_or_after(day)
-                theirs = old.period_starting_on_or_after(day)
-                assert (mine is None) == (theirs is None), day
-                if mine is not None:
-                    assert mine.period_id == theirs.period_id, day
-                    assert mine.start_date == theirs.start_date, day
-
-                day += timedelta(days=1)
-                checked += 1
-
-            # 10 periods x 14 days = 140 covered days (opening 2026-01-02
-            # through horizon 2026-05-21 inclusive), plus the 5-day margin on
-            # each side.  Asserted so the loop cannot silently walk nothing.
-            assert checked == PERIOD_COUNT * CADENCE + 10
-
-    @pytest.mark.usefixtures("seed_periods")
-    def test_every_stored_id_resolves_identically(self, app, seed_user):
-        """``period_by_id``, plus the two ways it answers ``None``."""
-        with app.app_context():
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            new, old = self._both(seed_user["user"].id)
-
-            for period in periods:
-                mine, theirs = new.period_by_id(period.id), old.period_by_id(period.id)
-                assert mine is not None and theirs is not None, period.id
-                assert mine.start_date == theirs.start_date
-                assert mine.period_index == theirs.period_index
-
-            assert new.period_by_id(None) is old.period_by_id(None) is None
-            unknown = max(period.id for period in periods) + 1000
-            assert new.period_by_id(unknown) is old.period_by_id(unknown) is None
-
-    @pytest.mark.usefixtures("seed_periods")
-    def test_every_month_the_schedule_touches_agrees(self, app, seed_user):
-        """``earliest_start_in_month``, over each month plus one either side."""
-        with app.app_context():
-            new, old = self._both(seed_user["user"].id)
-
-            months = {
-                (period.start_date.year, period.start_date.month)
-                for period in new.periods
-            }
-            months |= {(2025, 12), (2027, 1)}
-            answered = 0
-            for year, month in sorted(months):
-                mine = new.earliest_start_in_month(year, month)
-                assert mine == old.earliest_start_in_month(year, month), (year, month)
-                answered += mine is not None
-
-            # The schedule spans enough months that this is not vacuously
-            # asserting ``None == None`` everywhere.
-            assert answered >= 4
-
-    def test_they_diverge_on_a_hole_and_that_is_the_ruled_change(
+    def test_a_stored_hole_is_covered_by_the_derived_calendar(
         self, app, db, seed_user,
     ):
-        """The oracle's own blind spot, made explicit (ledger row **P27**).
+        """Ledger row **P27**, stated as a test rather than as a claim.
 
-        Every schedule above is contiguous, so every assertion above would hold
-        even if the derivation absorbed holes silently -- which it does.  This
-        is the control that says so: on a GAPPED schedule the two calendars
-        answer differently, deliberately, and a reader taking the agreement
-        above as "the cutover changes nothing" would be wrong.
+        A schedule written before plan step C3-b can leave days no STORED
+        period covers.  The derivation does not report such a day, it absorbs
+        it: the preceding paycheck runs to the day before the next payday.
+        This is the ruled model working, and it is why plan step C2-b2 could
+        delete the recurrence engine's schedule-gap report -- and why
+        ``integrity_check`` **BA-07** exists to ask the question of the stored
+        rows instead.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             stored_end = seed_user["bootstrap_period"].end_date
             _gapped_schedule(db.session, user_id, seed_user["bootstrap_period"])
-
-            new, old = self._both(user_id)
             in_the_hole = stored_end + timedelta(days=30)
 
-            assert old.period_containing(in_the_hole) is None
-            assert new.period_containing(in_the_hole) is not None
+            # The premise: no STORED period covers the day.
+            assert not any(
+                period.start_date <= in_the_hole <= period.end_date
+                for period in pay_period_service.get_all_periods(user_id)
+            )
+
+            covering = calendar_for(user_id).period_containing(in_the_hole)
+
+            assert covering is not None
+            assert covering.start_date <= stored_end
+            assert covering.end_date > stored_end, (
+                "the absorbing period must run PAST its own stored end -- that "
+                "is what makes this an absorption rather than a period that "
+                "already covered the day"
+            )
 
     @pytest.mark.usefixtures("seed_periods")
-    def test_they_diverge_when_the_stored_cadence_outlives_the_stored_end(
+    def test_the_derived_horizon_moves_when_the_stored_cadence_moves(
         self, app, db, seed_user,
     ):
-        """The SECOND divergence class, and the oracle above cannot see it.
+        """Ledger row **P28**: the SECOND divergence, and it is invisible by default.
 
-        Every agreeing assertion in this class is arithmetically forced on the
-        cadence axis: no fixture writes a ``budget.pay_schedule`` row, so
-        ``resolve_cadence`` falls back to ``(end - start).days + 1``, which is
-        the exact inverse of the ``end = start + cadence - 1`` the generator
-        wrote.  ``new.horizon() == old.horizon()`` therefore cannot fail on a
-        generated schedule however the loader treats the cadence -- an
-        adversarial review of this step measured that, and this is the control
-        it is owed.
+        On any GENERATED schedule the derived horizon reproduces the stored one
+        BY ARITHMETIC: ``resolve_cadence`` answers the very cadence the batch
+        was generated at, and ``end = start + cadence - 1`` is its exact
+        inverse.  So an agreement test on this axis cannot fail however the
+        loader treats the cadence, which an adversarial review of plan step
+        C2-b1 measured.  This is the control it is owed, and it asserts the
+        divergence in BOTH directions.
 
-        The door is live rather than hypothetical: plan finding **P12** --
-        ``routes/pay_periods.py:98`` reaches ``upsert_schedule`` even when the
-        batch created nothing -- lets a user rewrite the stored cadence without
-        touching a single period, and after plan step C2-b2 the recurrence
-        horizon moves with it.  Ledger row **P28**.
+        **No live door reaches this state, and the citation that said one did
+        is withdrawn.**  This paragraph named plan finding **P12** --
+        ``routes/pay_periods.py`` reaching ``upsert_schedule`` even when the
+        batch created nothing -- as the door that rewrites a stored cadence
+        without touching a period.  Plan step **C3-b** closed it: the route
+        goes through ``pay_period_write.record_paydays``, which upserts the
+        cadence only when it is recording paydays and then re-materialises
+        every row from the derivation (``_write_derivation``), so the stored
+        end and the stored cadence agree again at the end of the write.
+        ``upsert_schedule`` has exactly one caller in ``app/`` and that is it,
+        verified 2026-08-11.  What survives is legacy data and a direct
+        database write -- which is what makes this a CONTROL for a divergence
+        the reader must still answer for rather than a reproduction of a
+        reachable bug, and it is why the fixture below calls the service twice
+        instead of driving a route.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            stored_horizon = calendar_for(user_id).horizon()
+            stored_horizon = max(
+                period.end_date
+                for period in pay_period_service.get_all_periods(user_id)
+            )
+            assert calendar_for(user_id).horizon() == stored_horizon
 
             # LENGTHENED: the derived horizon runs past the last stored end, so
             # generation would place rows in days no stored period covers.
             pay_schedule_service.upsert_schedule(user_id, CADENCE + 7)
             db.session.commit()
-            longer, old = self._both(user_id)
-            assert old.horizon() == stored_horizon
-            assert longer.horizon() == stored_horizon + timedelta(days=7)
+            assert calendar_for(user_id).horizon() == (
+                stored_horizon + timedelta(days=7)
+            )
 
             # SHORTENED: eleven days of a real, id-bearing pay period stop
             # being covered by any period at all.
             pay_schedule_service.upsert_schedule(user_id, 3)
             db.session.commit()
-            shorter, old = self._both(user_id)
+            shorter = calendar_for(user_id)
             assert shorter.horizon() == stored_horizon - timedelta(days=11)
-            assert old.period_containing(stored_horizon) is not None
             assert shorter.period_containing(stored_horizon) is None
+            # ...while the STORED column still says the day is covered, which
+            # is the whole divergence.
+            assert any(
+                period.start_date <= stored_horizon <= period.end_date
+                for period in pay_period_service.get_all_periods(user_id)
+            )
 
 
 @pytest.mark.usefixtures("seed_periods")
@@ -536,11 +473,14 @@ class TestThePartialSetHazardIsRealAndTheDoorIsWhatClosesIt:
     def test_deriving_over_a_slice_renumbers_it_from_zero(self, app, seed_user):
         """The silent half: ordinals, which are the ``Every N Periods`` phase key.
 
-        ``PeriodCalendar.from_pay_periods`` COPIES ``period_index`` off each ORM
-        row, so a slice keeps its true ordinals; the derivation computes the
-        ordinal as a position in the set it is HANDED.  A rule whose phase is
-        ``(period_index - offset) % interval_n`` therefore re-phases against
+        The STORED ``period_index`` rides on the row, so a slice keeps its true
+        ordinals; the derivation computes the ordinal as a position in the set
+        it is HANDED, so the same slice comes back 0..n-1.  A rule whose phase
+        is ``(period_index - offset) % interval_n`` therefore re-phases against
         ordinals naming no real paycheck.
+
+        Compared against the stored column rather than against a second
+        calendar value: plan step C2-b2 deleted the one that copied it.
         """
         with app.app_context():
             tail = pay_period_service.get_all_periods(seed_user["user"].id)[6:]
@@ -550,9 +490,8 @@ class TestThePartialSetHazardIsRealAndTheDoorIsWhatClosesIt:
                 CADENCE,
                 seed_user["user"].id,
             )
-            kept = PeriodCalendar.from_pay_periods(tail, seed_user["user"].id)
 
-            assert [period.period_index for period in kept.periods] == [6, 7, 8, 9]
+            assert [period.period_index for period in tail] == [6, 7, 8, 9]
             assert [period.period_index for period in sliced.periods] == [0, 1, 2, 3]
 
     def test_the_loader_cannot_be_asked_for_a_slice(self, app, seed_user):

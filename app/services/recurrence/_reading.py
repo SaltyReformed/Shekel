@@ -55,15 +55,14 @@ contract.
 
 Flask-isolated and read-only: it touches no session and issues no query -- the
 owner's schedule arrives as a
-:class:`~app.services.recurrence._calendar.PeriodCalendar` the caller already
-holds.
+:class:`~app.services.pay_calendar.PayCalendar` the caller already holds.
 """
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 
 from app.models.recurrence_rule import RecurrenceRule
-from app.services.recurrence._calendar import PeriodCalendar, SchedulePeriod
+from app.services.pay_calendar import DerivedPeriod, PayCalendar
 from app.services.recurrence._occurrence import (
     OccurrencePlacement,
     occurrence_placements,
@@ -152,7 +151,7 @@ def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:
 
 
 def resolved_recurrence(
-    rule: RecurrenceRule, calendar: PeriodCalendar,
+    rule: RecurrenceRule, calendar: PayCalendar,
 ) -> ResolvedRecurrence | None:
     """Return what *rule* MEANS against its owner's schedule.
 
@@ -198,7 +197,7 @@ def resolved_recurrence(
 
 
 def read_rule(
-    rule: RecurrenceRule, calendar: PeriodCalendar,
+    rule: RecurrenceRule, calendar: PayCalendar,
 ) -> RuleReading:
     """Read *rule* against its owner's schedule, keeping both halves.
 
@@ -229,7 +228,7 @@ def read_rule(
 
 
 def rule_occurrences(
-    rule: RecurrenceRule, calendar: PeriodCalendar,
+    rule: RecurrenceRule, calendar: PayCalendar,
 ) -> tuple[OccurrencePlacement, ...]:
     """Return every occurrence *rule* names, each with the pay period it lands in.
 
@@ -257,13 +256,12 @@ def rule_occurrences(
     NAMES; it does not decide what is storable, which is why the read-only
     surfaces still render the repeats.
 
-    **An occurrence with no pay period is REPORTED, and it says which of the
-    two "no period" answers it is** (:class:`PlacementOutcome`).  A
-    ``SCHEDULE_GAP`` is owed with nowhere to live (plan ledger row D7) and the
-    generation seam logs it; ``BEYOND_THE_SCHEDULE`` is every schedule's
-    ordinary tail and is silent.  Conflating them was a defect in this step's
-    first draft and a neutral review measured it at 43% of biweekly schedule
-    openings -- see :class:`PlacementOutcome`.
+    **An occurrence with no pay period is REPORTED, and since plan step C2-b2
+    that means ONE thing**: the saved schedule does not reach it, which is every
+    schedule's ordinary tail rather than a signal.  The other reading -- a
+    schedule HOLE, plan ledger row D7 -- went unconstructible when the calendar
+    began deriving each period's end from the next payday, and the
+    ``PlacementOutcome`` that told the two apart went with it.
 
     Args:
         rule: The stored (or transient) recurrence rule.
@@ -303,7 +301,7 @@ def placed_periods(
     placements: Iterable[OccurrencePlacement],
     *,
     ending_on_or_after: date | None = None,
-) -> list[SchedulePeriod]:
+) -> list[DerivedPeriod]:
     """Project *placements* onto the pay periods a caller can show or write.
 
     The projection three surfaces take of :func:`rule_occurrences` -- the
@@ -314,8 +312,8 @@ def placed_periods(
     went.
 
     The generation seam does NOT use it: that path needs the
-    ``(occurrence, period)`` pair, the write window, and the gap report, so it
-    walks the placements itself.
+    ``(occurrence, period)`` pair and the write window, so it walks the
+    placements itself.
 
     Args:
         placements: The answer from :func:`rule_occurrences`.
@@ -323,7 +321,15 @@ def placed_periods(
             (the default) applies no bound.  It is the CALLER's display or
             regeneration boundary and never the rule's own -- the rule's
             opening bound is its anchor, and conflating the two is what defect
-            D2 was.
+            D2 was.  **The end it compares is the DERIVED one** (plan step
+            C2-b2), so on a schedule whose stored column disagrees this can
+            keep or drop a period the stored value would not -- see
+            ``recurrence/_occurrence.py``'s module docstring for the three
+            shapes.  Every caller of this projection is a DISPLAY surface; the
+            generation seam applies its own bound to the ORM row it resolves,
+            for exactly that reason (``recurrence_engine``'s
+            ``resolve_generation_plan``), because that bound also has to agree
+            with an SQL sweep over the stored column.
 
     Returns:
         The placed periods, ascending by occurrence date, one entry per

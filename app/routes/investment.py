@@ -38,7 +38,8 @@ from app.schemas.validation import (
     InvestmentParamsUpdateSchema,
 )
 from app.services import investment_dashboard_service
-from app.services.recurrence import RecurrenceSpec, author_rule, calendar_for
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import RecurrenceSpec, author_rule
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.money import PAY_PERIODS_PER_YEAR, round_money
 

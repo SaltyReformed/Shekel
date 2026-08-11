@@ -36,7 +36,8 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.recurrence import calendar_for, pattern_choices
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import pattern_choices
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (

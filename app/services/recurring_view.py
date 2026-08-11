@@ -41,7 +41,7 @@ placements together -- because the phrase and the next date are two questions
 about one reading, and resolving twice would be a second resolution point in
 one request.
 
-**It takes the owner's whole schedule as a ``PeriodCalendar``**, not a list
+**It takes the owner's whole schedule as a ``PayCalendar``**, not a list
 of pay periods (plan step R4b-1).  A recurrence's first occurrence is measured
 against the owner's schedule, so the value this surface passes has to BE that
 schedule; taking ORM rows and rebuilding the calendar per row would be a second
@@ -61,7 +61,7 @@ total (matching the retired /obligations kernel exactly).
 Boundary discipline (``CLAUDE.md`` Architecture): no Flask imports; inputs
 are already-loaded ORM template lists (or any duck-typed equivalent, as the
 tests build with ``types.SimpleNamespace``) plus the user's pay-period
-schedule as a ``PeriodCalendar`` and an ``as_of`` date; output is a frozen
+schedule as a ``PayCalendar`` and an ``as_of`` date; output is a frozen
 dataclass tree of ``Decimal`` / ``date``.  All money math is ``Decimal``; the
 route/template only display.
 """
@@ -76,8 +76,8 @@ from app.services.obligations_aggregator import (
     template_monthly_or_none,
     template_rule,
 )
+from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
-    PeriodCalendar,
     RecurrenceDescription,
     RecurrenceResolutionError,
     ResolvedRecurrence,
@@ -421,7 +421,7 @@ def _described(
 
 
 def _resolved_meaning(
-    rule: RecurrenceRule | None, calendar: PeriodCalendar,
+    rule: RecurrenceRule | None, calendar: PayCalendar,
 ) -> ResolvedRecurrence | None:
     """Resolve *rule*'s cadence without walking a single occurrence.
 
@@ -450,7 +450,7 @@ def _resolved_meaning(
 
 
 def _build_section(
-    templates: list[RecurringTemplate], calendar: PeriodCalendar, as_of: date,
+    templates: list[RecurringTemplate], calendar: PayCalendar, as_of: date,
 ) -> RecurringSection:
     """Build one kind-grouped section: its rows and both-units subtotal.
 
@@ -475,9 +475,11 @@ def _build_section(
     pattern, an interval below 1, a day or month outside its column's domain),
     so ONE such rule takes the whole Recurring surface to a 500 rather than
     rendering the other definitions beside a silently blank cell.  The
-    overlapping-schedule refusal (``RecurrenceScheduleError``) moved with the
-    calendar at plan step R4b-1: it is raised where the calendar is BUILT, so
-    the route meets it before this producer runs.  Every one of those is a
+    overlapping-schedule refusal (``RecurrenceScheduleError``) that used to sit
+    beside them is GONE, with the calendar that raised it: plan step C2-b2
+    replaced it with :class:`~app.services.pay_calendar.PayCalendar`, which
+    DERIVES each period's end from the next payday and so cannot be handed an
+    overlapping schedule to refuse.  Every one of the refusals that remain is a
     state the CHECK constraints and the write door already refuse, and the
     project's disposition for a broken invariant is the loud one -- but the
     contract is stated rather than discovered.
@@ -567,7 +569,7 @@ def build_view(
     income_templates: list[RecurringTemplate],
     expense_templates: list[RecurringTemplate],
     transfer_templates: list[RecurringTemplate],
-    calendar: PeriodCalendar,
+    calendar: PayCalendar,
     as_of: date,
 ) -> RecurringView:
     """Produce the unified Recurring surface's full display model.
@@ -580,7 +582,7 @@ def build_view(
         transfer_templates: The user's active recurring ``TransferTemplate``
             rows.
         calendar: The owner's whole pay-period schedule
-            (:class:`~app.services.recurrence.PeriodCalendar`), which the
+            (:class:`~app.services.pay_calendar.PayCalendar`), which the
             engine-backed next dates are measured against.
         as_of: Reference date -- "now" for the expired-rule filter and the
             next-occurrence search.  Callers pass ``date.today()``.
@@ -608,7 +610,7 @@ def build_view(
 
 
 def build_archived_rows(
-    templates: list[RecurringTemplate], calendar: PeriodCalendar,
+    templates: list[RecurringTemplate], calendar: PayCalendar,
 ) -> tuple[ArchivedRow, ...]:
     """Shape the Archived drawer's rows for one template kind.
 
