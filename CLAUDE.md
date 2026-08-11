@@ -87,9 +87,11 @@ root; never silence it with a bare disable.
 - **Plan gate (`tools/plan_gate/`)** grades the PLANNING documents against
   `docs/plans/conventions.md` -- every finding names a live owner, an identity class shares one tick
   state, an unruled fork refuses a tick on either remedy, the index and the specifications agree
-  both ways, and the dependency graph is referential and acyclic.
-  **Editing a planning document is what runs it** (pre-commit, scoped to those files; CI runs
-  `pytest tools/plan_gate`).
+  both ways, and the dependency graph is referential and acyclic. It also grades the ORDER: ranks
+  are dense, a rank never precedes an unshipped blocker's, the derived `starts` column is
+  recomputed, every step's description is one complete sentence, and every archived document
+  declares itself one on its first line. **Editing a planning document is what runs it**
+  (pre-commit, scoped to those files; CI runs `pytest tools/plan_gate`).
 - **Judgment the linters cannot mechanize** (float-on-money boundaries, IDOR, transfer invariants,
   DRY/SOLID, test quality) is the `code-reviewer` subagent and the `/standards` command.
 
@@ -194,16 +196,22 @@ hardening, and prod-override-sync conventions auto-load via `.claude/rules/deplo
 
 ## Development Status
 
-**All live work is four ARCS, governed by three shared registries in `docs/plans/`.** Start here,
-not in a per-arc document: `ledger.md` is every open finding in every arc and every row names a live
-owner; `steps.md` is every step, one line each, whose `blocked by` column is the dependency graph
-(the ROW ORDER is not an order -- the table groups by arc); `conventions.md` is the 13 rules all of
-it is held to. Each arc's argument, rulings and step specifications stay in its own document:
-`docs/audits/balance_architecture/README.md` (balance), and `implementation_plan_*.md` for
-recurrence, pay_calendar and credit_card.
+**All live work is four ARCS, and `docs/plans/steps.md` is the single source of truth for what to do
+next.** Start there and nowhere else: it holds every step in every arc IN EXECUTION ORDER, one
+sentence each. **The next step is the first row of its order table.** A row whose `starts` column
+reads `NOW` can be picked up today whatever its rank, which is how two steps run in parallel.
 
-**What may start now is a QUERY, not a reading**: an open step that is not a decomposed parent and
-whose blockers have all shipped. `tools/plan_gate/_registry.py` parses the tables.
+Three more registries sit beside it, all in `docs/plans/`: `ledger.md` is every open finding in
+every arc and every row names a live owner; `conventions.md` is the 15 rules all of it is held to;
+`lessons.md` is what this project has already paid to learn. Each arc's argument, rulings and step
+specifications stay in its own document: `docs/audits/balance_architecture/README.md` (balance), and
+`implementation_plan_*.md` for recurrence, pay_calendar and credit_card. `steps.md` names which
+document and section holds a given step's detail.
+
+**Anything under an `archive/` or `historical/` directory is a HISTORICAL RECORD and governs
+nothing** -- every such file says so on its first line. Cite one for how a decision came to be,
+never for what is true now, and never as a plan of record. The code as committed is the source of
+truth for what the app does; planning documents lag it.
 
 `docs/project_roadmap_v5.md` holds the older product direction and lags the code. Planning docs lag
 the code generally: treat the codebase and recent git history as the source of truth for what is

@@ -42,7 +42,7 @@ staleness was invisible because nothing here is a predicate.
 | **why this shape** | the anchor half was redesigned from scratch by ruling **R-EB**; R-EQ designed the duplicate rule that had only ever been re-keyed, R-ER put the day rule in the module that owns what an assertion is, X-f1e1 deleted the second DOOR, X-f1e2 the second WRITER, X-f1e3 the mount that was destroying its own message | Section 3.3, and R-EB / R-EQ / R-ER / R-ES / R-ET in Section 4 |
 | **the live lesson** | **a new door must not be asked to choose between two answers the app already holds.** X-f2-c2's design asked which figure the reconcile panel should show for a row the projection prices LIVE and the writers price from a stale column. Every answer to that question was wrong, because the question was: the panel is a third reader of a denormalization (**N-224**), and the fix is one rule in the settle VERB (**X-aq**) followed by deleting the second answer outright (**X-ar**). When a new surface forces a choice between two existing answers, the choice is the finding | Section 8, R-FE |
 | **the ledger** | Counted by `grep -c '^| balance' ../../plans/ledger.md`, never stored here -- the figure this row carried was wrong in both directions on two successive edits, which is rule 6's own prohibition demonstrated. X-f2-c2's design opened **N-224**: `transactions.estimated_amount` is a CACHE of a derivation, `income_service.live_projected_net` repairs it at READ time and writes nothing back, so a reader and a writer looking at one row get two figures -- owned by **X-ar**, with **X-aq** making every settle door agree meanwhile. Before it, X-f2-c1 closed **N-216** (the reconcile panel's doors had no kind gate) and opened two. **N-217**: a ruling id can resolve to TWO different rulings and no gate can see it -- two sessions appended a different `R-EX` on one day, both reached `dev`, and X-f2-c2 / X-f2-c3 cited it ambiguously until a reviewer read the table. The instance is fixed (this arc's is **R-FA**, naming its old id); the class is the new step **X-ao**'s. **N-218**: twelve files cite `anchor_settle_partition.md` at a path that does not exist -- it was archived -- and they are the modules ruling R-DH is about; **X-f4**'s. Before them, X-f2-b closed **N-204** / **N-206**, narrowed **N-205** to the 16 modelled-account assertions and re-pointed it to **X-j**, and opened **N-215** | `../../plans/ledger.md` |
-| **resuming cold** | Branch from `dev`. Whether it is ahead of `main`, and whether by documents or by code, is a MEASUREMENT (`git log --oneline origin/main..dev`) and this row no longer claims it -- the previous revision said "DOCUMENTS ONLY" and block 10's `C1` shipped `app/services/pay_calendar/` into that gap. The repo head is **`c7f3a9d1e864`** and the test template is already stamped at it -- VERIFIED by reading `alembic_version` in `shekel_test_template`, not assumed; rebuild only if you add a migration. Baseline **8,673** green (`./scripts/test.sh`, 231 s, 2026-08-10, re-measured on `dev` at the X-f2-c1 merge `b7c3aba3`); it read 8,663 before X-f2-c1's 10 controls, 8,486 before X-ad-a's and X-f2-b's, and 8,258 before R7a-1 and C1. **Pass `TEST_DB_PREFIX=<name>` when another checkout may be running the suite**, and put the venv on `PATH` -- `scripts/test.sh` execs bare `pytest`. The registries have their own gate, **111 green** (`pytest tools/plan_gate -c /dev/null -q`), and **what may start now is a QUERY over `steps.md`'s `blocked by` column, not the row order** -- see `docs/plans/conventions.md` rules 7 and 13. **The venv must be ACTIVE for `git commit`**: pre-commit hooks are `language: system` and the first attempt failed with `Executable pylint not found`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x). This row used to name one hand-made prod restore point; **the recurrence arc's R-F8 made every deploy dump unconditionally**, so `~/shekel-backups/` now holds one per release and the deploy REFUSES a rollback its image cannot resolve | Section 7.2 |
+| **resuming cold** | Branch from `dev`. Whether it is ahead of `main`, and whether by documents or by code, is a MEASUREMENT (`git log --oneline origin/main..dev`) and this row no longer claims it -- the previous revision said "DOCUMENTS ONLY" and block 10's `C1` shipped `app/services/pay_calendar/` into that gap. The repo head is **`c7f3a9d1e864`** and the test template is already stamped at it -- VERIFIED by reading `alembic_version` in `shekel_test_template`, not assumed; rebuild only if you add a migration. Baseline **8,673** green (`./scripts/test.sh`, 231 s, 2026-08-10, re-measured on `dev` at the X-f2-c1 merge `b7c3aba3`); it read 8,663 before X-f2-c1's 10 controls, 8,486 before X-ad-a's and X-f2-b's, and 8,258 before R7a-1 and C1. **Pass `TEST_DB_PREFIX=<name>` when another checkout may be running the suite**, and put the venv on `PATH` -- `scripts/test.sh` execs bare `pytest`. The registries have their own gate, **111 green** (`pytest tools/plan_gate -c /dev/null -q`), and **what to do next is the FIRST ROW of `steps.md`'s order table**, and a row whose `starts` column reads `NOW` can be picked up today whatever its rank -- see `docs/plans/conventions.md` rule 14. **The venv must be ACTIVE for `git commit`**: pre-commit hooks are `language: system` and the first attempt failed with `Executable pylint not found`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x). This row used to name one hand-made prod restore point; **the recurrence arc's R-F8 made every deploy dump unconditionally**, so `~/shekel-backups/` now holds one per release and the deploy REFUSES a rollback its image cannot resolve | Section 7.2 |
 
 Section 5 is the work that remains and Section 4 the rulings that govern it; `archive/` is what
 already shipped. **Every open defect is a row in `../../plans/ledger.md` whose `arc` reads
@@ -824,141 +824,11 @@ against are `../../plans/conventions.md`.
    own commit hash or was verified on its write date; when you edit this file, re-verify what you
    touch.
 
-## 8. Process lessons (paid for repeatedly; do not pay again)
+## 8. Process lessons
 
-One line each; the evidence is in the commits of the step that paid for it.
-
-* **An argument a caller can get wrong is a defect, not a contract.**
-* **Ask what a producer says the SECOND time.** One correct on the ordinary path can be inverted on
-  the correcting one, and only the correcting path is worth a test (X-f2-a, `-$45.86` vs `-$92.29`).
-* **Grading a value object's ids is not grading its FIELDS.** X-f2-c1 mutated `purchased_on` to the
-  statement day and left 8,671 tests green.
-* **A JS visibility defect is invisible to pytest** -- drive it in a browser (X-f2-b: 8,556 green
-  over a toast that reached the DOM and never appeared).
-* **A DRY refactor of a PREDICATE can move money.** Two spellings that agree by reading are two
-  answers until one is deleted.
-* **When two figures PARTITION a set, write both halves from ONE predicate**, or the boundary drifts
-  and both halves look right.
-* **When two sides of one problem have different SHAPES, the loose side is where the next hole is.**
-* **When a rule is re-keyed, the complement must move with it**, or replay and projection stop being
-  exact complements.
-* **SCORE THE RULE YOU SHIPPED, NOT THE RULE YOU DESIGNED.** Any change to a rule after it was
-  scored re-opens the score; re-run the measuring script as the LAST act of the build.
-* **AN APPEND-ONLY TABLE NEVER LICENSES AN UNSERIALISED READ-MODIFY-WRITE IN THE SAME
-  TRANSACTION.** Name the tables the transaction WRITES, not the one the ruling is about. Ruling
-  R-EN deleted a lock on "a second tab overwrites nothing", true of one table in a transaction that
-  mutates three; the deleted column had been serialising the reconcile by accident. The precedent
-  it cited carried the identical defect, so the mistake was made twice (N-190).
-* **IDEMPOTENCY IS A PROPERTY OF A REQUEST, NOT OF THE ROW IT CARRIES.** A retry and a deliberate
-  re-assertion are byte-identical by construction, so a unique index over the row's own values must
-  mis-classify one of them. Ask which way it errs and what each error costs: here a false refusal
-  rendered a wrong balance while a surplus append-only row posted `$0.00`, and the two are not the
-  same size (R-EQ).
-* **WHEN TWO DOORS WRITE ONE FACT, ALIGNING THEM CAN BE WORSE THAN DELETING ONE.** Ask what each
-  door's SURFACE means before making them agree: two reviews recommended putting the account-edit
-  door on ruling R-EQ's rule, and because that form PRE-FILLS the balance, a rename would then have
-  asserted today's figure and absorbed two months of unreconciled purchases. A door that is not a
-  balance-reading surface should not be taught to read balances better (X-f1e1).
-* **A TEST THAT REPLACES A DELETED FEATURE'S TEST MUST BE RUN AGAINST THE REVERT.** Two of X-f1e1's
-  four controls passed on the old code -- one submitted the exact input the deleted branch
-  short-circuited, the other could not tell "unreachable" from "refused" because both answer 200
-  and write nothing, and it never asserted the part of the edit that DOES differ. Deleting a
-  behaviour and its test lowers coverage silently unless the replacement is shown to fail without
-  the change.
-* **WHEN TWO VALUES HAVE ALWAYS BEEN EQUAL BY CONSTRUCTION, THE CODE THAT COUPLES THEM DOES NOT
-  EXIST.** Making one of them user-supplied does not break a rule you can go and read -- it breaks
-  an assumption nothing ever had to write down. Before changing what a field can hold, ask which
-  values it has silently equalled: the reconcile prompt keyed on `MAX(observed_on)` was correct for
-  as long as every true-up stamped today, and nothing in it named that dependency (X-f1c4c).
-* **A SUCCESS RESPONSE THAT RENDERS THE PRE-SUBMISSION STATE IS INDISTINGUISHABLE FROM A NO-OP.**
-  The same defect as an unrenderable refusal, on the other side, and it hides better -- a 200 looks
-  like it worked. A write whose whole point is invisible on the surface that made it will be made
-  twice.
-* **A REFUSAL THE SUBMITTING SURFACE CANNOT RENDER IS NOT A REFUSAL.** Before adding a rule that a
-  user can trip, press the button and watch: this app's htmx config leaves 4xx non-swapping, so a
-  correct 400 with a correct message was invisible and the form simply sat there. Ask what the
-  refusal LOOKS like, not only whether it fires (X-f1c4c).
-* **A RULE THAT READS A CLOCK MUST BE APPLIED ONCE, AND "the writer does not
-  trust its caller" IS NOT A REASON TO APPLY IT TWICE.** Unifying two writers
-  put one bound on both sides of a call; the floor is `min(earliest period
-  start, today)`, so a midnight roll between the two applications refused the
-  day the first had just produced -- and the second refusal landed after the row
-  was flushed. Ask whether a re-check is a pure function before calling it
-  defence-in-depth; where it is not, carry "already checked" in a TYPE the
-  checker alone can mint (X-f1e2).
-* **A FRAGMENT'S MOUNT IS PART OF ITS CORRECTNESS, AND A RESPONSE CAN DESTROY ITS OWN MESSAGE.**
-  An out-of-band swap into a region that re-fetches on the event the SAME response fires is a race
-  the response always loses. Ask what re-renders the target, not just whether the target exists
-  (N-199).
-* **A RESPONSE-BODY ASSERTION CANNOT SEE WHAT A SECOND REQUEST DOES TO THE PAGE.** The test that
-  missed N-199 asserted the message was in the body -- it was, and it was gone from the DOM a moment
-  later. Where a fragment's correctness is its POSITION, grade the position.
-* **GRADE THE ONE TOKEN THE FEATURE HANGS ON, OR A MUTATION WILL PROVE YOU DID NOT.** Deleting
-  `data-toast-auto-show` left the acknowledgement in the DOM, permanently invisible -- N-199's exact
-  symptom -- and the whole 7,867-test suite passed. Deleting `hx-swap-oob="true"` did too. An
-  adversarial review MEASURED both. A test that grades a fragment's id, copy, day and amount and
-  stops one attribute short of what makes it reach a human is grading everything except the defect.
-* **AN AFFORDANCE THAT CANNOT SUCCEED IS DELETED, NOT GIVEN A NICER REFUSAL.** The first fix for an
-  invisible kind refusal re-rendered the editor -- a live input and a Save button guaranteed to be
-  refused again -- twelve lines below the same module's rule forbidding exactly that. When a refusal
-  is reached by an ordinary click, the question is why the click was offered (R-ET).
-* **ONE SURFACE GETTING A RULE RIGHT HIDES THAT THE SHARED PARTIAL NEVER GOT IT.** The cockpit had
-  rendered loan balances read-only for a year; the partial the other four surfaces include had not,
-  so the rule looked shipped and was one-fifth shipped.
-* **NAME A WRAPPER'S FIELD SOMETHING THE WRAPPED PRIMITIVE CANNOT ANSWER.**
-  `ObservationDay.day` compiled against a raw `date` and returned the day of the
-  MONTH -- an integer, silently, into an SQL bound. A value type only fences
-  what its accessor cannot be satisfied by accident (X-f1e2).
-* **A MECHANISM THAT HAS ONLY EVER BEEN RE-KEYED HAS NEVER BEEN DESIGNED.** Three migrations moved
-  this index's columns to follow the schema, and each one read as a decision. Ask when the rule was
-  last decided, not when it was last edited.
-* **A shared primitive reached through a private import is telling you the package boundary is
-  wrong.**
-* **A fail-CLOSED gate is scoped by module identity, so creating a module is how you escape it.**
-* **A static guard that greps for a NAME cannot tell code from prose.**
-* **A GATE MUST BE EXERCISED AGAINST THE ARTIFACT IT GRADES, never read or tested only
-  synthetically.** A pattern that matches the real file nowhere passes every synthetic control.
-* **Scan with an AST, not a regex -- and an AST census is a grep with better manners unless it
-  FOLLOWS THE DATA.** A census and a gate can be blind the same way, and then they confirm each
-  other.
-* **A CENSUS THAT IS NOT COMMITTED IS AN UNCITED CLAIM.**
-* **COUNT THE CALL GRAPH, NOT THE CALL SITES.** One finding said four spellings; the tree held 18.
-* **A COUNT IN A DOCSTRING IS A CLAIM, AND THIS ARC KEEPS WRITING IT WRONG.**
-* **Every guard gets a negative control shown to fire, and a REPAIR for a dead control is itself a
-  control needing the same mutation.** A correction can carry the defect it corrects.
-* **A test whose fixture has no data cannot distinguish two producers.**
-* **A NEW FIXTURE IS A NEW CONTROL, AND IT CAN BE BORN DEAD.** SQLAlchemy accepts an assignment to a
-  field that does not exist.
-* **`hasattr` on a dataclass is not a test**, and neither is `is not None` after `isinstance`.
-* **A list returned for its COUNT must have its count asserted.**
-* **Ask what a test's failure would have COST before deleting it, and write the answer down.**
-* **CONVERTING A SURFACE TO "RAISE" BLINDS EVERY TEST WHOSE FIXTURE CANNOT REACH IT.**
-* **A SUITE THAT PASSES ON 353 DAYS A YEAR IS NOT A GATE**, and the day it fails it will look like
-  your change.
-* **AN INSTRUMENT MUST BE SHOWN TO HAVE REACHED ITS SUBJECT.** One that cannot authenticate reports
-  no differences, loudly and wrongly; one that silently grades a single subject five times reports
-  five results. Assert the identity a result is attributed to, not just that a result came back.
-* **A BASELINE IS ONLY A BASELINE AGAINST THE DATABASE IT WAS TAKEN FROM**, and widening an
-  instrument is a shape change needing the same normalization the code does.
-* **An ORACLE that states a different rule than the engine lets both be wrong together.**
-* **When a conversion is mechanical, the DIRECTION of the type change has a mirror, and the mirror
-  is where the bug is.**
-* **A refusal is only as good as the repair it names, and nobody had pressed the button.**
-* **THE STATE A GUARD DEFENDS AND THE STATE THE APP IS IN CAN BE OPPOSITES.**
-* **A guard written against the wrong failure mode can still be a good guard** -- write the reason
-  beside it.
-* **A skip is safer to state than a fire**, when the operation being guarded is the one under test.
-* **A RULING ID IS A CITATION, SO THE RULING SHIPS FIRST.**
-* **REVIEW A FROZEN TREE.** Applying one review's fixes while another is running invalidates both,
-  and a mutation-planting reviewer needs its own worktree.
-* **A STEP WITH MULTIPLE LEAVES, MIGRATIONS AND REVIEWS SPANS SESSIONS.** Stop at the first leaf
-  boundary and hand off; the alternative is a mechanical cleanup pass applied with too little care
-  at the end of a long session (X-f1c3, 2026-08-04).
-* **A TABLE THAT NAMES ITS OWN `HEAD` IS FALSE THE MOMENT IT LANDS**, because the commit that
-  writes it moves `HEAD` past the hash it just wrote. Record the last CODE commit and the remote,
-  which are stable, and tell the reader to re-measure the rest.
-* **Documents rot in days here.** This file is the only one allowed to rot, and every edit re-dates
-  it.
+**Moved to `../../plans/lessons.md`**, one copy for every arc. They were stated here and nowhere
+else, so the other three arcs did not have them -- which is what this restructure removes
+everywhere else in the corpus.
 
 ## 9. Rules for this document
 

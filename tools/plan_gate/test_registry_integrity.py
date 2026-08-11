@@ -25,41 +25,6 @@ import pytest
 import _registry as registry
 
 
-@pytest.fixture(name="stage")
-def _stage(tmp_path, monkeypatch):
-    """Return a helper that mutates a registry copy and re-points the module."""
-
-    def _apply(which: str, old: str, new: str) -> None:
-        source = {"ledger": registry.LEDGER, "steps": registry.STEPS}[which]
-        text = source.read_text()
-        assert old in text, f"control anchor {old!r} is not in the real {which}"
-        target = tmp_path / source.name
-        target.write_text(text.replace(old, new, 1))
-        monkeypatch.setattr(registry, which.upper(), target)
-
-    return _apply
-
-
-@pytest.fixture(name="stage_arc")
-def _stage_arc(tmp_path, monkeypatch):
-    """Return a helper that mutates an ARC DOCUMENT copy and re-points the map.
-
-    Separate from ``stage`` because ``ARC_DOCS`` is a dict rather than a module
-    attribute, and because the defects it plants are in the SPECIFICATIONS
-    rather than in a registry table.
-    """
-
-    def _apply(arc: str, old: str, new: str) -> None:
-        source = registry.ARC_DOCS[arc]
-        text = source.read_text()
-        assert old in text, f"control anchor {old!r} is not in the real {arc} doc"
-        target = tmp_path / source.name
-        target.write_text(text.replace(old, new, 1))
-        monkeypatch.setitem(registry.ARC_DOCS, arc, target)
-
-    return _apply
-
-
 def _a_live_fork():
     """Return the first live fork, its ``steps.md`` line, and a remedy's line.
 
@@ -177,7 +142,7 @@ class TestStepsStatesItsOwnSize:
     def test_the_control_fires_on_a_wrong_step_count(self, stage):
         """The control fires on a wrong step count."""
         rows = registry.step_rows()
-        opened = sum(1 for row in rows if row.state.lower() == "open")
+        opened = sum(1 for row in rows if not row.shipped)
         stage("steps", f"**{len(rows)} steps, {opened} open.**",
               f"**{len(rows) - 7} steps, {opened} open.**")
         problems = registry.steps_stated_count_violation()
@@ -191,7 +156,7 @@ class TestStepsStatesItsOwnSize:
         single count arm would report clean over the edit that ships a step.
         """
         rows = registry.step_rows()
-        opened = sum(1 for row in rows if row.state.lower() == "open")
+        opened = sum(1 for row in rows if not row.shipped)
         stage("steps", f"**{len(rows)} steps, {opened} open.**",
               f"**{len(rows)} steps, {opened - 3} open.**")
         problems = registry.steps_stated_count_violation()

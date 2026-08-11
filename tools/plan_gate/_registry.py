@@ -62,6 +62,11 @@ BLOCKED_GRAPH_RX = re.compile(
     r"holds (?P<edges>\d+) edges? over (?P<rows>\d+) rows?",
 )
 
+#: An ``order`` cell placing a step in the sequence: ``#12``.  The three legal
+#: spellings of that column are this, ``container`` and ``SHIPPED``; anything
+#: else is a row a reader cannot place.
+ORDER_CELL_RX = re.compile(r"^#(?P<rank>\d+)$")
+
 #: A ``steps.md`` ``commit`` cell naming a hash: the WHOLE cell is one
 #: backticked sha.  The shape comes from :data:`_plan_gate.COMMIT_SHA` so the
 #: index and the specifications cannot disagree about what a hash is; the
@@ -147,6 +152,22 @@ class StepRow:
         exactly what Phase G exists to delete.
         """
         return "decomposed parent" in self.title.casefold()
+
+    @property
+    def rank(self) -> int | None:
+        """This step's place in the execution order, or ``None``.
+
+        ``None`` for a container and for a shipped step, which is the whole
+        point of the column: neither is a thing a reader can pick up, so
+        neither carries a position in the sequence.
+        """
+        match = ORDER_CELL_RX.match(self.state)
+        return int(match.group("rank")) if match else None
+
+    @property
+    def is_container(self) -> bool:
+        """Whether the ``order`` cell declares this row a grouping."""
+        return self.state == "container"
 
     def blocked_keys(self) -> list[str]:
         """The ``arc:id`` keys this step may not ship before (rule 13).
@@ -349,7 +370,12 @@ def steps_stated_count_violation() -> list[str]:
     else:
         stated_total = int(match.group("total"))
         stated_open = int(match.group("open"))
-        actual_open = sum(1 for row in rows if row.state.lower() == "open")
+        # OPEN is the complement of SHIPPED, never a literal word in the cell.
+        # The `order` column now carries a rank, `container` or `SHIPPED`, and
+        # an arm keyed on the word "open" counted ZERO the moment that column
+        # started saying something useful -- a gate that reads a spelling
+        # rather than a state stops grading the instant the spelling improves.
+        actual_open = sum(1 for row in rows if not row.shipped)
         if stated_total != len(rows):
             problems.append(
                 f"steps.md says it holds {stated_total} steps and the table "
