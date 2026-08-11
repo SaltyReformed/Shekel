@@ -28,7 +28,11 @@ from app.enums import (
     PostingSourceEnum,
     StatusEnum,
 )
-from app.exceptions import PayPeriodDiscardRequired, PayPeriodLocked
+from app.exceptions import (
+    PayPeriodDiscardRequired,
+    PayPeriodLocked,
+    PayPeriodUnresolved,
+)
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.pay_period import PayPeriod
@@ -41,7 +45,7 @@ from app.services import (
     posting_service,
     transfer_service,
 )
-from app.services.pay_period_admin import PeriodLockReason
+from app.services.pay_period_locks import PeriodLockReason
 # The APP's civil day, never ``date.today()`` -- these fixtures build periods
 # that must CONTAIN the day the account factory stamps on its origination
 # assertion, and that day is the display-timezone one (CI runs a zone where
@@ -153,7 +157,7 @@ class TestTruncateHappyPath:
             user_id = seed_user["user"].id
 
             deleted = pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_index=periods[2].period_index,
+                user_id, keep_through_period_id=periods[2].id,
             )
             db.session.commit()
 
@@ -179,11 +183,11 @@ class TestTruncateHappyPath:
             )
             db.session.commit()
             doomed_id = periods[3].id  # index 4; capture before deletion
-            keep_index = periods[1].period_index
+            keep_period_id = periods[1].id
             assert _txns_in(db.session, doomed_id) == 1
 
             pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_index=keep_index,
+                user_id, keep_through_period_id=keep_period_id,
             )
             db.session.commit()
             # The deleted period's row is gone with it.
@@ -204,14 +208,14 @@ class TestTruncateHappyPath:
             )
             db.session.commit()
             doomed_id = periods[3].id  # capture before deletion
-            keep_index = periods[1].period_index
+            keep_period_id = periods[1].id
             assert db.session.query(Transfer).filter_by(
                 pay_period_id=doomed_id,
             ).count() == 1
 
             # confirm_discard not needed: template transfers are regenerable.
             pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_index=keep_index,
+                user_id, keep_through_period_id=keep_period_id,
             )
             db.session.commit()
             assert db.session.query(Transfer).filter_by(
@@ -224,19 +228,28 @@ class TestTruncateHappyPath:
             ).count() == 0
             assert_pay_period_invariants(db.session, user_id)
 
-    def test_idempotent_noop_past_max_index(self, app, db, seed_user):
-        """Keeping through a too-high index deletes nothing."""
+    def test_idempotent_noop_through_the_last_period(self, app, db, seed_user):
+        """Keeping through the LAST period deletes nothing.
+
+        Truncate's no-op case.  It used to be spelled ``keep_through_index=999``
+        -- an ordinal above every real one -- and plan step C3-a removed the
+        spelling with the ordinal: an id above every real id names no period,
+        which is now a REFUSAL rather than a no-op (see
+        ``TestTruncateRefusesAnIdItCannotResolve``).  Naming the actual last
+        period is the same question asked of the surviving key.
+        """
         with app.app_context():
-            _future_periods(db.session, seed_user, count=3)
+            periods = _future_periods(db.session, seed_user, count=3)
             user_id = seed_user["user"].id
             before = _count_periods(db.session, user_id)
 
             deleted = pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_index=999,
+                user_id, keep_through_period_id=periods[-1].id,
             )
             db.session.commit()
             assert deleted == 0
             assert _count_periods(db.session, user_id) == before
+
 
     def test_balances_correct_after_truncate(self, app, db, seed_user):
         """Disciplines 1-3: the retained-window balance is unchanged.
@@ -263,7 +276,7 @@ class TestTruncateHappyPath:
             assert before == Decimal("-2600.00")  # 1000 - 3*1200
 
             deleted = pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_index=periods[2].period_index,
+                user_id, keep_through_period_id=periods[2].id,
             )
             db.session.commit()
             assert deleted == 3
@@ -287,6 +300,65 @@ class TestTruncateHappyPath:
 # anyway) covers it; its own cases in this class are untouched.
 
 
+class TestTruncateRefusesAnIdItCannotResolve:
+    """Finding P13: the wire key names a ROW, so an unowned one is refused.
+
+    Until plan step C3-a the truncate form posted ``period_index``, and the
+    service compared it with ``>``.  Every value the comparison accepted
+    "worked": an ordinal from a stale page named whichever period now sits at
+    that position, and one above the end was a silent no-op.  Keyed on ``id``
+    there is exactly one correct answer -- the row -- and everything else is
+    refused before the classifier, the discard gate or the DELETE runs.
+    """
+
+    def test_an_id_that_names_no_period_is_refused(self, app, db, seed_user):
+        """A forged or stale id deletes nothing and says so."""
+        with app.app_context():
+            periods = _future_periods(db.session, seed_user, count=3)
+            user_id = seed_user["user"].id
+            before = _count_periods(db.session, user_id)
+            absent = max(p.id for p in periods) + 1000
+
+            with pytest.raises(PayPeriodUnresolved) as excinfo:
+                pay_period_admin.truncate_pay_periods(
+                    user_id, keep_through_period_id=absent,
+                )
+
+            assert str(absent) in str(excinfo.value)
+            assert _count_periods(db.session, user_id) == before
+
+    def test_another_owners_period_is_refused_identically(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """A real id belonging to someone else raises the SAME message.
+
+        The security response rule: "not yours" and "does not exist" must be
+        indistinguishable, or this door reports whether another owner's period
+        id exists.  Both are asserted against the same rendered message, and
+        the second owner keeps every period they had.
+        """
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=3)
+            user_id = seed_user["user"].id
+            theirs = seed_second_user["bootstrap_period"]
+            second_id = seed_second_user["user"].id
+            before = _count_periods(db.session, second_id)
+
+            with pytest.raises(PayPeriodUnresolved) as owned_exc:
+                pay_period_admin.truncate_pay_periods(
+                    user_id, keep_through_period_id=theirs.id,
+                )
+            with pytest.raises(PayPeriodUnresolved) as absent_exc:
+                pay_period_admin.truncate_pay_periods(
+                    user_id, keep_through_period_id=theirs.id + 10_000,
+                )
+
+            # Same sentence, only the echoed id differs -- no existence oracle.
+            assert str(owned_exc.value).replace(
+                str(theirs.id), "X",
+            ) == str(absent_exc.value).replace(str(theirs.id + 10_000), "X")
+            assert _count_periods(db.session, second_id) == before
+
 class TestTruncateHardLocks:
     """Hard locks refuse the delete and change nothing (Discipline 4)."""
 
@@ -306,7 +378,7 @@ class TestTruncateHardLocks:
 
             with pytest.raises(PayPeriodLocked):
                 pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_index=periods[1].period_index,
+                    user_id, keep_through_period_id=periods[1].id,
                 )
 
             assert _count_periods(db.session, user_id) == before
@@ -329,7 +401,8 @@ class TestTruncateHardLocks:
 
             with pytest.raises(PayPeriodLocked) as excinfo:
                 pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_index=0,
+                    user_id,
+                    keep_through_period_id=seed_user["bootstrap_period"].id,
                 )
             assert PeriodLockReason.HISTORICAL in excinfo.value.blocking.values()
             assert _count_periods(db.session, user_id) == before
@@ -367,6 +440,13 @@ class TestTruncateHardLocks:
                 period for period in periods
                 if period.start_date <= display_today() <= period.end_date
             )
+            # Truncate through the period BEFORE the anchored one, so the
+            # anchored period is inside the to-delete window.  Named by id
+            # since plan step C3-a; it was ``anchored.period_index - 1``.
+            previous = max(
+                (p for p in periods if p.start_date < anchored.start_date),
+                key=lambda p: p.start_date,
+            )
             create_savings_account(
                 seed_user, db.session, "Savings", Decimal("500.00"),
             )
@@ -375,7 +455,7 @@ class TestTruncateHardLocks:
 
             with pytest.raises(PayPeriodLocked) as excinfo:
                 pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_index=anchored.period_index - 1,
+                    user_id, keep_through_period_id=previous.id,
                 )
             assert excinfo.value.blocking.get(anchored.id) == (
                 PeriodLockReason.LEDGER_POSTINGS
@@ -414,7 +494,7 @@ class TestTruncateHardLocks:
 
             with pytest.raises(PayPeriodLocked) as excinfo:
                 pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_index=periods[1].period_index,
+                    user_id, keep_through_period_id=periods[1].id,
                 )
 
             assert excinfo.value.blocking.get(periods[2].id) == (
@@ -462,7 +542,7 @@ class TestTruncateHardLocks:
             ).count() == 2
 
             deleted = pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_index=periods[1].period_index,
+                user_id, keep_through_period_id=periods[1].id,
                 confirm_discard=True,
             )
 
@@ -486,7 +566,7 @@ class TestTruncateHardLocks:
 
             with pytest.raises(PayPeriodLocked) as excinfo:
                 pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_index=periods[1].period_index,
+                    user_id, keep_through_period_id=periods[1].id,
                 )
             assert excinfo.value.blocking.get(periods[2].id) == (
                 PeriodLockReason.RECURRENCE_ANCHOR
@@ -507,13 +587,13 @@ class TestTruncateDiscardGate:
 
             with pytest.raises(PayPeriodDiscardRequired) as excinfo:
                 pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_index=periods[1].period_index,
+                    user_id, keep_through_period_id=periods[1].id,
                 )
             assert excinfo.value.count == 1
             assert _count_periods(db.session, user_id) == before
 
             deleted = pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_index=periods[1].period_index,
+                user_id, keep_through_period_id=periods[1].id,
                 confirm_discard=True,
             )
             db.session.commit()
@@ -537,7 +617,7 @@ class TestTruncateDiscardGate:
 
             with pytest.raises(PayPeriodDiscardRequired):
                 pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_index=periods[1].period_index,
+                    user_id, keep_through_period_id=periods[1].id,
                 )
 
     def test_cancelled_row_requires_confirm(self, app, db, seed_user):
@@ -562,7 +642,7 @@ class TestTruncateDiscardGate:
 
             with pytest.raises(PayPeriodDiscardRequired):
                 pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_index=periods[1].period_index,
+                    user_id, keep_through_period_id=periods[1].id,
                 )
 
     def test_projected_template_rows_need_no_confirm(self, app, db, seed_user):
@@ -577,7 +657,7 @@ class TestTruncateDiscardGate:
             db.session.commit()
 
             deleted = pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_index=periods[1].period_index,
+                user_id, keep_through_period_id=periods[1].id,
             )
             db.session.commit()
             assert deleted == 2
@@ -604,7 +684,7 @@ class TestTruncateDiscardGate:
             db.session.commit()
 
             deleted = pay_period_admin.truncate_pay_periods(
-                user_id, keep_through_index=periods[1].period_index,
+                user_id, keep_through_period_id=periods[1].id,
             )
             db.session.commit()
             assert deleted == 2
@@ -623,5 +703,5 @@ class TestTruncateDiscardGate:
 
             with pytest.raises(PayPeriodDiscardRequired):
                 pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_index=periods[1].period_index,
+                    user_id, keep_through_period_id=periods[1].id,
                 )

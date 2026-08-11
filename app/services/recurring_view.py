@@ -382,9 +382,14 @@ def _described(
     would render a quarterly bill as "One-time" -- a repeating commitment
     reported as a one-off, on the surface whose job is to say how things
     repeat.  An empty schedule is a broken invariant rather than a state to
-    word: registration bootstraps a period, ``truncate_pay_periods`` keeps
-    index 0 by its own schema bound, and ``reset_pay_periods`` deletes and
-    regenerates inside one transaction, so no committed state has none.  It
+    word: registration bootstraps a period, ``truncate_pay_periods`` always
+    keeps the period its ``keep_through_period_id`` names, and
+    ``reset_pay_periods`` deletes and regenerates inside one transaction, so no
+    committed state has none.  (That truncate clause read "keeps index 0 by its
+    own schema bound" until plan step C3-a, which re-keyed the form onto
+    ``budget.pay_periods.id`` -- the guarantee got STRONGER, resting on the
+    named period being on the keep side rather than on a Marshmallow floor of
+    zero happening to sit below every real ordinal.)  It
     is refused here for the same reason :func:`_build_section` refuses every
     other broken invariant -- loudly.
 

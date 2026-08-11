@@ -16,10 +16,10 @@ operations build on it and on ``pay_period_service`` /
 ``period_population``.
 """
 
-import enum
 import logging
 from dataclasses import replace
 from datetime import date, timedelta
+from operator import attrgetter
 
 from sqlalchemy import or_
 
@@ -27,10 +27,10 @@ from app.exceptions import (
     PayPeriodDiscardRequired,
     PayPeriodLocked,
     PayPeriodResetBlocked,
+    PayPeriodUnresolved,
     ValidationError,
 )
 from app.extensions import db
-from app.models.journal_entry import JournalEntry, Posting
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction import Transaction
@@ -42,6 +42,8 @@ from app.services import (
     pay_schedule_service,
     user_write_lock,
 )
+from app.services._recurrence_common import log_resource_access_denied
+from app.services.pay_period_locks import classify_periods_bulk
 from app.services.period_population import populate_periods_from_active_templates
 from app.services.recurrence import (
     calendar_for,
@@ -49,143 +51,9 @@ from app.services.recurrence import (
     recurrence_spec,
 )
 from app.utils.balance_predicates import is_projected_clause, settled_status_ids
+from app.utils.log_events import ACCESS, EVT_RESOURCE_NOT_FOUND, log_event
 
 logger = logging.getLogger(__name__)
-
-
-class PeriodLockReason(enum.Enum):
-    """Why a pay period may not be deleted or rebuilt.
-
-    A non-``None`` reason is a HARD lock: the period either is historical
-    or holds irreplaceable state (settled money, posted ledger entries, a
-    recurrence rule's origin), and no operation may delete or rebuild it --
-    not even with ``confirm_discard``.  **An account's balance ASSERTION is no
-    longer among them, and it did not become deletable**: ruling R-EO moved the
-    assertion off the pay period entirely, so a schedule operation cannot reach
-    it at all (see :func:`_resolve_lock`).  ``None`` means the
-    period is the mutable payload truncate / regenerate may rewrite; its
-    projected and ad-hoc rows are guarded separately by the overridable
-    discard gate.
-
-    The members are ordered by precedence.  The classifier returns the
-    FIRST applicable reason, so a historical period that also holds a
-    settled transaction reports ``HISTORICAL``, and a future settled
-    period that is also an anchor reports ``SETTLED_TXN``.
-    """
-
-    HISTORICAL = "historical"
-    SETTLED_TXN = "settled"
-    LEDGER_POSTINGS = "ledger_postings"
-    RECURRENCE_ANCHOR = "recurrence_anchor"
-
-
-def _resolve_lock(
-    *, is_historical: bool, has_settled: bool, has_unbalanced_ledger: bool,
-    is_recurrence_anchor: bool,
-) -> PeriodLockReason | None:
-    """Apply the lock-reason precedence to four already-computed booleans.
-
-    The single source of truth for the ordering, shared by the
-    single-period and bulk classifiers so the two query strategies
-    (scalar EXISTS vs. set membership) can never disagree on which
-    reason wins.
-
-    **``ACCOUNT_ANCHOR`` left this set at plan step X-f1c3c** (ruling R-EO),
-    and it left by becoming unreachable rather than by being relaxed.  It
-    refused a period an account's ``current_anchor_period_id`` pointed at; that
-    column is deleted, and a balance ASSERTION no longer references a pay
-    period either, so no period delete can take one.  What is still worth
-    protecting is the period's POSTED state, and ``LEDGER_POSTINGS`` -- which
-    outranked ``ACCOUNT_ANCHOR`` anyway -- covers it: measured on the
-    developer's production data, all 10 periods holding an assertion carry an
-    unbalanced ledger account, so the deleted reason was refusing nothing that
-    survives without it.
-
-    Args:
-        is_historical: The period has already ended (``end_date`` is
-            before the reference date).
-        has_settled: The period holds a non-deleted settled transaction.
-        has_unbalanced_ledger: The period's journal entries do NOT net to
-            zero per ledger account -- posted financial state a CASCADE
-            delete would mis-state (see
-            :func:`_period_ids_with_unbalanced_ledger`).
-        is_recurrence_anchor: A recurrence rule's ``start_period_id``
-            points at the period.
-
-    Returns:
-        The first applicable :class:`PeriodLockReason`, or ``None`` when
-        the period is mutable.
-    """
-    if is_historical:
-        return PeriodLockReason.HISTORICAL
-    if has_settled:
-        return PeriodLockReason.SETTLED_TXN
-    if has_unbalanced_ledger:
-        return PeriodLockReason.LEDGER_POSTINGS
-    if is_recurrence_anchor:
-        return PeriodLockReason.RECURRENCE_ANCHOR
-    return None
-
-
-def classify_period_lock(period, as_of: date | None = None) -> PeriodLockReason | None:
-    """Return the first reason ``period`` is locked, or ``None`` if mutable.
-
-    The single-period public API, used by the settings UI to badge one
-    period.  Delegates to :func:`classify_periods_bulk` over a one-element
-    list so the lock rules have exactly ONE encoding -- the set queries
-    plus the :func:`_resolve_lock` precedence -- and the single-period and
-    bulk paths can never drift apart on this spine-critical classifier.
-
-    Args:
-        period: The :class:`~app.models.pay_period.PayPeriod` to classify.
-        as_of: Reference date for the historical test (defaults to
-            today), matching ``pay_period_service.get_current_period``:
-            the period containing ``as_of`` and every later one is not
-            historical.
-
-    Returns:
-        The first applicable :class:`PeriodLockReason`, or ``None``.
-    """
-    return classify_periods_bulk([period], as_of=as_of)[period.id]
-
-
-def classify_periods_bulk(
-    periods, as_of: date | None = None,
-) -> dict[int, PeriodLockReason | None]:
-    """Classify many periods with set queries instead of N x 3 scalar ones.
-
-    Returns ``{period.id: PeriodLockReason | None}`` identical to calling
-    :func:`classify_period_lock` on each period, but with four set
-    queries total plus the in-memory date check -- the no-N+1 path the
-    truncate operation runs over its to-delete window.
-
-    Args:
-        periods: The :class:`~app.models.pay_period.PayPeriod` objects to
-            classify.
-        as_of: Reference date for the historical test (defaults to today).
-
-    Returns:
-        A dict mapping each period's id to its lock reason (or ``None``).
-    """
-    if as_of is None:
-        as_of = date.today()
-    period_ids = [p.id for p in periods]
-    if not period_ids:
-        return {}
-
-    settled = _period_ids_with_settled_transaction(period_ids)
-    unbalanced = _period_ids_with_unbalanced_ledger(period_ids)
-    rule_anchors = _period_ids_that_are_recurrence_anchors(period_ids)
-
-    return {
-        period.id: _resolve_lock(
-            is_historical=period.end_date < as_of,
-            has_settled=period.id in settled,
-            has_unbalanced_ledger=period.id in unbalanced,
-            is_recurrence_anchor=period.id in rule_anchors,
-        )
-        for period in periods
-    }
 
 
 def extend_pay_periods(user_id, num_periods, cadence_days=None):
@@ -240,13 +108,27 @@ def extend_pay_periods(user_id, num_periods, cadence_days=None):
     return new_periods
 
 
-def truncate_pay_periods(user_id, keep_through_index, confirm_discard=False):
-    """Delete the schedule tail beyond ``keep_through_index``.
+def truncate_pay_periods(
+    user_id: int, keep_through_period_id: int, confirm_discard: bool = False,
+) -> int:
+    """Delete the schedule tail beyond the period *keep_through_period_id* names.
 
-    Removes every pay period whose ``period_index`` is greater than
-    ``keep_through_index`` (tail-truncate preserves the index==calendar
-    invariant; only tail ops do).  Two gates protect real data, checked
-    in order before anything is deleted:
+    **The public wire door, and it takes an ``id`` rather than an ordinal**
+    (plan step C3-a, finding **P13**).  This parameter was
+    ``keep_through_index``, a ``period_index`` the form posted as an
+    ``<option value>`` and the discard-confirm 422 echoed into a re-submittable
+    hidden field -- a user-supplied POSITION selecting which periods a CASCADE
+    destroyed, across a browser round trip.  Safe only while nothing renumbers:
+    from plan step C3-b (both columns materialised from the payday list) or C6
+    (mid-schedule insert), an ordinal read in an earlier request names a
+    DIFFERENT period than the user reviewed and takes its transactions, its
+    transfers with both shadows, and its journal entries.  ``user_write_lock``
+    cannot help -- the stale value crossed a REQUEST boundary, not a concurrent
+    one.  Identity is ``id``, so the wire key is ``id``.
+
+    Removes every pay period whose PAYDAY falls after the named period's
+    (tail-truncate preserves the index==calendar invariant; only tail ops do).
+    Two gates protect real data, checked in order before anything is deleted:
 
       1. **Hard locks (not overridable).** If any to-delete period is
          historical, holds a settled transaction, carries an unbalanced
@@ -270,33 +152,160 @@ def truncate_pay_periods(user_id, keep_through_index, confirm_discard=False):
     ``transactions.pay_period_id`` and raise before the DB cascade fires.
     ``expire_all`` then drops the now-stale identity map.
 
+    **The named period is always KEPT, so THIS DOOR can never empty a
+    schedule**, which three docstrings elsewhere rest on.  "This door" rather
+    than "truncate", precisely: the ordinal form protected the ROUTE with a
+    Marshmallow floor of zero, while the service beneath it emptied schedules
+    routinely -- ``_regenerate_keep_through_index`` answered ``-1``, and
+    :func:`_delete_periods_after` still empties one when regenerate hands it
+    ``None``.  The guarantee now rests on the resolve below instead: an id must
+    name one of this owner's periods, and that period is on the KEEP side of
+    the comparison by construction.
+
     Args:
         user_id: The owning user's id.
-        keep_through_index: The highest ``period_index`` to KEEP; every
-            higher index is deleted.
+        keep_through_period_id: The ``budget.pay_periods.id`` of the last
+            period to KEEP.  Must name one of *user_id*'s own periods.
         confirm_discard: When True, proceed past the discard gate (the
             user has acknowledged the loss).  Hard locks are never
             bypassed.
 
     Returns:
-        The number of pay periods deleted (0 when the tail is already at
-        or below ``keep_through_index`` -- an idempotent no-op).
+        The number of pay periods deleted (0 when the named period is
+        already the last one -- an idempotent no-op).
+
+    Raises:
+        PayPeriodUnresolved: *keep_through_period_id* names no pay period of
+            *user_id*'s.  **"No such period" and "not your period" raise the
+            SAME message deliberately**, so a caller cannot use this door to
+            learn whether another owner's id exists.  A stale id -- one the
+            browser held from before a concurrent truncate -- lands here too,
+            and refusing it is the point: the alternative is deleting a tail
+            the user never reviewed.
+        PayPeriodLocked: A to-delete period is hard-locked.
+        PayPeriodDiscardRequired: A to-delete period holds unrecoverable
+            rows and ``confirm_discard`` is False.
+    """
+    # Serialize against concurrent structural mutations so the resolve, the
+    # classify and the bulk DELETE see one consistent set -- closes the
+    # classify-then-DELETE TOCTOU against another extend / top-up /
+    # truncate for this user.
+    user_write_lock.lock_user_writes(user_id)
+
+    periods = pay_period_service.get_all_periods(user_id)
+    kept = next(
+        (p for p in periods if p.id == keep_through_period_id), None,
+    )
+    if kept is None:
+        _log_unresolved_period(user_id, keep_through_period_id)
+        raise PayPeriodUnresolved(keep_through_period_id)
+    return _delete_periods_after(periods, kept, confirm_discard)
+
+
+def _log_unresolved_period(user_id: int, period_id: int) -> None:
+    """Emit the F-144 access-denied trail for an id that resolved to nothing.
+
+    **A new ownership-failure branch owes an ACCESS event**, which is the
+    invariant ``utils.auth_helpers`` states for its own doors ("every
+    ownership-failure branch in this module emits a structured ``log_event`` so
+    probing patterns surface in dashboards and SOC alerting") and which plan
+    step C3-a's first cut left silent: an authenticated owner sweeping ids
+    through ``POST /pay-periods/truncate`` was correctly refused every time and
+    recorded nowhere.
+
+    The two branches ``get_or_404`` distinguishes are distinguished HERE too,
+    and for its reasons: a missing pk is common in normal use -- the
+    discard-confirm panel re-posts an id a concurrent truncate has since
+    deleted -- so it is INFO, while a pk owned by somebody else is the IDOR
+    signal and is WARNING.  **Splitting the LOG is not an oracle**: the caller
+    raises one message for both, and an event goes to the log rather than to
+    the response.
+
+    ``get_or_404`` itself cannot be reused: it reads ``current_user`` and
+    ``request.path``, and this module may not import Flask.  The cross-user
+    half therefore goes through ``_recurrence_common.log_resource_access_denied``,
+    the Flask-free helper built for exactly this shape, rather than through a
+    second copy of its fixed keyword set.
+
+    Args:
+        user_id: The requesting owner -- never the row's owner.
+        period_id: The submitted ``budget.pay_periods.id`` that resolved to
+            none of *user_id*'s periods.
+    """
+    owner_id = (
+        db.session.query(PayPeriod.user_id)
+        .filter(PayPeriod.id == period_id)
+        .scalar()
+    )
+    if owner_id is None:
+        log_event(
+            logger, logging.INFO,
+            EVT_RESOURCE_NOT_FOUND, ACCESS,
+            "Pay-period truncate named a non-existent primary key",
+            user_id=user_id, model="PayPeriod", pk=period_id,
+        )
+        return
+    log_resource_access_denied(
+        logger, user_id=user_id, model="PayPeriod", pk=period_id,
+        owner_id=owner_id,
+    )
+
+
+def _delete_periods_after(
+    periods: "list[PayPeriod]",
+    kept: "PayPeriod | None",
+    confirm_discard: bool,
+) -> int:
+    """Delete every period of *periods* whose payday follows *kept*'s.
+
+    The shared half of truncate: :func:`truncate_pay_periods` reaches it with
+    a period resolved from a submitted id, and :func:`regenerate_pay_periods`
+    with one it computed itself.  Both gates and the bulk DELETE live here so
+    the two callers cannot drift on which rows a truncate protects -- the
+    split is plan step C3-a's, made because only ONE of them takes user input
+    and so only one has an id to refuse.
+
+    **The tail is defined by PAYDAY, not by ordinal**, and that is the same
+    normalization the arc is about: ``start_date`` is the only fact in the row,
+    ``period_index`` is derived from it, and plan step C4 drops the ordinal
+    altogether.  On today's data the two select the same rows --
+    ``generate_pay_periods`` is the only writer of this table and appends at
+    ``max_index + 1`` behind a forward-only guard, so index order matches
+    payday order (0 disagreements on 61 production rows, 2026-08-10).
+
+    **But this function does not RELY on that, and an adversarial review of
+    C3-a is why.**  Its first cut took the boundary from
+    :func:`_regenerate_keep_through_period`, which picks by LIST POSITION over
+    a list ``get_all_periods`` orders by ``period_index`` -- so the boundary
+    was chosen in ordinal space and applied in payday space, and the two
+    agreeing was an unfenced assumption about data rather than a property of
+    the code.  That helper now works in payday order too, which makes the
+    operation whole-cloth payday-keyed: no fence to add, and nothing for plan
+    step C6's renumbering to invalidate.  This function itself is a filter and
+    reads no order at all.
+
+    Args:
+        periods: The owner's periods, in any order, read under the caller's
+            advisory lock.
+        kept: The last period to KEEP, or ``None`` to delete every period in
+            *periods*.  ``None`` is reachable only from regenerate, whose
+            rebuildable tail can start at the very first period; it then
+            generates a fresh schedule inside the same transaction, so no
+            committed state is ever period-less.
+        confirm_discard: When True, proceed past the discard gate.
+
+    Returns:
+        The number of pay periods deleted.
 
     Raises:
         PayPeriodLocked: A to-delete period is hard-locked.
         PayPeriodDiscardRequired: A to-delete period holds unrecoverable
             rows and ``confirm_discard`` is False.
     """
-    # Serialize against concurrent structural mutations so the classify
-    # and the bulk DELETE see one consistent set -- closes the
-    # classify-then-DELETE TOCTOU against another extend / top-up /
-    # truncate for this user.
-    user_write_lock.lock_user_writes(user_id)
-
-    to_delete = [
-        p for p in pay_period_service.get_all_periods(user_id)
-        if p.period_index > keep_through_index
-    ]
+    if kept is None:
+        to_delete = list(periods)
+    else:
+        to_delete = [p for p in periods if p.start_date > kept.start_date]
     if not to_delete:
         return 0
 
@@ -379,11 +388,17 @@ def regenerate_pay_periods(
     """
     # Serialize the whole rebuild -- boundary computation through the
     # truncate + regenerate -- for this user; re-entrant with the lock
-    # ``truncate_pay_periods`` itself takes.
+    # ``truncate_pay_periods`` used to take before plan step C3-a split the
+    # resolve off the delete, and which the generate below still relies on.
     user_write_lock.lock_user_writes(user_id)
 
-    keep_through = _regenerate_keep_through_index(user_id)
-    truncate_pay_periods(user_id, keep_through, confirm_discard=confirm_discard)
+    # The periods are read ONCE, under the lock, and threaded into both the
+    # boundary computation and the delete.  Before plan step C3-a each of
+    # those issued its own ``get_all_periods``, so the boundary was computed
+    # against one snapshot and applied against another.
+    periods = pay_period_service.get_all_periods(user_id)
+    kept = _regenerate_keep_through_period(periods)
+    _delete_periods_after(periods, kept, confirm_discard)
     new_periods = pay_period_service.generate_pay_periods(
         user_id, new_start_date, num_periods, cadence_days,
     )
@@ -628,36 +643,58 @@ def _future_period_count(user_id, as_of):
     )
 
 
-def _regenerate_keep_through_index(user_id):
-    """Return the ``keep_through_index`` regenerate truncates to.
+def _regenerate_keep_through_period(
+    periods: "list[PayPeriod]",
+) -> "PayPeriod | None":
+    """Return the last period regenerate KEEPS, or ``None`` to keep none.
 
-    Everything up to and including the last period that has already
-    started or is locked is kept; the first NOT-YET-STARTED AND unlocked
-    period is where the rebuildable tail begins, so this returns that
-    period's index minus one.  "Not yet started" is ``start_date >
-    today`` STRICTLY: a period whose ``start_date == today`` is the
-    current in-progress period (``get_current_period`` matches
-    ``start_date <= today <= end_date``), so on a payday it is kept, not
-    rebuilt.  When there is no rebuildable future tail (every period has
-    started or is locked), it returns the last index -- the truncate is
-    then a no-op and regenerate degrades to an append from
-    ``new_start_date``.  With no periods at all, it returns -1.
+    Everything up to and including the last period that has already started or
+    is locked is kept; the first NOT-YET-STARTED AND unlocked period is where
+    the rebuildable tail begins, so this returns the period BEFORE it.  "Not
+    yet started" is ``start_date > today`` STRICTLY: a period whose
+    ``start_date == today`` is the current in-progress period
+    (``get_current_period`` matches ``start_date <= today <= end_date``), so on
+    a payday it is kept, not rebuilt.  When there is no rebuildable future tail
+    (every period has started or is locked), it returns the LAST period -- the
+    truncate is then a no-op and regenerate degrades to an append from
+    ``new_start_date``.
+
+    **It returns a PERIOD rather than an ordinal, and ``None`` rather than
+    ``-1``** (plan step C3-a).  The sentinel had to be a number below every
+    real ``period_index`` because the truncate it fed compared ordinals; with
+    :func:`_delete_periods_after` comparing PAYDAYS there is no "one before the
+    first payday" to name, and inventing one would be an ordinal surviving in
+    a function whose whole point is that ordinals do not.
+
+    **It walks in PAYDAY order, and an adversarial review of C3-a is why.**
+    Its first cut walked ``periods`` as handed over -- which
+    ``pay_period_service.get_all_periods`` orders by ``period_index`` -- and
+    returned ``periods[position - 1]``, so the boundary was chosen in ORDINAL
+    space while the delete that consumes it selects in PAYDAY space.  The two
+    agree on every schedule this app can currently write, which made the
+    disagreement an unfenced assumption about data rather than a property of
+    the code; sorting here removes the assumption instead of asserting it, and
+    keeps working when plan step C6 lets a payday be inserted mid-schedule.
 
     Args:
-        user_id: The owning user's id.
+        periods: The owner's periods, in any order, read under the caller's
+            advisory lock.  Taken as an argument rather than re-queried so the
+            boundary and the delete that consumes it see one snapshot.
 
     Returns:
-        The highest ``period_index`` to keep.
+        The last :class:`~app.models.pay_period.PayPeriod` to keep, or ``None``
+        when the rebuildable tail starts at the very first period (or the owner
+        has no periods at all) -- both meaning "keep none of them".
     """
-    periods = pay_period_service.get_all_periods(user_id)
     if not periods:
-        return -1
+        return None
+    by_payday = sorted(periods, key=attrgetter("start_date"))
     today = date.today()
-    locks = classify_periods_bulk(periods)
-    for period in periods:
+    locks = classify_periods_bulk(by_payday)
+    for position, period in enumerate(by_payday):
         if period.start_date > today and locks[period.id] is None:
-            return period.period_index - 1
-    return periods[-1].period_index
+            return by_payday[position - 1] if position > 0 else None
+    return by_payday[-1]
 
 
 def _count_discardable_items(period_ids):
@@ -835,57 +872,3 @@ def _repoint_recurrence_rules(rule_ids: list[int], first_period) -> None:
             calendar,
         )
     db.session.flush()
-
-
-def _period_ids_with_settled_transaction(period_ids: list[int]) -> set[int]:
-    """Return the subset of ``period_ids`` holding a non-deleted settled txn."""
-    rows = db.session.query(Transaction.pay_period_id).filter(
-        Transaction.pay_period_id.in_(period_ids),
-        Transaction.status_id.in_(settled_status_ids()),
-        Transaction.is_deleted.is_(False),
-    ).distinct().all()
-    return {row[0] for row in rows}
-
-
-def _period_ids_with_unbalanced_ledger(period_ids: list[int]) -> set[int]:
-    """Return the ``period_ids`` whose entries do NOT net to zero per ledger.
-
-    The double-entry gate of the lock classifier (the 2026-07-02 adversarial
-    review's R2 defense-in-depth): ``journal_entries.pay_period_id`` is
-    ``ON DELETE CASCADE``, so deleting a period disposes its entries and legs
-    at the DB tier -- outside the ORM, where the balanced-journal trigger
-    never fires on DELETE.  That disposal is safe ONLY when the period's
-    postings net to zero per ledger account (e.g. an original + its reversal,
-    which the R2 attribution rule keeps in one period): the cascade then
-    removes a self-cancelling pair and no account's sum moves.  A period
-    whose postings carry a NON-zero per-account net -- a loan opening /
-    true-up correction, or any attribution drift -- holds posted financial
-    state a cascade would silently mis-state, so it hard-locks.
-
-    A period holding a settled transaction is already locked upstream
-    (``SETTLED_TXN`` precedence); this catches the posted state settled-row
-    counting cannot see.
-
-    Args:
-        period_ids: The pay-period ids being classified.
-
-    Returns:
-        The subset whose postings have a non-zero net on any ledger account.
-    """
-    rows = (
-        db.session.query(JournalEntry.pay_period_id)
-        .join(Posting, Posting.journal_entry_id == JournalEntry.id)
-        .filter(JournalEntry.pay_period_id.in_(period_ids))
-        .group_by(JournalEntry.pay_period_id, Posting.ledger_account_id)
-        .having(db.func.sum(Posting.amount) != 0)
-        .all()
-    )
-    return {row[0] for row in rows}
-
-
-def _period_ids_that_are_recurrence_anchors(period_ids: list[int]) -> set[int]:
-    """Return the subset of ``period_ids`` that are a rule's start period."""
-    rows = db.session.query(RecurrenceRule.start_period_id).filter(
-        RecurrenceRule.start_period_id.in_(period_ids),
-    ).distinct().all()
-    return {row[0] for row in rows}
