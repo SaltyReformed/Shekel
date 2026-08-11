@@ -122,8 +122,9 @@ def compute_annual_liability(
     """Compute a profile's filing-time federal + NC-state liability for *year*.
 
     Loads the year's tax configs through the shared
-    :func:`load_tax_configs_for_year` SSOT (the same per-year + current-year
-    fallback rule the recurrence engine and salary projection use), reads
+    :func:`load_tax_configs_for_year` SSOT (the same per-year resolution --
+    the latest CONFIGURED year at or before the requested one -- that the
+    recurrence engine and salary projection use), reads
     the additional-income and dependent counts off *profile*, and delegates
     the arithmetic to the pure ``tax_calculator`` engine.
 

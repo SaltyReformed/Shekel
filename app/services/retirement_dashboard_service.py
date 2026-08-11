@@ -34,7 +34,7 @@ from app.services.retirement_projection import (
     build_projection_context,
     project_retirement_accounts,
 )
-from app.services.tax_config_service import load_tax_configs
+from app.services.tax_config_service import load_tax_configs_for_year
 from app.utils.dates import add_months
 from app.utils.money import round_money
 
@@ -564,7 +564,11 @@ def _compute_current_pay(
     # dropped any applicable SalaryRaise.
     if salary_profiles and current_period:
         profile = salary_profiles[0]
-        tax_configs = load_tax_configs(user_id, profile)
+        # The CURRENT PERIOD's own tax year, not the clock's -- the same key
+        # every other paycheck for this profile is computed under.
+        tax_configs = load_tax_configs_for_year(
+            user_id, profile, current_period.start_date.year,
+        )
         current_breakdown = paycheck_calculator.calculate_paycheck(
             profile, current_period, all_periods, tax_configs,
         )

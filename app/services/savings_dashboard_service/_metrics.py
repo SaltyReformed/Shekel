@@ -29,7 +29,7 @@ from app.services.savings_dashboard_service._debt_line import (
     loan_payoff_outlook,
 )
 from app.services.savings_dashboard_service._types import AccountProjection
-from app.services.tax_config_service import load_tax_configs
+from app.services.tax_config_service import load_tax_configs_for_year
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
 _RATE_PLACES = Decimal("0.00001")
@@ -268,7 +268,11 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     if profile is None:
         return None
 
-    tax_configs = load_tax_configs(user_id, profile)
+    # The CURRENT PERIOD's own tax year, not the clock's -- the same key
+    # every other paycheck for this profile is computed under.
+    tax_configs = load_tax_configs_for_year(
+        user_id, profile, current_period.start_date.year,
+    )
     return paycheck_calculator.calculate_paycheck(
         profile, current_period, all_periods, tax_configs,
     )

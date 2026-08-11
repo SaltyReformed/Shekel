@@ -35,7 +35,7 @@ from app.services import (
 from app.services.recurrence import RecurrenceSpec, author_rule, calendar_for
 from app.services.generation_schedule import GenerationSchedule
 from app.services.scenario_resolver import get_baseline_scenario
-from app.services.tax_config_service import load_tax_configs
+from app.services.tax_config_service import load_tax_configs_for_year
 from app.routes._commit_helpers import (
     DbErrorContext,
     StaleConflictContext,
@@ -201,7 +201,11 @@ def create_profile():
             or (periods[0] if periods else None)
         )
         if ref_period:
-            tax_configs = load_tax_configs(current_user.id, profile)
+            # Resolved for the REFERENCE PERIOD's own tax year, matching the
+            # key every other paycheck for this profile is computed under.
+            tax_configs = load_tax_configs_for_year(
+                current_user.id, profile, ref_period.start_date.year,
+            )
             init_breakdown = paycheck_calculator.calculate_paycheck(
                 profile, ref_period, periods, tax_configs
             )

@@ -2764,7 +2764,15 @@ class TestPaycheckAmountFallback:
 
     @staticmethod
     def _fake_tax_configs(*args, **kwargs):
-        """Stub load_tax_configs to avoid DB hits in unit tests."""
+        """Stub the RESOLVING loader to avoid DB hits in unit tests.
+
+        Patched at ``load_tax_configs_for_year`` -- the function
+        ``_get_transaction_amount`` actually calls -- rather than at the
+        exact-year primitive beneath it.  The resolver reads the profile's
+        filing status and state to build its candidate set, which these
+        deliberately minimal fakes do not carry; stubbing the entry point
+        keeps the test hermetic and on the narrowing behaviour it is about.
+        """
         return {
             "bracket_set": "fake", "state_config": "fake",
             "fica_config": "fake",
@@ -2780,7 +2788,7 @@ class TestPaycheckAmountFallback:
                 ZeroDivisionError("division by zero")),
         )
         monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs",
+            "app.services.tax_config_service.load_tax_configs_for_year",
             self._fake_tax_configs,
         )
         from app.services.recurrence_engine import _get_transaction_amount
@@ -2814,7 +2822,7 @@ class TestPaycheckAmountFallback:
             "app.services.paycheck_calculator.calculate_paycheck", _boom,
         )
         monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs",
+            "app.services.tax_config_service.load_tax_configs_for_year",
             self._fake_tax_configs,
         )
         from app.services.recurrence_engine import _get_transaction_amount
@@ -2846,7 +2854,7 @@ class TestPaycheckAmountFallback:
             "app.services.paycheck_calculator.calculate_paycheck", _boom,
         )
         monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs",
+            "app.services.tax_config_service.load_tax_configs_for_year",
             self._fake_tax_configs,
         )
         from app.services.recurrence_engine import _get_transaction_amount

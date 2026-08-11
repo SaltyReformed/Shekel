@@ -36,7 +36,7 @@ from app.services import (
 )
 from app.services.generation_schedule import GenerationSchedule
 from app.services.scenario_resolver import get_baseline_scenario
-from app.services.tax_config_service import load_tax_configs
+from app.services.tax_config_service import load_tax_configs_for_year
 from app.schemas.validation import (
     CalibrationConfirmSchema,
     CalibrationSchema,
@@ -138,11 +138,17 @@ def _regenerate_salary_transactions(profile):
     # below and the regeneration's own resolution (plan step R4b-1).
     schedule = GenerationSchedule.for_user(current_user.id)
     periods = list(schedule.periods)
-    tax_configs = load_tax_configs(current_user.id, profile)
 
     # Update the template's default_amount to the current net pay
     current_period = pay_period_service.get_current_period(current_user.id)
     if current_period:
+        # The configs are resolved for the PERIOD's own tax year, not the
+        # clock's: a period straddling New Year belongs to the year it starts
+        # in, which is the key ``load_tax_configs_for_periods`` uses for every
+        # other paycheck this profile computes.
+        tax_configs = load_tax_configs_for_year(
+            current_user.id, profile, current_period.start_date.year,
+        )
         pay_breakdown = paycheck_calculator.calculate_paycheck(
             profile, current_period, periods, tax_configs,
             calibration=profile.calibration,
@@ -202,7 +208,9 @@ def _compute_total_pre_tax(profile):
     # regenerates nothing, so it needs the period list the calculator reads as
     # ``all_periods`` and none of the rest of a GenerationSchedule.
     periods = pay_period_service.get_all_periods(current_user.id)
-    tax_configs = load_tax_configs(current_user.id, profile)
+    tax_configs = load_tax_configs_for_year(
+        current_user.id, profile, current_period.start_date.year,
+    )
     pay_breakdown = paycheck_calculator.calculate_paycheck(
         profile, current_period, periods, tax_configs,
     )

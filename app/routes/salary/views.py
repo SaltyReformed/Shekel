@@ -77,8 +77,9 @@ def projection(profile_id):
     periods = pay_period_service.get_all_periods(current_user.id)
     # Resolve tax configs PER period year (DH-#30): the ~2-year horizon
     # spans multiple tax years, so each period uses its own year's
-    # brackets/FICA (current-year fallback), matching the recurrence
-    # engine that generates the stored grid amounts.
+    # brackets/FICA -- substituting the latest CONFIGURED year at or before
+    # it -- matching the recurrence engine that generates the stored grid
+    # amounts.
     configs_by_year = load_tax_configs_for_periods(
         current_user.id, profile, periods,
     )
