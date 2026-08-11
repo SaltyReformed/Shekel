@@ -174,10 +174,25 @@ def derive_periods(
     ``utils.dates.attribution_date`` clamps it -- so the damage is a row
     silently RENDERED on a different day, which is plan finding P10's shape
     reached through a door P10 does not cover.  ``_reject_overlapping_batch``
-    blocks that write today because it compares against the stored end; plan
-    step C3 deletes it, so the rule has to be re-established there.  The
-    derivation states the property and does not police it: it is a function of
-    a payday set, and which sets a user may write is the writer's question.
+    blocked that write by comparing against the stored end; plan step **C3-b**
+    replaced it with ``pay_period_write._reject_backward_payday``, and **that
+    floor is what closes this example** -- corrected 2026-08-11, because this
+    paragraph named C3-b's coverage rule until the floor's own correction made
+    the citation wrong and the rule was then deleted.  The floor is one FULL
+    CADENCE past the latest payday, so on ``[01-02, 01-16]`` at cadence 14 the
+    earliest acceptable new payday is 01-30 and the 01-28 above is refused
+    outright.
+
+    **What the floor buys is exactly that and no more, and a second adversarial
+    review caught a first draft of this paragraph claiming more**: no write can
+    place a payday INSIDE an existing paycheck's derived span.  A stored end can
+    still be pulled BACK, two ways, and both are exercised by C3-b's own tests
+    -- ``retire_paydays`` drops the newly-last survivor from its
+    successor-dictated end to the cadence projection, and ``record_paydays``
+    shortens the previously-last period whenever the stored cadence is shorter
+    than the one the schedule was generated at (row **P28**'s legacy shape).
+    The derivation states the property and does not police it: it is a function
+    of a payday set, and which sets a user may write is the writer's question.
 
     Order and duplication are handled HERE rather than trusted, because the
     result's whole value is that index order and date order cannot disagree:

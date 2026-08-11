@@ -31,6 +31,7 @@ from app.models.transaction import Transaction
 from app.services import (
     pay_period_admin,
     pay_period_service,
+    pay_period_write,
     pay_schedule_service,
     period_population,
 )
@@ -66,9 +67,9 @@ def _spanning_periods(db_session, seed_user, count=8):
     Index 4 (06-12..06-25) is the in-progress period; 1..3 are historical;
     5.. are the rebuildable future tail.
     """
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=_SPAN_START,
+        first_payday=_SPAN_START,
         num_periods=count,
         cadence_days=14,
     )
@@ -104,7 +105,7 @@ class TestRegenerateHappyPath:
         with app.app_context():
             user_id = seed_user["user"].id
             # Index 1 starts ON the frozen today -- the current period.
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id, FROZEN_TODAY, num_periods=4, cadence_days=14,
             )
             db.session.commit()
@@ -269,8 +270,8 @@ class TestRegenerateWhenTheWholeScheduleIsRebuildable:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            old = pay_period_service.generate_pay_periods(
-                user_id=user_id, start_date=date(2026, 7, 3),
+            old = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 7, 3),
                 num_periods=4, cadence_days=14,
             )
             db.session.commit()
@@ -305,8 +306,8 @@ class TestRegenerateWhenTheWholeScheduleIsRebuildable:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            old = pay_period_service.generate_pay_periods(
-                user_id=user_id, start_date=date(2026, 1, 2),
+            old = pay_period_write.record_paydays(
+                user_id=user_id, first_payday=date(2026, 1, 2),
                 num_periods=4, cadence_days=14,
             )
             db.session.commit()
@@ -378,20 +379,29 @@ class TestRegenerateRefusals:
     def test_overlapping_new_start_rejected_and_rolls_back(
         self, app, db, seed_user,
     ):
-        """A new_start that overlaps the retained schedule is rejected.
+        """A new_start below the forward-only floor is rejected, atomically.
 
-        The truncate runs before generate validates the start, so the
+        The truncate runs before the writer validates the start, so the
         route's rollback (simulated here) must restore the deleted tail --
         nothing partial survives.
+
+        **The refused date moved in at plan step C3-b.**  It was five days
+        into the retained current period, which the OLD guard refused because
+        it bounded on the retained ``end_date``; the floor is now the retained
+        PAYDAY plus two, so that date is accepted and correctly shortens the
+        retained period (the "correct my cadence going forward" case the
+        implementation plan's section 6 names).  One day in is still below the
+        floor, so it still refuses -- and the atomicity this test is about is
+        unchanged.
         """
         with app.app_context():
             periods = _spanning_periods(db.session, seed_user, count=8)
             user_id = seed_user["user"].id
             before = _count_periods(db.session, user_id)
-            # A start strictly inside the retained current period (not on a
-            # boundary, so generate cannot skip it as an existing start)
-            # overlaps the retained coverage.
-            bad_start = periods[3].start_date + timedelta(days=5)
+            # One day after the retained current period's PAYDAY: below the
+            # floor of payday + MIN_MATERIALISABLE_CADENCE_DAYS, so it would
+            # leave that period deriving an end equal to its own start.
+            bad_start = periods[3].start_date + timedelta(days=1)
 
             with pytest.raises(ValidationError):
                 pay_period_admin.regenerate_pay_periods(

@@ -35,7 +35,7 @@ from app.models.pay_schedule import (
     CADENCE_DAYS_MIN,
     PaySchedule,
 )
-from app.services import pay_calendar
+from app.services import pay_calendar, pay_period_write
 from app.services import pay_period_service
 
 
@@ -281,9 +281,9 @@ class TestBackfill:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 4, 1),
+                first_payday=date(2026, 4, 1),
                 num_periods=5,
                 cadence_days=10,
             )
@@ -334,9 +334,9 @@ class TestBackfill:
         """
         user_id = bare_user["user"].id
         with app.app_context():
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 5, 1),
+                first_payday=date(2026, 5, 1),
                 num_periods=3,
                 cadence_days=14,
             )

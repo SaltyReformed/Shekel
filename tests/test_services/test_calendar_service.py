@@ -20,7 +20,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 import pytest
 
-from app.services import balance_at, calendar_service
+from app.services import balance_at, calendar_service, pay_period_write
 from tests._test_helpers import default_settle_day
 from app.services.balance_at import BalanceContext
 from app.services.balance_at import _context as resolution_context
@@ -832,9 +832,9 @@ class TestThirdPaycheckDetection:
         """26 biweekly periods in 2026 produce exactly 2 third-paycheck months."""
         with app.app_context():
             from app.services import pay_period_service
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=26,
                 cadence_days=14,
             )
@@ -854,9 +854,9 @@ class TestThirdPaycheckDetection:
         with app.app_context():
             from app.services import pay_period_service
             # Generate periods spanning 2025-2026.
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2025, 7, 4),
+                first_payday=date(2025, 7, 4),
                 num_periods=40,
                 cadence_days=14,
             )
@@ -881,9 +881,9 @@ class TestThirdPaycheckDetection:
         """
         with app.app_context():
             from app.services import pay_period_service
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=26,
                 cadence_days=14,
             )
@@ -927,9 +927,9 @@ class TestYearOverview:
             # The BINDING went with the ``current_anchor_period_id`` line it
             # fed (ruling R-EH); the CALL is fixture setup and stays -- these
             # 26 periods ARE the third-paycheck year under test.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=26,
                 cadence_days=14,
             )
@@ -1024,9 +1024,9 @@ class TestEdgeCases:
         with app.app_context():
             from app.services import pay_period_service
             # Create a period that overlaps Feb 2028.
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2028, 2, 18),
+                first_payday=date(2028, 2, 18),
                 num_periods=2,
                 cadence_days=14,
             )

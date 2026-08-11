@@ -413,7 +413,7 @@ class TestPayPeriodGenerationIdempotency:
         exist. A second generation with the same parameters should produce
         0 new periods (all skipped as duplicates).
         """
-        from app.services import pay_period_service
+        from app.services import pay_period_write
         from datetime import date as dt_date
         from app.models.pay_period import PayPeriod
 
@@ -421,9 +421,9 @@ class TestPayPeriodGenerationIdempotency:
             user_id = bare_user["user"].id
 
             # First generation: 10 periods starting 2026-06-01.
-            periods1 = pay_period_service.generate_pay_periods(
+            periods1 = pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=dt_date(2026, 6, 1),
+                first_payday=dt_date(2026, 6, 1),
                 num_periods=10,
                 cadence_days=14,
             )
@@ -431,9 +431,9 @@ class TestPayPeriodGenerationIdempotency:
             assert len(periods1) == 10
 
             # Second generation: same parameters.
-            periods2 = pay_period_service.generate_pay_periods(
+            periods2 = pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=dt_date(2026, 6, 1),
+                first_payday=dt_date(2026, 6, 1),
                 num_periods=10,
                 cadence_days=14,
             )
@@ -470,7 +470,7 @@ class TestPayPeriodGenerationIdempotency:
         off-grid start would interleave and is rejected by the forward-only
         invariant (DH-#39), covered separately in test_pay_period_service.
         """
-        from app.services import pay_period_service
+        from app.services import pay_period_write
         from datetime import date as dt_date, timedelta
         from app.models.pay_period import PayPeriod
 
@@ -478,9 +478,9 @@ class TestPayPeriodGenerationIdempotency:
             user_id = bare_user["user"].id
 
             # First generation: 10 periods starting 2026-06-01.
-            periods1 = pay_period_service.generate_pay_periods(
+            periods1 = pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=dt_date(2026, 6, 1),
+                first_payday=dt_date(2026, 6, 1),
                 num_periods=10,
                 cadence_days=14,
             )
@@ -495,9 +495,9 @@ class TestPayPeriodGenerationIdempotency:
             expected_new = len(batch2_starts - batch1_starts)
 
             # Second generation: 10 periods starting 2026-08-10 (on-grid).
-            periods2 = pay_period_service.generate_pay_periods(
+            periods2 = pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=dt_date(2026, 8, 10),
+                first_payday=dt_date(2026, 8, 10),
                 num_periods=10,
                 cadence_days=14,
             )

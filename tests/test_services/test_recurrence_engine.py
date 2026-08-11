@@ -19,7 +19,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern, TransactionType, Status
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
-from app.services import pay_period_service, recurrence_engine
+from app.services import pay_period_service, pay_period_write, recurrence_engine
 from app.services.recurrence import RecurrenceResolutionError
 from app.services.recurrence import (
     PeriodCalendar,
@@ -34,6 +34,7 @@ from app.exceptions import (
 )
 from app.services import account_service
 from app.services.generation_schedule import GenerationSchedule
+from tests._test_helpers import open_calendar_hole
 
 # Map human-readable pattern names to RecurrencePatternEnum members for
 # use in build_rule and test helpers.  Allows tests to construct a rule
@@ -1072,9 +1073,9 @@ class TestGenerateForTemplate:
             # user-selectable 1..365, so this is configuration, not a
             # hypothetical.  Built after the seed periods so the batch opens
             # strictly after the latest existing end_date.
-            long_periods = pay_period_service.generate_pay_periods(
+            long_periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=seed_periods[-1].end_date + timedelta(days=1),
                 num_periods=4,
                 cadence_days=90,
             )
@@ -1151,9 +1152,9 @@ class TestGenerateForTemplate:
         later extend would refuse over periods it was never going to write.
         """
         with app.app_context():
-            long_periods = pay_period_service.generate_pay_periods(
+            long_periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=seed_periods[-1].end_date + timedelta(days=1),
                 num_periods=4,
                 cadence_days=90,
             )
@@ -1395,15 +1396,23 @@ class TestAnOccurrenceInAScheduleGap:
     """A bill owed on a day no pay period covers: logged, skipped, not lost.
 
     **Plan ledger row D7, ruled 2026-08-08 and built at plan step R4b-2.**  Pay
-    periods are not contiguous by construction: the only bound
-    ``pay_period_service._reject_overlapping_batch`` applies is that a new
-    batch must start AFTER the latest existing ``end_date``, so a batch
-    starting later than that leaves a calendar hole.  The first test below
-    builds the hole through the REAL writer rather than by hand-inserting rows,
-    because "can this state exist?" is the premise the whole finding rests on
-    -- production has no gap today (all 61 periods contiguous, measured
-    2026-08-08), so a hand-built one would prove nothing about what the
-    application PERMITS.  Closing that writer is finding F-10.
+    periods were not contiguous by construction: the only bound the batch guard
+    of the day (``pay_period_service._reject_overlapping_batch``) applied was
+    that a new batch must start AFTER the latest existing ``end_date``, so a
+    batch starting later than that left a calendar hole.  These tests built the
+    hole through the REAL writer rather than by hand, because "can this state
+    exist?" was the premise the whole finding rested on.
+
+    **Plan step C3-b closed that writer, which is what finding F-10 asked for,
+    and the first test below is now the CONTROL for the closure rather than the
+    premise.**  ``pay_period_write`` materialises the payday derivation, in
+    which a period ends the day before the next payday, so an append absorbs
+    the days it used to leave behind.  The state is still reachable in the
+    wild, from rows written before that step, so the remaining tests keep their
+    subject and build it with ``_test_helpers.open_calendar_hole``, which
+    writes the column directly.  What moved is which half of the claim each
+    test carries: the writer no longer PERMITS a hole, and the reader still has
+    to answer for one.
 
     **A hole is not the same as "the schedule has not got there yet"**, and the
     class ends with the control that says so.  Two neutral reviews of this
@@ -1425,22 +1434,30 @@ class TestAnOccurrenceInAScheduleGap:
     _DAY_OF_MONTH = 15
 
     def _schedule_with_a_gap(self, seed_user, seed_periods):
-        """Append a second batch that leaves a hole, through the real writer.
+        """Append a second batch, then re-open the hole the writer absorbs.
+
+        The append is still the real writer's, so the schedule's SHAPE is one
+        the app produces; the last line puts back the hole plan step C3-b's
+        recompute closes, because that hole is what these tests are about.
+        Doing it in this order rather than hand-inserting every row keeps the
+        fixture one line away from the production path.
 
         Returns:
             ``(later_periods, gap_start, gap_end)`` -- the appended batch and
             the inclusive span of days no period covers.
         """
-        gap_start = seed_periods[-1].end_date + timedelta(days=1)
-        later_start = seed_periods[-1].end_date + timedelta(days=self._GAP_DAYS)
-        later = pay_period_service.generate_pay_periods(
+        last_covered = seed_periods[-1].end_date
+        later_start = last_covered + timedelta(days=self._GAP_DAYS)
+        later = pay_period_write.record_paydays(
             user_id=seed_user["user"].id,
-            start_date=later_start,
+            first_payday=later_start,
             num_periods=6,
             cadence_days=14,
         )
-        db.session.flush()
-        return later, gap_start, later_start - timedelta(days=1)
+        gap_start, gap_end = open_calendar_hole(
+            db.session, seed_periods[-1], last_covered,
+        )
+        return later, gap_start, gap_end
 
     def _days_between(self, first, last):
         """Every ``_DAY_OF_MONTH`` in ``first..last``, inclusive, ascending."""
@@ -1451,33 +1468,49 @@ class TestAnOccurrenceInAScheduleGap:
             if first <= date(year, month, self._DAY_OF_MONTH) <= last
         ]
 
-    def test_the_writer_still_accepts_a_gapped_batch(
+    def test_the_writer_no_longer_leaves_a_gapped_batch(
         self, app, db, seed_user, seed_periods,
     ):
-        """The premise: a gapped schedule is a state the app can reach.
+        """The CONTROL: appending a late batch now absorbs the days it skips.
 
-        Asserted rather than assumed, and over the WHOLE hole rather than its
-        first day -- a schedule covering the middle of the span would satisfy a
-        single-day check while leaving the tests below measuring nothing.  If
-        ``_reject_overlapping_batch`` is ever tightened to refuse gaps (finding
-        F-10), this goes red and says so, instead of the two below quietly
-        passing over an unreachable branch.
+        This test used to assert the opposite -- that the real writer leaves a
+        hole -- and said in its own docstring that it would "go red and say so"
+        if the writer were ever tightened to refuse gaps (finding **F-10**).
+        Plan step **C3-b** tightened it, this went red, and the assertion is
+        inverted rather than deleted so the closure has a control of its own.
+
+        The days are checked over the WHOLE span rather than its first day: a
+        writer that closed the hole's opening and left its middle uncovered
+        would satisfy a single-day check.
         """
         with app.app_context():
-            later, gap_start, gap_end = self._schedule_with_a_gap(
-                seed_user, seed_periods,
+            last_covered = seed_periods[-1].end_date
+            later_start = last_covered + timedelta(days=self._GAP_DAYS)
+            later = pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=later_start,
+                num_periods=6,
+                cadence_days=14,
             )
-            assert gap_start <= gap_end, "the fixture built no hole"
-            assert later[0].start_date == gap_end + timedelta(days=1)
+            assert later[0].start_date == later_start
 
+            # The days the OLD writer would have left behind.
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            day = gap_start
-            while day <= gap_end:
-                assert not any(
+            day = last_covered + timedelta(days=1)
+            while day < later_start:
+                assert any(
                     period.start_date <= day <= period.end_date
                     for period in periods
-                ), f"{day} is inside the hole but a pay period covers it"
+                ), f"{day} is covered by no pay period"
                 day += timedelta(days=1)
+            # And it is the PRECEDING paycheck that absorbed them, stretched to
+            # the day before the new payday rather than left at its old end.
+            # Read off the re-queried list: the fixture's own objects were
+            # built in an earlier app context and do not see the UPDATE.
+            preceding = next(
+                p for p in periods if p.start_date == seed_periods[-1].start_date
+            )
+            assert preceding.end_date == later_start - timedelta(days=1)
 
     def test_only_the_occurrence_in_the_gap_is_skipped(
         self, app, db, seed_user, seed_periods,
@@ -1673,9 +1706,9 @@ class TestAnOccurrenceInAScheduleGap:
             # last period spans 2026-05-22..2026-06-04 -- across a month
             # boundary, so the 1st of June falls after the last payday while
             # still inside the schedule's covered span.
-            tail = pay_period_service.generate_pay_periods(
+            tail = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=seed_periods[-1].end_date + timedelta(days=1),
                 num_periods=1,
                 cadence_days=14,
             )
@@ -2117,10 +2150,10 @@ class TestResolveConflicts:
             # Create template and transaction for user B (second_user).
             # second_user needs their own periods and template.
             from app.services import pay_period_service
-            periods_b = pay_period_service.generate_pay_periods(
+            periods_b = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
-                start_date=seed_periods[0].start_date,
-                num_periods=10,
+                first_payday=seed_periods[0].start_date,
+                num_periods=10, cadence_days=14,
             )
             template_b = self._make_template_with_rule(
                 second_user, "Every Period", category_key="Rent",

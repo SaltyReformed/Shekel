@@ -5,12 +5,19 @@ One row per user holding the persisted pay-period cadence plus the
 continuous-rolling-window configuration.
 
 A pay period stores only ``(start_date, end_date, period_index)`` --
-its cadence is never recorded on the period itself (it is a
-generation-time argument to ``pay_period_service.generate_pay_periods``).
-That means the extend / regenerate / rolling-top-up paths have nothing
-to continue an existing schedule FROM unless the cadence is persisted
-somewhere.  This table is that storage: the genuinely non-derivable
-configuration a user's schedule needs to grow itself forward.
+its cadence is never recorded on the period itself (it is an argument to
+``pay_period_write.record_paydays``, which spaces the batch's paydays by
+it and then persists it here).  That means the extend / regenerate /
+rolling-top-up paths have nothing to continue an existing schedule FROM
+unless the cadence is persisted somewhere.  This table is that storage:
+the genuinely non-derivable configuration a user's schedule needs to grow
+itself forward.
+
+**Since plan step C3-b it is also an INPUT to the last period's stored
+``end_date``**, the derivation's one projected value -- every other end is
+the day before the next payday.  So a write to this column moves the
+schedule's horizon, which is why only a batch that RECORDS a payday may
+make one (the cadence rule; findings **P12** and **P29**).
 
 The anchor start date is deliberately NOT stored here -- it equals
 ``min(pay_periods.start_date)`` and has no consumer, so persisting it
@@ -61,7 +68,7 @@ class PaySchedule(UserScopedMixin, CreatedAtMixin, db.Model):
                           bounds it to
                           :data:`CADENCE_DAYS_MIN`..:data:`CADENCE_DAYS_MAX`,
                           the same two names the Marshmallow cadence
-                          fields and ``pay_period_service.establish_schedule``
+                          fields and ``pay_schedule_service.upsert_schedule``
                           read -- so the CHECK and every door in front of
                           it state one bound rather than four.
       ``rolling_enabled`` -- continuous-rolling-window switch.  When

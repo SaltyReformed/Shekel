@@ -73,7 +73,7 @@ from app.models.ref import CalcMethod, DeductionTiming, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.services import pay_period_service, period_population, recurrence_engine
+from app.services import pay_period_service, pay_period_write, period_population, recurrence_engine
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     seed_fica_config,
@@ -164,9 +164,9 @@ def _append_period(seed_user, seed_periods):
     Returns:
         The new ``[PayPeriod]`` batch, flushed.
     """
-    created = pay_period_service.generate_pay_periods(
+    created = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=seed_periods[-1].end_date + timedelta(days=1),
+        first_payday=seed_periods[-1].end_date + timedelta(days=1),
         num_periods=1,
         cadence_days=14,
     )

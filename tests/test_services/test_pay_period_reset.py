@@ -53,6 +53,7 @@ from app.services import (
     loan_posting_service,
     pay_period_admin,
     pay_period_service,
+    pay_period_write,
     pay_schedule_service,
     posting_service,
 )
@@ -125,9 +126,9 @@ def _seed_old_schedule(db_session, seed_user, count=5):
     Checking account anchors to; these are the extra periods the reset
     will wipe alongside it.
     """
-    pay_period_service.generate_pay_periods(
+    pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=date(2026, 1, 2),
+        first_payday=date(2026, 1, 2),
         num_periods=count,
         cadence_days=14,
     )
@@ -487,7 +488,7 @@ class TestResetHappyPath:
         """
         with app.app_context():
             user_id = bare_user["user"].id
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id, date(2026, 1, 2), num_periods=4, cadence_days=14,
             )
             db.session.commit()

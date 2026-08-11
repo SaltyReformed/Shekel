@@ -22,7 +22,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern, AccountType, TransactionType
 from app import ref_cache
 from app.enums import StatusEnum
-from app.services import pay_period_service, transfer_recurrence
+from app.services import pay_period_service, pay_period_write, transfer_recurrence
 from app.exceptions import (
     RecurrenceCadenceUnsupported,
     RecurrenceConflict,
@@ -30,6 +30,7 @@ from app.exceptions import (
 from app.services import account_service
 from app.utils.log_events import EVT_TRANSFER_HARD_DELETED
 from app.services.generation_schedule import GenerationSchedule
+from tests._test_helpers import open_calendar_hole
 
 
 def _assert_shadows_valid(xfer):
@@ -313,9 +314,9 @@ class TestTransferGenerationSharesTheOccurrencePairs:
         D19, dates since plan step R4b-2).
         """
         with app.app_context():
-            long_periods = pay_period_service.generate_pay_periods(
+            long_periods = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=seed_periods[-1].end_date + timedelta(days=1),
+                first_payday=seed_periods[-1].end_date + timedelta(days=1),
                 num_periods=4,
                 cadence_days=90,
             )
@@ -365,18 +366,27 @@ class TestTransferGenerationSharesTheOccurrencePairs:
         Emitted from the transfer engine's own logger, so an operator filtering
         by module sees it where the pass ran rather than under the transaction
         engine that owns the shared preamble.
+
+        **The hole is re-opened after the append, and plan step C3-b is why**:
+        ``pay_period_write`` materialises the payday derivation, so the batch
+        below now ABSORBS the days it used to skip.  ``open_calendar_hole``
+        writes the stored end back down, which is the only way to reach the
+        state this test is about -- and in the wild that state is rows written
+        before C3-b.  The control for the closure itself lives in
+        ``test_recurrence_engine.TestAnOccurrenceInAScheduleGap``.
         """
         with app.app_context():
-            gap_start = seed_periods[-1].end_date + timedelta(days=1)
-            later_start = seed_periods[-1].end_date + timedelta(days=43)
-            pay_period_service.generate_pay_periods(
+            last_covered = seed_periods[-1].end_date
+            later_start = last_covered + timedelta(days=43)
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=later_start,
+                first_payday=later_start,
                 num_periods=6,
                 cadence_days=14,
             )
-            db.session.flush()
-            gap_end = later_start - timedelta(days=1)
+            gap_start, gap_end = open_calendar_hole(
+                db.session, seed_periods[-1], last_covered,
+            )
             template = TestTransferGeneration()._make_template_with_rule(
                 seed_user, "Monthly", day_of_month=15,
             )
@@ -830,10 +840,10 @@ class TestTransferResolveConflicts:
 
             # Create transfer for user B (needs their own periods).
             from app.services import pay_period_service
-            periods_b = pay_period_service.generate_pay_periods(
+            periods_b = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
-                start_date=seed_periods[0].start_date,
-                num_periods=10,
+                first_payday=seed_periods[0].start_date,
+                num_periods=10, cadence_days=14,
             )
             template_b = self._make_template_with_rule(
                 second_user, "Every Period"

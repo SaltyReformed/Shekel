@@ -39,6 +39,7 @@ from app.services import (
     entry_credit_workflow,
     entry_service,
     pay_period_service,
+    pay_period_write,
     reconcile_service,
     recurrence_engine,
     transaction_service,
@@ -135,11 +136,11 @@ class TestPayPeriodServiceLogging:
     def test_generate_emits_event(self, app, db, seed_user):
         """Generating periods emits one event with user_id and count."""
         with app.app_context(), _LogCapture(
-            "app.services.pay_period_service",
+            "app.services.pay_period_write",
         ) as cap:
-            created = pay_period_service.generate_pay_periods(
+            created = pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2027, 1, 1),
+                first_payday=date(2027, 1, 1),
                 num_periods=3,
                 cadence_days=14,
             )
@@ -796,10 +797,10 @@ class TestRecurrenceEngineLogging:
         ).one()
 
         # Build a transaction owned by the second user.
-        from app.services import pay_period_service as pps  # noqa: WPS433
-        s2_periods = pps.generate_pay_periods(
+        from app.services import pay_period_write as ppw  # noqa: WPS433
+        s2_periods = ppw.record_paydays(
             user_id=seed_second_user["user"].id,
-            start_date=date(2027, 6, 1),
+            first_payday=date(2027, 6, 1),
             num_periods=1,
             cadence_days=14,
         )

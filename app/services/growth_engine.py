@@ -256,9 +256,11 @@ def period_return_rate(assumed_annual_return: Decimal, period) -> Decimal:
     counted INCLUSIVELY.  Pay periods carry an inclusive ``end_date``: a
     standard 14-calendar-day period runs ``start`` .. ``start + 13`` and
     the next period starts the following day
-    (:func:`generate_projection_periods` and
-    :func:`app.services.pay_period_service.generate_pay_periods` both build
-    ``end_date = start_date + (cadence_days - 1)``).  The span is therefore
+    (:func:`generate_projection_periods` builds
+    ``end_date = start_date + (cadence_days - 1)``, and since plan step C3-b
+    :func:`app.services.pay_period_write.record_paydays` stores that shape for
+    the last period and ``next payday - 1`` for every other, which on a
+    schedule generated at one cadence is the same span).  The span is therefore
     ``(end_date - start_date).days + 1`` -- 14 for a standard biweekly
     period, not 13.  Counting exclusively (the old ``end - start`` without
     the ``+ 1``) dropped one calendar day per period; because consecutive

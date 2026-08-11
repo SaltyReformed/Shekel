@@ -1,45 +1,27 @@
 """
 Shekel Budget App -- Pay Period Service
 
-Generates, extends, and queries biweekly pay periods.  Each period
-is defined by a start_date (payday) and end_date (day before next
-payday).
+Queries an owner's biweekly pay periods.  Each period is defined by a
+start_date (payday) and an end_date (the day before the next payday).
+
+**It no longer WRITES them** (plan step C3-b): ``generate_pay_periods``,
+``establish_schedule``, the batch bounds and the forward-only guard moved to
+:mod:`app.services.pay_period_write`, which is now the one place in ``app/``
+that changes ``budget.pay_periods``.  The reason is C3-a's, one level up --
+deciding that a schedule should change and changing it are two concerns, and
+the invariant that the stored ``end_date`` / ``period_index`` equal the
+derivation over the owner's paydays needs exactly one home for plan steps C4,
+C6 and C7 to inherit.  What is left here is the read side, which plan step
+**C2-f** points at ``pay_calendar.PayCalendar``.
 """
 
-import logging
-from datetime import date, timedelta
+from datetime import date
 
 from sqlalchemy import or_
 
 from app.extensions import db
-from app.models.pay_period import MIN_MATERIALISABLE_CADENCE_DAYS, PayPeriod
-from app.exceptions import ValidationError
-from app.services import pay_schedule_service
+from app.models.pay_period import PayPeriod
 from app.utils.dates import display_today
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_PAY_PERIODS_GENERATED,
-    log_event,
-)
-
-logger = logging.getLogger(__name__)
-
-#: Inclusive bounds on how many pay periods ONE call may create.
-#:
-#: A generation policy rather than a column constraint, which is why it lives
-#: with the writer rather than on a model: 260 is ten years of fortnightly
-#: paydays (five of weekly), past any horizon the app renders and well inside
-#: what one transaction can generate and populate.  The floor is 1 because a batch
-#: that creates nothing is a caller mistake, not a no-op -- at registration it
-#: used to surface several statements later as ``create_account`` complaining
-#: that the owner had no pay periods.
-#:
-#: Read by :func:`reject_unmaterialisable_batch` and by the Marshmallow fields
-#: in ``app.schemas.validation.pay_periods``, which import it from here: the
-#: bound belongs to the writer, and a schema that stated its own copy is how
-#: four form fields came to hold four literals.
-PERIOD_BATCH_MIN = 1
-PERIOD_BATCH_MAX = 260
 
 
 def earliest_recordable_day(user_id: int) -> date:
@@ -100,237 +82,6 @@ def earliest_recordable_day(user_id: int) -> date:
     if earliest is None:
         return today
     return min(earliest, today)
-
-def _reject_overlapping_batch(existing_periods, new_starts):
-    """Reject a batch whose earliest new payday overlaps existing coverage.
-
-    Forward-only invariant (DH-#39): new periods are appended with the
-    highest ``period_index`` values, so their start dates MUST fall after
-    every existing period's COVERAGE, not merely after the latest existing
-    start.  Otherwise ``period_index`` order stops matching calendar
-    order.  The cash fold indexes a day's column by DATE
-    (``balance_at._cash_fold._PeriodSpans``, a bisect over sorted
-    ``start_date``) so it would place a flow in the wrong column rather than
-    skip it.  The index-ordered anchor-forward walks that used to SKIP such a
-    period outright -- silently dropping its transactions -- were deleted at
-    plan step X-g4b, so the date-keyed misplacement is now the only failure
-    mode, and it is the reason this batch is rejected rather than reshuffled.  A start date that
-    lands ON or WITHIN any existing period's ``[start_date, end_date]`` span
-    also produces overlapping date ranges (two periods covering one day) and a
-    nondeterministic ``get_current_period``.
-
-    The bound is therefore the latest existing ``end_date``: the new batch
-    must start strictly after the day the current schedule's coverage
-    ends.  This is a user mistake or a schedule change that needs a
-    dedicated realign flow, not a silent reshuffle, so reject the whole
-    batch loudly before writing anything.
-
-    Args:
-        existing_periods: List of ``(start_date, end_date)`` rows for the
-            user's existing periods (empty for a first-time schedule).
-        new_starts: The de-duplicated start dates this batch would create.
-
-    Raises:
-        ValidationError: When the earliest new start falls on or before
-            the latest existing ``end_date``.
-    """
-    if not (existing_periods and new_starts):
-        return
-    latest_end = max(row[1] for row in existing_periods)
-    if min(new_starts) <= latest_end:
-        raise ValidationError(
-            "New pay periods must start after your latest existing "
-            f"period ends ({latest_end.isoformat()}). The requested "
-            "start date would create periods that overlap or predate "
-            "your current schedule; choose a later start date to "
-            "extend your schedule forward."
-        )
-
-
-def reject_unmaterialisable_batch(num_periods: int, cadence_days: int) -> None:
-    """Refuse a batch this writer cannot turn into ``budget.pay_periods`` rows.
-
-    **The writer's OWN preconditions, stated once and asked before anything is
-    written** (plan step X-ad-a).  Both were held by each caller's Marshmallow
-    field until registration became a fifth caller, and a bound held by
-    remembering is a bound the next door does without:
-
-    * **The cadence floor is about the REPRESENTATION, not the schedule.**  A
-      one-day pay cycle is legal and pay-calendar step C4 legalises it; what
-      cannot hold one is an AUTHORED ``end_date``, because
-      ``ck_pay_periods_date_order`` requires ``start_date < end_date`` and this
-      module writes ``end_date = start_date + (cadence_days - 1)``.  At a
-      cadence of 1 the INSERT died as an unhandled ``CheckViolation`` 500 --
-      measured on both the settings form and the registration form.  See
-      :data:`~app.models.pay_period.MIN_MATERIALISABLE_CADENCE_DAYS`, which C4
-      deletes with the column.
-    * **The batch size is a work bound.**  ``num_periods`` was refused by no
-      service at all, so a non-form caller could ask for zero periods (which
-      then fails several statements later, in ``create_account``, under a
-      message about accounts) or for a hundred thousand (383 years of
-      fortnights in one transaction).
-
-    The upper cadence bound is NOT asked here: it belongs to
-    ``budget.pay_schedule``'s CHECK and is asked by that column's one writer,
-    :func:`~app.services.pay_schedule_service.reject_out_of_range_cadence`.
-    Two bounds, two owners, because they answer different questions -- what
-    may be STORED as a schedule, and what this writer can MATERIALISE from it.
-
-    Args:
-        num_periods: How many periods the batch would create.
-        cadence_days: Days between the paydays it would create.
-
-    Raises:
-        ValidationError: Either value is outside what this writer can produce.
-            Each message names the offending value and the bound it broke.
-    """
-    if cadence_days < MIN_MATERIALISABLE_CADENCE_DAYS:
-        raise ValidationError(
-            f"Days between paydays must be at least "
-            f"{MIN_MATERIALISABLE_CADENCE_DAYS}; got {cadence_days}.  A pay "
-            "period records the day before the next payday as its end, so a "
-            "shorter cycle has no room to record one."
-        )
-    if not PERIOD_BATCH_MIN <= num_periods <= PERIOD_BATCH_MAX:
-        raise ValidationError(
-            f"Number of pay periods must be between {PERIOD_BATCH_MIN} and "
-            f"{PERIOD_BATCH_MAX}; got {num_periods}."
-        )
-
-
-def generate_pay_periods(user_id, start_date, num_periods=52, cadence_days=14):
-    """Generate a series of pay periods for a user.
-
-    Existing periods for this user are checked to avoid duplicates.
-    New periods are appended starting from the next available index.
-
-    Args:
-        user_id:       The owning user's ID.
-        start_date:    The first payday (date object).
-        num_periods:   How many periods to generate (default 52 = ~2 years).
-        cadence_days:  Days between paydays (default 14 = biweekly).
-
-    Returns:
-        List of newly created PayPeriod objects.
-
-    Raises:
-        ValidationError: If start_date is not a date, the cadence or the batch
-            size is one this writer cannot materialise (see
-            :func:`reject_unmaterialisable_batch`), or the batch would create
-            periods that overlap or predate the user's existing schedule (the
-            forward-only invariant that keeps ``period_index`` order
-            chronological -- see DH-#39).
-    """
-    if not isinstance(start_date, date):
-        raise ValidationError("start_date must be a date object.")
-    reject_unmaterialisable_batch(num_periods, cadence_days)
-
-    # Find the highest existing period_index for this user.
-    max_index = (
-        db.session.query(db.func.max(PayPeriod.period_index))
-        .filter_by(user_id=user_id)
-        .scalar()
-    )
-    next_index = 0 if max_index is None else max_index + 1
-
-    existing_periods = (
-        db.session.query(PayPeriod.start_date, PayPeriod.end_date)
-        .filter_by(user_id=user_id)
-        .all()
-    )
-    existing_starts = {row[0] for row in existing_periods}
-
-    # Determine which paydays this batch would create -- every requested
-    # start that is not already an existing period.  An exact-match re-run
-    # is skipped (not duplicated), so re-running with the same start and a
-    # larger count legitimately extends the schedule.
-    new_starts = []
-    current_start = start_date
-    for _ in range(num_periods):
-        if current_start not in existing_starts:
-            new_starts.append(current_start)
-        current_start += timedelta(days=cadence_days)
-
-    _reject_overlapping_batch(existing_periods, new_starts)
-
-    created = []
-    assigned_index = next_index  # Highest existing index + 1; gap-free.
-    for new_start in new_starts:
-        end = new_start + timedelta(days=cadence_days - 1)
-        period = PayPeriod(
-            user_id=user_id,
-            start_date=new_start,
-            end_date=end,
-            period_index=assigned_index,
-        )
-        db.session.add(period)
-        created.append(period)
-        assigned_index += 1
-
-    db.session.flush()  # Assign IDs without committing.
-    log_event(
-        logger, logging.INFO, EVT_PAY_PERIODS_GENERATED, BUSINESS,
-        "Pay periods generated",
-        user_id=user_id,
-        count=len(created),
-        start_date=start_date.isoformat(),
-        cadence_days=cadence_days,
-    )
-    return created
-
-
-def establish_schedule(
-    user_id: int, first_payday: date, num_periods: int, cadence_days: int,
-) -> "list[PayPeriod]":
-    """Create an owner's pay periods AND persist the cadence they run at.
-
-    **The one door for "this owner's schedule now starts here, at this
-    cadence"**, added at plan step **X-ad-a** because registration became its
-    second caller and the pair was about to be written twice.  Creating periods
-    and recording the cadence is not two operations a caller composes at will:
-    every path that grows a schedule later --
-    :func:`~app.services.pay_period_admin.extend_pay_periods` and the rolling
-    top-up -- reads the cadence back through
-    :func:`~app.services.pay_schedule_service.resolve_cadence`, and an owner
-    with periods but no ``budget.pay_schedule`` row is pay-calendar finding
-    **P8**: ``resolve_cadence`` then INFERS the cadence from the last period's
-    stored length, which after that arc's C4 reads back the value it produces.
-    Registration wrote exactly that state until this step -- a payday with no
-    schedule row at all -- so a backfill alone would have been reopened by the
-    next signup.
-
-    ``pay_period_admin``'s regenerate and reset deliberately do NOT route
-    through here: both interleave a repopulation pass between the two writes
-    and reset interleaves three more, so they are a different composition
-    rather than this one with extra steps.  What they share is
-    :func:`~app.services.pay_schedule_service.upsert_schedule`, which is where
-    the cadence bound now lives, so no caller can persist a cadence the CHECK
-    would refuse.
-
-    Args:
-        user_id: The owning user's id.
-        first_payday: The first payday of the batch -- the day money arrived,
-            never a period boundary computed from one.
-        num_periods: How many periods to create.
-        cadence_days: Days between paydays, for both the generated periods and
-            the persisted schedule row.
-
-    Returns:
-        The newly created :class:`~app.models.pay_period.PayPeriod` objects,
-        flushed so their ids are assigned.
-
-    Raises:
-        ValidationError: *first_payday* is not a ``date``, or *cadence_days*
-            falls outside the bound ``ck_pay_schedule_cadence_range``
-            enforces.  Nothing is written on either -- the generate refuses
-            before it adds a row, and the cadence refusal happens before the
-            upsert.
-    """
-    created = generate_pay_periods(
-        user_id, first_payday, num_periods, cadence_days,
-    )
-    pay_schedule_service.upsert_schedule(user_id, cadence_days)
-    return created
 
 
 def get_current_period(user_id, as_of=None):

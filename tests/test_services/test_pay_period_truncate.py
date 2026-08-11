@@ -41,6 +41,7 @@ from app.models.transfer import Transfer
 from app.services import (
     pay_period_admin,
     pay_period_service,
+    pay_period_write,
     period_population,
     posting_service,
     transfer_service,
@@ -68,9 +69,9 @@ from tests._test_helpers import (
 
 def _future_periods(db_session, seed_user, count=6, start=date(2026, 7, 3)):
     """Generate `count` biweekly FUTURE periods (indices 1..count)."""
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=start,
+        first_payday=start,
         num_periods=count,
         cadence_days=14,
     )
@@ -392,9 +393,9 @@ class TestTruncateHardLocks:
         with app.app_context():
             user_id = seed_user["user"].id
             # Spanning past->future: early indices have already ended.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 1, 2), num_periods=14, cadence_days=14,
+                first_payday=date(2026, 1, 2), num_periods=14, cadence_days=14,
             )
             db.session.commit()
             before = _count_periods(db.session, user_id)

@@ -22,7 +22,7 @@ import pytest
 from app import ref_cache
 from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
-from app.services import account_service
+from app.services import account_service, pay_period_write
 
 from tests._test_helpers import create_settled_cash_transaction, freeze_today
 
@@ -1171,9 +1171,9 @@ class TestCalendarYearView:
             # The BINDING went with the ``current_anchor_period_id`` line it
             # fed (ruling R-EH); the CALL is fixture setup and stays -- these
             # 26 periods ARE the third-paycheck year under test.
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=26,
                 cadence_days=14,
             )

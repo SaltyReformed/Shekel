@@ -19,11 +19,13 @@ from decimal import Decimal
 import pytest
 
 from app.exceptions import ValidationError
+from app.models.pay_schedule import PaySchedule
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
     pay_period_admin,
     pay_period_service,
+    pay_period_write,
     pay_schedule_service,
     period_population,
 )
@@ -42,9 +44,9 @@ from tests._test_helpers import (
 
 def _future_periods(db_session, seed_user, count=4, start=date(2026, 7, 3)):
     """Generate `count` biweekly future periods (indices 1..count)."""
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=start,
+        first_payday=start,
         num_periods=count,
         cadence_days=14,
     )
@@ -175,15 +177,35 @@ class TestExtendPayPeriods:
             assert new_periods[0].start_date == last.end_date + timedelta(days=1)
             assert_pay_period_invariants(db.session, seed_user["user"].id)
 
-    def test_explicit_cadence_overrides_inferred(self, app, db, seed_user):
-        """An explicit cadence_days wins over the inferred 14-day cadence."""
+    def test_this_door_takes_no_cadence_at_all(self, app, db, seed_user):
+        """Finding **P29**: the parameter is GONE, not newly honoured.
+
+        This test asserted the opposite -- that an explicit ``cadence_days``
+        beat the stored one -- and that was the defect: the extend card renders
+        NO control for it, so the only way to reach it was a direct POST, and
+        what it produced was 7-day paychecks beside a ``budget.pay_schedule``
+        still saying 14.  ``resolve_cadence``, the derived horizon and the next
+        rolling top-up then all continued at 14.
+
+        Extend CONTINUES an existing schedule, so the cadence is not a question
+        it gets to ask.  Plan step C3-b deleted the parameter, its Marshmallow
+        field and the rolling top-up's redundant pass-through -- which closes
+        the finding by making the state unreachable rather than by adding the
+        write finding **P30** objected to.
+        """
         with app.app_context():
             _future_periods(db.session, seed_user, count=2)
+
+            with pytest.raises(TypeError):
+                pay_period_admin.extend_pay_periods(
+                    seed_user["user"].id, num_periods=1, cadence_days=7,
+                )
+
             new_periods = pay_period_admin.extend_pay_periods(
-                seed_user["user"].id, num_periods=1, cadence_days=7,
+                seed_user["user"].id, num_periods=1,
             )
             db.session.commit()
-            assert _period_length(new_periods[0]) == 7
+            assert _period_length(new_periods[0]) == 14
             assert_pay_period_invariants(db.session, seed_user["user"].id)
 
     def test_stored_schedule_cadence_used_when_unspecified(
@@ -203,9 +225,21 @@ class TestExtendPayPeriods:
             assert _period_length(new_periods[0]) == 7
 
     def test_infers_cadence_for_legacy_user(self, app, db, seed_user):
-        """With no schedule row, cadence is inferred from the last period."""
+        """With no schedule row, cadence is inferred from the last period.
+
+        **The row is deleted here, and until plan step C3-b it did not exist
+        to delete.**  The cadence rule makes every batch that records a payday
+        store one, so the state finding **P8** is about -- paydays with no
+        cadence beside them -- can no longer be produced by any door and has to
+        be constructed on purpose.  That is the finding narrowing, and this is
+        what the extend path does with the legacy data that still carries it.
+        """
         with app.app_context():
             _future_periods(db.session, seed_user, count=2)  # 14-day periods
+            db.session.query(PaySchedule).filter_by(
+                user_id=seed_user["user"].id,
+            ).delete(synchronize_session=False)
+            db.session.commit()
             assert pay_schedule_service.get_schedule(
                 seed_user["user"].id,
             ) is None

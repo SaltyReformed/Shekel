@@ -36,7 +36,7 @@ from app.models.tax_config import FicaConfig
 from app.exceptions import AuthError, ConflictError, ValidationError
 from app.services import (
     account_service,
-    pay_period_service,
+    pay_period_write,
     pay_schedule_service,
 )
 from app.services.tax_seed_data import (
@@ -693,8 +693,9 @@ class RegistrationSpec:
     a pay period covering ``[today, today + 13]`` because
     :func:`app.services.account_service.create_account` refuses an owner with
     no pay period -- and that invented payday is what then blocked the owner's
-    real one: the forward-only batch guard
-    (``pay_period_service._reject_overlapping_batch``) refuses any batch
+    real one: the forward-only batch guard of the day
+    (``pay_period_service._reject_overlapping_batch``, replaced at plan step
+    C3-b by ``pay_period_write._reject_backward_payday``) refused any batch
     starting on or before the latest existing ``end_date``, so ``today + 1``
     through ``today + 13`` were REFUSED outright and every date from
     ``today + 14`` on left a permanent hole in the calendar (finding
@@ -802,12 +803,12 @@ def register_user(spec: RegistrationSpec):
     # Both write doors' preconditions, asked HERE rather than where they fire,
     # so the claim above is true: the schedule's own bound (what
     # ``budget.pay_schedule`` may store) and the writer's (what
-    # ``generate_pay_periods`` can materialise, and how much of it), then this
+    # ``record_paydays`` can materialise, and how much of it), then this
     # module's own question about the day.  Asking them late would let a bad
     # cadence or a zero horizon refuse several statements after the ``User``
     # row exists, under a message about accounts rather than about the input.
     pay_schedule_service.reject_out_of_range_cadence(spec.cadence_days)
-    pay_period_service.reject_unmaterialisable_batch(
+    pay_period_write.reject_unmaterialisable_batch(
         spec.num_periods, spec.cadence_days,
     )
     _reject_impossible_first_payday(spec.first_payday, spec.cadence_days, today)
@@ -835,11 +836,11 @@ def register_user(spec: RegistrationSpec):
     # (``_require_pay_period_schedule``) because the opening balance posts a
     # correction, and ``pay_calendar.PayCalendar.filing_period`` raises when
     # there is no materialised period to file it under (finding **N-192**).
-    # ``establish_schedule`` writes the ``budget.pay_schedule`` row in the same
-    # call, which is what keeps registration from re-opening pay-calendar
-    # finding **P8** -- a payday with no schedule row beside it -- on every new
-    # sign-up.
-    pay_period_service.establish_schedule(
+    # ``record_paydays`` writes the ``budget.pay_schedule`` row in the same
+    # call -- the cadence rule, plan step C3-b -- which is what keeps
+    # registration from re-opening pay-calendar finding **P8**, a payday with
+    # no schedule row beside it, on every new sign-up.
+    pay_period_write.record_paydays(
         user_id=user.id,
         first_payday=spec.first_payday,
         num_periods=spec.num_periods,

@@ -26,6 +26,7 @@ from app.services import (
     pay_period_admin,
     pay_period_locks,
     pay_period_service,
+    pay_period_write,
 )
 from app.services.pay_period_locks import PeriodLockReason
 from tests._test_helpers import (
@@ -47,9 +48,9 @@ def _make_future_periods(db_session, seed_user, count=5):
     Appended after the fixture's bootstrap period (index 0), so these
     take indices 1..count and all end after today.
     """
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=_FUTURE_START,
+        first_payday=_FUTURE_START,
         num_periods=count,
         cadence_days=14,
     )
@@ -209,15 +210,24 @@ class TestClassifyPeriodsBulk:
     def test_bulk_matches_single_across_a_mix(self, app, db, seed_user):
         """Bulk classification equals per-period classification on a mix.
 
-        The user's full set spans HISTORICAL (the 2024 bootstrap),
-        SETTLED_TXN, RECURRENCE_ANCHOR, and mutable (None) periods, so a
-        single fixed ``as_of`` exercises every branch through both paths.
+        The user's full set spans HISTORICAL, SETTLED_TXN,
+        RECURRENCE_ANCHOR, and mutable (None) periods, so a single fixed
+        ``as_of`` exercises every branch through both paths.
+
+        **The ``as_of`` moved forward at plan step C3-b, and the reason is the
+        fixture rather than the classifier.**  It was 2026-06-13, where the
+        2024 bootstrap supplied HISTORICAL because its stored end was
+        2024-01-18.  The writer now materialises the payday derivation, so the
+        bootstrap ends the day before the next payday (2026-07-02) and is the
+        CURRENT period at that date -- ledger row **P27**'s absorption, on this
+        fixture.  2026-07-20 puts the bootstrap and the first generated period
+        behind it instead, so the mix still covers all four reasons.
         """
-        as_of = date(2026, 6, 13)
+        as_of = date(2026, 7, 20)
         with app.app_context():
             futures = _make_future_periods(db.session, seed_user)
             add_txn(
-                db.session, seed_user, futures[0], "Rent", "1200.00",
+                db.session, seed_user, futures[1], "Rent", "1200.00",
                 status_enum=StatusEnum.DONE,
             )
             _add_rule_anchor(db.session, seed_user, futures[2])

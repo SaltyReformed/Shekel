@@ -54,6 +54,7 @@ from app.services import (
     anchor_service,
     balance_at,
     loan_posting_service,
+    pay_period_write,
     posting_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
@@ -1718,9 +1719,9 @@ class TestTheSharedFilingDoor:
         """
         with app.app_context():
             from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=seed_second_user["user"].id,
-                start_date=date(2025, 1, 1), num_periods=4, cadence_days=14,
+                first_payday=date(2025, 1, 1), num_periods=4, cadence_days=14,
             )
             _db.session.commit()
             account = _make_account(seed_user, "500.00")

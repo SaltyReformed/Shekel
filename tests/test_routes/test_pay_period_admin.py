@@ -22,6 +22,7 @@ from app.models.pay_period import PayPeriod
 from app.services import (
     pay_period_admin,
     pay_period_service,
+    pay_period_write,
     pay_schedule_service,
 )
 from tests._test_helpers import add_txn, freeze_today
@@ -39,9 +40,9 @@ def _freeze(monkeypatch):
 
 def _future_periods(db_session, seed_user, count=6):
     """Generate `count` future biweekly periods (after the bootstrap)."""
-    periods = pay_period_service.generate_pay_periods(
+    periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
-        start_date=date(2026, 7, 3),
+        first_payday=date(2026, 7, 3),
         num_periods=count,
         cadence_days=14,
     )
@@ -486,8 +487,8 @@ class TestRollingTriggerHooks:
         exists; idx 2 is the next future period.  ``end_date >= today``
         counts both, so the window starts at 2 and is short of ``target``.
         """
-        pay_period_service.generate_pay_periods(
-            user_id=seed_user["user"].id, start_date=date(2026, 6, 8),
+        pay_period_write.record_paydays(
+            user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
             num_periods=2, cadence_days=14,
         )
         pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)
@@ -519,8 +520,8 @@ class TestRollingTriggerHooks:
     ):
         """GET /grid with rolling disabled leaves the schedule unchanged."""
         with app.app_context():
-            pay_period_service.generate_pay_periods(
-                user_id=seed_user["user"].id, start_date=date(2026, 6, 8),
+            pay_period_write.record_paydays(
+                user_id=seed_user["user"].id, first_payday=date(2026, 6, 8),
                 num_periods=2, cadence_days=14,
             )
             pay_schedule_service.upsert_schedule(seed_user["user"].id, 14)

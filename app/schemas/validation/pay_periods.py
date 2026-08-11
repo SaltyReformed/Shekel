@@ -8,8 +8,8 @@ here -- the cadence pair from the model carrying the matching CHECK constraint
 (:data:`~app.models.pay_schedule.CADENCE_DAYS_MIN` /
 :data:`~app.models.pay_schedule.CADENCE_DAYS_MAX`), the batch pair from the
 writer whose transaction does the work
-(:data:`~app.services.pay_period_service.PERIOD_BATCH_MIN` /
-:data:`~app.services.pay_period_service.PERIOD_BATCH_MAX`).  A schema is a
+(:data:`~app.services.pay_period_write.PERIOD_BATCH_MIN` /
+:data:`~app.services.pay_period_write.PERIOD_BATCH_MAX`).  A schema is a
 door, and a door does not get to invent the rule it enforces.
 """
 
@@ -23,7 +23,7 @@ from app.config import BaseConfig
 from app.models.pay_period import MIN_MATERIALISABLE_CADENCE_DAYS
 from app.models.pay_schedule import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
 from app.schemas.validation._helpers import BaseSchema, RowId
-from app.services.pay_period_service import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
+from app.services.pay_period_write import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
 
 
 #: The two shared validators, built once.  ``validate.Range`` instances are
@@ -35,9 +35,9 @@ from app.services.pay_period_service import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
 #: difference is one day.  ``budget.pay_schedule.cadence_days`` accepts 1
 #: (:data:`~app.models.pay_schedule.CADENCE_DAYS_MIN`) and a derived calendar
 #: handles a one-day cycle correctly, but every form that carries a cadence
-#: submits it to :func:`~app.services.pay_period_service.generate_pay_periods`,
-#: which AUTHORS ``end_date`` and so cannot express a period shorter than two
-#: days (:data:`~app.models.pay_period.MIN_MATERIALISABLE_CADENCE_DAYS`).
+#: submits it to :func:`~app.services.pay_period_write.record_paydays`, which
+#: STORES ``end_date`` and so cannot express a period shorter than two days
+#: (:data:`~app.models.pay_period.MIN_MATERIALISABLE_CADENCE_DAYS`).
 #: Bounding at the column's floor let a 1 through to the CHECK as an unhandled
 #: 500.  Taking the tighter of the two here means the browser, the schema and
 #: the service refuse the same set -- and it is what makes the generate
@@ -98,13 +98,20 @@ class PayPeriodGenerateSchema(BaseSchema):
 class PayPeriodExtendSchema(BaseSchema):
     """Validates POST data for extending the schedule forward.
 
-    ``cadence_days`` is optional: when omitted the service resolves it
-    from the stored schedule (else the last period's length), so the
-    common case is a single "how many periods" field.
+    **One field, and the deleted one is finding P29's fix** (plan step C3-b).
+    ``cadence_days`` was accepted here, optional, and forwarded into
+    ``extend_pay_periods`` -- while the extend card renders NO control for it.
+    So a direct POST generated paychecks at a spacing the app never recorded:
+    ``budget.pay_schedule`` still said 14, and ``resolve_cadence``, the derived
+    horizon and the next rolling top-up all continued at 14.  Extend CONTINUES
+    an existing schedule, so the cadence is not a question this door asks; the
+    field is gone rather than newly persisted, which is what finding **P30**
+    asked for.  ``BaseSchema``'s ``unknown = EXCLUDE`` means an old client that
+    still posts one is not refused -- the value is simply ignored, which is now
+    what it means.
     """
 
     num_periods = num_periods_field(required=True)
-    cadence_days = cadence_days_field(required=False, allow_none=True)
 
 
 class PayPeriodTruncateSchema(BaseSchema):

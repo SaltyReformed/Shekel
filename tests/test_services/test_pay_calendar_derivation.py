@@ -35,7 +35,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from app.services import pay_period_service
+from app.services import pay_period_service, pay_period_write
 from app.services.pay_calendar import (
     MAX_CADENCE_DAYS,
     DerivedPeriod,
@@ -43,6 +43,7 @@ from app.services.pay_calendar import (
     PayCalendarError,
     derive_periods,
 )
+from tests._test_helpers import open_calendar_hole
 from tests.oracles.pay_calendar_derivation import (
     IRREGULAR_SHAPES,
     build_stored_rows,
@@ -539,9 +540,9 @@ class TestTheStoredColumnsAreReproduced:
         caught in CI rather than at the next manual run.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id,
-                start_date=_LIVE_FIRST_PAYDAY,
+                first_payday=_LIVE_FIRST_PAYDAY,
                 num_periods=_LIVE_PERIOD_COUNT,
                 cadence_days=_LIVE_CADENCE_DAYS,
             )
@@ -580,9 +581,9 @@ class TestTheStoredColumnsAreReproduced:
         ``lead(start) - 1`` branch) and the LAST (the projection), by hand.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=6,
                 cadence_days=cadence_days,
             )
@@ -616,16 +617,16 @@ class TestTheStoredColumnsAreReproduced:
         """
         with app.app_context():
             user_id = bare_user["user"].id
-            first = pay_period_service.generate_pay_periods(
+            first = pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=3,
                 cadence_days=14,
             )
             db.session.flush()
-            pay_period_service.generate_pay_periods(
+            pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=first[-1].end_date + timedelta(days=1),
+                first_payday=first[-1].end_date + timedelta(days=1),
                 num_periods=3,
                 cadence_days=14,
             )
@@ -642,33 +643,54 @@ class TestTheStoredColumnsAreReproduced:
     def test_a_gapped_batch_diverges_on_the_row_before_the_hole(
         self, app, db, bare_user,
     ):
-        """Plan finding P2, written through the REAL writer and then diffed.
+        """Plan finding P2 -- and BOTH halves of what plan step C3-b did to it.
 
-        ``_reject_overlapping_batch`` refuses a batch that starts on or before
-        the latest existing end and refuses nothing else, so a batch opening
-        two weeks late is accepted today.  The stored calendar then leaves
-        2026-01-30 through 2026-02-12 funded by no paycheck; the derivation
-        cannot express that, so the period before the hole absorbs it.  This
-        is the one disagreement, and it is the normalization working.
+        The batch guard of the day, ``_reject_overlapping_batch``, refused a
+        batch starting on or before the latest existing end and refused nothing
+        else, so a batch opening two weeks late was accepted and left
+        2026-01-30 through 2026-02-12 funded by no paycheck.  The derivation
+        cannot express that, so the row before the hole was the one
+        disagreement this oracle reported.
+
+        **C3-b closed the writer, so this test now asserts the closure FIRST**:
+        the late batch goes in through the real writer and the oracle reports
+        NOTHING, because the stored columns are the derivation.  The hole is
+        then punched by hand -- the only way to reach it since C3-b, and the
+        shape data written before it still carries -- and the oracle's answer
+        is what it always was.  Two claims, one fixture, and neither can pass
+        while the other is broken.
         """
         with app.app_context():
             user_id = bare_user["user"].id
-            pay_period_service.generate_pay_periods(
+            first = pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=2,
                 cadence_days=14,
             )
-            db.session.flush()
             # The missing payday would have been 2026-01-30; this batch opens
-            # a fortnight after THAT, and 15 days after the latest stored end
-            # (2026-01-29), so the forward-only guard lets it through.
-            pay_period_service.generate_pay_periods(
+            # a fortnight after THAT, 15 days past the payday before it.
+            pay_period_write.record_paydays(
                 user_id=user_id,
-                start_date=date(2026, 2, 13),
+                first_payday=date(2026, 2, 13),
                 num_periods=2,
                 cadence_days=14,
             )
+            db.session.commit()
+
+            # Half one: the writer left NO hole.  The second period's stored
+            # end runs to the day before the late payday.
+            assert compare(
+                user_id=user_id,
+                periods=pay_period_service.get_all_periods(user_id),
+                cadence_days=14,
+                cadence_is_stored=True,
+            ).disagreements == ()
+            assert first[1].end_date == date(2026, 2, 12)
+
+            # Half two: hand the oracle the pre-C3-b shape and it reports the
+            # row before the hole, exactly as it did when the writer made one.
+            open_calendar_hole(db.session, first[1], date(2026, 1, 29))
             db.session.commit()
 
             comparison = compare(
@@ -970,9 +992,9 @@ class TestTheComparatorRefusesWhatItCannotMeasure:
         flush would write the perturbed calendar into it.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            periods = pay_period_write.record_paydays(
                 user_id=bare_user["user"].id,
-                start_date=date(2026, 1, 2),
+                first_payday=date(2026, 1, 2),
                 num_periods=3,
                 cadence_days=14,
             )

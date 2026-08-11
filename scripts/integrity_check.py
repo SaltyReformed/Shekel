@@ -325,8 +325,8 @@ def check_balance_anomalies(session):
 
     Returns:
         List of CheckResult for the surviving balance/anchor checks
-        (BA-01 critical; BA-03, BA-04, BA-05 warnings.  BA-02 was deleted with
-        the anchor cache columns at plan step X-f1c3c).
+        (BA-01 critical; BA-03, BA-04, BA-05, BA-06 warnings.  BA-02 was
+        deleted with the anchor cache columns at plan step X-f1c3c).
     """
     checks = [
         # BA-01 and BA-02 both keyed on ``accounts.current_anchor_*``, deleted
@@ -373,6 +373,51 @@ def check_balance_anomalies(session):
              AND p1.id < p2.id
              AND p2.start_date > p1.start_date
              AND p2.start_date < p1.end_date
+        """),
+        # BA-06 is a CHECK and deliberately not a refusal or a log line
+        # (developer ruling 2026-08-11, which deleted pay_calendar C3-b's
+        # coverage rule).  That rule refused any schedule write leaving a
+        # settled row's cash day outside every paycheck, on the claim that it
+        # breaks ruling R-K's reconciliation identity -- and it does not: each
+        # column is valued at its OWN ``end_date``, so the day is absent from
+        # both sides and reports as the ``period_timing`` remainder.  Nothing
+        # is WRONG here, which is why this is a warning rather than a gate.
+        #
+        # It lives here rather than in the writer for the reason the arc keeps
+        # finding: the condition is DERIVABLE from the schedule and the row's
+        # own settle day, so recording it at write time would store a computed
+        # claim beside no reconciler -- the same defect dropping ``end_date``
+        # exists to remove -- and it would go stale on the next write.  Asked
+        # as a query it is always current, covers every owner, and reports the
+        # state however it arose, including from data no writer produced.
+        #
+        # Soft-deleted rows are excluded: they contribute to no figure on any
+        # surface.  An owner with NO periods is excluded by the join rather
+        # than reported as one giant violation.
+        ("BA-06", "warning",
+         "Settled transactions whose settle day no pay period covers", """
+            SELECT t.id AS transaction_id, p.user_id, t.settled_on,
+                   sched.first_day, sched.last_day
+            FROM budget.transactions t
+            JOIN budget.pay_periods p ON p.id = t.pay_period_id
+            JOIN ref.statuses s ON s.id = t.status_id
+            JOIN (
+                SELECT user_id,
+                       MIN(start_date) AS first_day,
+                       MAX(end_date) AS last_day
+                FROM budget.pay_periods
+                GROUP BY user_id
+            ) sched ON sched.user_id = p.user_id
+            WHERE t.is_deleted = FALSE
+              AND s.is_settled = TRUE
+              AND t.settled_on IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM budget.pay_periods covering
+                  WHERE covering.user_id = p.user_id
+                    AND t.settled_on BETWEEN covering.start_date
+                                         AND covering.end_date
+              )
         """),
         ("BA-05", "warning",
          "Large anchor balance jumps (>50% change between consecutive entries)",

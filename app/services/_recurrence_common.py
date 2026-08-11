@@ -388,12 +388,20 @@ def report_schedule_gaps(logger: logging.Logger, template, scenario_id, gaps):
     """Log every occurrence the owner's schedule has NO pay period for.
 
     **Plan ledger row D7, and the developer's 2026-08-08 ruling: log the gap,
-    skip it.**  Pay periods are not contiguous by construction --
-    ``pay_period_service._reject_overlapping_batch`` refuses an OVERLAPPING
-    batch and not a GAPPED one, and registration bootstraps a 14-day period 0
-    that a later real schedule can start after -- so a date can belong to no
-    period at all.  The obligation is real and has nowhere to live, and
-    extending the schedule cannot help: the hole is behind its horizon.
+    skip it.**  The obligation is real and has nowhere to live, and extending
+    the schedule cannot help: the hole is behind its horizon.
+
+    **Both generators of a hole are now closed, and this function outlived
+    them.**  Registration bootstrapped a 14-day period 0 that a later real
+    schedule could start after, until ``balance:X-ad-a`` deleted it; and
+    ``pay_period_service._reject_overlapping_batch`` refused an OVERLAPPING
+    batch and not a GAPPED one, until plan step **C3-b** replaced it with a
+    writer that materialises the derivation -- under which a period ends the
+    day before the next payday, so a hole is not expressible and any surviving
+    one is REPAIRED by the owner's next schedule write.  What can still reach
+    here is a hole written before C3-b that nothing has yet touched.  Plan step
+    **C5a** deletes this function and its two call sites once C4 has dropped
+    the columns a hole was ever stored in.
 
     The three alternatives were weighed and are worse.  RAISING would make one
     hole block every generate pass for every definition, including the

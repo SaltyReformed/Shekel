@@ -3427,6 +3427,77 @@ def append_balance_assertion(
     return row
 
 
+def open_calendar_hole(db_session, period, last_covered_day):
+    """Shorten one period's stored ``end_date`` so a calendar hole opens after it.
+
+    **The hole is HAND-BUILT, and since plan step C3-b that is the only way to
+    build one.**  Four suites need a schedule with a day no pay period covers,
+    because that is the state ledger row D7 / finding **P2** describes and the
+    recurrence engine's ``SCHEDULE_GAP`` answer exists for.  They used to reach
+    it through the REAL writer -- append a batch starting later than the
+    current coverage ends -- deliberately, so that "can this state exist?" was
+    proven rather than assumed.
+
+    ``pay_period_write`` closed that door: it materialises the payday
+    derivation, in which a period ends the day before the next payday, so an
+    append now ABSORBS the days it used to leave behind.  What the suites are
+    about is unchanged -- how a READER behaves when a day belongs to no
+    paycheck -- and that state is still reachable in the wild, from rows written
+    before C3-b.  So the fixture writes the column directly, and the writer's
+    own tests carry the other half: that no door can produce this any more, and
+    that the next write through one REPAIRS it.
+
+    Args:
+        db_session: The test ``db.session``.
+        period: The :class:`~app.models.pay_period.PayPeriod` to shorten -- the
+            one immediately before the intended hole.
+        last_covered_day: The new stored ``end_date``.  Must be on or after
+            *period*'s ``start_date`` (``ck_pay_periods_date_order`` requires
+            strictly after) and before the next period's payday, or no hole
+            opens.
+
+    Returns:
+        The inclusive ``(first_uncovered_day, last_uncovered_day)`` span, so a
+        caller asserts against the fixture's own arithmetic rather than
+        restating it.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.models.pay_period import PayPeriod
+
+    # Re-read by primary key rather than writing through the handed-in object.
+    # Callers typically hold a period from a FIXTURE built in an earlier app
+    # context, which is DETACHED: assigning to it writes nothing, the hole
+    # silently fails to open, and the test then measures a contiguous schedule
+    # while claiming to measure a hole.  ``Session.get`` returns the
+    # identity-mapped instance without copying the detached one's (possibly
+    # stale) state over it, which ``merge`` would.
+    period = db_session.get(PayPeriod, period.id)
+    assert last_covered_day > period.start_date, (
+        f"a period must cover at least two days "
+        f"(ck_pay_periods_date_order); {period.start_date} .. "
+        f"{last_covered_day} does not"
+    )
+    following = (
+        db_session.query(PayPeriod)
+        .filter(
+            PayPeriod.user_id == period.user_id,
+            PayPeriod.start_date > period.start_date,
+        )
+        .order_by(PayPeriod.start_date)
+        .first()
+    )
+    assert following is not None, (
+        "no period follows the one being shortened, so this opens no hole -- "
+        "it moves the schedule's horizon"
+    )
+    period.end_date = last_covered_day
+    db_session.flush()
+    first_uncovered = last_covered_day + _real_timedelta(days=1)
+    last_uncovered = following.start_date - _real_timedelta(days=1)
+    assert first_uncovered <= last_uncovered, "the fixture built no hole"
+    return first_uncovered, last_uncovered
+
+
 def _pp_assert_structure(periods, user_id):
     """Assert the index/calendar invariants over an ordered period list.
 
