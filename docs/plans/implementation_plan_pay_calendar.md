@@ -10,8 +10,8 @@
 and `C4` waits on C2 and C3 together. Run the ready-set query (`tools/plan_gate/_registry.py`); do
 not read the table. **The writer is now ONE module** -- `pay_period_write`, the only code in `app/`
 that constructs or deletes a pay period -- so C4 changes one file plus the readers section 3 names.
-**R-PC1's coverage half was DELETED 2026-08-11** (developer), leaving the forward-only floor as this
-arc's only write refusal; the reader-side residual it exposed is row **P32**, owned by C2-c.
+**R-PC1's coverage half was DELETED 2026-08-11** (developer), leaving the floor as this arc's only
+write refusal, `integrity_check` **BA-06** asking what it refused, and rows **P32** / **P33** open.
 
 The arc opened 2026-08-08 out of the recurrence arc's **F-10**, a missing NORMALIZATION rather than
 a missing check; `balance:N-128` / `X-l` are the same defect from a third side. `C2` ticks as ONE
@@ -320,10 +320,10 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
 
 - [x] **C3-b -- the writer materialises the derivation.** `7e3fb33b`. `pay_period_write` is the one
       place in `app/` that constructs or deletes a pay period, writing `derive_periods` over the
-      WHOLE payday list every time. **R-PC1's floor is one full CADENCE** (two days let a payday
-      split the last paycheck, making P10 reachable); its **coverage half is DELETED** (developer
-      2026-08-11: a stranded settle day cancels on both sides of R-K). Closed **P2**'s writer half,
-      **P12**, **P29**, **N-127**; opened **P31** (since narrowed) and **P32**.
+      WHOLE payday list every time. R-PC1's floor is one full CADENCE; its coverage half is DELETED
+      (developer 2026-08-11: a stranded settle day cancels on both sides of R-K, and
+      `integrity_check` BA-06 asks it as a query). Closed **P2**'s writer half, **P12**, **P29**,
+      **N-127**; opened **P31**, **P32**; found **P33**.
 
 - [ ] **C4 -- drop the derived columns.**
 
