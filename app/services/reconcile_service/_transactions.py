@@ -347,8 +347,10 @@ def record_settled_transactions(
     statements against 696 assembled, and a second batch implementation written
     here is the duplication that step exists to remove.  And the cost is bounded
     by the data rather than by hope: replayed over all 53 Checking assertion
-    days on production, the WORST day offers 9 transaction rows, the mean is
-    4.2, and ``carry_forward_service`` already loops the same reconcile per
+    days on production, the WORST day offers 9 transaction rows and the mean is
+    **4.02** over the 46 days that carry any (a first draft said 4.2, which was
+    the same replay with transfer shadows left in -- they are X-f2-c3's arm and
+    not this one's), and ``carry_forward_service`` already loops the same reconcile per
     envelope on a path with no such bound.  N-221 is therefore re-pointed to
     X-ai-a rather than closed.
 

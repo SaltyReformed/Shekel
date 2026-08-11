@@ -26,7 +26,7 @@ scheduled as one commit by all three documents. Before this table that identity 
 files with nothing reconciling it, and the `P3` / `N-123` collision went unnoticed from April to
 2026-08-09.
 
-**112 steps, 98 open.**
+**112 steps, 96 open.**
 
 | arc | id | aliases | step | state | commit | blocked by |
 |---|---|---|---|---|---|---|
@@ -36,9 +36,9 @@ files with nothing reconciling it, and the `P3` / `N-123` collision went unnotic
 | balance | X-f2 | -- | **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half, the DECOMPOSED parent | open | -- | -- |
 | balance | X-f2-c | -- | **X-f2-c** the OUTSTANDING SET, widened to transactions, envelopes and transfers, grouped by envelope (**R-EW**) -- the DECOMPOSED parent, three leaves | open | -- | -- |
 | balance | X-f2-c1 | -- | **X-f2-c1** the reconcile reader and writer get their own module home, all three panel doors get the kind gate, and purchases NEST under their parent. No new row kind, no money moves. Closed **N-216**; opened **N-217**, **N-218** | SHIPPED | `24701c1d` | -- |
-| balance | X-aq | -- | **X-aq** `fix(transactions): a settle books the freshest figure for the row` (**R-FE**) -- the settle verb resolves the amount when the caller supplies none, so every settle door books one figure. MOVES MONEY at the grid | open | -- | -- |
+| balance | X-aq | -- | **X-aq** `fix(transactions): a settle books the freshest figure for the row` (**R-FE**) -- the settle verb resolves the amount when the caller supplies none, so every settle door books one figure. MOVES MONEY at the grid | SHIPPED | `9cabc206` | -- |
 | balance | X-ar | -- | **X-ar** `refactor(cash): a projected row's amount has ONE answer` (**R-FE**) -- the stored amount becomes authoritative and the read-time override thread is deleted. Closes **N-40** and **N-224** | open | -- | balance:X-aq |
-| balance | X-f2-c2 | -- | **X-f2-c2** the TRANSACTION twin: the envelope's own close tick and bills, settled on the STATEMENT date through the service-tier settle verb (**R-FA**). MOVES MONEY | open | -- | balance:X-f2-c1 / balance:X-aq (the panel must not display a figure the grid contradicts; R-FE) |
+| balance | X-f2-c2 | -- | **X-f2-c2** the TRANSACTION twin: the envelope's own close tick and bills, settled on the STATEMENT date through the service-tier settle verb (**R-FA**). MOVES MONEY | SHIPPED | `d23b55fd` | balance:X-f2-c1 / balance:X-aq (the panel must not display a figure the grid contradicts; R-FE) |
 | balance | X-f2-c3 | -- | **X-f2-c3** transfer shadows in their own group, settled through the transfer service with the loan-payment freeze (**R-FA**). MOVES MONEY | open | -- | balance:X-f2-c2 / balance:X-ap (the third settle door is fixed while the verb is fresh; developer 2026-08-10) |
 | balance | X-ap | -- | **X-ap** `fix(transactions): the full-edit Status dropdown settles like every other door` -- the THIRD settle door R-FA's text missed. An envelope-tracked row flipped to Paid via the popover never consults its entries, so $25 of purchases against a $400 estimate books $400. MOVES MONEY | open | -- | balance:X-f2-c2 |
 | balance | X-f3 | -- | **X-f3** `feat(cash): the ledger is sum-of-postings and the residual is classified` -- **THE | open | -- | balance:X-f2 |
