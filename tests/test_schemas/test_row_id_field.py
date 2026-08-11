@@ -273,7 +273,11 @@ _NON_ROW_ID_INTEGERS = frozenset({
     "grid_default_periods",
     "inflation_effective_month",
     "interval_n",
-    "keep_through_index",
+    # ``keep_through_index`` LEFT this set at plan step C3-a rather than being
+    # relaxed out of it: the truncate form now posts ``keep_through_period_id``,
+    # a ``RowId``, because the value selects which pay periods a CASCADE
+    # destroys and identity is ``id`` (finding P13).  It was the one entry here
+    # that named a row while being spelled as a position.
     "large_transaction_threshold",
     "low_balance_threshold",
     "max_term_months",

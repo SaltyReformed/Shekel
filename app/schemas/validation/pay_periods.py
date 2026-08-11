@@ -22,7 +22,7 @@ from marshmallow import (
 from app.config import BaseConfig
 from app.models.pay_period import MIN_MATERIALISABLE_CADENCE_DAYS
 from app.models.pay_schedule import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
-from app.schemas.validation._helpers import BaseSchema
+from app.schemas.validation._helpers import BaseSchema, RowId
 from app.services.pay_period_service import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
 
 
@@ -110,14 +110,27 @@ class PayPeriodExtendSchema(BaseSchema):
 class PayPeriodTruncateSchema(BaseSchema):
     """Validates POST data for truncating the schedule tail.
 
-    ``keep_through_index`` is the highest ``period_index`` to keep; every
-    higher index is deleted.  ``confirm_discard`` acknowledges the loss of
+    ``keep_through_period_id`` names the last pay period to KEEP; every period
+    opening after it is deleted.  ``confirm_discard`` acknowledges the loss of
     hand-entered / changed rows the discard gate would otherwise block on.
+
+    **It names the period by ``id``, and plan step C3-a is why** (finding
+    **P13**).  This field was ``keep_through_index``, a plain
+    ``fields.Integer`` carrying the ORDINAL ``budget.pay_periods.period_index``
+    -- so a user-supplied position selected which periods a CASCADE destroyed,
+    and it survived a round trip through the browser in the discard-confirm
+    422's hidden payload.  That was safe only while nothing renumbered, which
+    is true today and which plan steps C3-b and C6 change; identity is ``id``,
+    so the wire key is ``id``.
+
+    A :class:`~app.schemas.validation._helpers.RowId` rather than an
+    ``Integer``: it names a ROW, and the strict spelling rules that go with
+    that (no ``"007"``, no ``" 12 "``, no ``1.9``) travel with the type.  The
+    service still resolves the id against the submitter's OWN periods, because
+    a well-formed id is not an owned one.
     """
 
-    keep_through_index = fields.Integer(
-        required=True, validate=validate.Range(min=0, max=100000)
-    )
+    keep_through_period_id = RowId(required=True)
     confirm_discard = fields.Boolean(load_default=False)
 
 

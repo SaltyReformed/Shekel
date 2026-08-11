@@ -248,7 +248,7 @@ class PayPeriodLocked(ShekelError):
 
     Attributes:
         blocking: A dict mapping each blocking pay-period id to its
-            :class:`~app.services.pay_period_admin.PeriodLockReason`.
+            :class:`~app.services.pay_period_locks.PeriodLockReason`.
     """
 
     def __init__(self, blocking):
@@ -279,6 +279,42 @@ class PayPeriodDiscardRequired(ShekelError):
         super().__init__(
             f"This will permanently discard {count} hand-entered or changed "
             f"item(s) that cannot be regenerated. Confirm to proceed."
+        )
+
+
+class PayPeriodUnresolved(ShekelError):
+    """A submitted pay-period id names no period the requesting owner has.
+
+    Raised by ``pay_period_admin.truncate_pay_periods`` when the id the
+    truncate form posted resolves to none of the caller's own periods -- it
+    was never theirs, it never existed, or a concurrent truncate deleted it
+    between the discard-confirm 422 and the confirmation post.  The operation
+    deletes nothing.
+
+    **One class for all three cases, and that is the security property**
+    (plan step C3-a, finding **P13**).  The house rule is that "not found" and
+    "not yours" are answered identically so no door becomes an existence
+    oracle; here that is structural rather than remembered, because there is
+    only one exception to raise and one message on it.  Which case it was IS
+    distinguished -- in the ACCESS log, where an analyst can see it and a
+    prober cannot (``pay_period_admin._log_unresolved_period``).
+
+    Its own class rather than a bare
+    :class:`ValidationError`, because the truncate route has to catch it: a
+    catch on the generic base would flash "reload the settings page and choose
+    the period again" for any future business-rule refusal raised anywhere
+    below it, turning a real defect into advice about a dropdown.
+
+    Attributes:
+        period_id: The submitted id that resolved to nothing.
+    """
+
+    def __init__(self, period_id):
+        self.period_id = period_id
+        super().__init__(
+            f"Pay period {period_id} is not one of yours, or no longer "
+            f"exists. Reload the pay-periods settings page and choose the "
+            f"period to keep through from the current list."
         )
 
 

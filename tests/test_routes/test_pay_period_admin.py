@@ -10,6 +10,7 @@ future-period setup is deterministic.  See
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 from decimal import Decimal
 
@@ -18,7 +19,11 @@ import pytest
 from app.enums import StatusEnum
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
-from app.services import pay_period_service, pay_schedule_service
+from app.services import (
+    pay_period_admin,
+    pay_period_service,
+    pay_schedule_service,
+)
 from tests._test_helpers import add_txn, freeze_today
 from app.services import cash_ledger
 
@@ -52,6 +57,16 @@ def _period_count(db_session, user_id):
 def _indices(user_id):
     """The user's current period indices."""
     return {p.period_index for p in pay_period_service.get_all_periods(user_id)}
+
+
+def _starts(user_id):
+    """The user's current period paydays.
+
+    What the truncate assertions read since plan step C3-a: the operation is
+    now defined on the payday rather than on the ordinal, and the payday is the
+    column that survives plan step C4.
+    """
+    return {p.start_date for p in pay_period_service.get_all_periods(user_id)}
 
 
 def _future_count(db_session, user_id):
@@ -101,16 +116,16 @@ class TestTruncateRoute:
     """POST /pay-periods/truncate."""
 
     def test_removes_tail_and_redirects(self, app, db, auth_client, seed_user):
-        """A valid truncate deletes everything past keep_through_index."""
+        """A valid truncate deletes everything past the named period."""
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=6)
-            keep = periods[2].period_index  # index 3
+            keep = periods[2].id  # the 3rd future period
             resp = auth_client.post(
                 "/pay-periods/truncate",
-                data={"keep_through_index": str(keep)},
+                data={"keep_through_period_id": str(keep)},
             )
             assert resp.status_code == 302
-            assert max(_indices(seed_user["user"].id)) == keep
+            assert max(_starts(seed_user["user"].id)) == periods[2].start_date
 
     def test_settled_period_blocked_nothing_deleted(
         self, app, db, auth_client, seed_user,
@@ -126,7 +141,7 @@ class TestTruncateRoute:
             before = _period_count(db.session, seed_user["user"].id)
             resp = auth_client.post(
                 "/pay-periods/truncate",
-                data={"keep_through_index": str(periods[1].period_index)},
+                data={"keep_through_period_id": str(periods[1].id)},
                 follow_redirects=True,
             )
             assert resp.status_code == 200
@@ -144,26 +159,88 @@ class TestTruncateRoute:
             before = _period_count(db.session, seed_user["user"].id)
             resp = auth_client.post(
                 "/pay-periods/truncate",
-                data={"keep_through_index": str(periods[1].period_index)},
+                data={"keep_through_period_id": str(periods[1].id)},
             )
             assert resp.status_code == 422
             assert b"permanently discard" in resp.data
             assert b"Confirm" in resp.data
+            # The panel must echo the ID the user chose, not its ordinal --
+            # this hidden field IS the browser round trip finding P13 is
+            # about, and asserting only the prose let it regress silently.
+            assert (
+                f'name="keep_through_period_id" value="{periods[1].id}"'
+                .encode() in resp.data
+            )
             assert _period_count(db.session, seed_user["user"].id) == before
 
     def test_confirm_discard_proceeds(self, app, db, auth_client, seed_user):
-        """Re-posting with confirm_discard=true completes the truncate."""
+        """Re-posting what the confirm PANEL rendered completes the truncate.
+
+        The id is parsed back out of the 422 body rather than passed by hand,
+        so the assertion covers the whole round trip the finding is about: what
+        the panel put on the wire is what the second post acts on.  Passing it
+        by hand tested the service twice and the round trip never.
+        """
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=6)
             add_txn(db.session, seed_user, periods[3], "Cash", "50.00")
             db.session.commit()
-            keep = periods[1].period_index
+            confirm = auth_client.post(
+                "/pay-periods/truncate",
+                data={"keep_through_period_id": str(periods[1].id)},
+            )
+            assert confirm.status_code == 422
+            echoed = re.search(
+                rb'name="keep_through_period_id" value="(\d+)"', confirm.data,
+            )
+            assert echoed is not None
+
             resp = auth_client.post(
                 "/pay-periods/truncate",
-                data={"keep_through_index": str(keep), "confirm_discard": "true"},
+                data={
+                    "keep_through_period_id": echoed.group(1).decode(),
+                    "confirm_discard": "true",
+                },
             )
             assert resp.status_code == 302
-            assert max(_indices(seed_user["user"].id)) == keep
+            assert max(_starts(seed_user["user"].id)) == periods[1].start_date
+
+    def test_a_stale_period_id_is_refused_and_deletes_nothing(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The confirm panel's re-submitted id no longer names a period.
+
+        Finding **P13**'s live shape at the HTTP boundary: the discard-confirm
+        422 echoes the chosen period into a hidden field and the user posts it
+        back, so the value crosses a request boundary that ``user_write_lock``
+        cannot span.  Keyed on ``id`` (plan step C3-a) a period deleted in
+        between is REFUSED; keyed on the old ordinal the same post named
+        whichever period had since slid into that position.
+        """
+        with app.app_context():
+            periods = _future_periods(db.session, seed_user, count=6)
+            user_id = seed_user["user"].id
+            # The user reviews period #4 in the confirm panel; a concurrent
+            # truncate then removes it and everything after.
+            reviewed_id = periods[3].id
+            pay_period_admin.truncate_pay_periods(
+                user_id, keep_through_period_id=periods[1].id,
+            )
+            db.session.commit()
+            before = _period_count(db.session, user_id)
+
+            resp = auth_client.post(
+                "/pay-periods/truncate",
+                data={
+                    "keep_through_period_id": str(reviewed_id),
+                    "confirm_discard": "true",
+                },
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"no longer exists" in resp.data
+            assert _period_count(db.session, user_id) == before
 
 
 class TestRegenerateRoute:
@@ -480,6 +557,35 @@ class TestOwnerOnlyAndUi:
             # The rolling-window controls render too.
             assert b"Continuous rolling window" in resp.data
             assert b'name="rolling_target_periods"' in resp.data
+
+    def test_the_truncate_select_offers_ids_not_ordinals(
+        self, app, db, auth_client, seed_user,
+    ):
+        """The destructive select's option VALUES are pay-period ids.
+
+        Finding **P13**'s gate at the surface that produces it.  The service
+        refusing an unresolvable id is only half the fix: if this select went
+        back to rendering ``period_index`` as its value, every posted ordinal
+        would resolve to no period and the control would break loudly rather
+        than destroy the wrong rows -- but it would break.  Asserting the
+        rendered value keeps the form and the schema on one key.
+
+        The seeded owner's periods deliberately have ids that are NOT their
+        ordinals (the bootstrap period is created first, and ids come from a
+        shared sequence), so an ordinal render cannot coincidentally pass.
+        """
+        with app.app_context():
+            periods = _future_periods(db.session, seed_user, count=3)
+            user_id = seed_user["user"].id
+            all_periods = pay_period_service.get_all_periods(user_id)
+            assert [p.id for p in periods] != [p.period_index for p in periods]
+
+            resp = auth_client.get("/settings?section=pay-periods")
+
+            assert resp.status_code == 200
+            assert b'name="keep_through_period_id"' in resp.data
+            for period in all_periods:
+                assert f'<option value="{period.id}">'.encode() in resp.data
 
     def test_rolling_controls_prefilled_from_schedule(
         self, app, db, auth_client, seed_user,

@@ -22,8 +22,12 @@ from app.enums import StatusEnum
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern
-from app.services import pay_period_admin, pay_period_service
-from app.services.pay_period_admin import PeriodLockReason
+from app.services import (
+    pay_period_admin,
+    pay_period_locks,
+    pay_period_service,
+)
+from app.services.pay_period_locks import PeriodLockReason
 from tests._test_helpers import (
     add_txn,
     assert_pay_period_invariants,
@@ -83,13 +87,13 @@ class TestClassifyPeriodLock:
         """A future period with no settled txn / anchor / rule -> None."""
         with app.app_context():
             periods = _make_future_periods(db.session, seed_user)
-            assert pay_period_admin.classify_period_lock(periods[2]) is None
+            assert pay_period_locks.classify_period_lock(periods[2]) is None
 
     def test_historical_period_is_locked(self, app, seed_user):
         """A period that has already ended -> HISTORICAL."""
         with app.app_context():
             bootstrap = seed_user["bootstrap_period"]
-            assert pay_period_admin.classify_period_lock(
+            assert pay_period_locks.classify_period_lock(
                 bootstrap, as_of=date(2026, 6, 13),
             ) == PeriodLockReason.HISTORICAL
 
@@ -101,7 +105,7 @@ class TestClassifyPeriodLock:
                 db.session, seed_user, periods[1], "Rent", "1200.00",
                 status_enum=StatusEnum.DONE,
             )
-            assert pay_period_admin.classify_period_lock(
+            assert pay_period_locks.classify_period_lock(
                 periods[1],
             ) == PeriodLockReason.SETTLED_TXN
 
@@ -113,7 +117,7 @@ class TestClassifyPeriodLock:
                 db.session, seed_user, periods[1], "Rent", "1200.00",
                 status_enum=StatusEnum.PROJECTED,
             )
-            assert pay_period_admin.classify_period_lock(periods[1]) is None
+            assert pay_period_locks.classify_period_lock(periods[1]) is None
 
     def test_soft_deleted_settled_not_locked(self, app, db, seed_user):
         """A soft-deleted settled row does not lock -- the user removed it."""
@@ -123,7 +127,7 @@ class TestClassifyPeriodLock:
                 db.session, seed_user, periods[1], "Rent", "1200.00",
                 status_enum=StatusEnum.DONE, is_deleted=True,
             )
-            assert pay_period_admin.classify_period_lock(periods[1]) is None
+            assert pay_period_locks.classify_period_lock(periods[1]) is None
 
     def test_cancelled_transaction_not_settled_lock(self, app, db, seed_user):
         """A Cancelled txn is not settled, so it does not SETTLED_TXN-lock.
@@ -138,7 +142,7 @@ class TestClassifyPeriodLock:
                 db.session, seed_user, periods[1], "Rent", "1200.00",
                 status_enum=StatusEnum.CANCELLED,
             )
-            assert pay_period_admin.classify_period_lock(periods[1]) is None
+            assert pay_period_locks.classify_period_lock(periods[1]) is None
 
     def test_anchor_period_with_opening_reports_ledger_postings(
         self, app, seed_user,
@@ -154,7 +158,7 @@ class TestClassifyPeriodLock:
         """
         with app.app_context():
             bootstrap = seed_user["bootstrap_period"]
-            assert pay_period_admin.classify_period_lock(
+            assert pay_period_locks.classify_period_lock(
                 bootstrap, as_of=_BOOTSTRAP_AS_OF,
             ) == PeriodLockReason.LEDGER_POSTINGS
 
@@ -163,7 +167,7 @@ class TestClassifyPeriodLock:
         with app.app_context():
             periods = _make_future_periods(db.session, seed_user)
             _add_rule_anchor(db.session, seed_user, periods[3])
-            assert pay_period_admin.classify_period_lock(
+            assert pay_period_locks.classify_period_lock(
                 periods[3],
             ) == PeriodLockReason.RECURRENCE_ANCHOR
 
@@ -175,7 +179,7 @@ class TestClassifyPeriodLock:
                 db.session, seed_user, bootstrap, "Old Rent", "1200.00",
                 status_enum=StatusEnum.DONE,
             )
-            assert pay_period_admin.classify_period_lock(
+            assert pay_period_locks.classify_period_lock(
                 bootstrap, as_of=date(2026, 6, 13),
             ) == PeriodLockReason.HISTORICAL
 
@@ -189,7 +193,7 @@ class TestClassifyPeriodLock:
             )
             # Not historical at this as_of, and it IS the account anchor,
             # but the settled txn outranks the anchor reason.
-            assert pay_period_admin.classify_period_lock(
+            assert pay_period_locks.classify_period_lock(
                 bootstrap, as_of=_BOOTSTRAP_AS_OF,
             ) == PeriodLockReason.SETTLED_TXN
 
@@ -200,7 +204,7 @@ class TestClassifyPeriodsBulk:
     def test_empty_input_returns_empty(self, app):
         """No periods -> empty dict, no queries."""
         with app.app_context():
-            assert pay_period_admin.classify_periods_bulk([]) == {}
+            assert pay_period_locks.classify_periods_bulk([]) == {}
 
     def test_bulk_matches_single_across_a_mix(self, app, db, seed_user):
         """Bulk classification equals per-period classification on a mix.
@@ -222,9 +226,9 @@ class TestClassifyPeriodsBulk:
             all_periods = pay_period_service.get_all_periods(
                 seed_user["user"].id,
             )
-            bulk = pay_period_admin.classify_periods_bulk(all_periods, as_of)
+            bulk = pay_period_locks.classify_periods_bulk(all_periods, as_of)
             expected = {
-                p.id: pay_period_admin.classify_period_lock(p, as_of)
+                p.id: pay_period_locks.classify_period_lock(p, as_of)
                 for p in all_periods
             }
             assert bulk == expected

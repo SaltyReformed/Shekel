@@ -781,8 +781,10 @@ class TestNoneMeansDoesNotRepeat:
     share a sentinel would report a quarterly bill as a one-off -- on the
     surface whose whole job is to say how definitions repeat.  The empty
     schedule is unreachable through any application path (registration
-    bootstraps period 0, ``truncate_pay_periods`` keeps index 0 by its schema
-    bound, ``reset_pay_periods`` deletes and regenerates in one transaction),
+    bootstraps period 0, ``truncate_pay_periods`` always keeps the period its
+    ``keep_through_period_id`` names -- plan step C3-a, which replaced the
+    ordinal wire key and with it the Marshmallow floor this sentence used to
+    cite -- ``reset_pay_periods`` deletes and regenerates in one transaction),
     so it is refused rather than worded.
     """
 

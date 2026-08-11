@@ -1761,7 +1761,9 @@ class TestTheSharedFilingDoor:
         state that could silently mis-file every correction an account has
         (finding **N-192**).  What keeps it out of reach is code rather than a
         constraint -- registration opens a period before it creates the default
-        account, ``truncate_pay_periods`` never deletes index 0, and
+        account, ``truncate_pay_periods`` always keeps the period its
+        ``keep_through_period_id`` names (plan step C3-a; it read "never
+        deletes index 0" while the form posted an ordinal), and
         ``reset_pay_periods`` regenerates before returning -- so the refusal is
         deliberate rather than defensive, and it is asserted here because no
         test covered it before C2-d gave it one home.
