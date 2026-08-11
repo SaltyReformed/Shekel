@@ -1,9 +1,18 @@
 """
-Shekel Budget App -- Outstanding-purchase reconcile routes
+Shekel Budget App -- The reconcile panel's routes
 
 The "which of these has your bank actually taken?" panel: its shared
 context builder, the two DOM-id helpers its two mounts share, and its
 GET / POST endpoints.
+
+**The POST is ``record_reconciliation`` and the partial is
+``_reconcile_panel.html``; both were named ``..._purchases`` until plan step
+X-f2-c2.**  Ruling **R-EW** widens the offer set to everything a statement can
+settle -- purchases nested under their envelope, the envelope's own close,
+bills, transfer shadows -- and only the first of those four is a purchase, so
+the old names claimed a scope the door no longer has.  Renamed in its own
+zero-money commit ahead of the leaf that widens it, per ruling **R-EY**: a
+rename inside a money-moving diff is a rename nobody reviews.
 
 **Why it is not in :mod:`app.routes.accounts.anchor`.**  It was, and the
 subject boundary was always there to cut along: ``anchor`` owns the WRITE
@@ -198,7 +207,7 @@ def reconcile_panel(account_id):
     """
     account = load_cash_account_or_404(account_id)
     return render_template(
-        "accounts/_reconcile_purchases.html",
+        "accounts/_reconcile_panel.html",
         **reconcile_context(account, panel=panel_id(account.id)),
     )
 
@@ -208,7 +217,7 @@ def reconcile_panel(account_id):
 )
 @login_required
 @require_owner
-def reconcile_purchases(account_id):
+def record_reconciliation(account_id):
     """Record that the ticked purchases had reached the bank.
 
     The reconcile step's write door (ruling R-DH (d) / the R-M re-ruling).
@@ -257,7 +266,7 @@ def reconcile_purchases(account_id):
         # (the panel renders no form in that state) and answered rather than
         # raised, because it is a legitimate empty state.
         return render_template(
-            "accounts/_reconcile_purchases.html",
+            "accounts/_reconcile_panel.html",
             **reconcile_context(account, panel=panel_id(account.id)),
         )
 
@@ -271,7 +280,7 @@ def reconcile_purchases(account_id):
 
     return (
         render_template(
-            "accounts/_reconcile_purchases.html",
+            "accounts/_reconcile_panel.html",
             **reconcile_context(account, panel=panel_id(account.id)),
         ),
         200,

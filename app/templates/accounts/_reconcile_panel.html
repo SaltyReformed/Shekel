@@ -48,7 +48,7 @@
 #}
 <div id="{{ panel_id }}">
   {% if not outstanding.is_empty %}
-  <form hx-post="{{ url_for('accounts.reconcile_purchases', account_id=account.id) }}"
+  <form hx-post="{{ url_for('accounts.record_reconciliation', account_id=account.id) }}"
         hx-target="#{{ panel_id }}"
         hx-swap="outerHTML"
         hx-disabled-elt="find button[type=submit]">

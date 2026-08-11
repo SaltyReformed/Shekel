@@ -2480,9 +2480,11 @@ class TestTheReconcileRoute:
         each trues up through the PATCH route and ``apply_anchor_true_up``
         stamps ``display_today()``.  So none of them can tell
         ``cash_ledger.reconciled_through(account.id)`` apart from
-        ``display_today()`` -- measured: substituting the latter in
-        ``accounts.anchor.reconcile_purchases`` left the whole 7,721-test suite
-        green.  This is the case that separates them, and it is the only one.
+        ``display_today()`` -- measured: substituting the latter in the POST
+        door (then ``accounts.anchor.reconcile_purchases``, now
+        ``accounts.reconcile.record_reconciliation``) left the whole 7,721-test
+        suite green.  This is the case that separates them, and it is the only
+        one.
 
         ``observed_on`` is USER-SUPPLIED (plan step 2), so a back-dated
         assertion is an ordinary state: "my statement is dated the 3rd, not

@@ -16,7 +16,7 @@
    Dismissing it loses nothing: the same list is a permanent section on the
    account's detail page, rendered from the same inner partial.
 
-   Expected context: everything ``accounts/_reconcile_purchases.html`` needs.
+   Expected context: everything ``accounts/_reconcile_panel.html`` needs.
 #}
 <div id="modal-mount" hx-swap-oob="true">
   <div class="modal fade" id="reconcilePurchasesModal" tabindex="-1"
@@ -36,7 +36,7 @@
         </div>
 
         <div class="modal-body">
-          {% include "accounts/_reconcile_purchases.html" %}
+          {% include "accounts/_reconcile_panel.html" %}
         </div>
 
         <div class="modal-footer">
