@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Implementation plan: kind-correct grid balances + accrual row
 
 **Status:** Planned (2026-06-27). Not started.

@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Follow-up: close the W9906 fence hole on `net_worth_kernel.loan_owed_at_dates`
 
 **Status:** **CLOSED 2026-07-13.** Verified, then fixed at the root -- which turned out to be one

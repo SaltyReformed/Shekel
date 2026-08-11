@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # The loan balance arc: as-built record (Phases A-F, 2026-07-16 .. 2026-07-25)
 
 **Read-only history. Nothing in this file governs work.** The live document is `../README.md`,

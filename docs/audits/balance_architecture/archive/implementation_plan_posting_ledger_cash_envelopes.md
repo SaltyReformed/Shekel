@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Implementation plan: post confirmed cash transactions + cleared envelope entries
 
 **Status:** SHIPPED TO PROD (2026-06-29) -- all 8 commits, via PR #49 (`dev -> main`, merge

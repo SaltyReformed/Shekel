@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Budget App -- Requirements Addendum: Extended Accounts & Financial Planning
 
 **Version:** 3.0 **Date:** February 28, 2026 **Parent Document:** project_requirements_v2.md

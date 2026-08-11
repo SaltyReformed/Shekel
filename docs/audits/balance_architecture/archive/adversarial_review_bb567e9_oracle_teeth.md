@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Adversarial review -- commit `bb567e9` "make the reconciliation-oracle teeth executable" (R5/M4/M5)
 
 Reviewer: second Claude Code session (adversarial watch on `fix/ledger-period-attribution`).

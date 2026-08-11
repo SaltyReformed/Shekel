@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Adversarial review: the balance architecture (Option D), end to end
 
 **Date:** 2026-07-02. **Reviewer:** independent adversarial pass, commissioned as a complete

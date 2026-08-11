@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Level 1 balance-at-T seam + no-bypass checker + cross-page oracle for every account kind
 
 Build-Order Step 1 of the Option D architecture

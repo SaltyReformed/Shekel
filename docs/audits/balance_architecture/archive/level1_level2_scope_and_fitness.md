@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Level 1 / Level 2 balance-architecture remedies: correctness, scope, blast radius, fitness
 
 Date: 2026-06-26. Companion to `recurring_loan_balance_root_cause.md`. Scope: an independent,

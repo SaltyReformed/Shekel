@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Implementation Plan: UI Overhaul + Polish Pass Closeout
 
 Combined remaining-work list for the Fable 5 UI/UX overhaul (`docs/design/overhaul_plan.md`) and the

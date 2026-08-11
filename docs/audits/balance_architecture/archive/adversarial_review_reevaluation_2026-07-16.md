@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Adversarial re-evaluation: the balance arc, the from-scratch plan, and the cash audit
 
 **Written 2026-07-16, against `dev` @ `62b9fa0a`.** Commissioned as a full re-evaluation with no

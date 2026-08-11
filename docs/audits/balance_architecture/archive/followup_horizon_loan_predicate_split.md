@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Follow-up: the horizon answers "is this a loan?" two different ways
 
 **Status:** CLOSED 2026-07-13 -- **FALSE ALARM.** The three producers already agree; the divergence

@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Implementation Plan: Pay Period CRUD + Continuous Rolling Window
 
 Status: Phases 0, 1, 2, and 3 COMPLETE + GREEN on `dev` (Phase 3 built 2026-06-14; full suite 6225;
