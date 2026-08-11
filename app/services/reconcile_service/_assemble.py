@@ -10,17 +10,19 @@ what the panel shows and totalling it are the same work whatever produced an
 offer, so writing them once per arm would be this arc's own root cause 1
 applied to the panel.
 
-**What this module does NOT yet decide, and must not pretend to: whether a
-BILL is a block of its own or a flat row beside the blocks.**  Ruling R-EW
-settles the purchase case (*"a purchase nests under the thing it belongs to"*)
-and is silent on the other three kinds, and a first draft of this package
-answered it two contradictory ways in one commit -- this docstring assumed
-every arm keys into a block by parent id, while ``_offers.OutstandingSet``
-assumed bills arrive as a sibling LIST.  Both cannot be true, and which is
-true decides whether X-f2-c2 ADDS an arm here or REWRITES the ordering, the
-headings and the empty rule inside a commit that moves money.  It is a
-developer decision, recorded in the plan as X-f2-c2's open shape question, and
-nothing here is written to prejudge it.
+**Whether a BILL is a block or a flat row is RULED, and it is one collection**
+(**R-FC**, 2026-08-10).  Ruling R-EW settled only the purchase case, and a
+first draft of this package answered the rest two contradictory ways in one
+commit -- this docstring assumed every arm keys into a block by parent id while
+``_offers.OutstandingSet`` assumed bills arrive as a sibling LIST.  The
+developer picked the flat-bills panel on sight; measuring why dissolved the
+fork, because the whole difference was RENDERING.  So: **one collection here,
+and three presentational rules downstream** -- a block with no children prints
+its name inline rather than above a one-item list, the ordering key gains a
+kind term so like sits with like, and a section label is emitted when the kind
+changes.  Those reproduce the chosen panel byte-for-byte while X-f2-c2 and
+X-f2-c3 each ADD an arm, so nothing below is rewritten inside a money commit
+(**R-EY**).
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, frozen dataclasses out.
