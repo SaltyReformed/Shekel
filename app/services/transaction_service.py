@@ -125,18 +125,44 @@ def settles_from_entries(txn: Transaction) -> bool:
     return bool(txn.tracks_purchases and txn.entries)
 
 
+def reject_transfer_shadow(txn: Transaction) -> None:
+    """Refuse a transfer shadow -- the rule, stated once for both doors.
+
+    A transfer settles through ``transfer_service.update_transfer`` so both legs
+    and the parent move together (``CLAUDE.md`` transfer invariants 3 and 4).
+    Two PUBLIC functions here have to know that -- :func:`settle_transaction`,
+    which would otherwise settle one leg silently, and :func:`settle_amount`,
+    which would otherwise price one off the loan-payment seam and hand a caller
+    a figure this module refuses to book.  A verb owns its own preconditions;
+    two verbs owning the same one own it once.
+
+    Args:
+        txn: The row to check.
+
+    Raises:
+        ValidationError: When *txn* is a transfer shadow.
+    """
+    if txn.transfer_id is not None:
+        raise ValidationError(
+            f"Transaction {txn.id} is a transfer shadow; "
+            "transfers settle via transfer_service.update_transfer so both "
+            "legs and the parent move together.",
+        )
+
+
 def settle_amount(txn: Transaction) -> Decimal:
     """Return what settling *txn* would BOOK, absent a caller-supplied actual.
 
-    **The read-only twin of act 1 of :func:`settle_transaction`**, and it exists
+    **The ONE valuation act 1 of :func:`settle_transaction` uses**, published
     because the reconcile panel must show the figure a tick will book.  A panel
     that renders ``effective_amount`` beside a verb that books something else is
     two answers to one money question, one screen apart -- and after plan step
-    X-aq the verb genuinely books something else for a salary row.
+    X-aq the verb genuinely books something else for a salary row.  The verb
+    CALLS this rather than re-branching, so there is no shape in which the
+    displayed figure and the booked one can drift.
 
-    It is a PURE read: nothing here mutates, so the panel can call it per
-    offered row and the writer can call it again to decide whether a submitted
-    figure is a correction or an echo of the prefill.
+    It is a PURE read: nothing here mutates, so the panel calls it per offered
+    row and the verb calls it again at the settle.
 
     Args:
         txn: The row about to be offered or settled, still Projected.
@@ -145,7 +171,15 @@ def settle_amount(txn: Transaction) -> Decimal:
         ``sum(entries)`` when :func:`settles_from_entries`, else the freshest
         derivation of the row's own amount -- the projection's live figure when
         one exists and the stored ``effective_amount`` otherwise.
+
+    Raises:
+        ValidationError: On a transfer shadow
+            (:func:`reject_transfer_shadow`).  A shadow's value is the transfer
+            service's, and answering here would publish a figure
+            :func:`settle_transaction` refuses to book -- which is exactly what
+            plan step X-f2-c3 would otherwise walk into.
     """
+    reject_transfer_shadow(txn)
     if settles_from_entries(txn):
         return compute_actual_from_entries(txn.entries)
     live = _freshest_amount(txn)
@@ -265,32 +299,41 @@ def settle_transaction(
     # Checked FIRST and before any mutation, so a refused call leaves the row
     # untouched -- the ordering ``status_seam.apply_status_change`` uses for
     # its own three refusals, and for the same reason.
-    if txn.transfer_id is not None:
-        raise ValidationError(
-            f"Transaction {txn.id} is a transfer shadow; "
-            "transfers settle via transfer_service.update_transfer so both "
-            "legs and the parent move together.",
-        )
+    reject_transfer_shadow(txn)
 
     if settles_from_entries(txn):
         settle_from_entries(txn, settled_on=settled_on)
     else:
-        # Resolved BEFORE the seam, because the projection's own rule is
-        # Projected-only: ``live_projected_net`` drops a row the moment its
-        # status leaves that band, so asking after the flip always answers
-        # "nothing fresher" and the verb would silently book the cache.
+        # Both resolved BEFORE the seam.  The valuation must be: the
+        # projection's own rule is Projected-only, so ``live_projected_net``
+        # drops a row the moment its status leaves that band and asking after
+        # the flip always answers "nothing fresher".  The comparison follows it
+        # for symmetry -- ``effective_amount`` is stable across the flip, but
+        # reading it once, here, is what makes the two lines one decision.
         booked = (
-            actual_amount if actual_amount is not None
-            else _freshest_amount(txn)
+            actual_amount if actual_amount is not None else settle_amount(txn)
         )
+        # **The echo rule, stated ONCE and applied to both sources.**  A figure
+        # equal to what the row would otherwise book is not a correction, and
+        # writing it populates a column that is NULL on every uncorrected row --
+        # destroying the only signal that says a human typed one, which is what
+        # ruling R-FB's own production measurement is made of ("11 of 93 settled
+        # bills carry a hand-typed correction").  It applies to a
+        # CALLER-SUPPLIED figure too, and that half is load-bearing: the
+        # reconcile panel prefills its amount box, so an untouched tick submits
+        # the figure the row would have booked anyway, and plan step X-ap routes
+        # a full-edit form here that submits ``actual_amount`` on EVERY save.
+        # Two doors suppressing the echo two different ways is how one column
+        # comes to mean two things.
+        correction = booked if booked != txn.effective_amount else None
         apply_status_change(
             txn, settled_status_id(txn), settled_on=settled_on,
         )
         # Applied AFTER the seam so act 3 below reads the final actual amount
         # rather than the pre-settle estimate (the 2.8b HIGH, forward
         # direction).
-        if booked is not None:
-            txn.actual_amount = booked
+        if correction is not None:
+            txn.actual_amount = correction
 
     posting_service.sync_transaction_postings(
         txn, settled=txn.status.is_settled,
@@ -326,13 +369,21 @@ def _freshest_amount(txn: Transaction) -> Decimal | None:
     ad-hoc row, an already-settled row and a manually-overridden paycheck each
     leave here after two list comprehensions.
 
-    **It answers ``None`` when the live figure EQUALS the stored one**, and that
-    is not an optimisation.  Writing ``actual_amount`` unconditionally would
-    populate a column that is NULL on every uncorrected row, destroying the one
-    signal that says a human typed a figure -- the signal ruling R-FB's own
-    measurement is made of ("11 of 93 settled bills carry a hand-typed
-    correction").  Leaving the column alone keeps a settle for the expected
-    amount indistinguishable from what it is.
+    **A row carrying an ``actual_amount`` is NOT a candidate, and that guard is
+    a money fix rather than a shortcut.**  What this refreshes is a CACHE, and
+    the cache is ``estimated_amount``; ``actual_amount`` is a fact a human
+    entered.  Without the guard, a Projected salary row whose actual the owner
+    typed by hand is compared against the recompute and OVERWRITTEN at settle --
+    the app deleting the user's own figure and substituting its estimate.  It
+    was reachable: ``is_override`` is the only other thing excluding such a row
+    from the override map, and ``routes/transactions/mutations`` sets that flag
+    only when ``estimated_amount`` or ``pay_period_id`` was submitted, so
+    editing the actual ALONE leaves it False.  An invariant of this module
+    cannot rest on a bookkeeping flag another module sets for another reason.
+
+    **It compares against ``estimated_amount``, not ``effective_amount``**, for
+    the same reason: past the guard above they are equal, and naming the column
+    that IS the cache says what the comparison means.
 
     Args:
         txn: The row about to settle, still in its pre-settle status.  Read for
@@ -340,13 +391,15 @@ def _freshest_amount(txn: Transaction) -> Decimal | None:
             filters test; not mutated.
 
     Returns:
-        The live amount when one exists and differs from what the row would
-        otherwise book, else ``None``.
+        The live amount when one exists and disagrees with the cache, else
+        ``None`` -- meaning "nothing fresher than what the row already says".
     """
+    if txn.actual_amount is not None:
+        return None
     live = live_amount_overrides(
         txn.account, txn.scenario_id, [txn],
     ).get(txn.id)
-    if live is None or live == txn.effective_amount:
+    if live is None or live == txn.estimated_amount:
         return None
     return live
 

@@ -31,15 +31,27 @@ class OfferKind(enum.Enum):
     label is emitted where the kind changes.  The third -- a childless block
     prints inline -- is a property of the block's contents, not of its kind.
 
+    **Each ARM TAGS its own offers with a kind; nothing DERIVES one.**  A first
+    version of this classified a block by reading its contents -- purchases
+    means envelope, correctable means bill -- and that was wrong twice.  An
+    INCOME row is never purchase-tracked, so it came out ``BILL`` and rendered
+    under a heading reading "Bills" three lines below a summary counting it as a
+    deposit: production's `$1,958.87` FSA reimbursement, captioned against
+    itself on the one screen read beside a paper statement.  And a transfer
+    shadow is childless and correctable too, so it is INDISTINGUISHABLE from a
+    bill by those proxies -- meaning plan step X-f2-c3 would have had to rewrite
+    the derivation inside a money commit, which is the exact rewrite R-FC and
+    **R-EY** exist to prevent.  An arm knows what it produced; a renderer
+    guessing from shape does not.
+
     **The member's VALUE is the section heading the panel prints**, and
     :attr:`section_label` says so at the call site, because a bare ``.value``
     does not tell a reader the string is user-visible copy.
 
-    **The definition ORDER is the section order**, so adding plan step
-    X-f2-c3's ``TRANSFER`` member below ``BILL`` is the whole of that leaf's
-    ordering change.  A rank map beside the class would be a second place to
-    edit, and an omission there sorts a whole section to the wrong end rather
-    than failing.
+    **The definition ORDER is the section order**, so plan step X-f2-c3 adds
+    ``TRANSFER`` below and sets it on its own offers -- an addition, not an
+    edit.  A rank map beside the class would be a second place to edit, and an
+    omission there sorts a whole section to the wrong end rather than failing.
 
     It is a service-tier classification and not a ``ref`` table, so it carries
     no id and nothing compares it to a string: the assembler reads
@@ -48,15 +60,18 @@ class OfferKind(enum.Enum):
 
     ENVELOPE = "Envelopes"
     BILL = "Bills"
+    DEPOSIT = "Deposits"
 
     @property
     def rank(self) -> int:
         """Return this kind's position in the panel's section order.
 
         Returns:
-            The member's index in its own class's definition order.
+            The member's index in its own class's definition order, resolved
+            through a map built once at import rather than by rebuilding the
+            member list inside every sort comparison.
         """
-        return list(type(self)).index(self)
+        return _KIND_RANK[self]
 
     @property
     def section_label(self) -> str:
@@ -66,6 +81,12 @@ class OfferKind(enum.Enum):
             The user-visible section heading.
         """
         return self.value
+
+
+#: Definition order, resolved once.  Derived from the class rather than written
+#: out, so a new member cannot be added without a rank -- the failure mode a
+#: hand-maintained map has is a silent mis-sort, not an error.
+_KIND_RANK = {kind: index for index, kind in enumerate(OfferKind)}
 
 
 @dataclass(frozen=True)
@@ -101,6 +122,12 @@ class OutstandingTransaction:
         is_income: Whether this row is money ARRIVING.  The panel counts
             deposits separately from payments (ruling **R-FD**) because a
             deposit and a bill do not sum to anything a reader wants.
+        kind: The section this offer puts its block in, TAGGED by the arm that
+            produced it rather than derived downstream -- see
+            :class:`OfferKind` for the two defects deriving it caused.  This
+            arm sets ``DEPOSIT`` for income, ``ENVELOPE`` for a purchase-tracked
+            row and ``BILL`` for the rest; plan step X-f2-c3's arm will set
+            ``TRANSFER`` on every offer it makes.
     """
 
     transaction_id: int
@@ -108,6 +135,7 @@ class OutstandingTransaction:
     amount: Decimal
     is_correctable: bool
     is_income: bool
+    kind: OfferKind
 
 
 @dataclass(frozen=True)
@@ -209,29 +237,50 @@ class OutstandingGroup:
     def kind(self) -> OfferKind:
         """Return which section this block belongs in (ruling **R-FC**).
 
-        **A block holding purchases is an ENVELOPE, and that is DERIVED rather
-        than assumed.**  Both entry write doors refuse a parent that is not
-        purchase-tracked (``entry_service.create_entry`` and ``update_entry``,
-        each on ``txn.tracks_purchases``), so "it carries entries" IMPLIES
-        envelope-tracked.  The docstring above is careful that no CLAUSE in the
-        purchase arm's scope asserts it, and that is still true: the guarantee
-        comes from the write door, not from the read.
+        **Read off the offers, never derived from their shape.**  A block
+        carrying its parent's own tick takes that offer's tag, which the arm
+        that produced it set; a block of purchases alone is an ENVELOPE, and
+        that one IS a derivation but a sound one -- both entry write doors
+        refuse a parent that is not purchase-tracked
+        (``entry_service.create_entry`` and ``update_entry``, each on
+        ``txn.tracks_purchases``), so "it carries entries" IMPLIES
+        envelope-tracked.  The class docstring above is careful that no CLAUSE
+        in the purchase arm's scope asserts it, and that stays true: the
+        guarantee comes from the write door, not from the read.
 
-        A childless block is classified by whether its settle DERIVES its own
-        amount -- ``is_correctable`` inverted, which is the settle verb's own
-        branch (ruling **R-FF**).  So an envelope whose purchases are all
-        already reconciled sits with the envelopes, and an envelope that has
-        never had one reads and behaves exactly like a bill, which is what it
-        is on this screen: one row with a correctable amount.
+        **The settle's tag wins over the purchases**, and the case is real: an
+        envelope with outstanding purchases AND an overdue close is one block,
+        and its arm tagged it ``ENVELOPE`` -- the same answer.  Where they could
+        differ is where the tag is the more specific fact.
 
         Returns:
             This block's :class:`OfferKind`.
         """
-        if self.purchases:
-            return OfferKind.ENVELOPE
-        if self.settle is not None and not self.settle.is_correctable:
-            return OfferKind.ENVELOPE
-        return OfferKind.BILL
+        if self.settle is not None:
+            return self.settle.kind
+        return OfferKind.ENVELOPE
+
+    @property
+    def settle_closes_an_envelope(self) -> bool:
+        """Return whether ticking this block's own row CLOSES an envelope.
+
+        The panel's copy needs the distinction because the two acts are not
+        alike: settling a bill records that the bank took a figure, while
+        closing an envelope ENDS a budget line -- it releases the unspent
+        remainder and makes every later purchase against that row inert, since
+        the entry reservation prices only Projected parents.  A row that reads
+        as an observation when it is an act is how a user ticks away a period
+        they were still spending in.
+
+        Published as a boolean rather than letting the template compare
+        :attr:`kind` to an enum member: reference-style values drive logic
+        through ids and predicates here, never through a name a template
+        matches on.
+
+        Returns:
+            True for an ENVELOPE block that carries its parent's own tick.
+        """
+        return self.settle is not None and self.kind is OfferKind.ENVELOPE
 
     @property
     def total(self) -> Decimal:
@@ -337,3 +386,39 @@ class OutstandingSet:
             and self.payment_count == 0
             and self.deposit_count == 0
         )
+
+
+@dataclass(frozen=True)
+class ReconcileSubmission:
+    """One statement's worth of ticks, as the write union receives it.
+
+    A parameter object rather than six arguments, for the reason
+    ``docs/coding-standards.md`` gives and ``AccountSpec`` / ``TransferSpec``
+    already follow: every field is read by more than one arm, and a six-argument
+    signature is a signature whose call sites can transpose two ids of the same
+    type without anything noticing.
+
+    It is a VALUE and carries no behaviour: the route parses and owner-scopes
+    it, :func:`~app.services.reconcile_service.record_reconciliation` runs the
+    arms over it in the one order that works.
+
+    Attributes:
+        owner_id: The user_id whose rows these must be.  Every arm re-scopes on
+            it rather than trusting the ids.
+        account_id: The cash account whose balance was asserted.
+        entry_ids: The purchase entry ids the user ticked.
+        transaction_ids: The source-row ids the user ticked.
+        corrections: ``{transaction id: amount}`` from the panel's amount
+            boxes.  Passed through: the arm decides which of them it may READ
+            (ruling **R-FF**) and the settle verb decides whether each is a
+            correction or an echo of the prefill.
+        observed_on: The civil day the asserted balance was true for, and the
+            day every settled row records its money as having moved.
+    """
+
+    owner_id: int
+    account_id: int
+    entry_ids: "set[int]"
+    transaction_ids: "set[int]"
+    corrections: "dict[int, Decimal]"
+    observed_on: date

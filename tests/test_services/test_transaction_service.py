@@ -953,6 +953,89 @@ class TestASettleBooksTheFreshestFigure:
 
             assert txn.actual_amount == Decimal("12.34")
 
+    def test_a_hand_typed_actual_is_NEVER_overwritten(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A figure a human entered is a FACT, not a cache.
+
+        **The defect this grades shipped in X-aq's first draft and an
+        adversarial review found it.**  ``_freshest_amount`` compared the live
+        recompute against ``effective_amount``, which is ``actual_amount`` when
+        one is populated -- so a Projected salary row whose actual the owner had
+        typed by hand was compared against the projection and OVERWRITTEN at
+        settle: the app deleting the user's own figure and substituting its
+        estimate.
+
+        **It was reachable, and that is the point.**  The only other thing
+        excluding such a row from the override map is ``is_override``, which
+        ``routes/transactions/mutations`` sets ONLY when ``estimated_amount`` or
+        ``pay_period_id`` was submitted -- so editing the actual alone leaves it
+        False.  An invariant of the settle verb cannot rest on a bookkeeping
+        flag another module sets for another reason.
+
+        Shown to FIRE: deleting the ``actual_amount is not None`` guard books
+        `$4,000.00` over the owner's `$3,880.15`.
+        """
+        with app.app_context():
+            txn = self._salary_row(seed_user, seed_periods[0])
+            txn.actual_amount = Decimal("3880.15")
+            db.session.commit()
+
+            transaction_service.settle_transaction(txn)
+
+            assert txn.actual_amount == Decimal("3880.15")
+
+    def test_a_supplied_figure_equal_to_the_booked_one_writes_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The echo rule applies to a CALLER's figure too, not just a derived one.
+
+        It was two rules before an adversarial review: the verb suppressed an
+        echo of the LIVE figure and the reconcile writer separately suppressed
+        an echo of the SUBMITTED one, so the same column meant different things
+        depending on which door wrote it.  Plan step X-ap routes a form here
+        that submits ``actual_amount`` on EVERY save, so the caller-supplied
+        half is the half that matters next.
+
+        `$500.00` supplied against a `$500.00` estimate leaves the column NULL.
+        """
+        with app.app_context():
+            template = _make_envelope_template(seed_user)
+            template.is_envelope = False
+            txn = _make_projected_txn(seed_user, seed_periods[0],
+                                      template=template)
+            db.session.commit()
+
+            transaction_service.settle_transaction(
+                txn, actual_amount=Decimal("500.00"),
+            )
+
+            assert txn.actual_amount is None
+            assert txn.effective_amount == Decimal("500.00")
+
+    def test_settle_amount_refuses_a_transfer_shadow(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The valuation refuses what the verb refuses to book.
+
+        ``settle_amount`` is PUBLIC and the reconcile panel reads it, so a
+        version that priced a shadow off the loan-payment seam would publish a
+        figure ``settle_transaction`` then refuses -- which is what plan step
+        X-f2-c3 would have walked into with the transfer arm.  One rule
+        (``reject_transfer_shadow``), two doors.
+        """
+        with app.app_context():
+            template = _make_envelope_template(seed_user)
+            template.is_envelope = False
+            txn = _make_projected_txn(seed_user, seed_periods[0],
+                                      template=template)
+            txn.transfer_id = 1
+
+            with pytest.raises(ValidationError) as exc:
+                transaction_service.settle_amount(txn)
+
+            assert "transfer shadow" in str(exc.value)
+
     def test_the_live_figure_is_resolved_BEFORE_the_status_flip(
         self, app, db, seed_user, seed_periods,
     ):

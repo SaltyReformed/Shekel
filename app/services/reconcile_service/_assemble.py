@@ -33,13 +33,16 @@ arm's own ``ORDER BY`` produced.
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, frozen dataclasses out.
-  - Reads only.  **The write side is deliberately still NOT here.**  What a
-    tick MEANS differs per arm (ruling **R-FA**) -- a purchase stamps one
-    column, a transaction runs a service verb -- and X-f2-c2, which was to
-    "decide then, with two arms to look at", looked and found no shared body:
-    the two writers share their ORDER (the route's, and it is load-bearing) and
-    nothing else.  A union verb here would be a passthrough that took the
-    arms' arguments and added a name.
+  - Reads AND the write union.  X-f2-c2 was to "decide then, with two arms to
+    look at"; a first draft looked, said the writers "share their ORDER (the
+    route's) and nothing else", and shipped that order as two statements in a
+    route handler.  **That sentence concedes a shared body and files it under
+    the wrong tier.**  The order is a rule ABOUT THE ARMS -- the purchase arm's
+    scope requires a PROJECTED parent, which the transaction arm's writer
+    destroys -- so writing the close first silently drops every purchase tick
+    on that block, and nothing but statement order was stopping it.
+    :func:`record_reconciliation` owns it, which is why it is not a
+    passthrough: it carries an invariant no caller can see.
 """
 
 from dataclasses import replace
@@ -51,11 +54,17 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 
 from . import _purchases, _transactions
-from ._offers import OutstandingGroup, OutstandingSet, OutstandingTransaction
+from ._offers import (
+    OutstandingGroup,
+    ReconcileSubmission,
+    OutstandingPurchase,
+    OutstandingSet,
+    OutstandingTransaction,
+)
 
 
 def _block_headings(
-    transaction_ids: "set[int]",
+    owner_id: int, transaction_ids: "set[int]",
 ) -> "dict[int, tuple[str, date, date]]":
     """Return ``{transaction_id: (name, period_start, period_end)}``.
 
@@ -68,7 +77,15 @@ def _block_headings(
     offers, so it cannot answer about a different set than the one being
     grouped.
 
+    **It scopes to the OWNER anyway**, and the redundancy is deliberate.  Every
+    id here comes from an arm that already scoped it, so the clause can never
+    change an answer today -- which is exactly the argument that would let a
+    future caller pass an unscoped set into the one query in a package whose
+    stated security property is that scope is SHARED rather than remembered.
+    The cost is one indexed predicate.
+
     Args:
+        owner_id: The user_id the parents must belong to.
         transaction_ids: The parents to label.  Empty is answered with an empty
             map and issues no query -- ``IN ()`` is a statement with no rows to
             find.
@@ -89,7 +106,10 @@ def _block_headings(
             PayPeriod.end_date,
         )
         .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
-        .filter(Transaction.id.in_(transaction_ids))
+        .filter(
+            Transaction.id.in_(transaction_ids),
+            PayPeriod.user_id == owner_id,
+        )
         .all()
     )
     return {row[0]: (row[1], row[2], row[3]) for row in rows}
@@ -163,19 +183,21 @@ def _sectioned(
 
 
 def _tally(
-    offers: "list[OutstandingTransaction]",
+    offers: "list[OutstandingPurchase | OutstandingTransaction]",
 ) -> "tuple[int, Decimal]":
-    """Return ``(count, total)`` for one kind of transaction offer.
+    """Return ``(count, total)`` for one kind of offer.
 
-    Stated once because the set publishes the same pair twice -- payments and
-    deposits (ruling **R-FD**) -- and a second hand-written sum is where one of
-    them would end up counting the other's rows.
+    Stated once because the set publishes the same pair THREE times -- purchases,
+    payments and deposits (rulings **R-FA** / **R-FD**) -- and a hand-written
+    second sum is where one of them ends up counting another's rows.  It takes
+    anything carrying an ``amount``, which is both offer types, because the
+    reduction is about a list of money and not about which arm produced it.
 
     Args:
-        offers: The offers of one kind.
+        offers: The offers of one kind, each carrying an ``amount``.
 
     Returns:
-        How many, and what they would book.
+        How many, and what they are worth.
     """
     return (
         len(offers),
@@ -232,7 +254,8 @@ def outstanding_set(
     settles = _transactions.outstanding_transactions(
         owner_id, account_id, observed_on,
     )
-    headings = _block_headings(set(blocks) | set(settles))
+    parents = set(blocks) | set(settles)
+    headings = _block_headings(owner_id, parents)
 
     groups = [
         OutstandingGroup(
@@ -247,10 +270,17 @@ def outstanding_set(
             # precedes it.
             section_label=None,
         )
-        for transaction_id in set(blocks) | set(settles)
+        for transaction_id in parents
     ]
     groups.sort(key=_block_order)
 
+    # Every pair through ``_tally``, including the purchases -- which were
+    # counted off ``blocks`` and totalled off ``groups`` until a review pointed
+    # out that ``_tally``'s whole reason for existing is that two sums of one
+    # set cannot be written two ways.
+    purchase_count, purchase_total = _tally(
+        [purchase for group in groups for purchase in group.purchases],
+    )
     payment_count, payment_total = _tally(
         [offer for offer in settles.values() if not offer.is_income],
     )
@@ -259,12 +289,64 @@ def outstanding_set(
     )
     return OutstandingSet(
         groups=_sectioned(groups),
-        purchase_count=sum(len(purchases) for purchases in blocks.values()),
-        purchase_total=sum(
-            (group.total for group in groups), Decimal("0.00"),
-        ),
+        purchase_count=purchase_count,
+        purchase_total=purchase_total,
         payment_count=payment_count,
         payment_total=payment_total,
         deposit_count=deposit_count,
         deposit_total=deposit_total,
     )
+
+
+def record_reconciliation(
+    submission: ReconcileSubmission,
+) -> "tuple[int, int]":
+    """Record everything a statement settled, in the ONE order that works.
+
+    The write union.  Each arm still owns what a tick MEANS for its own rows
+    (ruling **R-FA**); what lives here is the rule that spans them, and it is
+    not an HTTP concern:
+
+    **Purchases are stamped BEFORE transactions settle, because the purchase
+    arm's scope requires a PROJECTED parent** and settling an envelope's close
+    is exactly what takes that parent out of it.  Reversed, every purchase
+    ticked on a block whose close was also ticked is silently skipped -- the
+    call reports success, the panel re-renders, and the entries still read
+    outstanding.  Ticking a whole block at once is how a statement is walked,
+    so this is the ordinary case rather than an exotic one.
+
+    It was two statements in a route handler until an adversarial review named
+    it: an invariant enforced by the order of two lines, in a tier that owns
+    neither arm, with nothing able to fail if a later edit swapped them.  Plan
+    step X-f2-c3 adds a third writer to the same sequence.
+
+    **Both arms run in the caller's transaction and NEITHER commits.**  A
+    statement is one act: four purchases and their envelope's close mean all
+    five or none, so a commit between the arms would leave the half that failed
+    invisible behind a rendered success.
+
+    Args:
+        submission: The :class:`ReconcileSubmission` -- one statement's worth of
+            ticks, already parsed and owner-scoped by the route.
+
+    Returns:
+        ``(purchases stamped, transactions settled)`` -- what actually changed,
+        never what was asked for.  The caller compares them against what was
+        submitted to tell a user their ticks landed on rows something else had
+        already moved.
+
+    Raises:
+        ValidationError: Propagated from the settle verb -- an illegal
+            transition a stale panel can still submit.
+        PostingError: Propagated from the verb's ledger reconcile.  Fails loud.
+    """
+    purchases = _purchases.record_settled_days(
+        submission.owner_id, submission.account_id,
+        submission.entry_ids, submission.observed_on,
+    )
+    transactions = _transactions.record_settled_transactions(
+        submission.owner_id, submission.account_id,
+        submission.transaction_ids, submission.corrections,
+        submission.observed_on,
+    )
+    return purchases, transactions

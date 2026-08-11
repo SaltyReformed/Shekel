@@ -52,7 +52,10 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import transaction_service
-from app.services.reconcile_service._offers import OutstandingTransaction
+from app.services.reconcile_service._offers import (
+    OfferKind,
+    OutstandingTransaction,
+)
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_projected_clause,
@@ -175,6 +178,39 @@ def _attributed_on(txn: Transaction) -> date:
     )
 
 
+def _offer_kind(txn: Transaction) -> OfferKind:
+    """Return the section tag this arm puts on *txn*'s offer.
+
+    **The arm TAGS; nothing downstream derives** (see :class:`OfferKind` for
+    the two defects deriving it caused, one of them a live mis-captioning of
+    production's `$1,958.87` FSA reimbursement).
+
+    Three arms of one rule, in this order:
+
+    * INCOME is a ``DEPOSIT`` -- money arriving, which ruling **R-FD** counts
+      apart from payments because a deposit and a bill do not sum to anything a
+      reader wants.  Tested FIRST because an income row is never
+      purchase-tracked anyway (both entry write doors are expense-only), so the
+      order costs nothing and states the priority.
+    * A purchase-tracked row is an ``ENVELOPE``, whether or not it currently
+      holds anything.  Production's `Kayla's Spending Money` carries zero
+      entries and is still an envelope; calling it a bill because it happens to
+      be correctable was the renderer's proxy talking.
+    * Everything else is a ``BILL``.
+
+    Args:
+        txn: The row being offered.
+
+    Returns:
+        Its :class:`OfferKind`.
+    """
+    if txn.is_income:
+        return OfferKind.DEPOSIT
+    if txn.tracks_purchases:
+        return OfferKind.ENVELOPE
+    return OfferKind.BILL
+
+
 def _outstanding_rows(
     owner_id: int,
     account_id: int,
@@ -252,8 +288,13 @@ def outstanding_transactions(
 
     Returns:
         ``{transaction_id: OutstandingTransaction}``, insertion-ordered by
-        landing day then id.  Empty for an account holding nothing overdue,
-        which is the steady state for a user who reconciles at every true-up.
+        landing day then id.  Empty for an account holding nothing overdue --
+        **which is NOT the steady state, and the purchase arm's twin of this
+        sentence is now wrong about the panel as a whole.**  Replayed over all
+        53 Checking assertion days on production, 46 would have carried at
+        least one offer, because an envelope's close is offerable for the whole
+        of its own period and only closing it clears it.  Finding **N-227**
+        owns whether that bound is right.
     """
     return {
         txn.id: OutstandingTransaction(
@@ -262,6 +303,7 @@ def outstanding_transactions(
             amount=transaction_service.settle_amount(txn),
             is_correctable=not transaction_service.settles_from_entries(txn),
             is_income=txn.is_income,
+            kind=_offer_kind(txn),
         )
         for txn in _outstanding_rows(owner_id, account_id, observed_on)
     }
@@ -337,18 +379,28 @@ def record_settled_transactions(
     rows = _outstanding_rows(
         owner_id, account_id, observed_on, transaction_ids=transaction_ids,
     )
+    corrected = 0
     for txn in rows:
-        submitted = corrections.get(txn.id)
-        correction = None
-        if (
-            submitted is not None
-            and not transaction_service.settles_from_entries(txn)
-            and submitted != transaction_service.settle_amount(txn)
-        ):
-            correction = submitted
+        # The submitted figure is handed straight to the verb.  **This loop
+        # holds no money rule at all**, and a first draft's two -- "read it only
+        # where the panel offered a box" and "only when it differs from what the
+        # row would otherwise book" -- were both the verb's, restated.  A review
+        # measured the first: deleting it left every test green, because
+        # ``settle_transaction`` routes an entries-derived row to a branch that
+        # ignores ``actual_amount`` outright.  A guard nothing can observe is
+        # not a guard, and two doors deciding one column's meaning separately is
+        # the shape this whole arc exists to remove.
+        before = txn.actual_amount
         transaction_service.settle_transaction(
-            txn, actual_amount=correction, settled_on=observed_on,
+            txn, actual_amount=corrections.get(txn.id),
+            settled_on=observed_on,
         )
+        # Counted from what CHANGED, not from what was submitted.  An HTML form
+        # posts every rendered input, so ``corrections`` holds the prefilled box
+        # of every correctable row on the panel whether it was ticked or not --
+        # counting its keys measures how many boxes the panel drew.
+        if txn.actual_amount != before:
+            corrected += 1
 
     if rows:
         log_event(
@@ -360,9 +412,7 @@ def record_settled_transactions(
             observed_on=observed_on.isoformat(),
             settled_count=len(rows),
             requested_count=len(transaction_ids),
-            corrected_count=sum(
-                1 for txn in rows if txn.id in corrections
-            ),
+            corrected_count=corrected,
         )
 
     return len(rows)

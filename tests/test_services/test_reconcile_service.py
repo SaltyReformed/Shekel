@@ -13,6 +13,7 @@ list every case below was written against.  Grading the same ids through a new
 shape is what makes the move provably behaviour-preserving.
 """
 
+from dataclasses import fields
 from datetime import date
 from decimal import Decimal
 
@@ -1215,10 +1216,13 @@ class TestWhatATickBooks:
         """A forged box for an envelope with entries changes nothing.
 
         The panel renders no input there, so the only way to submit one is by
-        hand -- and the writer must not let it through, because the verb would
-        ignore it anyway and the row would silently book something other than
-        what was submitted.  `$999.99` against `$40.00` of entries books
-        `$40.00`.
+        hand.  **What refuses it is the VERB, and a review proved that is the
+        only thing that ever did**: the writer carried its own "read the box
+        only where the panel offered one" guard, and deleting that guard left
+        every test green, because ``settle_transaction`` routes an
+        entries-derived row to a branch that ignores ``actual_amount`` outright.
+        The guard is gone; this grades the rule that was doing the work.
+        `$999.99` against `$40.00` of entries books `$40.00`.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -1288,4 +1292,162 @@ class TestWhatATickBooks:
             assert result.purchase_total == Decimal("100.00")
             assert result.payment_count == 1
             assert result.payment_total == Decimal("100.00")
-            assert not hasattr(result, "total")
+            # Asserted by NAMING the fields, not by ``hasattr``: a probe on a
+            # dataclass passes for any typo (``status_seam``'s own X-aa
+            # lesson), so it would report "there is no combined total" about a
+            # field spelled anything at all.
+            assert {field.name for field in fields(result)} == {
+                "groups",
+                "purchase_count", "purchase_total",
+                "payment_count", "payment_total",
+                "deposit_count", "deposit_total",
+            }
+
+
+class TestTheSectionsAndTheOrder:
+    """Ruling **R-FC**'s three presentational rules, graded.
+
+    **They shipped with ZERO tests and an adversarial review said so.**  Nothing
+    referenced ``OfferKind``, ``section_label``, ``kind``, ``_block_order`` or
+    ``rank`` -- the entire content of the ruling, and the whole reason the
+    assembler took ownership of the block order, was ungraded.  That is the
+    balance README's own live lesson (a producer's new fields are the fields
+    nobody was asserting) repeating one leaf later.
+
+    The rules: the blocks arrive ordered by kind then by each block's OLDEST
+    offer; a section label is emitted where the kind CHANGES and nowhere else;
+    and a childless block is one the template prints inline.
+    """
+
+    _bill = staticmethod(TestTheTransactionArm._bill)
+
+    @staticmethod
+    def _resolved(seed_user):
+        return reconcile_service.outstanding_set(
+            seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+        )
+
+    def test_each_arm_TAGS_its_kind_and_income_is_a_DEPOSIT(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """An income row is a DEPOSIT, not a bill.
+
+        **The defect this grades was live.**  The kind was DERIVED from the
+        block's shape -- purchases meant envelope, correctable meant bill -- and
+        an income row is never purchase-tracked, so production's `$1,958.87`
+        FSA reimbursement rendered under a heading reading "Bills" three lines
+        below a summary counting it as a deposit.  A figure and its caption
+        disagreeing, on the one screen read beside a paper statement.
+
+        Shown to FIRE: classifying by ``is_correctable`` puts the deposit in
+        ``Bills``.
+        """
+        with app.app_context():
+            envelope = seed_entry_template["transaction"]
+            bill = self._bill(seed_user, seed_periods[0], name="Electricity")
+            deposit = self._bill(
+                seed_user, seed_periods[0], name="FSA Reimbursement",
+                amount="1958.87", income=True,
+            )
+            db.session.commit()
+
+            by_id = {
+                group.transaction_id: group.kind
+                for group in self._resolved(seed_user).groups
+            }
+            assert by_id[envelope.id] is reconcile_service.OfferKind.ENVELOPE
+            assert by_id[bill.id] is reconcile_service.OfferKind.BILL
+            assert by_id[deposit.id] is reconcile_service.OfferKind.DEPOSIT
+
+    def test_the_blocks_are_ordered_by_KIND_then_by_their_oldest_offer(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """Like sits with like, and within a section the oldest is first.
+
+        The bills are created NEWEST-first and given due dates that reverse
+        that, so a result matching insertion order would be indistinguishable
+        from one matching the rule if they agreed.
+        """
+        with app.app_context():
+            late_bill = self._bill(
+                seed_user, seed_periods[0], name="Water",
+                due_date=date(2026, 1, 9),
+            )
+            early_bill = self._bill(
+                seed_user, seed_periods[0], name="Electricity",
+                due_date=date(2026, 1, 3),
+            )
+            deposit = self._bill(
+                seed_user, seed_periods[0], name="Refund",
+                amount="20.00", income=True,
+            )
+            envelope = seed_entry_template["transaction"]
+            db.session.commit()
+
+            order = [
+                group.transaction_id
+                for group in self._resolved(seed_user).groups
+            ]
+            assert order == [
+                envelope.id, early_bill.id, late_bill.id, deposit.id,
+            ]
+
+    def test_a_section_label_is_emitted_ONLY_where_the_kind_changes(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """One heading per run, and it names the kind that follows it.
+
+        Two bills between an envelope and a deposit: the second bill continues
+        its section and carries no label.  A per-block label would print
+        "Bills" twice; a missing one would leave the deposit under the bills'
+        heading, which is the mis-captioning this ruling's sections exist to
+        prevent.
+        """
+        with app.app_context():
+            self._bill(seed_user, seed_periods[0], name="Electricity",
+                       due_date=date(2026, 1, 3))
+            self._bill(seed_user, seed_periods[0], name="Water",
+                       due_date=date(2026, 1, 9))
+            self._bill(seed_user, seed_periods[0], name="Refund",
+                       amount="20.00", income=True)
+            db.session.commit()
+
+            labels = [
+                group.section_label for group in self._resolved(seed_user).groups
+            ]
+            assert labels == ["Envelopes", "Bills", None, "Deposits"]
+
+    def test_a_block_with_purchases_is_NOT_childless_and_one_without_is(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The childless rule's own input, which the template branches on.
+
+        R-FC's first presentational rule is the template's -- a block with no
+        children prints inline -- so what the producer owes it is an honest
+        ``purchases``.  Graded here rather than by scraping markup: the
+        rendering is one ``{% if %}`` over this tuple.
+        """
+        with app.app_context():
+            envelope = seed_entry_template["transaction"]
+            _make_entry(envelope, seed_user["user"], amount="40.00")
+            bill = self._bill(seed_user, seed_periods[0], name="Electricity")
+            db.session.commit()
+
+            by_id = {
+                group.transaction_id: group
+                for group in self._resolved(seed_user).groups
+            }
+            assert len(by_id[envelope.id].purchases) == 1
+            assert by_id[bill.id].purchases == ()
+
+    def test_every_kind_has_a_rank_and_a_label(self):
+        """The section vocabulary is TOTAL over its own members.
+
+        ``rank`` resolves through a map built from the class, so a member added
+        without one is impossible rather than silently sorted to the wrong end
+        -- which is the failure mode a hand-written rank map has, and the reason
+        plan step X-f2-c3 can add ``TRANSFER`` by writing one line.
+        """
+        kinds = list(reconcile_service.OfferKind)
+        assert sorted(kind.rank for kind in kinds) == list(range(len(kinds)))
+        assert all(kind.section_label for kind in kinds)

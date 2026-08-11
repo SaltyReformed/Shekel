@@ -98,7 +98,7 @@ def panel_id(account_id: int) -> str:
 _AMOUNT_FIELD_PREFIX = "actual_amount-"
 
 
-def submitted_corrections(form) -> dict[int, Decimal]:
+def _submitted_corrections(form) -> dict[int, Decimal]:
     """Return ``{transaction id: amount}`` for the amount boxes submitted.
 
     Ruling **R-FB** gives a bill's tick a prefilled, editable figure, so the
@@ -157,6 +157,17 @@ def submitted_corrections(form) -> dict[int, Decimal]:
 _STALE_MESSAGE = (
     "Something on this list changed while you were reconciling, so nothing "
     "was recorded.  Here it is again -- tick what your statement shows."
+)
+
+#: What a PARTLY-landed submission reads as.  Both arms drop an out-of-scope id
+#: silently by design -- the set-operation form of "404 for not-found and
+#: not-yours" -- and for the purchase arm that hides a column stamp, but here it
+#: hides a status change, an amount and a ledger posting.  "Some of what you
+#: ticked was already settled" is a different sentence from "saved", so it is
+#: said.
+_PARTIAL_MESSAGE = (
+    "Some of what you ticked had already been settled elsewhere, so it was "
+    "left alone.  The list below is what is still outstanding."
 )
 
 
@@ -286,9 +297,16 @@ def prompt_fragment(account: Account) -> str:
 
     Appended to a successful true-up's body so the modal lands in
     ``#modal-mount`` (``base.html``) whichever of the five surfaces opened the
-    editor.  It is empty whenever the account has nothing outstanding, which is
-    the steady state for a user who reconciles as they go -- the one-click
-    true-up habit is not taxed by a prompt with nothing in it.
+    editor.  It is empty whenever the account has nothing outstanding.
+
+    **That used to be the steady state and since plan step X-f2-c2 it is not.**
+    The sentence here read "the one-click true-up habit is not taxed by a
+    prompt with nothing in it", and the widening falsified it: replayed over
+    all 53 Checking assertion days on production, 46 would have carried at
+    least one offer, because an envelope's close is offerable for the whole of
+    its own period and nothing but closing it clears it.  The prompt is now the
+    norm rather than the exception, which is a cost ruling **R-EE** did not
+    price.  Finding **N-227** owns the bound that causes it.
 
     PUBLIC for the same reason :func:`panel_id` is: its one caller
     (``app.routes.accounts.anchor._true_up_success_response``) is in another
@@ -384,11 +402,12 @@ def record_reconciliation(account_id):
     projection stops holding those budgets back -- on a date the USER supplied
     rather than one the engine guessed.
 
-    **The two arms are written in ORDER, and the order is load-bearing.**
-    Purchases first: the purchase arm's scope requires a PROJECTED parent, so
-    settling an envelope's close before stamping its purchases would take that
-    parent out of scope and silently drop every tick on it.  A user who ticks a
-    whole block at once is the ordinary case, not an exotic one.
+    **The ORDER the two arms run in is load-bearing and is NOT this module's**
+    -- it is ``reconcile_service.record_reconciliation``'s, because the rule is
+    about the arms rather than about HTTP: the purchase arm's scope requires a
+    PROJECTED parent, which the transaction arm's writer destroys.  It lived
+    here as two statements until an adversarial review pointed out that nothing
+    could fail if a later edit swapped them.
 
     **It is its own request, and that is deliberate.**  Folding it into
     ``apply_anchor_true_up`` would put it inside the transaction that function
@@ -400,16 +419,16 @@ def record_reconciliation(account_id):
     index until plan step X-f1c4b; the hazard is the same and so is the ruling.
 
     A submitted value that does not name a row is dropped by
-    :func:`~app.utils.digit_strings.parse_row_ids` before either service is
-    reached, and every id that survives is re-scoped there against that arm's
-    own outstanding set, so a forged id matches nothing rather than raising --
-    the set-operation form of the project's "404 for both not-found and
-    not-yours" rule.
+    :func:`~app.utils.digit_strings.parse_row_ids` before the service is
+    reached, and every id that survives is re-scoped inside the arm that owns
+    it, so a forged id matches nothing rather than raising -- the
+    set-operation form of the project's "404 for both not-found and
+    not-yours" rule.  What the arms actually changed comes back, so a
+    submission that landed on nothing is SAID rather than rendered as success.
 
-    **Both writers run inside ONE database transaction**, committed once here.
-    A statement is one act: a user who ticks four purchases and their envelope's
-    close means all five or none, and a commit between the arms would leave the
-    half that failed invisible behind a rendered success.
+    **Both writers run inside ONE database transaction**, committed once here:
+    a statement is one act, so four purchases and their envelope's close mean
+    all five or none.
 
     Returns the refreshed panel plus ``HX-Trigger: balanceChanged`` so every
     surface showing a projection recomputes.  A ``ValidationError`` from the
@@ -437,20 +456,18 @@ def record_reconciliation(account_id):
             ),
         )
 
+    entry_ids = parse_row_ids(request.form.getlist("entry_ids"))
+    transaction_ids = parse_row_ids(request.form.getlist("transaction_ids"))
     try:
-        corrections = submitted_corrections(request.form)
-        reconcile_service.record_settled_days(
-            current_user.id,
-            account.id,
-            parse_row_ids(request.form.getlist("entry_ids")),
-            observed_on,
-        )
-        reconcile_service.record_settled_transactions(
-            current_user.id,
-            account.id,
-            parse_row_ids(request.form.getlist("transaction_ids")),
-            corrections,
-            observed_on,
+        stamped, settled = reconcile_service.record_reconciliation(
+            reconcile_service.ReconcileSubmission(
+                owner_id=current_user.id,
+                account_id=account.id,
+                entry_ids=entry_ids,
+                transaction_ids=transaction_ids,
+                corrections=_submitted_corrections(request.form),
+                observed_on=observed_on,
+            ),
         )
         db.session.commit()
     except ValidationError as exc:
@@ -460,12 +477,27 @@ def record_reconciliation(account_id):
         db.session.rollback()
         return _refusal(account, observed_on, _STALE_MESSAGE)
 
+    # A tick that did not all land is REPORTED rather than swallowed.  The
+    # ordinary way to reach it is a second device settling the same rows while
+    # a statement is being walked, and the two cases read differently: nothing
+    # landed at all, or some of it did.  Answered as a 200 either way -- the
+    # request itself succeeded and the refreshed list is the useful part; only
+    # the silent reassurance would have been false.
+    asked = len(entry_ids) + len(transaction_ids)
+    recorded = stamped + settled
+    notice = None
+    if asked and not recorded:
+        notice = _STALE_MESSAGE
+    elif recorded < asked:
+        notice = _PARTIAL_MESSAGE
+
     # The SAME day, not a second resolution (finding N-222).  Neither writer
     # touches ``account_anchor_history``, so re-reading it here would be one
     # request asking one question twice and trusting that the answers agree.
     return (
         render_template(
             "accounts/_reconcile_panel.html",
+            error=notice,
             **reconcile_context(
                 account, panel=panel_id(account.id), observed_on=observed_on,
             ),

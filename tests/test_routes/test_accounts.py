@@ -2972,6 +2972,73 @@ class TestTheReconcileRoute:
             assert self._entries_of(txn.id)[0].settled_on is None
             assert db.session.get(Transaction, txn.id).settled_on is None
 
+    def test_a_tick_that_landed_on_nothing_SAYS_so(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A submission the scope dropped is reported, not rendered as success.
+
+        Both arms drop an out-of-scope id silently -- the set-operation form of
+        "404 for not-found and not-yours" -- and the ordinary way to reach it is
+        a second device settling the same rows while a statement is being
+        walked.  For the purchase arm that hides a column stamp; for this one it
+        hides a status change, an amount and a ledger posting, so "saved" would
+        be a false sentence about money.
+
+        Shown to FIRE: dropping the notice renders the plain success panel.
+        """
+        with app.app_context():
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+            # Settle it out from under the panel, exactly as another device
+            # would, then submit the tick the stale panel still shows.
+            auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"transaction_ids": [str(txn.id)]},
+            )
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"transaction_ids": [str(txn.id)]},
+            )
+
+            assert response.status_code == 200
+            assert b"had already been settled" in response.data or (
+                b"changed while you were reconciling" in response.data
+            )
+
+    def test_a_correctable_row_INSIDE_a_block_still_gets_its_box(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Ruling **R-FF** is honoured in BOTH renderings of a settle row.
+
+        The panel had two copies of that row and read ``is_correctable`` in only
+        one, so a block with purchases printed a static figure whatever the
+        producer said.  Reachable: a template's ``is_envelope`` is editable, so
+        turning purchase-tracking off after its rows carry entries leaves a
+        block with children whose settle IS correctable -- and the correction
+        box vanished silently, on the screen ruling R-FB added it to.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [("50.00", past, False, None)],
+            )
+            # Purchase-tracking off, entries already recorded.
+            txn.template.is_envelope = False
+            db.session.commit()
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            body = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+            ).data.decode()
+
+            # The entry checkbox proves the block took the WITH-CHILDREN arm,
+            # which is the arm that used to ignore the flag.
+            assert 'name="entry_ids" value="' in body
+            assert f'name="actual_amount-{txn.id}"' in body
+
     def test_the_write_door_still_404s_a_kind_this_panel_does_not_serve(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
