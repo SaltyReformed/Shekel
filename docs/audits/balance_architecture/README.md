@@ -345,21 +345,20 @@ with their own text and owners, so restating them here was the registry duplicat
     day up to `as_of + 1` (ruling R-G, `_cash_fold.py:512`), so a projected row whose attribution day
     has passed is precisely one the projection is still holding forward. Its fork is RULED: a bill's
     tick MAY correct its amount and an envelope's close may not (**R-FB**).
-    **Two obligations this leaf inherits.** The rule it replaces, carried from X-f1 because this is
-    the step that reads it: the seam stamps `display_today()` on FIRST entry to the settled band and
-    PRESERVES the day on re-entry, and this leaf puts the STATEMENT date there instead. And its FIRST
-    act was the ceiling measurement, **now DONE and it BINDS**, so the split is owed as its own
-    zero-money commit: `reconcile_service.py` is **482 lines** and the two remaining arms land it at
-    **~1,028** by one method (the shipped purchase arm costs 482 less ~209 of shared shape, so each
-    further arm costs ~273) and **972-1,137** by a second, independent per-responsibility projection
-    -- against a 1,000-line ceiling, with the optimistic end assuming every new docstring is SHORTER
-    than its shipped twin on arms that have strictly more to explain. **The subject's own cut is the
-    three-way polymorphism the ceiling only reveals**: one question -- what can this statement still
-    settle, and record it -- over three row kinds with three settle verbs, so the package is one
-    module per arm plus the value types they publish and the assembler that blocks them.
     Its SHAPE question is RULED (**R-FC**): one collection, and a childless block renders as one
     row. Three presentational rules -- inline heading, a kind term in the sort key, a section label
     on kind change -- give the flat-bills panel the developer picked without a second collection.
+    **Its two ZERO-MONEY commits are DONE and must not be redone.** The ceiling measurement it owed
+    as a first act BINDS, so `9f255bb4` split `reconcile_service` into a package (one module per
+    arm, the value types they publish, and the assembler that blocks them) and `f4512a2f` moved
+    R-FA's settle verb out of the route into `transaction_service.settle_transaction`. Both proved
+    byte-identical; the measurement and the method are in `9f255bb4`'s message.
+    **What REMAINS is the money commit alone**, and it owes three things beyond the offer set: the
+    seam stamps `display_today()` on first entry to the settled band and PRESERVES it on re-entry,
+    so this leaf puts the STATEMENT date there instead -- which is the `settled_on` parameter
+    `settle_transaction` deliberately does NOT yet take, because until now it had no caller; the
+    write union has no home yet (`_assemble` holds only the read side, by ruling R-FA the tick's
+    meaning is per-arm); and **N-221** / **N-222** / **N-223** are its, to answer or to re-point.
   * [ ] **X-f2-c3** the TRANSFER shadows (**R-FA**), in their own group, settled through
     `transfer_service.update_transfer` so both legs and the parent move together (Invariant 3) --
     which means a tick on THIS account's panel also settles the leg on the other account, and the
