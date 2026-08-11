@@ -335,16 +335,20 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   writes the cache at every settle (X-aq) and `routes/salary/_helpers._regenerate_salary_transactions`
   rebuilds the rows from 12 salary write doors. What has no trigger is a PAY-PERIOD write, a clock
   change and a code change -- and `pay_period_write` is one door since C3-b, so completing the set is
-  small. (b) "A reconciler AT DEPLOY" is refused: a blind re-derive would have written X-as's
-  `$8,460.50` permanently into 66 rows on the first deploy after New Year. The deploy-time step
-  CHECKS and refuses; a derivation change ships its backfill in the migration.
+  small. (b) The deploy-time half is **UNRULED and X-ar must rule it**, against a hazard R-FE could
+  not have known: a blind re-derive at deploy would have written X-as's `$8,460.50` permanently into
+  66 rows on the first deploy after New Year, because the derivation itself was wrong on that date.
+  R-FE named "on input change AND at deploy"; what the measurement shows is that an automatic
+  re-derive turns a transient derivation defect into a stored one, so the option space is at least
+  three: RE-DERIVE as R-FE says; CHECK and refuse the deploy, leaving a derivation change to ship its
+  own backfill migration; or NEITHER, relying on write triggers alone. Each is defensible and none is
+  chosen here -- naming one would be deciding it (rule 8).
   **It also needs its input set SHRUNK first**: `_gross_biweekly_for_period` groups the rounding
   residue over "the periods that exist in this calendar year" and falls back to half-up under 26, so
   extending the schedule retroactively rewrites earlier rows -- measured at 6 rows / `$0.06` after
   one rolling top-up. Horizon-dependence with no business meaning is recurrence **D10**'s class.
   **The LOAN half awaits a developer decision and is NOT in this step's scope**: it is dormant on
-  production
-  (`budget.loan_payment_settings` is EMPTY -- both loan payments predate migration `c2a2c508e103`,
+  production (`budget.loan_payment_settings` is EMPTY -- both loan payments predate migration `c2a2c508e103`,
   which deliberately did not backfill), and its derivation reads `date.today()` through
   `_resolve_loan_basis`, so no stored value can be kept true until a ruling puts a shadow's P&I on
   its own DUE date as ruling D5 already put its escrow.
