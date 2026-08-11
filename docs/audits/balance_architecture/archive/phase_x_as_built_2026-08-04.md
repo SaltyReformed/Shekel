@@ -255,6 +255,12 @@ in the plan document's git history at the commit that recorded it.
 | **R-EJ** | 2026-08-03 | A settle day in the FUTURE is refused, at the seam |
 | **R-EL** | 2026-08-04 | A settle day BELOW the schedule is refused, at the same seam and by the same bound an anchor observation already uses |
 | **R-EP** | 2026-08-04 | "As of when was this balance asserted" gets ONE source: the assertion's own `observed_on` |
+| **R-AQ** | 2026-07-27 | There is no DEFERRED category. Every finding is owned by a step, and a wake condition is not an owner. SUPERSEDED as a rule by `conventions.md` rule 1, which grades it |
+| **R-CC** | 2026-07-29 | A financial STATEMENT never reports zeros for a ledger it cannot read |
+| **R-DC** | 2026-07-31 | A mid-life schedule change FILLS the hole it would leave |
+| **R-DD** | 2026-07-31 | Both write-path fixes are their OWN step (X-ad), sequenced immediately after X-x. REVERSED on the ordering by **R-DE**, and the later ruling governs |
+| **R-DS** | 2026-08-02 | A status repair takes the PAIR's instant, and never invents one |
+
 ## 4. What this record deliberately does not carry
 
 * **The running-state narrative.** ~1,000 lines of "X-n is DONE" entries with their measurements,

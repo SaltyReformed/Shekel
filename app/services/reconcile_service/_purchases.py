@@ -31,7 +31,10 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services.reconcile_service._offers import OutstandingPurchase
-from app.utils.balance_predicates import is_projected_clause
+from app.utils.balance_predicates import (
+    balance_contributing_clause,
+    is_projected_clause,
+)
 from app.utils.log_events import (
     BUSINESS,
     EVT_ENTRIES_SETTLED_DAY_RECORDED,
@@ -77,13 +80,19 @@ def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
       one checking account (there is no per-type uniqueness).  Reconciling
       across accounts would drop another account's reservation without ever
       raising its anchor.
-    * the parent is PROJECTED and not soft-deleted -- the entry reservation
+    * the parent is PROJECTED and CONTRIBUTING -- the entry reservation
       prices only projected rows
       (:func:`app.services.cash_ledger._amounts._entry_aware_amount`), so an
       entry on a settled parent is inert and listing it would be asking the
       user to reconcile something that cannot move a figure.  Routed through
       the centralized ``is_projected_clause`` (D6-09 / MED-02) so this filter
-      shares one definition with every other Projected filter.
+      shares one definition with every other Projected filter, composed with
+      ``balance_contributing_clause`` -- the soft-delete half was a
+      hand-written ``is_deleted.is_(False)`` until plan step X-f2-c2, which
+      left one package stating "which parent rows exist at all" two ways while
+      its new arm's own docstring argued for the shared builder.  The two are
+      equivalent today (Projected is neither Credit nor Cancelled); the point
+      is that they cannot come to disagree.
 
     Not scoped by scenario_id: transactions are scenario-scoped, but Phase 1 is
     baseline-only (every transaction lives in the single baseline scenario), so
@@ -110,8 +119,8 @@ def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
             .filter(
                 PayPeriod.user_id == owner_id,
                 Transaction.account_id == account_id,
-                Transaction.is_deleted.is_(False),
                 is_projected_clause(Transaction),
+                balance_contributing_clause(),
             )
         ),
     ]
@@ -157,9 +166,12 @@ def outstanding_purchases(
         oldest first, the entry id breaking a same-day tie deterministically.
         Both orderings are the caller's contract and both come from the single
         ``ORDER BY`` below rather than from a second sort.  Empty for an
-        account with nothing outstanding, which is the steady state for a user
-        who reconciles at every true-up.  No list is ever empty: a parent
-        appears only because a purchase put it there.
+        account with nothing outstanding, which is THIS ARM's steady state for
+        a user who reconciles at every true-up -- and is no longer the PANEL's,
+        because plan step X-f2-c2 added an arm that offers source rows; see
+        :func:`app.services.reconcile_service._transactions.outstanding_transactions`.
+        No list is ever empty: a parent appears only because a purchase put it
+        there.
     """
     rows = (
         db.session.query(TransactionEntry)
@@ -224,18 +236,25 @@ def record_settled_days(
     if not entry_ids:
         return 0
 
-    # ``synchronize_session='fetch'`` so anything already holding these rows
-    # sees the new posting day WITHOUT waiting for the session boundary -- which
-    # this function does not own.  The rationale carried here from
-    # ``entry_service`` said "later code in the same request (the grid
-    # re-rendering its projection)", and that is FALSE at the one live caller:
-    # the grid re-render is a SEPARATE request raised by ``HX-Trigger:
-    # balanceChanged``, and the route's own panel re-render happens after a
-    # ``commit()`` that expires the identity map anyway (nothing in ``app/``
-    # overrides ``expire_on_commit``).  So the flag costs a pre-SELECT and buys
-    # nothing for today's caller; it is kept rather than flipped because
-    # changing it is a behaviour change on a write path and belongs to the leaf
-    # that revisits this writer (X-f2-c2), not to a docstring correction.
+    # ``synchronize_session=False``, which CLOSES finding **N-223**, and the
+    # reasoning that briefly argued the other way is recorded because it was
+    # wrong in an instructive way.
+    #
+    # The rationale this inherited from ``entry_service`` -- "later code in the
+    # same request (the grid re-rendering its projection)" -- was FALSE: that
+    # re-render is a SEPARATE request raised by ``HX-Trigger: balanceChanged``,
+    # and the route's own panel re-render happens after a ``commit()`` that
+    # expires the identity map anyway.
+    #
+    # Plan step X-f2-c2 then put a SECOND writer after this one in the same
+    # session -- the transaction arm, which ``selectinload``s the same parents'
+    # ``entries`` -- and it looked as though ``'fetch'`` had finally earned
+    # itself.  MEASURED, it has not, twice over: that arm reads an entry's
+    # ``amount`` and the relationship's truthiness and never its ``settled_on``;
+    # and a probe of the identity map at this statement counted **ZERO**
+    # ``TransactionEntry`` objects, because nothing in the POST loads one before
+    # here.  ``'fetch'`` pre-SELECTs primary keys in order to synchronise an
+    # empty set.
     updated = (
         db.session.query(TransactionEntry)
         .filter(
@@ -244,7 +263,7 @@ def record_settled_days(
         )
         .update(
             {TransactionEntry.settled_on: observed_on},
-            synchronize_session="fetch",
+            synchronize_session=False,
         )
     )
 

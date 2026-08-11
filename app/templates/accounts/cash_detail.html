@@ -69,7 +69,7 @@
        hx-get="{{ url_for('accounts.reconcile_panel', account_id=account.id) }}"
        hx-trigger="balanceChanged from:body"
        hx-swap="innerHTML">
-    {% include "accounts/_reconcile_purchases.html" %}
+    {% include "accounts/_reconcile_panel.html" %}
   </div>
 </div>
 

@@ -693,3 +693,13 @@ a.acct-cell__link:focus-visible {
     padding-right: 1rem;
   }
 }
+
+/* The reconcile panel's correctable amount box (plan step X-f2-c2, ruling
+   R-FB).  Sized to hold a five-figure amount plus the currency addon and no
+   more, so the row still reads as one line beside its label rather than as a
+   form.  A class rather than an inline style: djlint refuses inline styles
+   (H021) because a style attribute cannot be themed, and this box renders in
+   both the modal prompt and the detail page's section. */
+.reconcile-amount {
+  max-width: 8.5rem;
+}
