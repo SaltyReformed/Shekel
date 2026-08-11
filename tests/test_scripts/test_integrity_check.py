@@ -12,8 +12,10 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User
+from app.enums import StatusEnum
 from app.services.auth_service import hash_password
 from app.services import account_service
+from tests._test_helpers import add_txn
 from scripts.integrity_check import (
     CheckResult,
     check_balance_anomalies,
@@ -286,11 +288,12 @@ class TestBalanceAnomalies:
     def test_clean_database_no_anomalies(self, app, db, seed_user, seed_periods):
         """No balance anomalies on a properly seeded database."""
         results = check_balance_anomalies(db.session)
-        # 4 since plan step X-f1c3c: BA-02 ("anchor period beyond the user's
-        # last period") went with the column it queried, and BA-01 was
-        # RE-POINTED at "an account with no balance assertion at all" -- the
-        # state that actually breaks a producer.
-        assert len(results) == 4
+        # 5: BA-02 ("anchor period beyond the user's last period") went with
+        # the column it queried at plan step X-f1c3c and BA-01 was RE-POINTED
+        # at "an account with no balance assertion at all" -- the state that
+        # actually breaks a producer -- leaving 4; BA-06 was added 2026-08-11
+        # with the deletion of pay_calendar C3-b's coverage rule.
+        assert len(results) == 5
         ba01 = next(r for r in results if r.check_id == "BA-01")
         assert ba01.passed
 
@@ -334,11 +337,18 @@ class TestBalanceAnomalies:
     def test_the_other_balance_checks_stay_warnings(
         self, app, db, seed_user, seed_periods,
     ):
-        """BA-03/04/05 are warnings; only BA-01 escalated.
+        """BA-03/04/05/06 are warnings; only BA-01 escalated.
 
         The complement of the assertion above, so "severity is per check"
         is graded in both directions: an edit that promoted the whole family
         to critical would pass the BA-01 test alone.
+
+        **BA-06 belongs on this side deliberately.**  A settled row whose cash
+        day no paycheck covers writes no wrong figure -- each column is valued
+        at its own ``end_date``, so the day cancels on both sides of ruling
+        R-K's identity and reports as ``period_timing``.  Promoting it would
+        exit the backup sweep 2 over a state the developer ruled ACCEPTABLE on
+        2026-08-11 when deleting the writer refusal that used to forbid it.
         """
         results = check_balance_anomalies(db.session)
         by_id = {r.check_id: r.severity for r in results}
@@ -346,6 +356,57 @@ class TestBalanceAnomalies:
         assert by_id["BA-03"] == "warning"
         assert by_id["BA-04"] == "warning"
         assert by_id["BA-05"] == "warning"
+        assert by_id["BA-06"] == "warning"
+
+    def _settled_txn(self, seed_user, period, settled_on):
+        """File a SETTLED transaction in *period* whose cash moved on a day."""
+        return add_txn(
+            db.session, seed_user, period, "Gas", "59.04",
+            status_enum=StatusEnum.DONE, due_date=period.start_date,
+            settled_on=settled_on,
+        )
+
+    def test_ba06_detects_a_settle_day_no_paycheck_covers(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """BA-06 fires on the state C3-b's deleted coverage rule used to refuse.
+
+        The last seeded paycheck ends 2026-05-21.  A row filed in it that the
+        bank took on 2026-06-15 has a cash day outside every period the owner
+        has -- reachable since 2026-08-11, when the developer deleted the
+        writer refusal that forbade producing it, on the ground that it writes
+        no wrong figure.  It still deserves a human's attention, and this is
+        where the arc puts a derivable question rather than in the writer.
+        """
+        txn = self._settled_txn(
+            seed_user, seed_periods[-1], date(2026, 6, 15),
+        )
+
+        results = check_balance_anomalies(db.session)
+        ba06 = next(r for r in results if r.check_id == "BA-06")
+        assert not ba06.passed
+        assert ba06.detail_count == 1
+        assert ba06.details[0]["transaction_id"] == txn.id
+        assert ba06.details[0]["settled_on"] == date(2026, 6, 15)
+
+    def test_ba06_ignores_a_row_merely_outside_its_OWN_paycheck(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The control, and it is the whole reason this check is narrow.
+
+        Production carries 21 of 160 settled rows dated outside their OWN
+        paycheck and that state is ACCEPTED -- the cash clock and the budget
+        clock are different clocks, and ``period_timing`` exists to carry the
+        difference.  A check that fired on it would report the app working as
+        designed, on every sweep, forever.  This row is filed in the first
+        paycheck and settles inside the second: outside its own, inside the
+        schedule.
+        """
+        self._settled_txn(seed_user, seed_periods[0], seed_periods[1].end_date)
+
+        results = check_balance_anomalies(db.session)
+        ba06 = next(r for r in results if r.check_id == "BA-06")
+        assert ba06.passed, ba06.details
 
     def test_ba03_detects_period_gap(self, app, db, seed_user):
         """BA-03 detects a gap in the pay period index sequence."""
@@ -850,8 +911,10 @@ class TestRunAllChecks:
             f"{[(r.check_id, r.description, r.detail_count) for r in critical_failures]}"
         )
         # Total check count should cover all 4 categories:
-        # 12 FK + 6 OR + 4 BA + 8 DC = 30 checks (DC-01 removed
+        # 12 FK + 6 OR + 5 BA + 8 DC = 31 checks (DC-01 removed
         # 2026-06-11 -- estimated-only settles are a legal state).
-        # 30 since plan step X-f1c3c: FK-03 and BA-02 both queried
-        # ``accounts.current_anchor_*``, deleted with the columns.
-        assert len(results) == 30
+        # It was 30 from plan step X-f1c3c, where FK-03 and BA-02 both
+        # queried ``accounts.current_anchor_*`` and went with the columns;
+        # BA-06 was added 2026-08-11 beside the deletion of pay_calendar
+        # C3-b's coverage rule, which is what made its state reachable.
+        assert len(results) == 31
