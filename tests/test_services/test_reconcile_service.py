@@ -1098,6 +1098,91 @@ class TestTheTransactionArm:
             assert self._offered(seed_user) == {}
             assert self._settle(seed_user, [txn.id]) == 0
 
+    def test_an_envelope_still_being_spent_is_neither_offered_nor_settled(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The VALUE half of the bound, from both doors.
+
+        An envelope settles at ``sum(entries)`` over EVERY entry it holds, so
+        one still carrying a purchase made after the statement day would book
+        that purchase too -- dated on the statement's day, and with no
+        correction box, because an entries-derived row is not correctable
+        (**R-FF**).  The purchase arm has always refused such an entry; this is
+        the same rule applied to the parent, and without it the two arms
+        disagree about the same dollars.
+
+        **Shown to FIRE**: removing the ``_wholly_spent_by`` term from
+        ``_outstanding_rows`` offers this row at `$100.00` and settles it.
+
+        Measured on a clone of production before the fix: one `$137.45`
+        purchase three days after Checking's 2026-08-06 assertion made the
+        panel offer *Close Groceries* at `$622.55` rather than `$485.10`, and
+        ticking it raised the projected balance by exactly `$137.45` at +30d,
+        +90d and +365d -- already-spent money handed back to the projection.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(
+                txn, seed_user["user"], amount="40.00",
+                purchased_on=_BEFORE_THE_STATEMENT,
+            )
+            _make_entry(
+                txn, seed_user["user"], amount="60.00",
+                purchased_on=_AFTER_THE_STATEMENT,
+            )
+            db.session.commit()
+
+            assert txn.id not in self._offered(seed_user)
+            assert self._settle(seed_user, [txn.id]) == 0
+
+            db.session.expire_all()
+            reloaded = db.session.get(Transaction, txn.id)
+            assert reloaded.settled_on is None
+            assert reloaded.actual_amount is None
+
+    def test_an_envelope_spent_only_BEFORE_the_statement_is_still_offered(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The negative control for the refusal above.
+
+        Without it that test would pass just as well if the arm had stopped
+        offering envelopes carrying entries at all, which is a different -- and
+        wrong -- rule.  The discriminating fact is the entry's DAY, so the same
+        two purchases dated on or before the statement are still offered, at
+        their sum.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(
+                txn, seed_user["user"], amount="40.00",
+                purchased_on=_BEFORE_THE_STATEMENT,
+            )
+            _make_entry(
+                txn, seed_user["user"], amount="60.00",
+                purchased_on=_OBSERVED_ON,
+            )
+            db.session.commit()
+
+            assert self._offered(seed_user)[txn.id].amount == Decimal("100.00")
+            assert self._settle(seed_user, [txn.id]) == 1
+
+    def test_a_row_with_no_entries_is_unaffected_by_the_value_bound(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A bill answers the value bound over an empty set.
+
+        Its own control because the bound is written ``all(...)`` and an
+        ``all()`` over nothing is True -- the behaviour a bill and a deposit
+        need, and exactly the kind of vacuous truth that deserves a test rather
+        than a comment.
+        """
+        with app.app_context():
+            bill = self._bill(seed_user, seed_periods[0])
+            db.session.commit()
+
+            assert bill.id in self._offered(seed_user)
+            assert self._settle(seed_user, [bill.id]) == 1
+
     def test_an_empty_submission_is_a_no_op(
         self, app, db, seed_user, seed_periods, seed_entry_template,
     ):

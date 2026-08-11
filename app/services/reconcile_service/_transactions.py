@@ -23,17 +23,30 @@ for it.**  Both are the verb's, published as
 showing a figure the verb would not book, or an input for a value the verb
 would ignore, is the same defect one tier up.
 
-**The date bound is in TWO halves and only one of them is SQL.**  The offer set
-is the OVERDUE set: ruling **R-G** clamps a projected row's landing day up to
-``as_of + 1`` (``balance_at/_cash_fold.py``), so a row whose attribution day has
-already passed is precisely one the projection is still holding forward.  That
-day is :func:`~app.utils.dates.attribution_date` -- a clamp, not a column -- so
-the bound is applied in Python over an SQL SUPERSET (``period.start_date <=
+**The bound asks TWO questions of the statement's day, and neither is SQL.**  A
+statement of day D can settle a row only when the projection had already landed
+it by D *and* everything the row would book had moved by D.
+
+*Did it land by D?* (:func:`_lands_on_or_before`.)  The offer set is the OVERDUE
+set: ruling **R-G** clamps a projected row's landing day up to ``as_of + 1``
+(``balance_at/_cash_fold.py``), so a row whose attribution day has already
+passed is precisely one the projection is still holding forward.  That day is
+:func:`~app.utils.dates.attribution_date` -- a clamp, not a column -- so the
+bound is applied in Python over an SQL SUPERSET (``period.start_date <=
 observed_on``), valid because the clamp guarantees ``attribution_date >=
 period.start_date``.  Restating the clamp in SQL would be a second
 implementation of the rule the calendar and the balance line already share.
 Measured on production 2026-08-11, Checking at its latest assertion: the SQL
 superset admits 5 rows and the Python bound narrows them to 3.
+
+*Had it all moved by D?* (:func:`_wholly_spent_by`.)  An envelope's value is an
+AGGREGATE -- ``sum(entries)`` over every entry it holds -- so unlike a bill it
+can carry money that moved after the statement.  The purchase arm has always
+refused such an entry (``_purchases._outstanding_scope``); this is the same rule
+applied to the parent, and without it the two arms disagree about the same
+dollars.  It was missing until an adversarial review measured `$137.45` of
+already-spent money handed back to the projection; the worked case is on the
+function.
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, frozen dataclasses out.
@@ -156,6 +169,50 @@ def _lands_on_or_before(txn: Transaction, observed_on: date) -> bool:
     return _attributed_on(txn) <= observed_on
 
 
+def _wholly_spent_by(txn: Transaction, observed_on: date) -> bool:
+    """Return whether everything *txn* would BOOK moved by *observed_on*.
+
+    **The second half of "a statement of this day could settle this row", and
+    it is about the row's VALUE rather than its landing day.**  An envelope
+    settles at ``sum(entries)`` over EVERY entry it holds
+    (``entry_service.compute_actual_from_entries``, and
+    ``entry_service._update_actual_if_paid`` re-derives it the same way after
+    any later mutation), so a row still holding a purchase made AFTER the
+    statement day would book that purchase too -- dated on the statement's day,
+    at a figure the panel offers with no correction box because an
+    entries-derived row is not correctable (ruling **R-FF**).
+
+    **This is the bound the purchase arm has always had, applied to the
+    aggregate.**  ``_purchases._outstanding_scope`` refuses an entry with
+    ``purchased_on > observed_on`` and says why: a statement cannot show a
+    purchase made after the day it covers.  Without this the two arms disagree
+    about the same dollars -- the sibling arm refuses a purchase and this one
+    re-admits it inside its parent's total.
+
+    **Measured, because it is a money defect and not a tidiness one.**  On a
+    clone of production, planting one `$137.45` purchase three days after
+    Checking's 2026-08-06 assertion made the panel offer *Close Groceries* at
+    `$622.55` instead of `$485.10`; ticking it booked `$622.55` stamped
+    2026-08-06, which ``ReconciledThrough.covers`` then absorbs into that day's
+    anchor correction -- so the purchase contributed nothing forward and the
+    projected balance rose by exactly `$137.45` at +30d, +90d and +365d.  That
+    is already-spent money handed back to the projection, which is the class of
+    defect this arc exists to remove.
+
+    A row with no entries answers True over an empty sequence, so a bill and a
+    deposit are unaffected: they carry a single amount, and
+    :func:`_lands_on_or_before` is the whole bound for them.
+
+    Args:
+        txn: A row from the SQL superset, with ``entries`` loaded.
+        observed_on: The civil day the balance was asserted for.
+
+    Returns:
+        True when no entry against *txn* postdates the statement.
+    """
+    return all(entry.purchased_on <= observed_on for entry in txn.entries)
+
+
 def _attributed_on(txn: Transaction) -> date:
     """Return the day the projection lands *txn* on.
 
@@ -227,10 +284,11 @@ def _outstanding_rows(
     a per-row service verb, not a bulk ``UPDATE``).
 
     Both eager loads are load-bearing and are the plan loader's own: ``entries``
-    decides the settle branch and its amount, ``pay_period`` feeds the
-    attribution clamp.  ``template`` is loaded here and not there because this
-    arm reads ``tracks_purchases``, which lazy-loads a template per row
-    otherwise -- an N+1 on a list the user is about to read.
+    decides the settle branch, its amount AND the second half of the bound
+    (:func:`_wholly_spent_by`), ``pay_period`` feeds the attribution clamp.
+    ``template`` is loaded here and not there because this arm reads
+    ``tracks_purchases``, which lazy-loads a template per row otherwise -- an
+    N+1 on a list the user is about to read.
 
     Args:
         owner_id: The user_id whose rows to scope to.
@@ -259,6 +317,7 @@ def _outstanding_rows(
     rows = [
         txn for txn in query.all()
         if _lands_on_or_before(txn, observed_on)
+        and _wholly_spent_by(txn, observed_on)
     ]
     rows.sort(key=lambda txn: (_attributed_on(txn), txn.id))
     return rows
