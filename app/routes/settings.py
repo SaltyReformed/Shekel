@@ -30,6 +30,7 @@ from app.services import (
     account_resolver,
     account_service,
     pay_period_admin,
+    pay_period_locks,
     pay_period_service,
     pay_schedule_service,
 )
@@ -88,16 +89,16 @@ _ACCOUNT_TYPE_ICON_CHOICES = (
 # render rather than showing a blank badge -- which is what makes deleting the
 # member and the chip together the only safe order.
 _PP_LOCK_BADGES = {
-    pay_period_admin.PeriodLockReason.HISTORICAL: (
+    pay_period_locks.PeriodLockReason.HISTORICAL: (
         "Past", "flag-chip flag-chip--neutral",
     ),
-    pay_period_admin.PeriodLockReason.SETTLED_TXN: (
+    pay_period_locks.PeriodLockReason.SETTLED_TXN: (
         "Settled", "flag-chip flag-chip--warning",
     ),
-    pay_period_admin.PeriodLockReason.LEDGER_POSTINGS: (
+    pay_period_locks.PeriodLockReason.LEDGER_POSTINGS: (
         "Posted", "flag-chip flag-chip--warning",
     ),
-    pay_period_admin.PeriodLockReason.RECURRENCE_ANCHOR: (
+    pay_period_locks.PeriodLockReason.RECURRENCE_ANCHOR: (
         "Rule start", "flag-chip flag-chip--neutral",
     ),
 }
@@ -198,7 +199,7 @@ def _load_pay_periods_context(user_id):
     when it would be accepted.
     """
     periods = pay_period_service.get_all_periods(user_id)
-    locks = pay_period_admin.classify_periods_bulk(periods)
+    locks = pay_period_locks.classify_periods_bulk(periods)
     period_rows = []
     for period in periods:
         reason = locks.get(period.id)

@@ -93,13 +93,19 @@
         <form method="POST" action="{{ url_for('pay_periods.truncate') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <div class="mb-3">
-            <label for="keep_through_index" class="form-label">
+            <label for="keep_through_period_id" class="form-label">
               Keep through period
             </label>
-            <select id="keep_through_index" name="keep_through_index"
+            {# The option VALUE is the period's id, never its ordinal (plan
+               step C3-a, finding P13): this select drives a cascading DELETE
+               and its value round-trips through the discard-confirm panel
+               above, so it has to name the row the user picked rather than a
+               position that can be renumbered under it.  The LABEL still
+               shows the ordinal, matching the "#" column of the list above. #}
+            <select id="keep_through_period_id" name="keep_through_period_id"
                     class="form-select" required>
               {% for row in pp_periods %}
-              <option value="{{ row.period.period_index }}">
+              <option value="{{ row.period.id }}">
                 #{{ row.period.period_index }} ({{ row.period.label }})
               </option>
               {% endfor %}

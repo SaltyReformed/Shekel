@@ -20,6 +20,7 @@ from app.exceptions import (
     PayPeriodDiscardRequired,
     PayPeriodLocked,
     PayPeriodResetBlocked,
+    PayPeriodUnresolved,
     ValidationError,
 )
 from app.routes.settings import render_settings_dashboard
@@ -155,17 +156,34 @@ def truncate():
     data = _truncate_schema.load(request.form)
     try:
         deleted = pay_period_admin.truncate_pay_periods(
-            current_user.id, data["keep_through_index"],
+            current_user.id, data["keep_through_period_id"],
             confirm_discard=data["confirm_discard"],
         )
-    except PayPeriodLocked as exc:
+    except (PayPeriodLocked, PayPeriodUnresolved) as exc:
+        # ``PayPeriodUnresolved`` is the service refusing an id that names no
+        # pay period of this user's (plan step C3-a): a forged one, another
+        # owner's, or a STALE one -- the confirm panel below re-submits the id
+        # the user reviewed, and a concurrent truncate can delete that period
+        # between the two posts.  **Its own class rather than the generic
+        # ``ValidationError``**, which an adversarial review of this step
+        # asked for: a catch on the base would flash "choose the period again"
+        # for any future business-rule refusal raised anywhere below this
+        # call, reporting a real defect as advice about a dropdown.
+        #
+        # It flashes rather than 404ing because every sibling action on this
+        # settings form does, and the security property that matters is
+        # intact: "not yours" and "does not exist" carry the same message, so
+        # this door is not an existence oracle.  Which case it was is recorded
+        # in the ACCESS log instead (``_log_unresolved_period``).
         flash(str(exc), "danger")
         return _pay_periods_redirect()
     except PayPeriodDiscardRequired as exc:
         return render_settings_dashboard("pay-periods", extra={"pp_confirm": {
             "op": "truncate",
             "count": exc.count,
-            "params": {"keep_through_index": data["keep_through_index"]},
+            "params": {
+                "keep_through_period_id": data["keep_through_period_id"],
+            },
         }}, status=422)
 
     db.session.commit()

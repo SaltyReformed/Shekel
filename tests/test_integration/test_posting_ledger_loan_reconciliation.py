@@ -1648,7 +1648,14 @@ _LEDGER_IMPORT_TOKENS = (
     # objective proof the denylist stays complete as new readers land).
     "ledger_report_service",
     "balance_at",
-    "pay_period_admin",
+    # The pay-period LOCK CLASSIFIER: its ``LEDGER_POSTINGS`` gate sums a
+    # period's postings to decide whether a truncate may delete it.  This token
+    # read ``pay_period_admin`` until plan step C3-a moved the classifier into
+    # its own module -- the token MOVED with the reader rather than being added
+    # beside it, because the writers it left behind now import no ledger model
+    # at all, and a token covering a non-reader is a denylist entry nothing
+    # would ever fire on.  The M-2 coverage guard is what caught the move.
+    "pay_period_locks",
 )
 
 # The posted-ledger MODEL modules -- the concrete data classes (Posting,
