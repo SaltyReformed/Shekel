@@ -16,7 +16,7 @@ recording it would be this registry's own disease. It is graded by its own arm i
 DECLARES itself "the DECOMPOSED parent" may not ship while a leaf is open.
 **The parent set is declared and only the leaf set derived**, because deriving both by id prefix
 claims `R-F1` as the parent of `R-F10`, `R-F12` and `R-F13`. Second, an edge is written only where
-an arc document STATES it: the graph holds 93 edges over 58 rows, the gaps are real, and a guess
+an arc document STATES it: the graph holds 94 edges over 59 rows, the gaps are real, and a guess
 where a citation belongs is worse than a blank. *That count read "71 over 47" until 2026-08-10 and
 had been stale since `C2` decomposed into six leaves carrying three blockers each -- a prose count
 beside no reconciler, in the registry whose own rule 3 grades exactly that in `ledger.md`.*
@@ -26,7 +26,7 @@ scheduled as one commit by all three documents. Before this table that identity 
 files with nothing reconciling it, and the `P3` / `N-123` collision went unnoticed from April to
 2026-08-09.
 
-**112 steps, 96 open.**
+**113 steps, 95 open.**
 
 | arc | id | aliases | step | state | commit | blocked by |
 |---|---|---|---|---|---|---|

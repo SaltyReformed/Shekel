@@ -154,6 +154,73 @@ class TestTheLedgerStatesItsOwnSize:
         assert problem is not None and "rule 3" in problem
 
 
+class TestStepsStatesItsOwnSize:
+    """conventions.md rule 3, on the registry it was not being applied to.
+
+    **All FOUR of these numbers were stale when this class was written**
+    (2026-08-11): the header said "112 steps, 96 open" against 113 and 95, and
+    the graph line said 93 edges over 58 rows against 94 and 59.  Rule 3 was
+    written about `ledger.md` and graded only there, so its sibling carried
+    exactly the defect the rule describes -- and it went wrong in BOTH
+    directions inside one merge, because one session appended a step while
+    another ticked one.
+
+    Each arm is separate because each goes stale for a different reason: the
+    size on an append, the open count on a tick, the graph on a new
+    ``blocked by`` edge.
+    """
+
+    def test_the_stated_counts_match_the_table(self):
+        """The stated counts match the table."""
+        assert not registry.steps_stated_count_violation()
+
+    def test_the_control_fires_on_a_wrong_step_count(self, stage):
+        """The control fires on a wrong step count."""
+        rows = registry.step_rows()
+        opened = sum(1 for row in rows if row.state.lower() == "open")
+        stage("steps", f"**{len(rows)} steps, {opened} open.**",
+              f"**{len(rows) - 7} steps, {opened} open.**")
+        problems = registry.steps_stated_count_violation()
+        assert any("holds 113 steps" in p or "steps and the table holds" in p
+                   for p in problems), problems
+
+    def test_the_control_fires_on_a_wrong_open_count(self, stage):
+        """The control fires on a wrong open count.
+
+        Its own arm because a tick moves this number and not the size, so a
+        single count arm would report clean over the edit that ships a step.
+        """
+        rows = registry.step_rows()
+        opened = sum(1 for row in rows if row.state.lower() == "open")
+        stage("steps", f"**{len(rows)} steps, {opened} open.**",
+              f"**{len(rows)} steps, {opened - 3} open.**")
+        problems = registry.steps_stated_count_violation()
+        assert any("are open and" in p for p in problems), problems
+
+    def test_the_control_fires_on_a_wrong_graph_size(self, stage):
+        """The control fires on a wrong ``blocked by`` graph size."""
+        rows = registry.step_rows()
+        edges = sum(len(row.blocked_keys()) for row in rows)
+        carriers = sum(1 for row in rows if row.blocked_keys())
+        stage("steps", f"holds {edges} edges over {carriers} rows",
+              f"holds {edges - 4} edges over {carriers} rows")
+        problems = registry.steps_stated_count_violation()
+        assert any("edges and it holds" in p for p in problems), problems
+
+    def test_the_pattern_still_matches_the_live_document(self):
+        """Rule 3's own failure mode: a pattern that matches nothing passes.
+
+        The balance README's row-count arm shipped requiring ``rows**`` while
+        the document wrote ``rows.**``, so it matched NOTHING, read that as "no
+        count is claimed" and passed a planted 38-against-41.  These two arms
+        assert their patterns still find something in the REAL file, so the
+        same silence cannot happen here.
+        """
+        text = registry.STEPS.read_text()
+        assert registry.STEPS_COUNT_RX.search(text) is not None
+        assert registry.BLOCKED_GRAPH_RX.search(text) is not None
+
+
 class TestEveryFindingNamesALiveOwner:
     """conventions.md rules 1 and 2."""
 
