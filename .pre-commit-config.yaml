@@ -101,6 +101,25 @@ repos:
         files: ^tools/pylint/.*\.py$
         pass_filenames: false
         args: [tools/pylint/tests, -c, /dev/null, -q]
+      - id: pylint-plan-gate
+        name: pylint plan gate (10.00/10 floor)
+        entry: pylint
+        language: system
+        types: [python]
+        files: ^tools/plan_gate/.*\.py$
+        pass_filenames: false
+        # The plan gate was RUN by the pytest hook below and LINTED by nothing
+        # -- not this file, not ci.yml (whose pylint step is `app/` only) --
+        # found by audit 2026-08-11 when an `invalid-name` in a new control
+        # reached a commit and only a hand-run pylint caught it.  It is the
+        # machinery that guards the planning registries a cold session reads,
+        # so it holds the same 10.00/10 floor the other two tools/ packages do.
+        # The package was already at 10.00/10 when this hook was added, so it
+        # locks in a clean floor rather than deferring a cleanup.
+        args:
+          - tools/plan_gate/
+          - --fail-under=10
+          - --fail-on=E,F
 
       # The planning REGISTRIES and the four arc documents.  Every finding
       # names a LIVE owner, the stated row count matches the table, every
