@@ -208,9 +208,14 @@ class TestEveryFindingNamesALiveOwner:
         assert any("names no step" in p for p in problems), problems
 
     def test_the_control_fires_on_an_owner_that_has_shipped(self, stage):
-        """pay_calendar:C1 is SHIPPED, so a live row may not point at it."""
+        """pay_calendar:C1 is SHIPPED, so a live row may not point at it.
+
+        The staged row was ``pay_calendar:P2`` until that finding CLOSED at
+        ``C2-b2`` and left the ledger, which is the arm working on its own
+        control.  Any live row serves; ``P16`` is one this commit did not move.
+        """
         assert registry.arc_checkboxes("pay_calendar")["C1"], "C1 must be ticked"
-        line = _row("ledger", "| pay_calendar | P2 |")
+        line = _row("ledger", "| pay_calendar | P16 |")
         stage("ledger", line, _with_cell(line, -1, "C1"))
         problems = registry.owner_violations()
         assert any("SHIPPED" in p and "rule 2" in p for p in problems), problems
@@ -435,9 +440,14 @@ class TestTheTwoAlsoRelationsMeanOppositeThings:
         assert "= " in cells and "~ " in cells
 
     def test_the_control_fires_when_a_merged_target_is_still_live(self, stage):
-        """`=` says the target was absorbed, so it must not still be a row."""
+        """`=` says the target was absorbed, so it must not still be a row.
+
+        Named ``pay_calendar:P2`` until that row closed at ``C2-b2``; the
+        target only has to be a row that still EXISTS and whose id cell is
+        BARE, since the `also` grammar takes an unannotated id.
+        """
         line = _row("ledger", "| balance | N-128 |")
-        stage("ledger", line, _with_cell(line, 2, "= pay_calendar:P2"))
+        stage("ledger", line, _with_cell(line, 2, "= pay_calendar:P16"))
         problems = registry.also_violations()
         assert any("still its own live row" in p for p in problems), problems
 
@@ -676,19 +686,28 @@ class TestAParentTicksWithTheLastOfItsLeaves:
         """The reason the parent set is DECLARED rather than derived.
 
         ``R-F1`` is SHIPPED and is a string prefix of ``R-F10``, ``R-F12`` and
-        ``R-F13``, which are unrelated findings-steps and all open.  Deriving
-        parenthood from the id alone would report three failures the moment the
-        arm was switched on -- and the tempting fix is an exception list, which
-        is finding N-147's defect.  This control keeps that measurement alive:
-        if the corpus ever stops containing the trap, the reason for the design
-        should be re-read rather than assumed.
+        ``R-F13``, which are unrelated findings-steps.  Deriving parenthood
+        from the id alone would report failures the moment the arm was switched
+        on -- and the tempting fix is an exception list, which is finding
+        N-147's defect.  This control keeps that measurement alive: if the
+        corpus ever stops containing the trap, the reason for the design should
+        be re-read rather than assumed.
+
+        **It asserts that at least one prefix-sharer is OPEN, not that all
+        are.**  ``R-F10`` shipped at ``pay_calendar:C2-b2``, which turned an
+        ``all`` assertion red without the trap having gone anywhere -- a
+        control that fails when the corpus merely PROGRESSES is grading the
+        wrong thing.  What matters is that a shipped step still shares a prefix
+        with an open one, because that is the pair a derived arm would misread.
         """
         rows = {row.ident: row for row in registry.step_rows()
                 if row.arc == "recurrence"}
         assert rows["R-F1"].shipped
         tempting = [i for i in rows if i != "R-F1" and i.startswith("R-F1")]
         assert tempting, "the R-F1 prefix trap has left the corpus"
-        assert not any(rows[i].shipped for i in tempting)
+        assert any(not rows[i].shipped for i in tempting), (
+            "the trap needs an OPEN prefix-sharer beside the shipped R-F1"
+        )
         assert not rows["R-F1"].is_decomposed_parent, (
             "R-F1 must NOT declare itself a parent -- it has no decomposition"
         )

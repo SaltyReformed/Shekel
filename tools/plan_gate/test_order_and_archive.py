@@ -72,19 +72,33 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
         stage("steps", line, _with_cell(line, 4, "#26"))
         assert any("not one identity class" in p for p in order.rank_violations())
 
-    def test_an_identity_class_sharing_one_rank_is_not_a_violation(self):
+    def test_an_identity_class_sharing_one_rank_is_not_a_violation(self, stage):
         """`C5a` and `R-F10` are one commit at one position, and that is legal.
 
-        The live corpus carries the class this exemption exists for, so the
-        clean case above already proves the arm does not fire on it -- but a
-        reader deleting the exemption would not learn that from a passing
-        suite, which is what this test is for.
+        **The class SHIPPED at `pay_calendar:C2-b2`, so it no longer holds a
+        rank and the clean corpus stops exercising the exemption.**  It is
+        staged back onto a rank here rather than deleted with it: the exemption
+        is still the rule, the next identity class to be ranked will need it,
+        and a reader deleting it would otherwise learn nothing from a passing
+        suite.  The pair is the real one, read out of the Shipped table, so the
+        control still rests on a relation the corpus states rather than on a
+        fixture.
         """
         rows = {row.key: row for row in registry.step_rows()}
         left, right = rows["pay_calendar:C5a"], rows["recurrence:R-F10"]
-        assert left.rank is not None
-        assert left.rank == right.rank
+        assert left.shipped and right.shipped
         assert right.key in left.alias_keys()
+        assert left.key in right.alias_keys()
+
+        # A rank NO live row holds, so the only thing under test is whether
+        # two names at one rank are exempt.  The density arm fires on the hole
+        # that leaves, which is why this reads one arm's messages and not all.
+        free = max(r.rank for r in rows.values() if r.rank is not None) + 2
+        for row in (left, right):
+            line = _row("steps", f"| {row.arc} | {row.ident} |")
+            stage("steps", line, _with_cell(line, 4, f"#{free}"))
+        shared = [p for p in order.rank_violations() if "identity class" in p]
+        assert not shared, shared
 
 
 class TestTheStartsCellIsDerivedAndReconciled:
@@ -114,7 +128,10 @@ class TestTheStartsCellIsDerivedAndReconciled:
         line = _row("steps", "| credit_card | CC0a |")
         stage("steps", line, _with_cell(line, 6, "after #5 / balance:X-f4 / balance:X-am"))
         problems = order.starts_violations()
-        assert any("credit_card:CC0a" in p and "#32" in p for p in problems), problems
+        latest = order.rank_map()["balance:X-am"]
+        assert any(
+            "credit_card:CC0a" in p and f"#{latest}" in p for p in problems
+        ), problems
 
     def test_the_control_fires_when_a_ready_row_claims_to_be_blocked(self, stage):
         """A stale `after` hides work the reader can pick up today."""
@@ -126,9 +143,12 @@ class TestTheStartsCellIsDerivedAndReconciled:
     def test_the_control_fires_on_a_container_naming_the_wrong_leaf(self, stage):
         """A container ticks with its LAST leaf, not an earlier one."""
         line = _row("steps", "| balance | X-i |")
-        stage("steps", line, _with_cell(line, 6, "ticks with #41"))
+        last = order.rank_map()["balance:X-i2"]
+        stage("steps", line, _with_cell(line, 6, f"ticks with #{last - 1}"))
         problems = order.starts_violations()
-        assert any("balance:X-i" in p and "#42" in p for p in problems), problems
+        assert any(
+            "balance:X-i" in p and f"#{last}" in p for p in problems
+        ), problems
 
     def test_the_control_fires_on_an_unparseable_head(self, stage):
         """Every other spelling of readiness used to read as legal."""

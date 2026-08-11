@@ -513,24 +513,11 @@ downgrade drops them by name -- the table goes with them) and renaming 23 tables
 large migration that buys nothing. The alternative is a rename migration. Either way the outcome
 must land in `.claude/rules/database.md` so the next reader is not told two different things.
 
-- [ ] **R-F10 -- Delete the gap machinery the pay-calendar arc makes unconstructible** (finding
-      F-10).
-
-**The ruling is TAKEN (2026-08-08, developer) and it is not "reject a gapped batch".** F-10 is a
-missing NORMALIZATION: `budget.pay_periods` stores `end_date` and `period_index`, both derived from
-the ordered paydays, and a hole is those two columns disagreeing with the next row. The model and
-its **six** leaves are `docs/plans/implementation_plan_pay_calendar.md`, whose **C3** deletes
-`_reject_overlapping_batch` and whose **C4** drops the columns. That arc's **C1 has SHIPPED**
-(`f9d148fe`): the derivation exists, proven byte-identical against all 61 live rows, and nothing
-calls it yet. What is left HERE is the recurrence-side consequence and it ships as that arc's
-**C5**: `PlacementOutcome.SCHEDULE_GAP`, `GenerationPlan.gaps`,
-`_recurrence_common.report_schedule_gaps` and its two call sites (`recurrence_engine.py:309`,
-`transfer_recurrence.py:81`) all describe a state the model can no longer produce.
-**The state goes; the LOSS does not** (that arc's row **P16**, 2026-08-09): a hole is ABSORBED, not
-eliminated, so a 28-day period appears and `should_skip_period` (`:196-232`) bills one monthly where
-two are owed. These deletions are the only thing reporting it -- do not tick before P16 is ruled.
-Deletion-only, so the 430-shape baseline must stay byte-identical.
-**Tick this box with C5's commit.**
+- [x] **R-F10 -- delete the gap machinery.** `fe365de1`. The same commit as `pay_calendar:C5a`,
+      ticked at that arc's **C2-b2**: a period's end is derived from the next payday, so a hole is
+      not a state a reader can see. Closed **F-10**. The LOSS survives the state -- an absorbed hole
+      leaves an over-long period, which is that arc's **P16** and its `C5b`. Deletion-only; the
+      430-shape baseline stayed byte-identical.
 
 - [ ] **R-F12 -- One `PeriodCalendar`, not three period-containing searches** (finding F-12).
 
