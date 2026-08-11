@@ -60,11 +60,15 @@ reading is load-bearing: the scope shared between an arm's reader and its
 writer is what stops a forged id settling something the panel never offered,
 and one scope over three arms could not state it.
 
-**The privacy is structural, not conventional.**  A module outside this package
-cannot import ``_purchases`` or ``_offers`` in any spelling -- the
+**The privacy is structural, not conventional.**  No ``app/`` or ``scripts/``
+module can import ``_purchases`` or ``_offers`` in any spelling -- the
 ``shekel-private-module-import`` checker (W9910) is name-independent and
 carries no allowlist -- so this docstring's list of public names IS the
-boundary rather than a description of one.
+boundary rather than a description of one.  **The scope of that sentence is
+exact and a looser draft of it was wrong**: `.pre-commit-config.yaml` runs
+`tests/` with ``--disable=all --enable=shekel-decimal-from-float``, so W9910
+never fires there and a test COULD reach a private module.  None does; three
+name one in a docstring only.
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, frozen dataclasses out.

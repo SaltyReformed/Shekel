@@ -5,21 +5,36 @@ The work that is the SAME whatever produced an offer: labelling the parent a
 block hangs under, ordering the blocks, and totalling the set.  The arms decide
 WHAT this account still owes; this module decides how the answer READS.
 
-**Why the split is here and not somewhere else.**  Plan step X-f2-c2 adds a
-transaction arm and X-f2-c3 a transfer arm, and each one returns its own offers
-against the same key -- the parent ``budget.transactions`` id.  If each arm
-assembled its own blocks, the heading rule, the ordering rule and the totals
-would be written three times, which is this arc's own root cause 1 applied to
-the panel.  So an arm returns offers and this unions them.  Today there is one
-arm to union, and the seam still earns its place: it is what makes the second
-arm an ADDITION rather than a rewrite of the first.
+**Why the split is here and not somewhere else.**  Labelling a parent, ordering
+what the panel shows and totalling it are the same work whatever produced an
+offer, so writing them once per arm would be this arc's own root cause 1
+applied to the panel.
+
+**What this module does NOT yet decide, and must not pretend to: whether a
+BILL is a block of its own or a flat row beside the blocks.**  Ruling R-EW
+settles the purchase case (*"a purchase nests under the thing it belongs to"*)
+and is silent on the other three kinds, and a first draft of this package
+answered it two contradictory ways in one commit -- this docstring assumed
+every arm keys into a block by parent id, while ``_offers.OutstandingSet``
+assumed bills arrive as a sibling LIST.  Both cannot be true, and which is
+true decides whether X-f2-c2 ADDS an arm here or REWRITES the ordering, the
+headings and the empty rule inside a commit that moves money.  It is a
+developer decision, recorded in the plan as X-f2-c2's open shape question, and
+nothing here is written to prejudge it.
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, frozen dataclasses out.
   - Reads only.  No writer lives here: what a tick MEANS differs per arm
-    (ruling **R-FA**), so the write side has no shared body to hoist and
-    inventing a dispatcher before the second arm exists would be the
-    speculative structure rule 13 forbids.
+    (ruling **R-FA**), so the write side has no shared body to hoist yet.
+    **That is the same rule-13 test this module's own existence has to pass**,
+    and a reviewer was right to say the first draft applied it to the write
+    side while exempting the read side.  What earns the read seam today is not
+    a second arm -- there isn't one -- but that ``_block_headings`` and the
+    reduction below name no entry, no purchase and no envelope: they are about
+    a BLOCK.  The write side has no equivalent; a tick's meaning is entirely
+    per-arm.  When X-f2-c2 lands, the POST settles more than one arm in one
+    transaction and the write union gets a home -- decided then, with two arms
+    to look at, rather than guessed now.
 """
 
 from datetime import date
@@ -28,11 +43,9 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services.reconcile_service import _purchases
-from app.services.reconcile_service._offers import (
-    OutstandingGroup,
-    OutstandingSet,
-)
+
+from . import _purchases
+from ._offers import OutstandingGroup, OutstandingSet
 
 
 def _block_headings(

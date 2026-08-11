@@ -8,12 +8,24 @@ pattern in ``app/services/entry_service.py``.
 
 **Two settle entry points, and the difference is deliberate.**
 :func:`settle_transaction` is ruling **R-FA**'s verb -- what settling a row
-MEANS, amount and status and ledger together -- and it is what a DOOR calls:
-the grid's Mark Paid, and the reconcile panel's tick at plan step X-f2-c2.
-:func:`settle_from_entries` is the envelope PRIMITIVE underneath it, and it
-stays public for the one caller that cannot use the verb:
-``carry_forward_service`` settles a batch and must reconcile the ledger after
-its ``no_autoflush`` block, so it owns that act itself.
+MEANS, amount and status and ledger together.  :func:`settle_from_entries` is
+the envelope PRIMITIVE underneath it, and it stays public for
+``carry_forward_service``, which settles a BATCH and must reconcile the ledger
+after its ``no_autoflush`` block, so it owns that act itself.
+
+**THREE doors settle a transaction, not two, and only two of them are on this
+verb.**  Saying so here rather than letting the next leaf discover it: the
+grid's Mark Paid calls the verb, the reconcile panel's tick will at plan step
+X-f2-c2, and ``routes/transactions/mutations._apply_regular_update`` -- the
+Status dropdown on the full-edit popover -- does NOT.  That third door flips
+the status through the seam and reconciles, but never consults the entries, so
+an envelope-tracked row with a `$25` purchase against a `$400` estimate books
+`$25` through Mark Paid and **`$400`** through the dropdown, from two controls
+in the same card.  Measured on both this tree and the merge-base, so it is
+PRE-EXISTING and neither caused nor worsened here; ruling **R-FA** named "two
+route branches" and there were three.  It is a live money defect with its own
+ledger row and its own step, because routing it onto this verb CHANGES what a
+full-edit Save books and so cannot ride inside a zero-money commit.
 
 Architecture:
   - No Flask imports.  Receives ORM objects, mutates them, and
@@ -113,12 +125,14 @@ def settle_transaction(
     **Why act 3 is inside this verb and not left to the caller.**  Every
     settle door must reconcile, and a door that forgets posts nothing while
     reporting success -- an argument a caller can get wrong is a defect, not a
-    contract (Section 8).  ``carry_forward_service`` is the one caller that
-    genuinely cannot use this verb: it settles a BATCH and must reconcile
-    after its ``no_autoflush`` block so ``_emit_balanced_entry``'s flush lands
-    on the batch's index-safe final state, so it keeps calling
-    :func:`settle_from_entries` directly and owns its own reconcile. That is
-    the layering: the primitive for a batch, this verb for a settle.
+    contract (Section 8).  ``carry_forward_service`` genuinely cannot use this
+    verb: it settles a BATCH and must reconcile after its ``no_autoflush``
+    block so ``_emit_balanced_entry``'s flush lands on the batch's index-safe
+    final state, so it keeps calling :func:`settle_from_entries` directly and
+    owns its own reconcile.  That is the layering: the primitive for a batch,
+    this verb for a settle.  It is not the ONLY non-caller -- the full-edit
+    Status dropdown is a third settle door that is on neither, which is a
+    defect rather than a layering choice; see this module's docstring.
 
     **What it does NOT take is a settle DAY, deliberately.**  X-f2-c2's money
     commit is what gives the tick a statement date to stamp, and adding the
@@ -129,11 +143,27 @@ def settle_transaction(
 
     Does NOT commit -- the caller owns the session boundary.
 
+    **The shadow refusal is THIS function's, and the first draft borrowed it
+    from a branch a shadow never reaches.**  That draft said
+    :func:`settle_from_entries` refuses one by precondition -- true of that
+    helper, and unreachable here: a shadow carries no ``template_id`` and no
+    ``is_envelope``, so ``tracks_purchases`` is False and a shadow always takes
+    the MANUAL branch, where nothing looked at ``transfer_id``.  An adversarial
+    review ran it and settled one leg of a pair: expense shadow Paid, income
+    shadow still Projected, parent transfer still Projected -- ``CLAUDE.md``
+    transfer invariants **3** and **4** broken in one call, and silently,
+    because ``sync_transaction_postings`` returns ``[]`` for a shadow so the
+    ledger stays flat while the grid shows one leg settled.  No caller can
+    reach it today (``mark_done`` routes a shadow to ``_mark_done_shadow``
+    first), but this is a PUBLIC verb documented as what a door calls, and
+    X-f2-c3 puts transfer shadows in the reconcile panel.  A verb owns its own
+    preconditions.
+
     Args:
-        txn: The transaction to settle.  Must be a REGULAR row: a shadow
-            settles through ``transfer_service.update_transfer`` so both legs
-            and the parent move together, and :func:`settle_from_entries`
-            refuses one by precondition.
+        txn: The transaction to settle.  Must be a REGULAR row -- a shadow is
+            REFUSED here, because a transfer settles through
+            ``transfer_service.update_transfer`` so both legs and the parent
+            move together.
         actual_amount: What the row actually cost, when the caller knows.
             ``None`` leaves the column untouched, which is the one-click path.
             **No form submits it today** -- measured: ``name="actual_amount"``
@@ -145,12 +175,23 @@ def settle_transaction(
             an envelope's close may not.
 
     Raises:
-        ValidationError: From the envelope branch's preconditions or from an
-            illegal transition.  Both are 400s at the route.
+        ValidationError: On a transfer shadow, from the envelope branch's
+            preconditions, or from an illegal transition.  All are 400s at the
+            route.
         PostingError: From act 3, on a broken ledger invariant.  Deliberately
             NOT a sibling of ``ValidationError`` -- it must fail loud rather
             than render as a designed refusal.
     """
+    # Checked FIRST and before any mutation, so a refused call leaves the row
+    # untouched -- the ordering ``status_seam.apply_status_change`` uses for
+    # its own three refusals, and for the same reason.
+    if txn.transfer_id is not None:
+        raise ValidationError(
+            f"Transaction {txn.id} is a transfer shadow; "
+            "transfers settle via transfer_service.update_transfer so both "
+            "legs and the parent move together.",
+        )
+
     if txn.tracks_purchases and txn.entries:
         settle_from_entries(txn)
     else:

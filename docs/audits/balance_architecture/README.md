@@ -36,8 +36,8 @@ staleness was invisible because nothing here is a predicate.
 | **just landed** | **X-f2-c1** (`24701c1d`): the reconcile step's reader and writer leave `entry_service` for `reconcile_service`, the reader returns a grouped value instead of ORM rows, purchases NEST under their parent, and all THREE of the panel's doors take the cash page's kind gate. No row kind joined the offer set and no figure moved. Before it, **X-f2-b** (`a41b5ebf`) gave a balance assertion a durable home and shipped to `dev` as **PR #90**; both leaves' records are in `archive/…2026-08-04.md` Section 1c under rule 5 | Section 5, `archive/…2026-08-04.md` 1c |
 | **how it was measured** | **Nine mutations, and TWO of them the step's own controls did not catch.** `purchased_on` mutated to the statement day, and `description` emptied, both survived all 8,671 tests -- every line of the panel captioned with the wrong date, on the one screen whose job is to be walked against a paper statement, because every assertion graded ids and totals and none touched the value objects' other fields. An adversarial review found both; the grouping case asserts the values field for field now. The kind gate's own oracle is the STATUS CODE and nothing else: a loan's panel answered 200 with an EMPTY list, because a loan's `account_anchor_history` carries only its origination row -- a property of the data, not of the route, and one X-f2-c2 removes. X-f2-c's scope is likewise not an estimate: replayed over all 57 Checking assertions on `shekel-prod-db`, **34 days would have had something to tick, 100 rows / $23,910.04, of which 8 rows / $5,442.89 are transfer shadows** | Section 5.0, X-f2-c |
 | **in flight** | nothing OF THIS ARC. **Neither the live branch state nor what production runs is recorded here, and neither may be** -- read them from `git branch -vv` and `docker inspect shekel-prod-app --format '{{.Image}}'`. This row asserted "no feature branches exist" on 2026-08-08 while block 10's `C1` was being built on `feat/pay-calendar`, and it then stored a prod image digest that a deploy falsified on 2026-08-09 -- twice over, a volatile value beside no reconciler, which is this arc's own root cause worn as a signpost. The migration head is **`c7f3a9d1e864`**; nothing since has added one | -- |
-| **blocked on you** | **one, and it is not this arc's.** The SEQUENCING ruling opened at X-an-a: `R6` cannot ship with X-an because it reads a `due_on` that `R5` creates behind X-f4. **X-f2-c's last open fork CLOSED 2026-08-10 as R-FB** -- a bill's tick may correct its amount, an envelope's close may not -- so nothing in X-f2-c2 or X-f2-c3 now waits on an answer | `implementation_plan_recurrence_redesign.md` section 0 |
-| **next** | **X-f2-c2's MONEY commit**, and the two zero-money commits under it are DONE: its FIRST act, the ceiling measurement, BINDS (482 lines against 1,000, two independent projections agreeing at ~1,028 for the three arms), so `reconcile_service` split into a package, and R-FA's settle verb left the route for the service tier -- both because a structural refactor folded into a money-moving leaf is what **R-EY** refused for X-ad. What remains is the transaction twin itself: the parent's own close tick and bills, settled on the STATEMENT date, a bill's amount correctable (**R-FB**) and an envelope's not. Then **X-f2-c3**, transfer shadows with the loan-payment freeze (MOVES MONEY), then **X-f3** (own PR) -> X-f4 -> X-f5 -> X-f6. Block 2
+| **blocked on you** | **two.** (1) X-f2-c2's SHAPE: is a bill a BLOCK of its own or a flat row beside the blocks? R-EW rules only the purchase case, and the zero-money commit answered it two contradictory ways before a review caught it; the answer decides whether the money commit adds an arm or rewrites the assembler. (2) The SEQUENCING ruling opened at X-an-a: `R6` cannot ship with X-an because it reads a `due_on` that `R5` creates behind X-f4. The bill-amount fork CLOSED as **R-FB** | X-f2-c2, and `implementation_plan_recurrence_redesign.md` section 0 |
+| **next** | **X-f2-c2's MONEY commit**, once its SHAPE question is ruled -- is a bill a block or a flat row? Its two zero-money commits are done (`9f255bb4` the package split, `f4512a2f` R-FA's verb), both because folding a structural refactor into a money-moving leaf is what **R-EY** refused. What remains is the transaction twin: the close tick and bills on the STATEMENT date, a bill's amount correctable (**R-FB**). Then **X-ap** (the third settle door, MOVES MONEY), **X-f2-c3** (transfer shadows, MOVES MONEY), then **X-f3** (own PR) -> X-f4 -> X-f5 -> X-f6. Block 2
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it. **RECURRENCE**: Half A is disjoint and starts whenever; **Half B is not one unit, and "`R6` ships WITH X-an" is now known unsatisfiable** -- `R6` reads `due_on`, `R5` creates it, `R5` waits on X-f4. A `developer-decision` is owed; see X-an's entry. **PAY CALENDAR** (opened 2026-08-08, block 10): `budget.pay_periods` stores the payday and derives `end_date` / `period_index`. **Its `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md`, and blocks 9 / 10 |
 | **why this shape** | the anchor half was redesigned from scratch by ruling **R-EB**; R-EQ designed the duplicate rule that had only ever been re-keyed, R-ER put the day rule in the module that owns what an assertion is, X-f1e1 deleted the second DOOR, X-f1e2 the second WRITER, X-f1e3 the mount that was destroying its own message | Section 3.3, and R-EB / R-EQ / R-ER / R-ES / R-ET in Section 4 |
 | **the live lesson** | **a value object's fields are not graded by grading its ids.** X-f2-c1's producer returns purchases as values; every assertion on them checked the entry id, the ordering and the money, and mutating `purchased_on` to the statement day left 8,671 tests green. The panel would have captioned every line with the wrong date -- the one screen a user reads against a paper statement. The rule generalises past this leaf: when a producer starts returning a VALUE where it returned a row, the fields nobody asserted are the fields nobody was asserting before either, and the move is what makes them the producer's responsibility | Section 8 |
@@ -334,9 +334,7 @@ with their own text and owners, so restating them here was the registry duplicat
   2026-08-10, counting the shadows twice at $29,352.93; re-derived from `shekel-prod-db` then.)
   The **DECOMPOSED parent** of three leaves (developer, 2026-08-10), one session and one commit
   each, with the two that move money separated from the one that does not.
-  * [x] **X-f2-c1** `24701c1d` the MODULE HOME and the shape: the reader and writer leave
-    `entry_service` (991 of 1000, now 816) for `reconcile_service`, the reader returns a grouped
-    value, and purchases NEST under their parent. Closed **N-216** at all THREE doors; opened
+  * [x] **X-f2-c1** `24701c1d` the module home and the grouped shape. Closed **N-216**; opened
     **N-217**, **N-218**.
   * [ ] **X-f2-c2** the TRANSACTION twin (**R-FA**): the envelope's own close tick and bills, settled
     through a SERVICE verb the grid's Mark Paid shares, stamping `observed_on`. The date bound is
@@ -358,10 +356,21 @@ with their own text and owners, so restating them here was the registry duplicat
     three-way polymorphism the ceiling only reveals**: one question -- what can this statement still
     settle, and record it -- over three row kinds with three settle verbs, so the package is one
     module per arm plus the value types they publish and the assembler that blocks them.
+    **Its SHAPE question is OPEN and is the developer's**: is a BILL a block of its own or a flat
+    row beside the blocks? R-EW rules only the purchase case, and this leaf's zero-money commit
+    answered it two ways before a review caught it. Under one answer the money commit ADDS an arm
+    to `_assemble`; under the other it REWRITES that module's ordering, heading, count and empty
+    rules inside a commit that moves money, which **R-EY** forbids.
   * [ ] **X-f2-c3** the TRANSFER shadows (**R-FA**), in their own group, settled through
     `transfer_service.update_transfer` so both legs and the parent move together (Invariant 3) --
     which means a tick on THIS account's panel also settles the leg on the other account, and the
     copy must say so. Carries the loan-payment freeze.
+* [ ] **X-ap** `fix(transactions): the full-edit Status dropdown settles like every other door` --
+  closes **N-219**. **THE THIRD SETTLE DOOR, which R-FA's own text missed** by naming two.
+  `_apply_regular_update` flips an envelope row to Paid through the seam and reconciles, never
+  consulting its entries: a `$25` purchase against a `$400` estimate books `$25` through Mark Paid
+  and **`$400`** here. **MOVES MONEY**, so it is its own commit with its own figures, after
+  X-f2-c2's money commit and before X-f2-c3 (developer, 2026-08-10).
 * [ ] **X-f3** `feat(cash): the ledger is sum-of-postings and the residual is classified` -- **THE
   CUTOVER. MOVES MONEY. OWN PR, NO BACKLOG.** The assertion stops resetting the ledger
   (`cash_ledger/_walk.py:300`), `balance(T)` becomes `opening equity + SUM(postings <= T)`, and the
@@ -528,12 +537,9 @@ with their own text and owners, so restating them here was the registry duplicat
   repair X-x's refusals point at is that step's and X-x waits on both.
   *Its opening line claimed this step "re-anchors accounts". That was expired when written: ruling
   R-EH deleted `accounts.current_anchor_period_id`, so there is nothing left to re-anchor.*
-  * [x] **X-ad-a** `2a4eb477` -- registration ASKS for the most recent payday, the cadence and the
-    horizon; the bootstrap payday is DELETED and `pay_period_service.establish_schedule` writes the
-    periods and the `budget.pay_schedule` row in one call. Closes **N-123** (= pay-calendar `P3`)
-    and satisfies `C4`'s `P8` write-door invariant for new owners. Two write doors also stopped
-    emitting rows their own schema forbids (a cadence of 1, a zero batch). Proof of record:
-    `RegistrationSpec`'s docstring and `TestRegistrationBuildsARealPayCalendar`.
+  * [x] **X-ad-a** `2a4eb477` -- registration ASKS for the payday, the cadence and the horizon;
+    the bootstrap payday is DELETED. Closed **N-123** (= pay-calendar `P3`) and satisfies `C4`'s
+    `P8`. **Shipped to `dev`, NOT to production** -- it is not an ancestor of `origin/main`.
   * [ ] **X-ad-b** the rolling top-up stops writing HISTORY (**N-124**, ruling **R-EZ**). With
     rolling enabled, a lapsed schedule's page load appends periods from `last.end_date + 1`
     wherever that is and populates them -- **61 -> 113 -> 132 periods and +991 transactions** over

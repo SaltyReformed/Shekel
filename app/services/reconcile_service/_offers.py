@@ -151,9 +151,14 @@ class OutstandingSet:
         rather than an empty form.
 
         **Read off the COUNT, not off ``groups``**, and the difference is a
-        wrong empty state rather than a style point: when X-f2-c2 adds bills as
-        a sibling list, ``not self.groups`` would answer True for a panel with
-        bills to offer and suppress them behind the "nothing is being held back
-        twice" copy.  One definition of empty, and it is "nothing to tick".
+        wrong empty state rather than a style point.  ``not self.groups`` is
+        the same answer as this ONLY while purchases are the whole offer set:
+        the moment X-f2-c2 adds a kind that does not arrive inside a group, it
+        answers True for a panel with things to offer and suppresses them
+        behind the "nothing is being held back twice" copy.  Whether bills DO
+        arrive outside a group is the open shape question
+        (:mod:`app.services.reconcile_service._assemble`); this accessor is
+        written so that either answer is safe, because one definition of empty
+        -- "nothing to tick" -- survives both.
         """
         return self.purchase_count == 0
