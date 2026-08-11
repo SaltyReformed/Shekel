@@ -362,6 +362,12 @@ EVT_ENTRIES_SETTLED_DAY_RECORDED = _register(
     "User confirmed which outstanding purchases their bank statement shows, "
     "stamping each one's settled_on with the day the balance was observed.",
 )
+EVT_TRANSACTIONS_RECONCILED = _register(
+    "transactions_reconciled", BUSINESS,
+    "User confirmed which outstanding transactions their bank statement "
+    "shows; each settled through the transaction service on the day the "
+    "balance was observed, some carrying a corrected amount.",
+)
 
 # ── Business events: pay periods ───────────────────────────────────
 

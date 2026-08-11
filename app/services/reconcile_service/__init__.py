@@ -79,16 +79,24 @@ Architecture (``CLAUDE.md``):
 
 from app.services.reconcile_service._assemble import outstanding_set
 from app.services.reconcile_service._offers import (
+    OfferKind,
     OutstandingGroup,
     OutstandingPurchase,
     OutstandingSet,
+    OutstandingTransaction,
 )
 from app.services.reconcile_service._purchases import record_settled_days
+from app.services.reconcile_service._transactions import (
+    record_settled_transactions,
+)
 
 __all__ = [
+    "OfferKind",
     "OutstandingGroup",
     "OutstandingPurchase",
     "OutstandingSet",
+    "OutstandingTransaction",
     "outstanding_set",
     "record_settled_days",
+    "record_settled_transactions",
 ]

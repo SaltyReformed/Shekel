@@ -2245,8 +2245,11 @@ class TestTheReconcileRoute:
             entries = self._entries_of(txn.id)
             assert len(entries) == 3
             assert all(e.settled_on is None for e in entries)
-            # The prompt rides along on the true-up's own response.
-            assert b"Tick the ones your statement shows" in response.data
+            # The prompt rides along on the true-up's own response.  The copy
+            # widened at plan step X-f2-c2 (ruling R-FD: the panel offers
+            # deposits too, so it cannot say "purchases"); what this asserts is
+            # unchanged -- that the prompt is IN the true-up's own body.
+            assert b"Tick everything your statement shows" in response.data
 
     def test_ticking_a_purchase_stamps_the_asserted_day(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -2337,7 +2340,15 @@ class TestTheReconcileRoute:
             listed = auth_client.get(
                 f"/accounts/{seed_user['account'].id}/reconcile",
             )
-            assert b"50.00" not in listed.data
+            # Asserted on the entry's OWN checkbox, not on its amount as a
+            # substring.  The panel offers the envelope's close too since plan
+            # step X-f2-c2, and that row's figure is sum(entries) = $50.00, so
+            # a ``b"50.00" not in`` assertion now reads the wrong row's money
+            # and would pass or fail for reasons unrelated to this bound.
+            assert (
+                f'name="entry_ids" value="{entry_id}"'.encode()
+                not in listed.data
+            )
 
             response = auth_client.post(
                 f"/accounts/{seed_user['account'].id}/reconcile",
@@ -2849,6 +2860,153 @@ class TestTheReconcileRoute:
             assert max(
                 at(f'value="{i}"') for i in grocery_ids
             ) < at("Gas") < min(at(f'value="{i}"') for i in gas_ids)
+
+    # ── Plan step X-f2-c2: the door settles ROWS too ──────────────
+
+    def test_one_POST_settles_a_purchase_AND_its_parents_close(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The ORDER of the two writers, graded end to end.
+
+        **This is the control for the defect the ordering exists to prevent.**
+        The purchase arm's scope requires a PROJECTED parent, so settling the
+        envelope's close FIRST takes that parent out of scope and every ticked
+        purchase on it is silently skipped -- reported as success, with the
+        purchases still reading outstanding on the next render.  Ticking a whole
+        block at once is the ordinary way to walk a statement, not an exotic
+        one.
+
+        Shown to FIRE: swapping the two service calls in
+        ``record_reconciliation`` leaves ``settled_on`` NULL on the purchase
+        while the envelope settles.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [("106.86", past, False, None)],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+            entry_id = self._entries_of(txn.id)[0].id
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={
+                    "entry_ids": [str(entry_id)],
+                    "transaction_ids": [str(txn.id)],
+                },
+            )
+
+            assert response.status_code == 200
+            db.session.expire_all()
+            assert self._entries_of(txn.id)[0].settled_on == display_today()
+            settled = db.session.get(Transaction, txn.id)
+            assert settled.settled_on == display_today()
+            assert settled.actual_amount == Decimal("106.86")
+
+    def test_a_submitted_amount_box_corrects_what_the_row_books(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Ruling **R-FB**, through the real form field.
+
+        The panel renders ``actual_amount-<id>`` for a correctable row; the
+        route pairs it back to its own row by NAME rather than by position, so
+        this grades the pairing as well as the write.  An envelope with no
+        entries is the correctable case (ruling **R-FF**).
+        """
+        with app.app_context():
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={
+                    "transaction_ids": [str(txn.id)],
+                    f"actual_amount-{txn.id}": "412.09",
+                },
+            )
+
+            assert response.status_code == 200
+            db.session.expire_all()
+            settled = db.session.get(Transaction, txn.id)
+            assert settled.actual_amount == Decimal("412.09")
+            assert settled.estimated_amount == Decimal("500.00")
+
+    def test_a_malformed_amount_refuses_and_commits_NOTHING(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The panel's rejection surface, and the atomicity behind it.
+
+        A crafted POST can send anything; the browser's ``type="number"`` is a
+        convenience, not a boundary.  Without the designed refusal this is an
+        unhandled Marshmallow error -- a 500 on a write door.
+
+        **The ticked purchase must not survive either**, which is what makes
+        this an atomicity control rather than a validation one: both writers
+        run inside one transaction, so a refusal rolls back the half that had
+        already succeeded.  It answers 400 WITH the designed-fragment header,
+        because htmx leaves a bare 4xx unswapped and the button would read as
+        broken.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [("106.86", past, False, None)],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+            entry_id = self._entries_of(txn.id)[0].id
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={
+                    "entry_ids": [str(entry_id)],
+                    "transaction_ids": [str(txn.id)],
+                    f"actual_amount-{txn.id}": "-12",
+                },
+            )
+
+            assert response.status_code == 400
+            assert response.headers["Shekel-Designed-Fragment"] == "1"
+            db.session.expire_all()
+            assert self._entries_of(txn.id)[0].settled_on is None
+            assert db.session.get(Transaction, txn.id).settled_on is None
+
+    def test_the_write_door_still_404s_a_kind_this_panel_does_not_serve(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Finding **N-216**'s gate, re-graded now that the door writes more.
+
+        The kind gate ran before the offer set widened, so its own oracle was
+        the status code and nothing else -- a loan answered 200 with an empty
+        list only because a loan's ``account_anchor_history`` carries just its
+        origination row.  X-f2-c2 removes that accident: a loan's projected
+        rows would now be offered, so the gate is the only thing refusing.
+        """
+        with app.app_context():
+            # The gate's own predicate is ``has_amortization`` (plus
+            # appreciation and the two investment categories), so the fixture
+            # picks the type by THAT column rather than by a name.
+            loan_type = (
+                db.session.query(AccountType)
+                .filter_by(has_amortization=True).first()
+            )
+            loan = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    name="Van Loan",
+                    account_type_id=loan_type.id,
+                    anchor_balance=Decimal("9000.00"),
+                ),
+            )
+            db.session.commit()
+
+            assert auth_client.get(
+                f"/accounts/{loan.id}/reconcile",
+            ).status_code == 404
+            assert auth_client.post(
+                f"/accounts/{loan.id}/reconcile", data={},
+            ).status_code == 404
 
 
 # ── Account Type CRUD ─────────────────────────────────────────────

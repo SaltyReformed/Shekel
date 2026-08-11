@@ -40,6 +40,7 @@ Architecture:
 """
 
 import logging
+from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
@@ -93,8 +94,69 @@ def settled_status_id(txn: Transaction) -> int:
     return ref_cache.status_id(StatusEnum.DONE)
 
 
+def settles_from_entries(txn: Transaction) -> bool:
+    """Return whether a settle DERIVES this row's amount from its entries.
+
+    **The verb's own branch predicate, published** -- because three things ask
+    it and two of them are not this module.  :func:`settle_transaction` picks
+    its branch on it; :func:`settle_amount` values the row on it; and the
+    reconcile panel decides whether to render an editable amount on it, which
+    is ruling **R-FF**: a tick is correctable exactly when the verb takes its
+    MANUAL branch.
+
+    Writing the predicate at each of those three sites is the shape this arc
+    exists to remove, and the failure it produces here is specific: a panel
+    that offers a box the verb ignores takes a user's typed figure and drops
+    it, silently, on the screen whose whole job is entering the true one.
+
+    **Both halves are load-bearing.**  ``tracks_purchases`` alone would claim
+    production's ``Kayla's Spending Money`` -- envelope-tracked, `$100.00`
+    budgeted, ZERO entries -- derives its amount from entries that do not
+    exist, settling it at `$0.00` and refusing the user the box that would have
+    corrected it.
+
+    Args:
+        txn: The row.  Reads ``tracks_purchases`` (a template lookup for a
+            template-linked row) and the ``entries`` relationship.
+
+    Returns:
+        True when a settle takes the ``sum(entries)`` branch.
+    """
+    return bool(txn.tracks_purchases and txn.entries)
+
+
+def settle_amount(txn: Transaction) -> Decimal:
+    """Return what settling *txn* would BOOK, absent a caller-supplied actual.
+
+    **The read-only twin of act 1 of :func:`settle_transaction`**, and it exists
+    because the reconcile panel must show the figure a tick will book.  A panel
+    that renders ``effective_amount`` beside a verb that books something else is
+    two answers to one money question, one screen apart -- and after plan step
+    X-aq the verb genuinely books something else for a salary row.
+
+    It is a PURE read: nothing here mutates, so the panel can call it per
+    offered row and the writer can call it again to decide whether a submitted
+    figure is a correction or an echo of the prefill.
+
+    Args:
+        txn: The row about to be offered or settled, still Projected.
+
+    Returns:
+        ``sum(entries)`` when :func:`settles_from_entries`, else the freshest
+        derivation of the row's own amount -- the projection's live figure when
+        one exists and the stored ``effective_amount`` otherwise.
+    """
+    if settles_from_entries(txn):
+        return compute_actual_from_entries(txn.entries)
+    live = _freshest_amount(txn)
+    return txn.effective_amount if live is None else live
+
+
 def settle_transaction(
-    txn: Transaction, *, actual_amount: Decimal | None = None,
+    txn: Transaction,
+    *,
+    actual_amount: Decimal | None = None,
+    settled_on: date | None = None,
 ) -> None:
     """Settle one regular transaction -- what "the money moved" MEANS for a row.
 
@@ -143,12 +205,12 @@ def settle_transaction(
     Status dropdown is a third settle door that is on neither, which is a
     defect rather than a layering choice; see this module's docstring.
 
-    **What it does NOT take is a settle DAY, deliberately.**  X-f2-c2's money
-    commit is what gives the tick a statement date to stamp, and adding the
-    parameter before it has a caller is what ruling **R-EC** deleted from
-    :func:`settle_from_entries` under rule 13.  Until then the seam's own rule
-    holds: the user's today on first entry to the settled band, preserved on
-    re-entry.
+    **It takes a settle DAY since plan step X-f2-c2's money commit**, which is
+    the caller ruling **R-EC** was waiting for: the reconcile tick knows the day
+    the statement covers, and stamping the user's today instead would date the
+    money to when they got round to reconciling.  ``None`` leaves the seam's own
+    rule in force -- the user's today on first entry to the settled band,
+    preserved on re-entry -- which is what every other door means.
 
     Does NOT commit -- the caller owns the session boundary.
 
@@ -184,11 +246,18 @@ def settle_transaction(
             has never used.  Ruling **R-FB** is what gives it a first real
             caller: a BILL's tick may correct its amount, prefilled, and an
             envelope's close may not.
+        settled_on: The civil day the money moved, when the CALLER knows it --
+            the reconcile tick's statement date.  ``None`` derives it through
+            the seam.  A day in the future or one supplied for a non-settled
+            status is refused there (rulings **R-EJ** / finding **N-183**);
+            the tick cannot reach either, because an assertion's own
+            ``observed_on`` is already refused in the future by
+            ``anchor_service``.
 
     Raises:
         ValidationError: On a transfer shadow, from the envelope branch's
-            preconditions, or from an illegal transition.  All are 400s at the
-            route.
+            preconditions, from an illegal transition, or from the seam's
+            settle-day refusals.  All are 400s at the route.
         PostingError: From act 3, on a broken ledger invariant.  Deliberately
             NOT a sibling of ``ValidationError`` -- it must fail loud rather
             than render as a designed refusal.
@@ -203,8 +272,8 @@ def settle_transaction(
             "legs and the parent move together.",
         )
 
-    if txn.tracks_purchases and txn.entries:
-        settle_from_entries(txn)
+    if settles_from_entries(txn):
+        settle_from_entries(txn, settled_on=settled_on)
     else:
         # Resolved BEFORE the seam, because the projection's own rule is
         # Projected-only: ``live_projected_net`` drops a row the moment its
@@ -214,7 +283,9 @@ def settle_transaction(
             actual_amount if actual_amount is not None
             else _freshest_amount(txn)
         )
-        apply_status_change(txn, settled_status_id(txn))
+        apply_status_change(
+            txn, settled_status_id(txn), settled_on=settled_on,
+        )
         # Applied AFTER the seam so act 3 below reads the final actual amount
         # rather than the pre-settle estimate (the 2.8b HIGH, forward
         # direction).
@@ -280,7 +351,9 @@ def _freshest_amount(txn: Transaction) -> Decimal | None:
     return live
 
 
-def settle_from_entries(txn: Transaction) -> None:
+def settle_from_entries(
+    txn: Transaction, *, settled_on: date | None = None,
+) -> None:
     """Settle a tracked-envelope transaction at sum(entries).
 
     The envelope PRIMITIVE: the three writes an envelope's close needs --
@@ -301,8 +374,19 @@ def settle_from_entries(txn: Transaction) -> None:
       - ``status_id`` is set to ``DONE`` for expense transactions and
         ``RECEIVED`` for income transactions, matching the display
         convention used by ``app/routes/transactions.py:mark_done``.
-      - ``settled_on`` is set by the status seam: the user's today on the
-        first entry into a settled status, preserved on a re-settle.
+      - ``settled_on`` is *settled_on* when the caller supplied one, else the
+        status seam's own rule: the user's today on the first entry into a
+        settled status, preserved on a re-settle.
+
+    **The day parameter is BACK, and this time it has a caller** -- the
+    reconcile panel's envelope close, which knows the statement's date and must
+    not date the money to the day the user got round to reconciling.  Ruling
+    **R-EC** deleted the previous one (``paid_at``) because NO call site passed
+    it and its docstring named a caller that never had; the test rule 13 sets is
+    a real caller, not a plausible one, and :func:`settle_transaction` now
+    threads this from ``reconcile_service``.  ``carry_forward_service`` still
+    passes nothing, which is correct: a carried-forward envelope settles today,
+    not on some statement's day.
 
     **It took an explicit ``paid_at`` until plan step X-f1, and that parameter
     was DEAD** (ruling R-EC, rule 13).  Its docstring named the carry-forward
@@ -341,6 +425,11 @@ def settle_from_entries(txn: Transaction) -> None:
         txn: The Transaction to settle.  Must be attached to the
             current SQLAlchemy session so the entries relationship
             resolves correctly.
+        settled_on: The civil day the money moved, when the caller knows it.
+            ``None`` leaves the seam to derive it.  Passed straight through --
+            every refusal that guards it (a future day, a day beside a
+            non-settled status, a ``datetime``) is the seam's, so this helper
+            adds no second opinion about a value it does not own.
 
     Raises:
         ValidationError: If any precondition is violated.  The error
@@ -394,10 +483,11 @@ def settle_from_entries(txn: Transaction) -> None:
 
     # Route the status mechanics (transition check, status_id, settled_on,
     # status expire) through the single seam so this helper cannot drift from
-    # the manual mark-done / PATCH / credit paths.  No day is passed: the seam
-    # stamps the user's today on entering the settled status and preserves an
-    # existing one, which is the only behaviour any caller here ever wanted.
-    apply_status_change(txn, new_status_id)
+    # the manual mark-done / PATCH / credit paths.  The day is the caller's
+    # when it has one -- the reconcile tick's statement date -- and otherwise
+    # None, which is the seam's "stamp the user's today on entering the settled
+    # status and preserve an existing one".
+    apply_status_change(txn, new_status_id, settled_on=settled_on)
     # ``compute_actual_from_entries`` returns Decimal("0") on an empty
     # list, which is the carry-forward "no spend, full rollover" case.
     txn.actual_amount = compute_actual_from_entries(txn.entries)

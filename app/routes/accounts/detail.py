@@ -65,7 +65,11 @@ from app.models.ref import CompoundingFrequency
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.routes.accounts.history import balance_history_context
-from app.routes.accounts.reconcile import panel_id, reconcile_context
+from app.routes.accounts.reconcile import (
+    observed_day,
+    panel_id,
+    reconcile_context,
+)
 from app.services import (
     balance_at,
     cash_ledger,
@@ -378,10 +382,14 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
         "compounding_frequencies": compounding_frequencies,
         "chart_json": chart_json,
         "has_chart": has_chart,
-        # The outstanding-purchase list (plan step S1-c), built by the SAME
-        # helper the post-true-up prompt uses so the page and the modal cannot
-        # come to disagree about what is still unreconciled.
-        **reconcile_context(account, panel=panel_id(account.id)),
+        # The outstanding list (plan step S1-c, widened at X-f2-c), built by
+        # the SAME helper the post-true-up prompt uses so the page and the
+        # modal cannot come to disagree about what is still unreconciled.
+        # The asserted day is resolved once and handed in (finding N-222).
+        **reconcile_context(
+            account, panel=panel_id(account.id),
+            observed_on=observed_day(account),
+        ),
     }
 
 

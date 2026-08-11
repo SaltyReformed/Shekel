@@ -224,18 +224,25 @@ def record_settled_days(
     if not entry_ids:
         return 0
 
-    # ``synchronize_session='fetch'`` so anything already holding these rows
-    # sees the new posting day WITHOUT waiting for the session boundary -- which
-    # this function does not own.  The rationale carried here from
-    # ``entry_service`` said "later code in the same request (the grid
-    # re-rendering its projection)", and that is FALSE at the one live caller:
-    # the grid re-render is a SEPARATE request raised by ``HX-Trigger:
-    # balanceChanged``, and the route's own panel re-render happens after a
-    # ``commit()`` that expires the identity map anyway (nothing in ``app/``
-    # overrides ``expire_on_commit``).  So the flag costs a pre-SELECT and buys
-    # nothing for today's caller; it is kept rather than flipped because
-    # changing it is a behaviour change on a write path and belongs to the leaf
-    # that revisits this writer (X-f2-c2), not to a docstring correction.
+    # ``synchronize_session='fetch'``, and finding **N-223** is ANSWERED here
+    # rather than deferred again -- with a different answer from the one the
+    # finding expected, because plan step X-f2-c2 changed the fact it rested on.
+    #
+    # The rationale this inherited from ``entry_service`` -- "later code in the
+    # same request (the grid re-rendering its projection)" -- was FALSE: that
+    # re-render is a SEPARATE request raised by ``HX-Trigger: balanceChanged``,
+    # and the route's own panel re-render happens after a ``commit()`` that
+    # expires the identity map anyway.  On that reading the flag bought nothing
+    # and N-223 proposed flipping it.
+    #
+    # It buys something NOW.  The reconcile POST runs this writer and then the
+    # TRANSACTION arm inside one session, and that arm loads the same parents'
+    # ``entries`` (``selectinload``, for the settle branch and its amount).  A
+    # bulk UPDATE with ``synchronize_session=False`` leaves every already-loaded
+    # ``TransactionEntry`` carrying the ``settled_on`` it had BEFORE the update,
+    # and SQLAlchemy does not overwrite loaded attributes on an identity-mapped
+    # object a later query returns.  So the flag is what keeps the second arm's
+    # view of these rows true, for one pre-SELECT per reconcile POST.
     updated = (
         db.session.query(TransactionEntry)
         .filter(
