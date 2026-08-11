@@ -237,16 +237,26 @@ class OutstandingGroup:
     def kind(self) -> OfferKind:
         """Return which section this block belongs in (ruling **R-FC**).
 
-        **Read off the offers, never derived from their shape.**  A block
+        **Read off the offers wherever there is one to read.**  A block
         carrying its parent's own tick takes that offer's tag, which the arm
-        that produced it set; a block of purchases alone is an ENVELOPE, and
-        that one IS a derivation but a sound one -- both entry write doors
-        refuse a parent that is not purchase-tracked
-        (``entry_service.create_entry`` and ``update_entry``, each on
-        ``txn.tracks_purchases``), so "it carries entries" IMPLIES
-        envelope-tracked.  The class docstring above is careful that no CLAUSE
-        in the purchase arm's scope asserts it, and that stays true: the
-        guarantee comes from the write door, not from the read.
+        that produced it set.  A block of purchases alone has no tag to read,
+        so it falls back to ENVELOPE.
+
+        **That fallback is a DERIVATION and it is not guaranteed sound**, which
+        an earlier draft of this docstring claimed on a citation that does not
+        hold: it said both entry write doors refuse a parent that is not
+        purchase-tracked, and ``entry_service.update_entry`` has no such guard
+        -- it validates the field names and ownership and nothing else.  Only
+        ``create_entry`` checks ``tracks_purchases``, so the guarantee is
+        "it carried entries WHEN THEY WERE WRITTEN", and a template's
+        ``is_envelope`` is editable afterwards (the panel's own ``settle_row``
+        macro says so).  A de-enveloped parent still holding entries therefore
+        sections as an ENVELOPE here and as a ``BILL`` the moment its own close
+        becomes offerable -- a mis-section, no wrong figure.  Left as a
+        derivation rather than fixed here because the repair belongs with the
+        arms: the purchase arm knows its parent and should TAG its blocks like
+        the other arm does, which is plan step X-f2-c3's extraction (finding
+        **N-225**).
 
         **The settle's tag wins over the purchases**, and the case is real: an
         envelope with outstanding purchases AND an overdue close is one block,

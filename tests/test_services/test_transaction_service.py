@@ -832,6 +832,18 @@ class TestASettleBooksTheFreshestFigure:
         The headline of X-aq.  Before it, this settle booked ``$1.00`` while
         the grid cell beside it read ``$4,000.00`` -- ``$3,999.00`` of income
         deleted from the projection by pressing Mark Paid.
+
+        **The refresh lands in ``estimated_amount`` and ``actual_amount`` stays
+        NULL**, which is the developer's ruling of 2026-08-11 amending R-FE.
+        The stale column IS the cache, so reconciling it is what the settle
+        does; ``actual_amount`` means "a human entered this fact" and three
+        subsystems read its NULL-ness that way -- ``income_service`` (a settled
+        income row's actual is never a recomputable projection),
+        ``spending_analysis`` (only an explicitly entered actual is a surprise)
+        and the grid cell (which strikes through the estimate whenever the two
+        differ).  A machine write there is indistinguishable from a correction
+        afterwards, and permanent: the row leaves ``live_projected_net``'s
+        Projected-only candidate set at this very flip.
         """
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
@@ -839,7 +851,8 @@ class TestASettleBooksTheFreshestFigure:
 
             transaction_service.settle_transaction(txn)
 
-            assert txn.actual_amount == Decimal("4000.00")
+            assert txn.estimated_amount == Decimal("4000.00")
+            assert txn.actual_amount is None
             assert txn.effective_amount == Decimal("4000.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.RECEIVED)
 
@@ -851,6 +864,16 @@ class TestASettleBooksTheFreshestFigure:
         The precedence half of act 1 and the reason X-f2-c2's correctable box
         (ruling **R-FB**) is safe: the panel's prefilled amount is what the
         statement says, and a live recompute must not overwrite it.
+
+        **It is also the control for the two columns being SEPARABLE**, which
+        is what the developer's 2026-08-11 amendment to R-FE bought.  Both
+        facts survive one settle and neither is readable off the other: the
+        machine's recompute lands in ``estimated_amount`` (``$4,000.00``, what
+        the projection was holding) and the human's in ``actual_amount``
+        (``$3,912.44``, what the bank really paid).  Under the shipped-then-
+        withdrawn single-column version the recompute was invisible here, so
+        nothing could tell a stale projection from an accurate one after the
+        fact -- and plan step X-ar's reconciler could not have cleaned it.
         """
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
@@ -861,6 +884,8 @@ class TestASettleBooksTheFreshestFigure:
             )
 
             assert txn.actual_amount == Decimal("3912.44")
+            assert txn.estimated_amount == Decimal("4000.00")
+            assert txn.effective_amount == Decimal("3912.44")
 
     def test_an_overridden_row_is_not_re_derived(
         self, app, db, seed_user, seed_periods,
@@ -1047,7 +1072,7 @@ class TestASettleBooksTheFreshestFigure:
         except this one.  Grading it as an ORDER rather than as an outcome:
         the row is Projected at the moment the resolver is called.
 
-        Shown to FIRE: moving the ``_freshest_amount`` call below
+        Shown to FIRE: moving the :func:`_reconcile_cached_amount` call below
         ``apply_status_change`` books ``$1.00``.
         """
         with app.app_context():
@@ -1070,4 +1095,5 @@ class TestASettleBooksTheFreshestFigure:
             assert seen_status == [
                 ref_cache.status_id(StatusEnum.PROJECTED),
             ]
-            assert txn.actual_amount == Decimal("4000.00")
+            assert txn.estimated_amount == Decimal("4000.00")
+            assert txn.actual_amount is None

@@ -166,9 +166,12 @@ def outstanding_purchases(
         oldest first, the entry id breaking a same-day tie deterministically.
         Both orderings are the caller's contract and both come from the single
         ``ORDER BY`` below rather than from a second sort.  Empty for an
-        account with nothing outstanding, which is the steady state for a user
-        who reconciles at every true-up.  No list is ever empty: a parent
-        appears only because a purchase put it there.
+        account with nothing outstanding, which is THIS ARM's steady state for
+        a user who reconciles at every true-up -- and is no longer the PANEL's,
+        because plan step X-f2-c2 added an arm that offers source rows; see
+        :func:`app.services.reconcile_service._transactions.outstanding_transactions`.
+        No list is ever empty: a parent appears only because a purchase put it
+        there.
     """
     rows = (
         db.session.query(TransactionEntry)

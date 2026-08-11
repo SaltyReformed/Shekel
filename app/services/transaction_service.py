@@ -15,8 +15,8 @@ after its ``no_autoflush`` block, so it owns that act itself.
 
 **THREE doors settle a transaction, not two, and only two of them are on this
 verb.**  Saying so here rather than letting the next leaf discover it: the
-grid's Mark Paid calls the verb, the reconcile panel's tick will at plan step
-X-f2-c2, and ``routes/transactions/mutations._apply_regular_update`` -- the
+grid's Mark Paid calls the verb, the reconcile panel's tick calls it since plan
+step X-f2-c2, and ``routes/transactions/mutations._apply_regular_update`` -- the
 Status dropdown on the full-edit popover -- does NOT.  That third door flips
 the status through the seam and reconciles, but never consults the entries, so
 an envelope-tracked row with a `$25` purchase against a `$400` estimate books
@@ -206,21 +206,29 @@ def settle_transaction(
     Three acts, in this order and the order matters:
 
     1. **The amount, which is the FRESHEST derivation of what this row is
-       worth** (ruling **R-FE**, plan step X-aq).  A caller-supplied
-       *actual_amount* wins -- it is the figure a human read off a statement.
-       Absent one, an envelope-tracked row WITH entries settles at
-       ``sum(entries)`` (:func:`settle_from_entries`), because its entries ARE
-       the record of what it cost; everything else takes
-       :func:`_freshest_amount`, which prefers the projection's own live
-       derivation over the stored cache and answers ``None`` -- leave the
-       column alone -- whenever the two agree or no live seam applies.
+       worth** (ruling **R-FE**, plan step X-aq), and it is TWO writes to two
+       columns that mean two different things.  An envelope-tracked row WITH
+       entries settles at ``sum(entries)`` (:func:`settle_from_entries`),
+       because its entries ARE the record of what it cost.  Everything else:
+       :func:`_reconcile_cached_amount` first refreshes ``estimated_amount``
+       from the projection's own live derivation, because that column is a
+       CACHE and this is the one moment the arc reconciles it (finding
+       **N-224**; plan step **X-ar** gives the same reconciler its other
+       triggers and deletes the read-time thread).  Then a caller-supplied
+       *actual_amount* -- a figure a HUMAN read off a statement -- lands in
+       ``actual_amount``, and only if it differs from what the refreshed row
+       would book anyway.
        **The ``and txn.entries`` half is load-bearing**, and production says
        so: ``Kayla's Spending Money`` carries no entries at all, so settling it
        from entries unconditionally would book ``$0.00`` against its
        ``$100.00`` estimate.  **Why the rule is HERE and not at each door**: it
        decides money, three doors settle a row, and a door that picks its own
        figure is how one row comes to book two amounts depending on which
-       control the user pressed.
+       control the user pressed.  **And why the two writes are not one**: a
+       machine's recompute and a human's correction are different facts, and
+       three subsystems read ``actual_amount``'s NULL-ness as meaning the
+       second -- see :func:`_reconcile_cached_amount` for the three and for the
+       review that sent the single-column version back.
     2. **The status**, through the single seam, so the transition is verified
        and the settle day stamped by the one door that owns both.
     3. **The ledger**, reconciled LAST, so it reads the final amount rather
@@ -304,28 +312,32 @@ def settle_transaction(
     if settles_from_entries(txn):
         settle_from_entries(txn, settled_on=settled_on)
     else:
-        # Both resolved BEFORE the seam.  The valuation must be: the
-        # projection's own rule is Projected-only, so ``live_projected_net``
+        # Act 1a: RECONCILE THE CACHE, before the seam.  It must be before:
+        # the projection's own rule is Projected-only, so ``live_projected_net``
         # drops a row the moment its status leaves that band and asking after
-        # the flip always answers "nothing fresher".  The comparison follows it
-        # for symmetry -- ``effective_amount`` is stable across the flip, but
-        # reading it once, here, is what makes the two lines one decision.
-        booked = (
-            actual_amount if actual_amount is not None else settle_amount(txn)
+        # the flip always answers "nothing fresher".
+        _reconcile_cached_amount(txn)
+        # Act 1b: the HUMAN's figure, and only a human's reaches this column.
+        # The echo rule: a figure equal to what the row would book anyway is not
+        # a correction, and writing it would populate a column that is NULL on
+        # every uncorrected row -- destroying the only signal that says a human
+        # typed one, which is what ruling R-FB's own production measurement is
+        # made of ("11 of 93 settled bills carry a hand-typed correction").
+        # That half is load-bearing rather than tidy: the reconcile panel
+        # PREFILLS its amount box, so an untouched tick submits the figure the
+        # row would have booked anyway, and plan step X-ap routes a full-edit
+        # form here that submits ``actual_amount`` on EVERY save.
+        #
+        # **It is compared against the REFRESHED ``effective_amount``**, which
+        # is why act 1a runs first: comparing a prefill taken from
+        # :func:`settle_amount` against a cache that recompute had already
+        # superseded made the rule inert for exactly the rows act 1a is about.
+        correction = (
+            actual_amount
+            if actual_amount is not None
+            and actual_amount != txn.effective_amount
+            else None
         )
-        # **The echo rule, stated ONCE and applied to both sources.**  A figure
-        # equal to what the row would otherwise book is not a correction, and
-        # writing it populates a column that is NULL on every uncorrected row --
-        # destroying the only signal that says a human typed one, which is what
-        # ruling R-FB's own production measurement is made of ("11 of 93 settled
-        # bills carry a hand-typed correction").  It applies to a
-        # CALLER-SUPPLIED figure too, and that half is load-bearing: the
-        # reconcile panel prefills its amount box, so an untouched tick submits
-        # the figure the row would have booked anyway, and plan step X-ap routes
-        # a full-edit form here that submits ``actual_amount`` on EVERY save.
-        # Two doors suppressing the echo two different ways is how one column
-        # comes to mean two things.
-        correction = booked if booked != txn.effective_amount else None
         apply_status_change(
             txn, settled_status_id(txn), settled_on=settled_on,
         )
@@ -338,6 +350,55 @@ def settle_transaction(
     posting_service.sync_transaction_postings(
         txn, settled=txn.status.is_settled,
     )
+
+
+def _reconcile_cached_amount(txn: Transaction) -> None:
+    """Refresh *txn*'s cached amount from its own live derivation.
+
+    **This is plan step X-ar's reconciler, with ONE trigger.**  Finding
+    **N-224** is that ``transactions.estimated_amount`` is a CACHE of a
+    derivation with nothing that ever writes it back:
+    :func:`app.services.income_service.live_projected_net` recomputes a
+    salary-linked paycheck at READ time and discards the answer, so every
+    balance surface shows the live figure while the stored column keeps a value
+    its own inputs have moved past.  X-ar deletes the read-time thread outright
+    and keeps the stored amount true by reconciling it on input change and at
+    deploy; this reconciles it at the one moment the arc has reached, the
+    settle, and writes the SAME column X-ar's reconciler will write.
+
+    **Why the cache and not ``actual_amount``**, which is what a first version
+    of ruling R-FE wrote and what an adversarial review sent back.  Three
+    subsystems read that column's NULL-ness as meaning *a human entered a
+    fact*, and a machine write is indistinguishable from theirs afterwards:
+    ``income_service`` says a settled income row's actual is "a historical
+    fact, never a recomputable projection"; ``spending_analysis`` says only "a
+    settled row with an explicitly entered, different actual" can produce a
+    surprise, so a refresh manufactures one; and the grid strikes through
+    ``estimated_amount`` beside ``actual_amount`` exactly when they differ,
+    rendering a `$2,100` the user never saw against the `$2,105` every screen
+    had already shown them.  The write is also permanent -- the row leaves
+    ``live_projected_net``'s Projected-only candidate set at the settle, so the
+    stale estimate could never be repaired afterwards and X-ar's own reconciler
+    could not tell this write from a real correction.
+
+    ``is_override`` is deliberately NOT set: the flag means a human chose this
+    figure, and the recurrence engine's own ``resolve_conflicts`` sets it False
+    while rewriting ``estimated_amount`` for the same reason.  Nothing else
+    moves -- the row's template, period and scenario are untouched, so the
+    partial UNIQUE index over those three cannot be disturbed, and
+    ``ck_transactions_estimated_amount`` (``>= 0``) is satisfied by a figure the
+    paycheck engine has already rounded.
+
+    Mutates in place and does NOT flush or commit.
+
+    Args:
+        txn: The row about to settle, still in its pre-settle status.  Must be
+            asked BEFORE the status flip: the projection's rule is
+            Projected-only, so after it there is never anything fresher.
+    """
+    live = _freshest_amount(txn)
+    if live is not None:
+        txn.estimated_amount = live
 
 
 def _freshest_amount(txn: Transaction) -> Decimal | None:

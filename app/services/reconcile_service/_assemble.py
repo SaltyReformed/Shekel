@@ -245,8 +245,11 @@ def outstanding_set(
         The :class:`~app.services.reconcile_service.OutstandingSet`, its
         ``groups`` ordered by section and then by each block's oldest offer
         (:func:`_block_order`), each block's purchases oldest first.  Empty for
-        an account with nothing outstanding, which is the steady state for a
-        user who reconciles at every true-up.
+        an account with nothing outstanding -- **which stopped being the steady
+        state at plan step X-f2-c2**, because an envelope's close is offerable
+        for the whole of its own period and only closing it clears one.
+        Replayed over production's 48 Checking assertion days, 44 carry at
+        least one offer.  Finding **N-227** owns that bound.
     """
     blocks = _purchases.outstanding_purchases(
         owner_id, account_id, observed_on,
