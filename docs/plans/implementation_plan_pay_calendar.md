@@ -2,22 +2,22 @@
 
 ## Where this stands
 
-**C1** (`f9d148fe`), **C2-a** (`3cb3082f`), **C2-b1** (`90f2fbb7`), **C2-d** (`3e6cd4ec`) and
-**C3-a** are built; what has reached `main` and production is a MEASUREMENT --
+**C1** (`f9d148fe`), **C2-a** (`3cb3082f`), **C2-b1** (`90f2fbb7`), **C2-d** (`3e6cd4ec`) and **C3**
+(both leaves, `7e3fb33b`) are built; what has reached `main` and production is a MEASUREMENT --
 `git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`.
 
-**`C3-b` is the arc's one ready leaf and it gates the rest**: C2-b2 / C2-c / C2-e / C2-f each wait
-on `C3` and nothing else, and `C4` waits on both. Run the ready-set query
-(`tools/plan_gate/_registry.py`); do not read the table. **C3-b starts with a RULING** -- section 4
-names it: whether the writer re-derives the whole payday list or only the preceding end, which
-decides whether **N-127** closes.
+**C3 unblocked four leaves at once**: C2-b2 / C2-c / C2-e / C2-f each waited on it and nothing else,
+and `C4` waits on C2 and C3 together. Run the ready-set query (`tools/plan_gate/_registry.py`); do
+not read the table. **The writer is now ONE module** -- `pay_period_write`, the only code in `app/`
+that constructs or deletes a pay period -- so C4 changes one file plus the readers section 3 names.
 
 The arc opened 2026-08-08 out of the recurrence arc's **F-10**, a missing NORMALIZATION rather than
 a missing check; `balance:N-128` / `X-l` are the same defect from a third side. `C2` ticks as ONE
 step under three names -- `C2` == `balance:X-l` == `recurrence:R-F12` -- and **R-F10** / **R-F12**
 tick with **C5a** / **C2**. **P16** was ruled to **C5b** 2026-08-09, **C5 DECOMPOSED** into C5a
-(after C4) and C5b (after R5). **A cold session starts at section 4**, whose preamble names four
-things a cutover must not assume; findings, steps and rules are the shared registries.
+(after C4) and C5b (after R5); **C8** was opened 2026-08-11 to own **P30**.
+**A cold session starts at section 4**, whose preamble names four things a cutover must not assume;
+findings, steps and rules are the shared registries.
 
 ## Rulings
 
@@ -31,7 +31,7 @@ things a cutover must not assume; findings, steps and rules are the shared regis
 | **Table and column names** | `budget.pay_periods.start_date` KEEPS both names. A period is identified one-to-one by the payday that opens it, `transactions.pay_period_id` reads correctly against it, and a rename is a four-FK migration that buys nothing. See section 6 |
 | **An entry dated outside the schedule** | **A legitimate SECOND QUESTION, named on the one value -- not a compensator to delete. Ruled 2026-08-10 (developer).** The calendar gains `period_starting_on_or_before`, the missing mirror of the `period_starting_on_or_after` it already carries, and the FILING rule is DERIVED from it rather than scanning again. The alternative (drop the ledger's stored paycheck and derive it from `entry_date`) was measured against `shekel-prod-db` and REFUTED: 14 days carry TWO paychecks for one date, so `entry_date` does not determine it; 35 of 327 entries are dated outside their own paycheck by design; and 4 loan-opening entries predate the first payday by up to seven years, so the clamp is live rather than hypothetical. See section 6 |
 | **Past the last stored payday** | **The calendar ANSWERS, projecting forward at the OWNER's cadence with `period_id = None`. Ruled 2026-08-10 (developer)**, which is what makes it the TOTAL function `balance:X-l` asks for. `growth_engine.generate_projection_periods` and `SyntheticPeriod` retire into it (rows **P17**, **P20**). Containment over SAVED periods stays its own named method, because the recurrence engine needs to tell a schedule HOLE from "the schedule has not reached there yet" |
-| **The forward-only rule (R-PC1)** | **REPLACE `_reject_overlapping_batch`, do not delete it. Ruled 2026-08-10 (developer), amended twice by adversarial review the same day.** A new payday must be at least `MIN_MATERIALISABLE_CADENCE_DAYS` after the latest existing one, and the last paycheck must hold no row dated on or after it on EITHER clock (`due_date` and `settled_on`, transactions and transfers). Deleting the guard outright would open the mid-schedule insert C6 defers. See C3-b |
+| **The forward-only rule (R-PC1)** | **REPLACE `_reject_overlapping_batch`, do not delete it. Ruled 2026-08-10 (developer), SPLIT IN TWO and then corrected twice more by C3-b's two neutral reviews.** The rule the plan stated -- "the last paycheck must hold no row dated on or after the new payday" -- was measured wrong in both directions. What shipped is (1) a forward-only FLOOR of one full cadence after the latest payday, whose only job is keeping C6 closed and which C6 deletes, and (2) a COVERAGE rule refusing a write that takes a day out of every paycheck while a SETTLED row's `settled_on` falls on it. See C3-b |
 | **C2's shape** | **DECOMPOSED into `C2-a`..`C2-f`, the value first with nothing calling it. Ruled 2026-08-10 (developer).** A single commit over 66 call sites cannot be proven against production BEFORE its consumers depend on it, which is exactly the technique that made C1 safe, cannot be reviewed in focus, and cannot be reverted precisely -- and two of the cutovers move money |
 
 ---
@@ -307,62 +307,21 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
   `:237`, `:260`, `:277`, `:317`, `:336`) resolve against the one value across their 66 call
   sites. Closes **P19** with `get_current_period`'s unordered `.first()`.
 
-- [ ] **C3 -- the writer writes paydays, forward-only** -- the DECOMPOSED parent, split 2026-08-10
-      (developer). Two commits because only one takes user input and only one can renumber. Ticks
-      with its last leaf.
+- [x] **C3 -- the writer writes paydays, forward-only.** `7e3fb33b`. The DECOMPOSED parent; ticked
+      with C3-b, its last leaf.
 
 - [x] **C3-a -- the destructive form stops keying on an ordinal.** `5f1e2bd6`.
       `keep_through_period_id`, a `RowId` resolved against the owner's own periods; anything else is
       `PayPeriodUnresolved`, with both F-144 branches logged. The tail is selected by PAYDAY, so no
       part of the operation reads a column C4 drops. The lock classifier moved to `pay_period_locks`
-      (developer ruling: the 1000-line ceiling reported a read-predicate and four destructive
-      writers sharing one module). Closed **P13**; opened **P29**, **P30**.
+      (developer ruling). Closed **P13**; opened **P29**, **P30**.
 
-- [ ] **C3-b -- the writer materialises the derivation.**
-
-`generate_pay_periods` stops computing `end_date` and `period_index` from cadence arithmetic and
-materializes them from the derivation over the WHOLE payday list, which re-closes the preceding
-period's end as a matter of course. Closes **P2**, **P12**, **N-127**, and it is the second of
-**P27**'s two ends. The columns still exist and still agree, so C1's harness must stay
-byte-identical -- **which is true only if TRUNCATE re-materialises too**: it deletes rows and
-re-derives nothing, so paydays `[J, J+14, J+40]` truncated through `J+14` leave a stored end of
-`J+39` where the derivation says `J+27`. An on-cadence fixture cannot see that (section 4's own
-warning), and it falsifies the byte-identity claim if left out.
-
-**`_reject_overlapping_batch` is REPLACED, not deleted, and the first draft of this step had that
-wrong.** Deleting it opens the mid-schedule insert C6 defers behind two unruled questions. Its
-successor is ruling **R-PC1**, and an adversarial review corrected the rule twice before it was
-written:
-
-- The batch's first payday must be at least `MIN_MATERIALISABLE_CADENCE_DAYS` after the latest
-  existing payday, not merely after it. At `L+1` the derivation gives `L` an end of `L`, and
-  `ck_pay_periods_date_order` fires as an unhandled 500 until C4 drops it.
-- The last paycheck must hold no row dated on or after the new payday **on EITHER clock**:
-  `max(due_date, settled_on)`, over transactions AND transfers. `_cash_periods` groups the same rows
-  twice -- the budget leg on the stored FK (`:380-387`), the cash leg on
-  `spans.containing(fact.settled_on)` (`:428`) against the stored end -- so moving an end re-buckets
-  a settled row's cash leg while its budget leg stays. That is `balance:N-128`'s shape. A NULL
-  `due_date` needs no branch: `attribution_date` lands it at `period_start`.
-- **It closes only the SHORTENING half of P15.** Appending LATER than the cadence lengthens the last
-  period and moves a clamped row's render forward; the predicate cannot see that, and the step must
-  say which half it closes rather than claim the row.
-
-**The cadence rule (developer, 2026-08-10) applies to ALL FOUR writer doors** -- a batch that
-records at least one payday sets `budget.pay_schedule.cadence_days`, one that records none leaves it
-alone. Closes **P12** and **P29**. Two corrections ride with it: the column does NOT only project
-forward (it sets the last SAVED, id-bearing period's end via `_loader` -> `_derive`, which is what
-**P28** measured), and "at least one payday" is satisfiable by a `num_periods=1` batch that records
-no SPACING at all -- so the cadence follows a batch of at least TWO paydays, or an owner's first.
-**P30** then has to be answered rather than deferred again: this rule makes extend PERSIST the value
-that sets the derived horizon, through a form rendering no control for it.
-
-**UNRULED FORK, and it decides whether N-127 closes.** Does the writer rewrite the WHOLE payday list
-or only the preceding period's end? Under "preceding only" an interior hole is never repaired by a
-forward append, so N-127 stays open. Under "rewrite every row" it is -- but the UPDATE lands on
-periods `classify_period_lock` hard-locks (historical, settled, posted), moving `attribution_date`'s
-clamp and `_PeriodSpans.containing` for every settled day in them, and the generate path consults no
-classifier. **Ruling needed before this leaf is written.** Note R-PC1 forbids the direct repair
-regardless: the hole day is not after the latest payday.
+- [x] **C3-b -- the writer materialises the derivation.** `7e3fb33b`. `pay_period_write` is the one
+      place in `app/` that constructs or deletes a pay period; it writes `derive_periods` over the
+      WHOLE payday list every time. **R-PC1 split and both halves were corrected**: the floor is one
+      full CADENCE (two days let a payday split the last paycheck, making P10 reachable) and the
+      coverage rule reads `settled_on` only. Closed **P2**'s writer half, **P12**, **P29** and
+      **N-127**; opened **P31**. Proof: `tests/manual/verify_pay_period_writer.py`, on a prod clone.
 
 - [ ] **C4 -- drop the derived columns.**
 
@@ -432,6 +391,16 @@ go.* Three options, and the trace decides: DROP and derive, make it NULLABLE, or
 deliberate materialization with the second definition's cost stated. Sequenced after C4 (developer,
 2026-08-09), because a derived paycheck should be derived from the calendar this arc normalizes
 rather than from the one it is replacing. Closes **P18**.
+
+- [ ] **C8 -- the forecast cadence gets ONE control.**
+
+Recording paydays and setting the forward cadence are two operations welded onto one form, on
+generate / regenerate / reset. After C4 the column's only job is projecting past the last recorded
+payday, so it is a FORECAST SETTING rather than a property of any batch, and the normalized shape is
+one control that sets it beside payday forms that only record paydays.
+**C3-b took the extend door's half by DELETING its input** (finding **P29**) and the developer ruled
+2026-08-11 that the remaining three are a UX step rather than a writer step, sequenced after C4 so
+the control lands on a column whose job has already narrowed. Closes **P30**.
 
 ## 5. Findings ledger
 
