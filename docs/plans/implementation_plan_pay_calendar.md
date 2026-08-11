@@ -6,20 +6,20 @@
 (both leaves, `7e3fb33b`) are built; what has reached `main` and production is a MEASUREMENT --
 `git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`.
 
-**C3 unblocked four leaves at once**: C2-b2 / C2-c / C2-e / C2-f each waited on it and nothing else,
-and `C4` waits on C2 and C3 together. Their order and readiness are `steps.md`'s order table; do not
-re-derive them here. **The writer is now ONE module** -- `pay_period_write`, the only code in `app/`
-that constructs or deletes a pay period -- so C4 changes one file plus the readers section 3 names.
-**R-PC1's coverage half was DELETED 2026-08-11** (developer), leaving the floor as this arc's only
-write refusal, `integrity_check` **BA-06** asking what it refused, and rows **P32** / **P33** open.
+**C3 unblocked four leaves at once**, and which they are, in what order, and what is ready now is
+`steps.md`'s order table; do not re-derive it here. **The writer is now ONE module** --
+`pay_period_write`, the only code in `app/` that constructs or deletes a pay period -- so C4 changes
+one file plus the readers section 3 names. **R-PC1's coverage half was DELETED 2026-08-11**
+(developer), leaving the floor as this arc's only write refusal, `integrity_check` **BA-06** asking
+what it refused, and rows **P32** / **P33** open.
 
 The arc opened 2026-08-08 out of the recurrence arc's **F-10**, a missing NORMALIZATION rather than
 a missing check; `balance:N-128` / `X-l` are the same defect from a third side. `C2` ticks as ONE
 step under three names -- `C2` == `balance:X-l` == `recurrence:R-F12` -- and **R-F10** / **R-F12**
-tick with **C5a** / **C2**. **P16** was ruled to **C5b** 2026-08-09, **C5 DECOMPOSED** into C5a
-(after C4) and C5b (after R5); **C8** was opened 2026-08-11 to own **P30**.
-**A cold session starts at section 4**, whose preamble names four things a cutover must not assume;
-findings, steps and rules are the shared registries.
+tick with **C5a** / **C2**. **P16** was ruled to **C5b** 2026-08-09, **C5 DECOMPOSED**; **C8**
+opened 2026-08-11 to own **P30**. **A cold session starts at section 4**, whose preamble names four
+things a cutover must not assume. The shared registries are `ledger.md`, `steps.md`,
+`conventions.md` and `verification.md`.
 
 ## Rulings
 
@@ -191,8 +191,23 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       Proof: `_derive.py`'s docstring.
 
 - [ ] **C2 -- one calendar value answers every "which period" question** -- the DECOMPOSED parent,
-  RULED on three forks 2026-08-10. Ticks with the last of its leaves, and that tick is also
-  `balance:X-l` and `recurrence:R-F12`: one step under three names, one commit each.
+      RULED on three forks 2026-08-10. Ticks with the last of its leaves, and that tick is also
+      `balance:X-l` and `recurrence:R-F12`: one step under three names, one commit each.
+      **The CENSUS row P6 counts, and it is not final.** Seven implementations of "which pay period
+      contains this date" were found, one has gone: `recurrence/_calendar.py:287` (bisect, `None`
+      outside; 1 call site), `balance_at/_cash_periods.py:320` (bisect, `None` outside; 3 sites, all
+      in-module, scoped to the reported WINDOW), `investment_dashboard_service/_chart.py:200`
+      (linear scan over SYNTHETIC periods), `pay_period_service.get_current_period` (`:226`, SQL,
+      `.first()` with NO `ORDER BY` -- row **P19**), `get_overlapping_periods` (`:364`, SQL range),
+      and `savings_dashboard_service/_horizon.py:246-271` `_period_id_at` (linear containment scan
+      with a FORWARD clamp). `loan_ledger/_visible.py:150` was DELETED at C2-d (`3e6cd4ec`) with
+      `resolve_anchor_pay_period` and `owner_pay_periods`. `entry_service.py:816` is EXCLUDED: it
+      asks MEMBERSHIP, the primitive the searches are built on, not a search.
+      **The lesson, and why the count may still be low:** an AST census keyed on the containment
+      PREDICATE could not see `_period_id_at` -- it was found by reading the consumers of the
+      producer C2-e retires, and its own docstring says why it exists (its synthetic periods "carry
+      no `period_index` for the general `find_period_containing_date`"). Do not treat seven as
+      final.
 
 - [x] **C2-a -- the one calendar VALUE, and nothing calls it.** `3cb3082f`. Opened **P21**-**P25**.
       Proof: `_calendar.py`'s docstring.
@@ -216,7 +231,30 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       -- P26's phase test plus the four `TestAnOccurrenceInAScheduleGap` tests, which build a state
       this leaf makes unconstructible. The 430-shape baseline stays byte-identical and sees NO
       divergence class: its schedules are contiguous, complete, and read at the cadence they were
-      generated with (**P28**).
+      generated with (**P28**). **The three divergence classes, and the MECHANISM of each.** Rows
+      P26, P27 and P28 hold the finding, the cost and the owner; the mechanism lives here because it
+      is what the builder needs open in front of them. **Ordinal (P26).** `from_pay_periods` COPIES
+      `period_index` off each ORM row, so a slice keeps its true ordinals; `derive_periods` computes
+      `row_number()` over the payday set it is HANDED, so the same slice comes back 0..n-1. A
+      UNIFORM re-index is phase-NEUTRAL -- `_derive_offset_periods` and the match predicate read the
+      SAME frame (`recurrence/_resolution.py:934`, `:660`), so `(p - s) % n` is unchanged. What
+      re-phases is the fallback `if start_period is None: return spec.offset_periods` (`:932-933`),
+      which takes the STORED column computed in the unshifted frame. The hazard is also on the WRITE
+      side: `_authoring.py:97`. The row's original headline mechanism was REFUTED by adversarial
+      review 2026-08-10 and corrected rather than closed. **Hole absorption (P27).** Derived periods
+      TILE, so the period before a hole ends the day before the NEXT payday and the hole becomes
+      part of the preceding paycheck. Today `period_containing` answers `None`, generation reports
+      `SCHEDULE_GAP`, and `_recurrence_common.py:435-444` logs `EVT_RECURRENCE_OCCURRENCE_UNPLACED`
+      at WARNING naming the dates. Afterwards the row seats against a real id, `attribution_date`
+      still clamps its RENDER against the stored end, and **nothing is logged at all** -- the
+      `SCHEDULE_GAP` conjunction is unsatisfiable (**P25**). The new answer is strictly QUIETER; an
+      earlier draft said neither was, and review refuted it 2026-08-10. **Horizon (P28).**
+      `resolve_cadence`'s fallback `(end - start).days + 1` (`pay_schedule_service.py:169-177`) is
+      the exact inverse of `generate_pay_periods`' `end = start + cadence - 1`
+      (`pay_period_service.py:190`), so on any GENERATED schedule the derived last end reproduces
+      the stored one BY ARITHMETIC and `new.horizon() == old.horizon()` cannot fail, whatever the
+      loader does with the cadence. A schedule row edited AFTERWARDS moves the horizon and only the
+      horizon.
 
 - [ ] **C2-c -- the cash-view cutover.** `_cash_periods._PeriodSpans` retires. Its three call sites
   keep answering `None` outside the reported window, a VIEW question and not the calendar's --
@@ -318,6 +356,17 @@ go.* Three options, and the trace decides: DROP and derive, make it NULLABLE, or
 deliberate materialization with the second definition's cost stated. Sequenced after C4 (developer,
 2026-08-09), because a derived paycheck should be derived from the calendar this arc normalizes
 rather than from the one it is replacing. Closes **P18**.
+
+**"DERIVABLE FROM `entry_date`" IS FALSE, measured 2026-08-10 against `shekel-prod-db` while ruling
+C2's first fork. Do not carry the assumption into this step.** 14 days carry TWO different
+`pay_period_id` values for ONE `entry_date` (a single owner), so the date does not determine the
+paycheck; 35 of 327 entries (10.7%) are dated outside their own paycheck BY DESIGN; and 4
+loan-opening entries predate the first payday by up to seven years, so the clamp is live rather than
+hypothetical. **The column has 11 references in 7 `app/` modules**, 2 of them docstrings:
+`_posting_reconcile.py:186`, `posting_service.py:145,153`, `pay_period_admin.py:876-879`,
+`ledger_report_service/_income_statement.py:165`, `account_posting_service/_walk.py:322`,
+`loan_posting_service/_payments.py:163`. The income statement GROUPS by it, so it is a real query
+key and not dead weight.
 
 - [ ] **C8 -- the forecast cadence gets ONE control.**
 

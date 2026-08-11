@@ -3,23 +3,23 @@
 ## Where this stands
 
 **Plan of record** for the two-axis recurrence model and the cash-date / installment-date split.
-R1-R4 ARCHIVED. **R1-R4b-2, R-F1, R-F8 and R7a-1 ARE IN PRODUCTION** (PRs #85 / #86 / #87).
+R1-R4 ARCHIVED. **R1-R4b-2, R-F1, R-F8 and R7a-1 are IN PRODUCTION** (PRs #85 / #86 / #87): R7a-1
+made the Recurrence column one function over `(interval, unit)` and closed D17.
+**R7a is TWO leaves** and this was the first; the plan's single entry was measured wrong in three
+ways, all corrected in R7a-2's entry.
 
-**R7a-1 IS IN PRODUCTION** (PR #87): the Recurrence column is one function over `(interval, unit)`
-and D17 is closed. **R7a is TWO leaves** and this was the first; the plan's single entry was also
-measured wrong in three ways, all corrected in R7a-2's entry.
-
-**NEXT = R7a-2** (the monthly equivalent and `PAY_PERIODS_PER_YEAR`, section 4a), then R7b. R5 waits
-on the balance arc's X-f4 and R6 waits on R5, which is a CORRECTION -- "R6 ships with X-an" was
-unsatisfiable and a ruling is owed (section 0). **Also live:** R-F6, R-F7, R-F13.
+**What to do next is `steps.md`'s order table; do not re-derive it here.** One ruling is still owed
+and section 0 states its two options: "R6 ships with X-an" was unsatisfiable, and the index has
+sequenced R6 behind R5 without the developer saying whether that discharges it.
 
 **A new finding RESPECIFIES R7c: row D28.** R-R13 makes `starts_on` the opening validity BOUND and
 drops `month_of_year` onto `starts_on.month`; those cannot both hold, because a calendar rule's
 cycle phase is a month RESIDUE and the bound is not in it. Measured:
-**18 of the 24 live multi-month rules would fire in the wrong months.** The direction is in the row.
-**R7c must RULE it first.**
+**18 of the 24 live multi-month rules would fire in the wrong months.** The direction is in the row,
+and **R7c must RULE it first.**
 
-**Section 4 is the steps; findings, the step index and the rules are the shared registries.**
+**Section 4 is the steps; findings, the step index, the rules and the verification standard are the
+shared registries** -- `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 
 ## Rulings
 
@@ -31,7 +31,7 @@ Taken 2026-08-05 (developer):
 | Add-ons | ALL FOUR: weekly-by-date, nth-weekday, count-bounded end, business-day shift |
 | `loan_params.payment_day` | DELETE; every reader goes through one accessor |
 | The three defects | Folded into the redesign, not fixed as separate PRs |
-| Sequencing vs the balance arc | **Half A now.** "Half B folded into X-an" is SUPERSEDED: R6 reads a column R5 creates behind X-f4, so it cannot ship with X-an. A developer ruling is owed; see section 0 |
+| Sequencing vs the balance arc | The arc SPLITS: the engine core is disjoint from the balance arc's live work, the date work is not. "Half B folded into X-an" is SUPERSEDED -- R6 reads a column R5 creates, and R5 cannot precede the balance step deleting from `cash_ledger/_events.py`. A developer ruling is owed; see section 0. The resulting ORDER is `steps.md`'s |
 | `PAY_PERIODS_PER_YEAR` | Folded into R7a-2 (which already rewrites `amount_to_monthly`); derivation = `round(365.2425 / cadence_days)`, see section 4a |
 | **Anchor day vs month-end clamp** | **R-R3's subtype is SUPERSEDED by R-R13: the anchor SPLITS into `starts_on` + `nominal_day`** |
 | **A generated row's dates** | **THREE facts, three homes: `occurs_on` (the occurrence), `pay_period_id` (the funding), `due_on` (the installment). `compute_due_date` is DELETED. R-R12, ruled 2026-08-08** |
@@ -45,7 +45,10 @@ Taken 2026-08-05 (developer):
 
 ---
 
-## 0. Sequencing against the balance-architecture arc
+## 0. Why this arc splits, and the one ruling still owed
+
+**The ORDER is `steps.md`'s and is not restated here.** This section holds the MEASUREMENT the order
+rests on and the one question the measurement could not answer.
 
 The recurrence work SPLITS. Measured file overlap against
 `docs/audits/balance_architecture/README.md`'s live blocks (2026-08-05):
@@ -61,30 +64,31 @@ R5+R6 (dates)        vs X-an                 : 4 files -- ALL FOUR of X-an's sur
 R5+R6                vs X-f4 deletion set    : 1 file  (cash_ledger/_events.py)
 ```
 
-**Half A -- R1, R2, R3, R4, R7a-1 through R7c, R8. Runs NOW**, in the block-6/7 "interleaves
-anywhere" slot the balance README already defines. It does not touch a file the anchor half is
-editing. Delivers every-other-month, every-two-years, weekly, nth-weekday, count-bounded end,
-business-day shift, and defects D1, D2, D3.
+**What the measurement says.** The ENGINE CORE touches no file the balance arc's anchor half is
+editing, so it constrains nothing there; it delivers every-other-month, every-two-years, weekly,
+nth-weekday, count-bounded end, business-day shift and defects D1, D2, D3. The DATE work is a
+different story: `R5` and `R6` sit on all four of X-an's surfaces and one file of X-f4's deletion
+set, which is why they are a separate half and why the index gates them where it does.
 
-**Half B -- R5, R6 and the remainder of R9. NOT one unit** (correction, 2026-08-08).
-**R5 waits on X-f4**, which deletes from `cash_ledger/_events.py`.
-
-**"R6 ships with X-an" is UNSATISFIABLE, and the contradiction is inside this section** (found
-2026-08-09 while building X-an's first leaf). The three statements cannot all hold: R6's own
+**"R6 ships with X-an" was UNSATISFIABLE, and the contradiction was inside this section** (found
+2026-08-09 while building X-an's first leaf). Three statements could not all hold: R6's own
 specification derives the installment "over the rule plus `due_on`"; `due_on` is created by R5; and
-R5 waits on X-f4, which is three steps BEHIND X-an in the balance arc's block 1, with X-f3 (moves
-money, own PR) between them. The sentence right after the ordering claim already says so --
-"`due_on` is created by R5 and READ by R6, so the order is forced anyway" -- and that forces R5 then
-R6 then after X-f4, which is not "with X-an". `steps.md` recorded only `R6 blocked by balance:X-an`,
-so nothing reconciled the two.
+R5 cannot precede the balance step that deletes from `cash_ledger/_events.py`. The sentence right
+after the ordering claim already said so -- "`due_on` is created by R5 and READ by R6, so the order
+is forced anyway". `steps.md` recorded only `R6 blocked by balance:X-an`, and nothing reconciled the
+two; **that column is now graded, so the same contradiction cannot be re-entered** (`conventions.md`
+rule 13).
 
-**What survives is the TRACE, not the ship.** The file-overlap measurement is real and unchanged: 4
-of 4 of X-an's surfaces sit in the R5+R6 set, this arc asks which date IS the contractual
-installment while X-an asks which date decides a payment already HAPPENED, and tracing them apart
-means tracing the loan half's date semantics twice. X-an-a was traced with R6's question in view and
-shipped without it. **`developer-decision` owed**: re-point R6 behind R5 (both after X-f4), or split
-off the half that needs no `due_on` -- the single `loan_installment_date` accessor over the rule --
-and ship that beside the remaining X-an leaf.
+**What survives is the TRACE, not the ship.** The file overlap is real and unchanged: this arc asks
+which date IS the contractual installment while X-an asks which date decides a payment already
+HAPPENED, and tracing them apart means tracing the loan half's date semantics twice. X-an-a was
+traced with R6's question in view and shipped without it.
+
+**`developer-decision` OWED, and it is the one thing in this section the index cannot settle.** Two
+options: re-point R6 behind R5, which is what `steps.md` currently records; or split off the half
+that needs no `due_on` -- the single `loan_installment_date` accessor over the rule -- and ship that
+beside the remaining X-an leaf.
+**The index recording the first option is not the developer choosing it.**
 
 **Consequence for Half A:** it must leave the `due_date` contract byte-identical so the R1 oracle
 stays green, so no step before R5 touches the column. The transaction-template form's live "Due Day

@@ -5,7 +5,7 @@ balance README Section 9, the recurrence plan's Section 7, the pay-calendar plan
 near-identical wording, which is the same denormalization the arcs keep finding in the code. The
 credit-card plan had none at all and drifted furthest.
 
-**Rules 1-4, 7 and 10-15 are PREDICATES**, graded by `tools/plan_gate/` through a pre-commit hook
+**Rules 1-4, 7 and 10-16 are PREDICATES**, graded by `tools/plan_gate/` through a pre-commit hook
 scoped to these documents and the CI step that runs the custom pylint checkers -- so EDITING a
 planning document is what runs the gate.
 **Rules 5, 6's "replaced, never appended" half, 8 and 9 are DISCIPLINES.** Saying which is which is
@@ -19,6 +19,8 @@ the failure being guarded against.
 | `ledger.md` | every open finding in every arc | registry |
 | `steps.md` | every step IN EXECUTION ORDER, one line each, plus the unruled forks | registry |
 | `conventions.md` | this file | registry |
+| `verification.md` | what "done" means for a step in any arc: the oracle discipline | registry |
+| `lessons.md` | what this project has already paid to learn | registry |
 | `docs/audits/balance_architecture/README.md` | the balance arc's argument, rulings and step specifications | argument |
 | `implementation_plan_recurrence_redesign.md` | the recurrence arc's | argument |
 | `implementation_plan_pay_calendar.md` | the pay-calendar arc's | argument |
@@ -68,7 +70,20 @@ exists to end.
 
 4. **Every document is capped, and a cap is a FORCING FUNCTION rather than a ceiling sized to fit
    the work.** Raising a cap is not the answer when it binds; rule 5 is. Current caps live in the
-   gate's own constants.
+   gate's own constants. **"Every document" meant four of nine until 2026-08-11**: the gate capped
+   the arc documents and left every registry uncapped, including the one that actually grows. That
+   is rule 3's own sentence one rule over -- a rule stated for one artifact and graded on one
+   artifact is a rule the second artifact does not have -- and `ledger.md` had reached 166 rows with
+   no forcing function at all. All five registries are capped now.
+   **`ledger.md` also has a per-ROW cap, which is rule 14's twin for the ledger.** A row had reached
+   3,536 characters against a 409-character median; at that size it is not an index entry, it is the
+   arc document's argument living in the registry.
+   **The overflow's destination is the OWNING STEP's specification**, never deletion: when eight
+   rows were brought under the cap on 2026-08-11 their census enumerations, mechanisms and reference
+   lists moved to `C2`, `C2-b2` and `C7`, where the person picking that step up meets them.
+   **`lessons.md` is capped too, and its retirement path is its own**: a lesson MECHANIZED into a
+   gate stops being a lesson, and its line moves to that gate's rationale. An append-only file
+   nobody finishes reading loses its lessons as completely as deleting them would.
 
 5. **The only legal way back under a cap is to archive a COMPLETED span**, condensed to one line per
    step: its id, its commit and what it closed. Never trim a live step's specification to fit.
@@ -189,6 +204,29 @@ exists to end.
     filename that once meant something still resolves. A rule policing live citations would have
     been green while that happened. The banner is what a reader arriving from anywhere cannot get
     around.
+
+16. **A registry's content is stated ONCE, and no other live document may carry a second copy.**
+    Rules 1-15 make each registry internally honest; this one keeps a THIRD copy from growing
+    outside it, which is the failure mode that survived the 2026-08-09 restructure. Three arms:
+    **the ORDER is `steps.md`'s alone** -- no other live document may chain step keys into a
+    sequence; **a registry's own SIZE is stated only in that registry** -- rule 3 grades the count
+    where it lives and can see nothing about a copy elsewhere; and
+    **a section a live document has RETIRED says so at its own head**, which is rule 15's placement
+    argument applied one level down, to a section rather than a file. **Every one of the three was
+    measured on 2026-08-11, and each had already produced a wrong statement in a live document.**
+    The order was restated in four places besides `steps.md`, and two copies were stale: the balance
+    README carried a shipped step as pending work, and it stated that "`R6` ships WITH X-an" -- a
+    claim its OWN signpost, the recurrence plan's section 0, rule 13 here and `steps.md` all
+    contradicted, so one document disagreed with itself about the one thing a reader consults it
+    for. That README also counted "98 open findings" against a ledger whose own sentence read "The
+    ledger stands at 166 rows", in a section citing a Section 6 whose table had moved out entirely;
+    the paragraph doing the counting NAMED this blind spot ("drift the gate could not see") and kept
+    the number anyway, which is what a discipline without a predicate is worth. And the credit-card
+    plan carried a live-looking ordered list, discharged since 2026-07-19, whose ids `C8` and `D1`
+    now name LIVE steps in two other arcs -- retired only by a paragraph in a DIFFERENT document,
+    which is precisely the placement rule 15 exists to refuse.
+    **The remedy is a POINTER, never a summary**: a summary is a second copy that has merely been
+    shortened, and it goes stale on the same commit.
 
 ## The two relations in `ledger.md`, and why conflating them deletes work
 

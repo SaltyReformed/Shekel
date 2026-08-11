@@ -2,18 +2,22 @@
 
 **Status: APPROVED 2026-07-19. Not started.**
 
-**The "Ratified sequencing" section below is DISCHARGED, not a live gate, and must never be re-read
-as one.** Every balance-arc step it names has SHIPPED -- `C8`/`C9`, `D1`-`D3` and old `X1`-`X3` all
-resolve in archived records, and old `X4` survives as `X-e`. What actually blocks this arc is NEWER
-than that 2026-07-19 ruling: **ruling R-EB**, because `CC1b`'s fold is specified against the reset
-semantics R-EB deletes at `X-f3`, and `CC3b` derives a settle from `paid_at`, deleted at `X-f1b`.
-The earliest correct start is after `X-f4` and `X-am` (`../audits/balance_architecture/README.md`,
-Section 5.0 block 4). That correction lived only in the balance README until 2026-08-09, so this
-document told a reader the opposite of the truth.
+**The 2026-07-19 "Ratified sequencing" was DISCHARGED and is ARCHIVED** to
+`historical/credit_card_sequencing_2026-07-19.md`. It stayed here, live-looking, until 2026-08-11,
+warned about only by a paragraph in ANOTHER document -- which is the same failure rule 15 fixed for
+archived files: the warning must be on the artifact. Two of the bare ids it ordered now name LIVE
+steps in other arcs (`pay_calendar:C8`, `recurrence:D1`), so it could send a reader at the wrong
+work by grep alone.
 
-**This arc's findings live in `ledger.md` and its steps are indexed in `steps.md`**, the shared
-registries for every arc; it is graded by the same `conventions.md`. What stays HERE is the argument
--- the context, the locked rulings, the architecture and each step's specification.
+**What gates this arc is ruling R-EB**, newer than that 2026-07-19 ruling: `CC1b`'s fold is
+specified against the reset semantics R-EB deletes at the cutover, and `CC3b` derives a settle from
+`paid_at`, which `X-f1b` deleted. **When this arc may start is `steps.md`'s answer**, and the reason
+is `../audits/balance_architecture/README.md` Section 5.0 block 4.
+
+**This arc's findings live in `ledger.md`, its steps are indexed in `steps.md`, its rules are
+`conventions.md` and what "done" means is `verification.md`** -- the shared registries for every
+arc. What stays HERE is the argument: the context, the locked rulings, the architecture and each
+step's specification.
 
 ## Context
 
@@ -33,24 +37,6 @@ A seeded "Credit Card" account type already exists (`app/ref_seeds.py:59`,
 `AcctTypeEnum.CREDIT_CARD`) but classifies `PLAIN` (all behavioral booleans false). The seam
 reserves the hook: `app/services/balance_at/_liability.py:104` ("When revolving debt one day gets a
 real forward model, this is the ONE place that changes").
-
-## Ratified sequencing (developer ruling, 2026-07-19)
-
-After C8 is NOT the start signal; the ratified order is:
-
-1. Balance arc C8 tail (C8d + C8e + C8f, in flight) -> C9 -> Phase D (D1/D2/D3). Rationale: the
-   checker fence is FROZEN until D3 and this arc needs new fence classifications; D2's typed
-   balances mean the revolving producer is born into the final structure, never retrofitted.
-2. Interim prod ship dev -> main (including the outstanding C2 real-clone live-render check), so the
-   loan arc ships and rolls back independently of card work.
-3. **X1 alone** (settled counts from its settle instant; ruled R-B). It stops the live re-anchor
-   treadmill AND lands the shared instant-partition core as production code -- CC1a below becomes
-   consume-the-helper instead of extract.
-4. **This arc, Phases 0-5** (dedicated worktree + feature branch off clean dev; land into dev per
-   phase -- 0+1 together, then each phase).
-5. Balance arc X2-X4 (the cash fold adopts the core this arc proved on the complete-data case), then
-   E1, F1, closeout.
-6. This arc's Phase 6 (UI cockpit) -- any time after Phase 5, via the shekel-design loop.
 
 ## Locked developer rulings (2026-07-19; do not reopen)
 
@@ -313,13 +299,13 @@ Credit shapes.
 
 ## Verification standard
 
-- Every commit: full suite (`./scripts/test.sh`) + `pylint app/` 10.00 with the full `--fail-on`
-  set; migrations up AND down + `python scripts/build_test_template.py`; hand-computed oracles with
-  negative controls SHOWN to fire; never a producer as its own oracle.
-- The Phase 1 cutover and Phase 3 migration: dev-clone live-render before landing (grid on the card,
-  savings cockpit, obligations, net-worth trend, balance sheet); every moved number individually
-  explained and signed off.
-- End-to-end acceptance on the dev clone: create card + params -> charge a projected bill ->
-  statement closes -> derived payment renders -> settle payment -> grace holds (interest $0.00) ->
-  force an underpayment -> warning + projected finance charge -> rewards accrue -> auto-redeem row
-  at threshold -> confirm -> next payment shrinks.
+**The standard is `verification.md`**, one copy for every arc; what every commit owes is
+`CLAUDE.md`'s Definition of Done. This section states only what is SPECIFIC to this arc.
+
+- **The Phase 1 cutover and the Phase 3 migration are live-render gates**: on the dev clone, before
+  landing, render the grid on the card, the savings cockpit, obligations, the net-worth trend and
+  the balance sheet. Every moved number is individually explained and signed off.
+- **End-to-end acceptance on the dev clone**, one walk: create card + params -> charge a projected
+  bill -> statement closes -> derived payment renders -> settle payment -> grace holds (interest
+  `$0.00`) -> force an underpayment -> warning + projected finance charge -> rewards accrue ->
+  auto-redeem row at threshold -> confirm -> next payment shrinks.

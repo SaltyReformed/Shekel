@@ -129,7 +129,15 @@ repos:
       #   docs/plans/ledger.md       every finding, every arc, one table
       #   docs/plans/steps.md        every step + the unruled forks
       #   docs/plans/conventions.md  the rules, one copy
+      #   docs/plans/verification.md what "done" means, one copy
+      #   docs/plans/lessons.md      what this project already paid to learn
       #   the four arc documents     argument, rulings, step specifications
+      # Rule 16 (added 2026-08-11) grades the four documents for a SECOND COPY
+      # of what a registry already states: the order restated outside steps.md,
+      # a registry's row count quoted where nothing reconciles it, and a
+      # section a document has retired in place instead of archiving.  All
+      # three had already produced a wrong statement in a live document -- one
+      # of them a README contradicting itself about which step comes next.
       # The registries were split out of the four documents on 2026-08-09
       # because a cross-arc fact stored 2-3 times in prose has no reconciler:
       # C2 == X-l == R-F12 is one step under three names, and P3 == N-123 is
@@ -147,7 +155,7 @@ repos:
         # One line on purpose: a YAML folded scalar joins its lines with a
         # SPACE, which would put a space inside the alternation and stop the
         # pattern matching either document.
-        files: ^(docs/plans/ledger\.md|docs/plans/steps\.md|docs/plans/conventions\.md|docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|docs/plans/implementation_plan_pay_calendar\.md|docs/plans/implementation_plan_credit_card\.md|tools/plan_gate/.*\.py)$
+        files: ^(docs/plans/ledger\.md|docs/plans/steps\.md|docs/plans/conventions\.md|docs/plans/verification\.md|docs/plans/lessons\.md|docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|docs/plans/implementation_plan_pay_calendar\.md|docs/plans/implementation_plan_credit_card\.md|tools/plan_gate/.*\.py)$
         pass_filenames: false
         args: [tools/plan_gate, -c, /dev/null, -q]
 

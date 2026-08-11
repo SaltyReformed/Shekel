@@ -107,6 +107,19 @@ class LedgerRow:
         """The row's real primary key: the arc AND the id, never the id alone."""
         return f"{self.arc}:{self.ident}"
 
+    @property
+    def width(self) -> int:
+        """The row's total character width, which rule 4's per-row cap grades.
+
+        A property on the row rather than a sum at each call site, so the arm
+        and its controls cannot disagree about what a row's size even is --
+        the same reason ``COMMIT_SHA`` is shared rather than re-spelled.
+        """
+        return sum(len(cell) for cell in (
+            self.arc, self.ident, self.also, self.finding,
+            self.worst, self.status, self.owner,
+        ))
+
 
 @dataclass(frozen=True)
 class StepRow:
@@ -863,4 +876,84 @@ def blocked_by_violations() -> list[str]:
                 f"otherwise one of the two rows reads as READY "
                 f"(conventions.md rule 13)",
             )
+    return problems
+
+
+#: Rule 4's cap, for the registries.  **They went uncapped until 2026-08-11
+#: while rule 4 said "Every document is capped", and the arc documents were the
+#: only four the gate held** -- which is rule 3's own sentence one rule over: a
+#: rule stated for one artifact and graded on one artifact is a rule the second
+#: artifact does not have.  ``ledger.md`` is the one that actually grows, and it
+#: is the one that had no forcing function at all.
+#:
+#: Each is a CEILING WITH ROOM TO WORK, not a number fitted to today's file.
+#: When one binds, rule 5 is the answer: archive a completed span.  Raising it
+#: is not.
+REGISTRY_CAPS = {
+    "ledger.md": 240,
+    "steps.md": 260,
+    "conventions.md": 280,
+    "verification.md": 120,
+    "lessons.md": 200,
+}
+
+#: The widest a single ``ledger.md`` row may be, in characters.
+#:
+#: **A row had reached 3,536 characters against a 409-character median.**  At
+#: that size it is not an index entry, it is the arc document's argument living
+#: in the registry -- which is exactly what rule 5 exists to keep out, and what
+#: makes the table unreadable as a table.  ``steps.md`` has held its
+#: descriptions to one sentence since rule 14; this is that rule's twin for the
+#: ledger, and the ledger went without it for as long as it did because rule 14
+#: was written about the index and graded only there.
+#:
+#: **2,000 is a FIRST FLOOR, deliberately above the p90 of 1,674.**  It is set
+#: where it catches rows that have become specifications without demanding a
+#: rewrite of the 51 rows over 1,200, which would be an unreviewed edit to half
+#: the registry.  It comes DOWN as rule 5 archives closed findings, the way the
+#: arc-document caps came down when the registries left.
+LEDGER_ROW_CAP = 2000
+
+
+def registry_line_cap_violations() -> list[str]:
+    """Rule 4: every registry is under its line cap.
+
+    Returns:
+        One message per registry over :data:`REGISTRY_CAPS`.
+    """
+    problems = []
+    for name, cap in sorted(REGISTRY_CAPS.items()):
+        path = PLANS / name
+        lines = len(path.read_text(encoding="utf-8").splitlines())
+        if lines <= cap:
+            continue
+        problems.append(
+            f"{name} is {lines} lines against rule 4's {cap}-line cap (over by "
+            f"{lines - cap}). Archive a COMPLETED span under rule 5 -- closed "
+            "findings to their arc's as-built record, shipped steps to theirs. "
+            "Do not raise the cap and do not trim a live row."
+        )
+    return problems
+
+
+def ledger_row_cap_violations() -> list[str]:
+    """Rule 4: no ``ledger.md`` row has grown into a specification.
+
+    Returns:
+        One message per row over :data:`LEDGER_ROW_CAP`.
+    """
+    problems = []
+    for row in ledger_rows():
+        width = row.width
+        if width <= LEDGER_ROW_CAP:
+            continue
+        problems.append(
+            f"{row.key} is {width} characters against rule 4's "
+            f"{LEDGER_ROW_CAP}-character row cap (over by "
+            f"{width - LEDGER_ROW_CAP}). A ledger row is an INDEX entry: the "
+            "defect, what it costs, what is ruled, who owns it. The narrative "
+            "of how it was found, what each review said and what was tried "
+            "belongs in the owning step's specification, where the person who "
+            "picks that step up will read it."
+        )
     return problems

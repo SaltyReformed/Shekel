@@ -9,11 +9,16 @@ being read before the mistake is repeated.
 line by having COST something -- a rebuild, a wrong figure in production, a review round -- and the
 step that paid is named where the line would otherwise be unfalsifiable.
 
-**This document is not gated and deliberately not capped.** It is append-mostly and it is the one
-place in `docs/plans/` where that is correct: a lesson does not go stale when the code it was
-learned on is deleted, and none of it schedules work. What it must never become is a place to record
-STATE -- what shipped, what is next, what production runs. That is `steps.md`'s, and a sentence
-about it here would be a second answer beside no reconciler.
+**This document IS capped (rule 4), and it has a retirement rule of its own.** It was uncapped until
+2026-08-11 on the argument that a lesson never goes stale -- true, and beside the point: an
+append-only file nobody finishes reading loses its lessons just as completely as deleting them
+would. **A lesson that has been MECHANIZED into a gate stops being a lesson and its line goes**, to
+the gate's own rationale where a reader meets it at the moment it fires. That is the retirement path
+when the cap binds, and it is the only one that loses nothing.
+
+What this file must never become is a place to record STATE -- what shipped, what is next, what
+production runs. That is `steps.md`'s, and a sentence about it here would be a second answer beside
+no reconciler.
 
 - **An argument a caller can get wrong is a defect, not a contract.**
 - **Ask what a producer says the SECOND time.** One correct on the ordinary path can be inverted on
@@ -139,5 +144,10 @@ about it here would be a second answer beside no reconciler.
 - **A TABLE THAT NAMES ITS OWN `HEAD` IS FALSE THE MOMENT IT LANDS**, because the commit that writes
   it moves `HEAD` past the hash it just wrote. Record the last CODE commit and the remote, which are
   stable, and tell the reader to re-measure the rest.
+- **AN IMPOSSIBILITY ARGUMENT THAT CONSIDERS ONE LOCK CLASS IS NOT AN IMPOSSIBILITY ARGUMENT.**
+  X-f1c3c's first docstrings called deadlock "structurally impossible on every request path" having
+  reasoned only about advisory-vs-advisory ordering; the real cycle was advisory-vs-ROW, and it
+  REPRODUCED against a real PostgreSQL (**N-193**). Name the classes an impossibility claim ranges
+  over, or it is a claim about the argument rather than about the system.
 - **Documents rot in days here.** This file is the only one allowed to rot, and every edit re-dates
   it.

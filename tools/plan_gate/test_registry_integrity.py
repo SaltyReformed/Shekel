@@ -847,3 +847,85 @@ class TestTheParserSurvivesTheShapesTheRealFilesUse:
             f"the gate cites rules conventions.md does not state: {missing}. "
             f"conventions.md states {sorted(numbers)}"
         )
+
+
+class TestEveryRegistryIsUnderItsCap:
+    """conventions.md rule 4, on the five documents it did not used to reach."""
+
+    @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
+    def test_the_registry_is_within_its_line_cap(self, name):
+        """The registry is within its line cap."""
+        problems = [p for p in registry.registry_line_cap_violations()
+                    if p.startswith(name)]
+        assert not problems, problems[0]
+
+    @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
+    def test_the_cap_still_has_headroom(self, name):
+        """A cap already binding cannot absorb the next finding."""
+        cap = registry.REGISTRY_CAPS[name]
+        actual = len((registry.PLANS / name).read_text().splitlines())
+        assert actual <= cap - 20, (
+            f"{name} is at {actual} of {cap} -- under 20 lines of headroom. "
+            f"conventions.md rule 5: archive a completed span, do not raise the cap"
+        )
+
+    def test_the_control_fires_when_a_registry_grows_past_its_cap(self, tmp_path,
+                                                                 monkeypatch):
+        """A cap nobody has seen fail is a number, not a gate.
+
+        EVERY registry is staged, not just the one being pushed over: the arm
+        walks all five, so a directory holding one file raises
+        ``FileNotFoundError`` and the control fails for a reason that has
+        nothing to do with the cap.
+        """
+        over = "ledger.md"
+        for name, cap in registry.REGISTRY_CAPS.items():
+            padding = cap + 1 if name == over else 1
+            (tmp_path / name).write_text("filler\n" * padding)
+        monkeypatch.setattr(registry, "PLANS", tmp_path)
+        problems = registry.registry_line_cap_violations()
+        assert len(problems) == 1, problems
+        assert problems[0].startswith(over) and "rule 4" in problems[0]
+
+
+class TestNoLedgerRowHasGrownIntoASpecification:
+    """conventions.md rule 4's per-row half -- rule 14's twin for the ledger."""
+
+    def test_no_row_is_over_the_row_cap(self):
+        """No row is over the row cap."""
+        assert not registry.ledger_row_cap_violations()
+
+    def test_the_arm_has_rows_to_grade(self):
+        """Zero violations must mean zero, not "read nothing"."""
+        rows = registry.ledger_rows()
+        assert len(rows) >= 100, "the ledger parsed almost no rows"
+
+    def test_the_cap_targets_outliers_rather_than_the_corpus(self):
+        """A cap most rows crowd is a cap fitted to the file, which rule 4 refuses.
+
+        **Deliberately not a "widest row has headroom" check.**  That is the
+        right instrument for a LINE cap, where headroom means the document can
+        absorb another finding.  A row has a different remedy always available
+        -- move its narrative to the owning step -- so the meaningful property
+        is that the cap bites on outliers, not on ordinary rows.  The median
+        sat at 409 against a 2,000 cap when this was written; if it ever
+        approaches half the cap, the ledger has become a plan document again.
+        """
+        widths = sorted(row.width for row in registry.ledger_rows())
+        median = widths[len(widths) // 2]
+        assert median <= registry.LEDGER_ROW_CAP // 2, (
+            f"the MEDIAN row is {median} of {registry.LEDGER_ROW_CAP}. The cap "
+            "is no longer catching outliers -- the whole table has grown into "
+            "specifications. conventions.md rule 4"
+        )
+
+    def test_the_control_fires_on_a_row_that_became_a_specification(self, stage):
+        """The shape eight rows carried until 2026-08-11.
+
+        Planted on a REAL row so the control exercises the real seven-cell
+        parser, not a synthetic table it wrote itself.
+        """
+        stage("ledger", "| balance | FU-3 |", "| balance | FU-3 " + "x" * 2100 + " |")
+        problems = registry.ledger_row_cap_violations()
+        assert problems, "a row over the cap must be reported"
+        assert "owning step's specification" in problems[0]
