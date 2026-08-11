@@ -70,7 +70,7 @@ class TestTheOutstandingSet:
     """``outstanding_set`` / ``record_settled_days`` -- ONE definition.
 
     The reconcile step's reader and its writer share
-    ``reconcile_service._outstanding_scope``, and that sharing is the security
+    ``reconcile_service._purchases._outstanding_scope``, and that sharing is the security
     property, not a tidiness one: a purchase the panel does not OFFER can never
     be stamped by a forged id, because the writer re-applies the same five
     clauses to whatever ids arrive from the form.  So each clause is graded

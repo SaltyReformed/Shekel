@@ -2494,9 +2494,10 @@ class TestTheReconcileRoute:
         purchase would get ``settled_on = today``, which is AFTER the asserted
         day, so ``ReconciledThrough.covers`` answers False, the reservation never
         drops, and the projection stays low by the whole purchase.  Worse, the
-        row now fails ``reconcile_service._outstanding_scope``'s ``settled_on IS NULL`` clause, so
-        the panel can never offer it again -- the user cannot fix it from the
-        surface that broke it.
+        row now fails the ``settled_on IS NULL`` clause of
+        ``reconcile_service._purchases._outstanding_scope``, so the panel can
+        never offer it again -- the user cannot fix it from the surface that
+        broke it.
         """
         with app.app_context():
             account = seed_user["account"]
