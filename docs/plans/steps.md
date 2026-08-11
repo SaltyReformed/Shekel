@@ -16,7 +16,7 @@ recording it would be this registry's own disease. It is graded by its own arm i
 DECLARES itself "the DECOMPOSED parent" may not ship while a leaf is open.
 **The parent set is declared and only the leaf set derived**, because deriving both by id prefix
 claims `R-F1` as the parent of `R-F10`, `R-F12` and `R-F13`. Second, an edge is written only where
-an arc document STATES it: the graph holds 87 edges over 54 rows, the gaps are real, and a guess
+an arc document STATES it: the graph holds 93 edges over 58 rows, the gaps are real, and a guess
 where a citation belongs is worse than a blank. *That count read "71 over 47" until 2026-08-10 and
 had been stale since `C2` decomposed into six leaves carrying three blockers each -- a prose count
 beside no reconciler, in the registry whose own rule 3 grades exactly that in `ledger.md`.*
@@ -26,20 +26,19 @@ scheduled as one commit by all three documents. Before this table that identity 
 files with nothing reconciling it, and the `P3` / `N-123` collision went unnoticed from April to
 2026-08-09.
 
-**111 steps, 95 open.**
+**112 steps, 98 open.**
 
 | arc | id | aliases | step | state | commit | blocked by |
 |---|---|---|---|---|---|---|
-| balance | X-ae | -- | **X-ae** `fix(app): a submitted digit string is parsed, not predicated` -- PR #79, merge | SHIPPED | `a778703f` | -- |
-| balance | X-af | -- | **X-af** `test(periods): the fixtures build their window on the USER's clock` -- PR #77, | SHIPPED | `dbee3812` | -- |
-| balance | X-aj1 | -- | **X-aj1** the status seam merge, in three commits (`1688f508` R-DR's extraction, `63514efc` | SHIPPED | `1688f508` | -- |
 | balance | X-f | -- | **X-f** `feat(transactions): the app records when money moved` -- the DECOMPOSED parent, | open | -- | -- |
 | balance | X-f1 | -- | **X-f1** `feat(transactions): a settle carries the day the money moved` -- absorbs **S2-b**. | SHIPPED | `8d812662` | -- |
 | balance | X-an | -- | **X-an** `fix(loan): a payment is history from the day its money moved` -- the DECOMPOSED parent, COMPLETE at two leaves, condensed into `archive/…2026-08-04.md` Section 1b | SHIPPED | `549015c0` | -- |
 | balance | X-f2 | -- | **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half, the DECOMPOSED parent | open | -- | -- |
 | balance | X-f2-c | -- | **X-f2-c** the OUTSTANDING SET, widened to transactions, envelopes and transfers, grouped by envelope (**R-EW**) -- the DECOMPOSED parent, three leaves | open | -- | -- |
 | balance | X-f2-c1 | -- | **X-f2-c1** the reconcile reader and writer get their own module home, all three panel doors get the kind gate, and purchases NEST under their parent. No new row kind, no money moves. Closed **N-216**; opened **N-217**, **N-218** | SHIPPED | `24701c1d` | -- |
-| balance | X-f2-c2 | -- | **X-f2-c2** the TRANSACTION twin: the envelope's own close tick and bills, settled on the STATEMENT date through the service-tier settle verb (**R-FA**). MOVES MONEY | open | -- | balance:X-f2-c1 |
+| balance | X-aq | -- | **X-aq** `fix(transactions): a settle books the freshest figure for the row` (**R-FE**) -- the settle verb resolves the amount when the caller supplies none, so every settle door books one figure. MOVES MONEY at the grid | open | -- | -- |
+| balance | X-ar | -- | **X-ar** `refactor(cash): a projected row's amount has ONE answer` (**R-FE**) -- the stored amount becomes authoritative and the read-time override thread is deleted. Closes **N-40** and **N-224** | open | -- | balance:X-aq |
+| balance | X-f2-c2 | -- | **X-f2-c2** the TRANSACTION twin: the envelope's own close tick and bills, settled on the STATEMENT date through the service-tier settle verb (**R-FA**). MOVES MONEY | open | -- | balance:X-f2-c1 / balance:X-aq (the panel must not display a figure the grid contradicts; R-FE) |
 | balance | X-f2-c3 | -- | **X-f2-c3** transfer shadows in their own group, settled through the transfer service with the loan-payment freeze (**R-FA**). MOVES MONEY | open | -- | balance:X-f2-c2 / balance:X-ap (the third settle door is fixed while the verb is fresh; developer 2026-08-10) |
 | balance | X-ap | -- | **X-ap** `fix(transactions): the full-edit Status dropdown settles like every other door` -- the THIRD settle door R-FA's text missed. An envelope-tracked row flipped to Paid via the popover never consults its entries, so $25 of purchases against a $400 estimate books $400. MOVES MONEY | open | -- | balance:X-f2-c2 |
 | balance | X-f3 | -- | **X-f3** `feat(cash): the ledger is sum-of-postings and the residual is classified` -- **THE | open | -- | balance:X-f2 |
