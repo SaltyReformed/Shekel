@@ -198,8 +198,17 @@ class TestAnArchivedDocumentSaysSoOnItsFirstLine:
         assert not archive.archive_banner_violations()
 
     def test_the_archive_actually_holds_documents_to_grade(self):
-        """A floor far under the live count, so a broken walk is visible."""
-        assert len(list(archive.archived_docs())) >= 100
+        """A floor far under the live count, so a broken walk is visible.
+
+        **The floor came DOWN from 100 to 40 on 2026-08-11, and the reason is
+        the point**: 100 sat just under a 124-document archive, so it was
+        really tracking the corpus size rather than proving the walk works.
+        Deleting an archived document is now an EXPECTED operation -- 25 went
+        that day, referenced by nothing -- and a floor set just under the
+        current count turns every such deletion into a red suite. The floor's
+        only job is catching a walk that has stopped finding files at all.
+        """
+        assert len(list(archive.archived_docs())) >= 40
 
     def test_the_walk_covers_every_archived_tree(self):
         """Three separate trees hold archived documents, and all three count.
