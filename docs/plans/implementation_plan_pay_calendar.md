@@ -10,6 +10,8 @@
 and `C4` waits on C2 and C3 together. Run the ready-set query (`tools/plan_gate/_registry.py`); do
 not read the table. **The writer is now ONE module** -- `pay_period_write`, the only code in `app/`
 that constructs or deletes a pay period -- so C4 changes one file plus the readers section 3 names.
+**R-PC1's coverage half was DELETED 2026-08-11** (developer), leaving the forward-only floor as this
+arc's only write refusal; the reader-side residual it exposed is row **P32**, owned by C2-c.
 
 The arc opened 2026-08-08 out of the recurrence arc's **F-10**, a missing NORMALIZATION rather than
 a missing check; `balance:N-128` / `X-l` are the same defect from a third side. `C2` ticks as ONE
@@ -31,7 +33,7 @@ findings, steps and rules are the shared registries.
 | **Table and column names** | `budget.pay_periods.start_date` KEEPS both names. A period is identified one-to-one by the payday that opens it, `transactions.pay_period_id` reads correctly against it, and a rename is a four-FK migration that buys nothing. See section 6 |
 | **An entry dated outside the schedule** | **A legitimate SECOND QUESTION, named on the one value -- not a compensator to delete. Ruled 2026-08-10 (developer).** The calendar gains `period_starting_on_or_before`, the missing mirror of the `period_starting_on_or_after` it already carries, and the FILING rule is DERIVED from it rather than scanning again. The alternative (drop the ledger's stored paycheck and derive it from `entry_date`) was measured against `shekel-prod-db` and REFUTED: 14 days carry TWO paychecks for one date, so `entry_date` does not determine it; 35 of 327 entries are dated outside their own paycheck by design; and 4 loan-opening entries predate the first payday by up to seven years, so the clamp is live rather than hypothetical. See section 6 |
 | **Past the last stored payday** | **The calendar ANSWERS, projecting forward at the OWNER's cadence with `period_id = None`. Ruled 2026-08-10 (developer)**, which is what makes it the TOTAL function `balance:X-l` asks for. `growth_engine.generate_projection_periods` and `SyntheticPeriod` retire into it (rows **P17**, **P20**). Containment over SAVED periods stays its own named method, because the recurrence engine needs to tell a schedule HOLE from "the schedule has not reached there yet" |
-| **The forward-only rule (R-PC1)** | **REPLACE `_reject_overlapping_batch`, do not delete it. Ruled 2026-08-10 (developer), SPLIT IN TWO and then corrected twice more by C3-b's two neutral reviews.** The rule the plan stated -- "the last paycheck must hold no row dated on or after the new payday" -- was measured wrong in both directions. What shipped is (1) a forward-only FLOOR of one full cadence after the latest payday, whose only job is keeping C6 closed and which C6 deletes, and (2) a COVERAGE rule refusing a write that takes a day out of every paycheck while a SETTLED row's `settled_on` falls on it. See C3-b |
+| **The forward-only rule (R-PC1)** | **REPLACE `_reject_overlapping_batch`, do not delete it. Ruled 2026-08-10 (developer), SPLIT IN TWO, corrected twice by C3-b's neutral reviews, then HALVED 2026-08-11 (developer).** The rule the plan stated -- "the last paycheck must hold no row dated on or after the new payday" -- was measured wrong in both directions. What survives is a forward-only FLOOR of one full cadence after the latest payday, whose only job is keeping C6 closed and which C6 deletes. **The COVERAGE half is DELETED**: it refused a write taking a day out of every paycheck while a SETTLED row's `settled_on` fell on it, on the claim that stranding such a day reproduces `balance:N-128` -- and the claim was false. `_cash_periods` values each column at its OWN `end_date`, so a day off the top of the window is absent from both sides of R-K and reports as `period_timing`. See C3-b |
 | **C2's shape** | **DECOMPOSED into `C2-a`..`C2-f`, the value first with nothing calling it. Ruled 2026-08-10 (developer).** A single commit over 66 call sites cannot be proven against production BEFORE its consumers depend on it, which is exactly the technique that made C1 safe, cannot be reviewed in focus, and cannot be reverted precisely -- and two of the cutovers move money |
 
 ---
@@ -317,11 +319,11 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       (developer ruling). Closed **P13**; opened **P29**, **P30**.
 
 - [x] **C3-b -- the writer materialises the derivation.** `7e3fb33b`. `pay_period_write` is the one
-      place in `app/` that constructs or deletes a pay period; it writes `derive_periods` over the
-      WHOLE payday list every time. **R-PC1 split and both halves were corrected**: the floor is one
-      full CADENCE (two days let a payday split the last paycheck, making P10 reachable) and the
-      coverage rule reads `settled_on` only. Closed **P2**'s writer half, **P12**, **P29** and
-      **N-127**; opened **P31**. Proof: `tests/manual/verify_pay_period_writer.py`, on a prod clone.
+      place in `app/` that constructs or deletes a pay period, writing `derive_periods` over the
+      WHOLE payday list every time. **R-PC1's floor is one full CADENCE** (two days let a payday
+      split the last paycheck, making P10 reachable); its **coverage half is DELETED** (developer
+      2026-08-11: a stranded settle day cancels on both sides of R-K). Closed **P2**'s writer half,
+      **P12**, **P29**, **N-127**; opened **P31** (since narrowed) and **P32**.
 
 - [ ] **C4 -- drop the derived columns.**
 
