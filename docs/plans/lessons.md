@@ -149,5 +149,20 @@ no reconciler.
   reasoned only about advisory-vs-advisory ordering; the real cycle was advisory-vs-ROW, and it
   REPRODUCED against a real PostgreSQL (**N-193**). Name the classes an impossibility claim ranges
   over, or it is a claim about the argument rather than about the system.
+- **A NARROWING MUST ASSERT WHAT IT LEAVES ALONE, NOT ONLY WHAT IT REMOVES.** X-ap narrowed the
+  status dropdown's offer set by subtracting the settled BAND, which has three members, so the
+  ARCHIVE transition silently stopped being offered on every row -- retiring the only control that
+  reaches it. Ten controls shipped with that step and none could fail on it, because every one used
+  a Projected row and the loss lived in the settled band. Two docstrings written in the SAME PR
+  asserted the opposite ("the full-edit Status dropdown offers Settled from Paid"), which is the
+  tell: **when a change makes a claim elsewhere in its own diff false, the claim was the test that
+  was missing.**
+- **READING A LAZY RELATIONSHIP IS A FLUSH**, so where a guard SITS decides which exception net
+  catches the request's first UPDATE. X-ap moved a refusal that asks `tracks_purchases` above the
+  handler's `try`; that read lazy-loads `template`, autoflushing the staged `setattr` mutations from
+  outside the net -- turning a designed 409 into a 500, and a period move into an uncaught
+  `IntegrityError` because the flag that lifts the row out of a partial unique index had not been
+  written yet. **A guard placed for READABILITY moved a database write.** Ask of every pre-mutation
+  check whether it touches a relationship, and put it where the flush belongs.
 - **Documents rot in days here.** This file is the only one allowed to rot, and every edit re-dates
   it.
