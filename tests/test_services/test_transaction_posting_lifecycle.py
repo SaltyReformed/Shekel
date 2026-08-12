@@ -634,7 +634,7 @@ class TestEnvelopePostingLifecycle:
         It is a STRONGER control than the one it replaces.  ``toggle_cleared``
         was documented as deliberately not a posting boundary and never called
         the resync at all; ``update_entry`` calls
-        ``_resync_postings_if_settled`` on every mutation of a settled
+        ``_resync_settled_envelope`` on every mutation of a settled
         envelope's entries, so this exercises the resync and asserts it
         reconciles to the SAME target: the single posted entry (-40 / +40)
         stands, no second entry appears, and the checking total holds at

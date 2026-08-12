@@ -42,13 +42,13 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 40 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 41 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**125 steps, 100 open.** The dependency graph holds 103 edges over 62 rows.
+**126 steps, 101 open.** The dependency graph holds 103 edges over 62 rows.
 
 ## The order
 
@@ -141,6 +141,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-at | -- | Surface which tax year a figure was actually computed against, and give a new year's bracket set a write door, so the resolver's substitution stops being invisible and the settings screen can finish the year it starts. Closes **N-235**, **N-236**. | #85 | -- | NOW |
 | balance | X-av | -- | Give the base annual salary an effective date so the app can tell a raise from a correction, which `apply_raises` already does for every raise but cannot do for the figure they are applied to. Closes **N-237**. | #86 | -- | NOW |
 | balance | X-aw | -- | Count a calendar year's paydays from the stored cadence rather than from whichever periods happen to have been generated, so a period's gross stops moving by a cent when the schedule extends. Closes **N-239**. | #87 | -- | NOW |
+| balance | X-ax | -- | Reconcile a carry-forward rollover against its source: when a settled source's spend changes, the target row's top-up moves by the same amount so the two always sum to the budget the rollover divided. **MOVES MONEY.** Closes **N-249**. | #88 | -- | NOW |
 
 ## Containers
 
