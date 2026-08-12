@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
+from app.utils.money import MONTHS_PER_YEAR, round_money
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +90,10 @@ def _after_tax_projected_savings(
     return round_money(traditional_total * (1 - estimated_tax_rate) + roth_total)
 
 
-def calculate_gap(
+def calculate_gap(  # pylint: disable=too-many-arguments
+    *,
     net_biweekly_pay,
+    pay_cadence,
     monthly_pension_income=ZERO,
     retirement_account_projections=None,
     safe_withdrawal_rate=Decimal("0.04"),
@@ -99,8 +101,35 @@ def calculate_gap(
 ):
     """Calculate the retirement income gap analysis.
 
+    **Every argument is KEYWORD-ONLY**, which plan step R7a-2a made structural
+    rather than conventional.  All three production call sites and all 30-odd
+    tests already passed them by name, and the reason is worth enforcing: six
+    of these are money or rates, several are ``Decimal``, and a transposed pair
+    -- a pension benefit read as a withdrawal rate -- would produce a plausible
+    wrong retirement plan rather than an error.  Adding the sixth parameter is
+    what forced the question; the ``*`` is the answer that removes the hazard
+    instead of counting it.
+
+    Pylint: ``too-many-arguments`` (6/5) -- the six are independent
+    assumptions of one analysis, not a cohesive entity: the income basis and
+    the cadence it is measured in, the pension benefit, the projected balances,
+    and the two rates.  Each call site supplies a different subset of the
+    defaults, so a parameter object would be a bag assembled to satisfy a count
+    rather than a concept -- and it would have to be constructed at each of
+    them from values they hold individually.  Grouping the two rates was
+    weighed and rejected: they are resolved by two different resolvers from two
+    different settings columns (``resolve_swr_fraction`` /
+    ``resolve_estimated_tax_rate``), and pairing them would imply a
+    relationship the settings do not have.
+
     Args:
-        net_biweekly_pay:              Decimal current net biweekly paycheck.
+        net_biweekly_pay:              Decimal net pay for one paycheck.
+        pay_cadence:                   The owner's
+            :class:`~app.services.pay_calendar.PayCadence` -- how often that
+            paycheck arrives, which is what turns it into monthly income.
+            A hardcoded 26/year until plan step R7a-2a, which made a
+            weekly-paid owner's pre-retirement income read at half its true
+            monthly value and so understated the retirement gap they face.
         monthly_pension_income:        Decimal monthly pension benefit.
         retirement_account_projections: list of dicts with keys:
             - projected_balance: Decimal
@@ -118,11 +147,12 @@ def calculate_gap(
     if retirement_account_projections is None:
         retirement_account_projections = []
 
-    # Step 1: Pre-retirement net monthly income. Biweekly-to-monthly
-    # uses the canonical factors from app.utils.money so this site
-    # cannot drift from /obligations and /savings (E-24, HIGH-05).
+    # Step 1: Pre-retirement net monthly income.  The paycheck-to-monthly
+    # conversion is the OWNER's, through the one value that owns it, so this
+    # site cannot drift from /obligations and /savings (E-24, HIGH-05, and
+    # plan step R7a-2a, which made the rate per-owner).
     pre_retirement_net_monthly = round_money(
-        net_biweekly_pay * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
+        pay_cadence.per_paycheck_to_monthly(net_biweekly_pay),
     )
 
     # Step 2: Monthly pension income (passed in directly).

@@ -28,9 +28,13 @@ from app.services.savings_dashboard_service._debt_line import (
     debt_without_payoff_model,
     loan_payoff_outlook,
 )
-from app.services.savings_dashboard_service._types import AccountProjection
+from app.services.pay_calendar import PayCadence
+from app.services.savings_dashboard_service._types import (
+    AccountProjection,
+    _DashboardCoreData,
+)
 from app.services.tax_config_service import load_tax_configs_for_year
-from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
+from app.utils.money import round_money
 
 _RATE_PLACES = Decimal("0.00001")
 _DTI_HEALTHY_THRESHOLD = Decimal("36")
@@ -303,14 +307,21 @@ def _checking_account_ids(accounts):
 
 
 def _recent_settled_expenses_monthly(
-    checking_ids, all_periods, current_period, scenario_id,
-):
+    checking_ids: list[int],
+    all_periods: list,
+    current_period,
+    scenario_id: int,
+    pay_cadence: PayCadence,
+) -> Decimal:
     """Average monthly settled checking expenses over the last 6 periods.
 
     Sums settled expense transactions on the user's checking accounts
     across the most recent 6 periods (at or before the current period)
-    and converts the per-period average to a monthly figure via the
-    biweekly-to-monthly factor.  Scoped to the same checking-account set
+    and converts the per-period average to a monthly figure at the OWNER's
+    pay cadence (a hardcoded 26/12 until plan step R7a-2a, which reported a
+    weekly-paid owner's spending at half its true monthly rate and so
+    understated the emergency fund they need).  Scoped to the same
+    checking-account set
     as :func:`_committed_expense_floor` (DH-#29) so the two operands of
     :func:`_compute_avg_monthly_expenses`'s ``max()`` measure the same
     "outflow from checking" universe -- a settled expense on a
@@ -325,6 +336,9 @@ def _recent_settled_expenses_monthly(
         current_period: The current :class:`PayPeriod`, or ``None``.
         scenario_id: The baseline scenario's id, from the read pass's
             raising accessor -- never a nullable (plan step X-v2).
+        pay_cadence: How often the owner is paid
+            (:class:`~app.services.pay_calendar.PayCadence`), which is what
+            turns a per-PERIOD average into a per-MONTH one.
 
     Returns:
         The monthly average as a Decimal.  ``Decimal("0.00")`` when
@@ -369,10 +383,12 @@ def _recent_settled_expenses_monthly(
             total_expenses += Decimal(str(txn.effective_amount))
 
     per_period = total_expenses / len(recent_periods)
-    return per_period * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
+    return pay_cadence.per_paycheck_to_monthly(per_period)
 
 
-def _committed_expense_floor(user_id, checking_ids):
+def _committed_expense_floor(
+    user_id: int, checking_ids: list[int], pay_cadence: PayCadence,
+) -> Decimal:
     """Committed monthly expense floor from active checking templates.
 
     Sums the monthly-normalized commitment of active expense templates
@@ -386,6 +402,10 @@ def _committed_expense_floor(user_id, checking_ids):
         checking_ids: IDs of the user's checking accounts (the
             :func:`_checking_account_ids` set the historical operand
             also uses).
+        pay_cadence: How often the owner is paid
+            (:class:`~app.services.pay_calendar.PayCadence`), threaded into the
+            aggregator so a paycheck-space template's monthly equivalent is
+            measured against the owner's real rhythm.
 
     Returns:
         The committed monthly floor as a Decimal.  ``Decimal("0.00")``
@@ -417,12 +437,13 @@ def _committed_expense_floor(user_id, checking_ids):
     return obligations_aggregator.committed_monthly(
         list(active_expense_templates) + list(active_transfer_templates),
         date.today(),
+        pay_cadence,
     )
 
 
 def _compute_avg_monthly_expenses(
-    user_id, accounts, all_periods, current_period, scenario_id,
-):
+    user_id: int, core: _DashboardCoreData, pay_cadence: PayCadence,
+) -> Decimal:
     """Compute average monthly expenses for emergency fund coverage.
 
     Uses the higher of: historical settled expenses from the last 6
@@ -432,12 +453,34 @@ def _compute_avg_monthly_expenses(
     checking" universe the committed floor (E-24) defines -- rather than
     pairing an all-accounts historical figure against a checking-only
     floor.
+
+    **Takes the read-pass bundle rather than four of its fields** (plan step
+    R7a-2a).  It had unpacked ``accounts`` / ``all_periods`` /
+    ``current_period`` / ``scenario_id`` at the call site and threaded them
+    through, and the owner's pay cadence -- which BOTH operands need -- would
+    have been a fifth.  The first four all come off
+    :class:`~.._types._DashboardCoreData`, so the bundle is the honest
+    argument and the caller stops restating its contents; the cadence does
+    NOT, and is passed separately for the reason that class's docstring gives.
+
+    Args:
+        user_id: Integer ID of the current user.
+        core: The read pass's loaded bundle -- its accounts scope the checking
+            set, and its periods and scenario scope the historical operand.
+        pay_cadence: How often the owner is paid
+            (:class:`~app.services.pay_calendar.PayCadence`), which converts
+            BOTH operands into month space.  One value for both, so the
+            ``max()`` cannot compare figures measured against two rhythms.
+
+    Returns:
+        The higher of the two monthly figures, as a Decimal.
     """
-    checking_ids = _checking_account_ids(accounts)
+    checking_ids = _checking_account_ids(core.accounts)
     historical = _recent_settled_expenses_monthly(
-        checking_ids, all_periods, current_period, scenario_id,
+        checking_ids, core.all_periods, core.current_period,
+        core.balance_ctx.scenario_id, pay_cadence,
     )
-    floor = _committed_expense_floor(user_id, checking_ids)
+    floor = _committed_expense_floor(user_id, checking_ids, pay_cadence)
     return max(historical, floor)
 
 
@@ -674,7 +717,7 @@ def _accumulate_loan_debt(
 def _compute_debt_summary(
     account_data: list[AccountProjection],
     escrow_map: dict[int, list],
-    gross_biweekly: Decimal,
+    gross_monthly: Decimal,
 ) -> DebtSummary | None:
     """Compute aggregate debt metrics across the user's loan accounts.
 
@@ -718,9 +761,10 @@ def _compute_debt_summary(
         account_data: The per-account projections from
             _compute_account_projections.
         escrow_map: Dict mapping account_id to list of EscrowLine (with versions).
-        gross_biweekly: The engine-derived gross biweekly pay the DTI block is
-            computed from; ``0.00`` when the user has no salary data, which is
-            what makes :attr:`DebtSummary.dti` ``None``.
+        gross_monthly: The engine-derived gross MONTHLY income the DTI block
+            is computed from -- the owner's paycheck converted at their own
+            cadence by the caller; ``0.00`` when the user has no salary data,
+            which is what makes :attr:`DebtSummary.dti` ``None``.
 
     Returns:
         The :class:`DebtSummary`, or ``None`` if no loan accounts with params
@@ -770,7 +814,7 @@ def _compute_debt_summary(
         # re-ran this whole pipeline to get here, which is the redundancy the
         # finding measured; what it is NOT is a re-decision of any rule.
         principal_paid_fraction=_compute_principal_paid_fraction(loan_ads),
-        dti=_dti_metrics(total_monthly_payments, gross_biweekly),
+        dti=_dti_metrics(total_monthly_payments, gross_monthly),
     )
 
 
@@ -794,7 +838,7 @@ def _get_dti_label(dti_pct: Decimal) -> str:
 
 
 def _dti_metrics(
-    total_monthly_payments: Decimal, gross_biweekly: Decimal,
+    total_monthly_payments: Decimal, gross_monthly: Decimal,
 ) -> DtiMetrics | None:
     """Derive the DTI block from monthly debt payments and gross biweekly pay.
 
@@ -805,26 +849,34 @@ def _dti_metrics(
     templates, and the summary object was never fully constructed in any one
     place.
 
-    The biweekly -> monthly conversion factor (``PAY_PERIODS_PER_YEAR /
-    MONTHS_PER_YEAR``) is a structural property of the 26-period pay schedule
-    (Shekel is a biweekly app), applied to the engine-derived gross (MED-06 /
-    F-032); it is a "genuine flat conversion" in the sense Commit 26 calls out,
-    not a raise-dropping shortcut.
+    **It takes the MONTHLY gross, and the paycheck-to-monthly conversion moved
+    OUT at plan step R7a-2a.**  This function used to take the per-paycheck
+    gross and convert it here against a hardcoded
+    ``PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR``, justified as "a structural
+    property of the 26-period pay schedule (Shekel is a biweekly app)" -- a
+    justification that was false of the schema it described, since
+    ``cadence_days`` is user-selectable 1..365.  Giving it the owner's cadence
+    instead was the obvious repair and it was the wrong shape twice over: a DTI
+    is a ratio of two MONTHLY figures, so the unit conversion was never this
+    function's job; and resolving a cadence for it meant reading the owner's
+    schedule on a page that answers ``None`` here whenever no salary is
+    configured, which put a 500 in front of an owner with a mortgage and no
+    salary profile.  The caller converts, behind the one condition that decides
+    whether there is anything to convert.
 
     Args:
         total_monthly_payments: The debt summary's PITI total.
-        gross_biweekly: Engine-derived gross biweekly pay.
+        gross_monthly: Engine-derived gross MONTHLY income, already converted
+            from the owner's paycheck at their own cadence and rounded to
+            cents by the caller.  ``0.00`` when no salary is configured.
 
     Returns:
-        The :class:`DtiMetrics`, or ``None`` when ``gross_biweekly`` is zero --
+        The :class:`DtiMetrics`, or ``None`` when ``gross_monthly`` is zero --
         no income source, which a consumer must distinguish from a real zero
         ratio (E-12).
     """
-    if gross_biweekly <= Decimal("0.00"):
+    if gross_monthly <= Decimal("0.00"):
         return None
-    gross_monthly = round_money(
-        gross_biweekly * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-    )
     return DtiMetrics(ratio=(
         total_monthly_payments / gross_monthly * Decimal("100")
     ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))

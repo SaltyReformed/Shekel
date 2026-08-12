@@ -42,7 +42,7 @@ from app.services.pay_calendar import calendar_for
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
-from app.utils.money import PAY_PERIODS_PER_YEAR, round_money
+from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +213,12 @@ def create_contribution_transfer(account_id):
         return result
     source_account, data = result
 
+    # ONE schedule read for the whole request: the suggested amount spreads
+    # the annual limit over the owner's paychecks, and the recurrence rule
+    # below is anchored against the same calendar.  Two loads would be two
+    # answers to one question (plan step R7a-2a).
+    calendar = calendar_for(current_user.id)
+
     # Determine transfer amount: user override or suggested default.
     if "amount" in data and data["amount"] is not None:
         transfer_amount = data["amount"]
@@ -243,17 +249,23 @@ def create_contribution_transfer(account_id):
                 return redirect(
                     url_for("investment.dashboard", account_id=account_id),
                 )
-            transfer_amount = round_money(limit / PAY_PERIODS_PER_YEAR)
+            # The owner's OWN paycheck count, not a hardcoded 26 (plan step
+            # R7a-2a): the transfer fires every paycheck, so spreading the
+            # annual cap over 26 for a weekly-paid owner would suggest a
+            # contribution that overshoots the cap by the end of the year.
+            transfer_amount = round_money(
+                calendar.cadence.annual_to_per_paycheck(limit),
+            )
         else:
             transfer_amount = _DEFAULT_SUGGESTED_AMOUNT
 
-    # Create every-period recurrence rule (biweekly, matching paycheck).
+    # Create every-period recurrence rule (one occurrence per paycheck).
     every_period_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.EVERY_PERIOD,
     )
     rule = author_rule(
         RecurrenceSpec(user_id=current_user.id, pattern_id=every_period_id),
-        calendar_for(current_user.id),
+        calendar,
     )
 
     # Create transfer template via the shared builder (a contribution gets

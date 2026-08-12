@@ -44,7 +44,9 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.services import pay_schedule_service
 
+from ._cadence import PayCadence
 from ._calendar import PayCalendar
+from ._derive import PayCalendarError
 
 
 def calendar_for(user_id: int) -> PayCalendar:
@@ -102,3 +104,67 @@ def calendar_for(user_id: int) -> PayCalendar:
     return PayCalendar.from_paydays(
         paydays=paydays, cadence_days=cadence_days, user_id=user_id,
     )
+
+
+def cadence_for(user_id: int) -> PayCadence:
+    """Return how often *user_id* is paid, without reading their paydays.
+
+    Plan step **R7a-2a**.  The door for a consumer that needs the CADENCE and
+    nothing else -- the savings dashboard's monthly-equivalent floor, the DTI
+    denominator, the retirement gap's pre-retirement income, an investment
+    limit spread over the year.  One query against ``budget.pay_schedule``
+    instead of :func:`calendar_for`'s two, and no payday set to build: on
+    production that is 61 rows this never loads.
+
+    A caller that ALREADY holds a :class:`~._calendar.PayCalendar` must use
+    :attr:`~._calendar.PayCalendar.cadence` instead, which answers from the
+    calendar it already has.  Both reach one derivation
+    (:class:`~._cadence.PayCadence`), so the two doors cannot disagree; what
+    they differ in is how much of the schedule the caller needed anyway.
+
+    **Resolve it once per PRODUCER and thread it.**  Section 4a of
+    ``docs/plans/implementation_plan_recurrence_redesign.md`` says "once per
+    request", and the honest statement is narrower, because two surfaces
+    genuinely read it twice: the budget dashboard's tracks section runs both
+    narrow savings producers and each resolves its own, and ``/retirement``
+    calls ``load_gap_inputs`` from the gap producer and again from the lever
+    solver.  Both ride on an already-recorded duplicate load (finding
+    **N-115** for the dashboard core data), and collapsing either would mean
+    resolving BEFORE those producers' early returns -- which is the defect
+    ``_DashboardCoreData``'s docstring records.  The rule that matters is the
+    one this door does enforce: never per ROW.  A monthly-equivalent
+    conversion runs per recurring template, so a lookup inside that loop would
+    be one query per row of a page that already has the answer.
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        The owner's :class:`~._cadence.PayCadence`.
+
+    Raises:
+        PayCalendarError: The owner has no resolvable cadence -- neither a
+            ``budget.pay_schedule`` row nor a pay period to infer one from.
+            Refused rather than defaulted, for the reason
+            :attr:`~._calendar.PayCalendar.cadence` gives: every monthly
+            equivalent in the application is a function of this number, and
+            assuming biweekly would report a weekly-paid owner's commitments at
+            half their true value.  Since plan step X-ad-a registration writes
+            the schedule row, so this names legacy data and the companion role,
+            which ``require_owner`` 404s before a page builds.  It is also what
+            :func:`~._derive.validate_cadence` refuses: the legacy fallback
+            infers a cadence from the last period's stored length, which
+            nothing bounds above (plan finding **P8**).
+    """
+    cadence_days = pay_schedule_service.resolve_cadence(user_id)
+    if cadence_days is None:
+        raise PayCalendarError(
+            f"user {user_id} has no pay cadence: no budget.pay_schedule row "
+            f"and no pay period to infer one from, so how many paychecks they "
+            f"receive in a year is unanswerable.  Since plan step X-ad-a "
+            f"registration writes the row, so this is legacy or companion "
+            f"data rather than a state to default.  Assuming biweekly would "
+            f"report a weekly-paid owner's commitments at half their true "
+            f"monthly value."
+        )
+    return PayCadence(cadence_days=cadence_days)

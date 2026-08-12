@@ -167,7 +167,7 @@
       <span class="calendar-day-number{% if day.is_today %} fw-bold{% endif %}">{{ day.number }}</span>
       {% if day.is_paycheck %}<span class="calendar-pay-tag">PAY</span>{% endif %}
       {% if day.entries | selectattr("is_infrequent") | list %}
-      <i class="bi bi-asterisk calendar-infreq" title="Includes an infrequent item (quarterly or less often)"></i>
+      <i class="bi bi-asterisk calendar-infreq" title="Includes an infrequent item (repeats less often than monthly)"></i>
       {% endif %}
     </div>
     {% if day.entries %}
@@ -214,7 +214,7 @@
    asterisk's meaning is reachable on touch (its tooltip is not). #}
 <div class="calendar-legend d-flex flex-wrap column-gap-3 row-gap-1 small text-muted mb-3">
   <span><span class="calendar-pay-tag">PAY</span> payday</span>
-  <span><i class="bi bi-asterisk calendar-infreq"></i> includes an infrequent item (quarterly or less often)</span>
+  <span><i class="bi bi-asterisk calendar-infreq"></i> includes an infrequent item (repeats less often than monthly)</span>
   <span>~ projected (after today)</span>
   <span><i class="bi bi-check2"></i> paid</span>
 </div>

@@ -58,7 +58,15 @@ def _freeze_today_inside_seed_range(monkeypatch):
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services import account_service, obligations_aggregator
+from app.services.pay_calendar import PayCadence
 from app.services.auth_service import hash_password
+
+#: The cadence the seed fixtures build and every hand-computed figure in this
+#: file assumes: 14 days between paydays, 26 a year.  An explicit input to the
+#: obligations aggregator since plan step R7a-2a, where it was a hardcoded
+#: ``PAY_PERIODS_PER_YEAR`` that made every monthly equivalent wrong for an
+#: owner who is not paid biweekly.
+_BIWEEKLY = PayCadence(cadence_days=14)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -1519,7 +1527,7 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(),
+                [tmpl], date.today(), _BIWEEKLY,
             )
             assert result == Decimal("500.00"), (
                 f"Monthly template should contribute exactly $500, got {result}"
@@ -1550,7 +1558,7 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [once_tmpl, recurring_tmpl], date.today(),
+                [once_tmpl, recurring_tmpl], date.today(), _BIWEEKLY,
             )
             # Only recurring: 100 * 26/12 = 216.67
             expected = (Decimal("100") * Decimal("26") / Decimal("12")).quantize(
@@ -1634,7 +1642,7 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             result = obligations_aggregator.committed_monthly(
-                [mock_template], date.today(),
+                [mock_template], date.today(), _BIWEEKLY,
             )
             assert result == Decimal("0.00"), (
                 f"Expected 0.00 when template has None amount, got {result}"
@@ -1658,7 +1666,7 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(),
+                [tmpl], date.today(), _BIWEEKLY,
             )
             assert result == Decimal("650.00"), (
                 f"Expected 650.00 for every-2-periods template, got {result}"
@@ -1679,7 +1687,7 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(),
+                [tmpl], date.today(), _BIWEEKLY,
             )
             assert result == Decimal("100.00"), (
                 f"Expected 100.00 for annual template, got {result}"
@@ -1691,7 +1699,7 @@ class TestEmergencyFundCommittedBaseline:
         """obligations_aggregator.committed_monthly([], today) returns zero."""
         with app.app_context():
             result = obligations_aggregator.committed_monthly(
-                [], date.today(),
+                [], date.today(), _BIWEEKLY,
             )
             assert result == Decimal("0.00"), (
                 f"Expected 0.00 for empty iterable, got {result}"

@@ -33,9 +33,16 @@ quality problem in this project.
 ### Code Structure
 
 - **No magic numbers or strings.** Every numeric or string literal representing a business rule must
-  be a named constant. Do not write `26` when you mean `PAY_PERIODS_PER_YEAR`. Do not write
-  `Decimal("0.062")` when you mean `SOCIAL_SECURITY_RATE`. Mathematical constants (`0`, `1`), HTTP
-  status codes, and framework values are exempt.
+  be a named constant. Do not write `Decimal("0.062")` when you mean `SOCIAL_SECURITY_RATE`, or `12`
+  when you mean `MONTHS_PER_YEAR`. Mathematical constants (`0`, `1`), HTTP status codes, and
+  framework values are exempt.
+- **A constant is for a value that does not vary. A per-owner fact is a DERIVATION, not a constant
+  with a good name.** This rule cited `26` / `PAY_PERIODS_PER_YEAR` as its own example until plan
+  step R7a-2a deleted that constant: how many paychecks a year an owner receives is a function of
+  `budget.pay_schedule.cadence_days`, which is user-selectable 1..365, so naming the 26 made nine
+  files agree on a number that was simply wrong for anyone not paid biweekly.
+  `app.services.pay_calendar.PayCadence` derives it instead. Naming a varying value is worse than
+  inlining it, because the name asserts it is settled.
 - **Keep functions focused.** If a function exceeds 50 lines, evaluate decomposition. Functions over
   100 lines require justification. A 300-line function is a service module incorrectly written as a
   single function.

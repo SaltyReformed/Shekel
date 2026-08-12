@@ -10,9 +10,9 @@ in the app implies. Python's Decimal default of ``ROUND_HALF_EVEN``
 boundaries and must never be reached implicitly through a bare
 ``.quantize(Decimal("0.01"))``.
 
-This module exposes three rounding helpers and the project's pay-period /
-month conversion factors. ``round_money`` is the default boundary
-rounding. ``round_money_ceiling`` is the explicitly-named sanctioned
+This module exposes three rounding helpers and the calendar-month
+denominator every monthly figure divides by. ``round_money`` is the default
+boundary rounding. ``round_money_ceiling`` is the explicitly-named sanctioned
 variant for the savings-goal monthly contribution case, where under-
 funding by a fraction of a cent must never round down. ``round_money_floor``
 is the sanctioned variant for largest-remainder cent allocation, where a
@@ -26,13 +26,21 @@ input at the boundary rather than silently rounding an already-imprecise
 value. Callers must construct Decimal from strings (CLAUDE.md / coding
 standards: "Construct Decimals from strings").
 
-``PAY_PERIODS_PER_YEAR`` and ``MONTHS_PER_YEAR`` are the canonical
-biweekly-to-monthly conversion factors (Shekel is organised around 26
-biweekly pay periods per year). Co-locating them with the rounding
-helpers gives every monetary code path one import for the small fixed
-set of cross-service financial constants. Per E-24 / HIGH-05 the factor
-is defined exactly once here; any future 26/12 inlining is a regression
-of D6-05.
+``MONTHS_PER_YEAR`` is the calendar-month denominator, and it belongs here
+because 12 is a property of the calendar rather than of any owner.
+
+**Its partner ``PAY_PERIODS_PER_YEAR = Decimal("26")`` LEFT at the recurrence
+arc's plan step R7a-2a, and it was never a constant.** It stood for how often
+the owner is paid, which is ``budget.pay_schedule.cadence_days`` and is
+user-selectable 1..365 -- so every monthly-equivalent figure on
+``/savings``, the Recurring surface and ``/retirement`` was wrong for anyone
+not paid biweekly: a weekly-paid owner's ``$100`` per-paycheck bill reported
+``$216.67`` a month against a true ``$433.33``. It is now DERIVED per owner by
+:class:`app.services.pay_calendar.PayCadence`, which also owns the named unit
+conversions the nine reader files used to spell inline. The E-24 / HIGH-05 rule
+that produced this paragraph still stands and is stronger: the biweekly-to-
+monthly factor has one home, and it is no longer a number this module can
+state.
 """
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 
@@ -40,7 +48,6 @@ CENTS = Decimal("0.01")
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
 
-PAY_PERIODS_PER_YEAR = Decimal("26")
 MONTHS_PER_YEAR = Decimal("12")
 
 

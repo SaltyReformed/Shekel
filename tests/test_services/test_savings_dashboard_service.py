@@ -2099,7 +2099,14 @@ class TestDTI:
     """Tests for debt-to-income ratio computation.
 
     DTI = total_monthly_payments / gross_monthly * 100.
-    Gross monthly = gross_biweekly * 26 / 12 (biweekly, not semi-monthly).
+
+    **Gross monthly is the owner's paycheck at the OWNER's cadence** since plan
+    step R7a-2a -- ``gross_biweekly * PayCadence.periods_per_year / 12``, where
+    this docstring used to say "``* 26 / 12`` (biweekly, not semi-monthly)".
+    ``budget.pay_schedule.cadence_days`` is user-selectable 1..365, so the
+    parenthetical was describing a constraint the schema does not have.  The
+    conversion happens in ``_debt_summary_with_dti``; ``_dti_metrics`` takes
+    the monthly figure and performs none.
     """
 
     def test_dti_no_salary(
@@ -2208,6 +2215,55 @@ class TestDTI:
             assert ds.dti is not None
             assert ds.dti.ratio == Decimal("0.0")
             assert ds.dti.label == "healthy"
+
+    def test_the_dti_denominator_is_a_monthly_figure_the_caller_converted(
+        self, app,
+    ):
+        """``_dti_metrics`` takes MONTHLY income and performs no conversion.
+
+        Plan step R7a-2a.  This function used to take the per-PAYCHECK gross
+        and convert it against a hardcoded ``26 / 12``; a DTI is a ratio of two
+        monthly figures, so the conversion was never its job, and owning it
+        made the function need the owner's pay schedule to answer a question
+        that is ``None`` whenever no salary is configured.
+
+        The assertion is that the SAME gross figure produces the same ratio
+        whatever the owner's cadence -- because the cadence has already been
+        applied by the caller.  Hand-computed: $3,500 of PITI against $8,666.67
+        of monthly income is 40.4%, which is the "moderate" band.  A conversion
+        smuggled back in here would move one of these two and not the other.
+        """
+        from app.services.savings_dashboard_service._metrics import (
+            _dti_metrics,
+        )
+        # $4,000 a paycheck at 26/year -> $8,666.67 a month; at 52/year ->
+        # $17,333.33.  BOTH are handed in already converted, so this function
+        # sees only the monthly figure and cannot tell them apart.
+        moderate = _dti_metrics(Decimal("3500.00"), Decimal("8666.67"))
+        healthy = _dti_metrics(Decimal("3500.00"), Decimal("17333.33"))
+
+        assert moderate is not None and healthy is not None
+        assert moderate.ratio == Decimal("40.4")
+        assert moderate.label == "moderate"
+        assert healthy.ratio == Decimal("20.2")
+        assert healthy.label == "healthy"
+
+    def test_the_dti_block_is_absent_without_income_and_reads_no_schedule(
+        self, app,
+    ):
+        """A zero gross answers ``None`` before anything is converted.
+
+        The control for the 500 an adversarial review of plan step R7a-2a
+        found: an owner with a mortgage and no salary profile reaches the debt
+        summary, and this branch is why the page must not have resolved their
+        pay schedule to get here.  ``_dti_metrics`` takes no cadence at all
+        now, so the property is structural -- this pins the branch that makes
+        it safe for the CALLER to skip the resolution.
+        """
+        from app.services.savings_dashboard_service._metrics import (
+            _dti_metrics,
+        )
+        assert _dti_metrics(Decimal("3500.00"), Decimal("0.00")) is None
 
     def test_dti_thresholds(self, app):
         """C-5.12-7 / C-5.12-14 / C-5.12-15: DTI threshold boundary values.
@@ -2416,10 +2472,12 @@ class TestDTIRaiseAware:
            ``"salary_gross_biweekly"`` key (the off-engine value still
            used by the investment-projection path -- F-20 follow-up).
         2. No bare ``Decimal("26") / Decimal("12")`` literal remains
-           anywhere in the file: the biweekly-to-monthly factor lives
-           in ``app/utils/money.py`` as
-           ``PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR`` per E-24 /
-           HIGH-05 / Commit 23.
+           anywhere in the file.  The paycheck count is
+           ``PayCadence.periods_per_year``, DERIVED per owner from
+           ``budget.pay_schedule.cadence_days`` since plan step R7a-2a --
+           it was ``app/utils/money.py``'s ``PAY_PERIODS_PER_YEAR``
+           constant until then (E-24 / HIGH-05 / Commit 23), and a
+           re-inlined 26 would be that constant back under another name.
 
         Guard 1 is implemented as an AST scan rather than a substring
         check so docstrings or comments that mention the off-engine
@@ -2503,8 +2561,11 @@ class TestDTIRaiseAware:
             for p in sorted(pkg_dir.glob("*.py"))
         )
         assert 'Decimal("26") / Decimal("12")' not in file_source, (
-            "biweekly-to-monthly factor must use named constants "
-            "PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR (E-24 / HIGH-05)."
+            "the paycheck-to-monthly conversion must go through "
+            "PayCadence, which derives the owner's paycheck count from "
+            "their cadence -- an inlined 26 is the retired "
+            "PAY_PERIODS_PER_YEAR constant under another name "
+            "(E-24 / HIGH-05, plan step R7a-2a)."
         )
 
     def test_dti_label_band_correct_with_raise(
@@ -4017,6 +4078,36 @@ class TestNetWorthHorizon:
                 all_periods=[], current_period=None,
             )
             assert build_horizon(seed_user["user"].id, core, []) is None
+
+    def test_the_narrow_producers_do_not_need_a_cadence_they_never_use(
+        self, app, db, bare_user,
+    ):
+        """An owner with NO pay cadence still gets the budget dashboard.
+
+        The regression control for a defect plan step R7a-2a introduced and
+        then fixed: resolving the owner's pay cadence inside
+        ``_load_dashboard_core_data`` made ``/`` raise ``PayCalendarError`` for
+        an owner with no ``budget.pay_schedule`` row, because
+        ``dashboard_pulse_service.compute_tracks_section`` reaches that loader
+        through BOTH narrow producers -- and both of them return early for an
+        owner with no goals and no loans, so neither ever converts anything.
+        A page must not fail for a fact it does not use.
+
+        ``bare_user`` is the state: no periods, no schedule row, no goals, no
+        loans.  Both producers must answer their empty result rather than
+        raise.  What must still raise is the FULL ``/savings`` build, whose
+        coverage footer states a span in paychecks on every render -- that
+        assertion is in ``test_pay_cadence.py``, so this one is about the
+        surfaces that need nothing.
+        """
+        with app.app_context():
+            user_id = bare_user["user"].id
+            assert savings_dashboard_service.compute_goal_progress(
+                user_id,
+            ) == []
+            assert savings_dashboard_service.compute_debt_summary(
+                user_id,
+            ) is None
 
     def test_publishes_only_the_keys_the_page_reads(
         self, app, db, seed_user, seed_periods_today,

@@ -36,6 +36,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.services import growth_engine, retirement_gap_calculator
+from app.services.pay_calendar import PayCadence
 from app.services.retirement_dashboard_service import (
     GapInputs,
     compute_gap_net_biweekly,
@@ -54,7 +55,7 @@ from app.services.retirement_projection import (
 )
 from app.services.retirement_readiness import funded_ratio_state
 from app.utils.dates import add_months
-from app.utils.money import PAY_PERIODS_PER_YEAR, ZERO, round_money
+from app.utils.money import ZERO, round_money
 
 # Retire-later search cap: the largest month offset the P2b binary search
 # probes (the audit's ratified bound).  A plan not funded even at +180
@@ -265,6 +266,7 @@ def _probe(inputs, month_offset):
             inputs.gap.salary_profiles, date_m, inputs.gap.pay,
             pension.salary_by_year, inputs.gap.merit_horizon_years,
         ),
+        pay_cadence=inputs.gap.pay_cadence,
         monthly_pension_income=pension.monthly_income,
         retirement_account_projections=projections,
         safe_withdrawal_rate=inputs.swr,
@@ -351,19 +353,30 @@ def _blended_return(settings, projections):
     return slider["current_return"] / _PCT_SCALE
 
 
-def _headroom_per_period(projections):
+def _headroom_per_period(
+    projections: list[dict], pay_cadence: PayCadence,
+) -> Decimal | None:
     """Aggregate per-period contribution-limit headroom across accounts.
 
     For each account with a finite ``annual_contribution_limit``, the
-    per-period room is ``limit / 26 - current employee per-period``
-    (floored at zero); the aggregate is their sum.  An account with no
-    known limit (no params row, or an uncapped account such as a
+    per-period room is ``limit / paychecks per year - current employee
+    per-period`` (floored at zero); the aggregate is their sum.  An account
+    with no known limit (no params row, or an uncapped account such as a
     brokerage) makes the aggregate unbounded -- reported as ``None`` so
     the solver never flags a solution that unlimited account could absorb.
+
+    **The divisor is the OWNER's paycheck count since plan step R7a-2a**, where
+    it was a hardcoded 26.  It has to match the cadence the contributions
+    themselves are made at: a weekly-paid owner making 52 contributions a year
+    was told each could be ``limit / 26``, which is twice the room they have,
+    so the solver would propose a contribution that overshoots the annual cap.
 
     Args:
         projections: The per-account projection dicts (each carrying
             ``annual_contribution_limit`` and ``employee_per_period``).
+        pay_cadence: The owner's
+            :class:`~app.services.pay_calendar.PayCadence` -- how many
+            contributions a year the annual limit is spread over.
 
     Returns:
         Decimal per-period headroom, or ``None`` when unbounded.
@@ -373,7 +386,7 @@ def _headroom_per_period(projections):
         limit = proj["annual_contribution_limit"]
         if limit is None:
             return None
-        room = Decimal(str(limit)) / PAY_PERIODS_PER_YEAR - (
+        room = pay_cadence.annual_to_per_paycheck(Decimal(str(limit))) - (
             proj["employee_per_period"]
         )
         total += max(room, ZERO)
@@ -471,7 +484,9 @@ def _contribution_lever(inputs, baseline, contribution_override):
         if contribution_override is not None
         else solved_amount
     )
-    headroom = _headroom_per_period(baseline.projections)
+    headroom = _headroom_per_period(
+        baseline.projections, inputs.gap.pay_cadence,
+    )
     return {
         "state": state,
         "solved_amount": solved_amount,

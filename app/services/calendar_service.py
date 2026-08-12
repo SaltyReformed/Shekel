@@ -18,7 +18,7 @@ from decimal import Decimal
 from sqlalchemy.orm import joinedload
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
@@ -26,6 +26,11 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import balance_at
 from app.services.account_resolver import resolve_analytics_account
+from app.services.calendar_infrequency import (
+    badge_cadence,
+    is_infrequent,
+)
+from app.services.pay_calendar import PayCadence
 from app.services.pay_period_service import get_overlapping_periods
 from app.services.balance_at import BalanceContext
 from app.utils.balance_predicates import (
@@ -68,20 +73,6 @@ class CalendarAccountNotResolvableError(LookupError):
     handler renders the repair.  Two conditions that shared one exception are
     two exceptions again, and this one means exactly what its name says.
     """
-
-
-# Recurrence patterns considered "infrequent" -- less frequent than monthly.
-#
-# ``Once`` was a member until plan step R2e-3 retired it.  A non-recurring
-# definition is now rule-less, and :func:`_is_infrequent` already answers
-# ``False`` for that -- which is what a transaction template modelled as
-# non-recurring has always returned, so the two kinds now agree instead of one
-# badging a one-time row "infrequent" and the other not.
-_INFREQUENT_PATTERNS = frozenset({
-    RecurrencePatternEnum.QUARTERLY,
-    RecurrencePatternEnum.SEMI_ANNUAL,
-    RecurrencePatternEnum.ANNUAL,
-})
 
 
 @dataclass(frozen=True)
@@ -276,6 +267,17 @@ def get_month_detail(  # pylint: disable=too-many-arguments
 
     Returns:
         A MonthSummary with day-level and aggregate data.
+
+    Raises:
+        CalendarAccountNotResolvableError: The analytics account cannot be
+            resolved -- an upstream defect the route turns into a 404.
+        PayCalendarError: See
+            :func:`~app.services.calendar_infrequency.badge_cadence`.
+        RecurrenceResolutionError: See
+            :func:`~app.services.calendar_infrequency.is_infrequent`.  NEW at
+            plan step R7a-2b together with the one above, and the unhandled
+            500 is the intended answer -- ``routes/analytics.py`` catches only
+            the first of these three.
     """
     account = resolve_analytics_account(user_id, account_id)
     if account is None:
@@ -297,6 +299,7 @@ def get_month_detail(  # pylint: disable=too-many-arguments
         year=year, account=account, periods=periods,
         transactions=transactions, large_threshold=large_threshold,
         balance_ctx=balance_ctx, today=today,
+        pay_cadence=badge_cadence(user_id, transactions),
     )
     return _build_month_summary(month, ctx)
 
@@ -320,6 +323,9 @@ def get_year_overview(
 
     Returns:
         A YearOverview with 12 MonthSummary entries (Jan-Dec).
+
+    Raises:
+        The three :func:`get_month_detail` raises, for the same reasons.
     """
     account = resolve_analytics_account(user_id, account_id)
     if account is None:
@@ -340,6 +346,7 @@ def get_year_overview(
         year=year, account=account, periods=periods,
         transactions=all_txns, large_threshold=large_threshold,
         balance_ctx=balance_ctx, today=None,
+        pay_cadence=badge_cadence(user_id, all_txns),
     )
     months = [_build_month_summary(m, ctx) for m in range(1, 13)]
 
@@ -423,6 +430,7 @@ def _build_day_entry(
     txn: Transaction,
     income_type_id: int,
     threshold: Decimal,
+    pay_cadence: PayCadence | None,
 ) -> DayEntry:
     """Create a DayEntry from a transaction.
 
@@ -430,6 +438,9 @@ def _build_day_entry(
         txn: The transaction to convert.
         income_type_id: Ref ID for the Income transaction type.
         threshold: Amount at or above which a transaction is large.
+        pay_cadence: The owner's pay cadence for the infrequent badge, or
+            ``None`` when no row in this build repeats
+            (:func:`~app.services.calendar_infrequency.badge_cadence`).
 
     Returns:
         A frozen DayEntry dataclass.
@@ -442,7 +453,7 @@ def _build_day_entry(
         is_income=txn.transaction_type_id == income_type_id,
         is_paid=bool(txn.status and txn.status.is_settled),
         is_large=abs(amount) >= threshold,
-        is_infrequent=_is_infrequent(txn),
+        is_infrequent=is_infrequent(txn, pay_cadence),
         category_group=txn.category.group_name if txn.category else None,
         category_item=txn.category.item_name if txn.category else None,
         due_date=txn.due_date,
@@ -483,6 +494,7 @@ def _assign_transactions_to_days(
     year: int,
     month: int,
     large_threshold: int,
+    pay_cadence: PayCadence | None,
 ) -> tuple[
     dict[int, list[DayEntry]],
     dict[int, tuple[Decimal, Decimal]],
@@ -528,7 +540,9 @@ def _assign_transactions_to_days(
             continue
 
         seen_ids.add(txn.id)
-        entry = _build_day_entry(txn, income_type_id, threshold)
+        entry = _build_day_entry(
+            txn, income_type_id, threshold, pay_cadence,
+        )
         day_map[display_day].append(entry)
 
     # Order each day income first, then expenses by descending magnitude.
@@ -573,7 +587,7 @@ def _day_overflow(entries: list[DayEntry]) -> DayOverflow:
 
 
 @dataclass(frozen=True)
-class _MonthBuildContext:
+class _MonthBuildContext:  # pylint: disable=too-many-instance-attributes
     """The pre-queried data and config shared across a year's month summaries.
 
     ``get_year_overview`` resolves the account, scenario, overlapping
@@ -587,6 +601,17 @@ class _MonthBuildContext:
     view (``None`` for the year overview): when set, the build computes the
     month's daily running-balance :class:`DailyView`; when ``None`` no
     balance-series read runs and ``MonthSummary.daily`` stays ``None``.
+
+    ``pay_cadence`` is the owner's, for the infrequent badge, and is ``None``
+    exactly when no row in this build repeats -- see
+    :func:`~app.services.calendar_infrequency.badge_cadence`.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- these eight ARE one
+    calendar build's inputs, read as a flat unit by
+    :func:`_build_month_summary` and its helpers, with no cohesive sub-group to
+    nest: the year and account scope the query, the periods and transactions
+    are its result, and the threshold, context, clock and cadence are four
+    independent per-build settings.  Mirrors :class:`DayEntry`'s 10/7 here.
     """
 
     year: int
@@ -596,6 +621,7 @@ class _MonthBuildContext:
     large_threshold: int
     balance_ctx: BalanceContext
     today: date | None
+    pay_cadence: PayCadence | None
 
 
 def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
@@ -615,6 +641,7 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
     """
     day_entries, day_totals, day_overflow = _assign_transactions_to_days(
         ctx.transactions, ctx.year, month, ctx.large_threshold,
+        ctx.pay_cadence,
     )
     # Month headline totals are the sum of the per-day folds, so the
     # month and per-day numbers derive from the one _fold_income_expense
@@ -812,26 +839,6 @@ def _get_display_day(
     if landing.month == target_month and landing.year == target_year:
         return landing.day
     return None
-
-
-def _is_infrequent(txn: Transaction) -> bool:
-    """Check if a transaction's recurrence is less frequent than monthly.
-
-    Returns True for Quarterly, Semi-Annual and Annual patterns.  Returns
-    False for Every Period, Every N Periods, Monthly, Monthly First, and for
-    transactions with no template or no recurrence rule -- the last of which
-    is how a non-recurring definition is modelled (plan step R2e-3).
-    """
-    if txn.template is None:
-        return False
-    rule = txn.template.recurrence_rule
-    if rule is None:
-        return False
-
-    for pattern_enum in _INFREQUENT_PATTERNS:
-        if rule.pattern_id == ref_cache.recurrence_pattern_id(pattern_enum):
-            return True
-    return False
 
 
 def _detect_third_paycheck_months(

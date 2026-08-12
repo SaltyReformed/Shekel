@@ -16,10 +16,20 @@ Monthly / Per-paycheck toggle can switch without recomputing money in the
 template or in JS.  There is exactly one monthly source of truth --
 ``obligations_aggregator.template_monthly_or_none`` (E-24 / HIGH-05, also
 behind the /savings emergency-fund baseline) -- and the per-paycheck value
-is DERIVED from it by the single factor ``MONTHS_PER_YEAR /
-PAY_PERIODS_PER_YEAR`` (12 / 26).  The toggle therefore only re-expresses
-the same committed figure in a different unit; it never opens a second
-money path that could disagree with the first.
+is DERIVED from it by
+:meth:`~app.services.pay_calendar.PayCadence.monthly_to_per_paycheck`.  The
+toggle therefore only re-expresses the same committed figure in a different
+unit; it never opens a second money path that could disagree with the first.
+
+**The conversion is the OWNER's since plan step R7a-2a**, where this module
+held it as a module-level ``MONTHS_PER_YEAR / PAY_PERIODS_PER_YEAR`` ratio --
+a hardcoded 12/26, so the "per paycheck" column named a paycheck the owner
+does not receive unless they are paid biweekly.  The cadence comes off the
+:class:`~app.services.pay_calendar.PayCalendar` this module is already handed,
+so the page resolves it once and no second load appears.  That change also
+dropped a rounding step: the ratio was pre-computed and multiplied (``x *
+(12/26)``, inexact twice), where the value's method divides once (``x * 12 /
+ppy``).
 
 Next dates are engine-backed, and the cadence phrase comes from the same read
 -----------------------------------------------------------------------------
@@ -76,7 +86,7 @@ from app.services.obligations_aggregator import (
     template_monthly_or_none,
     template_rule,
 )
-from app.services.pay_calendar import PayCalendar
+from app.services.pay_calendar import PayCadence, PayCalendar
 from app.services.recurrence import (
     RecurrenceDescription,
     RecurrenceResolutionError,
@@ -88,19 +98,7 @@ from app.services.recurrence import (
     resolved_recurrence,
 )
 from app.services.recurrence_engine import compute_due_date
-from app.utils.money import (
-    MONTHS_PER_YEAR,
-    PAY_PERIODS_PER_YEAR,
-    round_money,
-)
-
-# Per-paycheck is the monthly equivalent re-expressed over the biweekly pay
-# cadence: a monthly figure covers ``PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR``
-# paychecks, so dividing by that ratio (equivalently, multiplying by
-# ``MONTHS_PER_YEAR / PAY_PERIODS_PER_YEAR`` = 12 / 26) gives the amount
-# attributable to one paycheck.  Defined once here so the toggle's second
-# unit has a single conversion site.
-_MONTHLY_TO_PER_PAYCHECK = MONTHS_PER_YEAR / PAY_PERIODS_PER_YEAR
+from app.utils.money import round_money
 
 _HUNDRED = Decimal("100")
 _PERCENT_QUANTUM = Decimal("0.1")
@@ -229,7 +227,9 @@ class RecurringView:
     band: SummaryBand
 
 
-def _unit_pair(monthly_full: Decimal | None) -> UnitPair:
+def _unit_pair(
+    monthly_full: Decimal | None, pay_cadence: PayCadence,
+) -> UnitPair:
     """Round a full-precision monthly figure into both display units.
 
     ``monthly_full`` is the unquantized monthly equivalent from
@@ -238,12 +238,23 @@ def _unit_pair(monthly_full: Decimal | None) -> UnitPair:
     intermediate sums at full precision so pennies cannot accumulate drift
     (the ``committed_monthly`` contract).  ``None`` in propagates to both
     fields so a non-recurring row shows a blank equivalent.
+
+    Args:
+        monthly_full: The unquantized monthly figure, or ``None`` for a
+            definition that is not a recurring commitment.
+        pay_cadence: How often the owner is paid, from the calendar this
+            surface already holds.
+
+    Returns:
+        The :class:`UnitPair`, both fields rounded to cents, or both ``None``.
     """
     if monthly_full is None:
         return UnitPair(monthly=None, per_paycheck=None)
     return UnitPair(
         monthly=round_money(monthly_full),
-        per_paycheck=round_money(monthly_full * _MONTHLY_TO_PER_PAYCHECK),
+        per_paycheck=round_money(
+            pay_cadence.monthly_to_per_paycheck(monthly_full),
+        ),
     )
 
 
@@ -487,11 +498,25 @@ def _build_section(
     Raises:
         RecurrenceResolutionError: When a rule names a cadence this application
             cannot derive.
+        PayCalendarError: The owner has no resolvable pay cadence -- no
+            ``budget.pay_schedule`` row and no pay period to infer one
+            from.  Every monetary figure here is a conversion against how often
+            they are paid, so there is no honest figure to publish
+            without it (plan step R7a-2a; see
+            :func:`app.services.pay_calendar.cadence_for`).
     """
+    # ONE cadence for the section, off the schedule this surface already
+    # holds: every row belongs to the calendar's owner, so asking per row
+    # would resolve one fact many times.  Derived here rather than taken as a
+    # parameter because :func:`build_archived_rows` calls this module's other
+    # entry point and must NOT need one -- see
+    # :class:`TestAnAbsentCadenceIsRefused`.  It costs one frozen 1-field value
+    # per section and no query: the calendar is already in memory.
+    pay_cadence = calendar.cadence
     prepared: list[_PreparedRow] = []
     section_total_full = Decimal("0")
     for template in templates:
-        monthly_full = template_monthly_or_none(template, as_of)
+        monthly_full = template_monthly_or_none(template, as_of, pay_cadence)
         rule = template_rule(template)
         prepared.append(_PreparedRow(
             template=template,
@@ -505,7 +530,7 @@ def _build_section(
     rows = [
         RecurringRow(
             template=item.template,
-            equivalent=_unit_pair(item.monthly_full),
+            equivalent=_unit_pair(item.monthly_full, pay_cadence),
             recurrence=_described(item.rule, item.resolved),
             next_date=(
                 None if item.reading is None
@@ -525,7 +550,8 @@ def _build_section(
         reverse=True,
     )
     return RecurringSection(
-        rows=tuple(rows), subtotal=_unit_pair(section_total_full),
+        rows=tuple(rows),
+        subtotal=_unit_pair(section_total_full, pay_cadence),
     )
 
 
@@ -592,6 +618,17 @@ def build_view(
         and transfers sections, each with cost-descending rows and a
         both-units subtotal.  Every figure is a ``Decimal`` rounded to
         cents; the caller only displays.
+
+    Raises:
+        RecurrenceResolutionError: When a rule names a cadence this application
+            cannot derive -- the fail-closed read :func:`_build_section`
+            documents.
+        PayCalendarError: The owner has no resolvable pay cadence -- no
+            ``budget.pay_schedule`` row and no pay period to infer one
+            from.  Every row's per-paycheck column here is a conversion against how often
+            they are paid, so there is no honest figure to publish
+            without it (plan step R7a-2a; see
+            :func:`app.services.pay_calendar.cadence_for`).
     """
     income_section = _build_section(income_templates, calendar, as_of)
     expense_section = _build_section(expense_templates, calendar, as_of)

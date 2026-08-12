@@ -4,6 +4,13 @@ Shekel Budget App -- Unit Tests for Savings Goal Service
 Tests the pure calculation functions in savings_goal_service.py:
 calculate_required_contribution, calculate_savings_metrics,
 count_periods_until, resolve_goal_target, and calculate_trajectory.
+
+**Every hand-computed figure below assumes the BIWEEKLY cadence.**  Plan step
+R7a-2a made "how often is this owner paid" an explicit input where it was a
+hardcoded ``PAY_PERIODS_PER_YEAR = 26``, so each case passes :data:`_BIWEEKLY`
+and every pre-existing assertion is unchanged.  ``TestCadenceIsTheOwners``
+below is where a different cadence is exercised -- and it is the point of the
+step: the same dollars answer differently for an owner paid weekly.
 """
 
 from dataclasses import astuple
@@ -16,14 +23,24 @@ import pytest
 
 from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum
+from app.services.pay_calendar import PayCadence
 from app.services.savings_goal_service import (
     calculate_required_contribution,
+    GoalTargetSpec,
     GoalTrajectory,
     calculate_savings_metrics,
     calculate_trajectory,
     count_periods_until,
     resolve_goal_target,
 )
+
+#: 14 days between paydays, 26 a year -- the cadence every figure in this file
+#: was hand-computed at, and the value the retired constant assumed for all.
+_BIWEEKLY = PayCadence(cadence_days=14)
+
+#: 7 days between paydays, 52 a year.  Chosen for the counterexamples because
+#: every figure it produces is exactly double the biweekly one.
+_WEEKLY = PayCadence(cadence_days=7)
 
 
 # ── TestCalculateRequiredContribution ────────────────────────────
@@ -88,6 +105,7 @@ class TestCalculateSavingsMetrics:
     def test_returns_months_paychecks_years(self):
         """Standard case: $12k balance / $2k expenses."""
         result = calculate_savings_metrics(
+            pay_cadence=_BIWEEKLY,
             savings_balance=Decimal("12000"),
             average_monthly_expenses=Decimal("2000"),
         )
@@ -98,6 +116,7 @@ class TestCalculateSavingsMetrics:
     def test_paychecks_formula(self):
         """Paychecks = months * 26 / 12."""
         result = calculate_savings_metrics(
+            pay_cadence=_BIWEEKLY,
             savings_balance=Decimal("24000"),
             average_monthly_expenses=Decimal("3000"),
         )
@@ -108,6 +127,7 @@ class TestCalculateSavingsMetrics:
     def test_years_formula(self):
         """Years = months / 12."""
         result = calculate_savings_metrics(
+            pay_cadence=_BIWEEKLY,
             savings_balance=Decimal("36000"),
             average_monthly_expenses=Decimal("1000"),
         )
@@ -118,6 +138,7 @@ class TestCalculateSavingsMetrics:
     def test_expenses_zero_returns_all_zeros(self):
         """Zero expenses -- can't divide, return zeros."""
         result = calculate_savings_metrics(
+            pay_cadence=_BIWEEKLY,
             savings_balance=Decimal("10000"),
             average_monthly_expenses=Decimal("0"),
         )
@@ -158,6 +179,7 @@ class TestCalculateSavingsMetrics:
         exists to hold.
         """
         result = calculate_savings_metrics(
+            pay_cadence=_BIWEEKLY,
             savings_balance=Decimal("4076.92"),
             average_monthly_expenses=Decimal("5667.63"),
         )
@@ -189,6 +211,7 @@ class TestCalculateSavingsMetrics:
         renders a tenth of a year of runway that the money does not support.
         """
         result = calculate_savings_metrics(
+            pay_cadence=_BIWEEKLY,
             savings_balance=Decimal("550"),
             average_monthly_expenses=Decimal("1000"),
         )
@@ -214,6 +237,7 @@ class TestCalculateSavingsMetrics:
         returns 0.7 here and 0.5 is the only right answer.
         """
         result = calculate_savings_metrics(
+            pay_cadence=_BIWEEKLY,
             savings_balance=Decimal("250"),
             average_monthly_expenses=Decimal("1000"),
         )
@@ -224,6 +248,7 @@ class TestCalculateSavingsMetrics:
     def test_balance_zero_returns_all_zeros(self):
         """Zero balance -- nothing to cover expenses with."""
         result = calculate_savings_metrics(
+            pay_cadence=_BIWEEKLY,
             savings_balance=Decimal("0"),
             average_monthly_expenses=Decimal("2000"),
         )
@@ -319,6 +344,7 @@ class TestNegativeAndBoundaryPaths:
         bug. The metrics must not produce negative months or division errors.
         """
         result = calculate_savings_metrics(
+            pay_cadence=_BIWEEKLY,
             savings_balance=Decimal("10000"),
             average_monthly_expenses=Decimal("-100"),
         )
@@ -332,6 +358,7 @@ class TestNegativeAndBoundaryPaths:
         Decimal arithmetic must not produce floating-point artifacts.
         """
         result = calculate_savings_metrics(
+            pay_cadence=_BIWEEKLY,
             savings_balance=Decimal("100000"),
             average_monthly_expenses=Decimal("0.01"),
         )
@@ -395,11 +422,14 @@ class TestResolveGoalTarget:
         """Fixed goal returns target_amount directly, unmodified."""
         fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
         result = resolve_goal_target(
-            goal_mode_id=fixed_id,
-            target_amount=Decimal("5000.00"),
-            income_unit_id=None,
-            income_multiplier=None,
-            net_biweekly_pay=Decimal("2000.00"),
+            GoalTargetSpec(
+                goal_mode_id=fixed_id,
+                target_amount=Decimal("5000.00"),
+                income_unit_id=None,
+                income_multiplier=None,
+            ),
+            Decimal("2000.00"),
+            _BIWEEKLY,
         )
         assert result == Decimal("5000.00")
 
@@ -412,11 +442,14 @@ class TestResolveGoalTarget:
         """
         fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
         result = resolve_goal_target(
-            goal_mode_id=fixed_id,
-            target_amount=None,
-            income_unit_id=None,
-            income_multiplier=None,
-            net_biweekly_pay=Decimal("2000.00"),
+            GoalTargetSpec(
+                goal_mode_id=fixed_id,
+                target_amount=None,
+                income_unit_id=None,
+                income_multiplier=None,
+            ),
+            Decimal("2000.00"),
+            _BIWEEKLY,
         )
         assert result == Decimal("0.00")
 
@@ -428,11 +461,14 @@ class TestResolveGoalTarget:
         ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
         paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
         result = resolve_goal_target(
-            goal_mode_id=ir_id,
-            target_amount=None,
-            income_unit_id=paychecks_id,
-            income_multiplier=Decimal("3.00"),
-            net_biweekly_pay=Decimal("2000.00"),
+            GoalTargetSpec(
+                goal_mode_id=ir_id,
+                target_amount=None,
+                income_unit_id=paychecks_id,
+                income_multiplier=Decimal("3.00"),
+            ),
+            Decimal("2000.00"),
+            _BIWEEKLY,
         )
         assert result == Decimal("6000.00")
 
@@ -450,11 +486,14 @@ class TestResolveGoalTarget:
         ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
         months_id = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
         result = resolve_goal_target(
-            goal_mode_id=ir_id,
-            target_amount=None,
-            income_unit_id=months_id,
-            income_multiplier=Decimal("3.00"),
-            net_biweekly_pay=Decimal("2000.00"),
+            GoalTargetSpec(
+                goal_mode_id=ir_id,
+                target_amount=None,
+                income_unit_id=months_id,
+                income_multiplier=Decimal("3.00"),
+            ),
+            Decimal("2000.00"),
+            _BIWEEKLY,
         )
         assert result == Decimal("13000.00"), (
             f"Expected exactly $13,000.00 but got {result} -- "
@@ -472,11 +511,14 @@ class TestResolveGoalTarget:
         ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
         months_id = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
         result = resolve_goal_target(
-            goal_mode_id=ir_id,
-            target_amount=None,
-            income_unit_id=months_id,
-            income_multiplier=Decimal("3.00"),
-            net_biweekly_pay=Decimal("1234.56"),
+            GoalTargetSpec(
+                goal_mode_id=ir_id,
+                target_amount=None,
+                income_unit_id=months_id,
+                income_multiplier=Decimal("3.00"),
+            ),
+            Decimal("1234.56"),
+            _BIWEEKLY,
         )
         assert result == Decimal("8024.64")
 
@@ -488,11 +530,14 @@ class TestResolveGoalTarget:
         ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
         paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
         result = resolve_goal_target(
-            goal_mode_id=ir_id,
-            target_amount=None,
-            income_unit_id=paychecks_id,
-            income_multiplier=Decimal("0.50"),
-            net_biweekly_pay=Decimal("2000.00"),
+            GoalTargetSpec(
+                goal_mode_id=ir_id,
+                target_amount=None,
+                income_unit_id=paychecks_id,
+                income_multiplier=Decimal("0.50"),
+            ),
+            Decimal("2000.00"),
+            _BIWEEKLY,
         )
         assert result == Decimal("1000.00")
 
@@ -501,11 +546,14 @@ class TestResolveGoalTarget:
         ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
         paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
         result = resolve_goal_target(
-            goal_mode_id=ir_id,
-            target_amount=None,
-            income_unit_id=paychecks_id,
-            income_multiplier=Decimal("3.00"),
-            net_biweekly_pay=Decimal("0.00"),
+            GoalTargetSpec(
+                goal_mode_id=ir_id,
+                target_amount=None,
+                income_unit_id=paychecks_id,
+                income_multiplier=Decimal("3.00"),
+            ),
+            Decimal("0.00"),
+            _BIWEEKLY,
         )
         assert result == Decimal("0.00")
 
@@ -514,11 +562,14 @@ class TestResolveGoalTarget:
         ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
         with pytest.raises(ValueError, match="income_unit_id"):
             resolve_goal_target(
-                goal_mode_id=ir_id,
-                target_amount=None,
-                income_unit_id=None,
-                income_multiplier=Decimal("3.00"),
-                net_biweekly_pay=Decimal("2000.00"),
+                GoalTargetSpec(
+                    goal_mode_id=ir_id,
+                    target_amount=None,
+                    income_unit_id=None,
+                    income_multiplier=Decimal("3.00"),
+                ),
+                Decimal("2000.00"),
+                _BIWEEKLY,
             )
 
     def test_resolve_income_relative_missing_multiplier_raises(self):
@@ -527,11 +578,14 @@ class TestResolveGoalTarget:
         paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
         with pytest.raises(ValueError, match="income_multiplier"):
             resolve_goal_target(
-                goal_mode_id=ir_id,
-                target_amount=None,
-                income_unit_id=paychecks_id,
-                income_multiplier=None,
-                net_biweekly_pay=Decimal("2000.00"),
+                GoalTargetSpec(
+                    goal_mode_id=ir_id,
+                    target_amount=None,
+                    income_unit_id=paychecks_id,
+                    income_multiplier=None,
+                ),
+                Decimal("2000.00"),
+                _BIWEEKLY,
             )
 
     def test_resolve_returns_decimal_type(self):
@@ -539,11 +593,14 @@ class TestResolveGoalTarget:
         ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
         paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
         result = resolve_goal_target(
-            goal_mode_id=ir_id,
-            target_amount=None,
-            income_unit_id=paychecks_id,
-            income_multiplier=Decimal("3.00"),
-            net_biweekly_pay=Decimal("2000.00"),
+            GoalTargetSpec(
+                goal_mode_id=ir_id,
+                target_amount=None,
+                income_unit_id=paychecks_id,
+                income_multiplier=Decimal("3.00"),
+            ),
+            Decimal("2000.00"),
+            _BIWEEKLY,
         )
         assert isinstance(result, Decimal)
 
@@ -558,13 +615,114 @@ class TestResolveGoalTarget:
         ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
         months_id = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
         result = resolve_goal_target(
+            GoalTargetSpec(
+                goal_mode_id=ir_id,
+                target_amount=None,
+                income_unit_id=months_id,
+                income_multiplier=Decimal("6.00"),
+            ),
+            Decimal("3500.00"),
+            _BIWEEKLY,
+        )
+        assert result == Decimal("45500.00")
+
+
+# ── TestCadenceIsTheOwners ───────────────────────────────────────
+
+
+class TestCadenceIsTheOwners:
+    """Paycheck-to-month conversions read the OWNER's cadence (R7a-2a).
+
+    Each case pairs a biweekly answer with a weekly one on identical dollars.
+    The pair is the control: a single weekly assertion would pass against a
+    hardcoded 52 just as it does against the derivation, while the pair can
+    only pass if the cadence is genuinely an input.
+    """
+
+    def test_months_of_salary_target_doubles_for_a_weekly_owner(self):
+        """3 months of salary at $2,000 a paycheck: $26,000 weekly, $13,000 biweekly.
+
+        Hand-computed.  Weekly: 2000 * 52 / 12 = 8666.666... a month, times 3
+        = 26,000.00 exactly.  Biweekly: 2000 * 26 / 12 = 4333.333..., times 3
+        = 13,000.00 exactly.  Before this step BOTH owners were told $13,000 --
+        so the weekly owner's emergency-fund target was half what three months
+        of their salary actually is.
+        """
+        ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+        months_id = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
+        spec = GoalTargetSpec(
             goal_mode_id=ir_id,
             target_amount=None,
             income_unit_id=months_id,
-            income_multiplier=Decimal("6.00"),
-            net_biweekly_pay=Decimal("3500.00"),
+            income_multiplier=Decimal("3.00"),
         )
-        assert result == Decimal("45500.00")
+        weekly = resolve_goal_target(spec, Decimal("2000.00"), _WEEKLY)
+        biweekly = resolve_goal_target(spec, Decimal("2000.00"), _BIWEEKLY)
+        assert weekly == Decimal("26000.00")
+        assert biweekly == Decimal("13000.00")
+
+    def test_a_paychecks_target_does_not_move_with_the_cadence(self):
+        """3 PAYCHECKS of salary is 3 paychecks however often they arrive.
+
+        The control for the case above: the PAYCHECKS unit never leaves
+        paycheck space, so it must be cadence-independent.  Without this, a
+        conversion accidentally applied to both units would still pass the
+        months test.
+        """
+        ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)
+        paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
+        spec = GoalTargetSpec(
+            goal_mode_id=ir_id,
+            target_amount=None,
+            income_unit_id=paychecks_id,
+            income_multiplier=Decimal("3.00"),
+        )
+        assert resolve_goal_target(
+            spec, Decimal("2000.00"), _WEEKLY,
+        ) == Decimal("6000.00")
+        assert resolve_goal_target(
+            spec, Decimal("2000.00"), _BIWEEKLY,
+        ) == Decimal("6000.00")
+
+    def test_a_fixed_target_does_not_move_with_the_cadence(self):
+        """A FIXED goal states dollars, so no cadence can touch it."""
+        fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
+        spec = GoalTargetSpec(
+            goal_mode_id=fixed_id,
+            target_amount=Decimal("5000.00"),
+            income_unit_id=None,
+            income_multiplier=None,
+        )
+        assert resolve_goal_target(
+            spec, Decimal("2000.00"), _WEEKLY,
+        ) == Decimal("5000.00")
+        assert resolve_goal_target(
+            spec, Decimal("2000.00"), _BIWEEKLY,
+        ) == Decimal("5000.00")
+
+    def test_paychecks_covered_doubles_for_a_weekly_owner(self):
+        """$12,000 against $2,000/mo covers 6 months: 26 paychecks, or 13.
+
+        Hand-computed: months = 12000 / 2000 = 6.0 for both owners, because a
+        month is a month.  Paychecks = 6 * 52 / 12 = 26.0 weekly and
+        6 * 26 / 12 = 13.0 biweekly.  The MONTHS figure is the control -- it
+        must not move -- and the paychecks figure is the one the cadence owns.
+        """
+        weekly = calculate_savings_metrics(
+            pay_cadence=_WEEKLY,
+            savings_balance=Decimal("12000"),
+            average_monthly_expenses=Decimal("2000"),
+        )
+        biweekly = calculate_savings_metrics(
+            pay_cadence=_BIWEEKLY,
+            savings_balance=Decimal("12000"),
+            average_monthly_expenses=Decimal("2000"),
+        )
+        assert weekly.months_covered == Decimal("6.0")
+        assert biweekly.months_covered == Decimal("6.0")
+        assert weekly.paychecks_covered == Decimal("26.0")
+        assert biweekly.paychecks_covered == Decimal("13.0")
+        assert weekly.years_covered == biweekly.years_covered == Decimal("0.5")
 
 
 # ── TestCalculateTrajectory ──────────────────────────────────────

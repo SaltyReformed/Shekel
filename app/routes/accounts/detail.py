@@ -93,12 +93,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The number of biweekly pay periods that make up one year -- the window
-# width for the "Interest, next 12 months" health chip.  Matches the
-# ``("1 year", 26)`` horizon offset in
-# :mod:`app.utils.period_projections` (26 biweekly periods per year); an
-# int (not the ``Decimal`` ``PAY_PERIODS_PER_YEAR``) because it indexes
-# ``period_index`` arithmetic, not a money calculation.
+# The number of pay periods that make up one year -- the window width for the
+# "Interest, next 12 months" health chip.  Matches the ``("1 year", 26)``
+# horizon offset in :mod:`app.utils.period_projections`.
+#
+# **It is a hardcoded 26 and it should be the OWNER's paycheck count**, which
+# :attr:`app.services.pay_calendar.PayCadence.periods_per_year` now derives
+# from ``budget.pay_schedule.cadence_days``.  At a weekly cadence this window
+# spans six months and the chip still says "next 12 months"; at a monthly one
+# it spans two years.  Left as-is by plan step R7a-2a (``CLAUDE.md`` rule 6:
+# report out of scope, do not fix), together with the sibling offsets in
+# ``period_projections`` -- both are period-INDEX arithmetic rather than the
+# money constant that step replaced, and converting them means deciding what a
+# fractional period offset means.  Reported to the developer with that step,
+# NOT yet a ledger row: this comment said "RECORDED" before an adversarial
+# review checked ``docs/plans/`` and found nothing there.
 _ONE_YEAR_PERIODS = 26
 
 # Chart.js x-axis label format for the balance-projection trend: month
