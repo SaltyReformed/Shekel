@@ -309,7 +309,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
 * [x] **X-an** `3d3f0ef5` / `549015c0` a payment is history from the day its money moved (**R-EK**),
   two leaves, CONDENSED into `archive/…2026-08-04.md` 1b. Closed **N-187**, **N-196**; opened
   **N-207**..**N-211**.
-* [ ] **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half, the
+* [x] **X-f2** `9afd53f1` `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half, the
   DECOMPOSED parent (**R-EU** / **R-EV** / **R-EW**, 2026-08-09). One session's work is one leaf; it
   ticks with the last of them. **The developer's existing workflow already IS this loop** -- read the
   bank, type the balance, tick what cleared -- and only the RECORDING changes. **X-f2-a**
@@ -327,28 +327,25 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   the engine reads a missing `fica_config` as zero Social Security. **The amount model's PRECONDITION** (**X-au-b**): a
   resolver may not read the wall clock, and "what year is it" was the last clock read in the salary
   derivation. Opened **N-235**, **N-236**.
-* [ ] **X-f2-c** the OUTSTANDING SET, widened (**R-EW**) -- the panel offers everything the statement
-  can settle, and ticking stamps the STATEMENT date. This is **N-172**'s churn on the transaction
-  side. Measured on production over all 53 assertion DAYS (57 assertion ROWS -- the two figures are
-  both right about different things and one word was doing both jobs): **34 days would have had
-  something to tick, 100 rows worth $23,910.04, OF WHICH 8 rows worth $5,442.89 are transfer shadows** -- so the
-  non-transfer half is **92 rows / $18,467.15**, and the replay's row set is "carries no purchase
-  entries", i.e. bills AND shadows -- the OF WHICH is load-bearing: reading it as "plus" counted the
-  shadows twice at $29,352.93 until it was re-derived from `shekel-prod-db` on 2026-08-10.
-  The **DECOMPOSED parent** of three leaves (developer, 2026-08-10), one session and one commit
-  each, with the two that move money separated from the one that does not.
+* [x] **X-f2-c** `9afd53f1` the OUTSTANDING SET, widened (**R-EW**): the panel offers everything
+  the statement can settle and a tick stamps the STATEMENT date, which is **N-172**'s churn.
+  Measured over production's 53 assertion DAYS: **34 would have had something to tick, 100 rows
+  worth $23,910.04, OF WHICH 8 rows / $5,442.89 are transfer shadows** -- the OF-WHICH is
+  load-bearing, and reading it as "plus" double-counted the shadows at $29,352.93 until it was
+  re-derived on 2026-08-10. Three leaves, ticked below.
   * [x] **X-f2-c1** `24701c1d` the module home and the grouped shape. Closed **N-216**; opened
     **N-217**, **N-218**.
   * [x] **X-f2-c2** `d23b55fd` the TRANSACTION twin (**R-FA** / **R-FB** / **R-FC** / **R-FD** /
     **R-FF**): the envelope's close and bills, income included, settled through the grid's own verb
-    on the STATEMENT day. Prepared by `9f255bb4` / `f4512a2f` / `3e2c346e`, residue `41f678e5`.
-    **`9325fe6a` is the rule a LATER arm must keep**: a row is offerable only when everything it
-    would book moved by the statement day, so an envelope holding a later purchase is not offered.
-    Closed **N-222** / **N-223** / **N-227**; re-pointed **N-221**; opened **N-225**..**N-233**.
-  * [ ] **X-f2-c3** the TRANSFER shadows (**R-FA**), in their own group, settled through
-    `transfer_service.update_transfer` so both legs and the parent move together (Invariant 3) --
-    which means a tick on THIS account's panel also settles the leg on the other account, and the
-    copy must say so. Carries the loan-payment freeze.
+    on the STATEMENT day. **`9325fe6a` is the rule a LATER arm must keep**: a row is offerable only
+    when everything it would book moved by the statement day, so an envelope holding a later
+    purchase is not offered. Closed **N-222** / **N-223** / **N-227**; opened **N-225**..**N-233**.
+  * [x] **X-f2-c3** `9afd53f1` the TRANSFER shadows (**R-FA**): `settle_transfer` is the named verb
+    every settle door reaches, so both legs and the parent move together and a tick settles the leg
+    on the OTHER account. **The rule a LATER step must keep is why R-FH's column move is NOT here**:
+    the freeze cannot write the row's own amount until `amount_source` exists, or the manual base
+    derives from its own output -- **X-au-c**'s, measured at **N-259**. Closed **N-225**, **N-226**,
+    **N-231**, **N-232**; opened **N-255**-**N-259**.
 * [x] **X-ap** `616cf157` THE THIRD SETTLE DOOR, which R-FA's own text missed by naming two.
   Measured before and after on production: row 2231 *Gas*, an `$80.00` budget carrying one `$48.98`
   purchase, booked **`$80.00`** through the dropdown and `$48.98` through Mark Paid -- **`$31.02` of
