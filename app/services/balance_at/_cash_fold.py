@@ -106,8 +106,8 @@ from app.models.transaction import Transaction
 from app.services.cash_ledger import (
     CashLedgerWalk,
     ProjectedBasis,
+    amount_basis,
     dated_deltas,
-    live_amount_overrides,
     planned_cash_rows,
     sum_projected,
     walk_cash_ledger,
@@ -426,14 +426,15 @@ class _CashPlan:
         by_day: The same rows keyed by the day each LANDS on (ruling R-G's
             clamp) -- the cash clock.  Empty when the account has no plan.
         basis: The account's
-            :class:`~app.services.cash_ledger.ProjectedBasis` -- the live
-            ``{transaction_id: Decimal}`` override map plus the day through
+            :class:`~app.services.cash_ledger.ProjectedBasis` -- the amount
+            basis every row is priced through plus the day through
             which the account's purchases are reconciled -- built ONCE over the
             whole plan and threaded into every reduction (the established
-            build-once-and-thread pattern).  For the override half: each seam
-            picks its own candidates and both filter to ``is_projected``, so a
-            map built over the plan alone is identical on every key that can
-            matter.  For the reconciled half: it comes off the SAME walk this
+            build-once-and-thread pattern).  For the amount half: each live
+            producer picks its own candidates and both filter to
+            ``is_projected``, so a basis built over the plan alone answers
+            identically on every key that can matter.  For the reconciled
+            half: it comes off the SAME walk this
             record is assembled beside, so the plan and the assertion history
             it is valued against are two readings of one account by
             construction rather than two arguments a caller could mismatch.
@@ -501,13 +502,16 @@ def _cash_plan(
     """
     reconciled_through = walk.reconciled_through
     rows = planned_cash_rows(account.id, scenario_id)
+    # Built over the plan whether or not it is empty: both live producers filter
+    # their candidates in Python first, so an empty row set costs two list
+    # comprehensions and no query -- which is cheaper than a second construction
+    # of the same record for the empty branch.
+    basis = ProjectedBasis(
+        amounts=amount_basis(account.user_id, scenario_id, rows),
+        reconciled_through=reconciled_through,
+    )
     if not rows:
-        return _CashPlan(
-            rows=[], by_day={},
-            basis=ProjectedBasis(
-                amount_overrides={}, reconciled_through=reconciled_through,
-            ),
-        )
+        return _CashPlan(rows=[], by_day={}, basis=basis)
 
     not_before = as_of + _ONE_DAY
     by_day: "dict[date, list[Transaction]]" = defaultdict(list)
@@ -517,16 +521,7 @@ def _cash_plan(
             txn.due_date, period.start_date, period.end_date,
         )
         by_day[max(nominal, not_before)].append(txn)
-    return _CashPlan(
-        rows=rows,
-        by_day=dict(by_day),
-        basis=ProjectedBasis(
-            amount_overrides=live_amount_overrides(
-                account.user_id, scenario_id, rows,
-            ),
-            reconciled_through=reconciled_through,
-        ),
-    )
+    return _CashPlan(rows=rows, by_day=dict(by_day), basis=basis)
 
 
 def _planned_day_nets(plan: _CashPlan) -> "dict[date, Decimal]":

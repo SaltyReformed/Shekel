@@ -58,7 +58,7 @@ from app.services.cash_ledger import (
     AmountRule,
     amount_basis,
     amount_rule,
-    live_amount_overrides,
+    live_amounts,
     resolve_transaction_amount,
     resolve_transfer_amount,
 )
@@ -1155,17 +1155,17 @@ class TestTheBatchTier:
         assert basis.loan_cash[shadow.id] == Decimal("1499.10")
         assert basis.priced_ids == {row.id for row in rows}
 
-    def test_live_amount_overrides_holds_the_union_of_both_maps(
+    def test_live_amounts_holds_the_union_of_both_maps(
         self, app, db, seed_user, seed_periods,
     ):
-        """The legacy merged map still answers for both kinds, produced once.
+        """The merged map answers for both kinds, produced once.
 
-        The regression guard for X-au-b's one wiring change: two call sites in
-        ``app/`` read ``live_amount_overrides`` and neither may move.  Asserted
-        from OUTSIDE -- the expected keys are the salary row and both loan
-        shadows, named explicitly -- rather than by re-expressing the merge,
-        which a review pointed out could only fail if the producer were
-        nondeterministic.
+        The regression guard for the surfaces that want a LOOKUP rather than a
+        per-row question -- the grid publishes it so a cell and the balance row
+        beside it read one object (ruling R-Q).  Asserted from OUTSIDE -- the
+        expected keys are the salary row and both loan shadows, named explicitly
+        -- rather than by re-expressing the merge, which a review pointed out
+        could only fail if the producer were nondeterministic.
         """
         template, _profile = _salary_template(seed_user)
         paycheck = _template_row(
@@ -1175,9 +1175,7 @@ class TestTheBatchTier:
             seed_user, seed_periods[0], derive=True,
         )
         rows = [paycheck, *loan_rows]
-        merged = live_amount_overrides(
-            seed_user["user"].id, seed_user["scenario"].id, rows,
-        )
+        merged = live_amounts(_basis_for(seed_user, rows))
         assert set(merged) == {paycheck.id, *(row.id for row in loan_rows)}
         assert merged[loan_rows[0].id] == Decimal("1499.10")
         assert merged[paycheck.id] != Decimal(_NOT_AN_ANSWER)

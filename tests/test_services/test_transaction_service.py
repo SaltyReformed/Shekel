@@ -1154,9 +1154,9 @@ class TestASettleBooksTheFreshestFigure:
             seen_status = []
             real = _settle._freshest_amount  # noqa: SLF001
 
-            def _spy(row):
+            def _spy(row, basis):
                 seen_status.append(row.status_id)
-                return real(row)
+                return real(row, basis)
 
             _settle._freshest_amount = _spy  # noqa: SLF001
             try:

@@ -38,7 +38,11 @@ from decimal import Decimal
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services.cash_ledger import CashLedgerWalk, sum_projected
+from app.services.cash_ledger import (
+    CashLedgerWalk,
+    live_amounts,
+    sum_projected,
+)
 from app.utils.money import round_money
 
 from ._cash_fold import (
@@ -259,7 +263,7 @@ def period_view_of(
             _cash_sums(folded.walk, folded.day_nets, spans),
             _assertion_sums(folded.walk, spans),
         ),
-        amount_overrides=folded.plan.basis.amount_overrides,
+        amount_overrides=live_amounts(folded.plan.basis.amounts),
     )
 
 

@@ -281,15 +281,30 @@ _FENCED_MODULE_RULINGS = {
         # all seam-private in ``balance_at._cash_fold``.
         "planned_cash_rows",
         # ``_amounts`` -- what ONE row is worth to checking.  An amount per
-        # TRANSACTION is not a balance per ACCOUNT: the live override map is
+        # TRANSACTION is not a balance per ACCOUNT: the live override lookup is
         # what a row is worth right now when its stored amount is a stale
-        # cache, the income rule reads that map, and the three-bucket
+        # cache, the income rule reads it, and the three-bucket
         # reservation is a decomposition of one row's budget.  The cash analog
         # of ``loan_ledger``'s ``split_*`` rulings below, and carried for the
         # same reason.  The three-bucket reservation formula itself is NOT here:
         # D1c deleted its only external caller, so it went private and needs no
         # ruling -- structure retiring a fence entry, which is Phase D's point.
-        "live_amount_overrides",
+        #
+        # The VALUATION family (plan step X-au-c2) joins them on exactly that
+        # ground, and it is the same four names ``Transaction.effective_amount``
+        # answered for as a model property: ``contributed_amount`` composes a
+        # resolved amount with the status, the soft delete and an entered
+        # actual; ``owned_contribution`` is that composition for a row whose
+        # amount is its own; ``contribution_of`` and ``contributions_by_id`` are
+        # the one-row and batch forms that resolve first.  Each answers what ONE
+        # ROW is worth -- none folds, dates, sums, or reads an anchor, and the
+        # batch is a dict keyed by row id rather than anything per account.
+        "live_override",
+        "live_amounts",
+        "contributed_amount",
+        "owned_contribution",
+        "contribution_of",
+        "contributions_by_id",
         "income_amount",
         # ``_amount_source`` -- WHERE one row's amount comes from (plan step
         # X-au-b, ruling R-FI).  Four names, one ruling, because they are one
