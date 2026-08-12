@@ -19,6 +19,7 @@ from app.enums import (
     AcctCategoryEnum,
     CompoundingFrequencyEnum,
     EmployerContributionTypeEnum,
+    StatusEnum,
 )
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
@@ -3371,6 +3372,54 @@ class TestTheReconcileRoutesUngradedBranches:
             body = response.data.decode()
             assert f'name="actual_amount-{bill.id}"' in body
             assert f'name="actual_amount-{envelope.id}"' not in body
+
+    def test_a_correction_ABOVE_the_columns_domain_is_a_designed_refusal(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A figure the column cannot hold is a 400, never a 500 mid-statement.
+
+        ``budget.transactions.actual_amount`` is ``numeric(12, 2)``, so a
+        figure at or above ``10 ** 10`` cannot be stored.  The schema bounded
+        the field below (``>= 0``) and not above, so such a value passed
+        validation, reached the settle verb and died at the DATABASE as a
+        ``DataError`` -- an unhandled 500 on a door an ordinary crafted POST
+        reaches.
+
+        **The blast radius is what makes it worth a test rather than a shrug.**
+        A statement walk is ONE act committed once (the route's own
+        "four purchases and their envelope's close mean all five or none"), so
+        a single unstorable box discards every other tick submitted with it.
+
+        Shown to FIRE: removing the field's ``max`` turns this into a 500.
+        """
+        with app.app_context():
+            ticked = self._bill(seed_user, seed_periods_today[0])
+            alongside = self._bill(seed_user, seed_periods_today[0],
+                                   name="Water", amount="60.00")
+            ticked_id, alongside_id = ticked.id, alongside.id
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={
+                    "transaction_ids": [str(ticked_id), str(alongside_id)],
+                    f"actual_amount-{ticked_id}": "10000000000.00",
+                },
+            )
+
+            assert response.status_code == 400, response.status_code
+            assert response.headers.get("Shekel-Designed-Fragment") == "1"
+
+            # The whole act was refused, so the row ticked ALONGSIDE the bad
+            # box is still outstanding rather than half-committed.
+            db.session.expire_all()
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            for row_id in (ticked_id, alongside_id):
+                row = db.session.get(Transaction, row_id)
+                assert row.status_id == projected_id
+                assert row.settled_on is None
+                assert row.actual_amount is None
+
 
 class TestAccountTypes:
     """Tests for account type create, rename, and delete."""
