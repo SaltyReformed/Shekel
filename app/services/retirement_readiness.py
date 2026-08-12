@@ -276,8 +276,9 @@ def _net_frame(data):
 
     Args:
         data: The dict returned by ``compute_gap_data`` (carries the
-            projections, the gross-pension gap analysis, the net biweekly,
-            the SWR, and the stored estimated tax rate).
+            projections, the gross-pension gap analysis, the net pay for one
+            paycheck and the cadence it arrives at, the SWR, and the stored
+            estimated tax rate).
 
     Returns:
         ``(net_analysis, tax_rate_missing, effective_tax_rate)``.
@@ -289,6 +290,7 @@ def _net_frame(data):
     )
     net = retirement_gap_calculator.calculate_gap(
         net_biweekly_pay=data["gap_net_biweekly"],
+        pay_cadence=data["pay_cadence"],
         monthly_pension_income=data["gap_analysis"].monthly_pension_income,
         retirement_account_projections=data["retirement_account_projections"],
         safe_withdrawal_rate=data["swr"],

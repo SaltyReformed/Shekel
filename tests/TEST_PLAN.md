@@ -351,14 +351,18 @@ the rounded months figure (plan step X-z5, ruling R-CS, finding N-120). The
 non-divisible row is the shape that tells the two rules apart: every other case
 here divides exactly, so both give identical answers.
 
-| Category | Tests Needed                                             |
-| -------- | -------------------------------------------------------- |
-| HP       | Returns months/paychecks/years covered                   |
-| FIN      | `paychecks_covered = raw_months * 26 / 12`, rounded once  |
-| FIN      | `years_covered = raw_months / 12`, rounded once           |
-| FIN      | Non-divisible ratio: 4076.92/5667.63 → 0.7 / 1.6 / 0.1   |
-| BE       | `average_monthly_expenses = 0` → all zeros               |
-| BE       | `savings_balance = 0` → all zeros                        |
+| Category | Tests Needed                                                     |
+| -------- | ---------------------------------------------------------------- |
+| HP       | Returns months/paychecks/years covered                           |
+| FIN      | `paychecks_covered = raw_months * ppy / 12`, rounded once        |
+| FIN      | `years_covered = raw_months / 12`, rounded once                  |
+| FIN      | Non-divisible ratio: 4076.92/5667.63 → 0.7 / 1.6 / 0.1          |
+| FIN      | `ppy` is the OWNER's: 6 months = 13 paychecks biweekly, 26 weekly |
+| BE       | `average_monthly_expenses = 0` → all zeros                       |
+| BE       | `savings_balance = 0` → all zeros                                |
+
+`ppy` is `PayCadence.periods_per_year`, an argument since plan step R7a-2a; it
+was the hardcoded `26` this table used to name.
 
 #### `count_periods_until()`
 

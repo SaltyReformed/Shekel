@@ -22,8 +22,11 @@ checkers, CI); fix what a gate flags at the root, never with a bare disable.
 - **Do not rely on truthiness for business logic.** Write `if amount is None:`,
   not `if not amount:`. A zero balance is not a missing balance.
 - **No magic numbers or strings.** Name every business-rule literal
-  (`PAY_PERIODS_PER_YEAR`, `SOCIAL_SECURITY_RATE`). Math constants (0, 1), HTTP
-  codes, framework values are exempt.
+  (`SOCIAL_SECURITY_RATE`, `MONTHS_PER_YEAR`). Math constants (0, 1), HTTP
+  codes, framework values are exempt. **But a per-OWNER fact is a derivation, not
+  a constant with a good name** -- `PAY_PERIODS_PER_YEAR = 26` was this rule's own
+  example until plan step R7a-2a measured it wrong for every non-biweekly
+  cadence; `pay_calendar.PayCadence` derives it now.
 - **Keep functions focused** (evaluate decomposition past 50 lines), **guard
   clauses over deep nesting** (max depth 3), **no mutable default arguments**.
 - **DRY/SOLID:** verify equivalent logic does not already exist before writing new

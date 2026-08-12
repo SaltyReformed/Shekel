@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 from app.services import balance_at, savings_goal_service
 from app.services.balance_at import BalanceContext
 from app.services.account_category import is_liability_account
+from app.services.pay_calendar import cadence_for
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
     _load_archived_accounts,
@@ -54,6 +55,7 @@ from app.services.savings_dashboard_service._display import (
 from app.services.savings_dashboard_service._goals import (
     GoalProgress,
     _compute_goal_progress,
+    _GoalInputs,
     _load_active_goals,
 )
 from app.services.savings_dashboard_service._metrics import (
@@ -70,8 +72,10 @@ from app.services.savings_dashboard_service._types import (
     AccountProjection,
     _ProjectionContext,
 )
+from app.utils.money import round_money
 
 if TYPE_CHECKING:
+    from app.services.pay_calendar import PayCadence
     from app.services.paycheck_calculator import PaycheckBreakdown
     from app.services.savings_dashboard_service._types import (
         _AccountParams,
@@ -116,6 +120,7 @@ def _debt_summary_with_dti(
     account_data: list[AccountProjection],
     escrow_map: dict[int, list],
     current_breakdown: PaycheckBreakdown | None,
+    user_id: int,
 ) -> DebtSummary | None:
     """Resolve the engine gross and build the debt summary from it.
 
@@ -137,6 +142,9 @@ def _debt_summary_with_dti(
         escrow_map: account_id -> list of EscrowLine with versions (PITI).
         current_breakdown: The engine ``PaycheckBreakdown`` for the
             current period, or ``None`` with no salary configured.
+        user_id: The owner, read ONLY to resolve their pay cadence -- and only
+            when there is a gross to convert.  See the comment below for why
+            this takes an id rather than the cadence itself.
 
     Returns:
         The :class:`~.._metrics.DebtSummary`, or ``None`` when no loan
@@ -146,13 +154,26 @@ def _debt_summary_with_dti(
     # the current period (``calculate_paycheck`` ->
     # ``PaycheckBreakdown.earnings.gross_biweekly``), NOT the off-engine
     # ``annual_salary / pay_periods`` recompute the DTI block read
-    # pre-Commit-26.  ``_metrics._dti_metrics`` performs the
-    # biweekly -> monthly normalization on this engine-derived input.
+    # pre-Commit-26.
     gross_biweekly = (
         current_breakdown.earnings.gross_biweekly if current_breakdown is not None
         else Decimal("0.00")
     )
-    return _compute_debt_summary(account_data, escrow_map, gross_biweekly)
+    # The paycheck -> monthly conversion happens HERE, at the owner's own
+    # cadence (plan step R7a-2a), and the schedule is read only when there is
+    # something to convert.  Taking a resolved ``PayCadence`` as a parameter
+    # instead put a 500 in front of an owner with a mortgage and no salary
+    # profile: ``_dti_metrics`` answers ``None`` for a zero gross, so the
+    # cadence was resolved -- and could refuse -- for a figure the page never
+    # publishes.  That is the same defect ``_DashboardCoreData``'s docstring
+    # records, one guard further in, and an adversarial review of this step
+    # found it.
+    gross_monthly = (
+        round_money(cadence_for(user_id).per_paycheck_to_monthly(gross_biweekly))
+        if gross_biweekly > Decimal("0.00")
+        else Decimal("0.00")
+    )
+    return _compute_debt_summary(account_data, escrow_map, gross_monthly)
 
 
 def compute_debt_summary(
@@ -208,6 +229,14 @@ def compute_debt_summary(
         inside the full build, and additionally skips the per-account
         projections and the breakdown's paycheck-engine call -- the
         debt summary needs neither).
+
+    Raises:
+        PayCalendarError: The owner has no resolvable pay cadence -- no
+            ``budget.pay_schedule`` row and no pay period to infer one
+            from.  Reached only by an owner who HAS a loan
+            AND a configured salary, because the DTI denominator is the only
+            figure here that converts (plan step R7a-2a; see
+            :func:`app.services.pay_calendar.cadence_for`).
     """
     core = _load_dashboard_core_data(user_id, balance_ctx)
     params = _load_account_params(core.accounts)
@@ -232,7 +261,7 @@ def compute_debt_summary(
         user_id, core.all_periods, core.current_period,
     )
     return _debt_summary_with_dti(
-        account_data, params.escrow_map, current_breakdown,
+        account_data, params.escrow_map, current_breakdown, user_id,
     )
 
 
@@ -271,6 +300,14 @@ def compute_goal_progress(
         One :class:`~.._goals.GoalProgress` per active goal (see
         :func:`_compute_goal_progress`); empty when the user has no active
         goals.
+
+    Raises:
+        PayCalendarError: The owner has no resolvable pay cadence -- no
+            ``budget.pay_schedule`` row and no pay period to infer one
+            from.  Reached only by an owner who HAS an
+            active goal, whose contribution floor and income-relative target
+            are both conversions against how often they are paid (plan step R7a-2a; see
+            :func:`app.services.pay_calendar.cadence_for`).
     """
     core = _load_dashboard_core_data(user_id, balance_ctx)
 
@@ -296,7 +333,15 @@ def compute_goal_progress(
     )
 
     return _compute_goal_progress(
-        user_id, account_data, core.all_periods, net_biweekly_pay,
+        user_id,
+        account_data,
+        _GoalInputs(
+            all_periods=core.all_periods,
+            net_biweekly_pay=net_biweekly_pay,
+            # After the no-goals early return above, for the reason
+            # ``compute_debt_summary`` resolves it after ITS early return.
+            pay_cadence=cadence_for(user_id),
+        ),
         active_goals,
     )
 
@@ -557,6 +602,7 @@ def _compute_emergency_fund_section(
     user_id: int,
     core: _DashboardCoreData,
     account_data: list[AccountProjection],
+    pay_cadence: PayCadence,
 ) -> dict:
     """Assemble the cockpit's emergency-fund figures and their basis.
 
@@ -584,6 +630,12 @@ def _compute_emergency_fund_section(
         core: The loaded :class:`_DashboardCoreData` (its accounts, periods and
             scenario scope the expense baseline).
         account_data: The per-account projections (the liquid balances).
+        pay_cadence: How often the owner is paid
+            (:class:`~app.services.pay_calendar.PayCadence`).  BOTH figures
+            here rest on it -- the expense baseline converts a per-period
+            average into month space, and the coverage footer states its span
+            in paychecks -- so one value serves them and the caption cannot
+            name a basis the figure above it was not measured against.
 
     Returns:
         dict with ``emergency_metrics``
@@ -591,13 +643,12 @@ def _compute_emergency_fund_section(
         ``total_savings`` and ``avg_monthly_expenses``.
     """
     avg_monthly_expenses = _compute_avg_monthly_expenses(
-        user_id, core.accounts, core.all_periods, core.current_period,
-        core.balance_ctx.scenario_id,
+        user_id, core, pay_cadence,
     )
     total_savings = _sum_liquid_balances(account_data)
     return {
         "emergency_metrics": savings_goal_service.calculate_savings_metrics(
-            total_savings, avg_monthly_expenses,
+            total_savings, avg_monthly_expenses, pay_cadence,
         ),
         "total_savings": total_savings,
         "avg_monthly_expenses": avg_monthly_expenses,
@@ -619,8 +670,33 @@ def compute_dashboard_data(user_id):
             account_data, grouped_accounts, goal_data,
             emergency_metrics, total_savings,
             avg_monthly_expenses, savings_accounts.
+
+    Raises:
+        PayCalendarError: The owner has no resolvable pay cadence -- no
+            ``budget.pay_schedule`` row and no pay period to infer one
+            from.  Unlike the two narrow producers this has no
+            early return: the coverage footer states a span in PAYCHECKS on
+            every render, so the page cannot be built without the cadence (plan step R7a-2a; see
+            :func:`app.services.pay_calendar.cadence_for`).
     """
     core = _load_dashboard_core_data(user_id)
+
+    # ── How often this owner is paid ────────────────────────────
+    # Resolved ONCE for this build and threaded (plan step R7a-2a, section
+    # 4a): the goal floors and the emergency-fund baseline are both
+    # conversions against it, and two lookups would be two chances for one
+    # page to state two rhythms.  (The debt summary's DTI is the third
+    # conversion and resolves its own, behind the positive-gross condition
+    # that decides whether it converts at all -- see
+    # :func:`_debt_summary_with_dti`.)
+    #
+    # Unlike the narrow producers this entry has no early return to sit
+    # behind: the coverage footer publishes a span in PAYCHECKS on every
+    # render, so an owner with no stated cadence cannot be shown this page --
+    # the honest answer rather than an assumed 26.  (``_compute_avg_monthly
+    # _expenses`` needs it to decide whether expenses are even non-zero, so
+    # "resolve it only when there are expenses" is not available here.)
+    pay_cadence = cadence_for(user_id)
 
     # ── Load account-type-specific parameters ───────────────────
     params = _load_account_params(core.accounts)
@@ -649,7 +725,13 @@ def compute_dashboard_data(user_id):
 
     # ── Savings goals ───────────────────────────────────────────
     goal_data = _compute_goal_progress(
-        user_id, account_data, core.all_periods, net_biweekly_pay,
+        user_id,
+        account_data,
+        _GoalInputs(
+            all_periods=core.all_periods,
+            net_biweekly_pay=net_biweekly_pay,
+            pay_cadence=pay_cadence,
+        ),
         _load_active_goals(user_id),
     )
 
@@ -663,7 +745,7 @@ def compute_dashboard_data(user_id):
 
     # ── Debt summary and DTI ───────────────────────────────────
     debt_summary = _debt_summary_with_dti(
-        account_data, params.escrow_map, current_breakdown,
+        account_data, params.escrow_map, current_breakdown, user_id,
     )
 
     # ── Net-worth cockpit region + per-account sparklines ──────
@@ -684,7 +766,9 @@ def compute_dashboard_data(user_id):
         "goal_data": goal_data,
         # The coverage figures and the two figures its caption names as their
         # basis, from one helper (plan step X-z2).
-        **_compute_emergency_fund_section(user_id, core, account_data),
+        **_compute_emergency_fund_section(
+            user_id, core, account_data, pay_cadence,
+        ),
         "savings_accounts": savings_accounts,
         "archived_accounts": _load_archived_accounts(user_id),
         "debt_summary": debt_summary,

@@ -48,17 +48,32 @@ Boundary discipline (``CLAUDE.md``), stated PER MODULE because plan step C2-b1
 made one of them impure and a claim about "the package" would then be false of
 part of it:
 
-* :mod:`._derive` and :mod:`._calendar` -- no Flask symbol, no database
-  session, no clock.  Every answer is a pure function of values a caller
-  supplies, and that is load-bearing rather than tidy: it is what lets C1's
-  harness drive the derivation over production's real 61 paydays and over a
-  generated sweep with no database, so the two runs exercise the same code.
+* :mod:`._derive`, :mod:`._calendar` and :mod:`._cadence` -- no Flask symbol,
+  no database session, no clock.  Every answer is a pure function of values a
+  caller supplies, and that is load-bearing rather than tidy: it is what lets
+  C1's harness drive the derivation over production's real 61 paydays and over
+  a generated sweep with no database, so the two runs exercise the same code.
 * :mod:`._loader` -- holds the session, and ONLY the session.  It reads an
   owner's paydays and cadence and hands them to the pure half; it computes
   nothing.  One module is the whole impure surface, which is what makes the
   boundary a file rather than a convention.
+
+**One more value landed here at the recurrence arc's plan step R7a-2a**, and it
+is in this package because the fact it derives from is:
+:class:`~._cadence.PayCadence` answers "how many paychecks does this owner
+receive in a year", which is ``budget.pay_schedule.cadence_days`` and nothing
+else.  It replaced ``app.utils.money.PAY_PERIODS_PER_YEAR``, a hardcoded
+``Decimal("26")`` read by nine files while the cadence it stood for is
+user-selectable 1..365 -- so every monthly-equivalent figure on
+``/obligations``, ``/savings`` and the Recurring surface was wrong for an owner
+who is not paid biweekly.  It is a SEPARATE value from
+:class:`~._calendar.PayCalendar` rather than a method on it, because most of
+its consumers need the cadence and not the payday set; the calendar exposes
+:attr:`~._calendar.PayCalendar.cadence` so a caller holding one never builds a
+second answer.
 """
 
+from ._cadence import DAYS_PER_YEAR, PayCadence
 from ._calendar import (
     PayCalendar,
     PeriodWindow,
@@ -76,15 +91,18 @@ from ._derive import (
     PayCalendarError,
     derive_periods,
 )
-from ._loader import calendar_for
+from ._loader import cadence_for, calendar_for
 
 __all__ = [
+    "DAYS_PER_YEAR",
     "MAX_CADENCE_DAYS",
     "MIN_CADENCE_DAYS",
     "DerivedPeriod",
+    "PayCadence",
     "PayCalendar",
     "PayCalendarError",
     "PeriodWindow",
+    "cadence_for",
     "calendar_for",
     "containing_period",
     "derive_periods",

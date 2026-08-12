@@ -29,6 +29,7 @@ from app.services import (
     pension_calculator,
     retirement_gap_calculator,
 )
+from app.services.pay_calendar import PayCadence, cadence_for
 from app.services.retirement_projection import (
     build_employer_salary_basis,
     build_projection_context,
@@ -161,6 +162,12 @@ class GapInputs:
         salary_profiles: The user's active :class:`SalaryProfile` rows.
         pay: The current-period pay snapshot (:class:`_CurrentPay`).
         merit_horizon_years: The resolved merit-raise horizon.
+        pay_cadence: How often the owner is paid
+            (:class:`~app.services.pay_calendar.PayCadence`), loaded here at
+            plan step R7a-2a so the gap analysis and every lever probe measure
+            pre-retirement income against the same rhythm.  It is
+            date-independent like everything else on this bundle, which is why
+            a probe at month offset ``m`` never reloads it.
     """
 
     settings: UserSettings | None
@@ -168,6 +175,7 @@ class GapInputs:
     salary_profiles: list[SalaryProfile]
     pay: _CurrentPay
     merit_horizon_years: int
+    pay_cadence: PayCadence
 
 
 def load_gap_inputs(user_id):
@@ -178,8 +186,15 @@ def load_gap_inputs(user_id):
 
     Returns:
         A :class:`GapInputs` bundle (settings, active pensions, active
-        salary profiles, the current-pay snapshot, and the resolved merit
-        horizon).
+        salary profiles, the current-pay snapshot, the resolved merit
+        horizon, and the owner's pay cadence).
+
+    Raises:
+        PayCalendarError: The owner has no resolvable pay cadence -- no
+            ``budget.pay_schedule`` row and no pay period to infer one from.
+            The gap's pre-retirement income is their paycheck converted to a
+            month, so there is no honest figure without it (plan step
+            R7a-2a; see :func:`app.services.pay_calendar.cadence_for`).
     """
     settings = (
         db.session.query(UserSettings).filter_by(user_id=user_id).first()
@@ -200,6 +215,10 @@ def load_gap_inputs(user_id):
         salary_profiles=salary_profiles,
         pay=_compute_current_pay(user_id, salary_profiles),
         merit_horizon_years=_resolve_merit_horizon(settings),
+        # Resolved once here (plan step R7a-2a): the retire-later solver
+        # probes this bundle dozens of times per request and the cadence does
+        # not move with a candidate retirement date.
+        pay_cadence=cadence_for(user_id),
     )
 
 
@@ -284,8 +303,18 @@ def compute_gap_data(
     Returns:
         dict with keys: gap_analysis, pension_benefits,
                         retirement_account_projections, settings,
-                        salary_profiles, pensions, gap_net_biweekly, swr,
-                        planned_retirement_date, estimated_tax_rate.
+                        salary_profiles, pensions, gap_net_biweekly,
+                        pay_cadence, swr, planned_retirement_date,
+                        estimated_tax_rate.
+
+        ``pay_cadence`` is published for the same reason ``gap_net_biweekly``
+        and ``swr`` are: ``retirement_readiness._net_frame`` re-runs this gap
+        in the net frame and must measure income against the SAME cadence
+        rather than resolve a second one.  It is not a template context key.
+
+    Raises:
+        PayCalendarError: The owner has no resolvable pay cadence; see
+            :func:`load_gap_inputs`.
     """
     inputs = load_gap_inputs(user_id)
     salary_profiles = inputs.salary_profiles
@@ -337,6 +366,7 @@ def compute_gap_data(
     )
     gap_result = retirement_gap_calculator.calculate_gap(
         net_biweekly_pay=gap_net_biweekly,
+        pay_cadence=inputs.pay_cadence,
         monthly_pension_income=pension.monthly_income,
         retirement_account_projections=retirement_account_projections,
         safe_withdrawal_rate=swr,
@@ -361,6 +391,10 @@ def compute_gap_data(
         # cheap pure resolver, called inline here rather than stored, to
         # keep this orchestrator within its local-variable budget.
         "gap_net_biweekly": gap_net_biweekly,
+        # Exposed for the same reason as the line above it: the readiness
+        # producer re-runs this gap in the net frame and must measure income
+        # against the SAME cadence, not resolve a second one.
+        "pay_cadence": inputs.pay_cadence,
         "swr": swr,
         "planned_retirement_date": planned_retirement_date,
         "estimated_tax_rate": resolve_estimated_tax_rate(inputs.settings),

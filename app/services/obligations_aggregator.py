@@ -30,15 +30,21 @@ The shared filter applied here, in one place, by every consumer:
      were separate cases until plan step R2e-3 retired the ``Once``
      pattern that was the second spelling of it.)
 
-The pay-period and month constants come from ``app.utils.money``
-(``PAY_PERIODS_PER_YEAR``, ``MONTHS_PER_YEAR``); per E-24 / HIGH-05
-the 26/12 factor is defined exactly once in the project.
+**How often the owner is paid is an INPUT, not a constant** (plan step
+R7a-2a).  The paycheck-space patterns' monthly equivalent used to be computed
+against ``app.utils.money.PAY_PERIODS_PER_YEAR``, a hardcoded ``Decimal("26")``
+-- so this "single canonical producer" produced a figure that was simply wrong
+for an owner not paid biweekly.  Both entry points now take the owner's
+:class:`~app.services.pay_calendar.PayCadence`, resolved ONCE per request by
+the caller and threaded, never looked up per row.  The month denominator
+(``MONTHS_PER_YEAR``) stays a constant, because 12 is a property of the
+calendar rather than of an owner.
 
 All functions are pure: they accept ORM template instances (or any
 object exposing the same ``recurrence_rule`` / ``default_amount``
 attributes -- duck-typing supports the ``types.SimpleNamespace`` mock
-templates used in tests) and ``as_of``, and return Decimal results.
-No Flask imports.
+templates used in tests), ``as_of`` and the owner's pay cadence, and return
+Decimal results.  No Flask imports.
 """
 
 from datetime import date
@@ -47,6 +53,7 @@ from typing import Iterable, Union
 
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
+from app.services.pay_calendar import PayCadence
 from app.services.savings_goal_service import amount_to_monthly
 from app.utils.money import round_money
 
@@ -85,6 +92,7 @@ def template_rule(template: RecurringTemplate):
 def template_monthly_or_none(
     template: RecurringTemplate,
     as_of: date,
+    pay_cadence: PayCadence,
 ) -> Decimal | None:
     """Return the monthly equivalent of one recurring template, or None.
 
@@ -107,6 +115,12 @@ def template_monthly_or_none(
             rule whose ``end_date`` is strictly before ``as_of`` is
             treated as expired and excluded. Callers pass
             ``date.today()`` for "as of now" semantics.
+        pay_cadence: How often the owner is paid
+            (:class:`~app.services.pay_calendar.PayCadence`).  Read only by the
+            paycheck-space patterns; a monthly or annual template's equivalent
+            is a property of the calendar alone.  Resolved once per request by
+            the caller -- ``PayCalendar.cadence`` where the caller already has
+            a schedule, ``pay_calendar.cadence_for`` where it does not.
 
     Returns:
         The full-precision Decimal monthly equivalent, or ``None`` if
@@ -129,12 +143,15 @@ def template_monthly_or_none(
     if amount == 0:
         return None
 
-    return amount_to_monthly(amount, rule.pattern_id, rule.interval_n)
+    return amount_to_monthly(
+        amount, rule.pattern_id, rule.interval_n, pay_cadence,
+    )
 
 
 def committed_monthly(
     templates: Iterable[RecurringTemplate],
     as_of: date,
+    pay_cadence: PayCadence,
 ) -> Decimal:
     """Sum monthly equivalents across a set of recurring templates.
 
@@ -161,6 +178,11 @@ def committed_monthly(
             filter, not the data-ownership filter.
         as_of: Reference date for the expired-rule filter (see
             ``template_monthly_or_none``).
+        pay_cadence: How often the owner is paid, threaded to every
+            per-template conversion (see ``template_monthly_or_none``).  One
+            value for the whole set: these templates belong to one owner, so
+            summing figures resolved against two cadences would be adding
+            different units.
 
     Returns:
         The total monthly-equivalent Decimal, rounded to cents with
@@ -169,7 +191,7 @@ def committed_monthly(
     """
     total = Decimal("0")
     for template in templates:
-        monthly = template_monthly_or_none(template, as_of)
+        monthly = template_monthly_or_none(template, as_of, pay_cadence)
         if monthly is not None:
             total += monthly
     return round_money(total)

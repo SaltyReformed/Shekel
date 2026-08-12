@@ -5,6 +5,10 @@ Covers the contribution solver's annuity-factor math (against an engine
 replay oracle), the headroom facts, the retire-later binary search and its
 degenerate states, and the producer's consistency with the readiness
 picture (probe(0) == compute_readiness_data).
+
+**Every hand-computed figure assumes the BIWEEKLY cadence** (:data:`_BIWEEKLY`),
+which plan step R7a-2a made an explicit input to the headroom division where it
+was a hardcoded 26.
 """
 
 from datetime import date
@@ -18,6 +22,7 @@ from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import account_service, retirement_levers, retirement_readiness
+from app.services.pay_calendar import PayCadence
 from app.services.growth_engine import (
     generate_projection_periods,
     project_balance,
@@ -33,6 +38,10 @@ from app.services.retirement_levers import (
 )
 from app.utils.dates import add_months
 from app.utils.money import round_money
+
+#: 14 days between paydays, 26 a year -- the cadence the seeded scenarios
+#: build and every hand-computed figure here assumes.
+_BIWEEKLY = PayCadence(cadence_days=14)
 
 
 # ── Fakes ────────────────────────────────────────────────────────
@@ -182,6 +191,31 @@ class TestContributionOutcome:
 
 
 class TestHeadroomPerPeriod:
+    """The per-period room an annual contribution limit leaves.
+
+    Every limit below is divisible by 26 so the biweekly arithmetic is exact;
+    :data:`_BIWEEKLY` states the cadence those figures were computed at, which
+    plan step R7a-2a made an argument where it was a hardcoded 26.
+    """
+
+    def test_a_weekly_owner_has_half_the_room_per_paycheck(self):
+        """The same $5,200 cap is $200 a paycheck biweekly and $100 weekly.
+
+        Hand-computed: 5200 / 26 = 200.00 and 5200 / 52 = 100.00, with no
+        current employee contribution.  The divisor has to match how often the
+        contribution actually FIRES: telling a weekly owner they have $200 of
+        room per paycheck would have them contribute $10,400 against a $5,200
+        cap over the year.  The pair is the control -- one assertion alone
+        would pass against either hardcoded number.
+        """
+        projections = [_FakeLimitedProjection(Decimal("5200"), Decimal("0"))]
+        assert _headroom_per_period(
+            projections, _BIWEEKLY,
+        ) == Decimal("200.00")
+        assert _headroom_per_period(
+            projections, PayCadence(cadence_days=7),
+        ) == Decimal("100.00")
+
     def test_hand_computed_aggregate(self):
         """Two capped accounts sum their per-period room.
 
@@ -193,7 +227,7 @@ class TestHeadroomPerPeriod:
             _FakeLimitedProjection(Decimal("2600"), Decimal("50.00")),
             _FakeLimitedProjection(Decimal("5200"), Decimal("100.00")),
         ]
-        assert _headroom_per_period(projections) == Decimal("150.00")
+        assert _headroom_per_period(projections, _BIWEEKLY) == Decimal("150.00")
 
     def test_over_contributed_account_floors_at_zero(self):
         """An account already past its per-period cap contributes no room.
@@ -206,7 +240,7 @@ class TestHeadroomPerPeriod:
             _FakeLimitedProjection(Decimal("2600"), Decimal("150.00")),
             _FakeLimitedProjection(Decimal("5200"), Decimal("0")),
         ]
-        assert _headroom_per_period(projections) == Decimal("200.00")
+        assert _headroom_per_period(projections, _BIWEEKLY) == Decimal("200.00")
 
     def test_any_unlimited_account_makes_headroom_unbounded(self):
         """One account without a known limit -> None (no honest finite cap)."""
@@ -214,7 +248,7 @@ class TestHeadroomPerPeriod:
             _FakeLimitedProjection(Decimal("2600"), Decimal("50.00")),
             _FakeLimitedProjection(None, Decimal("0")),
         ]
-        assert _headroom_per_period(projections) is None
+        assert _headroom_per_period(projections, _BIWEEKLY) is None
 
 
 # ── Seeded scenarios ─────────────────────────────────────────────

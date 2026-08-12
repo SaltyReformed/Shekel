@@ -49,7 +49,7 @@ from app.exceptions import ShekelError
 
 #: The cadence bounds, mirroring ``ck_pay_schedule_cadence_range`` on
 #: ``budget.pay_schedule.cadence_days``.  Named here rather than inlined
-#: because :func:`_validate_cadence` states them in its refusal message, and a
+#: because :func:`validate_cadence` states them in its refusal message, and a
 #: message that quotes a bound the code does not enforce is how the first cut
 #: of this module shipped.
 #:
@@ -253,7 +253,7 @@ def derive_periods(
             component); or a payday appears twice.
     """
     if cadence_days is not None:
-        _validate_cadence(cadence_days)
+        validate_cadence(cadence_days)
     # Sorted on the PAYDAY alone.  Sorting the pairs would break on a ``None``
     # id the moment two paydays tied -- and they cannot tie, which is checked
     # next, so keying the sort on the id would only hide that check.
@@ -308,7 +308,7 @@ def derive_periods(
     )
 
 
-def _validate_cadence(cadence_days: int) -> None:
+def validate_cadence(cadence_days: int) -> None:
     """Refuse a cadence that is not an in-range plain integer.
 
     Held to the same standard as :func:`_validated` holds a payday, and for the
@@ -317,6 +317,13 @@ def _validate_cadence(cadence_days: int) -> None:
     cadence; and a ``float`` was accepted and silently TRUNCATED, because
     ``date.__add__`` reads only ``timedelta.days``, so ``14.9`` produced the
     same calendar as ``14``.
+
+    **Package-internal rather than underscore-private, and plan step R7a-2a is
+    why**: :class:`~._cadence.PayCadence` validates through this same function,
+    so the bound has one implementation across the two values that hold a
+    cadence.  It stays out of the package's public surface -- this module is
+    private and ``__init__`` does not re-export it -- so the name is visible to
+    siblings and to nothing else.
 
     **``None`` is not this function's subject and reaching here with one is a
     caller error**, which is a correction plan step C2-b1 made: absence means
