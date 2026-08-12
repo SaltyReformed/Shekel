@@ -368,6 +368,16 @@ EVT_TRANSACTIONS_RECONCILED = _register(
     "shows; each settled through the transaction service on the day the "
     "balance was observed, some carrying a corrected amount.",
 )
+EVT_TRANSFERS_RECONCILED = _register(
+    "transfers_reconciled", BUSINESS,
+    "User confirmed which outstanding TRANSFERS their bank statement shows; "
+    "each settled through the transfer service on the day the balance was "
+    "observed, moving both legs and the parent together, some carrying a "
+    "corrected amount.  Its own event rather than a count folded into the "
+    "transaction one, because settling a transfer touches a SECOND account: "
+    "an analyst asking why that account's balance moved has to be able to "
+    "find this without knowing to look under transactions.",
+)
 
 # ── Business events: pay periods ───────────────────────────────────
 

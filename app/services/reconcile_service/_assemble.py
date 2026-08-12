@@ -53,13 +53,14 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 
-from . import _purchases, _transactions
+from . import _purchases, _rows, _transactions, _transfers
 from ._offers import (
     OutstandingGroup,
     ReconcileSubmission,
     OutstandingPurchase,
     OutstandingSet,
     OutstandingTransaction,
+    Section,
 )
 
 
@@ -165,18 +166,19 @@ def _sectioned(
         groups: The blocks, already ordered by :func:`_block_order`.
 
     Returns:
-        The same blocks, each carrying ``section_label`` where its kind first
-        appears and ``None`` elsewhere.
+        The same blocks, each carrying a :class:`Section` where its kind
+        first appears and ``None`` elsewhere.
     """
     labelled = []
     previous = None
     for group in groups:
+        starts_a_section = group.kind is not previous
         labelled.append(replace(
             group,
-            section_label=(
-                group.kind.section_label if group.kind is not previous
-                else None
-            ),
+            section=Section(
+                label=group.kind.section_label,
+                note=group.kind.section_note,
+            ) if starts_a_section else None,
         ))
         previous = group.kind
     return tuple(labelled)
@@ -254,9 +256,17 @@ def outstanding_set(
     blocks = _purchases.outstanding_purchases(
         owner_id, account_id, observed_on,
     )
-    settles = _transactions.outstanding_transactions(
-        owner_id, account_id, observed_on,
-    )
+    # The two source-row arms union into ONE map, and they can: their scopes
+    # are complements (``transfer_id IS NULL`` against ``IS NOT NULL``), so no
+    # id is in both and the merge cannot silently drop one arm's offer.
+    settles = {
+        **_transactions.outstanding_transactions(
+            owner_id, account_id, observed_on,
+        ),
+        **_transfers.outstanding_transfers(
+            owner_id, account_id, observed_on,
+        ),
+    }
     parents = set(blocks) | set(settles)
     headings = _block_headings(owner_id, parents)
 
@@ -269,9 +279,9 @@ def outstanding_set(
             purchases=tuple(blocks.get(transaction_id, ())),
             settle=settles.get(transaction_id),
             # Resolved by ``_sectioned`` once the order is known: a block
-            # cannot know whether it starts a section before it knows what
+            # cannot know whether it STARTS a section before it knows what
             # precedes it.
-            section_label=None,
+            section=None,
         )
         for transaction_id in parents
     ]
@@ -301,16 +311,14 @@ def outstanding_set(
     )
 
 
-def record_reconciliation(
-    submission: ReconcileSubmission,
-) -> "tuple[int, int]":
+def record_reconciliation(submission: ReconcileSubmission) -> int:
     """Record everything a statement settled, in the ONE order that works.
 
     The write union.  Each arm still owns what a tick MEANS for its own rows
     (ruling **R-FA**); what lives here is the rule that spans them, and it is
     not an HTTP concern:
 
-    **Purchases are stamped BEFORE transactions settle, because the purchase
+    **Purchases are stamped BEFORE the source rows settle, because the purchase
     arm's scope requires a PROJECTED parent** and settling an envelope's close
     is exactly what takes that parent out of it.  Reversed, every purchase
     ticked on a block whose close was also ticked is silently skipped -- the
@@ -320,36 +328,58 @@ def record_reconciliation(
 
     It was two statements in a route handler until an adversarial review named
     it: an invariant enforced by the order of two lines, in a tier that owns
-    neither arm, with nothing able to fail if a later edit swapped them.  Plan
-    step X-f2-c3 adds a third writer to the same sequence.
+    neither arm, with nothing able to fail if a later edit swapped them.
 
-    **Both arms run in the caller's transaction and NEITHER commits.**  A
-    statement is one act: four purchases and their envelope's close mean all
-    five or none, so a commit between the arms would leave the half that failed
-    invisible behind a rendered success.
+    **The transfer arm's position is FREE and is fixed anyway.**  Its scope is
+    the complement of the transaction arm's and disjoint from the purchase
+    arm's parents -- a shadow can hold no entries -- so no ordering between it
+    and either of them can change an outcome.  It runs last because a sequence
+    with one hard rule in it should not also have an unstated arbitrary part:
+    the order is written down here so a reader learns which half is which.
+
+    **The three arms are handed ONE set of ticked transaction ids**, and each
+    re-scopes it.  The two source-row scopes partition ``budget.transactions``
+    on ``transfer_id``, so an id settles through exactly one of them and can
+    never settle twice; a second form field would be a second place for the
+    panel and the writers to agree about which control posts what.
+
+    **All three run in the caller's transaction and NONE commits.**  A
+    statement is one act: four purchases, their envelope's close and the
+    transfer beneath them mean all six or none, so a commit between the arms
+    would leave the part that failed invisible behind a rendered success.
 
     Args:
         submission: The :class:`ReconcileSubmission` -- one statement's worth of
             ticks, already parsed and owner-scoped by the route.
 
     Returns:
-        ``(purchases stamped, transactions settled)`` -- what actually changed,
-        never what was asked for.  The caller compares them against what was
+        How many of the submitted ticks actually LANDED, across all three arms
+        -- never what was asked for.  The caller compares it against what was
         submitted to tell a user their ticks landed on rows something else had
-        already moved.
+        already moved.  **One total rather than a tuple per arm**, because that
+        is the only thing the caller does with them and a per-arm breakdown
+        would be three numbers nobody adds up differently.
 
     Raises:
-        ValidationError: Propagated from the settle verb -- an illegal
-            transition a stale panel can still submit.
-        PostingError: Propagated from the verb's ledger reconcile.  Fails loud.
+        ValidationError: Propagated from a settle verb -- an illegal transition
+            a stale panel can still submit.
+        PostingError: Propagated from a verb's ledger reconcile.  Fails loud.
     """
     purchases = _purchases.record_settled_days(
         submission.owner_id, submission.account_id,
         submission.entry_ids, submission.observed_on,
     )
-    transactions = _transactions.record_settled_transactions(
-        submission.owner_id, submission.account_id,
-        submission.transaction_ids, submission.corrections,
-        submission.observed_on,
+    statement = _rows.Statement(
+        submission.owner_id, submission.account_id, submission.observed_on,
     )
-    return purchases, transactions
+    source_rows = sum(
+        _rows.record_settled(
+            arm, statement,
+            submission.transaction_ids, submission.corrections,
+        )
+        for arm in (
+            _transactions.ARM,
+            _transfers.arm(submission.owner_id),
+        )
+    )
+    return purchases + source_rows

@@ -61,9 +61,11 @@
      1. a block with NO children prints its name inline as one row, rather
         than as a heading above a one-item list;
      2. the blocks arrive ordered by kind (the producer's ``_block_order``);
-     3. a section label is printed where the kind changes -- resolved by the
-        producer as ``group.section_label``, because it is a function of the
-        ORDER and a template deriving it would index into the previous element.
+     3. a section is printed where the kind changes -- resolved by the
+        producer as ``group.section``, because it is a function of the ORDER
+        and a template deriving it would index into the previous element.  A
+        section carries its heading and, for transfers, one sentence saying
+        that a tick settles the other account too.
 
    **An amount box appears exactly where the producer says it may** --
    ``group.settle.is_correctable``, which is ruling R-FF: a tick is correctable
@@ -87,7 +89,7 @@
      outstanding        -- a ``reconcile_service.OutstandingSet``: ``groups``
                            (each with ``name``, ``period_start`` /
                            ``period_end``, ``purchases``, ``total``, ``kind``,
-                           ``settle``, ``section_label``), the three
+                           ``settle``, ``section``), the three
                            count/total pairs, and ``is_empty``.  Already scoped
                            to this account's owner and to what the asserted day
                            can settle.  Every figure is the producer's; this
@@ -152,10 +154,20 @@
     </p>
 
     {% for group in outstanding.groups %}
-    {% if group.section_label %}
+    {% if group.section %}
+    {# A block either STARTS a section or continues the previous one's, which
+       is why this is one nullable value rather than two.  The NOTE is printed
+       only where the producer supplies one (``OfferKind.section_note``):
+       transfers carry one because ticking there settles a second account --
+       both legs and the parent move together (transfer invariant 3) -- which
+       a panel captioned "your statement" otherwise does not say.  The template
+       never asks WHICH kind; it prints what the producer resolved. #}
     <h6 class="text-uppercase text-body-secondary fs-xs fw-semibold mt-3 mb-2">
-      {{ group.section_label }}
+      {{ group.section.label }}
     </h6>
+    {% if group.section.note %}
+    <p class="small text-body-secondary mb-2">{{ group.section.note }}</p>
+    {% endif %}
     {% endif %}
 
     {% if group.purchases %}

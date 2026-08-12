@@ -39,13 +39,26 @@ transaction arm's ``transfer_id IS NULL`` and the transfer arm's
 ``transfer_id IS NOT NULL`` partition the table, and a shared default would be
 a third place for that partition to be stated.
 
+**The WRITER's loop joined the shared half when the second arm arrived, and
+the gate is what said so.**  X-f2-c2's design left it per-arm on the argument
+that it was six lines of glue -- correct until there were two of them, at
+which point pylint's cross-file ``duplicate-code`` check reported the two
+telemetry tails as what they are.  What is shared is the LOOP and the REPORT:
+narrow the ticked ids to the rows this arm actually owes, settle each through
+the arm's own verb, count what the verb says was a human's correction
+(**N-231**), and say how much of what was asked for landed.  What stays the
+arm's is :class:`ArmWrite` -- how a row of its kind settles, and what its act
+is called in the log.
+
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, ORM rows out.
   - Reads only.  Nothing here mutates, flushes or commits.
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -57,18 +70,44 @@ from app.utils.balance_predicates import (
     is_projected_clause,
 )
 from app.utils.dates import attribution_date
+from app.utils.log_events import BUSINESS, log_event
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Statement:
+    """The bank statement being reconciled: whose, which account, which day.
+
+    The three scalars every function in this package takes together, as one
+    value.  They are not independent -- an assertion declares the real balance
+    of ONE account on ONE civil day for ONE owner, and a call site that could
+    pair one account's id with another day's would be a call site that can
+    reconcile against a statement nobody read.
+
+    Attributes:
+        owner_id: The user_id whose rows may be offered or settled.
+        account_id: The cash account whose balance was asserted.
+        observed_on: The civil day that balance was true for -- the bound
+            every offer is measured against, and the day every tick records
+            its money as having moved.
+    """
+
+    owner_id: int
+    account_id: int
+    observed_on: date
 
 
 @dataclass(frozen=True)
 class Arm:
-    """Which rows are one arm's, and what it needs loaded to price them.
+    """What one SOURCE-ROW arm IS: which rows are its own, and what a tick does.
 
-    The two things :func:`outstanding_rows` cannot decide for a caller, as one
-    value rather than two parameters -- so an arm states its own shape ONCE, as
-    a module constant, and its reader and its writer are structurally incapable
-    of asking for different rows.  That is the same property the purchase arm
-    gets from sharing a clause list, which is the security property this
-    package is built on.
+    The four things this module cannot decide for an arm, as ONE value -- so an
+    arm states its shape once, as a module constant, and its reader and its
+    writer are structurally incapable of asking for different rows.  That is
+    the same property the purchase arm gets from sharing a clause list, and it
+    is the security property this package is built on rather than a tidiness
+    one.
 
     Attributes:
         kind_clauses: The arm's membership clauses.  It has no default and must
@@ -76,21 +115,29 @@ class Arm:
             the transfer arm's ``transfer_id IS NOT NULL`` PARTITION the table,
             and a default would be a third place for that partition to be
             stated.
+        settle: ``(row, submitted, statement) -> bool`` -- settles one row
+            through the arm's own service verb and returns whether a HUMAN's
+            figure was booked.  The bool is asked of the verb's own published
+            predicate rather than read off the column afterwards, which is
+            finding **N-231**: an envelope's close always writes
+            ``actual_amount``, so a column reading counts machine writes as
+            hand-typed corrections.
+        event: The ``EVT_*`` constant this arm reports under.  Each arm has its
+            OWN rather than sharing one, because a reader asking why a second
+            account's balance moved has to be able to find the transfer arm
+            without knowing to look under transactions.
         load_options: Eager loads this arm needs beyond the two the shared
             bound already requires (``pay_period`` and ``entries``).  Empty for
             an arm that prices its rows from columns alone.
     """
 
     kind_clauses: tuple
+    settle: object
+    event: str
     load_options: tuple = field(default=())
 
 
-def outstanding_scope(
-    owner_id: int,
-    account_id: int,
-    observed_on: date,
-    kind_clauses: tuple,
-) -> list:
+def outstanding_scope(statement: Statement, kind_clauses: tuple) -> list:
     """Return the SQL half of "this row is still waiting on the bank".
 
     A SUPERSET, by construction: the day bound below is on the pay period's
@@ -132,9 +179,7 @@ def outstanding_scope(
     scope rather than differently per arm.
 
     Args:
-        owner_id: The user_id whose rows to scope to.
-        account_id: The cash account the balance was asserted for.
-        observed_on: The civil day that balance was true for.
+        statement: The statement being reconciled.
         kind_clauses: The calling arm's own membership clauses.
 
     Returns:
@@ -142,14 +187,14 @@ def outstanding_scope(
         :class:`~app.models.transaction.Transaction` query.
     """
     return [
-        Transaction.account_id == account_id,
+        Transaction.account_id == statement.account_id,
         *kind_clauses,
         is_projected_clause(Transaction),
         balance_contributing_clause(),
         Transaction.pay_period_id.in_(
             db.session.query(PayPeriod.id).filter(
-                PayPeriod.user_id == owner_id,
-                PayPeriod.start_date <= observed_on,
+                PayPeriod.user_id == statement.owner_id,
+                PayPeriod.start_date <= statement.observed_on,
             )
         ),
     ]
@@ -253,9 +298,7 @@ def wholly_spent_by(txn: Transaction, observed_on: date) -> bool:
 
 def outstanding_rows(
     arm: Arm,
-    owner_id: int,
-    account_id: int,
-    observed_on: date,
+    statement: Statement,
     *,
     transaction_ids: "set[int] | None" = None,
 ) -> "list[Transaction]":
@@ -276,9 +319,7 @@ def outstanding_rows(
 
     Args:
         arm: Which rows are the caller's, and what it needs loaded.
-        owner_id: The user_id whose rows to scope to.
-        account_id: The cash account whose balance was asserted.
-        observed_on: The civil day that balance was true for.
+        statement: The statement being reconciled.
         transaction_ids: The writer's narrowing -- the ids a form submitted.
             ``None`` (the reader) means "everything in scope".  An id outside
             the scope simply does not come back, which is the set-operation
@@ -295,18 +336,97 @@ def outstanding_rows(
             selectinload(Transaction.entries),
             *arm.load_options,
         )
-        .filter(
-            *outstanding_scope(
-                owner_id, account_id, observed_on, arm.kind_clauses,
-            )
-        )
+        .filter(*outstanding_scope(statement, arm.kind_clauses))
     )
     if transaction_ids is not None:
         query = query.filter(Transaction.id.in_(transaction_ids))
     rows = [
         txn for txn in query.all()
-        if lands_on_or_before(txn, observed_on)
-        and wholly_spent_by(txn, observed_on)
+        if lands_on_or_before(txn, statement.observed_on)
+        and wholly_spent_by(txn, statement.observed_on)
     ]
     rows.sort(key=lambda txn: (attributed_on(txn), txn.id))
     return rows
+
+
+def record_settled(
+    arm: Arm,
+    statement: Statement,
+    transaction_ids: "set[int]",
+    corrections: "dict[int, Decimal]",
+) -> int:
+    """Settle every row of *arm* the form ticked, and report what landed.
+
+    **The WRITER, once, for both source-row arms**, and what an arm keeps is
+    :class:`Arm`.  Three things happen per row and none of them is a money
+    rule: the arm's own settle runs, what it says about a human's figure is
+    counted, and the totals are logged once.
+
+    **It is one function because the two writers HAD BECOME one**, and the gate
+    is what said so rather than a preference.  X-f2-c2 left the loop per-arm on
+    the argument that it was six lines of glue; X-f2-c3 wrote the second and
+    pylint's cross-file ``duplicate-code`` check reported the pair, twice --
+    first the telemetry tails, then the whole body once the tails were shared.
+    Finding **N-225** predicted this shape in its own words, *(extra scope
+    clause, settle callable, OfferKind)*, and was right where the leaf's first
+    reading of it was not.
+
+    **The ids are re-derived through the arm's own scope rather than trusted.**
+    An id belonging to another user, another account, a settled row or a row
+    this arm does not own simply does not come back from
+    :func:`outstanding_rows` and is silently skipped -- the set-operation form
+    of the project's "404 for both not-found and not-yours" rule.  Both arms
+    are handed the SAME id set, and their scopes are complements, so an id
+    settles through exactly one of them and can never settle twice.
+
+    **The count is the VERB's answer, not the column's** (finding **N-231**).
+    Reading ``actual_amount`` before and after counted every envelope close as
+    a hand-typed correction, because that settle always writes the column --
+    measured on a probe of one envelope with nothing submitted, which logged
+    ``corrected_count: 1``.  Ruling **R-FB**'s production figure ("11 of 93
+    settled bills carry a hand-typed correction") is made of this same signal,
+    so it is the one number here that had to be right.
+
+    Does NOT commit -- the caller owns the session boundary.
+
+    Args:
+        arm: Which rows are the caller's, and what a tick does to one.
+        statement: The statement being reconciled.
+        transaction_ids: The ids the user ticked.  An empty set is a no-op that
+            issues no query.
+        corrections: ``{transaction id: amount}`` from the panel's amount
+            boxes.  An id with no entry settles at the row's own figure.
+
+    Returns:
+        How many rows settled -- what actually CHANGED, never what was asked
+        for.  The caller compares the two and tells the user their ticks landed
+        on rows something else had already moved.
+
+    Raises:
+        ValidationError: Propagated from the arm's settle verb -- an illegal
+            transition a stale panel can still submit.  A 400 at the route.
+        PostingError: Propagated from the verb's ledger reconcile.  Fails loud.
+    """
+    if not transaction_ids:
+        return 0
+
+    rows = outstanding_rows(arm, statement, transaction_ids=transaction_ids)
+    corrected = 0
+    for row in rows:
+        if arm.settle(row, corrections.get(row.id), statement):
+            corrected += 1
+
+    if rows:
+        log_event(
+            logger, logging.INFO,
+            arm.event, BUSINESS,
+            "Outstanding rows settled against a bank statement",
+            user_id=statement.owner_id,
+            account_id=statement.account_id,
+            observed_on=statement.observed_on.isoformat(),
+            settled_count=len(rows),
+            requested_count=len(transaction_ids),
+            corrected_count=corrected,
+        )
+
+    return len(rows)
