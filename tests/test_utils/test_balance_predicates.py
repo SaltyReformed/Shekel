@@ -870,19 +870,23 @@ class TestNoInlineStatusBusinessLogic:
     # so a future change that adds a NEW inline comparison in any
     # listed file is still caught.
     _ALLOWED_NON_D609_SITES = (
-        # transfer_service: relational integrity (shadow status must
-        # match parent), comparing two model fields not a constant.
-        ("services/transfer_service.py",
+        # transfer_service._restore: relational integrity (shadow status
+        # must match parent), comparing two model fields not a constant.
+        ("services/transfer_service/_restore.py",
          "shadow.status_id != xfer.status_id"),
-        # _transfer_validation: the SAME relational-integrity comparison,
-        # in the restore precondition that refuses a drift the state
-        # machine cannot legally repair (plan step X-aj1, ruling R-DO).
+        # transfer_service._validation: the SAME relational-integrity
+        # comparison, in the restore precondition that refuses a drift the
+        # state machine cannot legally repair (plan step X-aj1, ruling R-DO).
         # It moved here with the three checks it now sits beside; this
         # entry is that move's other half.  **This allowlist is keyed on a
         # FILE PATH, so the move invalidated it and this gate caught it** --
         # which is finding N-147's thesis demonstrated on the gate itself,
-        # and is why Phase G exists.
-        ("services/_transfer_validation.py",
+        # and is why Phase G exists.  **It caught the SECOND move too**: plan
+        # step X-f2-c3 made ``transfer_service`` a package (N-152 / N-156),
+        # which re-pathed both of these entries a second time.  A gate that
+        # has to be hand-repaired by every structural change is the finding,
+        # not the fix.
+        ("services/transfer_service/_validation.py",
          "shadow.status_id != xfer.status_id"),
         # archive_helpers: SQL JOIN ON clauses on the status FK.
         ("utils/archive_helpers.py",

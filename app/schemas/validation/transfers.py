@@ -190,7 +190,7 @@ class TransferUpdateSchema(BaseSchema):
     #
     # Deliberately NOT ``allow_none``: an empty input loads as ABSENT ("leave
     # the day alone"), never as a request to clear it.  Clearing it on a settled
-    # transfer is refused by ``_transfer_status.apply_settle_day_correction`` --
+    # transfer is refused by ``transfer_service._status.apply_settle_day_correction`` --
     # the balance walk REFUSES a settled row with no day -- and the way to
     # remove one is to revert the transfer to Projected.
     settled_on = fields.Date()

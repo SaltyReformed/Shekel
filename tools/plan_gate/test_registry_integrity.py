@@ -715,25 +715,51 @@ class TestAParentTicksWithTheLastOfItsLeaves:
     def test_the_control_fires_when_a_parent_ships_over_an_open_leaf(self, stage):
         """The control fires when a parent ships over an open leaf.
 
-        **Asserted as a property, and the leaf names are NOT pinned.**  Two
-        versions of this control died to that: the first anchored on
-        ``X-an-b``, which the next merge archived out of the index under rule
-        5; the second pinned ``X-f2-a`` as an open leaf, and it SHIPPED in the
-        same merge.  Both times the arm was correct and the control was wrong,
-        which is a control that fails on correct edits.  What is stable is the
-        claim: a shipped parent is named, and every leaf reported against it is
-        genuinely open.
+        **Nothing here is pinned to a name, and THREE versions died before
+        that was true.**  The first anchored on ``X-an-b`` (archived out of the
+        index under rule 5); the second pinned ``X-f2-a`` as an open leaf (it
+        SHIPPED in the same merge); the third pinned ``X-f2`` as the PARENT to
+        stage, and when ``X-f2-c3`` shipped that parent ticked legitimately --
+        so the staged state was TRUE and the arm correctly reported nothing.
+        Every time the arm was right and the control was wrong, which is the
+        most expensive kind: it teaches a reader to edit the gate until a green
+        change goes green.
+
+        So the parent is CHOSEN rather than named -- any declared parent with an
+        open leaf -- and the corpus is asserted to hold one so this cannot pass
+        vacuously.  The stable claim: a shipped parent is named, and every leaf
+        reported against it is genuinely open.
         """
-        line = _row("steps", "| balance | X-f2 |")
+        rows = registry.step_rows()
+        by_key = {row.key: row for row in rows}
+        candidates = sorted(
+            parent.key for parent in rows
+            if parent.is_decomposed_parent and not parent.shipped
+            and any(
+                not by_key[key].shipped
+                for key in registry.decomposition_leaf_keys(parent, rows)
+            )
+        )
+        assert candidates, (
+            "no declared parent still has an open leaf, so this control has "
+            "nothing to stage -- re-anchor it on a live decomposition"
+        )
+        parent_key = candidates[0]
+        arc, ident = parent_key.split(":", 1)
+        line = _row("steps", f"| {arc} | {ident} |")
         stage("steps", line, _with_cell(line, 4, "SHIPPED"))
         problems = [p for p in registry.decomposition_violations()
-                    if "balance:X-f2" in p]
+                    if parent_key in p]
         assert problems, registry.decomposition_violations()
-        named = {row.ident for row in registry.step_rows()
-                 if row.ident.startswith("X-f2-") and row.ident in problems[0]}
+        staged = {row.key: row for row in registry.step_rows()}
+        named = {
+            key for key in registry.decomposition_leaf_keys(
+                staged[parent_key], registry.step_rows(),
+            )
+            if key.split(":", 1)[1] in problems[0]
+        }
         assert named, f"the failure names no leaf: {problems}"
-        by_key = {row.ident: row for row in registry.step_rows()}
-        assert not [i for i in named if by_key[i].shipped], (
+        assert not [key for key in named if staged[key].shipped], (
             f"a SHIPPED leaf was reported as open: {problems}"
         )
 

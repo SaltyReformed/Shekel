@@ -50,8 +50,17 @@ over THREE row kinds whose settle verbs are genuinely different:
   correct its amount while an envelope's close may not (ruling **R-FB**) --
   plan step X-f2-c2;
 * a TRANSFER SHADOW settles through ``transfer_service.update_transfer`` so
-  both legs and the parent move together, carrying the loan-payment freeze --
-  plan step X-f2-c3.
+  both legs and the parent move together, carrying the loan-payment freeze
+  (:mod:`._transfers`) -- plan step X-f2-c3.
+
+**Two of those three turned out to share a SHAPE, and finding N-225 is that
+measured.**  A purchase's settle is genuinely different -- one column, no
+status, a bulk ``UPDATE`` -- but the transaction and transfer arms are both
+"query ``Transaction`` under a scope, narrow in Python by attribution date,
+loop dispatching to a per-row service verb".  The half that would have been
+COPIED is :mod:`._rows`: the SQL scope, both halves of the day bound, and the
+loader.  Each arm still states which rows are its own, what one is worth, and
+what a tick means for it.
 
 So the package is one module per arm, plus the value types they all publish
 (:mod:`._offers`) and the assembly that turns their offers into the panel's
@@ -88,11 +97,9 @@ from app.services.reconcile_service._offers import (
     OutstandingSet,
     OutstandingTransaction,
     ReconcileSubmission,
+    Section,
 )
 from app.services.reconcile_service._purchases import record_settled_days
-from app.services.reconcile_service._transactions import (
-    record_settled_transactions,
-)
 
 __all__ = [
     "OfferKind",
@@ -101,8 +108,8 @@ __all__ = [
     "OutstandingSet",
     "OutstandingTransaction",
     "ReconcileSubmission",
+    "Section",
     "outstanding_set",
     "record_reconciliation",
     "record_settled_days",
-    "record_settled_transactions",
 ]

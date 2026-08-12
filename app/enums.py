@@ -473,3 +473,75 @@ class LedgerAccountKindEnum(enum.Enum):
     LOAN_REFUND = "loan_refund"
     EQUITY_OPENING = "equity_opening"
     ANCHOR_EQUITY = "anchor_equity"
+
+
+class AmountSourceEnum(enum.Enum):
+    """WHICH RELATION states a row's amount, when the row does not state it itself.
+
+    Ruling **R-FI**'s discriminator (plan step **X-au-c1**): a row's amount is
+    either its OWN -- a human authored the figure, or the money moved -- or it
+    is DERIVED, and a derived amount is not stored at all.  A row that owns its
+    amount carries ``amount_source_id IS NULL`` and a figure; a derived row
+    names one of these and carries no figure.  The pairing is the CHECK
+    ``ck_transactions_amount_ownership`` / ``ck_transfers_amount_ownership``, so
+    a stale derived figure is unrepresentable rather than merely unlikely.
+
+        template        -- the recurring DEFINITION that generated this row
+                           states its price: ``Transaction.template_id`` ->
+                           ``budget.transaction_templates``, or
+                           ``Transfer.transfer_template_id`` ->
+                           ``budget.transfer_templates``.
+        parent_transfer -- this row is a transfer SHADOW and is worth exactly
+                           what its parent transfer is (``transfer_id``), which
+                           is Transfer Invariant 3 read rather than maintained.
+
+    **These name the RELATION that prices the row, not the RULE that computes
+    the figure, and the difference is a developer ruling (2026-08-12) amending
+    R-FI's own enumeration.**  R-FI listed five values naming the five
+    producers -- own / salary / template / loan payment / transfer -- and two of
+    those are refinements a DEFINITION carries, not facts about a row: a
+    template is salary-linked when an active
+    :class:`~app.models.salary_profile.SalaryProfile` names it
+    (``template_amount_service.is_salary_linked_template``), and a transfer
+    template is a loan payment when it holds a
+    :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row
+    (``loan_payment_service.loan_payment_config``).  Storing the refinement on
+    every generated row copies a definition-level fact onto each of its
+    instances, and two LIVE routes then falsify the copy:
+
+    * ``routes/loan/payment_transfer.py`` ``track_payment`` -- the loan
+      dashboard's one-click "auto-track the contract" sets
+      ``derive_from_loan = True``.  A legacy manual payment has no settings row,
+      so its shadows would have been stamped with the plain-transfer rule; after
+      the flip the definition's price series is dormant
+      (``template_amount_service.owns_its_amount`` is False) and every stamped
+      shadow becomes unpriceable.
+    * ``routes/salary/profiles.py`` ``delete_profile`` -- archiving a profile is
+      the moment a template stops being salary-linked and starts owning its own
+      amount, which X-au-a already handles by stating a price through the write
+      door in the same unit of work (58 production rows).  Rows stamped with the
+      salary rule would keep naming a producer that no longer answers.
+
+    Both are repairable only by a writer that rewrites every affected row -- a
+    second maintainer of a derived value, which is the shape this arc exists to
+    delete.  Naming the relation instead leaves the refinement where it is a
+    fact: the row says *my definition prices me*, and the definition says how.
+    ``credit_card:CC4b``'s card payment needs no new value here -- it prices
+    through its transfer template's satellite, the same shape as a loan payment
+    -- and neither does ``CC5a``'s rewards accrual.  **``CC4c``'s projected
+    finance charge DOES**, and a first draft of this paragraph claimed the card
+    arc needed none: that row carries no pricing link at all and its producer is
+    reached from the row's ACCOUNT, which is finding **N-264**.
+
+    Application code resolves these via ``ref_cache.amount_source_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.  The OWN state is deliberately NOT a member: it is the ABSENCE of
+    a source, which is what lets the ownership CHECK be written as
+    ``(amount_source_id IS NULL) = (estimated_amount IS NOT NULL)`` -- a
+    constraint over two NULL-nesses, with no ref-table id literal frozen into
+    the schema.
+    """
+
+    TEMPLATE = "template"
+    PARENT_TRANSFER = "parent_transfer"

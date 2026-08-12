@@ -459,7 +459,7 @@ def record_reconciliation(account_id):
     entry_ids = parse_row_ids(request.form.getlist("entry_ids"))
     transaction_ids = parse_row_ids(request.form.getlist("transaction_ids"))
     try:
-        stamped, settled = reconcile_service.record_reconciliation(
+        recorded = reconcile_service.record_reconciliation(
             reconcile_service.ReconcileSubmission(
                 owner_id=current_user.id,
                 account_id=account.id,
@@ -484,7 +484,6 @@ def record_reconciliation(account_id):
     # request itself succeeded and the refreshed list is the useful part; only
     # the silent reassurance would have been false.
     asked = len(entry_ids) + len(transaction_ids)
-    recorded = stamped + settled
     notice = None
     if asked and not recorded:
         notice = _STALE_MESSAGE

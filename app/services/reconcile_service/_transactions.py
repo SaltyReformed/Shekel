@@ -1,12 +1,18 @@
 """
 Shekel Budget App -- The TRANSACTION arm of the outstanding set
 
-One of the package's three arms (see :mod:`app.services.reconcile_service` for
-what an arm is and why there are three): the SOURCE ROWS a statement can still
+One of the package's arms (see :mod:`app.services.reconcile_service` for what
+an arm is and how many there are): the SOURCE ROWS a statement can still
 settle -- an envelope's own close, and a bill -- as opposed to the purchase
-entries recorded against one.  It owns the three things an arm owns, its SCOPE,
-its READ and its WRITE, and they live in one module because the scope being
-literally shared between the read and the write is the security property.
+entries recorded against one, or a transfer's shadow.  It owns the three things
+an arm owns, its SCOPE, its READ and its WRITE.
+
+**Its scope, bound and loader are :mod:`._rows`', and that is finding N-225.**
+This arm and the transfer arm ask one question of one table and differ only in
+which rows are theirs; the shared half lives once, and the reader and the
+writer here still share it literally, which is the security property.  What
+stays here is what is genuinely this arm's: WHICH rows (``transfer_id IS
+NULL``), what one is WORTH, and what a tick MEANS for it.
 
 **Its settle is a service verb, and that is the difference from the purchase
 arm.**  A purchase settles by stamping one column and moves no status, so that
@@ -16,37 +22,14 @@ seam, an amount rule and a posting reconcile -- so this writer dispatches to
 grid's Mark Paid calls (ruling **R-FA**).  Two doors restating one money rule
 is this arc's own root cause 1.
 
-**Nothing here decides what a tick BOOKS or whether the panel may offer a box
-for it.**  Both are the verb's, published as
-``transaction_service.settle_amount`` and
-``transaction_service.settles_from_entries``, and read from here.  A panel
-showing a figure the verb would not book, or an input for a value the verb
-would ignore, is the same defect one tier up.
-
-**The bound asks TWO questions of the statement's day, and neither is SQL.**  A
-statement of day D can settle a row only when the projection had already landed
-it by D *and* everything the row would book had moved by D.
-
-*Did it land by D?* (:func:`_lands_on_or_before`.)  The offer set is the OVERDUE
-set: ruling **R-G** clamps a projected row's landing day up to ``as_of + 1``
-(``balance_at/_cash_fold.py``), so a row whose attribution day has already
-passed is precisely one the projection is still holding forward.  That day is
-:func:`~app.utils.dates.attribution_date` -- a clamp, not a column -- so the
-bound is applied in Python over an SQL SUPERSET (``period.start_date <=
-observed_on``), valid because the clamp guarantees ``attribution_date >=
-period.start_date``.  Restating the clamp in SQL would be a second
-implementation of the rule the calendar and the balance line already share.
-Measured on production 2026-08-11, Checking at its latest assertion: the SQL
-superset admits 5 rows and the Python bound narrows them to 3.
-
-*Had it all moved by D?* (:func:`_wholly_spent_by`.)  An envelope's value is an
-AGGREGATE -- ``sum(entries)`` over every entry it holds -- so unlike a bill it
-can carry money that moved after the statement.  The purchase arm has always
-refused such an entry (``_purchases._outstanding_scope``); this is the same rule
-applied to the parent, and without it the two arms disagree about the same
-dollars.  It was missing until an adversarial review measured `$137.45` of
-already-spent money handed back to the projection; the worked case is on the
-function.
+**Nothing here decides what a tick BOOKS, whether the panel may offer a box for
+it, or whether a submitted figure is a CORRECTION.**  All three are the verb's,
+published as ``transaction_service.settle_amount``,
+``transaction_service.settles_from_entries`` and
+``transaction_service.is_correction``, and read from here.  A panel showing a
+figure the verb would not book, an input for a value the verb would ignore, or
+a telemetry count of corrections the verb never made, are the same defect one
+tier up.
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, frozen dataclasses out.
@@ -55,184 +38,56 @@ Architecture (``CLAUDE.md``):
     boundary.
 """
 
-import logging
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import selectinload
 
-from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services import transaction_service
+from app.services import cash_ledger, transaction_service
+from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
     OutstandingTransaction,
 )
-from app.utils.balance_predicates import (
-    balance_contributing_clause,
-    is_projected_clause,
-)
-from app.utils.dates import attribution_date
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_TRANSACTIONS_RECONCILED,
-    log_event,
-)
-
-logger = logging.getLogger(__name__)
+from app.utils.log_events import EVT_TRANSACTIONS_RECONCILED
 
 
-def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
-    """Return the SQL half of "this row is still waiting on the bank".
+def _cash_amount(txn: Transaction, booked: Decimal) -> "Decimal | None":
+    """Return what the STATEMENT shows for *txn*, or ``None`` when it is *booked*.
 
-    A SUPERSET, by construction: the day bound below is on the pay period's
-    start rather than on the row's own landing day, and
-    :func:`_lands_on_or_before` narrows what comes back.  The two halves are
-    always applied together by :func:`_outstanding_rows`, which is the only
-    caller, so there is no shape in which a reader or a writer gets one of
-    them.
+    Finding **N-226**.  An envelope settles at ``sum(entries)`` over EVERY
+    entry it holds, and a card purchase is one of those -- but a card purchase
+    never touches checking: it leaves later through its own CC Payback sibling,
+    which is exactly why the purchase arm refuses to OFFER one.  So the figure
+    a tick books and the figure the bank showed are two different numbers for
+    one row, and this screen is the one read beside a paper statement.
 
-    **The offer set is a SUBSET of the account's PLAN**, and the clauses say so
-    by sharing the plan loader's own builders rather than re-deriving them:
-    ``is_projected_clause`` composed with ``balance_contributing_clause`` is
-    exactly what
-    :func:`app.services.cash_ledger._facts.planned_cash_rows` narrows with.
-    The status pair inside the second is redundant by construction (Projected
-    is neither Credit nor Cancelled) and composed anyway, for the reason that
-    loader gives: one shared statement of "which rows exist at all" beats two
-    hand-written filters that agree today.
+    **It prints both rather than changing what a tick books**, which is the
+    only correct direction: ``actual_amount`` legitimately IS total spend, the
+    posted ledger already subtracts the credit sum
+    (``cash_ledger.settled_cash_leg``), and moving the booked figure would make
+    the panel disagree with the grid and the analytics.
 
-    Five clauses, each load-bearing:
-
-    * the row is on THIS account -- a balance assertion declares the real
-      balance of one account, and a user may hold more than one checking
-      account.  Settling across accounts would book money against a statement
-      that never showed it.
-    * ``transfer_id IS NULL`` -- a transfer shadow settles through
-      ``transfer_service.update_transfer`` so both legs and the parent move
-      together (``CLAUDE.md`` transfer invariant 3).  It is plan step X-f2-c3's
-      arm, and ``transaction_service.settle_transaction`` REFUSES one, so
-      admitting it here would turn a design boundary into a 400.
-    * PROJECTED -- a settled row has already been recorded, and a Credit or
-      Cancelled row is not money this account owes.
-    * contributing and not soft-deleted -- the shared gate above.
-    * the parent period is this OWNER's and starts on or before *observed_on*
-      -- ownership, and the SQL superset of the landing-day bound.
-
-    Not scoped by ``scenario_id``, for the same reason
-    :func:`app.services.reconcile_service._purchases._outstanding_scope` is
-    not: Phase 1 is baseline-only, so ``account_id`` fully isolates the set
-    today, and when what-if scenarios land the callers must thread an
-    operating-scenario context into BOTH arms.  One deferral, stated once per
-    arm and identically, rather than two arms of one package scoping
-    differently.
+    The credit term is ``cash_ledger.credit_entry_sum`` rather than a second
+    ``entry.is_credit`` reduction here: one rule, one statement, so a change to
+    what "on a card" means cannot leave the panel saying the old thing.
 
     Args:
-        owner_id: The user_id whose rows to scope to.
-        account_id: The cash account the balance was asserted for.
-        observed_on: The civil day that balance was true for.
+        txn: The row being offered, with ``entries`` loaded.
+        booked: What a tick would book (``transaction_service.settle_amount``).
 
     Returns:
-        A list of SQLAlchemy filter clauses to apply to a
-        :class:`~app.models.transaction.Transaction` query.
+        ``booked`` minus the card entries when the row holds any, else
+        ``None`` -- which is every bill, every deposit and every envelope whose
+        purchases were all debits.  Production carries 18 card entries in
+        history and ZERO on a Projected envelope today, so this is latent
+        rather than live.
     """
-    return [
-        Transaction.account_id == account_id,
-        Transaction.transfer_id.is_(None),
-        is_projected_clause(Transaction),
-        balance_contributing_clause(),
-        Transaction.pay_period_id.in_(
-            db.session.query(PayPeriod.id).filter(
-                PayPeriod.user_id == owner_id,
-                PayPeriod.start_date <= observed_on,
-            )
-        ),
-    ]
-
-
-def _lands_on_or_before(txn: Transaction, observed_on: date) -> bool:
-    """Return whether the projection lands *txn* on or before *observed_on*.
-
-    The Python half of the bound, and the reason it is not SQL: the landing day
-    is :func:`~app.utils.dates.attribution_date`, the clamp the calendar's day
-    cells and the balance line's daily ramp already share, so writing it as a
-    ``LEAST(GREATEST(...))`` here would be a second implementation of one rule.
-
-    Args:
-        txn: A row from the SQL superset, with ``pay_period`` loaded.
-        observed_on: The civil day the balance was asserted for.
-
-    Returns:
-        True when the row is OVERDUE against that day.
-    """
-    return _attributed_on(txn) <= observed_on
-
-
-def _wholly_spent_by(txn: Transaction, observed_on: date) -> bool:
-    """Return whether everything *txn* would BOOK moved by *observed_on*.
-
-    **The second half of "a statement of this day could settle this row", and
-    it is about the row's VALUE rather than its landing day.**  An envelope
-    settles at ``sum(entries)`` over EVERY entry it holds
-    (``entry_service.compute_actual_from_entries``, and
-    ``entry_service._resync_settled_envelope`` re-derives it the same way after
-    any later mutation), so a row still holding a purchase made AFTER the
-    statement day would book that purchase too -- dated on the statement's day,
-    at a figure the panel offers with no correction box because an
-    entries-derived row is not correctable (ruling **R-FF**).
-
-    **This is the bound the purchase arm has always had, applied to the
-    aggregate.**  ``_purchases._outstanding_scope`` refuses an entry with
-    ``purchased_on > observed_on`` and says why: a statement cannot show a
-    purchase made after the day it covers.  Without this the two arms disagree
-    about the same dollars -- the sibling arm refuses a purchase and this one
-    re-admits it inside its parent's total.
-
-    **Measured, because it is a money defect and not a tidiness one.**  On a
-    clone of production, planting one `$137.45` purchase three days after
-    Checking's 2026-08-06 assertion made the panel offer *Close Groceries* at
-    `$622.55` instead of `$485.10`; ticking it booked `$622.55` stamped
-    2026-08-06, which ``ReconciledThrough.covers`` then absorbs into that day's
-    anchor correction -- so the purchase contributed nothing forward and the
-    projected balance rose by exactly `$137.45` at +30d, +90d and +365d.  That
-    is already-spent money handed back to the projection, which is the class of
-    defect this arc exists to remove.
-
-    A row with no entries answers True over an empty sequence, so a bill and a
-    deposit are unaffected: they carry a single amount, and
-    :func:`_lands_on_or_before` is the whole bound for them.
-
-    Args:
-        txn: A row from the SQL superset, with ``entries`` loaded.
-        observed_on: The civil day the balance was asserted for.
-
-    Returns:
-        True when no entry against *txn* postdates the statement.
-    """
-    return all(entry.purchased_on <= observed_on for entry in txn.entries)
-
-
-def _attributed_on(txn: Transaction) -> date:
-    """Return the day the projection lands *txn* on.
-
-    Stated once because two things read it: the bound
-    (:func:`_lands_on_or_before`) and the caption the panel prints
-    (:attr:`~app.services.reconcile_service.OutstandingTransaction.attributed_on`).
-    A row offered under a caption that disagrees with why it was offered is the
-    "a figure and its caption never disagree" rule broken on the one screen a
-    user reads against a paper statement.
-
-    Args:
-        txn: The row, with ``pay_period`` loaded.
-
-    Returns:
-        Its clamped attribution date.
-    """
-    period = txn.pay_period
-    return attribution_date(
-        txn.due_date, period.start_date, period.end_date,
-    )
+    on_card = cash_ledger.credit_entry_sum(txn)
+    if not on_card:
+        return None
+    return booked - on_card
 
 
 def _offer_kind(txn: Transaction) -> OfferKind:
@@ -268,59 +123,67 @@ def _offer_kind(txn: Transaction) -> OfferKind:
     return OfferKind.BILL
 
 
-def _outstanding_rows(
-    owner_id: int,
-    account_id: int,
-    observed_on: date,
-    *,
-    transaction_ids: "set[int] | None" = None,
-) -> "list[Transaction]":
-    """Return the rows this arm offers, both halves of the scope applied.
+def _settle_one(
+    txn: Transaction,
+    submitted: Decimal | None,
+    statement: _rows.Statement,
+) -> bool:
+    """Settle one row through the grid's own verb; say if a human's figure won.
 
-    **The ONE place this arm's scope is expressed**, so its reader and its
-    writer cannot come to disagree about what "outstanding" means -- the
-    property the purchase arm gets by sharing a clause list, expressed as a
-    shared loader here because this arm's writer needs the ROWS (its settle is
-    a per-row service verb, not a bulk ``UPDATE``).
-
-    Both eager loads are load-bearing and are the plan loader's own: ``entries``
-    decides the settle branch, its amount AND the second half of the bound
-    (:func:`_wholly_spent_by`), ``pay_period`` feeds the attribution clamp.
-    ``template`` is loaded here and not there because this arm reads
-    ``tracks_purchases``, which lazy-loads a template per row otherwise -- an
-    N+1 on a list the user is about to read.
+    This arm's settle, named by :data:`ARM`.
+    The submitted figure is handed STRAIGHT to the verb: **this function holds
+    no money rule at all**, and a first draft's two -- "read it only where the
+    panel offered a box" and "only when it differs from what the row would
+    otherwise book" -- were both the verb's, restated.  A review measured the
+    first: deleting it left every test green, because ``settle_transaction``
+    routes an entries-derived row to a branch that ignores ``actual_amount``
+    outright.  A guard nothing can observe is not a guard, and two doors
+    deciding one column's meaning separately is the shape this whole arc exists
+    to remove.
 
     Args:
-        owner_id: The user_id whose rows to scope to.
-        account_id: The cash account whose balance was asserted.
-        observed_on: The civil day that balance was true for.
-        transaction_ids: The writer's narrowing -- the ids a form submitted.
-            ``None`` (the reader) means "everything in scope".  An id outside
-            the scope simply does not come back, which is the set-operation
-            form of the project's "404 for both not-found and not-yours" rule.
+        txn: The row to settle, still Projected.
+        submitted: The figure the panel's amount box posted, or ``None``.
+        statement: The statement being reconciled; its day is what the settle
+            records the money as having moved on, rather than the seam's
+            default of the user's today.
 
     Returns:
-        The matching rows, ordered by their landing day and then by id so the
-        panel's blocks and the writer's loop are both deterministic.
+        Whether the verb booked *submitted* as a correction -- asked of its own
+        published predicate BEFORE the settle, because the settle mutates the
+        figures the question is about (finding **N-231**).
     """
-    query = (
-        db.session.query(Transaction)
-        .options(
-            joinedload(Transaction.pay_period),
-            selectinload(Transaction.entries),
-            selectinload(Transaction.template),
-        )
-        .filter(*_outstanding_scope(owner_id, account_id, observed_on))
+    corrected = transaction_service.is_correction(txn, submitted)
+    transaction_service.settle_transaction(
+        txn, actual_amount=submitted, settled_on=statement.observed_on,
     )
-    if transaction_ids is not None:
-        query = query.filter(Transaction.id.in_(transaction_ids))
-    rows = [
-        txn for txn in query.all()
-        if _lands_on_or_before(txn, observed_on)
-        and _wholly_spent_by(txn, observed_on)
-    ]
-    rows.sort(key=lambda txn: (_attributed_on(txn), txn.id))
-    return rows
+    return corrected
+
+
+#: What this arm IS (:class:`app.services.reconcile_service._rows.Arm`): which
+#: rows are its own, how one settles, and what it calls the act in the log.
+#:
+#: ``transfer_id IS NULL`` -- a transfer shadow settles through
+#: ``transfer_service.update_transfer`` so both legs and the parent move
+#: together (``CLAUDE.md`` transfer invariant 3), and
+#: ``transaction_service.settle_transaction`` REFUSES one, so admitting it here
+#: would turn a design boundary into a 400.  It is the transfer arm's
+#: (:mod:`._transfers`), whose own clause is this one's complement -- the two
+#: partition the table, which is why neither is a default.
+#:
+#: ``template`` is loaded here and not in the shared loader because only this
+#: arm reads ``tracks_purchases``, which lazy-loads a template per row
+#: otherwise -- an N+1 on a list the user is about to read.
+#:
+#: PUBLIC within the package: the reader below and
+#: :func:`app.services.reconcile_service._assemble.record_reconciliation` both
+#: name it, and it being ONE value is what stops them scoping differently.
+ARM = _rows.Arm(
+    kind_clauses=(Transaction.transfer_id.is_(None),),
+    settle=_settle_one,
+    event=EVT_TRANSACTIONS_RECONCILED,
+    load_options=(selectinload(Transaction.template),),
+)
 
 
 def outstanding_transactions(
@@ -331,7 +194,8 @@ def outstanding_transactions(
     The source rows this account is still holding forward on the day the
     balance was asserted: an envelope whose own close has not been ticked, and
     a bill the projection is still carrying.  Ticking one records that the bank
-    moved the money by that day (:func:`record_settled_transactions`).
+    moved the money by that day
+    (:func:`app.services.reconcile_service._rows.record_settled`).
 
     **It returns a MAP keyed on the PARENT, which is what lets the assembler
     union it with the purchase arm** -- that arm keys its purchases on the same
@@ -355,125 +219,33 @@ def outstanding_transactions(
         of its own period and only closing it clears it.  Finding **N-227**
         owns whether that bound is right.
     """
+    statement = _rows.Statement(owner_id, account_id, observed_on)
     return {
-        txn.id: OutstandingTransaction(
-            transaction_id=txn.id,
-            attributed_on=_attributed_on(txn),
-            amount=transaction_service.settle_amount(txn),
-            is_correctable=not transaction_service.settles_from_entries(txn),
-            is_income=txn.is_income,
-            kind=_offer_kind(txn),
-        )
-        for txn in _outstanding_rows(owner_id, account_id, observed_on)
+        txn.id: _offer(txn)
+        for txn in _rows.outstanding_rows(ARM, statement)
     }
 
 
-def record_settled_transactions(
-    owner_id: int,
-    account_id: int,
-    transaction_ids: "set[int]",
-    corrections: "dict[int, Decimal]",
-    observed_on: date,
-) -> int:
-    """Settle *transaction_ids* as having moved by *observed_on*.
-
-    This arm's writer: the user ticked these rows off a statement, so each
-    settles through ``transaction_service.settle_transaction`` -- the grid's
-    own verb -- stamping the statement's civil day rather than the seam's
-    default of the user's today.
-
-    **Every id is re-derived through the arm's scope rather than trusted.**
-    An id belonging to another user, another account, a settled row, a
-    soft-deleted row, a transfer shadow or a row that is not yet overdue simply
-    does not come back from :func:`_outstanding_rows` and is silently skipped.
-    The count returned is what actually settled, never what was asked for.
-
-    **A correction is applied only where the panel offered a box for one**
-    (rulings **R-FB** / **R-FF**), and only when it DIFFERS from what the row
-    would otherwise book.  Both halves matter.  Reading a submitted amount for
-    a row whose settle derives its own figure would silently discard the user's
-    input; writing an equal figure into ``actual_amount`` would populate a
-    column that is NULL on every uncorrected row, destroying the only signal
-    that says a human typed one.
-
-    **The loop reconciles the posted ledger once PER ROW, and that is finding
-    N-221 ANSWERED rather than accepted by default.**  The verb ends in
-    ``posting_service.sync_transaction_postings``, which per call resolves two
-    ledger accounts, reads the period's posted set and runs the anchor self-heal
-    -- ruling **R-DL**'s shape one tier up.  A batch sibling is NOT built here,
-    for two measured reasons.  It already exists as somebody's job: plan step
-    **X-ai-a**'s stated mandate is a BATCHED cash reconcile, measured at 8 SQL
-    statements against 696 assembled, and a second batch implementation written
-    here is the duplication that step exists to remove.  And the cost is bounded
-    by the data rather than by hope: replayed over all 53 Checking assertion
-    days on production, the WORST day offers 9 transaction rows and the mean is
-    **4.02** over the 46 days that carry any (a first draft said 4.2, which was
-    the same replay with transfer shadows left in -- they are X-f2-c3's arm and
-    not this one's), and ``carry_forward_service`` already loops the same reconcile per
-    envelope on a path with no such bound.  N-221 is therefore re-pointed to
-    X-ai-a rather than closed.
-
-    Does NOT commit -- the caller owns the session boundary.
+def _offer(txn: Transaction) -> OutstandingTransaction:
+    """Return the offer this arm makes for one row.
 
     Args:
-        owner_id: The user_id whose rows these must be.
-        account_id: The cash account the balance was asserted for.
-        transaction_ids: The ids the user ticked.  An empty set is a no-op that
-            issues no query.
-        corrections: ``{transaction id: amount}`` for the rows whose amount box
-            was submitted.  An id with no entry, and an id whose row is not
-            correctable, settle at the row's own figure.
-        observed_on: The civil day the asserted balance was true for, and the
-            day each settled row records its money as having moved.
+        txn: A row in scope, with ``entries``, ``pay_period`` and ``template``
+            loaded.
 
     Returns:
-        The number of rows actually settled.
-
-    Raises:
-        ValidationError: Propagated from the settle verb -- an illegal
-            transition a stale panel can still submit.  A 400 at the route.
-        PostingError: Propagated from the verb's ledger reconcile.  Fails loud.
+        Its :class:`OutstandingTransaction`.  ``amount`` is resolved once and
+        passed to :func:`_cash_amount` rather than resolved twice: the two
+        figures are the same number seen two ways, and asking the verb again
+        would be a second answer to one money question.
     """
-    if not transaction_ids:
-        return 0
-
-    rows = _outstanding_rows(
-        owner_id, account_id, observed_on, transaction_ids=transaction_ids,
+    booked = transaction_service.settle_amount(txn)
+    return OutstandingTransaction(
+        transaction_id=txn.id,
+        attributed_on=_rows.attributed_on(txn),
+        amount=booked,
+        cash_amount=_cash_amount(txn, booked),
+        is_correctable=not transaction_service.settles_from_entries(txn),
+        is_income=txn.is_income,
+        kind=_offer_kind(txn),
     )
-    corrected = 0
-    for txn in rows:
-        # The submitted figure is handed straight to the verb.  **This loop
-        # holds no money rule at all**, and a first draft's two -- "read it only
-        # where the panel offered a box" and "only when it differs from what the
-        # row would otherwise book" -- were both the verb's, restated.  A review
-        # measured the first: deleting it left every test green, because
-        # ``settle_transaction`` routes an entries-derived row to a branch that
-        # ignores ``actual_amount`` outright.  A guard nothing can observe is
-        # not a guard, and two doors deciding one column's meaning separately is
-        # the shape this whole arc exists to remove.
-        before = txn.actual_amount
-        transaction_service.settle_transaction(
-            txn, actual_amount=corrections.get(txn.id),
-            settled_on=observed_on,
-        )
-        # Counted from what CHANGED, not from what was submitted.  An HTML form
-        # posts every rendered input, so ``corrections`` holds the prefilled box
-        # of every correctable row on the panel whether it was ticked or not --
-        # counting its keys measures how many boxes the panel drew.
-        if txn.actual_amount != before:
-            corrected += 1
-
-    if rows:
-        log_event(
-            logger, logging.INFO,
-            EVT_TRANSACTIONS_RECONCILED, BUSINESS,
-            "Outstanding transactions settled against a bank statement",
-            user_id=owner_id,
-            account_id=account_id,
-            observed_on=observed_on.isoformat(),
-            settled_count=len(rows),
-            requested_count=len(transaction_ids),
-            corrected_count=corrected,
-        )
-
-    return len(rows)

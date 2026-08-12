@@ -32,10 +32,16 @@ This module is the single source of truth for the predicate. It exposes:
   zero, ``excludes_from_balance`` statuses contribute zero, everything
   else contributes its effective amount. This is the Python predicate
   for in-memory iteration.
-- ``is_projected(txn) -> bool`` is the equality form ("is this txn
+- ``is_projected(row) -> bool`` is the equality form ("is this row
   Projected?") used by the inline ``!= projected_id`` / ``== projected_id``
   sites. Pure status equality; does not consider ``is_deleted`` (callers
-  that need the combined gate use ``is_balance_contributing``).
+  that need the combined gate use ``is_balance_contributing``). It takes a
+  ``Transaction`` OR a ``Transfer``, for the same reason
+  ``is_projected_clause`` below is parameterised on the model class: both
+  tables carry a ``status_id`` into ``ref.statuses``, and "is this row still
+  Projected" is ONE question. The row form was Transaction-only until plan
+  step X-au-b asked it of a transfer (``cash_ledger._amount_source``), where
+  the alternative was a second spelling of the same comparison.
 - ``balance_excluded_status_ids() -> frozenset[int]`` is the cached
   ``{Credit.id, Cancelled.id}`` set, derived from the same ``ref_cache``
   lookups as the clause builder so they can never disagree.
@@ -79,6 +85,7 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import UndatedSettleError
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 
 
 def balance_excluded_status_ids() -> frozenset[int]:
@@ -147,6 +154,68 @@ def settled_status_ids() -> frozenset[int]:
         ref_cache.status_id(StatusEnum.RECEIVED),
         ref_cache.status_id(StatusEnum.SETTLED),
     })
+
+
+def enters_settled_band(row, new_status_id: int) -> bool:
+    """Return whether moving *row* to *new_status_id* SETTLES it.
+
+    **The predicate that tells a status ASSIGNMENT from a SETTLE.**  Settling
+    is entering the band from outside it: Projected -> Paid or Projected ->
+    Received, the only two the state machine admits inward (Credit and
+    Cancelled reach the band through Projected, never directly).
+
+    **Staying inside the band is NOT a settle**, and that half is load-bearing.
+    ``Paid -> Settled`` is an ARCHIVE of a row whose money already moved and
+    whose amount is already a fact, and ``Paid -> Paid`` is an idempotent
+    re-submit; routing either to a settle verb would ask an immutable row to
+    re-price itself, which an envelope's settle refuses by precondition and a
+    manual settle would answer by re-reading a projection the row left months
+    ago.
+
+    **It lives HERE rather than on either service, and the move is plan step
+    X-f2-c3's.**  It was ``transaction_service``'s, published so
+    ``apply_requested_status`` could dispatch on it; that leaf gave
+    ``transfer_service.update_transfer`` the same dispatch -- a transfer's
+    settle rule became structural there -- and a TRANSFER asking the
+    transaction service "is this a settle" reads as a dependency that is not
+    real.  The question is over ``status_id`` and :func:`settled_status_ids`
+    and nothing else, which is this module's subject, and it is polymorphic in
+    exactly the way :func:`is_projected_clause` already is: ``Transaction`` and
+    ``Transfer`` both carry a ``status_id`` FK against ``ref.statuses.id``.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer`, read for its CURRENT
+            ``status_id``.
+        new_status_id: The status a door is asking for.
+
+    Returns:
+        True when the move crosses INTO the settled band from outside it.
+    """
+    settled = settled_status_ids()
+    return row.status_id not in settled and new_status_id in settled
+
+
+def leaves_settled_band(row, new_status_id: int) -> bool:
+    """Return whether moving *row* to *new_status_id* UNSETTLES it.
+
+    :func:`enters_settled_band`'s mirror, and it exists for the same reason:
+    the two directions are different acts and a door must not decide which is
+    which.  The only edges out of the band are ``Paid -> Projected`` and
+    ``Received -> Projected`` -- the documented unlock path, where the user is
+    saying the money did not move after all.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer`, read for its CURRENT
+            ``status_id``.
+        new_status_id: The status a door is asking for.
+
+    Returns:
+        True when the move crosses OUT of the settled band.
+    """
+    settled = settled_status_ids()
+    return row.status_id in settled and new_status_id not in settled
 
 
 def settled_day(transaction_id: int, settled_on: date | None) -> date:
@@ -294,8 +363,8 @@ def is_balance_contributing(txn: Transaction) -> bool:
     return status_contributes_to_balance(txn)
 
 
-def is_projected(txn: Transaction) -> bool:
-    """Return True iff *txn*'s status is ``Projected``.
+def is_projected(row: Transaction | Transfer) -> bool:
+    """Return True iff *row*'s status is ``Projected``.
 
     Centralizes the inline ``status_id != ref_cache.status_id(
     StatusEnum.PROJECTED)`` and ``status_id == projected_id`` comparisons
@@ -306,11 +375,20 @@ def is_projected(txn: Transaction) -> bool:
     ``is_balance_contributing``, or use ``is_balance_contributing``
     alone when they only need the exclusion set semantics.
 
+    **It takes a ``Transaction`` OR a ``Transfer``**, which is the same
+    generality :func:`is_projected_clause` has always had one tier down: both
+    tables carry a ``status_id`` into ``ref.statuses``, and "is this row still
+    Projected" is one question with one answer. It was annotated
+    Transaction-only until plan step X-au-b needed it for a transfer
+    (:func:`app.services.cash_ledger.resolve_transfer_amount`), where the only
+    alternative was a second spelling of this comparison -- the drift this
+    module exists to prevent.
+
     Args:
-        txn: a ``Transaction`` instance with ``status_id`` populated.
+        row: a ``Transaction`` or ``Transfer`` with ``status_id`` populated.
 
     Returns:
-        ``True`` if ``txn.status_id`` equals the cached integer ID for
+        ``True`` if ``row.status_id`` equals the cached integer ID for
         ``StatusEnum.PROJECTED``; ``False`` for every other status,
         including ``Paid``, ``Received``, ``Credit``, ``Cancelled``,
         and ``Settled``.
@@ -319,7 +397,7 @@ def is_projected(txn: Transaction) -> bool:
         RuntimeError: propagated from ``ref_cache.status_id`` if the
             reference cache has not been initialized.
     """
-    return txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+    return row.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
 
 
 def is_credit(txn: Transaction) -> bool:

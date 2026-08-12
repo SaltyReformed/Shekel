@@ -619,7 +619,7 @@ def _shadow_live_amount(
         escrow_lines: The loan's escrow lines with their full version history.
         shadow: The payment shadow whose installment dates the escrow resolution.
         extra_principal: The recurring payment's standing extra principal
-            (``0.00`` when none), from :func:`_loan_payment_config`.
+            (``0.00`` when none), from :func:`loan_payment_config`.
 
     Returns:
         ``round_money(monthly_pi + escrow_monthly_as_of(lines, due date)
@@ -663,7 +663,7 @@ def _manual_shadow_amount(
     return round_money(base + extra_principal)
 
 
-def _loan_payment_config(template: TransferTemplate) -> tuple[bool, Decimal]:
+def loan_payment_config(template: TransferTemplate) -> tuple[bool, Decimal]:
     """Return ``(derive_from_loan, extra_principal)`` for a transfer template.
 
     The single accessor for a recurring transfer's loan-payment settings
@@ -675,6 +675,16 @@ def _loan_payment_config(template: TransferTemplate) -> tuple[bool, Decimal]:
     generic transfer.  The ``settings`` relationship must already be loaded by
     the caller (the readers ``joinedload`` it) so this stays a pure in-memory
     read with no N+1.
+
+    **It became PUBLIC at plan step X-au-b**, and the alternative was a second
+    copy.  The amount resolver
+    (:mod:`app.services.cash_ledger._amount_source`) has to know which MODE a
+    loan payment is in before it can price it -- a derive-mode payment resolves
+    from the loan, a manual one from its definition plus this ``extra`` -- and
+    reading ``template.settings`` there would be a second spelling of the
+    row-absent defaults this function exists to state once.  An adversarial
+    review found the resolver answering a manual payment two different ways for
+    want of exactly this.
 
     Args:
         template: The :class:`~app.models.transfer_template.TransferTemplate`
@@ -751,7 +761,7 @@ def live_loan_payment_amount(
     )
     if transfer is None or transfer.template is None:
         return None
-    derive_from_loan, extra_principal = _loan_payment_config(transfer.template)
+    derive_from_loan, extra_principal = loan_payment_config(transfer.template)
     if derive_from_loan:
         basis = _resolve_loan_basis(
             transfer.to_account_id, scenario_id, date.today(),
@@ -819,7 +829,7 @@ def _live_config_by_transfer(
     for xfer in transfers:
         if xfer.template is None:
             continue
-        derive, extra = _loan_payment_config(xfer.template)
+        derive, extra = loan_payment_config(xfer.template)
         if not derive and extra <= Decimal("0.00"):
             continue
         config[xfer.id] = _LivePaymentConfig(

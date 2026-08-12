@@ -7,6 +7,7 @@ Supports both template-generated recurring transfers and ad-hoc one-time transfe
 
 from decimal import Decimal
 
+from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.mixins import (
     OptimisticLockMixin,
@@ -46,6 +47,43 @@ class Transfer(
         db.CheckConstraint(
             "version_id > 0",
             name="ck_transfers_version_id_positive",
+        ),
+        # THE AMOUNT MODEL'S ONE CONSTRAINT, on the second of the two columns it
+        # covers (ruling **R-FI**, plan step X-au-c1).  Identical in form and in
+        # purpose to ``ck_transactions_amount_ownership`` -- see that constraint
+        # for why the pairing is written as two NULL tests rather than against a
+        # source value, and for the write-side teeth it buys.  On THIS table the
+        # writer it refuses is named: ``transfer_service`` copies the parent's
+        # figure onto both shadows and a drift corrector repairs the copies that
+        # got away, and plan step X-au-f deletes both by making a shadow READ its
+        # parent -- at which point Transfer Invariant 3 is structural rather than
+        # maintained.
+        #
+        # ``ck_transfers_positive_amount`` (``amount > 0``) is UNCHANGED and
+        # still admits the NULL (a comparison with NULL is UNKNOWN, which a CHECK
+        # passes), so this constraint alone decides when the column may be empty.
+        db.CheckConstraint(
+            "(amount_source_id IS NULL) = (amount IS NOT NULL)",
+            name="ck_transfers_amount_ownership",
+        ),
+        # An AD-HOC transfer owns its amount, because no definition states a
+        # price for it -- ``cash_ledger.resolve_transfer_amount`` answers OWN for
+        # a transfer with no template, so a declaration on one names a relation
+        # that cannot be reached.
+        #
+        # **It is a constraint rather than a comment because
+        # ``uq_transfers_adhoc_dedupe`` DEPENDS on it, and an adversarial review
+        # is why.**  That index prevents the double-submit that silently doubles a
+        # projected debit and credit (F-050 / C-22), and its key includes
+        # ``amount``.  PostgreSQL indexes NULLs as DISTINCT by default, so two
+        # ad-hoc transfers with a NULL amount and otherwise identical keys would
+        # BOTH insert -- the guard disabled by a column the amount model made
+        # nullable.  The first draft of the comment above asserted the index was
+        # unaffected "because an ad-hoc transfer owns its amount", which was true
+        # and enforced by nothing; this is that sentence made structural.
+        db.CheckConstraint(
+            "amount_source_id IS NULL OR transfer_template_id IS NOT NULL",
+            name="ck_transfers_adhoc_owns_amount",
         ),
         # One non-deleted, non-override transfer per template per period
         # per scenario.  Mirrors the relaxed transactions index: override
@@ -151,7 +189,27 @@ class Transfer(
         db.ForeignKey("budget.transfer_templates.id", ondelete="SET NULL"),
     )
     name = db.Column(db.String(200))
-    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    # The transfer's OWN amount, and NULLABLE since plan step X-au-c1: a transfer
+    # whose amount is DERIVED does not store one (ruling **R-FI**).  NULL means
+    # "ask ``cash_ledger.resolve_transfer_amount``", which for a generated
+    # transfer is its definition's effective-dated price series as of the
+    # transfer's own due date.  Structurally paired with ``amount_source_id`` by
+    # ``ck_transfers_amount_ownership`` above.  No production row is NULL as of
+    # this step; plan step X-au-f is what empties it for generated transfers.
+    amount = db.Column(db.Numeric(12, 2))
+    # WHICH RELATION prices this transfer, or NULL when it owns its own figure
+    # (ruling **R-FI**, plan step X-au-c1).  Only ``template`` is meaningful here
+    # -- a transfer has no parent transfer -- and RESTRICT is for the reason the
+    # transaction twin states: a vanishing ref row would convert a derived
+    # transfer into one claiming to own an amount it does not have.
+    amount_source_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.amount_sources.id",
+            name="fk_transfers_amount_source_id",
+            ondelete="RESTRICT",
+        ),
+    )
     # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="SET NULL"),
@@ -199,9 +257,31 @@ class Transfer(
         """Return the amount used in balance calculations.
 
         Transfers with an excluded status (Cancelled) contribute 0.
+
+        **A transfer that does not OWN its amount is REFUSED rather than
+        answered** (ruling R-FI, plan step X-au-c1).  The transaction twin's
+        docstring (``Transaction.effective_amount``) carries the full reasoning;
+        the short form is that this is a pure in-memory read, a derived figure
+        needs a database and a batch basis, and answering ``None`` would put one
+        into a money path.  Unreachable as of this step -- no row is NULLed --
+        and it is what makes an unrouted reader fail loud when plan step X-au-f
+        empties the column.
+
+        Raises:
+            AmountUnresolvable: When this transfer's amount is derived.  Price it
+                through ``cash_ledger.resolve_transfer_amount`` instead.
         """
         if self.status and self.status.excludes_from_balance:
             return Decimal("0")
+        if self.amount is None:
+            raise AmountUnresolvable(
+                f"Transfer {self.id} does not own its amount -- "
+                f"amount_source_id={self.amount_source_id} says its figure is "
+                "DERIVED -- so effective_amount cannot answer for it. Price it "
+                "through cash_ledger.resolve_transfer_amount, which resolves a "
+                "generated transfer from its definition's price series as of "
+                "the transfer's own due date."
+            )
         return self.amount
 
     @property
@@ -211,7 +291,7 @@ class Transfer(
         A transfer has no ``settled_on`` COLUMN -- the day lives on its two
         shadow ``Transaction`` rows, which carry the same value (Transfer
         Invariant 3, maintained by
-        ``app.services._transfer_status.apply_settle_day_to_pair``).  This is
+        ``app.services.transfer_service._status.apply_settle_day_to_pair``).  This is
         the read of that shared fact, so the two surfaces that need it -- the
         full-edit form's pre-filled correction input, opened from either the
         transfers page or a grid shadow cell -- ask ONE question rather than
@@ -233,7 +313,7 @@ class Transfer(
         **The ``limit(1)`` is what makes that true, and a bare ``.scalar()``
         did not.**  ``Query.scalar()`` swallows ``NoResultFound`` but lets
         ``MultipleResultsFound`` propagate, so a transfer with DUPLICATE income
-        shadows -- data corruption ``_transfer_validation._get_shadow_transactions``
+        shadows -- data corruption ``transfer_service._validation._get_shadow_transactions``
         already fails loud on -- would have 500'd both full-edit popovers, which
         is precisely the outcome the paragraph above says this read avoids.  A
         neutral review caught the contradiction between the code and its own

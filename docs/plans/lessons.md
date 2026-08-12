@@ -119,6 +119,12 @@ no reconciler.
 - **A GATE MUST BE EXERCISED AGAINST THE ARTIFACT IT GRADES, never read or tested only
   synthetically.** A pattern that matches the real file nowhere passes every synthetic control.
 - **An ORACLE that states a different rule than the engine lets both be wrong together.**
+- **AN AGREEMENT ORACLE CANNOT SEE A PRODUCER THAT READS THE VALUE IT IS REPLACING.** The control
+  that sees it is INVARIANCE -- perturb the input the new rule must not be reading and require the
+  answer not to move (X-au-b scored 997 of 997 replaced by `return txn.estimated_amount`).
+- **A SERIES MINED OUT OF A COLUMN CANNOT INDEPENDENTLY GRADE A READER OF THAT SERIES.** Ask where
+  the oracle's expected value came from, not just whether it differs from the code under test
+  (X-au-a backfilled the price history FROM the rows X-au-b's 452 agreements then re-attested).
 - **A BASELINE IS ONLY A BASELINE AGAINST THE DATABASE IT WAS TAKEN FROM**, and widening an
   instrument is a shape change needing the same normalization the code does.
 - **Scan with an AST, not a regex -- and an AST census is a grep with better manners unless it

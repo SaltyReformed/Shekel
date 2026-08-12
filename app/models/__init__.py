@@ -9,6 +9,7 @@ then budget (to satisfy foreign key dependencies).
 # Reference / lookup tables
 from app.models.ref import (
     AccountType,
+    AmountSource,
     BusinessDayShift,
     CalcMethod,
     DeductionTiming,
@@ -85,6 +86,7 @@ from app.models.tax_config import (
 __all__ = [
     # Reference / lookup tables
     "AccountType",
+    "AmountSource",
     "BusinessDayShift",
     "CalcMethod",
     "DeductionTiming",

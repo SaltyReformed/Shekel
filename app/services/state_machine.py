@@ -87,10 +87,10 @@ about writes, and a "everything goes through the seam" claim that
 quietly meant "every write" is the kind of overclaim this arc keeps
 paying for:
 
-* ``app/services/_transfer_status.py:apply_status_to_all_three`` --
+* ``app/services/transfer_service/_status.py:apply_status_to_all_three`` --
   verifies all three of a transfer's rows BEFORE the seam assigns any,
   so an illegal move leaves the trio untouched (F-047 atomicity).
-* ``app/services/_transfer_validation.py:assert_restorable`` -- asks
+* ``app/services/transfer_service/_validation.py:assert_restorable`` -- asks
   :func:`allowed_transitions` whether a drifted shadow can legally be
   pulled back to its parent, and refuses the restore when it cannot
   (ruling R-DO).

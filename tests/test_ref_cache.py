@@ -14,6 +14,8 @@ to the Status model.  Verifies that:
   - GoalModeEnum and IncomeUnitEnum match their database rows exactly.
   - The two-axis recurrence vocabulary (RecurrenceUnit / PeriodPlacement /
     BusinessDayShift) resolves and matches its rows exactly (step R2a).
+  - The amount model's AmountSource vocabulary resolves and matches its rows
+    exactly, and has no ``own`` row (plan step X-au-c1, ruling R-FI).
 """
 
 from decimal import Decimal
@@ -25,6 +27,7 @@ from app.extensions import db
 from app import create_app, ref_cache
 from app.enums import (
     AcctCategoryEnum,
+    AmountSourceEnum,
     BusinessDayShiftEnum,
     GoalModeEnum,
     IncomeUnitEnum,
@@ -39,6 +42,7 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.models.ref import (
+    AmountSource,
     BusinessDayShift,
     GoalMode,
     IncomeUnit,
@@ -1096,3 +1100,79 @@ class TestAcctCategoryMemberRefCache:
                     ref_cache.acct_category_member(1)
             finally:
                 ref_cache.init(db.session)
+
+
+class TestAmountSourceRefCache:
+    """The amount model's discriminator resolves (plan step X-au-c1, ruling R-FI).
+
+    ``ref.amount_sources`` names WHICH RELATION states a row's amount when the
+    row does not state it itself.  Nothing in ``app/`` declares a source yet --
+    the per-kind cutovers (plan steps X-au-d..X-au-i) are the first writers -- so
+    what these tests protect is the dual-seed contract and the enum<->row parity
+    that ``ref_cache.init()`` turns into a fatal startup error.
+
+    The parity is asserted in BOTH directions: a value in the enum with no row is
+    that fatal error, and a row with no member is a value no reader can resolve
+    but a writer could still stamp -- which would produce a derived row nothing
+    can price.
+    """
+
+    def test_ids_are_distinct_and_positive(self, app, db):
+        """Every AmountSourceEnum member resolves to its own positive ID.
+
+        A collision would merge two relations into one, so a row priced by its
+        parent transfer would be looked up against its template instead -- a
+        wrong figure rather than a refusal.
+        """
+        with app.app_context():
+            ids = {
+                member: ref_cache.amount_source_id(member)
+                for member in AmountSourceEnum
+            }
+            for member, source_id in ids.items():
+                assert isinstance(source_id, int) and source_id > 0, (
+                    f"amount_source_id({member.name}) must be a positive int, "
+                    f"got {source_id!r}"
+                )
+            assert len(set(ids.values())) == len(AmountSourceEnum), (
+                f"AmountSourceEnum members must have distinct IDs; got {ids}"
+            )
+
+    def test_enum_matches_db(self, app, db):
+        """``ref.amount_sources`` holds exactly the enum's values.
+
+        There is deliberately no ``own`` row: owning an amount is the ABSENCE of
+        a source (``amount_source_id IS NULL``), which is what lets the ownership
+        CHECK be written over two NULL-nesses instead of freezing a ref id into
+        the schema.  A stray ``own`` row here would be the first sign that
+        distinction had been lost.
+        """
+        with app.app_context():
+            db_names = {row.name for row in db.session.query(AmountSource).all()}
+            enum_values = {member.value for member in AmountSourceEnum}
+            assert db_names == enum_values, (
+                f"AmountSource DB rows {sorted(db_names)} do not match "
+                f"AmountSourceEnum values {sorted(enum_values)}"
+            )
+
+    def test_ref_cache_fails_on_missing_amount_source(self, app, db):
+        """``ref_cache.init()`` raises when an amount-source row is missing.
+
+        The parity gate fires for this vocabulary as it does for every other:
+        deleting the ``template`` row leaves ``AmountSourceEnum.TEMPLATE``
+        unresolvable, which must be a fatal startup error rather than a silent
+        skip that would later surface as an unstampable declaration mid-cutover.
+        """
+        with app.app_context():
+            template_row = (
+                db.session.query(AmountSource).filter_by(name="template").one()
+            )
+            db.session.delete(template_row)
+            db.session.flush()
+
+            with pytest.raises(RuntimeError, match="TEMPLATE"):
+                ref_cache.init(db.session)
+
+            # Roll back so other tests aren't affected, then re-init clean.
+            db.session.rollback()
+            ref_cache.init(db.session)

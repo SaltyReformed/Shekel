@@ -11,10 +11,21 @@ question             here                            loan analog
 ===================  ==============================  ==========================
 what is stored?      :mod:`._facts`                  ``loan_loaders``
 what happened, when? :mod:`._events`                 ``loan_ledger._events``
+what IS the amount?  :mod:`._amount_source`          (see below)
 what was it worth?   :mod:`._amounts`                ``loan_ledger._split``
 in what order?       :mod:`._walk`                   ``loan_ledger._walk``
 what do they sum to? :mod:`._flows`                  (a peer reduction)
 ===================  ==============================  ==========================
+
+**The third and fourth rows are two questions, not one split in half** (plan
+step X-au-b, ruling **R-FI**).  :mod:`._amount_source` answers *where does this
+row's amount come from* -- the figure the amount COLUMN holds or would hold,
+by a total dispatch over the five sources a row's amount can have.
+:mod:`._amounts` answers *what is this row worth to checking*, which composes
+that amount with an entered actual, an excluded status and an envelope's
+purchases.  The arrow runs one way: the second consumes the first.  The loan
+side has no analog for the third row because a loan payment's amount has
+exactly one source; a cash row's has five, and four of them are derived.
 
 Nothing here answers "what is the balance at T".  That is the
 :mod:`app.services.balance_at` seam's question, and the arrow runs ONE way: the
@@ -62,9 +73,18 @@ in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 :class:`~decimal.Decimal`.
 """
 
+from ._amount_source import (
+    AmountBasis,
+    AmountRule,
+    amount_basis,
+    amount_rule,
+    resolve_transaction_amount,
+    resolve_transfer_amount,
+)
 from ._amounts import (
     ProjectedBasis,
     ReconciledThrough,
+    credit_entry_sum,
     income_amount,
     live_amount_overrides,
     settled_cash_leg,
@@ -91,6 +111,8 @@ from ._walk import (
 )
 
 __all__ = [
+    "AmountBasis",
+    "AmountRule",
     "AnchorPoint",
     "governing_anchor_on",
     "CashAnchorCorrection",
@@ -99,13 +121,18 @@ __all__ = [
     "CashSourceFact",
     "ProjectedBasis",
     "ReconciledThrough",
+    "amount_basis",
+    "amount_rule",
     "cash_anchor_facts",
+    "credit_entry_sum",
     "dated_deltas",
     "income_amount",
     "live_amount_overrides",
     "planned_cash_rows",
     "reconciled_through",
     "resolve_anchor",
+    "resolve_transaction_amount",
+    "resolve_transfer_amount",
     "settled_cash_facts",
     "settled_cash_leg",
     "sum_projected",

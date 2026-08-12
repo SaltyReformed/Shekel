@@ -59,10 +59,25 @@
 {% else %}
 {% set true_up_url = url_for('accounts.true_up', account_id=account.id) %}
 {% endif %}
+{# ``hx-disinherit`` keeps these three attributes to the form's OWN request.
+   All three are inherited by descendants, and this form CONTAINS an element
+   that issues its own request -- the difference preview below.  Inherited,
+   ``hx-target="this"`` resolves to the form (htmx returns the element that
+   DECLARED it), so the preview's response swapped over the whole editor and
+   deleted the balance box mid-keystroke; ``hx-disabled-elt``'s ``find
+   button[type=submit]`` matches nothing inside that region and made htmx log a
+   selector error on every preview.  The preview states its own target too --
+   this is the class-level guard, that is the local contract, and the two are
+   deliberately not one: a future control added inside this form inherits
+   nothing it did not ask for.
+   The form's own PATCH is unaffected; disinheritance applies only to
+   descendants.  Save, Cancel, Escape from either box, and the preview were all
+   re-measured in a browser after this landed. #}
 <form hx-patch="{{ true_up_url }}"
       hx-target="this"
       hx-swap="outerHTML"
       hx-disabled-elt="find button[type=submit]"
+      hx-disinherit="hx-target hx-swap hx-disabled-elt"
       class="d-inline-block">
   <div class="d-flex align-items-center gap-2">
     <div class="input-group input-group-sm mw-px-200">
@@ -133,12 +148,36 @@
 
      ``hx-include="closest form"`` puts both boxes on the query string; the
      route hands the whole thing to the write door's own schema, which drops
-     what it does not declare. #}
+     what it does not declare.
+
+     **``hx-target`` IS DECLARED HERE, and omitting it destroyed the editor.**
+     ``hx-target`` is an INHERITED htmx attribute, and this region sits inside a
+     form carrying ``hx-target="this"`` for its own PATCH.  htmx resolves an
+     inherited ``"this"`` to the element that DECLARED the attribute, never to
+     the element issuing the request (``getTarget`` -> ``Se(e,"hx-target")``,
+     which is ``closest(elt, '[hx-target]')`` -- the FORM).  So this region's
+     GET landed an ``innerHTML`` swap on the form: the first preview replaced
+     the balance box, the date box and both buttons with the difference table,
+     mid-keystroke, leaving nothing to type into and nothing to submit.  A user
+     typing ``2193.69`` who paused after ``21`` got a preview of ``$21.00`` and
+     an editor that no longer existed, and no balance was ever recorded.
+
+     Verified in a real browser against production data: the trace named
+     ``elt=div#anchor-difference-1 target=form.d-inline-block``, followed by
+     ``htmx:beforeCleanupElement`` on the balance input, the Save button and the
+     date input.  ``hx-swap="innerHTML"`` is load-bearing for the same reason --
+     without it the region inherits the form's ``outerHTML`` and replaces
+     ITSELF, losing the wiring after one fetch.
+
+     Stated as an attribute rather than trusted to nesting because the request
+     count is what the step that shipped this measured, and a count cannot see a
+     target: it fired exactly once, into exactly the wrong element. #}
   <div id="anchor-difference-{{ account.id }}"
        role="status" aria-live="polite"
        hx-get="{{ url_for('accounts.anchor_difference', account_id=account.id) }}"
        hx-include="closest form"
        hx-trigger="input changed delay:400ms from:closest form"
+       hx-target="this"
        hx-swap="innerHTML"></div>
   {% if error %}
   {# The refusal, rendered where the submission was made.  It arrives on a 400

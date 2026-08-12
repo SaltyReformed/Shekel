@@ -52,6 +52,8 @@ from decimal import Decimal
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import is_balance_contributing, is_projected
 
+from ._amount_source import amount_basis
+
 
 @dataclass(frozen=True)
 class ReconciledThrough:
@@ -487,7 +489,7 @@ def _entry_aware_amount(txn, reconciled_through: ReconciledThrough) -> Decimal:
     )
 
 
-def _credit_entry_sum(txn: Transaction) -> Decimal:
+def credit_entry_sum(txn: Transaction) -> Decimal:
     """Return the sum of a transaction's credit (credit-card) entry amounts.
 
     The ``Sigma(credit entry amounts)`` term of the confirmed-cash-effect
@@ -496,6 +498,14 @@ def _credit_entry_sum(txn: Transaction) -> Decimal:
     (``credit_workflow``), so counting them here would double-count against the
     payback.  A plain transaction has no entries, so this is ``Decimal("0")``
     and the effect collapses to ``effective_amount``.
+
+    **PUBLIC since plan step X-f2-c3, for the reconcile panel** (finding
+    **N-226**).  That panel offers an envelope at what a tick would BOOK, which
+    is ``sum(entries)`` over every entry INCLUDING the card ones -- against a
+    statement that shows only the debit half.  The panel therefore prints the
+    cash figure beside the booked one, and it takes this term rather than
+    writing ``entry.is_credit`` a second time: the two would then be one rule
+    in two places, on the screen a user reads beside a paper statement.
 
     Args:
         txn: The transaction whose credit entries to sum.
@@ -567,7 +577,7 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     """
     if not is_balance_contributing(txn):
         return Decimal("0.00")
-    net = txn.effective_amount - _credit_entry_sum(txn)
+    net = txn.effective_amount - credit_entry_sum(txn)
     return net if txn.is_income else -net
 
 
@@ -663,6 +673,22 @@ def live_amount_overrides(account, scenario_id, transactions):
     :func:`_expense_amount` beside it consume; producing it and reading it
     are one concern, which is why they share a module (plan step D1c).
 
+    **The two seams are CALLED by :func:`~._amount_source.amount_basis` and
+    merged here (plan step X-au-b), rather than called here.**  That resolver
+    needs the two answers APART -- which rule prices a row is a fact about the
+    row, never about which map its id turned up in, and conflating them is the
+    link-derived discriminator ruling R-FI refuted -- while this map's four
+    consumers want them merged.  Building the basis and flattening it keeps ONE
+    call path to the producers: two call sites would be two producers of one
+    answer, which is the shape this module's own docstring says it exists to
+    prevent.  The merge is unchanged in value and in precedence -- same
+    producers, same arguments, same evaluation order, and the loan half still
+    wins a collision.  The key sets are disjoint in practice (salary income rows
+    against loan-payment transfer shadows) but that rests on a CONVENTION rather
+    than a constraint -- the balance README says so of ``template_id`` /
+    ``transfer_id`` exclusivity -- which is why this says the precedence is
+    preserved rather than that a collision is impossible.
+
     Args:
         account: The :class:`~app.models.account.Account` whose rows are
             being priced; only its ``user_id`` is read (the income seam
@@ -675,16 +701,5 @@ def live_amount_overrides(account, scenario_id, transactions):
         ``dict`` mapping ``transaction_id`` to the live ``Decimal``
         amount, empty when neither seam has a candidate.
     """
-    # Pylint: ``import-outside-toplevel`` -- imported locally to keep the
-    # income_service (paycheck/tax) and loan_payment_service (loan-resolver)
-    # stacks off this module's load path and out of any import cycle; the
-    # helpers are only needed at call time.
-    # pylint: disable=import-outside-toplevel
-    from app.services import income_service, loan_payment_service
-    income_overrides = income_service.live_projected_net(
-        account.user_id, scenario_id, transactions,
-    )
-    loan_overrides = loan_payment_service.live_loan_transfer_amounts(
-        scenario_id, transactions,
-    )
-    return {**income_overrides, **loan_overrides}
+    basis = amount_basis(account, scenario_id, transactions)
+    return {**basis.salary_net, **basis.loan_cash}
