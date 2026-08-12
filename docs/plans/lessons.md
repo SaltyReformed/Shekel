@@ -128,6 +128,15 @@ no reconciler.
 - **A BASELINE IS ONLY A BASELINE AGAINST THE DATABASE IT WAS TAKEN FROM**, and widening an
   instrument is a shape change needing the same normalization the code does.
 - **An ORACLE that states a different rule than the engine lets both be wrong together.**
+- **AN AGREEMENT ORACLE CANNOT SEE A PRODUCER THAT READS THE VALUE IT IS REPLACING.** Grading "the
+  new answer equals the old answer" passes for the identity function: X-au-b's resolver, replaced
+  entirely by `return txn.estimated_amount`, still scored 997 of 997 rows correct, because for 946
+  of them the app's own answer WAS that column. The control that sees it is INVARIANCE -- perturb
+  the input the new rule must not be reading and require the answer not to move.
+- **A SERIES MINED OUT OF A COLUMN CANNOT INDEPENDENTLY GRADE A READER OF THAT SERIES.** X-au-a
+  backfilled its price history FROM the rows' amounts, so X-au-b's 452 template agreements re-attest
+  the backfill rather than test the resolver. Ask where the oracle's expected value came from, not
+  just whether it differs from the code under test.
 - **When a conversion is mechanical, the DIRECTION of the type change has a mirror, and the mirror
   is where the bug is.**
 - **A refusal is only as good as the repair it names, and nobody had pressed the button.**
