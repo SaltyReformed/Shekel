@@ -213,14 +213,26 @@ def _release_derived_actual(txn: Transaction) -> None:
 
 
 def _mismatched_settled_status_ids(txn: Transaction) -> frozenset[int]:
-    """Return the settled statuses *txn*'s TYPE does NOT take.
+    """Return the TYPE-specific settled statuses *txn* does NOT take.
 
-    The settled band minus :func:`settled_status_id`'s answer for this row --
-    one expression for the two things that need it, the refusal
+    One expression for the two things that need it, the refusal
     (:func:`reject_mismatched_settled_status`) and the dropdown's pre-hint
     (:func:`offerable_status_ids`).  Stated once so the enforced rule and the
     displayed rule cannot drift, which is the same reason
     :func:`settles_from_entries` is published.
+
+    **It is the TYPE PAIR minus this row's, NOT the settled band minus this
+    row's, and the difference is a capability.**  The band has THREE members and
+    the third is ``Settled`` -- the archive, which is not type-specific: an
+    expense reaches it from Paid and an income row from Received.  A first draft
+    subtracted the whole band, so ``Settled`` counted as "mismatched" for every
+    row and :func:`offerable_status_ids` removed it from every dropdown --
+    silently retiring the only control that offers the archive, while the state
+    machine still called ``Paid -> Settled`` legal and the seam still preserved
+    the settle day across it.  Caught by adversarial review, and two assertions
+    written in the same step said the opposite ("the full-edit Status dropdown
+    can still reach it"), which is what made it a mistake rather than a
+    decision.
 
     A SET rather than an equality, and deliberately: an inline equality against
     a resolved status id is the D6-09 shape the project's own census test
@@ -232,10 +244,14 @@ def _mismatched_settled_status_ids(txn: Transaction) -> frozenset[int]:
         txn: The row, read for ``is_income``.
 
     Returns:
-        The ``ref.statuses.id`` values in the settled band that this row may
-        never settle into -- one member today, for either type.
+        The ``ref.statuses.id`` values this row's TYPE forbids it settling
+        into -- exactly one member, for either type.
     """
-    return settled_status_ids() - {settled_status_id(txn)}
+    type_specific = frozenset({
+        ref_cache.status_id(StatusEnum.DONE),
+        ref_cache.status_id(StatusEnum.RECEIVED),
+    })
+    return type_specific - {settled_status_id(txn)}
 
 
 def reject_mismatched_settled_status(

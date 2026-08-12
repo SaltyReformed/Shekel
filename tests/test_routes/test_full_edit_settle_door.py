@@ -38,6 +38,7 @@ from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
 from app.services import transaction_service
+from app.services.state_machine import allowed_transitions
 from app.utils.dates import display_today
 from tests._test_helpers import add_entry, create_envelope_txn
 
@@ -251,6 +252,85 @@ class TestTheDropdownBooksWhatTheRowCost:
             assert archived.settled_on == settled_day
 
 
+class TestTheFieldWritesFlushInsideTheExceptionNet:
+    """The derived-amount guard reads a LAZY relationship, so it FLUSHES.
+
+    ``settles_from_entries`` resolves ``tracks_purchases``, which for a
+    template-linked row is ``self.template.is_envelope`` -- a default
+    ``lazy="select"`` relationship (``models/transaction.py:324``).  Reading it
+    emits a SELECT, and a SELECT autoflushes the ``setattr`` loop's staged
+    mutations as the version-pinned UPDATE.  That made the request's FIRST flush
+    happen above the handler's own exception net and, worse, before
+    ``is_override`` was written.
+
+    Found by adversarial review after the step had shipped, and the comment it
+    contradicted is the tell: the handler claimed its three excepts "cover the
+    WHOLE tail", which was true of the tail while the first flush had moved
+    above it.
+    """
+
+    def test_a_period_move_carrying_an_actual_does_not_500(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Moving a generated row into an already-populated period still works.
+
+        ``idx_transactions_template_period_scenario`` is UNIQUE over
+        ``(template, period, scenario)`` but only ``WHERE is_override = FALSE``
+        -- so ``is_override = True`` is exactly what makes this move legal into
+        a period the recurrence engine has already filled, which is every future
+        period.  Written before the flush, the row leaves the index predicate
+        and the move commits; written after it, the flush lands while the row is
+        still inside the predicate and PostgreSQL rejects it as an
+        ``IntegrityError`` raised above the net -- an unhandled 500 on an
+        ordinary edit.
+
+        The submitted ``actual_amount`` is what reaches the lazy load at all:
+        the guard short-circuits on ``data.get("actual_amount") is not None``,
+        and the popover prefills that box from the stored figure, so any row
+        carrying an actual submits one on every Save.
+
+        Shown to FIRE: moving ``is_override`` back below the guard raises
+        ``IntegrityError`` out of the handler.
+        """
+        with app.app_context():
+            source = create_envelope_txn(
+                seed_user, db.session, seed_periods_today[3],
+                "Electricity", Decimal("300.00"),
+            )
+            source.template.is_envelope = False
+            source.actual_amount = Decimal("45.00")
+            # The destination period already holds this template's generated
+            # row, non-override -- the state every future period is in.
+            occupant = Transaction(
+                template_id=source.template_id,
+                pay_period_id=seed_periods_today[4].id,
+                scenario_id=source.scenario_id,
+                account_id=source.account_id,
+                status_id=source.status_id,
+                name=source.name,
+                category_id=source.category_id,
+                transaction_type_id=source.transaction_type_id,
+                estimated_amount=Decimal("300.00"),
+            )
+            db.session.add(occupant)
+            db.session.commit()
+            source_id = source.id
+
+            resp = _full_edit_save(
+                auth_client, source,
+                ref_cache.status_id(StatusEnum.PROJECTED),
+                pay_period_id=str(seed_periods_today[4].id),
+                actual_amount="45.00",
+            )
+
+            assert resp.status_code == 200, resp.data[:300]
+            db.session.expire_all()
+            moved = db.session.get(Transaction, source_id)
+            assert moved.pay_period_id == seed_periods_today[4].id
+            assert moved.is_override is True
+            assert moved.actual_amount == Decimal("45.00")
+
+
 class TestARevertTakesBackWhatTheSettleDerived:
     """A settle writes an envelope's actual; leaving the band takes it back.
 
@@ -374,6 +454,47 @@ class TestASettledStatusMustMatchTheRowsType:
                 StatusEnum.PROJECTED,
             )
             assert reloaded.actual_amount is None
+
+    def test_the_dropdown_still_offers_the_ARCHIVE_from_a_paid_row(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Narrowing the offer set must not take the archive with it.
+
+        ``Settled`` is in the settled BAND but it is not a TYPE-specific
+        status: both an expense and an income row reach it, from Paid and from
+        Received respectively.  A narrowing keyed on the whole band therefore
+        removes it from every row's dropdown -- and the dropdown is the only
+        control that offers the archive at all, so the transition becomes
+        unreachable while ``state_machine`` still calls it legal and the seam
+        still preserves the settle day across it.
+
+        The regression this pins was shipped and caught by review: two
+        assertions in this same PR -- ``is_archived``'s docstring and
+        ``test_entry_service``'s -- both state that the dropdown offers Settled
+        from Paid, which is what made it visible as a mistake rather than a
+        decision.
+        """
+        with app.app_context():
+            txn = _gas_envelope(seed_user, seed_periods_today[3])
+            assert auth_client.post(
+                f"/transactions/{txn.id}/mark-done",
+            ).status_code == 200
+            db.session.expire_all()
+            paid = db.session.get(Transaction, txn.id)
+
+            offerable = transaction_service.offerable_status_ids(paid)
+            names = {ref_cache.status_id(m): m.value for m in StatusEnum}
+            legal = allowed_transitions(paid)
+            shown = (
+                f"status={names[paid.status_id]} "
+                f"legal={sorted(names[i] for i in legal)} "
+                f"offered={sorted(names[i] for i in offerable)}"
+            )
+
+            assert ref_cache.status_id(StatusEnum.SETTLED) in offerable, shown
+            assert ref_cache.status_id(StatusEnum.PROJECTED) in offerable
+            assert ref_cache.status_id(StatusEnum.DONE) in offerable
+            assert ref_cache.status_id(StatusEnum.RECEIVED) not in offerable
 
     def test_the_dropdown_does_not_offer_the_mismatched_status(
         self, app, db, auth_client, seed_user, seed_periods_today,
