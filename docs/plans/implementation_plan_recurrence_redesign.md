@@ -32,7 +32,7 @@ Taken 2026-08-05 (developer):
 | `loan_params.payment_day` | DELETE; every reader goes through one accessor |
 | The three defects | Folded into the redesign, not fixed as separate PRs |
 | Sequencing vs the balance arc | The arc SPLITS: the engine core is disjoint from the balance arc's live work, the date work is not. "Half B folded into X-an" is SUPERSEDED -- R6 reads a column R5 creates, and R5 cannot precede the balance step deleting from `cash_ledger/_events.py`. A developer ruling is owed; see section 0. The resulting ORDER is `steps.md`'s |
-| `PAY_PERIODS_PER_YEAR` | Folded into R7a-2 (which already rewrites `amount_to_monthly`); derivation = `round(365.2425 / cadence_days)`, see section 4a |
+| `PAY_PERIODS_PER_YEAR` | SHIPPED at R7a-2a (`003e3657`) as `pay_calendar.PayCadence`; derivation = `round(365.2425 / cadence_days)`, see section 4a. It surfaced a SECOND stored paycheck count -- finding **F-16**, ruled into this arc as R-F16 |
 | **Anchor day vs month-end clamp** | **R-R3's subtype is SUPERSEDED by R-R13: the anchor SPLITS into `starts_on` + `nominal_day`** |
 | **A generated row's dates** | **THREE facts, three homes: `occurs_on` (the occurrence), `pay_period_id` (the funding), `due_on` (the installment). `compute_due_date` is DELETED. R-R12, ruled 2026-08-08** |
 | **`anchor_date` itself** | **SPLITS before R7c freezes it: `starts_on` (one meaning, every unit) + `nominal_day`. R-R13, ruled 2026-08-08** |
@@ -362,13 +362,20 @@ and form work is not carried into it.
       producer. **D17 closed.** Measured on production: 45 cells render, 2 move month (Anchor
       Disposal, Clothes) and 5 unauthored shapes reword -- see the commit.
 
-- [ ] **R7a-2 -- the monthly equivalent becomes one function over the same pair.**
+- [x] **R7a-2a -- the paycheck count is derived per owner, not a constant.** `003e3657`. R7a-2 is
+      TWO leaves, split with the developer 2026-08-11: the paycheck count is a fact about the
+      SCHEDULE and the two-axis reading is a fact about the RULE, so the first ships alone and
+      byte-identical. `PAY_PERIODS_PER_YEAR` is deleted; `pay_calendar.PayCadence` derives
+      `round(365.2425 / cadence_days)` (section 4a), reached through two doors and refusing an owner
+      who has stated none. **Opened F-16 and F-17.**
 
-`savings_goal_service.amount_to_monthly` becomes four lines over `(interval_n, unit)`, which is the
-same edit that replaces the `PAY_PERIODS_PER_YEAR` constant with a resolved per-user cadence
-(section 4a) and derives `calendar_service._INFREQUENT_PATTERNS` instead of enumerating it. Unlike
-R7a-1 this one MOVES MONEY -- `/savings`, the Recurring surface's equivalents and the retirement
-projection all read it -- so it carries its own review pass.
+- [ ] **R7a-2b -- the monthly equivalent becomes one function over `(interval_n, unit)`.**
+
+`savings_goal_service.amount_to_monthly` becomes one expression over `(interval_n, unit)`, and
+`calendar_service._INFREQUENT_PATTERNS` is DERIVED from the same pair -- "less frequent than
+monthly" is `occurrences_per_year < 12`, which reproduces today's three-member set exactly and
+extends to the cadences R8 authors. It MOVES MONEY -- `/savings`, the Recurring surface's
+equivalents and the retirement projection all read it -- so it carries its own review pass.
 
 **It must land BEFORE R8**, and R7a-1 is what makes that an ordering constraint rather than a
 preference: the Recurring row now derives "how often" from `(interval, unit)` while its monthly
@@ -376,13 +383,20 @@ equivalent still derives it from `pattern_id`. The two cannot disagree over toda
 the first cadence R8 authors -- `(2, MONTH)` -- reads "Every 2 months" in the cell beside a BLANK
 equivalent, because `amount_to_monthly`'s unmodelled-pattern branch answers `None`.
 
-**Three corrections R7a-1 measured in this step's own former specification.** (1) The counts were 7,
-not 8: `Once` left at R2e-3. (2) **`amount_to_monthly` cannot be "fed by `resolve()`"** -- `resolve`
-requires the owner's `PeriodCalendar` and `obligations_aggregator.template_monthly_or_none` has
-none, nor do its callers in `savings_dashboard_service`. `(interval_n, unit)` is a function of the
-pattern ALONE, so this step needs a cadence seam that does not take a schedule; that seam is this
-step's design question. (3) The `REC_*` globals do NOT all die here: R7a-1 deleted the two the macro
-was the only reader of, and `_recurrence_fields.html:57-61,95` reads the other five until R7b
+**The seam this needs, and R7a-2a did not build.** `resolve()` requires the owner's `PayCalendar`
+and `obligations_aggregator.template_monthly_or_none` has none -- so the two-axis reading has to be
+split at its own seam: `pattern -> (interval_n, unit, placement)` needs no schedule, and only the
+ANCHOR does. Publish the first half as a schedule-free `cadence_of(pattern_id, interval_n)` built
+from the SAME `_PATTERN_DERIVATIONS` table `resolve()` reads, so one table serves both.
+
+**The unmodelled-pattern arm goes.** `amount_to_monthly` answers `None` for a pattern the enum does
+not name while `resolve()` RAISES for the same state -- one state, two dispositions, and the
+Recurring surface already 500s on such a rule through `read_rule` while `/savings` silently drops
+the obligation from its baseline. Ruled 2026-08-11: RAISE, one disposition. Zero live rows.
+
+**Two corrections R7a-1 measured in this step's former specification.** (1) The counts were 7, not
+8: `Once` left at R2e-3. (2) The `REC_*` globals do NOT all die here: R7a-1 deleted the two the
+macro was the only reader of, and `_recurrence_fields.html:57-61,95` reads the other five until R7b
 rewrites the form.
 
 - [ ] **R7b -- bounds and the form.**
@@ -539,6 +553,51 @@ One commit, three assertions, no behaviour change. Construct an `OccurrencePlace
 unset unless a marker says the run is a regeneration.
 **Each of the three gets a mutation shown to fire**, which is the standard this arc already holds
 its other controls to -- a control that is not shown to fire is the thing being fixed.
+
+- [ ] **R-F16 -- ONE producer for "how often am I paid"** (finding F-16).
+
+**Starts with a RULING, not a keystroke.** `salary.salary_profiles.pay_periods_per_year` is a
+12/24/26/52 dropdown (`app/templates/salary/form.html:52-57`) and is the DIVISOR the paycheck engine
+turns an annual salary into a paycheck with -- `paycheck_calculator:225`, plus `:898`, `:945`,
+`retirement_projection:230`, `investment_projection:88/113/147`, `retirement_dashboard_service:752`
+and `routes/salary/profiles.py:322`, every one of them `or 26`. `budget.pay_schedule.cadence_days`
+is the rhythm R7a-2a's conversions multiply that paycheck back up by.
+**No door validates one against the other**, and while both read 26 the two errors cancelled
+exactly.
+
+Measured on the developer's `$91,675` salary, true monthly gross `$7,639.58`:
+
+```text
+profile 26 / cadence 14d  (production)          before 7,639.58   after 7,639.58   correct
+profile 52 / cadence  7d  (consistent weekly)   before 3,819.79   after 7,639.58   FIXED by R7a-2a
+profile 12 / cadence 30d  (consistent monthly)  before 16,552.43  after 7,639.58   FIXED by R7a-2a
+profile 26 / cadence  7d  (MISMATCHED)          before 7,639.58   after 15,279.17  now visibly wrong
+profile 26 / cadence 30d  (MISMATCHED)          before 7,639.58   after 3,525.96   now visibly wrong
+```
+
+The remedy is that the engine divides by `PayCadence.periods_per_year` too and the column goes.
+**The ruling owed first: what does SEMI-MONTHLY mean here?** 24 is the 1st and the 15th, which no
+fixed `cadence_days` can express -- `round(365.2425 / 15) = 24` gives the right COUNT and the wrong
+paydays, and the pay-calendar arc's whole model is a fixed-cadence walk (finding F-4 is its sibling:
+`pay_periods` stores NOMINAL paydays). Three options, and the step opens by putting them to the
+developer: derive the count and accept nominal paydays; keep the column but REFUSE a pair that
+disagrees at both write doors; or give the pay calendar a second cadence KIND.
+
+Destructive if the column is dropped, so it carries the `Review:` line and a refusing downgrade.
+**MOVES MONEY** and needs its own review pass.
+
+- [ ] **R-F17 -- the two period-INDEX horizon windows** (finding F-17).
+
+`utils/period_projections.py:16` offers `("1 year", 26)` and `routes/accounts/detail.py`'s
+`_ONE_YEAR_PERIODS = 26` bounds the "Interest, next 12 months" chip. Both count PERIODS and label
+MONTHS, so at a weekly cadence the chip sums six months of interest under a twelve-month heading and
+at a monthly cadence two years. Left by R7a-2a because they are index arithmetic rather than the
+money constant that step replaced.
+
+**Its own ruling first**: `round(365.2425 / cadence_days)` gives a whole count for the chip, but
+`period_projections`' offsets are a module-level tuple of `(label, offset)` pairs shared by several
+surfaces, so making them per-owner means deciding whether the LABEL or the OFFSET is the fixed thing
+-- and what a fractional period offset means when neither divides evenly. Small, and no migration.
 
 - [ ] **R-F7 -- Delete two unreachable branches in `_first_of_month_anchor`** (finding D11).
 

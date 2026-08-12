@@ -42,13 +42,13 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 40 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 42 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**125 steps, 101 open.** The dependency graph holds 103 edges over 62 rows.
+**128 steps, 103 open.** The dependency graph holds 106 edges over 65 rows.
 
 ## The order
 
@@ -72,10 +72,10 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | pay_calendar | C4 | -- | Drop `pay_periods.end_date` and `period_index` with their three constraints, once the ORM readers take their bounds from the calendar. Closes **P1**, **P4**, **P5**, **P8**, **P9**. | #16 | -- | after #15 / pay_calendar:C2 (the container ticks at #10) / pay_calendar:C3 (shipped) |
 | pay_calendar | C7 | -- | Rule and then fix `journal_entries.pay_period_id`, a NOT NULL FK stored beside the `entry_date` it derives from, which is P1's defect on the ledger's header table. Closes **P18**. | #17 | -- | after #16 / pay_calendar:C4 |
 | pay_calendar | C8 | -- | Give the forward forecast cadence its own control, separating it from the payday forms it is currently welded onto. Closes **P30**. | #18 | -- | after #16 / pay_calendar:C4 |
-| recurrence | R7a-2 | -- | Rewrite `savings_goal_service.amount_to_monthly` as four lines over `(interval_n, unit)`, replacing the `PAY_PERIODS_PER_YEAR` constant with a resolved per-user cadence and deriving `_INFREQUENT_PATTERNS`. **MOVES MONEY**. | #19 | -- | NOW |
+| recurrence | R7a-2b | -- | Rewrite `savings_goal_service.amount_to_monthly` as one expression over `(interval_n, unit)` and derive `calendar_service._INFREQUENT_PATTERNS` from the same pair, so a cadence R8 has not authored yet already reads and totals correctly. **MOVES MONEY**. | #19 | -- | NOW / recurrence:R7a-2a (shipped) |
 | recurrence | R7b | -- | Rebuild the recurrence form as interval plus unit plus anchor plus an optional due row, giving `max_occurrences` its first writer and deleting `offset_periods` and the "First paycheck" affordance. Closes **D1**, **D2**. | #20 | -- | NOW |
 | recurrence | R7c | -- | THE CUTOVER: one migration adds the two-axis columns, backfills them, and drops `pattern_id`, `day_of_month`, `month_of_year`, `start_period_id` and `offset_periods`. It must RULE row **D28** first. Closes **D10**, **D12**, **D21**, **D24**. | #21 | -- | after #20 / recurrence:R7b |
-| recurrence | R8 | -- | Add the four ruled add-ons: the WEEK unit, `recurrence_weekday_anchors`, the business-day shift and the count-bounded end. | #22 | -- | after #21 / recurrence:R7a-2 / recurrence:R7c |
+| recurrence | R8 | -- | Add the four ruled add-ons: the WEEK unit, `recurrence_weekday_anchors`, the business-day shift and the count-bounded end. | #22 | -- | after #21 / recurrence:R7a-2b / recurrence:R7c |
 | recurrence | R9 | -- | Drop the `ref.recurrence_patterns` table and `pay_period_admin._repoint_recurrence_rules`, after re-checking the two premises ledger row **D6** names. | #23 | -- | after #21 / recurrence:R7c |
 | pay_calendar | C6 | -- | Let a payday be inserted mid-schedule, refusing only where `classify_period_lock` says the split period is locked. Starts with the two rulings section 3 names. Closes **P10**. | #24 | -- | after #21 / pay_calendar:C4 / recurrence:R7c |
 | recurrence | R5 | -- | Split a generated row's dates into three -- `occurs_on` (the cadence), `pay_period_id` (the funding) and `due_on` (the installment) -- and delete `compute_due_date`. A value-splitting migration; own PR. | #25 | -- | after #3 / balance:X-f4 (R5 edits `cash_ledger/_events.py`, which is inside that step's deletion set) |
@@ -142,6 +142,8 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-at | -- | Surface which tax year a figure was actually computed against, and give a new year's bracket set a write door, so the resolver's substitution stops being invisible and the settings screen can finish the year it starts. Closes **N-235**, **N-236**. | #86 | -- | NOW |
 | balance | X-av | -- | Give the base annual salary an effective date so the app can tell a raise from a correction, which `apply_raises` already does for every raise but cannot do for the figure they are applied to. Closes **N-237**. | #87 | -- | NOW |
 | balance | X-aw | -- | Count a calendar year's paydays from the stored cadence rather than from whichever periods happen to have been generated, so a period's gross stops moving by a cent when the schedule extends. Closes **N-239**. | #88 | -- | NOW |
+| recurrence | R-F16 | -- | Give the paycheck engine's divisor and the monthly-equivalent conversions ONE producer, deleting `salary_profiles.pay_periods_per_year` -- which must first RULE what semi-monthly pay means when no `cadence_days` can express the 1st and the 15th. **MOVES MONEY**. Closes **F-16**. | #89 | -- | NOW / recurrence:R7a-2a (shipped) |
+| recurrence | R-F17 | -- | Derive the two period-INDEX horizon windows from the owner's cadence instead of a hardcoded 26, deciding first what a fractional period offset means. Closes **F-17**. | #90 | -- | NOW / recurrence:R7a-2a (shipped) |
 
 ## Containers
 
@@ -183,6 +185,7 @@ The fuller as-built entries are in each arc's archive.
 | recurrence | R1-R3 | -- | Oracle, vocabulary, subtypes, write door, `Once` retired, forward engine. Archived to `historical/recurrence_as_built_2026-08-05.md`. | SHIPPED | `4b5c577b` | -- |
 | recurrence | R4a | -- | The forward cutover, three commits, archived to `historical/recurrence_as_built_2026-08-08.md`. Closed **D3**, **D5**, **D22**, **D25**, **D7**. | SHIPPED | `1836a928` | -- |
 | recurrence | R7a-1 | -- | The Recurrence cell became one function over `(interval, unit)`. Closed **D17**. | SHIPPED | `6fed14af` | -- |
+| recurrence | R7a-2a | -- | The paycheck count is DERIVED per owner (`PayCadence`), not a `Decimal("26")` constant nine files read; every conversion takes it as an input. Opened **F-16**, **F-17**. | SHIPPED | `003e3657` | -- |
 | recurrence | R-F1 | -- | The lagging `ref` identity sequences are back in step. Closed **F-1**. | SHIPPED | `44b25ad3` | -- |
 | recurrence | R-F8 | -- | The deploy's safety net stops lying: back up unconditionally, pre-flight the rollback, and refuse the one that cannot work. Closed **F-8**, **F-14**. | SHIPPED | `2e63e4f9` | -- |
 | pay_calendar | C1 | -- | The derivation exists and is proven equal to what is stored. Opened **P15**, **P16**. | SHIPPED | `f9d148fe` | -- |
