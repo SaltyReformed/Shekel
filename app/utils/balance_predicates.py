@@ -156,6 +156,68 @@ def settled_status_ids() -> frozenset[int]:
     })
 
 
+def enters_settled_band(row, new_status_id: int) -> bool:
+    """Return whether moving *row* to *new_status_id* SETTLES it.
+
+    **The predicate that tells a status ASSIGNMENT from a SETTLE.**  Settling
+    is entering the band from outside it: Projected -> Paid or Projected ->
+    Received, the only two the state machine admits inward (Credit and
+    Cancelled reach the band through Projected, never directly).
+
+    **Staying inside the band is NOT a settle**, and that half is load-bearing.
+    ``Paid -> Settled`` is an ARCHIVE of a row whose money already moved and
+    whose amount is already a fact, and ``Paid -> Paid`` is an idempotent
+    re-submit; routing either to a settle verb would ask an immutable row to
+    re-price itself, which an envelope's settle refuses by precondition and a
+    manual settle would answer by re-reading a projection the row left months
+    ago.
+
+    **It lives HERE rather than on either service, and the move is plan step
+    X-f2-c3's.**  It was ``transaction_service``'s, published so
+    ``apply_requested_status`` could dispatch on it; that leaf gave
+    ``transfer_service.update_transfer`` the same dispatch -- a transfer's
+    settle rule became structural there -- and a TRANSFER asking the
+    transaction service "is this a settle" reads as a dependency that is not
+    real.  The question is over ``status_id`` and :func:`settled_status_ids`
+    and nothing else, which is this module's subject, and it is polymorphic in
+    exactly the way :func:`is_projected_clause` already is: ``Transaction`` and
+    ``Transfer`` both carry a ``status_id`` FK against ``ref.statuses.id``.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer`, read for its CURRENT
+            ``status_id``.
+        new_status_id: The status a door is asking for.
+
+    Returns:
+        True when the move crosses INTO the settled band from outside it.
+    """
+    settled = settled_status_ids()
+    return row.status_id not in settled and new_status_id in settled
+
+
+def leaves_settled_band(row, new_status_id: int) -> bool:
+    """Return whether moving *row* to *new_status_id* UNSETTLES it.
+
+    :func:`enters_settled_band`'s mirror, and it exists for the same reason:
+    the two directions are different acts and a door must not decide which is
+    which.  The only edges out of the band are ``Paid -> Projected`` and
+    ``Received -> Projected`` -- the documented unlock path, where the user is
+    saying the money did not move after all.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer`, read for its CURRENT
+            ``status_id``.
+        new_status_id: The status a door is asking for.
+
+    Returns:
+        True when the move crosses OUT of the settled band.
+    """
+    settled = settled_status_ids()
+    return row.status_id in settled and new_status_id not in settled
+
+
 def settled_day(transaction_id: int, settled_on: date | None) -> date:
     """Return the civil day a SETTLED transaction's money moved, or refuse.
 

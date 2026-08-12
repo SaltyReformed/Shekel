@@ -25,10 +25,17 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
     account_service,
+    cash_ledger,
     pay_period_service,
     pay_period_write,
     reconcile_service,
     status_seam,
+    transfer_service,
+)
+from app.services.reconcile_service import _transactions
+from app.utils.log_events import (
+    EVT_TRANSACTIONS_RECONCILED,
+    EVT_TRANSFERS_RECONCILED,
 )
 from tests._test_helpers import create_transfer
 
@@ -885,10 +892,24 @@ class TestTheTransactionArm:
     @staticmethod
     def _settle(seed_user, ids, corrections=None,
                 observed_on=_OBSERVED_ON):
-        """Run the arm's writer against the seed user's own account."""
-        return reconcile_service.record_settled_transactions(
-            seed_user["user"].id, seed_user["account"].id,
-            set(ids), corrections or {}, observed_on,
+        """Run the WRITE UNION against the seed user's own account.
+
+        It was ``record_settled_transactions`` until plan step X-f2-c3, which
+        made the two source-row arms one writer parameterised by an ``Arm``
+        (finding **N-225**) -- so there is no per-arm entry point left to call
+        and the union is the door.  Every assertion below is unchanged: the
+        ids it settles are still exactly the ones the transaction arm's scope
+        admits, because the transfer arm's scope is that scope's COMPLEMENT.
+        """
+        return reconcile_service.record_reconciliation(
+            reconcile_service.ReconcileSubmission(
+                owner_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                entry_ids=set(),
+                transaction_ids=set(ids),
+                corrections=corrections or {},
+                observed_on=observed_on,
+            ),
         )
 
     def test_an_overdue_row_is_offered_and_settles_on_the_statement_day(
@@ -964,21 +985,26 @@ class TestTheTransactionArm:
             assert earlier.id in offered
             assert offered[earlier.id].attributed_on == date(2026, 1, 8)
 
-    def test_a_transfer_shadow_is_neither_offered_nor_settled(
+    def test_a_transfer_shadow_belongs_to_the_OTHER_arm(
         self, app, db, seed_user, seed_periods, seed_entry_template,
     ):
-        """Transfer invariant 3: a shadow settles through the transfer service.
+        """A shadow is offered, and it is tagged as the TRANSFER arm's.
 
-        Plan step X-f2-c3's arm, and the verb REFUSES one -- so admitting it
-        here would turn a design boundary into a 400 mid-reconciliation.  A
-        forged id changes nothing rather than raising.
+        **This case inverted at plan step X-f2-c3 and the inversion is the
+        step.**  It read "neither offered nor settled": the panel could not
+        settle a transfer at all, because ``settle_transaction`` REFUSES a
+        shadow (transfer invariant 3 -- the parent and both legs move
+        together), so this arm's scope excluded one and nothing else offered
+        it.  The transfer arm settles through ``update_transfer`` instead, so
+        the row IS offered now -- and what is graded here is that it belongs to
+        that arm and not to this one, which is the clause the two arms
+        partition the table on.
 
         **Built through the real transfer service**, not by writing a
         ``transfer_id`` onto an ordinary row: the expense shadow that lands on
         this account is a genuine Projected row in the same period, so it is
-        inside every other clause of the scope and ONLY the shadow clause can
-        exclude it.  A hand-set id would also be filtered by an FK that does
-        not exist in production data.
+        inside every other clause of the scope and ONLY the membership clause
+        can tell the two arms' rows apart.
         """
         with app.app_context():
             other = account_service.create_account(
@@ -1005,11 +1031,16 @@ class TestTheTransactionArm:
                 .one()
             )
 
-            assert shadow.id not in self._offered(seed_user)
-            assert self._settle(seed_user, [shadow.id]) == 0
-
-            db.session.expire_all()
-            assert db.session.get(Transaction, shadow.id).settled_on is None
+            offer = self._offered(seed_user)[shadow.id]
+            assert offer.kind is reconcile_service.OfferKind.TRANSFER
+            assert offer.amount == Decimal("75.00")
+            # The transaction arm's own scope still refuses it: asked directly,
+            # with the transfer arm out of the picture.  Without this the case
+            # above would pass for a panel that offered the shadow through the
+            # WRONG arm and settled one leg.
+            assert shadow.id not in _transactions.outstanding_transactions(
+                seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+            )
 
     def test_a_settled_row_is_neither_offered_nor_re_settled(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1046,8 +1077,15 @@ class TestTheTransactionArm:
             assert reconcile_service.outstanding_set(
                 other_id, seed_user["account"].id, _OBSERVED_ON,
             ).groups == ()
-            assert reconcile_service.record_settled_transactions(
-                other_id, seed_user["account"].id, {txn.id}, {}, _OBSERVED_ON,
+            assert reconcile_service.record_reconciliation(
+                reconcile_service.ReconcileSubmission(
+                    owner_id=other_id,
+                    account_id=seed_user["account"].id,
+                    entry_ids=set(),
+                    transaction_ids={txn.id},
+                    corrections={},
+                    observed_on=_OBSERVED_ON,
+                ),
             ) == 0
 
             db.session.expire_all()
@@ -1076,8 +1114,15 @@ class TestTheTransactionArm:
             assert reconcile_service.outstanding_set(
                 seed_user["user"].id, other.id, _OBSERVED_ON,
             ).groups == ()
-            assert reconcile_service.record_settled_transactions(
-                seed_user["user"].id, other.id, {txn.id}, {}, _OBSERVED_ON,
+            assert reconcile_service.record_reconciliation(
+                reconcile_service.ReconcileSubmission(
+                    owner_id=seed_user["user"].id,
+                    account_id=other.id,
+                    entry_ids=set(),
+                    transaction_ids={txn.id},
+                    corrections={},
+                    observed_on=_OBSERVED_ON,
+                ),
             ) == 0
 
             db.session.expire_all()
@@ -1190,6 +1235,322 @@ class TestTheTransactionArm:
         """Ticking nothing settles nothing, and issues no query."""
         with app.app_context():
             assert self._settle(seed_user, []) == 0
+
+
+class TestTheTransferArm:
+    """Plan step **X-f2-c3**: the panel offers a TRANSFER's shadow too.
+
+    Money moving between two of the owner's own accounts still leaves one of
+    them, so a checking statement shows it exactly as it shows a bill.
+    Replayed over production's 57 Checking assertion days, 8 would have carried
+    a transfer offer, `$5,442.89` -- six `$500.00` savings sweeps, one
+    `$1,910.95` Mortgage payment and one `$531.94` Van Loan payment.
+
+    **What makes it a separate arm is the SETTLE.**  A transfer is three rows
+    and ``CLAUDE.md`` invariants 3 and 4 say they move together, so
+    ``settle_transaction`` refuses a shadow and ``update_transfer`` is the
+    verb.  These grade that a tick moves all THREE and stamps the statement's
+    day on both legs -- which is the whole reason the panel prints a note
+    saying a second account moves.
+    """
+
+    @staticmethod
+    def _savings(seed_user, name="Savings"):
+        """Create a second cash account for the transfer's other leg."""
+        account = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                name=name,
+                account_type_id=seed_user["account"].account_type_id,
+                anchor_balance=Decimal("100.00"),
+            ),
+        )
+        db.session.flush()
+        return account
+
+    @classmethod
+    def _transfer_out(cls, seed_user, seed_periods, amount="75.00",
+                      due_date=None):
+        """Return ``(transfer, expense shadow on the seed account)``."""
+        transfer = create_transfer(
+            seed_user, db.session, seed_user["account"],
+            cls._savings(seed_user), seed_periods[0],
+            amount=Decimal(amount), due_date=due_date,
+        )
+        db.session.commit()
+        shadow = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id == transfer.id,
+                Transaction.account_id == seed_user["account"].id,
+            )
+            .one()
+        )
+        return transfer, shadow
+
+    _offered = staticmethod(TestTheTransactionArm._offered)
+    _settle = staticmethod(TestTheTransactionArm._settle)
+
+    def test_a_tick_settles_the_parent_and_BOTH_legs_on_the_statement_day(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The arm's whole point: three rows move, dated by the statement.
+
+        The leg on the OTHER account settles too -- which is what the panel's
+        section note tells the user -- and both carry the asserted day rather
+        than the seam's default of the user's today.  A settle that moved one
+        leg would break transfer invariants 3 and 4 silently, because
+        ``sync_transaction_postings`` returns nothing for a shadow and the
+        ledger would stay flat while the grid showed one side settled.
+        """
+        with app.app_context():
+            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+
+            assert self._settle(seed_user, [shadow.id]) == 1
+            db.session.commit()
+
+            db.session.expire_all()
+            legs = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=transfer.id)
+                .all()
+            )
+            assert len(legs) == 2
+            settled = ref_cache.status_id(StatusEnum.DONE)
+            assert {leg.status_id for leg in legs} == {settled}
+            assert {leg.settled_on for leg in legs} == {_OBSERVED_ON}
+            assert db.session.get(
+                type(transfer), transfer.id,
+            ).status_id == settled
+
+    def test_it_is_offered_under_its_OWN_section_with_the_both_sides_note(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """TRANSFER sorts last and carries the sentence about the other account.
+
+        The section is the ACT and the tally is the LEG (below), so this grades
+        the half that decides what the screen says.  A transfer landing in the
+        Bills section would read as an observation about one account, which is
+        exactly what it is not.
+        """
+        with app.app_context():
+            _transfer, shadow = self._transfer_out(seed_user, seed_periods)
+
+            groups = reconcile_service.outstanding_set(
+                seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+            ).groups
+            block = next(
+                group for group in groups
+                if group.transaction_id == shadow.id
+            )
+            assert block is groups[-1]
+            assert block.section.label == "Transfers"
+            assert "both sides" in block.section.note
+            assert block.settle_closes_an_envelope is False
+
+    def test_the_expense_leg_counts_as_a_PAYMENT_and_the_income_leg_a_DEPOSIT(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """One act, one section -- but the statement shows a direction.
+
+        Ruling **R-FD** counts deposits apart from payments because they do not
+        sum to anything a reader wants, and a transfer is no exception: money
+        leaving Checking is a payment on Checking's statement, and the same
+        transfer's other leg is a deposit on the savings account's.  Both are
+        graded, from the two panels they appear on.
+        """
+        with app.app_context():
+            savings = self._savings(seed_user)
+            transfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], amount=Decimal("75.00"),
+            )
+            db.session.commit()
+
+            outgoing = reconcile_service.outstanding_set(
+                seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+            )
+            assert outgoing.payment_total >= Decimal("75.00")
+            assert outgoing.deposit_count == 0
+
+            incoming = reconcile_service.outstanding_set(
+                seed_user["user"].id, savings.id, _OBSERVED_ON,
+            )
+            assert incoming.deposit_count == 1
+            assert incoming.deposit_total == Decimal("75.00")
+            assert incoming.payment_count == 0
+            assert transfer.id  # the same transfer, offered on both panels
+
+    def test_a_row_that_is_not_yet_overdue_is_neither_offered_nor_settled(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The shared bound applies to this arm too, from BOTH doors.
+
+        The transfer's due date is the day after the statement, so nothing the
+        bank showed can have included it.  Graded from the write side as well:
+        a clause held on the read side only would let a forged id settle a
+        transfer the panel never offered -- and settling one moves a SECOND
+        account.
+        """
+        with app.app_context():
+            _transfer, shadow = self._transfer_out(
+                seed_user, seed_periods, due_date=date(2026, 1, 11),
+            )
+
+            assert shadow.id not in self._offered(seed_user)
+            assert self._settle(seed_user, [shadow.id]) == 0
+
+            db.session.expire_all()
+            assert db.session.get(Transaction, shadow.id).settled_on is None
+
+    def test_another_accounts_transfer_is_neither_offered_nor_settled(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """A balance assertion declares ONE account's balance.
+
+        The transfer runs between two accounts that are neither of them the one
+        being reconciled, so its shadows are not on this statement.  Settling
+        across accounts would record money against a statement that never
+        showed it -- and here it would move two accounts at once.
+        """
+        with app.app_context():
+            source = self._savings(seed_user, name="Second Checking")
+            target = self._savings(seed_user, name="Third Checking")
+            transfer = create_transfer(
+                seed_user, db.session, source, target, seed_periods[0],
+                amount=Decimal("75.00"),
+            )
+            db.session.commit()
+
+            shadow = (
+                db.session.query(Transaction)
+                .filter(
+                    Transaction.transfer_id == transfer.id,
+                    Transaction.account_id == source.id,
+                )
+                .one()
+            )
+
+            assert shadow.id not in self._offered(seed_user)
+            assert self._settle(seed_user, [shadow.id]) == 0
+
+            db.session.expire_all()
+            assert db.session.get(Transaction, shadow.id).settled_on is None
+
+    def test_a_soft_deleted_transfer_is_neither_offered_nor_settled(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """A deleted transfer is not money this account owes.
+
+        Graded because the WRITER acts on the PARENT rather than on the shadow
+        it was handed: ``update_transfer`` treats a soft-deleted transfer as
+        absent and raises ``NotFoundError``, which this route has no handler
+        for -- so a scope that admitted one would be a 500 on a money door
+        rather than a silent skip.
+        """
+        with app.app_context():
+            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+            transfer_service.delete_transfer(
+                transfer.id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+
+            assert shadow.id not in self._offered(seed_user)
+            assert self._settle(seed_user, [shadow.id]) == 0
+
+    def test_a_settled_transfer_is_neither_offered_nor_re_settled(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """Already recorded is not outstanding, and a replay must not re-date.
+
+        ``done -> done`` is a legal identity transition, so nothing downstream
+        would refuse a second submission -- the SCOPE is what stops it, and a
+        re-settle would rewrite ``settled_on`` on both legs to a later
+        statement's day.
+        """
+        with app.app_context():
+            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+            assert self._settle(seed_user, [shadow.id]) == 1
+            db.session.commit()
+
+            assert shadow.id not in self._offered(seed_user)
+            assert self._settle(
+                seed_user, [shadow.id], observed_on=date(2026, 1, 14),
+            ) == 0
+
+            db.session.expire_all()
+            assert {
+                leg.settled_on
+                for leg in db.session.query(Transaction)
+                .filter_by(transfer_id=transfer.id).all()
+            } == {_OBSERVED_ON}
+
+    def test_a_correction_books_on_both_legs_and_counts_as_one(
+        self, app, db, seed_user, seed_periods, seed_entry_template, caplog,
+    ):
+        """A transfer's tick is correctable, and the figure lands on the pair.
+
+        Ruling **R-FF**: correctable exactly when the settle takes its MANUAL
+        branch, and a transfer has no other -- a shadow is never
+        purchase-tracked (production: 342 shadows, 0 entries).  The corrected
+        figure must reach BOTH legs or the two accounts disagree about how much
+        money moved between them.
+        """
+        with app.app_context():
+            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+            assert self._offered(seed_user)[shadow.id].is_correctable is True
+
+            with caplog.at_level("INFO"):
+                assert self._settle(
+                    seed_user, [shadow.id], {shadow.id: Decimal("74.11")},
+                ) == 1
+            db.session.commit()
+
+            db.session.expire_all()
+            assert {
+                leg.actual_amount
+                for leg in db.session.query(Transaction)
+                .filter_by(transfer_id=transfer.id).all()
+            } == {Decimal("74.11")}
+
+            events = [
+                record for record in caplog.records
+                if getattr(record, "event", None) == EVT_TRANSFERS_RECONCILED
+            ]
+            assert len(events) == 1
+            assert events[0].corrected_count == 1
+
+    def test_an_ECHOED_prefill_leaves_both_legs_NULL_and_counts_ZERO(
+        self, app, db, seed_user, seed_periods, seed_entry_template, caplog,
+    ):
+        """An untouched box is not a correction, on this arm either.
+
+        The panel prefills every correctable row, so a five-row submit posts
+        five figures.  Writing an echo would populate a column that is NULL on
+        all 17 settled transfer shadows in production -- the only signal that
+        says a human read one off a statement.
+        """
+        with app.app_context():
+            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+
+            with caplog.at_level("INFO"):
+                assert self._settle(
+                    seed_user, [shadow.id], {shadow.id: Decimal("75.00")},
+                ) == 1
+            db.session.commit()
+
+            db.session.expire_all()
+            assert {
+                leg.actual_amount
+                for leg in db.session.query(Transaction)
+                .filter_by(transfer_id=transfer.id).all()
+            } == {None}
+
+            events = [
+                record for record in caplog.records
+                if getattr(record, "event", None) == EVT_TRANSFERS_RECONCILED
+            ]
+            assert events[0].corrected_count == 0
 
 
 class TestWhatATickBooks:
@@ -1390,6 +1751,252 @@ class TestWhatATickBooks:
             }
 
 
+class TestTheCashFigureBesideTheBookedOne:
+    """Finding **N-226**: what a tick BOOKS is not always what a statement shows.
+
+    An envelope settles at ``sum(entries)`` over EVERY entry it holds, and a
+    card purchase is one of those -- but a card purchase never touches
+    checking, which is exactly why the purchase arm refuses to OFFER one.  So a
+    `$40` debit plus a `$60` card purchase is offered at `$100.00` on a screen
+    captioned "tick everything your statement shows", against a statement
+    showing `$40`.
+
+    **The LEDGER was right either way** -- ``settled_cash_leg`` subtracts the
+    credit sum -- so the fix prints both figures rather than changing what a
+    tick books: ``actual_amount`` legitimately IS total spend, and moving it
+    would make the panel disagree with the grid and the analytics.
+
+    Production carries 18 card entries in history and ZERO on a Projected
+    envelope today, so this is latent rather than live.
+    """
+
+    _bill = staticmethod(TestTheTransactionArm._bill)
+    _offered = staticmethod(TestTheTransactionArm._offered)
+
+    def test_an_envelope_holding_a_CARD_purchase_publishes_both_figures(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """`$40` debit + `$60` card: booked `$100.00`, statement `$40.00`."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            _make_entry(
+                txn, seed_user["user"], amount="60.00",
+                description="Amazon", is_credit=True,
+            )
+            db.session.commit()
+
+            offer = self._offered(seed_user)[txn.id]
+            assert offer.amount == Decimal("100.00")
+            assert offer.cash_amount == Decimal("40.00")
+
+    def test_an_envelope_of_DEBITS_publishes_no_second_figure(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The negative control, and it is what stops the caption being noise.
+
+        Nothing on the card means the booked figure IS what the statement
+        shows, so there is no second number to print.  Without this the case
+        above passes for a panel that captions every envelope.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            db.session.commit()
+
+            assert self._offered(seed_user)[txn.id].cash_amount is None
+
+    def test_a_bill_and_a_transfer_publish_no_second_figure(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """A row that carries no entries has no card half to disagree with.
+
+        Graded across BOTH source-row arms because the field is on the shared
+        offer type: a bill can hold no entries, and a transfer shadow
+        structurally cannot (production: 342 shadows, 0 entries).
+        """
+        with app.app_context():
+            bill = self._bill(seed_user, seed_periods[0], amount="180.00")
+            savings = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    name="Savings",
+                    account_type_id=seed_user["account"].account_type_id,
+                    anchor_balance=Decimal("100.00"),
+                ),
+            )
+            db.session.flush()
+            transfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], amount=Decimal("75.00"),
+            )
+            db.session.commit()
+
+            shadow = (
+                db.session.query(Transaction)
+                .filter(
+                    Transaction.transfer_id == transfer.id,
+                    Transaction.account_id == seed_user["account"].id,
+                )
+                .one()
+            )
+            offered = self._offered(seed_user)
+            assert offered[bill.id].cash_amount is None
+            assert offered[shadow.id].cash_amount is None
+
+    def test_the_cash_figure_matches_what_the_LEDGER_will_post(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The panel's second figure IS the posted one, not a lookalike.
+
+        Both come from ``cash_ledger.credit_entry_sum``, and this grades that
+        by settling the row and comparing against ``settled_cash_leg`` -- the
+        expression the ledger writer and the cash walk both reduce through.
+        Two numbers that agree by construction rather than by coincidence is
+        the whole reason the term was published instead of re-summed.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            _make_entry(
+                txn, seed_user["user"], amount="60.00",
+                description="Amazon", is_credit=True,
+            )
+            db.session.commit()
+
+            offered_cash = self._offered(seed_user)[txn.id].cash_amount
+            assert reconcile_service.record_reconciliation(
+                reconcile_service.ReconcileSubmission(
+                    owner_id=seed_user["user"].id,
+                    account_id=seed_user["account"].id,
+                    entry_ids=set(),
+                    transaction_ids={txn.id},
+                    corrections={},
+                    observed_on=_OBSERVED_ON,
+                ),
+            ) == 1
+            db.session.commit()
+
+            db.session.expire_all()
+            settled = db.session.get(Transaction, txn.id)
+            assert cash_ledger.settled_cash_leg(settled) == -offered_cash
+
+
+class TestTheCorrectionCountIsWhatAHumanTyped:
+    """Finding **N-231**: the count says how many figures a HUMAN supplied.
+
+    ``transactions_reconciled`` describes its rows as "some carrying a
+    corrected amount", and ruling **R-FB**'s production measurement ("11 of 93
+    settled bills carry a hand-typed correction") is made of this same signal.
+    It was read off the COLUMN -- rows whose ``actual_amount`` changed -- and
+    an envelope's close ALWAYS writes that column, so every envelope tick
+    incremented it.  It now asks the verb's own published predicate
+    (``transaction_service.is_correction``) before the settle.
+
+    Four shapes, and the first two are the ones the column reading got wrong.
+    """
+
+    _bill = staticmethod(TestTheTransactionArm._bill)
+    _settle = staticmethod(TestTheTransactionArm._settle)
+
+    @staticmethod
+    def _corrected_count(caplog):
+        """Return ``corrected_count`` off the one reconcile event emitted."""
+        events = [
+            record for record in caplog.records
+            if getattr(record, "event", None) == EVT_TRANSACTIONS_RECONCILED
+        ]
+        assert len(events) == 1, "expected exactly one reconcile event"
+        return events[0].corrected_count
+
+    def test_an_envelope_close_with_no_correction_counts_ZERO(
+        self, app, db, seed_user, seed_periods, seed_entry_template, caplog,
+    ):
+        """The defect, reproduced from the failing direction.
+
+        An envelope carrying `$40.00` of purchases settles at `$40.00` and its
+        ``actual_amount`` moves from NULL to `$40.00` -- a MACHINE write, in the
+        same statement as the status.  Nobody typed anything, so the count is
+        zero.  Measured before the fix on a probe of this exact shape: it
+        logged ``corrected_count: 1``.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            db.session.commit()
+
+            with caplog.at_level("INFO"):
+                assert self._settle(seed_user, [txn.id]) == 1
+
+            assert self._corrected_count(caplog) == 0
+            db.session.expire_all()
+            assert db.session.get(
+                Transaction, txn.id,
+            ).actual_amount == Decimal("40.00")
+
+    def test_a_forged_box_on_a_DERIVED_row_counts_ZERO(
+        self, app, db, seed_user, seed_periods, seed_entry_template, caplog,
+    ):
+        """A figure the verb IGNORES was not a correction.
+
+        The panel renders no box for an entries-derived row, so the only way to
+        submit one is by hand -- and ``settle_transaction`` drops it.  A count
+        that read the submission rather than the outcome would report a
+        correction the ledger never made.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            db.session.commit()
+
+            with caplog.at_level("INFO"):
+                assert self._settle(
+                    seed_user, [txn.id], {txn.id: Decimal("999.99")},
+                ) == 1
+
+            assert self._corrected_count(caplog) == 0
+
+    def test_a_bill_ticked_at_its_prefill_counts_ZERO(
+        self, app, db, seed_user, seed_periods, seed_entry_template, caplog,
+    ):
+        """The echo: an untouched box is not a correction.
+
+        The panel PREFILLS the box, so every correctable row on the form posts
+        a figure whether the user touched it or not.  Counting submissions
+        would measure how many boxes the panel drew.
+        """
+        with app.app_context():
+            bill = self._bill(seed_user, seed_periods[0], amount="180.00")
+            db.session.commit()
+
+            with caplog.at_level("INFO"):
+                assert self._settle(
+                    seed_user, [bill.id], {bill.id: Decimal("180.00")},
+                ) == 1
+
+            assert self._corrected_count(caplog) == 0
+
+    def test_a_bill_ticked_at_a_DIFFERENT_figure_counts_ONE(
+        self, app, db, seed_user, seed_periods, seed_entry_template, caplog,
+    ):
+        """The one shape that IS a correction, so the count is not inert.
+
+        Production's Electricity, to the cent: estimated `$300.00`, statement
+        `$245.32`.  Without this case the three zeros above are satisfied by a
+        count that is always zero.
+        """
+        with app.app_context():
+            bill = self._bill(seed_user, seed_periods[0], amount="300.00")
+            db.session.commit()
+
+            with caplog.at_level("INFO"):
+                assert self._settle(
+                    seed_user, [bill.id], {bill.id: Decimal("245.32")},
+                ) == 1
+
+            assert self._corrected_count(caplog) == 1
+
+
 class TestTheSectionsAndTheOrder:
     """Ruling **R-FC**'s three presentational rules, graded.
 
@@ -1499,7 +2106,8 @@ class TestTheSectionsAndTheOrder:
             db.session.commit()
 
             labels = [
-                group.section_label for group in self._resolved(seed_user).groups
+                group.section.label if group.section else None
+                for group in self._resolved(seed_user).groups
             ]
             assert labels == ["Envelopes", "Bills", None, "Deposits"]
 
@@ -1537,3 +2145,11 @@ class TestTheSectionsAndTheOrder:
         kinds = list(reconcile_service.OfferKind)
         assert sorted(kind.rank for kind in kinds) == list(range(len(kinds)))
         assert all(kind.section_label for kind in kinds)
+        # And exactly one carries a NOTE.  Asserted as a set rather than as a
+        # count so a note appearing on the wrong section fails here rather than
+        # on the screen: the sentence is about what a TICK does, and printing
+        # "settles both sides" over the Bills section would be a false promise
+        # about somebody's money.
+        assert {
+            kind for kind in kinds if kind.section_note
+        } == {reconcile_service.OfferKind.TRANSFER}

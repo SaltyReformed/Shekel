@@ -13,13 +13,20 @@ finding **N-152** recorded that the next change to it would hit the gate again.
 This is that change.  The split is by responsibility rather than by line count:
 these two functions are the ONLY place the three rows' shared status and shared
 settle day are resolved, and Transfer Invariant 3 (shadow statuses and settle
-days always equal the parent's) is a property of this module.
+days always equal the parent's) is a property of this module.  Plan step
+X-f2-c3 then made ``transfer_service`` a PACKAGE (**N-152** / **N-156**) and
+this module a leaf of it; the responsibility is unchanged and the file moved
+from ``app/services/_transfer_status.py``.
 
 **Neither function writes ``status_id`` and neither constructs a status-bearing
 model**, so this module stays clear of the W9907 status fence: both go through
 :func:`app.services.status_seam.apply_status_change`, which is the sanctioned
-door.  The fence's ``transfer_service`` allowlist entry is held open by the two
-CONSTRUCTORS that stay behind there (``_build_shadow`` and ``create_transfer``),
+door.  **The package move is where that sentence could have quietly stopped
+being true**: the fence's allowlist read ``app.services.transfer_service`` and
+:func:`_module_in_allowlist` matches a package PREFIX, so this leaf would have
+become exempt without anybody deciding it should be.  The entry now names
+:mod:`app.services.transfer_service._create` -- the one leaf holding the two
+CONSTRUCTORS that hold it open (``_build_shadow`` and ``create_transfer``),
 which plan step X-aj2 replaces.
 
 Flask-isolated like the parent service: plain data and ORM rows in, mutations
@@ -31,18 +38,18 @@ from datetime import date
 
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
-from app.models.transfer import Transfer
 from app.services import status_seam
 from app.services.state_machine import verify_transition
+from app.services.transfer_service._validation import TransferRows
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import display_today
 
 
 def apply_status_to_all_three(
-    xfer: Transfer,
-    expense_shadow: Transaction,
-    income_shadow: Transaction,
+    rows: TransferRows,
     new_status_id: int,
+    *,
+    settled_on: date | None = None,
 ) -> None:
     """Move a transfer and both shadows to one status, through the ONE seam.
 
@@ -68,17 +75,27 @@ def apply_status_to_all_three(
     exceptions, reverse control firing).
 
     Args:
-        xfer: The parent :class:`Transfer` being updated.
-        expense_shadow: The expense-side shadow :class:`Transaction`.
-        income_shadow: The income-side shadow :class:`Transaction`.
+        rows: The transfer and both shadows being moved.
         new_status_id: The ``ref.statuses.id`` all three rows move to.
+        settled_on: The civil day the money moved, when the CALLER knows it --
+            the reconcile tick's statement date, threaded from
+            :func:`app.services.transfer_service._settle.settle`.  ``None``
+            derives the day, which is what every door that does not know one
+            means.  **Taken here rather than corrected afterwards** and that is
+            a defect fixed rather than a convenience: a settle carrying a
+            statement day used to stamp the derived day first and then rewrite
+            it through :func:`apply_settle_day_correction`, so every reconcile
+            tick wrote the column twice, the first value was a day the money
+            did not move, and the second went through the door ruling **R-ED**
+            built for a user CORRECTING one.  Ignored for a non-settled status,
+            where the seam clears the day.
 
     Raises:
         ValidationError: If the transition is illegal for the transfer or for
-            either shadow (propagated from the state machine).
+            either shadow (propagated from the state machine), or if
+            *settled_on* is refused by the seam (a future day, ruling R-EJ).
     """
-    rows = (xfer, expense_shadow, income_shadow)
-    for row in rows:
+    for row in (rows.transfer, *rows.shadows):
         verify_transition(row, new_status_id)
 
     # ONE settle DAY for the PAIR (Transfer Invariant 3), resolved before
@@ -95,20 +112,26 @@ def apply_status_to_all_three(
     # and that day is the ``entry_date`` the postings are filed under.
     pair_day = None
     if new_status_id in settled_status_ids():
+        # The CALLER's day wins over both, because it is the only one of the
+        # three that is EVIDENCE: a statement said the money moved that day.
+        # The two below are repairs -- a sibling's record, then the user's
+        # today -- and a repair may not overrule a fact.
+        pair_day = settled_on
         # ``is not None`` rather than truthiness: the coding standard forbids
         # relying on falsiness for a business value, and while no ``date`` is
         # falsy today, the ``or`` chain read as if one could be.
-        pair_day = expense_shadow.settled_on
         if pair_day is None:
-            pair_day = income_shadow.settled_on
+            pair_day = rows.expense.settled_on
+        if pair_day is None:
+            pair_day = rows.income.settled_on
         if pair_day is None:
             pair_day = display_today()
-    for shadow in (expense_shadow, income_shadow):
+    for shadow in rows.shadows:
         status_seam.apply_status_change(
             shadow, new_status_id, settled_on=pair_day,
         )
     # The parent carries no ``settled_on`` column, so it takes no day.
-    status_seam.apply_status_change(xfer, new_status_id)
+    status_seam.apply_status_change(rows.transfer, new_status_id)
 
 
 def apply_settle_day_to_pair(
@@ -162,10 +185,7 @@ def apply_settle_day_to_pair(
 
 
 def apply_settle_day_correction(
-    xfer: Transfer,
-    expense_shadow: Transaction,
-    income_shadow: Transaction,
-    day: date | None,
+    rows: TransferRows, day: date | None,
 ) -> None:
     """Correct the civil day a SETTLED transfer's money moved, through the seam.
 
@@ -173,7 +193,8 @@ def apply_settle_day_correction(
     statement and the money moved on a different day than the settle was
     recorded on.  Since plan step E1a that day IS the ``entry_date`` the
     transfer's postings are filed under, so this is a money-moving edit and
-    ``transfer_service._run_posting_reconciles`` re-dates the ledger after it.
+    ``transfer_service._update._reconcile_postings_after_update`` re-dates the
+    ledger after it.
 
     **It routes through the status seam rather than assigning the column, and
     that is finding N-183's fix.**  ``update_transfer`` used to write
@@ -194,12 +215,11 @@ def apply_settle_day_correction(
     no such column.
 
     Args:
-        xfer: The parent :class:`Transfer`, already carrying the status this
-            edit leaves it in -- ``update_transfer`` applies ``status_id``
-            before it applies ``settled_on``, so a settle and a correction
-            submitted together are judged against the status being moved TO.
-        expense_shadow: The expense-side shadow :class:`Transaction`.
-        income_shadow: The income-side shadow :class:`Transaction`.
+        rows: The transfer and both shadows.  The parent already carries the
+            status this edit leaves it in, and since plan step X-f2-c3 a
+            correction arriving WITH a settle no longer reaches here at all --
+            the settle takes the day at the status flip, so what this door sees
+            is a correction to a row whose money had already moved.
         day: The corrected civil day, or ``None``.
 
     Raises:
@@ -212,9 +232,9 @@ def apply_settle_day_correction(
         TypeError: If *day* is a ``datetime`` rather than a civil ``date``
             (propagated from the seam).
     """
-    if xfer.status_id not in settled_status_ids():
+    if rows.transfer.status_id not in settled_status_ids():
         status_seam.reject_settle_day_without_settled_status(
-            xfer.status_id, day,
+            rows.transfer.status_id, day,
         )
         return
 
@@ -226,4 +246,4 @@ def apply_settle_day_correction(
             "the day because the money has not moved."
         )
 
-    apply_settle_day_to_pair(expense_shadow, income_shadow, day)
+    apply_settle_day_to_pair(rows.expense, rows.income, day)

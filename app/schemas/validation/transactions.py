@@ -1,8 +1,6 @@
 """Ad-hoc transaction and mark-done validation schemas."""
 
 
-from decimal import Decimal
-
 from marshmallow import (
     fields,
     pre_load,
@@ -13,6 +11,7 @@ from marshmallow import (
 from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
+    _NON_NEGATIVE_MONETARY,
     _normalize_empty_inputs,
     _reject_envelope_on_income,
 )
@@ -168,14 +167,31 @@ class MarkDoneSchema(BaseSchema):
     """Validates POST data for the mark-done status route.
 
     Used by ``transactions.mark_done`` (both transfer-shadow and
-    regular branches) to replace the raw
-    ``Decimal(request.form.get("actual_amount"))`` parse the route
-    previously used.  Marshmallow's Decimal field rejects malformed
-    numeric input with a clean field-level 400 instead of the route's
-    catch-and-translate 400, and the ``Range(min=0)`` validator is
-    the schema-tier counterpart to the DB CHECK
-    ``actual_amount IS NULL OR actual_amount >= 0`` on
+    regular branches) and, since plan step X-f2-c2, by the reconcile
+    panel's amount boxes
+    (``routes.accounts.reconcile._submitted_corrections``) -- the same
+    question feeding the same parameter of the same verb, so one field
+    declaration answers it.  Marshmallow's Decimal field rejects
+    malformed numeric input with a clean field-level 400 instead of
+    the route's catch-and-translate 400, and
+    ``_NON_NEGATIVE_MONETARY`` is the schema-tier counterpart to the
+    DB CHECK ``actual_amount IS NULL OR actual_amount >= 0`` on
     ``budget.transactions.actual_amount``.
+
+    **Its UPPER bound is what plan step X-f2-c3 added, and the lower
+    half alone was a 500.**  The column is ``numeric(12, 2)``, so a
+    figure at or above ``10 ** 10`` cannot be stored: it passed the
+    ``>= 0`` validator, reached the settle verb and raised
+    ``psycopg2.errors.NumericValueOutOfRange`` at flush -- unhandled,
+    so a 500 on a door an ordinary crafted POST reaches.  The reconcile
+    panel commits a whole statement walk in ONE transaction, so a
+    single unstorable box discarded every other tick submitted beside
+    it.  Sharing the app's own monetary range rather than declaring a
+    second one is the point: a bound this field states for itself is a
+    second answer to "what is a valid money input", on a money path.
+    50 of this package's 104 ``fields.Decimal`` declarations still carry
+    no upper bound, which is ledger finding **N-256** rather than this
+    step's to sweep.
 
     ``allow_none=True`` matches the column's nullability so a JSON
     caller can clear the actual amount explicitly (the form path is
@@ -207,5 +223,5 @@ class MarkDoneSchema(BaseSchema):
 
     actual_amount = fields.Decimal(
         places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=Decimal("0")),
+        validate=_NON_NEGATIVE_MONETARY,
     )

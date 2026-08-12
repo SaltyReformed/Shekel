@@ -489,7 +489,7 @@ def _entry_aware_amount(txn, reconciled_through: ReconciledThrough) -> Decimal:
     )
 
 
-def _credit_entry_sum(txn: Transaction) -> Decimal:
+def credit_entry_sum(txn: Transaction) -> Decimal:
     """Return the sum of a transaction's credit (credit-card) entry amounts.
 
     The ``Sigma(credit entry amounts)`` term of the confirmed-cash-effect
@@ -498,6 +498,14 @@ def _credit_entry_sum(txn: Transaction) -> Decimal:
     (``credit_workflow``), so counting them here would double-count against the
     payback.  A plain transaction has no entries, so this is ``Decimal("0")``
     and the effect collapses to ``effective_amount``.
+
+    **PUBLIC since plan step X-f2-c3, for the reconcile panel** (finding
+    **N-226**).  That panel offers an envelope at what a tick would BOOK, which
+    is ``sum(entries)`` over every entry INCLUDING the card ones -- against a
+    statement that shows only the debit half.  The panel therefore prints the
+    cash figure beside the booked one, and it takes this term rather than
+    writing ``entry.is_credit`` a second time: the two would then be one rule
+    in two places, on the screen a user reads beside a paper statement.
 
     Args:
         txn: The transaction whose credit entries to sum.
@@ -569,7 +577,7 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     """
     if not is_balance_contributing(txn):
         return Decimal("0.00")
-    net = txn.effective_amount - _credit_entry_sum(txn)
+    net = txn.effective_amount - credit_entry_sum(txn)
     return net if txn.is_income else -net
 
 

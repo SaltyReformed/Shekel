@@ -84,6 +84,7 @@ from ._amount_source import (
 from ._amounts import (
     ProjectedBasis,
     ReconciledThrough,
+    credit_entry_sum,
     income_amount,
     live_amount_overrides,
     settled_cash_leg,
@@ -123,6 +124,7 @@ __all__ = [
     "amount_basis",
     "amount_rule",
     "cash_anchor_facts",
+    "credit_entry_sum",
     "dated_deltas",
     "income_amount",
     "live_amount_overrides",

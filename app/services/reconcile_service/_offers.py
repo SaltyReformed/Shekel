@@ -48,10 +48,10 @@ class OfferKind(enum.Enum):
     :attr:`section_label` says so at the call site, because a bare ``.value``
     does not tell a reader the string is user-visible copy.
 
-    **The definition ORDER is the section order**, so plan step X-f2-c3 adds
-    ``TRANSFER`` below and sets it on its own offers -- an addition, not an
-    edit.  A rank map beside the class would be a second place to edit, and an
-    omission there sorts a whole section to the wrong end rather than failing.
+    **The definition ORDER is the section order**, and plan step X-f2-c3 added
+    ``TRANSFER`` below as exactly that -- an addition, not an edit.  A rank map
+    beside the class would be a second place to edit, and an omission there
+    sorts a whole section to the wrong end rather than failing.
 
     It is a service-tier classification and not a ``ref`` table, so it carries
     no id and nothing compares it to a string: the assembler reads
@@ -61,6 +61,7 @@ class OfferKind(enum.Enum):
     ENVELOPE = "Envelopes"
     BILL = "Bills"
     DEPOSIT = "Deposits"
+    TRANSFER = "Transfers"
 
     @property
     def rank(self) -> int:
@@ -82,11 +83,65 @@ class OfferKind(enum.Enum):
         """
         return self.value
 
+    @property
+    def section_note(self) -> "str | None":
+        """Return the sentence printed UNDER this kind's section heading.
+
+        One kind carries one, and it is a fact about the ACT rather than about
+        any row: ticking a transfer settles the matching row on the other
+        account too, because a transfer's two legs and its parent always move
+        together (``CLAUDE.md`` transfer invariant 3).  A user who reads the
+        panel as "this account's statement" would otherwise be surprised by a
+        second account moving.  It is per SECTION and not per row because the
+        row already names the other account ("Transfer to Fidelity Money Market
+        Savings"), so a per-row caption would repeat what the label says.
+
+        **A map beside the class, and here that is right where :attr:`rank`'s
+        would be wrong.**  A missing rank silently sorts a section to the wrong
+        end; a missing note prints no note, which is the correct rendering for
+        the three kinds that have nothing extra to say.
+
+        Returns:
+            The user-visible caption, or ``None`` for a kind with no note.
+        """
+        return _KIND_NOTES.get(self)
+
 
 #: Definition order, resolved once.  Derived from the class rather than written
 #: out, so a new member cannot be added without a rank -- the failure mode a
 #: hand-maintained map has is a silent mis-sort, not an error.
 _KIND_RANK = {kind: index for index, kind in enumerate(OfferKind)}
+
+#: The per-section captions, keyed by kind.  Absence means "no note"; see
+#: :attr:`OfferKind.section_note` for why a map is safe here and is not for
+#: :attr:`OfferKind.rank`.
+_KIND_NOTES = {
+    OfferKind.TRANSFER: (
+        "Ticking a transfer settles both sides -- the matching row on the "
+        "other account is settled at the same time."
+    ),
+}
+
+
+@dataclass(frozen=True)
+class Section:
+    """The heading a block STARTS, when it starts one.
+
+    Ruling **R-FC**'s third presentational rule, as a value: the panel prints a
+    section heading where the kind changes, and one kind prints a sentence under
+    it.  The two travel together because they appear in the same place and are
+    resolved by the same pass, and because a block either starts a section or it
+    does not -- two nullable fields could express "a note with no heading",
+    which is not a state the panel has.
+
+    Attributes:
+        label: The heading, from :attr:`OfferKind.section_label`.
+        note: The sentence under it, or ``None``.  Only the TRANSFER section
+            has one today (:attr:`OfferKind.section_note`).
+    """
+
+    label: str
+    note: "str | None"
 
 
 @dataclass(frozen=True)
@@ -119,6 +174,18 @@ class OutstandingTransaction:
             (envelope-tracked AND carrying entries).  Read off
             ``transaction_service.settles_from_entries`` so the panel cannot
             offer a box for a value the verb would ignore.
+        cash_amount: What the STATEMENT shows, when that is LESS than
+            :attr:`amount` -- and ``None`` whenever the two agree, which is
+            every row but one shape.  Finding **N-226**: an envelope settles at
+            ``sum(entries)`` over EVERY entry including the card ones, while
+            what leaves checking is the debit half alone (the card half leaves
+            later through its own CC Payback).  So a `$40` debit plus a `$60`
+            card purchase is offered at `$100.00` on a screen captioned "tick
+            everything your statement shows", against a statement showing
+            `$40`.  The LEDGER was right either way -- ``settled_cash_leg``
+            subtracts the credit sum -- and only the panel's figure was, so the
+            fix is to print both rather than to change what a tick books:
+            ``actual_amount`` legitimately IS total spend.
         is_income: Whether this row is money ARRIVING.  The panel counts
             deposits separately from payments (ruling **R-FD**) because a
             deposit and a bill do not sum to anything a reader wants.
@@ -126,13 +193,14 @@ class OutstandingTransaction:
             produced it rather than derived downstream -- see
             :class:`OfferKind` for the two defects deriving it caused.  This
             arm sets ``DEPOSIT`` for income, ``ENVELOPE`` for a purchase-tracked
-            row and ``BILL`` for the rest; plan step X-f2-c3's arm will set
-            ``TRANSFER`` on every offer it makes.
+            row and ``BILL`` for the rest; the transfer arm sets ``TRANSFER``
+            on every offer it makes (plan step X-f2-c3).
     """
 
     transaction_id: int
     attributed_on: date
     amount: Decimal
+    cash_amount: "Decimal | None"
     is_correctable: bool
     is_income: bool
     kind: OfferKind
@@ -211,12 +279,14 @@ class OutstandingGroup:
         settle: The parent's OWN tick, or ``None`` when the row itself is not
             offerable -- the everyday mid-period case, where an envelope holds
             outstanding purchases but its own attribution day has not passed.
-        section_label: The heading to print ABOVE this block, or ``None`` when
-            the block continues the previous one's section.  Resolved by the
-            assembler rather than in the template because it is a function of
-            the ORDER, which the assembler owns; a template deriving it would
-            re-read the previous element by index, and index arithmetic over a
-            sorted list is how a section heading silently stops appearing.
+        section: The :class:`Section` this block STARTS, or ``None`` when it
+            continues the previous one's.  Resolved by the assembler rather
+            than in the template because it is a function of the ORDER, which
+            the assembler owns; a template deriving it would re-read the
+            previous element by index, and index arithmetic over a sorted list
+            is how a section heading silently stops appearing.  Its TEXT is
+            :class:`OfferKind`'s, so the template never compares a kind to a
+            member to decide what to say.
 
     :attr:`kind` and :attr:`total` are PROPERTIES rather than fields, and that
     is the same normalization rule this arc applies to the database: both are
@@ -231,7 +301,7 @@ class OutstandingGroup:
     period_end: date
     purchases: "tuple[OutstandingPurchase, ...]"
     settle: "OutstandingTransaction | None"
-    section_label: "str | None"
+    section: "Section | None"
 
     @property
     def kind(self) -> OfferKind:
@@ -255,8 +325,10 @@ class OutstandingGroup:
         becomes offerable -- a mis-section, no wrong figure.  Left as a
         derivation rather than fixed here because the repair belongs with the
         arms: the purchase arm knows its parent and should TAG its blocks like
-        the other arm does, which is plan step X-f2-c3's extraction (finding
-        **N-225**).
+        the other two do.  **X-f2-c3's extraction (finding N-225) did NOT do
+        it** -- ``_purchases`` is byte-unchanged by that leaf -- so this
+        sentence named a completed step for work nobody had done, and the
+        repair is still owed.
 
         **The settle's tag wins over the purchases**, and the case is real: an
         envelope with outstanding purchases AND an overdue close is one block,

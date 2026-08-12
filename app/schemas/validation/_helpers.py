@@ -40,12 +40,30 @@ _PERCENT_INPUT_RANGE = validate.Range(
     min=Decimal("0"), max=Decimal("100"),
 )
 
-# Monetary range for W-4 / tax credit fields where the DB CHECK is
+# The app's range for a non-negative money INPUT, where the DB CHECK is
 # ``>= 0``.  10,000,000 is generous: it accommodates very large W-4
 # adjustments while still rejecting an obvious typo (extra digit) on
 # a routine entry.  Columns are ``Numeric(12, 2)`` so the database
 # can hold up to ~10B; this validator caps the schema layer well
 # below that.
+#
+# **The upper bound is not decoration, and plan step X-f2-c3 measured what
+# omitting it costs.**  ``MarkDoneSchema`` carried the ``>= 0`` half alone, so a
+# figure at or above ``10 ** 10`` passed validation, reached the settle verb and
+# died at the DATABASE (``psycopg2.errors.NumericValueOutOfRange``) -- an
+# unhandled 500 on a door an ordinary crafted POST reaches.  On the reconcile
+# panel that door commits a whole statement walk at once, so one unstorable box
+# discarded every other tick submitted with it.  A schema-tier bound BELOW the
+# column's domain is what keeps an unstorable figure a designed 400.
+#
+# **50 of this package's 104 ``fields.Decimal`` declarations still state a lower
+# bound and no upper one** (AST census 2026-08-12, counting the shared
+# constants above as bounds): 14 in ``salary``, 11 in ``loans``, 6 each in
+# ``savings`` and ``transactions``, 4 in ``transfers``, and 7 across five more.
+# That class is ledger finding **N-256**; it is recorded rather than swept here,
+# because a sweep across loans, templates, entries, settings and salary is a
+# large unrelated diff and this step's own pull request moves money (ruling
+# **R-EY**).
 _NON_NEGATIVE_MONETARY = validate.Range(
     min=Decimal("0"), max=Decimal("10000000"),
 )

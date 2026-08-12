@@ -384,10 +384,14 @@ def test_settling_derived_loan_payment_captures_live_amount(
     default is a deliberately stale $1.00, and the operator settles via the
     ``mark_done`` route WITHOUT typing an actual.  The frozen ``actual_amount``
     must be the live PITI (P&I 1,199.10 + escrow 300.00 = 1,499.10), NOT the
-    $1.00 estimate -- so the settled cash carries exactly the escrow the
-    genesis split subtracts (cash == split).  The split then divides 1,499.10
-    into interest 1,000.00 (200,000 * 0.06 / 12), escrow 300.00, and principal
+    $1.00 estimate -- so the settled cash carries exactly the escrow the genesis
+    split subtracts (cash == split).  The split then divides 1,499.10 into
+    interest 1,000.00 (200,000 * 0.06 / 12), escrow 300.00, and principal
     199.10 (= P&I 1,199.10 - interest 1,000.00).
+
+    The stored ``estimated_amount`` is deliberately left alone: it is the base
+    ``loan_payment_service._manual_shadow_amount`` derives from, so a settle
+    that wrote it would make the next settle derive from its own output.
     """
     with app.app_context():
         loan, _escrow, scenario_id, template, _rule, _periods = (
@@ -425,6 +429,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
         # Capture-on-settle froze the LIVE PITI, not the $1.00 estimate.
         assert settled.actual_amount == Decimal("1499.10")
         assert settled.effective_amount == Decimal("1499.10")
+        assert settled.estimated_amount == Decimal("1.00")
         # Both legs mirror the captured actual (Transfer Invariant 3).
         expense = (
             db.session.query(Transaction)
@@ -458,7 +463,9 @@ def test_settled_loan_payment_freeze_is_one_shot(
     ``live_loan_payment_amount`` returns None for the now-DONE shadow (the
     ``is_projected`` guard), so a stale-tab re-POST of ``mark_done`` -- admitted
     by the ``done -> done`` identity transition on the still-present mark-paid
-    button -- leaves the frozen actual untouched.  Without the guard the
+    button -- leaves the frozen figure untouched.  Since plan step X-f2-c3
+    there are TWO guards: that one, and the settle act running only on the way
+    INTO the settled band, so a re-settle does not reach the derivation at all.  Without the guard the
     capture would recompute the CURRENT live amount and silently corrupt the
     confirmed payment's recorded cash (the value it would return here proves the
     skip: a non-None result would overwrite the freeze).
@@ -499,15 +506,15 @@ def test_settled_loan_payment_freeze_is_one_shot(
             settled, scenario_id,
         ) is None
 
-        # A stale-tab re-settle leaves the frozen actual untouched.
+        # A stale-tab re-settle leaves the frozen figure untouched.
         resp2 = auth_client.post(
             f"/transactions/{income_shadow_id}/mark-done",
         )
         assert resp2.status_code == 200, resp2.data
         db.session.expire_all()
-        assert db.session.get(Transaction, income_shadow_id).actual_amount == (
-            Decimal("1499.10")
-        )
+        replayed = db.session.get(Transaction, income_shadow_id)
+        assert replayed.actual_amount == Decimal("1499.10")
+        assert replayed.effective_amount == Decimal("1499.10")
 
 
 def test_loan_standing_extra_reads_the_recurring_payment_setting(
@@ -784,3 +791,7 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         db.session.expire_all()
         settled = db.session.get(Transaction, income_shadow_id)
         assert settled.actual_amount == Decimal("1599.10")
+        # The manual BASE is untouched, so a second settle would freeze the
+        # same 1,599.10 rather than 1,699.10: the derivation must never read
+        # its own output.
+        assert settled.estimated_amount == Decimal("1499.10")

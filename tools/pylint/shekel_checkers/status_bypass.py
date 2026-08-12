@@ -17,17 +17,28 @@ from ._common import _called_name_in, _is_string_const, _module_in_allowlist
 
 # Status seam (W9907): the single attribute the transaction status seam owns.
 # Every non-transfer ``Transaction.status_id`` assignment must go through
-# ``status_seam.apply_status_change``; only the seam's own module and
-# ``transfer_service`` (which mirrors the status onto a transfer's two shadow
-# ``Transaction`` rows) may write it directly. Matched syntactically by attribute
+# ``status_seam.apply_status_change``; only the seam's own module and the ONE
+# transfer-service leaf that CONSTRUCTS a transfer and its two shadow rows may
+# write it directly. Matched syntactically by attribute
 # name -- precise because ``Transaction`` / ``Transfer`` are the only models with
 # a ``status_id`` column (``filing_status_id`` on the tax tables is a different
 # attribute and is not matched). Listed by fully-qualified module name, matched
 # exactly or as a package prefix by :func:`_module_in_allowlist`.
+#
+# The transfer entry NARROWED from ``app.services.transfer_service`` to that
+# package's ``_create`` leaf at plan step X-f2-c3, and the narrowing is the
+# point rather than a tidy-up: the module became a PACKAGE there (findings
+# N-152 / N-156), and prefix matching would have silently extended this
+# exemption over all eight of its leaves -- an allowlist widening nobody
+# decided on, which is the failure mode a fence exists to prevent. ``_create``
+# holds both writes that need it (``Transaction(status_id=...)`` in
+# ``_build_shadow`` and ``Transfer(status_id=...)`` in ``create_transfer``);
+# every other leaf reaches the column through the seam. Plan step X-aj2 makes
+# the write door structural and deletes the entry.
 _STATUS_ID_ATTR = "status_id"
 _STATUS_SEAM_MODULES = frozenset({
     "app.services.status_seam",
-    "app.services.transfer_service",
+    "app.services.transfer_service._create",
 })
 # The two models carrying a ``status_id`` column.  A constructor call to one of
 # these with a ``status_id=`` kwarg is a status WRITE the born-Projected create

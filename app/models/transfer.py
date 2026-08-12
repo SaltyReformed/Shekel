@@ -211,7 +211,7 @@ class Transfer(
         A transfer has no ``settled_on`` COLUMN -- the day lives on its two
         shadow ``Transaction`` rows, which carry the same value (Transfer
         Invariant 3, maintained by
-        ``app.services._transfer_status.apply_settle_day_to_pair``).  This is
+        ``app.services.transfer_service._status.apply_settle_day_to_pair``).  This is
         the read of that shared fact, so the two surfaces that need it -- the
         full-edit form's pre-filled correction input, opened from either the
         transfers page or a grid shadow cell -- ask ONE question rather than
@@ -233,7 +233,7 @@ class Transfer(
         **The ``limit(1)`` is what makes that true, and a bare ``.scalar()``
         did not.**  ``Query.scalar()`` swallows ``NoResultFound`` but lets
         ``MultipleResultsFound`` propagate, so a transfer with DUPLICATE income
-        shadows -- data corruption ``_transfer_validation._get_shadow_transactions``
+        shadows -- data corruption ``transfer_service._validation._get_shadow_transactions``
         already fails loud on -- would have 500'd both full-edit popovers, which
         is precisely the outcome the paragraph above says this read avoids.  A
         neutral review caught the contradiction between the code and its own
