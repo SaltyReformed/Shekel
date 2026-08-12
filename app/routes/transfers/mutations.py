@@ -187,10 +187,28 @@ def update_transfer(xfer_id):
     )
 
     # Auto-set is_override when a template-linked transfer's amount or
-    # period changes, so transfer_recurrence does not regenerate over the
-    # edited instance (mirrors the transaction move in
+    # period actually CHANGES, so transfer_recurrence does not regenerate over
+    # the edited instance (mirrors the transaction move in
     # transactions.update_transaction and the carry-forward transfer move).
-    if xfer.transfer_template_id and ("amount" in data or "pay_period_id" in data):
+    #
+    # **It tested for the field's PRESENCE until plan step X-f2-c3, and the
+    # difference was a money defect.**  This form renders the Amount input on
+    # every editable row and an HTML form posts every input it renders, so
+    # ``"amount" in data`` was true for EVERY save of a Projected
+    # template-linked transfer -- including one that only moved the Status
+    # dropdown.  Two consequences, both measured by this step's adversarial
+    # review: every such save silently opted the row out of regeneration and
+    # out of ``live_loan_transfer_amounts``; and because the flag is applied
+    # before the settle dispatch and means "the OPERATOR owns this amount", it
+    # SUPPRESSED the loan-payment freeze -- so a `$1,499.10` mortgage payment
+    # settled through this door booked its stale `$1.00` estimate against a
+    # `$1,000.00` interest + `$300.00` escrow split.  That is finding N-219's
+    # own shape surviving inside the fix for it.
+    #
+    # The amount comparison is numeric (``Decimal("1.00") == Decimal("1.0")``),
+    # so re-submitting the rendered value unchanged is correctly not a move.
+    amount_changed = "amount" in data and data["amount"] != xfer.amount
+    if xfer.transfer_template_id and (amount_changed or period_changed):
         data["is_override"] = True
 
     # The settle-day grading, the finalised-row edit lock (#26) and the service

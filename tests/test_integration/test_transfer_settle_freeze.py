@@ -407,20 +407,40 @@ class TestEveryDoorReachesTheSameFigure:
     def test_the_transfer_full_edit_status_dropdown_freezes(
         self, app, db, auth_client, seed_user, seed_periods,
     ):
-        """``PATCH /transfers/instance/<id>`` with a settled status.
+        """``PATCH /transfers/instance/<id>`` with the payload the FORM sends.
 
         The third door, and the one whose transaction twin is finding
         **N-219**: it flipped the status through the service without ever
         asking what the payment was worth.
+
+        **It posts ``amount`` because the real form always does**, and that is
+        the whole point of this case rather than a detail.  An earlier version
+        submitted ``status_id`` alone, which no browser can produce:
+        ``_transfer_full_edit.html`` renders the Amount input on every editable
+        row and an HTML form posts every input it renders.  Against that
+        realistic payload the door did NOT freeze -- the route set
+        ``is_override`` on the mere PRESENCE of the field, which tells the
+        settle "the operator owns this amount" and suppresses the derivation.
+        Measured before the fix: `$1.00` of cash booked against a `$1,000.00`
+        interest + `$300.00` escrow split.  The route now tests whether the
+        amount actually MOVED, which is what its own comment always claimed.
         """
         with app.app_context():
             xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
             xfer_id = xfer.id
             version = xfer.version_id
+            # Exactly what the rendered form carries back: the value already in
+            # the box, unchanged, beside the status the user did change.
+            rendered_amount = str(xfer.amount)
+            period_id = xfer.pay_period_id
+            due = xfer.due_date
 
         response = auth_client.patch(
             f"/transfers/instance/{xfer_id}",
             data={
+                "amount": rendered_amount,
+                "pay_period_id": period_id,
+                "due_date": due.isoformat() if due else "",
                 "status_id": ref_cache.status_id(StatusEnum.DONE),
                 "version_id": version,
             },
