@@ -1,0 +1,396 @@
+"""Integration: a transfer's settle books ONE figure, whichever door asked.
+
+Plan step **X-f2-c3**, ruling **R-FA** applied to the transfer table.  FOUR
+doors can move a transfer into the settled band and exactly ONE of them froze
+an auto-derived loan payment's live payment-date cash:
+
+* the grid's shadow "Mark Paid" (``routes/transactions/_shadow_mutations``) --
+  it called ``loan_payment_service.live_loan_payment_amount`` itself;
+* the transfers page's "Mark Done" (``routes/transfers/mutations.mark_done``);
+* the transfer full-edit Status dropdown (``_execute_transfer_update``);
+* a transaction PATCH landing on a shadow (``_apply_shadow_update``).
+
+The other three booked the stored estimate -- the creation-time escrow -- so
+the same payment recorded a different figure depending on which control the
+operator pressed.  That is finding **N-219**'s shape on this table, and a ROUTE
+holding a money rule is this arc's own root cause 1.
+``transfer_service.update_transfer`` dispatches the rule now, so these grade the
+FIGURE at the service and then prove each door reaches it.
+
+**The arithmetic is hand-computed and shown.**  Loan $200,000 / 6% / 360mo:
+    P&I    = amortize(200000, 0.06, 360)  = 1,199.10
+    escrow = 3,600.00 / 12                =   300.00
+    PITI   = 1,199.10 + 300.00            = 1,499.10
+The template's stored ``default_amount`` is a deliberately stale ``$1.00``, so
+a settle that books ``$1.00`` is a settle that missed the freeze and a settle
+that books ``$1,499.10`` is one that took it.
+
+**On production this changes `$0.00` today**: ``budget.loan_payment_settings``
+holds ZERO rows, so no live transfer is an auto-derived loan payment and all 17
+settled transfer shadows on Checking carry ``actual_amount = NULL``.  The route
+that writes that settings row (``routes/loan/payment_transfer.py``) is live, so
+the split opens on the next loan payment transfer created through the loan page.
+"""
+
+from decimal import Decimal
+
+from app import ref_cache
+from app.enums import StatusEnum
+from app.extensions import db
+from app.models.transaction import Transaction
+from app.models.transfer import Transfer
+from app.services import (
+    account_service,
+    transfer_service,
+    transfer_recurrence,
+)
+from app.services.generation_schedule import GenerationSchedule
+from tests._test_helpers import create_transfer
+from tests.test_integration.test_loan_transfer_live_amount import (
+    _build_derived_loan_transfer,
+)
+
+#: P&I 1,199.10 + escrow 300.00, the figure the freeze captures.
+_LIVE_PITI = Decimal("1499.10")
+#: The template's deliberately stale stored amount.
+_STALE = Decimal("1.00")
+
+
+def _derived_loan_transfer(seed_user, seed_periods):
+    """Return one projected loan-payment transfer and its expense shadow.
+
+    Built on the derive-from-loan fixture the live-override integration test
+    already owns, so the two grade the same loan with the same arithmetic: a
+    $200k / 6% / 360mo mortgage with $3,600/yr escrow behind a recurring
+    transfer whose stored amount is stale.
+    """
+    loan, _escrow, scenario_id, template, _rule, _periods = (
+        _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+    )
+    transfer_recurrence.generate_for_template(
+        template,
+        GenerationSchedule.for_periods(template.user_id, seed_periods),
+        scenario_id,
+    )
+    db.session.commit()
+
+    xfer = (
+        db.session.query(Transfer)
+        .filter_by(to_account_id=loan.id)
+        .order_by(Transfer.id)
+        .first()
+    )
+    assert xfer is not None, "expected a generated loan-payment transfer"
+    expense_shadow = (
+        db.session.query(Transaction)
+        .filter_by(transfer_id=xfer.id, account_id=xfer.from_account_id)
+        .one()
+    )
+    return xfer, expense_shadow
+
+
+def _plain_transfer(seed_user, seed_periods, amount="250.00"):
+    """Return a projected checking-to-savings transfer -- NO loan behind it.
+
+    The control shape: its template carries no ``loan_payment_settings`` row,
+    so the freeze resolves to ``None`` and the row books its own estimate.  It
+    is what every live transfer on production is today.
+    """
+    savings = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            name="Savings",
+            account_type_id=seed_user["account"].account_type_id,
+            anchor_balance=Decimal("100.00"),
+        ),
+    )
+    db.session.flush()
+    return create_transfer(
+        seed_user, db.session, seed_user["account"], savings,
+        seed_periods[0], amount=Decimal(amount),
+    )
+
+
+def _shadows(xfer_id):
+    """Return both legs of *xfer_id*, expense side first."""
+    rows = (
+        db.session.query(Transaction)
+        .filter_by(transfer_id=xfer_id)
+        .order_by(Transaction.id)
+        .all()
+    )
+    assert len(rows) == 2, "Transfer Invariant 1: exactly two shadows"
+    return rows
+
+
+class TestTheSettleFreezeIsTheSERVICEs:
+    """The amount rule lives at the one chokepoint, so no door can miss it."""
+
+    def test_a_plain_settle_freezes_the_live_payment_date_cash(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """One-click Paid books `$1,499.10`, not the stale `$1.00`.
+
+        The rule's whole point: an auto-derived loan payment's stored estimate
+        is the creation-time escrow, and what actually leaves checking is the
+        live P&I + escrow-as-of on the shadow's own DUE date -- the same figure
+        the genesis split subtracts, so ``cash == split`` holds by construction.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            for shadow in _shadows(xfer.id):
+                assert shadow.actual_amount == _LIVE_PITI
+                assert shadow.effective_amount == _LIVE_PITI
+                assert shadow.estimated_amount == _STALE
+
+    def test_a_typed_figure_BEATS_the_freeze(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A human read `$1,512.44` off the statement; the derivation yields.
+
+        The precedence half of the rule.  A figure somebody typed is a FACT
+        about money that moved; the freeze is a derivation, and a derivation
+        never overwrites a fact.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                actual_amount=Decimal("1512.44"),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            for shadow in _shadows(xfer.id):
+                assert shadow.actual_amount == Decimal("1512.44")
+
+    def test_an_ECHOED_prefill_is_not_written(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Submitting exactly what the row would book leaves the column NULL.
+
+        The reconcile panel PREFILLS its amount box, so every correctable row
+        on the form posts a figure whether the user touched it or not.  Writing
+        an untouched echo would populate a column that is NULL on all 17 settled
+        transfer shadows in production and destroy the only signal that says a
+        human read one off a statement.
+
+        Graded on a NON-loan transfer, where the row books its own estimate:
+        the echo is the estimate, and the column must stay NULL.
+        """
+        with app.app_context():
+            xfer = _plain_transfer(seed_user, seed_periods)
+            db.session.commit()
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                actual_amount=Decimal("250.00"),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            for shadow in _shadows(xfer.id):
+                assert shadow.actual_amount is None
+                assert shadow.effective_amount == Decimal("250.00")
+
+    def test_an_explicit_None_still_CLEARS_a_typed_actual(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Clearing the Actual box while marking Paid is not "no figure".
+
+        The two ``None``s are different acts and the dispatch tells them apart:
+        a caller that supplied nothing gets the row left alone, and a caller
+        that explicitly cleared the box is saying the typed figure was wrong.
+        Without the distinction this edit would silently keep `$310.00`.
+        """
+        with app.app_context():
+            xfer = _plain_transfer(seed_user, seed_periods)
+            db.session.commit()
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                actual_amount=Decimal("310.00"),
+            )
+            db.session.commit()
+            db.session.expire_all()
+            assert _shadows(xfer.id)[0].actual_amount == Decimal("310.00")
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                actual_amount=None,
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            for shadow in _shadows(xfer.id):
+                assert shadow.actual_amount is None
+                assert shadow.effective_amount == Decimal("250.00")
+
+    def test_is_override_in_the_SAME_call_suppresses_the_freeze(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Retyping the amount and marking Paid keeps the typed figure.
+
+        The transfer edit route auto-sets ``is_override`` whenever a
+        template-linked transfer's amount moves, so this is exactly what a
+        "correct the payment and mark it Paid" save sends.  The flag says the
+        OPERATOR owns this amount, and reading its PRE-edit value would freeze
+        a derived `$1,499.10` straight over the `$1,325.00` the user had just
+        typed -- which is why the dispatch runs after the caller-stated facts
+        rather than before them.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                amount=Decimal("1325.00"),
+                is_override=True,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            for shadow in _shadows(xfer.id):
+                assert shadow.estimated_amount == Decimal("1325.00")
+                assert shadow.actual_amount is None
+                assert shadow.effective_amount == Decimal("1325.00")
+
+    def test_a_re_settle_does_not_rewrite_the_frozen_figure(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The freeze is ONE-SHOT, and a stale tab must not move money.
+
+        ``done -> done`` is a legal identity transition, so a replayed POST from
+        a page left open reaches the service again.  The capture is gated on the
+        shadow still being Projected, and the dispatch runs BEFORE the status is
+        applied so a genuine first settle still sees that -- but a re-settle
+        resolves to nothing and the recorded cash stands, even after the loan's
+        escrow moves underneath it.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, status_id=done_id,
+            )
+            db.session.commit()
+            db.session.expire_all()
+            assert _shadows(xfer.id)[0].actual_amount == _LIVE_PITI
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, status_id=done_id,
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            for shadow in _shadows(xfer.id):
+                assert shadow.actual_amount == _LIVE_PITI
+
+    def test_settle_amount_publishes_what_a_tick_WILL_book(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The panel's figure and the booked figure come from one expression.
+
+        ``settle_amount`` is what the reconcile panel renders; the dispatch
+        resolves its own figure through the same two functions.  A panel showing
+        one number beside a verb that books another is this arc's own root cause
+        1 applied to a screen.
+        """
+        with app.app_context():
+            xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
+
+            offered = transfer_service.settle_amount(shadow)
+            assert offered == _LIVE_PITI
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            assert _shadows(xfer.id)[0].actual_amount == offered
+
+
+class TestEveryDoorReachesTheSameFigure:
+    """The census, from the doors themselves -- three of four used to differ."""
+
+    def test_the_transfers_page_mark_done_freezes(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """``POST /transfers/instance/<id>/mark-done``, which did NOT freeze.
+
+        The door that made this a defect rather than a design: it sent
+        ``status_id`` alone, so an auto-derived loan payment settled at its
+        creation-time escrow here and at the live figure from the grid.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer_id = xfer.id
+
+        response = auth_client.post(f"/transfers/instance/{xfer_id}/mark-done")
+        assert response.status_code == 200
+
+        with app.app_context():
+            for shadow in _shadows(xfer_id):
+                assert shadow.actual_amount == _LIVE_PITI
+
+    def test_the_grid_shadow_mark_done_still_freezes(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """``POST /transactions/<id>/mark-done``, the door that always froze.
+
+        The control for the move: the rule left this route for the service, so
+        the figure it books must be unchanged.
+        """
+        with app.app_context():
+            xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer_id, shadow_id = xfer.id, shadow.id
+
+        response = auth_client.post(f"/transactions/{shadow_id}/mark-done")
+        assert response.status_code == 200
+
+        with app.app_context():
+            for row in _shadows(xfer_id):
+                assert row.actual_amount == _LIVE_PITI
+
+    def test_the_transfer_full_edit_status_dropdown_freezes(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """``PATCH /transfers/instance/<id>`` with a settled status.
+
+        The third door, and the one whose transaction twin is finding
+        **N-219**: it flipped the status through the service without ever
+        asking what the payment was worth.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer_id = xfer.id
+            version = xfer.version_id
+
+        response = auth_client.patch(
+            f"/transfers/instance/{xfer_id}",
+            data={
+                "status_id": ref_cache.status_id(StatusEnum.DONE),
+                "version_id": version,
+            },
+        )
+        assert response.status_code == 200
+
+        with app.app_context():
+            for row in _shadows(xfer_id):
+                assert row.actual_amount == _LIVE_PITI

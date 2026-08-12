@@ -43,6 +43,17 @@ Two things follow from the package that a flat module could not have:
   the two CONSTRUCTOR writes (``_build_shadow`` and ``create_transfer``) that
   hold it open, which plan step X-aj2 replaces.
 
+**A transfer's SETTLE is a rule of this package, not of the doors that ask for
+one** (plan step X-f2-c3, ruling **R-FA**).  FOUR doors can move a transfer
+into the settled band and exactly one of them froze an auto-derived loan
+payment's live cash -- so the same payment booked one figure through the grid
+and another through the transfers page, which is finding **N-219**'s shape on
+this table.  :func:`update_transfer` now DISPATCHES that rule
+(:mod:`._settle`), so a fifth door cannot be written without it, and
+:func:`settle_amount` / :func:`is_correction` publish what a tick will book and
+whether a submitted figure is a human's, for the reconcile panel that has to
+display the one and count the other.
+
 **The public surface is this module and ``__all__`` is it.**  A leaf is
 private; a caller outside the package depends on the names below.
 
@@ -60,12 +71,18 @@ from app.services.transfer_service._create import (
 )
 from app.services.transfer_service._delete import delete_transfer
 from app.services.transfer_service._restore import restore_transfer
+from app.services.transfer_service._settle import (
+    is_correction,
+    settle_amount,
+)
 from app.services.transfer_service._update import update_transfer
 
 __all__ = [
     "TransferSpec",
     "create_transfer",
     "delete_transfer",
+    "is_correction",
     "restore_transfer",
+    "settle_amount",
     "update_transfer",
 ]

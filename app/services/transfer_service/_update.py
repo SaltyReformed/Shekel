@@ -25,6 +25,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import account_posting_service
 from app.services import posting_service
+from app.services.transfer_service import _settle
 from app.services.transfer_service._loan_posting import (
     _reject_installment_move_before_loan,
     _sync_loan_postings_if_loan,
@@ -42,6 +43,7 @@ from app.services.transfer_service._validation import (
     _get_transfer_or_raise,
     _validate_positive_amount,
 )
+from app.utils.balance_predicates import enters_settled_band
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_UPDATED,
@@ -120,6 +122,69 @@ def _apply_actual_amount(
         actual = None
     expense_shadow.actual_amount = actual
     income_shadow.actual_amount = actual
+
+
+def _resolved_settle_kwargs(
+    xfer: Transfer,
+    expense_shadow: Transaction,
+    updates: "dict[str, object]",
+) -> "dict[str, object]":
+    """Return *updates* with the SETTLE's own amount rule applied to it.
+
+    **The dispatch that makes a transfer's settle rule structural** (plan step
+    X-f2-c3, ruling **R-FA**).  Moving a transfer into the settled band is not
+    just a status change: an auto-derived loan payment must freeze what it is
+    live worth, and an echoed prefill must not be written.  Both rules are
+    :mod:`._settle`'s; this decides WHEN they apply and what that means for the
+    ``actual_amount`` kwarg :func:`update_transfer` is about to hand to
+    :func:`_apply_actual_amount`.
+
+    **Why here and not at each door.**  Four doors could move a transfer into
+    the settled band and exactly ONE of them froze -- the grid's shadow "Mark
+    Paid", which called the loan service itself and passed the answer down.  The
+    transfers page's "Mark Done", the transfer full-edit Status dropdown and a
+    transaction PATCH landing on a shadow all booked the stored estimate.  That
+    is finding **N-219**'s shape on the transfer table: a ROUTE holding a money
+    rule, so one control books a different figure from another for the same
+    payment.  Putting it at the one chokepoint every transfer mutation already
+    passes through means a FIFTH door cannot be written without it.
+
+    **The ``None`` return of :func:`._settle.settle_actual` is read as "this
+    settle supplies no figure", never as "clear the column"**, and the
+    difference is a real edit: a user who clears the Actual box while marking a
+    transfer Paid is saying the typed figure was wrong, and the column must
+    follow them.  So an explicit ``actual_amount=None`` is left in place, while
+    an ECHOED figure -- one equal to what the row would book anyway -- has its
+    kwarg REMOVED, so the column keeps meaning "a human read this off a
+    statement".
+
+    Args:
+        xfer: The transfer being updated, at its pre-update status.
+        expense_shadow: Either leg would resolve the same figure (Transfer
+            Invariant 3); the expense side is passed so the choice is not made
+            twice.  Its caller-stated facts (``is_override``, ``amount``) are
+            already applied, which is what lets this read the post-edit state.
+        updates: The update kwargs as submitted.
+
+    Returns:
+        *updates* unchanged when this update does not settle, else a copy
+        carrying the figure the settle books -- or without ``actual_amount`` at
+        all when the submitted figure was an echo.
+    """
+    if "status_id" not in updates:
+        return updates
+    if not enters_settled_band(xfer, updates["status_id"]):
+        return updates
+    submitted = updates.get("actual_amount")
+    resolved = _settle.settle_actual(expense_shadow, submitted)
+    if resolved is not None:
+        return {**updates, "actual_amount": resolved}
+    if submitted is not None:
+        return {
+            key: value for key, value in updates.items()
+            if key != "actual_amount"
+        }
+    return updates
 
 
 def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object]) -> None:
@@ -244,12 +309,30 @@ def update_transfer(transfer_id, user_id, **kwargs):
     # any field is applied.  See :func:`_reject_installment_move_before_loan`.
     _reject_installment_move_before_loan(xfer, user_id, kwargs)
 
+    # ── is_override ────────────────────────────────────────────────
+    # Applied FIRST, and the position is load-bearing rather than tidy: the
+    # flag says WHO OWNS THIS TRANSFER'S AMOUNT, and the settle dispatch below
+    # derives a figure only when the answer is "not the operator".  The
+    # transfer edit route auto-sets it whenever a template-linked transfer's
+    # amount moves, so a combined "retype the amount and mark it Paid" save
+    # arrives carrying it -- and reading the PRE-edit flag there would freeze a
+    # derived figure straight over the number the user had just typed.  Every
+    # branch between here and the dispatch is a caller-stated FACT; the
+    # derivation comes after all of them.
+    if "is_override" in kwargs:
+        flag = bool(kwargs["is_override"])
+        xfer.is_override = flag
+        expense_shadow.is_override = flag
+        income_shadow.is_override = flag
+
     # ── amount ─────────────────────────────────────────────────────
     if "amount" in kwargs:
         new_amount = _validate_positive_amount(kwargs["amount"])
         xfer.amount = new_amount
         expense_shadow.estimated_amount = new_amount
         income_shadow.estimated_amount = new_amount
+
+    kwargs = _resolved_settle_kwargs(xfer, expense_shadow, kwargs)
 
     # ── status_id ──────────────────────────────────────────────────
     # All three transitions verified before any propagation, then applied
@@ -321,13 +404,6 @@ def update_transfer(transfer_id, user_id, **kwargs):
         apply_settle_day_correction(
             xfer, expense_shadow, income_shadow, kwargs["settled_on"],
         )
-
-    # ── is_override ────────────────────────────────────────────────
-    if "is_override" in kwargs:
-        flag = bool(kwargs["is_override"])
-        xfer.is_override = flag
-        expense_shadow.is_override = flag
-        income_shadow.is_override = flag
 
     db.session.flush()
 

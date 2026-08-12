@@ -45,7 +45,6 @@ from app.routes.transactions._helpers import (
     _stale_transaction_response,
 )
 from app.services import (
-    loan_payment_service,
     status_seam,
     transfer_service,
 )
@@ -195,22 +194,17 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
         "status_id": ref_cache.status_id(StatusEnum.DONE),
     }
 
-    # Capture-on-settle (escrow redesign, Option A): when the operator settles
-    # an auto-derived loan payment with a one-click "mark paid" (no typed
-    # actual), freeze the LIVE payment-date amount (P&I + escrow-as-of) as the
-    # actual cash instead of letting ``effective_amount`` fall back to the
-    # stale template ``estimated_amount`` (the creation-time escrow).  This is
-    # what makes ``cash == split`` hold for a plain settle after an escrow
-    # change: the frozen cash and the genesis split read the same
-    # ``escrow_monthly_as_of`` on the shadow's DUE date.  Returns None for any
-    # shadow that is not an auto-derived loan payment (or when the operator
-    # typed an actual, handled above), leaving the estimate / typed value
-    # untouched.
-    if actual_amount is None:
-        actual_amount = loan_payment_service.live_loan_payment_amount(
-            txn, txn.scenario_id,
-        )
-
+    # **The capture-on-settle FREEZE left this route at plan step X-f2-c3**, and
+    # its absence here is the fix rather than an omission.  This branch called
+    # ``loan_payment_service.live_loan_payment_amount`` and handed the answer
+    # down as an ``actual_amount``, so an auto-derived loan payment recorded its
+    # live payment-date cash through THIS door and the stale creation-time
+    # escrow through the other three that can settle a transfer (the transfers
+    # page's Mark Done, the transfer full-edit Status dropdown, and a
+    # transaction PATCH landing on a shadow).  A ROUTE holding a money rule is
+    # this arc's own root cause 1, and finding **N-219** is the same defect on
+    # the transaction table.  ``transfer_service.update_transfer`` dispatches it
+    # now, for every door at once.
     if actual_amount is not None:
         svc_kwargs["actual_amount"] = actual_amount
 
