@@ -18,7 +18,7 @@ from app.models.ref import Status
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.account import Account
-from app.services import pay_period_service
+from app.services import pay_period_service, transaction_service
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
@@ -130,10 +130,18 @@ def get_full_edit(txn_id):
         settle_day_min=pay_period_service.earliest_recordable_day(
             current_user.id,
         ),
-        # Pre-hint (grid audit D2): the status dropdown disables
-        # transitions the state machine would reject from the row's
-        # current status.
-        allowed_status_ids=allowed_transitions(txn),
+        # Pre-hint (grid audit D2): the status dropdown disables transitions
+        # the row cannot take.  ``offerable_status_ids`` is the state machine's
+        # answer narrowed by the row's TYPE -- the map admits both Paid and
+        # Received from Projected because it grades the status and never sees
+        # ``transaction_type_id``, and exactly one of them is what an income or
+        # an expense row settles as (plan step X-ap).
+        allowed_status_ids=transaction_service.offerable_status_ids(txn),
+        # Ruling **R-FF**, the same sentence the reconcile panel obeys: an
+        # amount is correctable exactly when the settle verb takes its MANUAL
+        # branch.  An envelope carrying purchases settles at ``sum(entries)``,
+        # so an Actual box beside it would take a figure the settle discards.
+        amount_correctable=not transaction_service.settles_from_entries(txn),
     )
 
 

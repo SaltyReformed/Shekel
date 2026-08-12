@@ -48,6 +48,7 @@ from app.utils.balance_predicates import (
     is_balance_contributing,
     is_cancelled,
     is_credit,
+    is_archived,
     is_done,
     is_projected,
     is_projected_clause,
@@ -604,11 +605,14 @@ class TestIsCancelled:
 class TestIsDone:
     """Pins ``is_done`` (Commit 29 / MED-02 residual).
 
-    Centralizes the inline ``status_id == done_id`` comparison in
-    ``entry_service._update_actual_if_paid`` (recompute
-    ``actual_amount`` from entries when the parent transaction is
-    already Paid). ``StatusEnum.DONE`` is the Python enum identifier;
-    the ref-table row carries display name "Paid".
+    Centralized the inline ``status_id == done_id`` comparison in
+    ``entry_service``'s actual-recompute hook. ``StatusEnum.DONE`` is the
+    Python enum identifier; the ref-table row carries display name "Paid".
+
+    The predicate has NO ``app/`` caller since plan step X-ap merged that hook
+    with its posting-reconcile sibling onto the settled BAND (finding N-229);
+    it is reported to plan step **X-e**, whose subject is the callerless public
+    helper. These pin the contract until that step rules on it.
     """
 
     def test_is_done_true_for_paid_txn(
@@ -636,6 +640,59 @@ class TestIsDone:
                 txn = _make_txn(db, seed_user, seed_periods, member)
                 assert is_done(txn) is False, (
                     f"is_done returned True for {member.name}"
+                )
+
+
+class TestIsArchived:
+    """Pins ``is_archived`` -- the TERMINAL ``Settled`` status, not the band.
+
+    Added at plan step X-ap for ``entry_service``, which refuses a purchase
+    recorded against an archived row (finding **N-229**). The distinction it
+    exists to make is one word wide and the whole point: ``Status.is_settled``
+    is True for Paid, Received AND Settled, so a guard written against the band
+    would refuse a Paid envelope's late-posting purchases -- the case the
+    re-derive hook exists for.
+    """
+
+    def test_is_archived_true_only_for_settled(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``Settled`` is the one status that answers True."""
+        with app.app_context():
+            txn = _make_txn(db, seed_user, seed_periods, StatusEnum.SETTLED)
+            assert is_archived(txn) is True
+
+    def test_is_archived_false_for_the_other_settled_band_members(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Paid and Received are settled but NOT archived.
+
+        The control for the failure mode: a guard that collapsed the archive
+        into the band would refuse every late-posting purchase on a Paid
+        envelope, which is the documented reason the re-derive hook exists.
+        """
+        with app.app_context():
+            for member in (StatusEnum.DONE, StatusEnum.RECEIVED):
+                txn = _make_txn(db, seed_user, seed_periods, member)
+                assert txn.status.is_settled is True, (
+                    f"{member.name} must be in the settled band for this "
+                    "test to mean anything"
+                )
+                assert is_archived(txn) is False, (
+                    f"is_archived returned True for {member.name}"
+                )
+
+    def test_is_archived_false_for_every_other_status(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Projected, Credit and Cancelled all answer False."""
+        with app.app_context():
+            for member in StatusEnum:
+                if member is StatusEnum.SETTLED:
+                    continue
+                txn = _make_txn(db, seed_user, seed_periods, member)
+                assert is_archived(txn) is False, (
+                    f"is_archived returned True for {member.name}"
                 )
 
 
