@@ -375,12 +375,67 @@ and form work is not carried into it.
       pair. The seam is `recurrence.cadence_of` on the ONE table `resolve()` reads
       (`_frequency.py`); the `None` arm raises now.
 
-- [ ] **R7b -- bounds and the form.**
+- [ ] **R7b-1 -- the authored vocabulary becomes the two axes.**
 
-The form becomes interval + unit + anchor + optional due row, and `max_occurrences` gains its first
-writer. Deletes the vestigial `offset_periods` schema field (D8) and `start_period_id`'s "First
-paycheck" affordance, so **D1 and D2 die here**. Still authors through the closed-set columns: it
-collects the two-axis vocabulary and the seam maps it, so the schema does not move yet.
+**R7b is FOUR leaves**, split with the developer 2026-08-12: the form becomes interval + unit +
+anchor + optional due row and `max_occurrences` gains its first writer, and the vocabulary swap, the
+form, the bounds and the opening bound are four independently revertible commits of which only the
+last carries a migration. Every leaf still authors through the closed-set columns -- the form
+collects the two-axis vocabulary and the seam maps it -- so the schema does not move until R7c.
+
+`RecurrenceSpec` stops carrying a `pattern_id` and carries `(interval_n, unit, placement)`. The
+closed set is demoted to a STORAGE ENCODING with exactly two crossings, both in `_frequency`:
+`encode_cadence` at the write door and `decode_pattern` at the read door, the second built by
+INVERTING `PATTERN_DERIVATIONS` at import rather than by a second table. `resolve` reads no `ref` id
+at all and derives the anchor FAMILY from `(unit, placement)`; `_months.months_per_step` becomes the
+one producer of a calendar cadence's month stride, which the anchor took off the pattern table while
+the walk computed `interval_n * 12` for itself, and `MONTH_SPANNING_UNITS` becomes the one statement
+of which units fire on a day of the month -- deriving it deleted a guard whose only reachable state
+was two hand-written sets disagreeing.
+
+**A calendar cadence encodes its interval into the pattern's NAME and writes `interval_n = 1`** --
+what every live row holds; writing the two-axis interval there would put a month count in a column
+spelled "every N pay periods". No form change and no schema change.
+**Two STORED columns normalise**, found by adversarial review after the step claimed "no behaviour
+change" flatly: `(1, PERIOD)` stores as `Every Period` whatever it was authored as, and a phase on
+an interval-1 rule resolves to 0 rather than being carried. Neither moves an occurrence, a period or
+an amount, and neither is visible to the step's own evidence -- the 430-shape baseline never calls
+the write door and no live rule has either shape -- so both have their own controls. The honest
+claim is **no occurrence, period or amount moves**, measured on a production clone in both
+directions: all 46 live rules resolve and place identically, and re-authoring every one of them
+moves zero columns.
+
+- [ ] **R7b-2 -- the form authors that vocabulary.**
+
+The pattern `<select>` becomes a unit select, an interval control and a placement select, with the
+offered intervals per unit SERVED FROM the encoder's own table -- so a cadence the closed set cannot
+store is never offered and the refusal is unreachable rather than fenced (developer ruling
+2026-08-12). `pattern_choices`, `_PATTERN_LABELS`, `RecurrencePatternField` and the vestigial
+`offset_periods` schema field (D8) go with it. The transfer form's pay-period `<select>` SURVIVES
+under its other job -- which period a one-time transfer lands in -- and stops being relabelled by
+JS.
+
+- [ ] **R7b-3 -- one "ends" control, and the CHECKs the door does not mirror.**
+
+`max_occurrences` gains its first writer: never / on a date / after N occurrences, ONE control, so
+`ck_recurrence_rules_single_end_bound` is expressed by the form's shape rather than refused after
+it. The door mirrors the four constraints ledger row **D23** names -- `due_dom`, `valid_offset`,
+`positive_max_occurrences`, `single_end_bound` -- which today reach the flush as an `IntegrityError`
+naming neither field nor value.
+
+- [ ] **R7b-4 -- the opening bound becomes a DATE.**
+
+"First paycheck" (a pay-period FK) becomes "Starts on" (a date) written to the existing `start_date`
+column, which is the target model's `starts_on` under its current name. Ruled 2026-08-12 on a
+measurement: dropping the affordance outright moves ONE live rule (Claude Max, anchor `2026-08-07`
+-> `2026-04-07`, four extra rows into past periods) while folding it into `start_date` with
+`COALESCE` moves NONE of the 46. **A loan payment's bound stays DERIVED** -- `_sync_loan_cadence`
+writes it from the first contractual installment -- so that form renders it read-only and the field
+leaves the payload, which is what stops `replace()` touching it. The fold makes four readers dead
+and they go with it: `RecurrenceRule.start_period` (**D30**), `PeriodLockReason.RECURRENCE_ANCHOR`,
+and `pay_period_admin._rule_ids_with_start_period` / `_repoint_recurrence_rules` -- the last two
+R9's, folded in by developer ruling rather than left as dead code. **D2 dies here.** Destructive, so
+it carries the `Review:` line and a downgrade that re-derives what it nulled.
 
 - [ ] **R7c -- the cutover.**
 

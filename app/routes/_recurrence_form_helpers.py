@@ -76,10 +76,11 @@ from app.services.recurrence import (
     PatternChoice,
     RecurrenceSpec,
     author_rule,
+    decode_pattern,
     modelled_pattern,
     pattern_choices_for,
     reauthor_rule,
-    recurrence_spec,
+    recurrence_spec_with_cadence,
 )
 from app.utils.log_events import (
     BUSINESS,
@@ -299,17 +300,25 @@ def build_recurrence_rule_from_form(
         data.pop(_DUE_DAY_KEY, None) if ctx.include_due_day_of_month else None
     )
 
-    # The offset auto-derivation this branch used to run inline -- "for
-    # EVERY_N_PERIODS, phase the rule on the chosen start period" -- moved
+    # The offset auto-derivation this branch used to run inline -- "for an
+    # every-N-paychecks rule, phase it on the chosen start period" -- moved
     # into ``resolve``, which applies it on EVERY write rather than only on
     # create.  That is what closes defect D1: the update path had no such
     # derivation and wrote the schema default instead, re-phasing every
     # future occurrence on an amount-only edit.
+    #
+    # ``decode_pattern`` is the ONE place a submitted pattern id becomes the
+    # cadence the seam authors in (plan step R7b).  The form still POSTS the
+    # closed-set id -- plan step R7b's own next leaf is what replaces the
+    # picker -- so this call is the translation, taken from the same table the
+    # write door encodes back through.  It goes when the picker does.
+    reading = decode_pattern(pattern_id, interval_n)
     return author_rule(
         RecurrenceSpec(
             user_id=user_id,
-            pattern_id=pattern_id,
-            interval_n=interval_n,
+            unit=reading.cadence.unit,
+            interval_n=reading.cadence.interval_n,
+            placement=reading.placement,
             offset_periods=offset_periods,
             day_of_month=day_of_month,
             due_day_of_month=due_day_of_month,
@@ -400,11 +409,14 @@ def update_recurrence_rule_from_form(
     # ``max_occurrences`` -- rides through untouched, so this edit cannot
     # reset a field it never showed the user.
     #
-    # ``interval_n`` needs no pattern-scoping here, and that is structural
-    # rather than a tidier spelling of the old guard.  This form's interval
-    # input is hidden for every pattern but EVERY_N_PERIODS and a hidden input
-    # still SUBMITS, so the submitted value lands on a Quarterly rule's column
-    # -- where it means nothing and nobody reads it.  ``interval_n`` carries
+    # ``interval_n`` needs no pattern-scoping here, and since plan step R7b-1
+    # it cannot reach a column at all for a calendar cadence.  This form's
+    # interval input is hidden for every pattern but EVERY_N_PERIODS and a
+    # hidden input still SUBMITS, so the submitted value used to land verbatim
+    # on a Quarterly rule's column, where it meant nothing and nobody read it.
+    # ``decode_pattern`` now discards it for any pattern that names its own
+    # interval and ``encode_cadence`` writes 1, so the column holds one meaning
+    # rather than "whatever the form happened to post".  ``interval_n`` carries
     # one meaning only, "repeat every N pay PERIODS", consulted by the
     # occurrence engine's PERIOD-unit walk, by ``obligations_aggregator``'s
     # monthly equivalent under the same condition (through
@@ -417,13 +429,25 @@ def update_recurrence_rule_from_form(
     # merely relocated, and it closes the reverse case the guard left open:
     # switching an every-4-paychecks rule to Quarterly used to make it read as
     # "every 4 months".
-    current = recurrence_spec(rule)
+    # **Read with the SUBMITTED cadence, never the stored one**, and the
+    # difference is the repair path this form advertises: an edit page may be
+    # showing a rule whose stored pattern the application no longer models
+    # (``pattern_choices_for`` keeps it selectable and
+    # ``UNAVAILABLE_PATTERN_MESSAGE`` says to pick a new one before saving), and
+    # reading that rule's cadence on the way to REPLACING it raises.  Measured
+    # against ``origin/dev``: routing this through ``recurrence_spec`` turned
+    # the one action the surface tells the user to take into a 500.
+    reading = decode_pattern(pattern_id, submitted_interval)
+    current = recurrence_spec_with_cadence(
+        rule,
+        interval_n=reading.cadence.interval_n,
+        unit=reading.cadence.unit,
+        placement=reading.placement,
+    )
     reauthor_rule(
         rule,
         replace(
             current,
-            pattern_id=pattern_id,
-            interval_n=submitted_interval,
             offset_periods=submitted_offset,
             day_of_month=day_of_month,
             due_day_of_month=(

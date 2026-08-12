@@ -1,7 +1,7 @@
 """The pure recurrence resolver (plan steps R2c-1 and R2d).
 
-``app.services.recurrence.resolve`` is the one place the closed ``pattern_id``
-vocabulary becomes the two-axis one, and it is pure: a spec and a
+``app.services.recurrence.resolve`` turns an AUTHORED cadence into what it
+means against one schedule, and it is pure: a spec and a
 :class:`~app.services.pay_calendar.PayCalendar` in, a
 :class:`~app.services.recurrence.ResolvedRecurrence` out.  So every case below
 is exercised at EXACT dates against a hand-built schedule -- no database, no
@@ -53,6 +53,8 @@ from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
     RecurrenceResolutionError,
     RecurrenceSpec,
+    build_transient_rule,
+    decode_pattern,
     occurrence_placements,
     resolve,
 )
@@ -113,19 +115,42 @@ def build_calendar(
 
 
 def spec_for(pattern: RecurrencePatternEnum, **overrides) -> RecurrenceSpec:
-    """Return a spec naming *pattern*, with *overrides* applied.
+    """Return a spec for the cadence *pattern* names, with *overrides* applied.
+
+    **Keyed on the closed-set member even though the spec no longer carries
+    one** (plan step R7b), and deliberately: every case in this file was
+    written against a named pattern and hand-checked at exact dates, so
+    re-keying them onto ``(interval, unit, placement)`` by hand would be 200
+    silent opportunities to change what a case measures.  The translation goes
+    through :func:`~app.services.recurrence.decode_pattern`, the same seam the
+    read door uses, so a case still means what its name says.
+
+    A case ABOUT the two-axis vocabulary states the axes directly instead --
+    see the last three of :class:`TestRefusals`.
 
     Args:
-        pattern: The pattern member to resolve the id of.
+        pattern: The pattern member whose cadence to build.
         **overrides: Any :class:`~app.services.recurrence.RecurrenceSpec`
             field to set.
 
     Returns:
         The spec.
     """
+    # Decoded at TWO, not one, and an adversarial review of plan step R7b-1
+    # is why: a pattern that names its own interval ignores this number, and
+    # ``Every N Periods`` -- the one that does not -- would otherwise collapse
+    # onto ``Every Period``'s reading, silently dropping a member from every
+    # sweep in this file that claims to cover the whole enum.
+    interval_override = overrides.pop("interval_n", None)
+    reading = decode_pattern(ref_cache.recurrence_pattern_id(pattern), 2)
     return RecurrenceSpec(
         user_id=_USER_ID,
-        pattern_id=ref_cache.recurrence_pattern_id(pattern),
+        unit=reading.cadence.unit,
+        interval_n=(
+            reading.cadence.interval_n if interval_override is None
+            else interval_override
+        ),
+        placement=reading.placement,
         **overrides,
     )
 
@@ -643,13 +668,20 @@ class TestTheRetiredOncePattern:
     resolver rather than being read as an every-paycheck cadence.
     """
 
-    def test_the_surviving_once_row_is_refused_by_the_resolver(self, app):
-        """A rule naming the retired row raises rather than resolving.
+    def test_the_surviving_once_row_is_refused_by_the_decoder(self, app):
+        """A rule naming the retired row raises rather than decoding.
 
         The id is looked up from the live ``ref`` table rather than
         hard-coded: on a migration-built database ``a3b1c2d4e5f6`` appends two
         rows after the initial seed, so the ids are not in enum order and a
         literal 8 would test the wrong row.
+
+        **The refusal moved from ``resolve`` to ``decode_pattern`` at plan step
+        R7b and it is the same refusal**: the resolver no longer sees a
+        ``pattern_id`` at all, so the last place a stored row becomes a cadence
+        is where an unmodelled one now fails.  A rule naming the survivor
+        cannot be read AT ALL rather than being read as an every-paycheck one,
+        which is the property ruling R-R11 needs.
         """
         with app.app_context():
             once_row = (
@@ -657,12 +689,11 @@ class TestTheRetiredOncePattern:
                 .filter_by(name=_RETIRED_PATTERN_NAME)
                 .one()
             )
-            spec = RecurrenceSpec(user_id=_USER_ID, pattern_id=once_row.id)
 
             with pytest.raises(
                 RecurrenceResolutionError, match=str(once_row.id),
             ):
-                resolve(spec, build_calendar())
+                decode_pattern(once_row.id, 1)
 
     def test_no_enum_member_names_the_retired_row(self, app):
         """The row exists AND no member names it -- both halves, together.
@@ -820,7 +851,7 @@ class TestTotality:
         """No pattern in the closed set can fail to produce a complete tuple.
 
         The property plan step R7c's NOT NULL columns will rest on, asserted
-        over the whole set rather than sampled: whatever the eight patterns
+        over the whole set rather than sampled: whatever the seven patterns
         are, each resolves to a COMPLETE two-axis value.  A pattern that
         resolved to a partial one would become an un-migratable row at R7c.
         """
@@ -1071,11 +1102,60 @@ class TestAStatedDayOrMonthMustBeInItsColumnsDomain:
 class TestRefusals:
     """Four broken invariants, refused loudly rather than papered over."""
 
-    def test_an_unknown_pattern_id_is_refused(self):
-        """A pattern this application does not model has no derivable cadence."""
-        spec = RecurrenceSpec(user_id=_USER_ID, pattern_id=999_999)
+    def test_an_unknown_pattern_id_is_refused_by_the_decoder(self):
+        """A pattern this application does not model has no derivable cadence.
 
+        Asserted against ``decode_pattern`` because that is where a stored id
+        becomes a cadence since plan step R7b; ``resolve`` is handed the
+        cadence and never the id.  The refusal did not weaken -- it moved one
+        function EARLIER, so a rule naming an unmodelled pattern cannot even be
+        read back as a spec.
+        """
         with pytest.raises(RecurrenceResolutionError, match="999999"):
+            decode_pattern(999_999, 1)
+
+    def test_a_cadence_the_closed_set_cannot_store_is_refused(self):
+        """A well-defined cadence with no pattern to name it is REFUSED.
+
+        ``(2, MONTH)`` resolves and walks correctly -- the two-axis model has
+        no trouble with it -- but ``budget.recurrence_rules`` names its cadence
+        with a closed pattern set until plan step R7c, so there is nowhere to
+        write it.  The refusal is the gap stated once, at the encode step, and
+        it disappears with the table.
+
+        Its counterpart is the assertion that nothing OFFERS such a cadence:
+        the picker's options are derived from the same table, so this is a
+        broken invariant rather than a state a user can reach.
+
+        Driven through the WRITE DOOR rather than through the encoder
+        directly, because the property is "such a rule is never written" and
+        the door is what has to hold it.  ``build_transient_rule`` is the one
+        door that needs no session.
+        """
+        spec = spec_for(RecurrencePatternEnum.MONTHLY, interval_n=2)
+
+        with pytest.raises(RecurrenceResolutionError, match="every 2"):
+            build_transient_rule(spec, build_calendar())
+
+    def test_a_unit_and_placement_with_no_anchor_derivation_is_refused(self):
+        """A YEAR cadence deferred onto a month's first paycheck has no anchor.
+
+        ``_first_of_month_anchor`` answers "the 1st of the first qualifying
+        month", which for a yearly rule would fire in whichever month the
+        schedule happened to open in -- a plausible date the cadence never
+        names.  Refused rather than defaulted; plan step R8 owns the placement
+        axis (plan ledger row D20).
+        """
+        spec = RecurrenceSpec(
+            user_id=_USER_ID,
+            unit=RecurrenceUnitEnum.YEAR,
+            placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            day_of_month=15,
+        )
+
+        with pytest.raises(
+            RecurrenceResolutionError, match="no first occurrence",
+        ):
             resolve(spec, build_calendar())
 
     def test_another_users_schedule_is_refused(self):

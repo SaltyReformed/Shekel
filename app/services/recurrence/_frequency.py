@@ -31,10 +31,21 @@ defect this arc exists to remove, one file over.  The dependency runs ONE way
 which is what keeps the split a boundary rather than a pair of files that need
 each other.
 
+**Since plan step R7b this module is also the SEAM between the two
+vocabularies.**  A caller AUTHORS ``(interval_n, unit, placement)`` and the
+table stores a ``ref.recurrence_patterns`` id, so exactly two functions cross
+that line: :func:`encode_cadence` (authored -> stored, used by the write door)
+and :func:`decode_pattern` (stored -> authored, used by the read door).  Both
+read :data:`PATTERN_DERIVATIONS` -- the encoder through an INVERSION of it
+computed at import, never a second hand-written table -- so the round trip is
+one statement of the mapping read in two directions and cannot half-drift.
+
 Everything keyed on the closed pattern set dies at plan step **R7c**, which
-makes ``interval_n`` and ``unit_id`` authored columns.  What survives is
-:class:`Cadence` -- the pair itself -- and :meth:`Cadence.occurrences_per_year`,
-which is a fact about the two axes and not about how they were stored.
+makes ``interval_n`` and ``unit_id`` authored columns: the two functions above,
+the table and its inverse leave together, and nothing above the door changes.
+What survives is :class:`Cadence` -- the pair itself -- and
+:meth:`Cadence.occurrences_per_year`, which is a fact about the two axes and
+not about how they were stored.
 
 Pure: no Flask, no ORM, no clock, no database.
 """
@@ -81,14 +92,6 @@ _CALENDAR_UNITS_PER_YEAR: dict[RecurrenceUnitEnum, Decimal] = {
     RecurrenceUnitEnum.MONTH: MONTHS_PER_YEAR,
     RecurrenceUnitEnum.YEAR: Decimal(1),
 }
-
-#: Families of anchor derivation.  Three, because the anchor is measured in
-#: three different spaces -- the paycheck rhythm, the calendar, and "each
-#: month's first paycheck" -- not because there are three groups of patterns.
-FAMILY_PERIOD = "period"
-FAMILY_CALENDAR = "calendar"
-FAMILY_FIRST_OF_MONTH = "first_of_month"
-
 
 class RecurrenceFrequencyError(ShekelError):
     """A cadence names a unit with no yearly count.
@@ -233,18 +236,56 @@ class PatternDerivation:
             pattern whose interval was already a column rather than a name.
         unit: The cadence unit the pattern counts in.
         placement: How its occurrences map onto pay periods.
-        family: Which anchor derivation applies (one of the ``FAMILY_*``
-            constants above).
-        month_step: The interval expressed in MONTHS for the calendar family
-            -- the residue class its occurrence months fall in -- and ``None``
-            elsewhere.
     """
 
     interval_n: int | None
     unit: RecurrenceUnitEnum
     placement: PeriodPlacementEnum
-    family: str
-    month_step: int | None
+
+
+@dataclass(frozen=True)
+class PatternReading:
+    """What one STORED pattern says on both authored axes.
+
+    The whole of what :func:`decode_pattern` recovers from the closed-set
+    columns, held as one value so a caller cannot take the cadence and forget
+    the placement -- two rules with the identical ``(1, MONTH)`` cadence differ
+    only in it, and reading one without the other is how a bill that funds from
+    the month's first paycheck comes to be treated as one that funds from the
+    paycheck containing its own date.
+
+    Attributes:
+        cadence: How often the rule fires.
+        placement: Which pay period an occurrence is funded from.
+    """
+
+    cadence: "Cadence"
+    placement: PeriodPlacementEnum
+
+
+@dataclass(frozen=True)
+class EncodedPattern:
+    """The closed-set columns one AUTHORED cadence is stored as.
+
+    :func:`encode_cadence`'s whole answer.  Both fields together, because
+    writing one without the other stores a cadence the decoder cannot recover:
+    the pattern names the unit and the placement, and the column carries the
+    interval for the single pattern whose interval was never in its name.
+
+    Attributes:
+        pattern: The ``RecurrencePatternEnum`` member to store, resolved to a
+            ``ref.recurrence_patterns`` id by the write door.
+        interval_n: What ``budget.recurrence_rules.interval_n`` must hold.  The
+            authored interval for the one pattern that reads the column, and
+            ``1`` for every other -- which is what every live row holds and
+            what the column's ``CHECK (interval_n > 0)`` requires.  Writing the
+            two-axis interval there instead would put a MONTH count in a column
+            spelled "repeat every N pay periods", which nothing until plan step
+            R7c can tell apart.
+    """
+
+    pattern: RecurrencePatternEnum
+    interval_n: int
 
 
 #: How each closed-set pattern reads on the two axes.
@@ -262,38 +303,56 @@ PATTERN_DERIVATIONS: dict[RecurrencePatternEnum, PatternDerivation] = {
     RecurrencePatternEnum.EVERY_PERIOD: PatternDerivation(
         interval_n=1, unit=RecurrenceUnitEnum.PERIOD,
         placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=FAMILY_PERIOD, month_step=None,
     ),
     RecurrencePatternEnum.EVERY_N_PERIODS: PatternDerivation(
         interval_n=None, unit=RecurrenceUnitEnum.PERIOD,
         placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=FAMILY_PERIOD, month_step=None,
     ),
     RecurrencePatternEnum.MONTHLY: PatternDerivation(
         interval_n=1, unit=RecurrenceUnitEnum.MONTH,
         placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=FAMILY_CALENDAR, month_step=1,
     ),
     RecurrencePatternEnum.MONTHLY_FIRST: PatternDerivation(
         interval_n=1, unit=RecurrenceUnitEnum.MONTH,
         placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
-        family=FAMILY_FIRST_OF_MONTH, month_step=None,
     ),
     RecurrencePatternEnum.QUARTERLY: PatternDerivation(
         interval_n=3, unit=RecurrenceUnitEnum.MONTH,
         placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=FAMILY_CALENDAR, month_step=3,
     ),
     RecurrencePatternEnum.SEMI_ANNUAL: PatternDerivation(
         interval_n=6, unit=RecurrenceUnitEnum.MONTH,
         placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=FAMILY_CALENDAR, month_step=6,
     ),
     RecurrencePatternEnum.ANNUAL: PatternDerivation(
         interval_n=1, unit=RecurrenceUnitEnum.YEAR,
         placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=FAMILY_CALENDAR, month_step=12,
     ),
+}
+
+
+#: :data:`PATTERN_DERIVATIONS` read backwards: which pattern STORES a given
+#: two-axis reading.
+#:
+#: INVERTED from the forward table rather than written out, so the encoder and
+#: the decoder are one statement of the mapping read in two directions.  A
+#: second hand-written table is the defect this arc exists to remove, and it
+#: would fail in the direction nobody tests -- an entry changed on one side
+#: only.
+#:
+#: The key's interval is the pattern's OWN, so ``Every N Periods`` keys on
+#: ``None``: it is the one pattern that names no interval and takes the
+#: authored one from a column.  :func:`encode_cadence` therefore looks for an
+#: exact interval first and falls back to the ``None`` key, which is what makes
+#: ``(1, PERIOD)`` encode as ``Every Period`` rather than as ``Every N
+#: Periods`` with ``N = 1``.  Both would resolve identically; picking the named
+#: one keeps plan step R7c's downgrade able to round-trip.
+_PATTERNS_BY_READING: dict[
+    tuple[int | None, RecurrenceUnitEnum, PeriodPlacementEnum],
+    RecurrencePatternEnum,
+] = {
+    (derivation.interval_n, derivation.unit, derivation.placement): pattern
+    for pattern, derivation in PATTERN_DERIVATIONS.items()
 }
 
 
@@ -355,95 +414,71 @@ def pattern_member(pattern_id: int) -> RecurrencePatternEnum:
 
 
 
-def resolved_interval(
-    pattern_id: int,
-    interval_n: int,
-    derivation: PatternDerivation,
-    user_id: int | None = None,
-) -> int:
-    """Return the two-axis interval, refusing a non-positive authored one.
+def require_positive_interval(interval_n: int, where: str) -> None:
+    """Refuse a cadence interval that is not positive.
 
-    Package-internal for the reason :func:`pattern_member` is: ``resolve`` and
-    :func:`cadence_of` apply the same interval rule and must not each carry
-    their own.
+    Package-internal for the reason :func:`pattern_member` is: the decoder, the
+    encoder and ``resolve`` all need the rule and must not each carry their
+    own.
 
-    **The check is on the AUTHORED value, not the resolved one**, and the
-    difference is a live defect an adversarial review measured.  For every
-    calendar pattern the resolved interval is a hard-coded 1, 3, 6 or 1, which
-    can never be non-positive -- so checking it looked at nothing, while
-    ``app.services.recurrence._authoring._author`` wrote ``spec.interval_n``
-    verbatim into a ``NOT NULL`` column carrying
-    ``CHECK (interval_n > 0)``.  An authored 0 therefore reached the flush as
-    an unhandled ``IntegrityError``.  The authored value is the one that
-    becomes a column, so the authored value is the one the door must refuse;
-    the resolved value is positive by construction once it is.
+    **The check is on the AUTHORED value, not on a pattern's own**, and the
+    difference is a live defect an adversarial review measured.  Every calendar
+    pattern's interval is a hard-coded 1, 3 or 6, which can never be
+    non-positive -- so checking that looked at nothing, while the write door
+    wrote the authored value into a ``NOT NULL`` column carrying
+    ``CHECK (interval_n > 0)``.  An authored 0 therefore reached the flush as an
+    unhandled ``IntegrityError``.
 
     Args:
-        pattern_id: The pattern the interval was authored against.
         interval_n: The AUTHORED interval.
-        derivation: The pattern's two-axis reading.
-        user_id: The owner, when there is one to name.  ``None`` from
-            :func:`cadence_of`, which reads a pattern and not a rule and so
-            has no owner in scope; the refusal then names the pattern and the
-            value, which is the pair that identifies the fault either way.
-
-    Returns:
-        The pattern's own interval, or the authored one for the single
-        pattern (``Every N Periods``) whose interval was already a column.
+        where: What to name in the refusal -- the pattern id a stored rule
+            carries, or the ``(unit, placement)`` an authoring request states.
+            The caller composes it because only the caller knows which
+            vocabulary the offending value arrived in.
 
     Raises:
-        RecurrenceResolutionError: When the AUTHORED interval is not positive.
-            Mirrors ``ck_recurrence_rules_positive_interval``, refused here so
-            the caller sees the offending value rather than an IntegrityError
+        RecurrenceResolutionError: When *interval_n* is not positive.  Mirrors
+            ``ck_recurrence_rules_positive_interval``, refused here so the
+            caller sees the offending value rather than an ``IntegrityError``
             at flush, and so the phase modulo cannot divide by zero.
     """
     if interval_n < 1:
-        owner = "" if user_id is None else f" (user {user_id})"
         raise RecurrenceResolutionError(
-            f"recurrence interval_n must be positive, got {interval_n} "
-            f"for pattern id {pattern_id}{owner}.  It is "
-            f"written to a NOT NULL column with CHECK (interval_n > 0), so "
-            f"letting it through would raise an unhandled IntegrityError at "
-            f"the flush instead of here."
+            f"recurrence interval_n must be positive, got {interval_n} for "
+            f"{where}.  It is written to a NOT NULL column with "
+            f"CHECK (interval_n > 0), so letting it through would raise an "
+            f"unhandled IntegrityError at the flush instead of here."
         )
-    return (
-        interval_n if derivation.interval_n is None
-        else derivation.interval_n
-    )
 
 
-def cadence_of(pattern_id: int, interval_n: int) -> Cadence:
-    """Return how often a stored pattern fires, with NO schedule involved.
+def decode_pattern(pattern_id: int, interval_n: int) -> PatternReading:
+    """Return what a STORED closed-set pattern says on the authored axes.
 
-    The schedule-free half of :func:`resolve`, published for the consumers
-    that ask "how often" and never "when": ``obligations_aggregator``'s
-    monthly equivalent and ``calendar_service``'s infrequent-transaction
-    badge, neither of which holds a
-    :class:`~app.services.pay_calendar.PayCalendar` -- nor do their callers.
-    That absence is exactly why both read ``pattern_id`` through a hand-written
-    table until plan step R7a-2b (see :mod:`._frequency`).
-
-    It reads the SAME :data:`~._frequency.PATTERN_DERIVATIONS` table
-    :func:`resolve` does and applies the same interval rule, so the two
-    readings of one pattern cannot disagree; what it does not do is derive an
-    anchor, which is the only part that needs an owner's paydays.
+    **The DECODER half of the seam plan step R7b put between the two
+    vocabularies.**  ``budget.recurrence_rules`` still stores a
+    ``ref.recurrence_patterns`` id; a caller states, and every reader below
+    this line works in, ``(interval_n, unit, placement)``.  This is the one
+    place the first becomes the second, :func:`encode_cadence` is the one place
+    the reverse happens, and both read :data:`PATTERN_DERIVATIONS` -- so the
+    round trip is one table read twice rather than two tables that agree.
+    Plan step R7c deletes both together with the columns.
 
     Args:
         pattern_id: A ``ref.recurrence_patterns`` id.
-        interval_n: The AUTHORED interval.  Read only for the one pattern
-            whose interval is a column (``Every N Periods``); every other
-            pattern's interval is a property of the pattern, which is why a
-            hidden form input landing on a Quarterly rule's column cannot make
-            it read as monthly.
+        interval_n: The stored ``budget.recurrence_rules.interval_n``.  Read
+            only for the one pattern whose interval is a column
+            (``Every N Periods``); every other pattern's interval is a property
+            of the pattern, which is why a hidden form input landing on a
+            Quarterly rule's column cannot make it read as monthly.
 
     Returns:
-        The :class:`~._frequency.Cadence`.
+        The :class:`PatternReading`.
 
     Raises:
         RecurrenceResolutionError: *pattern_id* names no modelled pattern, or
-            the authored interval is not positive.  **A rule whose pattern
-            this application does not model is REFUSED rather than answered**
-            (ruled 2026-08-11) -- one disposition for one state, the one
+            the stored interval is not positive.  **A rule whose pattern this
+            application does not model is REFUSED rather than answered** (ruled
+            2026-08-11) -- one disposition for one state, the one
             :func:`resolve` has always had.  ``amount_to_monthly`` used to
             answer ``None`` here and its caller dropped the template, so a
             single such rule 500'd the Recurring surface through ``read_rule``
@@ -453,20 +488,115 @@ def cadence_of(pattern_id: int, interval_n: int) -> Cadence:
     """
     pattern = pattern_member(pattern_id)
     derivation = PATTERN_DERIVATIONS[pattern]
-    return Cadence(
-        interval_n=resolved_interval(pattern_id, interval_n, derivation),
-        unit=derivation.unit,
+    require_positive_interval(interval_n, f"pattern id {pattern_id}")
+    return PatternReading(
+        cadence=Cadence(
+            interval_n=(
+                interval_n if derivation.interval_n is None
+                else derivation.interval_n
+            ),
+            unit=derivation.unit,
+        ),
+        placement=derivation.placement,
     )
 
 
+def encode_cadence(
+    interval_n: int,
+    unit: RecurrenceUnitEnum,
+    placement: PeriodPlacementEnum,
+) -> EncodedPattern:
+    """Return the closed-set columns an AUTHORED cadence is stored as.
+
+    **The ENCODER half of the seam** -- see :func:`decode_pattern` for the
+    other, and for why both read one table.
+
+    **Not every authorable cadence has a pattern, and that is the whole reason
+    plan step R7c exists.**  ``(2, MONTH)`` and ``(1, WEEK)`` are perfectly
+    well-defined and the resolver walks them correctly; the closed set has no
+    NAME for them, so until R7c makes ``unit_id`` and ``interval_n`` authored
+    columns they cannot be STORED.  The refusal here is that gap stated once,
+    and it disappears with the table.
+
+    **It is load-bearing TODAY**, which an adversarial review corrected an
+    earlier draft of this paragraph for denying: the picker's options come from
+    :func:`~app.services.recurrence.pattern_choices`, which iterates
+    ``RecurrencePatternEnum`` rather than this table, so "nothing offers such a
+    cadence" is true only because the two sets happen to coincide.  Plan step
+    R7b-2 is what makes the form serve its intervals from this table and the
+    refusal genuinely unreachable.
+
+    Args:
+        interval_n: How many *unit*\\ s pass between occurrences.
+        unit: The cadence unit.
+        placement: Which pay period an occurrence is funded from.
+
+    Returns:
+        The :class:`EncodedPattern` the write door assigns.
+
+    Raises:
+        RecurrenceResolutionError: When *interval_n* is not positive, or when
+            no closed-set pattern names this reading.
+    """
+    require_positive_interval(interval_n, f"cadence ({unit!r}, {placement!r})")
+    # The pattern that names this exact interval first, then the one that takes
+    # its interval from a column.  See :data:`_PATTERNS_BY_READING` for why the
+    # order matters: ``(1, PERIOD)`` must encode as ``Every Period``.
+    pattern = _PATTERNS_BY_READING.get((interval_n, unit, placement))
+    if pattern is not None:
+        return EncodedPattern(pattern=pattern, interval_n=1)
+    pattern = _PATTERNS_BY_READING.get((None, unit, placement))
+    if pattern is not None:
+        return EncodedPattern(pattern=pattern, interval_n=interval_n)
+    raise RecurrenceResolutionError(
+        f"no recurrence pattern stores a cadence of every {interval_n} "
+        f"{unit!r} funded {placement!r}.  ``budget.recurrence_rules`` names "
+        f"its cadence with a closed pattern set until plan step R7c gives it "
+        f"an authored unit and interval, so this reading has nowhere to be "
+        f"written -- and nothing offers it, because the picker's own options "
+        f"are derived from the same table."
+    )
+
+
+def cadence_of(pattern_id: int, interval_n: int) -> Cadence:
+    """Return how often a stored pattern fires, with NO schedule involved.
+
+    The projection of :func:`decode_pattern` taken by the consumers that ask
+    "how often" and never "when" or "which paycheck":
+    ``obligations_aggregator``'s monthly equivalent and ``calendar_service``'s
+    infrequent-transaction badge, neither of which holds a
+    :class:`~app.services.pay_calendar.PayCalendar`.  That absence is exactly
+    why both read ``pattern_id`` through a hand-written table until plan step
+    R7a-2b; this module's own docstring records the one caller that DOES hold a
+    calendar, an adversarial review having corrected "nor do their callers".
+
+    **It is the third public entry point in the STORED vocabulary**, and plan
+    step R7c retires all three together: its two callers above read
+    ``rule.pattern_id`` off the row, so they change with the columns even
+    though neither is part of the form work R7b-2 and R7b-4 delete.
+
+    Args:
+        pattern_id: A ``ref.recurrence_patterns`` id.
+        interval_n: The stored interval; see :func:`decode_pattern`.
+
+    Returns:
+        The :class:`Cadence`.
+
+    Raises:
+        RecurrenceResolutionError: See :func:`decode_pattern`.
+    """
+    return decode_pattern(pattern_id, interval_n).cadence
+
+
 __all__ = [
-    "FAMILY_CALENDAR",
-    "FAMILY_FIRST_OF_MONTH",
-    "FAMILY_PERIOD",
     "PATTERN_DERIVATIONS",
     "Cadence",
+    "EncodedPattern",
     "PatternDerivation",
+    "PatternReading",
     "RecurrenceFrequencyError",
     "RecurrenceResolutionError",
     "cadence_of",
+    "decode_pattern",
+    "encode_cadence",
 ]

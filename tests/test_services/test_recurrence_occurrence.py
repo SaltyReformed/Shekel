@@ -61,6 +61,7 @@ from app.enums import (
     PeriodPlacementEnum,
     RecurrenceUnitEnum,
 )
+from app.exceptions import ShekelError
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
     RecurrenceGenerationError,
@@ -75,7 +76,7 @@ from app.services.recurrence import (
 # would leave ``occurrence_placements`` calling the real ones, making a control
 # that passes prove nothing -- the same reasoning
 # ``tests/oracles/recurrence_baseline.py`` records for the old engine.
-from app.services.recurrence import _occurrence, _resolution
+from app.services.recurrence import _months, _occurrence, _resolution
 from tests.oracles import recurrence_baseline
 from tests.test_services.test_recurrence_resolution import build_calendar
 
@@ -1461,35 +1462,93 @@ class TestRefusals:
         with pytest.raises(RecurrenceGenerationError, match="no occurrence walk"):
             occurrences(not_a_unit, calendar, through=date(2026, 12, 31))
 
-    def test_a_unit_that_names_a_day_but_has_no_stride_is_refused(self, monkeypatch):
-        """The sibling refusal, and the reason there are two (plan step R7a).
+    def test_a_unit_that_names_a_day_ALWAYS_has_a_stride(self):
+        """The sibling refusal is gone, because its state is unconstructible.
 
-        A member added to ``_resolution._DAY_OF_MONTH_UNITS`` without a walk
-        here reaches ``walk_months`` with a real day and no stride.  Before the
-        two refusals were separated it reached ``clamped_day`` with ``None``
-        and died on a bare ``TypeError`` three frames down, which is not this
-        package's idea of failing loud.  Both halves of the half-finished edit
-        are now named, and each is shown to fire: this one by giving the
-        hypothetical unit a day, the one above by withholding it.
+        **This case used to manufacture the defect and assert the guard; plan
+        step R7b-1 deleted both** (adversarial review, 2026-08-12).  There were
+        two refusals -- "this unit names no day" and "this unit names a day but
+        has no stride" -- and the second was reachable only when
+        ``_resolution._DAY_OF_MONTH_UNITS`` and ``_months``' month-span table
+        disagreed about which units are calendar units.  Two hand-written
+        statements of one class, and the only way to exercise the guard between
+        them was to monkeypatch them apart, which is what this case did.
+
+        They are ONE statement now: ``_DAY_OF_MONTH_UNITS`` IS
+        ``MONTH_SPANNING_UNITS``, which is the key set of the table
+        ``months_per_step`` reads.  A unit that names a day of the month
+        therefore has a stride by construction, and the guard that used to say
+        so was a fence over an impossible state.  What replaces it is the
+        identity the proof rests on, which fails the moment either set is
+        written out separately again.
+
+        The refusal itself is not untested -- ``months_per_step`` still refuses
+        a unit with no month span, asserted on the function directly by
+        :meth:`test_the_month_stride_refuses_a_unit_it_cannot_measure`.  What
+        can no longer happen is REACHING it from either of this package's two
+        walks.
+        """
+        assert (
+            tuple(_resolution._DAY_OF_MONTH_UNITS)  # pylint: disable=protected-access
+            == tuple(_months.MONTH_SPANNING_UNITS)
+        ), (
+            "the day-of-month units and the month-spanning units have been "
+            "written out separately again.  While they are one statement, a "
+            "cadence that names a day of the month provably has a month "
+            "stride; while they are two, that is a hope with a guard behind it."
+        )
+        # An identity between two EMPTY tuples would satisfy the assert above,
+        # so the members are exercised too.
+        assert _months.MONTH_SPANNING_UNITS
+        for unit in _months.MONTH_SPANNING_UNITS:
+            assert _months.months_per_step(unit, 1) >= 1
+
+    @pytest.mark.parametrize(
+        "unit", [RecurrenceUnitEnum.PERIOD, RecurrenceUnitEnum.WEEK],
+    )
+    def test_the_month_stride_refuses_a_unit_it_cannot_measure(self, unit):
+        """``months_per_step`` is partial over the enum and says so.
+
+        Unreachable from either walk -- see the case above for why -- and
+        asserted on the function itself because a THIRD caller that does not
+        prove membership first would meet it.  A ``ShekelError`` since plan
+        step R7b-1, so such a caller fails inside the hierarchy every other
+        refusal in this package raises into rather than beside it.
+        """
+        with pytest.raises(_months.MonthStepError, match="no reading in months"):
+            _months.months_per_step(unit, 1)
+
+        assert isinstance(
+            _months.MonthStepError("probe"), ShekelError,
+        ), "a refusal outside ShekelError escapes every handler written for it"
+
+    def test_the_two_walks_take_the_same_stride(self):
+        """The anchor's month step and the occurrence walk's are one call.
+
+        They were two spellings of one fact until plan step R7b-1 -- a
+        ``month_step`` column on the pattern table for the anchor, and
+        ``interval_n * MONTHS_PER_YEAR`` computed inline here for the walk --
+        in the two functions whose own docstrings say they are "the SAME walk
+        seeded differently".  They agreed; nothing made them.
+
+        Asserted where it can actually fail: a YEAR cadence's first TWO
+        occurrences must be twelve months apart, which is the case a second
+        spelling gets wrong.  The anchor is the walk's first element by
+        construction, so comparing the walk's own step to the anchor's is what
+        a re-divergence would break.
         """
         calendar = build_calendar()
-        fortnight = object()
-        monkeypatch.setattr(
-            _resolution, "_DAY_OF_MONTH_UNITS",
-            (*_resolution._DAY_OF_MONTH_UNITS, fortnight),
+        yearly = resolved_value(
+            unit=RecurrenceUnitEnum.YEAR, anchor_date=date(2026, 4, 15),
+            interval_n=2,
         )
-        value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
-        )
-        no_stride = ResolvedRecurrence(**{**vars(value), "unit": fortnight})
 
-        assert no_stride.day_of_month == 15, (
-            "the control must reach the SECOND refusal, not the first"
-        )
-        with pytest.raises(
-            RecurrenceGenerationError, match="names a day of the month but",
-        ):
-            occurrences(no_stride, calendar, through=date(2026, 12, 31))
+        dates = list(occurrences(yearly, calendar, through=date(2032, 12, 31)))
+
+        assert dates[:3] == [
+            date(2026, 4, 15), date(2028, 4, 15), date(2030, 4, 15),
+        ]
+        assert _months.months_per_step(RecurrenceUnitEnum.YEAR, 2) == 24
 
     def test_a_placement_with_no_rule_is_refused(self):
         """Same reasoning on the placement axis."""

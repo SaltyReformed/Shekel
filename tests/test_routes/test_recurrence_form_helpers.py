@@ -721,9 +721,11 @@ class TestTheFormsIntervalCannotChangeACalendarCadence:
             stored_interval=4, submitted=99,
         )
 
-        assert rule.interval_n == 99, (
-            "the submitted value should reach the COLUMN -- it is the "
-            "authored pay-period interval, meaningless for this pattern"
+        assert rule.interval_n == 1, (
+            "a calendar cadence carries its interval in the pattern's NAME, so "
+            "the column must hold the encoder's 1 -- writing the submitted 99 "
+            "there would put a value in a column spelled 'every N pay PERIODS' "
+            "that nothing can tell from an authored one (plan step R7b)"
         )
         resolved = resolve(
             recurrence_spec(rule), calendar_for(seed_user["user"].id),

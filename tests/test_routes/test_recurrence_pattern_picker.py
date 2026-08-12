@@ -24,8 +24,11 @@ one alone would not show the defect:
 
 1. the surface REFUSES it (a flash and a redirect, or the preview's "Unknown
    pattern"), and nothing is written;
-2. ``resolve`` genuinely raises for that same id -- so the refusal is what
-   stands between the user and a 500, not a coincidence.
+2. the SEAM genuinely raises for that same id -- so the refusal is what
+   stands between the user and a 500, not a coincidence.  Since plan step R7b
+   that raise lives in ``decode_pattern``, the one place a stored or submitted
+   id becomes a cadence; ``resolve`` is handed the cadence and never sees an
+   id at all, so the refusal moved one function EARLIER rather than weakening.
 """
 import re
 from decimal import Decimal
@@ -40,14 +43,12 @@ from app.models.ref import AccountType, RecurrencePattern
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
-from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     UNAVAILABLE_PATTERN_LABEL,
     UNAVAILABLE_PATTERN_MESSAGE,
     RecurrenceResolutionError,
-    RecurrenceSpec,
+    decode_pattern,
     pattern_choices,
-    resolve,
 )
 from tests._test_helpers import select_option_values
 
@@ -76,27 +77,27 @@ def _unmodelled_pattern_id(name="Every Blue Moon"):
     return row.id
 
 
-def _assert_unresolvable(user_id, pattern_id):
-    """Assert ``resolve`` raises for *pattern_id*, i.e. the door earns its keep.
+def _assert_unresolvable(pattern_id):
+    """Assert the seam raises for *pattern_id*, i.e. the door earns its keep.
 
     Without this, a test that only asserts "the route redirected" cannot tell
     a door that refuses bad input from a door that refuses everything.
 
     The match is the membership sentence, not the bare id: ``match`` is a
-    ``re.search`` over the whole message, and ``resolve`` raises three other
-    errors that can carry the same digits ("recurrence for user 9 cannot be
-    resolved", "interval_n must be positive, got 9").
+    ``re.search`` over the whole message, and the seam raises other errors that
+    can carry the same digits ("interval_n must be positive, got 9").
+
+    **Asserted against ``decode_pattern`` since plan step R7b.**  It took the
+    owner's schedule before, because ``resolve`` needed one; the refusal is a
+    property of the ID alone and now sits where the id is read, so the schedule
+    was never part of what it measured.
 
     Args:
-        user_id: Owner whose schedule the resolution is measured against.
         pattern_id: The id the surface just refused.
     """
     expected = rf"pattern id {pattern_id} matches no RecurrencePatternEnum"
     with pytest.raises(RecurrenceResolutionError, match=expected):
-        resolve(
-            RecurrenceSpec(user_id=user_id, pattern_id=pattern_id),
-            calendar_for(user_id),
-        )
+        decode_pattern(pattern_id, 1)
 
 
 def _savings_account(seed_user):
@@ -427,7 +428,7 @@ class TestTheCreateDoorRefusesAnUnmodelledPattern:
             assert seed_periods_today
             surplus_id = _unmodelled_pattern_id()
             user_id = seed_user["user"].id
-            _assert_unresolvable(user_id, surplus_id)
+            _assert_unresolvable(surplus_id)
             rules_before = db.session.query(RecurrenceRule).count()
 
             resp = auth_client.post("/templates", data={
@@ -461,7 +462,7 @@ class TestTheCreateDoorRefusesAnUnmodelledPattern:
             savings = _savings_account(seed_user)
             surplus_id = _unmodelled_pattern_id()
             user_id = seed_user["user"].id
-            _assert_unresolvable(user_id, surplus_id)
+            _assert_unresolvable(surplus_id)
             rules_before = db.session.query(RecurrenceRule).count()
 
             resp = auth_client.post("/transfers", data={
@@ -507,7 +508,7 @@ class TestTheEditDoorRefusesAnUnmodelledPattern:
             template = _template_with_pattern(seed_user, monthly_id)
             template_id, rule_id = template.id, template.recurrence_rule_id
             surplus_id = _unmodelled_pattern_id()
-            _assert_unresolvable(seed_user["user"].id, surplus_id)
+            _assert_unresolvable(surplus_id)
 
             resp = auth_client.post(f"/templates/{template_id}", data={
                 "name": "Rent",
@@ -522,6 +523,55 @@ class TestTheEditDoorRefusesAnUnmodelledPattern:
             reloaded = db.session.get(TransactionTemplate, template_id)
             assert reloaded.recurrence_rule_id == rule_id
             assert reloaded.recurrence_rule.pattern_id == monthly_id
+
+
+class TestAnUnmodelledRuleCanStillBeREPAIRED:
+    """Picking a NEW pattern fixes a rule whose stored one is unmodelled.
+
+    The other half of ``pattern_choices_for``'s contract, and the half a test
+    only appears for now because plan step R7b-1 broke it.  The edit form keeps
+    the unmodelled stored id SELECTABLE and flashes
+    ``UNAVAILABLE_PATTERN_MESSAGE`` -- "Pick a new pattern before saving" -- so
+    that repair is the action the surface asks for, and the class above only
+    proves the OTHER action (saving it unchanged) is refused.  A suite holding
+    just that one can watch the advertised remedy turn into a 500, which is
+    exactly what happened: reading the rule's authored state on the way to
+    replacing its cadence raised on the cadence being replaced.
+
+    Measured against ``origin/dev`` before the fix landed, driven through this
+    same route: ``RecurrenceResolutionError: recurrence pattern id 10 matches
+    no RecurrencePatternEnum member``, uncaught.
+    """
+
+    def test_choosing_a_modelled_pattern_re_points_the_rule(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /templates/<id> with a good pattern repairs the broken rule."""
+        with app.app_context():
+            assert seed_periods_today
+            surplus_id = _unmodelled_pattern_id()
+            _assert_unresolvable(surplus_id)
+            template = _template_with_pattern(seed_user, surplus_id)
+            template_id, rule_id = template.id, template.recurrence_rule_id
+            monthly_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.MONTHLY,
+            )
+
+            resp = auth_client.post(f"/templates/{template_id}", data={
+                "name": "Rent",
+                "default_amount": "1200.00",
+                "recurrence_pattern": str(monthly_id),
+                "day_of_month": "1",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            reloaded = db.session.get(TransactionTemplate, template_id)
+            # The SAME rule row, re-pointed -- not a new one, so every
+            # generated row keeps its lineage.
+            assert reloaded.recurrence_rule_id == rule_id
+            assert reloaded.recurrence_rule.pattern_id == monthly_id
+            assert reloaded.recurrence_rule.day_of_month == 1
 
 
 # ── The preview ──────────────────────────────────────────────────────
@@ -549,7 +599,7 @@ class TestThePreviewRefusesAnUnmodelledPattern:
             # fires on an empty calendar too.
             assert seed_periods_today
             surplus_id = _unmodelled_pattern_id()
-            _assert_unresolvable(seed_user["user"].id, surplus_id)
+            _assert_unresolvable(surplus_id)
 
         resp = auth_client.get(
             f"/templates/preview-recurrence?recurrence_pattern={surplus_id}",

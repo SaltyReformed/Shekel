@@ -75,7 +75,7 @@ from app.enums import RecurrencePatternEnum
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import PayCalendar
-from app.services.recurrence import RecurrenceSpec
+from app.services.recurrence import RecurrenceSpec, decode_pattern
 # Both imported as MODULES, not as names, and the recurrence producer is
 # imported from its DEFINITION site (``_reading``) rather than through the
 # package's re-export.  ``from ... import rule_occurrences`` would bind the
@@ -284,6 +284,13 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
     period here would add a bound the captured answers were never measured
     under.
 
+    **The shape's PATTERN is decoded rather than passed** (plan step R7b): the
+    spec speaks the two-axis vocabulary now, and a shape is a set of stored
+    COLUMN values.  Decoding here is what keeps the two builders on this page
+    two views of one shape -- ``build_shape_rule`` writes the columns and this
+    reads them back through the same seam the read door uses, so a shape cannot
+    mean one thing to the engine and another to the resolver.
+
     Requires an app context: ``pattern_id`` resolves through
     :func:`app.ref_cache.recurrence_pattern_id`.
 
@@ -293,10 +300,14 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
     Returns:
         The :class:`~app.services.recurrence.RecurrenceSpec`.
     """
+    reading = decode_pattern(
+        ref_cache.recurrence_pattern_id(shape.pattern), shape.interval_n,
+    )
     return RecurrenceSpec(
         user_id=SHAPE_USER_ID,
-        pattern_id=ref_cache.recurrence_pattern_id(shape.pattern),
-        interval_n=shape.interval_n,
+        unit=reading.cadence.unit,
+        interval_n=reading.cadence.interval_n,
+        placement=reading.placement,
         offset_periods=shape.offset_periods,
         day_of_month=shape.day_of_month,
         due_day_of_month=shape.due_day_of_month,

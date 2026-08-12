@@ -34,6 +34,7 @@ from app.services.recurrence import (
     RecurrenceResolutionError,
     RecurrenceSpec,
     build_transient_rule,
+    decode_pattern,
     modelled_pattern,
     placed_periods,
     rule_occurrences,
@@ -120,9 +121,9 @@ def build_preview_rule(
     caller now validates the submitted id against what the application MODELS,
     which needs no row, and the row it used to fetch was written onto the
     transient rule's ``pattern`` relationship for a reader that does not
-    exist -- resolution reads the ``pattern_id`` COLUMN
-    (``app.services.recurrence.resolve``), never the relationship, and the
-    transient rule is discarded immediately afterwards.
+    exist.  Since plan step R7b the id is DECODED into a cadence here and
+    ``resolve`` never sees an id at all; the transient rule is discarded
+    immediately afterwards either way.
 
     Args:
         pattern_id: The ``ref.recurrence_patterns`` id being previewed,
@@ -133,11 +134,21 @@ def build_preview_rule(
     Returns:
         The transient :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
+    # ``decode_pattern`` translates the submitted closed-set id into the
+    # cadence the seam authors in (plan step R7b), through the same table the
+    # write door encodes back through -- so the preview and the save cannot
+    # read one submission as two different cadences.  It refuses a
+    # non-positive ``interval_n`` for the caller's ``RecurrenceResolutionError``
+    # handler, which is why the raw query arg is safe to pass here.
+    reading = decode_pattern(
+        pattern_id, request.args.get("interval_n", type=int, default=1),
+    )
     return build_transient_rule(
         RecurrenceSpec(
             user_id=current_user.id,
-            pattern_id=pattern_id,
-            interval_n=request.args.get("interval_n", type=int, default=1),
+            unit=reading.cadence.unit,
+            interval_n=reading.cadence.interval_n,
+            placement=reading.placement,
             day_of_month=request.args.get("day_of_month", type=int),
             month_of_year=request.args.get("month_of_year", type=int),
             start_period_id=start_period.id if start_period else None,

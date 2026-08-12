@@ -221,8 +221,8 @@ from app.enums import (
 from app.exceptions import ShekelError
 from app.services.pay_calendar import DerivedPeriod, PayCalendar
 from app.services.recurrence._months import (
-    MONTHS_PER_YEAR,
     month_ordinal,
+    months_per_step,
     walk_months,
 )
 from app.services.recurrence._resolution import ResolvedRecurrence
@@ -388,26 +388,25 @@ def _unbounded(
     # The SAME walk ``_resolution._calendar_anchor`` derives the anchor with
     # (``app.services.recurrence._months``), seeded at the anchor's own month
     # -- so the first date this yields IS the anchor, by construction rather
-    # than by two implementations agreeing.  A YEAR cadence is that walk with
+    # than by two implementations agreeing.  **Including the STRIDE**, which
+    # this function used to compute for itself (``interval_n *
+    # MONTHS_PER_YEAR`` for a YEAR cadence) while the anchor took one off the
+    # pattern table: one fact, two spellings, in the two places whose own
+    # docstrings say they are the same walk.  A YEAR cadence is that walk with
     # a twelve-month stride; there is no separate year arithmetic, so leap-day
     # clamping is the month clamp and cannot diverge from it.
+    #
+    # ``months_per_step`` is partial over the enum and is NOT guarded here,
+    # because reaching this line already proves membership: ``day_of_month``
+    # answers non-``None`` only for ``_resolution._DAY_OF_MONTH_UNITS``, which
+    # IS ``_months.MONTH_SPANNING_UNITS``, which is that function's own key
+    # set.  A guard whose only reachability condition is "two hand-written sets
+    # disagree" is the fence this project removes rather than tests, and an
+    # adversarial review of plan step R7b-1 named it: the sets are one now, so
+    # the state is unconstructible rather than merely unreached.
     start = month_ordinal(resolved.anchor_date)
-    if unit is RecurrenceUnitEnum.MONTH:
-        return walk_months(start, month_day, resolved.interval_n)
-    if unit is RecurrenceUnitEnum.YEAR:
-        return walk_months(
-            start, month_day, resolved.interval_n * MONTHS_PER_YEAR,
-        )
-    # A unit that DOES name a day of the month but has no stride here: the
-    # sibling of the refusal above, reached by adding a member to
-    # ``_resolution._DAY_OF_MONTH_UNITS`` without giving it a walk.  Two
-    # refusals because the two half-finished edits are different, and each
-    # names which one happened.
-    raise RecurrenceGenerationError(
-        f"recurrence unit {unit!r} names a day of the month but has no "
-        f"occurrence walk.  Every member of RecurrenceUnitEnum must have "
-        f"one: returning nothing instead would read as a rule that never "
-        f"fires."
+    return walk_months(
+        start, month_day, months_per_step(unit, resolved.interval_n),
     )
 
 

@@ -76,11 +76,16 @@ class TestTheOrderIsStatedOnlyInStepsMd:
 
         The recurrence plan's copy was exactly this long -- "NEXT = R7a-2 ...,
         then R7b" -- so an arm that demanded three members would have passed it.
+
+        The planted ids track the LIVE table, because the arm can only see a
+        chain of keys it can resolve: ``R7b`` DECOMPOSED on 2026-08-12, and a
+        control naming a retired id would have stopped firing silently -- which
+        is the one failure a control exists to make impossible.
         """
         stage_arc(
             "recurrence",
             "## Rulings",
-            "## Rulings\n\nBuild R7b, then R7c.\n",
+            "## Rulings\n\nBuild R7b-1, then R7c.\n",
         )
         assert duplication.order_restatement_violations()
 

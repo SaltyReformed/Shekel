@@ -61,13 +61,17 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 
+from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import DerivedPeriod, PayCalendar
 from app.services.recurrence._occurrence import (
     OccurrencePlacement,
     occurrence_placements,
 )
-from app.services.recurrence._frequency import RecurrenceResolutionError
+from app.services.recurrence._frequency import (
+    RecurrenceResolutionError,
+    decode_pattern,
+)
 from app.services.recurrence._resolution import (
     RecurrenceSpec,
     ResolvedRecurrence,
@@ -125,20 +129,86 @@ def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:
     without a partial write: a caller that owns ONE fact about a rule reads
     the spec, replaces that fact, and re-authors the whole value.
 
+    **The DECODE step for a stored ROW is here** (plan step R7b).  The row
+    still names its cadence with a closed pattern set;
+    :func:`~app.services.recurrence._frequency.decode_pattern` turns
+    ``(pattern_id, interval_n)`` back into the ``(interval_n, unit,
+    placement)`` a caller authored.  Its inverse is the write door's
+    ``encode_cadence``, and both read one table, so the round trip is one
+    statement of the mapping rather than two that agree.  Plan step R7c deletes
+    this call together with the columns.
+
+    **It is not the only ``decode_pattern`` call in the application**, and an
+    adversarial review corrected an earlier "here and nowhere else" for saying
+    so: the two form doors and the preview each decode a POSTED id until plan
+    step R7b-2 replaces the picker.  What is single is the MAPPING, not the
+    call site.
+
     Args:
         rule: The rule to read.
 
     Returns:
         The :class:`~app.services.recurrence.RecurrenceSpec` that authored it.
-        Round-trips exactly -- resolution ignores ``interval_n`` for every
-        pattern but ``Every N Periods`` (where the stored value IS the
-        authored one), and re-derives ``offset_periods`` from the start period
-        whenever the rule names one.
+        **Round-trips exactly**, and ``test_recurrence_frequency`` proves it
+        over every authorable cadence rather than by argument: encoding maps a
+        calendar cadence's interval into the pattern's NAME and writes ``1`` to
+        the column, so decoding reads the interval back off the name.
+
+    Raises:
+        RecurrenceResolutionError: When the row names a pattern this
+            application does not model, or carries a non-positive interval --
+            see ``decode_pattern``.  A caller that is REPLACING the cadence
+            must take :func:`recurrence_spec_with_cadence` instead, which reads
+            no cadence and therefore cannot fail on one.
+    """
+    reading = decode_pattern(rule.pattern_id, rule.interval_n)
+    return recurrence_spec_with_cadence(
+        rule,
+        interval_n=reading.cadence.interval_n,
+        unit=reading.cadence.unit,
+        placement=reading.placement,
+    )
+
+
+def recurrence_spec_with_cadence(
+    rule: RecurrenceRule,
+    *,
+    interval_n: int,
+    unit: RecurrenceUnitEnum,
+    placement: PeriodPlacementEnum,
+) -> RecurrenceSpec:
+    """Read a rule's authored state with a STATED cadence in place of its own.
+
+    The read door for the one caller that OWNS the cadence: the edit form,
+    whose whole job is to state one.  :func:`recurrence_spec` is this function
+    plus a decode, so "everything about a rule except how often it repeats" has
+    one implementation rather than two that agree.
+
+    **Its existence is a defect the two-axis swap would otherwise have
+    introduced, measured against ``origin/dev``.**  The edit form offers a
+    stored pattern the application no longer models as a trailing option and
+    tells the user to pick a new one before saving (``pattern_choices_for``,
+    ``UNAVAILABLE_PATTERN_MESSAGE``) -- so picking a new one IS the documented
+    repair.  Routing that repair through :func:`recurrence_spec` made it read
+    the broken cadence on the way to replacing it, and the read raised: the one
+    action the surface tells the user to take became a 500.  Reading no cadence
+    is what makes the repair structural rather than excepted.
+
+    Args:
+        rule: The rule to read.  Its ``pattern_id`` and ``interval_n`` are NOT
+            consulted.
+        interval_n: The cadence interval to state.
+        unit: The cadence unit to state.
+        placement: The placement to state.
+
+    Returns:
+        The :class:`~app.services.recurrence.RecurrenceSpec`.
     """
     return RecurrenceSpec(
         user_id=rule.user_id,
-        pattern_id=rule.pattern_id,
-        interval_n=rule.interval_n,
+        unit=unit,
+        interval_n=interval_n,
+        placement=placement,
         offset_periods=rule.offset_periods,
         day_of_month=rule.day_of_month,
         due_day_of_month=rule.due_day_of_month,
@@ -351,6 +421,7 @@ __all__ = [
     "placed_periods",
     "read_rule",
     "recurrence_spec",
+    "recurrence_spec_with_cadence",
     "resolved_recurrence",
     "rule_occurrences",
 ]

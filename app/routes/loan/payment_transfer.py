@@ -14,8 +14,7 @@ from decimal import Decimal
 from flask import Response, flash, redirect, request, url_for
 from flask_login import current_user, login_required
 
-from app import ref_cache
-from app.enums import RecurrencePatternEnum
+from app.enums import RecurrenceUnitEnum
 from app.exceptions import (
     NotFoundError,
     ValidationError as ShekelValidationError,
@@ -172,13 +171,10 @@ def create_payment_transfer(account_id):
     extra_principal = data["extra_principal"]
 
     # Create monthly recurrence rule.
-    monthly_pattern_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.MONTHLY,
-    )
     rule = author_rule(
         RecurrenceSpec(
             user_id=current_user.id,
-            pattern_id=monthly_pattern_id,
+            unit=RecurrenceUnitEnum.MONTH,
             day_of_month=params.payment_day,
         ),
         calendar_for(current_user.id),

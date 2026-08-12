@@ -164,5 +164,13 @@ no reconciler.
   `IntegrityError` because the flag that lifts the row out of a partial unique index had not been
   written yet. **A guard placed for READABILITY moved a database write.** Ask of every pre-mutation
   check whether it touches a relationship, and put it where the flush belongs.
+- **A READ DOOR THAT GAINS A RAISE BREAKS EVERY REPAIR PATH THE UI ADVERTISES THROUGH IT.** R7b-1
+  made `recurrence_spec` decode, so it refused a rule whose stored pattern the application no longer
+  models -- on the way to REPLACING that pattern, which is the one action the edit form tells the
+  user to take ("Pick a new pattern before saving"). The suite had a control for saving such a rule
+  UNCHANGED and none for repairing it, so the advertised remedy became a 500 with every gate green.
+  The fix was structural -- read everything EXCEPT the fact being replaced -- and the shape
+  generalises: **when a reader starts validating, ask which of its callers were about to overwrite
+  the thing it now validates.**
 - **Documents rot in days here.** This file is the only one allowed to rot, and every edit re-dates
   it.

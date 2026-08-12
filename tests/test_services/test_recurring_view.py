@@ -671,7 +671,11 @@ class TestTheRecurrenceDescription:
         real_resolve = _reading.resolve
 
         def counting_resolve(spec, calendar):
-            calls.append(spec.pattern_id)
+            # The CADENCE identifies the call since plan step R7b, which is
+            # what a spec carries now; the two definitions above are a monthly
+            # bill and an every-paycheck income, so the two entries also say
+            # the right rules were read.
+            calls.append((spec.interval_n, spec.unit))
             return real_resolve(spec, calendar)
 
         monkeypatch.setattr(_reading, "resolve", counting_resolve)
