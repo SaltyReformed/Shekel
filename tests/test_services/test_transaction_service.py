@@ -637,6 +637,64 @@ class TestSettleTransactionTheVerb:
             assert txn.settled_on is None
             assert txn.actual_amount is None
 
+    def test_a_soft_deleted_row_is_refused(
+        self, app, seed_user, seed_periods,
+    ):
+        """A settle cannot resurrect a deleted row -- on EITHER branch.
+
+        **Finding N-233.**  The envelope branch refused this from the
+        beginning, with its own docstring giving the reason, and the MANUAL
+        branch never did -- so the refusal was a property of which branch a row
+        happened to take rather than of the verb.  It was REACHABLE:
+        ``get_accessible_transaction`` does not filter ``is_deleted``, so
+        ``POST /transactions/<id>/mark-done`` on a soft-deleted non-envelope row
+        flipped it into the settled band and stamped a settle day, while
+        ``effective_amount`` valued it at ``Decimal("0")`` -- a row that reads
+        Paid on every surface and is worth nothing on all of them.  Production
+        carries 102 soft-deleted rows, every one of them Projected.
+
+        Graded on the MANUAL branch specifically, because that is the half that
+        had no guard.
+        """
+        with app.app_context():
+            template = _make_envelope_template(seed_user)
+            template.is_envelope = False
+            txn = _make_projected_txn(seed_user, seed_periods[0],
+                                      template=template)
+            txn.is_deleted = True
+            db.session.flush()
+
+            with pytest.raises(ValidationError) as exc:
+                transaction_service.settle_transaction(txn)
+
+            assert "soft-deleted" in str(exc.value)
+            assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert txn.settled_on is None
+
+    def test_settle_amount_refuses_a_soft_deleted_row(
+        self, app, seed_user, seed_periods,
+    ):
+        """The read refuses what the write refuses, for the same reason.
+
+        A deleted row values at ``Decimal("0")`` through ``effective_amount``,
+        so answering here would publish a figure ``settle_transaction`` will not
+        book -- the exact argument the transfer-shadow half of
+        ``reject_unsettleable`` already made, applied to the rule that was
+        missing beside it.
+        """
+        with app.app_context():
+            template = _make_envelope_template(seed_user)
+            template.is_envelope = False
+            txn = _make_projected_txn(seed_user, seed_periods[0],
+                                      template=template)
+            txn.is_deleted = True
+            db.session.flush()
+
+            with pytest.raises(ValidationError) as exc:
+                transaction_service.settle_amount(txn)
+
+            assert "soft-deleted" in str(exc.value)
+
     def test_an_envelope_with_entries_ignores_a_supplied_actual(
         self, app, seed_user, seed_periods,
     ):

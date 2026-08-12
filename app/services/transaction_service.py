@@ -131,28 +131,55 @@ def settles_from_entries(txn: Transaction) -> bool:
     return bool(txn.tracks_purchases and txn.entries)
 
 
-def reject_transfer_shadow(txn: Transaction) -> None:
-    """Refuse a transfer shadow -- the rule, stated once for both doors.
+def reject_unsettleable(txn: Transaction) -> None:
+    """Refuse a row NO settle door may touch -- both rules, stated once.
 
-    A transfer settles through ``transfer_service.update_transfer`` so both legs
-    and the parent move together (``CLAUDE.md`` transfer invariants 3 and 4).
-    Two PUBLIC functions here have to know that -- :func:`settle_transaction`,
-    which would otherwise settle one leg silently, and :func:`settle_amount`,
-    which would otherwise price one off the loan-payment seam and hand a caller
-    a figure this module refuses to book.  A verb owns its own preconditions;
-    two verbs owning the same one own it once.
+    **Two refusals in one statement, because they are the same kind of rule and
+    they had drifted apart** (finding **N-233**).  Every public settle surface
+    in this module asks it: :func:`settle_transaction`, which would otherwise
+    settle one leg of a transfer pair silently; :func:`settle_amount`, which
+    would otherwise price one off the loan-payment seam and hand a caller a
+    figure this module refuses to book; and :func:`settle_from_entries`, which
+    asked BOTH questions in its own words and so gave the transfer rule a
+    second, shorter spelling.  A verb owns its own preconditions; three verbs
+    owning the same two own them once.
+
+    **A transfer shadow** settles through ``transfer_service.update_transfer``
+    so both legs and the parent move together (``CLAUDE.md`` transfer invariants
+    3 and 4).
+
+    **A soft-deleted row** must not be resurrected by a status change.  It
+    values at ``Decimal("0")`` through ``effective_amount``, so settling one
+    books nothing while stamping the row Paid and dated: a row that reads
+    settled and is worth nothing.  The envelope branch refused this from the
+    beginning and the MANUAL branch never did, and the gap was REACHABLE --
+    ``get_accessible_transaction`` does not filter ``is_deleted``, so
+    ``POST /transactions/<id>/mark-done`` on a soft-deleted non-envelope row
+    flipped it into the settled band.  Measured on production: 102 soft-deleted
+    rows, every one of them Projected, so the ledger cost is ``$0.00`` and the
+    cost is to the data.
+
+    Ordered shadow-then-deleted so a row that is both reports the rule that
+    routes it somewhere else rather than the one that refuses it outright.  Both
+    are column reads, so neither triggers the relationship lazy-load
+    :func:`settle_from_entries`' cheap-first precondition ordering avoids.
 
     Args:
-        txn: The row to check.
+        txn: The row to check.  Reads ``transfer_id`` and ``is_deleted``.
 
     Raises:
-        ValidationError: When *txn* is a transfer shadow.
+        ValidationError: When *txn* is a transfer shadow or is soft-deleted.
     """
     if txn.transfer_id is not None:
         raise ValidationError(
             f"Transaction {txn.id} is a transfer shadow; "
             "transfers settle via transfer_service.update_transfer so both "
             "legs and the parent move together.",
+        )
+    if txn.is_deleted:
+        raise ValidationError(
+            f"Transaction {txn.id} is soft-deleted; a settle cannot "
+            "resurrect a deleted row.",
         )
 
 
@@ -179,13 +206,14 @@ def settle_amount(txn: Transaction) -> Decimal:
         one exists and the stored ``effective_amount`` otherwise.
 
     Raises:
-        ValidationError: On a transfer shadow
-            (:func:`reject_transfer_shadow`).  A shadow's value is the transfer
-            service's, and answering here would publish a figure
-            :func:`settle_transaction` refuses to book -- which is exactly what
-            plan step X-f2-c3 would otherwise walk into.
+        ValidationError: On a row no door may settle
+            (:func:`reject_unsettleable`).  A shadow's value is the transfer
+            service's and a deleted row's is nothing, and answering for either
+            here would publish a figure :func:`settle_transaction` refuses to
+            book -- which is exactly what plan step X-f2-c3 would otherwise walk
+            into.
     """
-    reject_transfer_shadow(txn)
+    reject_unsettleable(txn)
     if settles_from_entries(txn):
         return compute_actual_from_entries(txn.entries)
     live = _freshest_amount(txn)
@@ -370,9 +398,10 @@ def settle_transaction(
             ``anchor_service``.
 
     Raises:
-        ValidationError: On a transfer shadow, from the envelope branch's
-            preconditions, from an illegal transition, or from the seam's
-            settle-day refusals.  All are 400s at the route.
+        ValidationError: On a transfer shadow or a soft-deleted row, from the
+            envelope branch's remaining preconditions, from an illegal
+            transition, or from the seam's settle-day refusals.  All are 400s at
+            the route.
         PostingError: From act 3, on a broken ledger invariant.  Deliberately
             NOT a sibling of ``ValidationError`` -- it must fail loud rather
             than render as a designed refusal.
@@ -380,7 +409,7 @@ def settle_transaction(
     # Checked FIRST and before any mutation, so a refused call leaves the row
     # untouched -- the ordering ``status_seam.apply_status_change`` uses for
     # its own three refusals, and for the same reason.
-    reject_transfer_shadow(txn)
+    reject_unsettleable(txn)
 
     if settles_from_entries(txn):
         settle_from_entries(txn, settled_on=settled_on)
@@ -592,18 +621,17 @@ def settle_from_entries(
 
     Preconditions (defensively validated, not assumed):
 
-      1. ``txn.is_deleted`` is False.  Soft-deleted rows must not be
-         resurrected via a status change.
+      1. Neither a transfer shadow nor a soft-deleted row
+         (:func:`reject_unsettleable`).  Both rules are shared with the two
+         other public settle surfaces rather than restated here -- this
+         helper's own wording of the transfer rule was a SECOND spelling of
+         it (finding **N-233**).
       2. ``txn.tracks_purchases`` is True -- the row is purchase-tracked,
          either via its template's ``is_envelope`` flag or, for an ad-hoc
          row, its own ``is_envelope`` column.  Envelope semantics are the
          contract this helper relies on; calling on a non-tracked row is
          a programming error and surfaces as a ``ValidationError``.
-      3. ``txn.transfer_id`` is None.  Transfer shadows must settle
-         through ``app.services.transfer_service.update_transfer`` so
-         both shadow legs and the parent transfer stay in sync (see
-         transfer invariants in CLAUDE.md).
-      4. ``txn.status`` is mutable (``status.is_immutable`` is False).
+      3. ``txn.status`` is mutable (``status.is_immutable`` is False).
          The only mutable status in the current schema is ``Projected``;
          settling a row that is already Paid, Received, Cancelled,
          Credit, or Settled is meaningless and indicates a caller bug.
@@ -631,16 +659,8 @@ def settle_from_entries(
     # triggers an autoflush of pending mutations on the txn.  Column
     # checks come before relationship accesses (which lazy-load and
     # therefore autoflush) to keep the failure path side-effect-free.
-    if txn.is_deleted:
-        raise ValidationError(
-            f"Transaction {txn.id} is soft-deleted; "
-            "settle_from_entries cannot resurrect deleted rows.",
-        )
-    if txn.transfer_id is not None:
-        raise ValidationError(
-            f"Transaction {txn.id} is a transfer shadow; "
-            "transfers settle via transfer_service.update_transfer.",
-        )
+    # The shared pair reads two columns, so it belongs at the front.
+    reject_unsettleable(txn)
     # Resolved purchase-tracking check: covers template-generated rows
     # (template.is_envelope) and ad-hoc rows (own is_envelope flag).  For
     # an ad-hoc row tracks_purchases reads a column only -- no relationship
