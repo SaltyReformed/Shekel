@@ -292,6 +292,17 @@ EVT_TRANSFER_UPDATED = _register(
     "transfer_updated", BUSINESS,
     "Transfer service updated a transfer and propagated to shadows.",
 )
+EVT_TRANSFER_AMOUNT_FROZEN = _register(
+    "transfer_amount_frozen", BUSINESS,
+    "A settle FROZE an auto-derived loan payment's live payment-date figure "
+    "(P&I + escrow-as-of + extra) rather than booking the creation-time "
+    "estimate its transfer was generated with.  Its own event because it is "
+    "the one money write here that no operator asked for -- the figure "
+    "differs from the one they saw when the transfer was generated, and "
+    "without this nothing records that it moved or to what.  Emitted only "
+    "where the derivation actually decided the figure: a settle carrying a "
+    "human's correction books that instead and is not a freeze.",
+)
 EVT_TRANSFER_SOFT_DELETED = _register(
     "transfer_soft_deleted", BUSINESS,
     "Transfer service flagged a transfer (and its shadows) is_deleted=True.",

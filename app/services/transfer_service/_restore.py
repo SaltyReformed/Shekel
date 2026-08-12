@@ -27,6 +27,7 @@ from app.services.transfer_service._loan_posting import (
 )
 from app.services.transfer_service._status import apply_status_to_all_three
 from app.services.transfer_service._validation import (
+    TransferRows,
     _get_transfer_or_raise,
     assert_restorable,
 )
@@ -210,7 +211,7 @@ def restore_transfer(transfer_id, user_id):
             xfer.status_id,
         )
     apply_status_to_all_three(
-        xfer, expense_shadow, income_shadow, xfer.status_id,
+        TransferRows(xfer, expense_shadow, income_shadow), xfer.status_id,
     )
 
     db.session.flush()

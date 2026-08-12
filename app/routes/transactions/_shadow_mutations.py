@@ -33,8 +33,6 @@ from flask_login import current_user
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
-from app import ref_cache
-from app.enums import StatusEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 from app.routes._render_helpers import render_transaction_cell
@@ -183,17 +181,6 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
         success, a 409 conflict surface on a concurrent commit, or a 400
         on a bad FK or a state-machine rejection.
     """
-    # Use 'done' for the transfer service -- it sets the same status on
-    # both shadows.  The 'done'/'received' distinction is a display
-    # convention for regular transactions.
-    # NO explicit settle day: finding N-178's fix, rationale at the matching
-    # comment in ``routes/transfers/mutations.py:mark_done``.  The seam stamps
-    # the day on first entry and preserves it after; passing one here
-    # overrode that and re-dated a replayed settle.
-    svc_kwargs = {
-        "status_id": ref_cache.status_id(StatusEnum.DONE),
-    }
-
     # **The capture-on-settle FREEZE left this route at plan step X-f2-c3**, and
     # its absence here is the fix rather than an omission.  This branch called
     # ``loan_payment_service.live_loan_payment_amount`` and handed the answer
@@ -203,14 +190,21 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
     # page's Mark Done, the transfer full-edit Status dropdown, and a
     # transaction PATCH landing on a shadow).  A ROUTE holding a money rule is
     # this arc's own root cause 1, and finding **N-219** is the same defect on
-    # the transaction table.  ``transfer_service.update_transfer`` dispatches it
-    # now, for every door at once.
-    if actual_amount is not None:
-        svc_kwargs["actual_amount"] = actual_amount
-
+    # the transaction table.  ``transfer_service.settle_transfer`` owns it now,
+    # for every door at once -- what this route states is the INTENT, and the
+    # optional figure a human typed.
+    #
+    # The status is the verb's: it sets one for all three rows, because the
+    # done/received split is a display convention for regular transactions and
+    # is meaningless for a pair whose whole point is that one leg is each.
+    #
+    # NO explicit settle day: finding N-178's fix, rationale at the matching
+    # comment in ``routes/transfers/mutations.py:mark_done``.  The seam stamps
+    # the day on first entry and preserves it after; passing one here
+    # overrode that and re-dated a replayed settle.
     try:
-        transfer_service.update_transfer(
-            txn.transfer_id, current_user.id, **svc_kwargs
+        transfer_service.settle_transfer(
+            txn.transfer_id, current_user.id, actual_amount=actual_amount,
         )
         db.session.commit()
     except StaleDataError:

@@ -19,7 +19,7 @@ this arc went wrong before.  At the LATEST assertion (2026-08-06) this arm
 offers NOTHING, because every projected shadow starts 2026-08-13 -- so the
 panel is unchanged on production today.
 
-**Its settle is ``transfer_service.update_transfer``, and that is the whole
+**Its settle is ``transfer_service.settle_transfer``, and that is the whole
 reason it is a separate arm** (ruling **R-FA**).  A transfer is THREE rows -- a
 parent and two shadows -- and ``CLAUDE.md`` transfer invariants 3 and 4 say they
 move together, so ``transaction_service.settle_transaction`` REFUSES a shadow
@@ -28,14 +28,16 @@ which is a fact about the act rather than about any row and is why the panel
 prints it once under the section heading
 (:attr:`~app.services.reconcile_service.OfferKind.section_note`).
 
-**Nothing here decides what a tick BOOKS or whether a submitted figure is a
-CORRECTION.**  Both are the transfer service's, published as
-``transfer_service.settle_amount`` and ``transfer_service.is_correction``, and
-read from here.  The loan-payment FREEZE the step specification names is inside
-the first of those: an auto-derived loan payment books its live payment-date
-cash rather than the creation-time escrow its estimate carries, and because the
-panel's figure and the booked figure come from one expression they cannot
-drift.
+**Nothing here decides what a tick BOOKS, which status the rows take, or
+whether a submitted figure is a CORRECTION.**  All three are the transfer
+service's.  What a tick will book is published as
+``transfer_service.settle_amount`` so the panel can render it; whether a figure
+was a human's is the VERB's own answer, returned by the settle rather than
+asked of a predicate beforehand.  The loan-payment FREEZE the step
+specification names is inside both: an auto-derived loan payment books its live
+payment-date figure rather than the creation-time escrow its estimate carries,
+and because the panel's figure and the booked figure come from one expression
+they cannot drift.
 
 **Its scope, bound and loader are :mod:`._rows`'** -- the same ones the
 transaction arm uses, with the complementary membership clause.  What stays
@@ -51,8 +53,6 @@ Architecture (``CLAUDE.md``):
 from datetime import date
 from decimal import Decimal
 
-from app import ref_cache
-from app.enums import StatusEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -78,15 +78,10 @@ def _settle_one(
     remembering them, and it is why a tick here settles the matching row on the
     other account (the section note says so on the panel).
 
-    **The status is DONE for all three rows, including the INCOME leg.**  The
-    Paid/Received split is a display convention for ordinary rows and it is
-    meaningless for a pair whose whole point is that one leg is each, so the
-    transfer service sets one status on all three and this asks for the one it
-    uses.
-
-    The submitted figure is handed straight through: whether it beats the
-    loan-payment freeze, and whether it is written at all, are the transfer
-    service's rules and are not restated here.
+    The submitted figure and the statement's day are handed straight through:
+    what a tick BOOKS, whether the figure is written at all, and which status
+    the three rows take are the transfer service's rules and are not restated
+    here.
 
     Args:
         shadow: The leg on this account, still Projected.
@@ -95,23 +90,18 @@ def _settle_one(
             record the money as having moved on.
 
     Returns:
-        Whether the service booked *submitted* as a correction -- asked of its
-        own published predicate BEFORE the settle, the same shape the
-        transaction arm uses and for the same reason (finding **N-231**): a
-        count read off the column afterwards cannot tell a human's figure from
-        the freeze the settle writes for itself.
+        Whether the verb booked *submitted* as a human's correction -- the
+        verb's OWN answer about what it just did, which is finding **N-231**'s
+        rule (a count read off the column afterwards cannot tell a human's
+        figure from a machine's).  Taking it from the act rather than from a
+        predicate asked beforehand is also what stops the loan freeze being
+        resolved twice for one tick.
     """
-    corrected = transfer_service.is_correction(shadow, submitted)
-    updates = {
-        "status_id": ref_cache.status_id(StatusEnum.DONE),
-        "settled_on": statement.observed_on,
-    }
-    if submitted is not None:
-        updates["actual_amount"] = submitted
-    transfer_service.update_transfer(
-        shadow.transfer_id, statement.owner_id, **updates,
+    return transfer_service.settle_transfer(
+        shadow.transfer_id, statement.owner_id,
+        actual_amount=submitted,
+        settled_on=statement.observed_on,
     )
-    return corrected
 
 
 def arm(owner_id: int) -> _rows.Arm:
@@ -131,7 +121,7 @@ def arm(owner_id: int) -> _rows.Arm:
       belongs in the SCOPE rather than in a guard at the writer, because the
       writer acts on the PARENT and not on the shadow it was handed: a shadow
       whose parent has gone is not money this account owes, and offering one
-      would send ``update_transfer`` looking for a row it treats as absent --
+      would send ``settle_transfer`` looking for a row it treats as absent --
       a ``NotFoundError`` this route has no handler for, i.e. a 500 on a money
       door.  The owner half is the deliberate redundancy
       :func:`~app.services.reconcile_service._assemble._block_headings`
@@ -183,8 +173,8 @@ def outstanding_transfers(
     purchase-tracked and there are no entries for a figure to be derived from
     (measured on production: 342 shadows, 0 entries against any of them).  The
     box is PREFILLED with what the tick would book, so an untouched tick is an
-    echo and writes nothing -- ``transfer_service.is_correction`` is what tells
-    the two apart.
+    echo and writes nothing -- ``transfer_service.settle_transfer`` tells the
+    two apart as it settles, and says which it was in its return value.
 
     **The tally follows the LEG and the section follows the ACT.**
     ``is_income`` puts the expense leg among the payments and the income leg

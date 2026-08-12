@@ -28,6 +28,7 @@ from tests._test_helpers import (
     append_balance_assertion,
     create_account_of_type,
     create_loan_account,
+    create_transfer,
     settle_instant_on,
 )
 from app.models.interest_params import InterestParams
@@ -35,6 +36,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 from app.services import (
     account_service,
     balance_at,
@@ -3419,6 +3421,273 @@ class TestTheReconcileRoutesUngradedBranches:
                 assert row.status_id == projected_id
                 assert row.settled_on is None
                 assert row.actual_amount is None
+
+
+class TestTheTransferArmThroughItsROUTE:
+    """Plan step **X-f2-c3**: the TRANSFER arm, from the door rather than the service.
+
+    The arm's rules are graded exhaustively at the service
+    (``test_services/test_reconcile_service.py::TestTheTransferArm``).  What
+    is graded HERE is the part only the route and the template can get wrong:
+    that a transfer reaches the panel at all, that its section prints the
+    sentence saying a SECOND account moves, and that a tick posted as an
+    ordinary form submission settles all three rows.
+
+    **The section note is the one piece of copy on this screen that describes
+    a side effect.**  Every other row settles what the user is looking at; a
+    transfer settles the matching row on an account the panel is not showing.
+    A template branch nothing renders is a sentence that can be deleted
+    without a single test noticing, on the screen whose whole job is telling
+    the user what a tick is about to do.
+    """
+
+    _true_up = staticmethod(TestTheReconcileRoute._true_up)
+
+    @staticmethod
+    def _outstanding_transfer(seed_user, period, amount="75.00"):
+        """Return ``(transfer, shadow on the reconciled account)``, projected.
+
+        Dated into the past through the period it sits in, so the shared
+        attribution bound admits it against a statement asserted today.
+        """
+        savings = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                name="Savings",
+                account_type_id=seed_user["account"].account_type_id,
+                anchor_balance=Decimal("100.00"),
+            ),
+        )
+        db.session.flush()
+        transfer = create_transfer(
+            seed_user, db.session, seed_user["account"], savings, period,
+            amount=Decimal(amount),
+        )
+        db.session.commit()
+        shadow = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id == transfer.id,
+                Transaction.account_id == seed_user["account"].id,
+            )
+            .one()
+        )
+        return transfer, shadow
+
+    def test_the_panel_prints_the_section_and_says_a_SECOND_account_moves(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The TRANSFER section renders its heading AND its note.
+
+        Both are template branches that no test reached: the heading comes
+        from ``group.section.label`` and the note from ``group.section.note``,
+        which only :class:`OfferKind.TRANSFER` supplies.  Shown to FIRE:
+        deleting the ``group.section.note`` block fails this.
+        """
+        with app.app_context():
+            _transfer, shadow = self._outstanding_transfer(
+                seed_user, seed_periods_today[0],
+            )
+            shadow_id = shadow.id
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            body = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+            ).data.decode()
+
+            assert f'value="{shadow_id}"' in body, (
+                "the transfer's shadow must be offered at all"
+            )
+            assert "Transfers" in body
+            assert "settles both sides" in body
+            assert "the matching row on the other account" in body
+
+    def test_a_posted_tick_settles_the_parent_and_BOTH_legs(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The arm end to end: one form POST moves three rows.
+
+        The service case proves the verb does it; this proves the ROUTE
+        reaches the verb -- that the shadow's id posted in the shared
+        ``transaction_ids`` field lands in the transfer arm rather than the
+        transaction one, which would refuse a shadow outright.
+        """
+        with app.app_context():
+            transfer, shadow = self._outstanding_transfer(
+                seed_user, seed_periods_today[0],
+            )
+            transfer_id, shadow_id = transfer.id, shadow.id
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"transaction_ids": [str(shadow_id)]},
+            )
+            assert response.status_code == 200
+            assert b"already been settled" not in response.data
+
+            db.session.expire_all()
+            # The status is compared by ID, not by its display name -- the
+            # project's reference-table rule ("IDs for logic, strings for
+            # display only"), which the DONE member makes concrete: its
+            # ``name`` reads "Paid".
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            parent = db.session.get(Transfer, transfer_id)
+            assert parent.status_id == done_id
+            legs = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=transfer_id)
+                .all()
+            )
+            assert len(legs) == 2, "Transfer Invariant 1"
+            for leg in legs:
+                assert leg.status_id == done_id
+                assert leg.settled_on == display_today()
+                # Nobody typed a figure, so no correction was recorded.
+                assert leg.actual_amount is None
+
+    def test_a_correction_typed_on_a_transfer_lands_on_BOTH_legs(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A figure read off the statement is a fact about the whole act.
+
+        Both legs carry it, because Transfer Invariant 3 says the three rows
+        state one amount -- a correction recorded on one side only would leave
+        the two accounts disagreeing about how much money moved between them.
+        """
+        with app.app_context():
+            transfer, shadow = self._outstanding_transfer(
+                seed_user, seed_periods_today[0],
+            )
+            transfer_id, shadow_id = transfer.id, shadow.id
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={
+                    "transaction_ids": [str(shadow_id)],
+                    f"actual_amount-{shadow_id}": "80.25",
+                },
+            )
+            assert response.status_code == 200
+
+            db.session.expire_all()
+            legs = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=transfer_id)
+                .all()
+            )
+            for leg in legs:
+                assert leg.actual_amount == Decimal("80.25")
+                assert leg.effective_amount == Decimal("80.25")
+
+    def test_an_ECHOED_prefill_on_a_transfer_records_no_correction(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The negative control for the case above, at the ROUTE.
+
+        The panel PREFILLS every correctable box, so an untouched tick posts
+        the figure the row would book anyway.  Without this case the
+        correction test is satisfied by a verb that writes whatever it is
+        handed, which would populate ``actual_amount`` on every settled
+        transfer and destroy the signal that says a human typed one.
+        """
+        with app.app_context():
+            transfer, shadow = self._outstanding_transfer(
+                seed_user, seed_periods_today[0],
+            )
+            transfer_id, shadow_id = transfer.id, shadow.id
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={
+                    "transaction_ids": [str(shadow_id)],
+                    f"actual_amount-{shadow_id}": "75.00",
+                },
+            )
+            assert response.status_code == 200
+
+            db.session.expire_all()
+            legs = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=transfer_id)
+                .all()
+            )
+            for leg in legs:
+                assert leg.actual_amount is None
+                assert leg.effective_amount == Decimal("75.00")
+
+
+class TestTheCashFigureRendersBesideTheBookedOne:
+    """Finding **N-226**'s caption, from the template rather than the producer.
+
+    An envelope books ``sum(entries)`` over EVERY entry, and a card purchase
+    is one of those -- but it never touches checking, so a `$40` debit plus a
+    `$60` card purchase is offered at `$100.00` on a screen captioned "tick
+    everything your statement shows", against a statement showing `$40`.
+
+    The developer ruled the remedy 2026-08-12: print the cash figure BESIDE
+    the booked one.  The producer's half is graded at the service; the branch
+    that RENDERS it had no test, so the caption could be deleted or the two
+    figures swapped with the suite green.
+    """
+
+    _make_grocery_txn_with_entries = (
+        TestTheReconcileRoute._make_grocery_txn_with_entries
+    )
+    _true_up = staticmethod(TestTheReconcileRoute._true_up)
+
+    def test_a_card_purchase_prints_what_the_STATEMENT_shows(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """`$100.00` booked, `$40.00` on the statement, and the panel says both.
+
+        Shown to FIRE: deleting the ``cash_amount`` block leaves the panel
+        offering `$100.00` against a statement showing `$40.00` with nothing
+        explaining the difference.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [
+                    ("40.00", past, False, None),
+                    ("60.00", past, True, None),
+                ],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            body = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+            ).data.decode()
+
+            assert "$100.00" in body, "the figure a tick BOOKS"
+            assert "$40.00 on your statement" in body
+            assert "the rest went on a card" in body
+
+    def test_an_envelope_with_NO_card_purchase_prints_one_figure(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The negative control: the caption appears only where it is true.
+
+        Without it, a template that printed the line unconditionally -- or
+        printed the booked figure twice -- would satisfy the case above while
+        telling every user that part of every envelope went on a card.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("40.00", past, False, None)],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            body = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+            ).data.decode()
+
+            assert "on your statement" not in body
+            assert "went on a card" not in body
 
 
 class TestAccountTypes:

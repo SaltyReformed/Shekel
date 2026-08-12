@@ -14,8 +14,23 @@ The other three booked the stored estimate -- the creation-time escrow -- so
 the same payment recorded a different figure depending on which control the
 operator pressed.  That is finding **N-219**'s shape on this table, and a ROUTE
 holding a money rule is this arc's own root cause 1.
-``transfer_service.update_transfer`` dispatches the rule now, so these grade the
-FIGURE at the service and then prove each door reaches it.
+``transfer_service.settle_transfer`` is the rule's name now and
+``update_transfer`` dispatches to it, so these grade the FIGURE at the service
+and then prove each door reaches it.
+
+**WHICH COLUMN the freeze writes stays ``actual_amount``, and that is a
+developer ruling (2026-08-12) rather than an oversight.**  Ruling **R-FH** says
+a derivation belongs in the row's OWN amount and finding **N-241** records that
+it does not go there; this branch BUILT that move and withdrew it, because two
+adversarial reviews measured it unsafe on today's schema -- a manual payment's
+base is ``estimated_amount``, so writing the freeze there compounds the standing
+extra across settle/revert cycles (`$1,599.10` -> `$1,699.10` -> `$1,799.10`),
+and a leftover ``actual_amount`` from a reverted settle would OUTRANK the frozen
+figure through ``COALESCE``.  Plan step **X-au-c**'s ``amount_source`` column is
+what makes the write idempotent and authoritative, so the move is that step's.
+These cases therefore assert ``actual_amount`` AND ``effective_amount``: the
+first is where the freeze lands today, the second is what the ledger books, and
+the second is the one that must never change.
 
 **The arithmetic is hand-computed and shown.**  Loan $200,000 / 6% / 360mo:
     P&I    = amortize(200000, 0.06, 360)  = 1,199.10
@@ -32,6 +47,8 @@ that writes that settings row (``routes/loan/payment_transfer.py``) is live, so
 the split opens on the next loan payment transfer created through the loan page.
 """
 
+import logging
+from datetime import timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -45,6 +62,7 @@ from app.services import (
     transfer_recurrence,
 )
 from app.services.generation_schedule import GenerationSchedule
+from app.utils.dates import attribution_date, display_today
 from tests._test_helpers import create_transfer
 from tests.test_integration.test_loan_transfer_live_amount import (
     _build_derived_loan_transfer,
@@ -89,17 +107,23 @@ def _derived_loan_transfer(seed_user, seed_periods):
     return xfer, expense_shadow
 
 
-def _plain_transfer(seed_user, seed_periods, amount="250.00"):
+def _plain_transfer(
+    seed_user, seed_periods, amount="250.00", destination="Savings",
+):
     """Return a projected checking-to-savings transfer -- NO loan behind it.
 
     The control shape: its template carries no ``loan_payment_settings`` row,
     so the freeze resolves to ``None`` and the row books its own estimate.  It
     is what every live transfer on production is today.
+
+    *destination* names the receiving account because ``uq_accounts_user_name``
+    is unique per owner, so a case wanting two independent transfers has to ask
+    for two destinations.
     """
     savings = account_service.create_account(
         account_service.AccountSpec(
             user_id=seed_user["user"].id,
-            name="Savings",
+            name=destination,
             account_type_id=seed_user["account"].account_type_id,
             anchor_balance=Decimal("100.00"),
         ),
@@ -147,8 +171,15 @@ class TestTheSettleFreezeIsTheSERVICEs:
 
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
-                assert shadow.actual_amount == _LIVE_PITI
+                # What it BOOKS -- the ledger figure, and the whole point.
                 assert shadow.effective_amount == _LIVE_PITI
+                # Where the freeze lands today (N-241 is the open question
+                # about which column that should be; X-au-c owns it).
+                assert shadow.actual_amount == _LIVE_PITI
+                # The stored estimate is UNTOUCHED, which is what keeps the
+                # freeze idempotent: ``_manual_shadow_amount`` reads this
+                # column as its base, so a settle that wrote it would make a
+                # later settle derive from its own output.
                 assert shadow.estimated_amount == _STALE
 
     def test_a_typed_figure_BEATS_the_freeze(
@@ -173,6 +204,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
                 assert shadow.actual_amount == Decimal("1512.44")
+                assert shadow.effective_amount == Decimal("1512.44")
 
     def test_an_ECHOED_prefill_is_not_written(
         self, app, db, seed_user, seed_periods,
@@ -299,6 +331,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
                 assert shadow.actual_amount == _LIVE_PITI
+                assert shadow.effective_amount == _LIVE_PITI
 
     def test_settle_amount_publishes_what_a_tick_WILL_book(
         self, app, db, seed_user, seed_periods,
@@ -323,6 +356,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             db.session.commit()
 
             db.session.expire_all()
+            assert _shadows(xfer.id)[0].effective_amount == offered
             assert _shadows(xfer.id)[0].actual_amount == offered
 
 
@@ -347,6 +381,7 @@ class TestEveryDoorReachesTheSameFigure:
 
         with app.app_context():
             for shadow in _shadows(xfer_id):
+                assert shadow.effective_amount == _LIVE_PITI
                 assert shadow.actual_amount == _LIVE_PITI
 
     def test_the_grid_shadow_mark_done_still_freezes(
@@ -366,6 +401,7 @@ class TestEveryDoorReachesTheSameFigure:
 
         with app.app_context():
             for row in _shadows(xfer_id):
+                assert row.effective_amount == _LIVE_PITI
                 assert row.actual_amount == _LIVE_PITI
 
     def test_the_transfer_full_edit_status_dropdown_freezes(
@@ -389,8 +425,238 @@ class TestEveryDoorReachesTheSameFigure:
                 "version_id": version,
             },
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.data
 
         with app.app_context():
             for row in _shadows(xfer_id):
+                assert row.effective_amount == _LIVE_PITI
                 assert row.actual_amount == _LIVE_PITI
+
+    def test_a_transaction_PATCH_landing_on_a_shadow_freezes(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """``PATCH /transactions/<shadow id>`` -- the FOURTH door.
+
+        The one the census names and no test reached.  A shadow's PATCH is
+        branched to ``_shadow_mutations._apply_shadow_update``, which maps the
+        submitted transaction fields onto transfer-service kwargs -- so a
+        settling ``status_id`` arriving here is a settle that must freeze like
+        any other.  Without this case the census is a claim in a docstring:
+        three doors graded, one asserted.
+
+        No UI reaches it today -- the quick-edit cell PATCHes this route but
+        renders an amount only, and a shadow's full edit redirects to the
+        TRANSFER form -- so this grades the service dispatch behind a public
+        door rather than a live control.  That is the same ground
+        ``transaction_service.settle_transaction`` gives for owning its own
+        shadow refusal: a door with no caller today is a door the next feature
+        writes against.
+        """
+        with app.app_context():
+            xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer_id, shadow_id = xfer.id, shadow.id
+            version = shadow.version_id
+
+        response = auth_client.patch(
+            f"/transactions/{shadow_id}",
+            data={
+                "status_id": ref_cache.status_id(StatusEnum.DONE),
+                "version_id": version,
+            },
+        )
+        assert response.status_code == 200, response.data
+
+        with app.app_context():
+            for row in _shadows(xfer_id):
+                assert row.effective_amount == _LIVE_PITI
+                assert row.actual_amount == _LIVE_PITI
+
+    def test_the_reconcile_panels_tick_freezes_and_dates_by_the_STATEMENT(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """The FIFTH door, which plan step X-f2-c3 opens.
+
+        It is the only one that knows a day, so it grades the two rules
+        together: the freeze books the live figure, and both legs record the
+        money as having moved on the day the STATEMENT covers rather than the
+        day the operator got round to reconciling.
+        """
+        with app.app_context():
+            xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
+            xfer_id, shadow_id = xfer.id, shadow.id
+            account_id = xfer.from_account_id
+            # The day the panel measures the offer against is the row's own
+            # LANDING day, not its period's start: a loan payment carries a
+            # due date, so the two differ and a statement asserted before the
+            # landing day would (correctly) offer nothing.
+            period = shadow.pay_period
+            observed = attribution_date(
+                shadow.due_date, period.start_date, period.end_date,
+            )
+
+        response = auth_client.patch(
+            f"/accounts/{account_id}/true-up",
+            data={
+                "anchor_balance": "4537.66",
+                "observed_on": observed.isoformat(),
+            },
+        )
+        assert response.status_code == 200, response.data
+
+        response = auth_client.post(
+            f"/accounts/{account_id}/reconcile",
+            data={"transaction_ids": [str(shadow_id)]},
+        )
+        assert response.status_code == 200, response.data
+
+        with app.app_context():
+            for row in _shadows(xfer_id):
+                assert row.effective_amount == _LIVE_PITI
+                assert row.actual_amount == _LIVE_PITI
+                assert row.settled_on == observed
+
+
+class TestTheNamedVerbItself:
+    """``settle_transfer``: the surface every settle-only door now calls.
+
+    Its behaviour was reachable only THROUGH those doors until an adversarial
+    review pointed out that a public verb with no direct case is a verb whose
+    own contract is ungraded -- and then found a real defect in exactly the
+    branch nothing exercised.
+    """
+
+    def test_it_returns_whether_a_HUMAN_s_figure_was_booked(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The return value is what the reconcile writer counts (**N-231**).
+
+        Three shapes in one case, because the answer is a three-way decision
+        and grading one arm would leave the other two free to invert: nobody
+        typed a figure, somebody typed the panel's own prefill back, and
+        somebody typed a different one.
+        """
+        with app.app_context():
+            nothing_typed = _plain_transfer(
+                seed_user, seed_periods, destination="Savings",
+            )
+            echoed = _plain_transfer(
+                seed_user, seed_periods, amount="120.00",
+                destination="Vacation",
+            )
+            corrected = _plain_transfer(
+                seed_user, seed_periods, amount="80.00",
+                destination="Emergency",
+            )
+            db.session.commit()
+            owner = seed_user["user"].id
+
+            assert transfer_service.settle_transfer(
+                nothing_typed.id, owner,
+            ) is False
+            assert transfer_service.settle_transfer(
+                echoed.id, owner, actual_amount=Decimal("120.00"),
+            ) is False
+            assert transfer_service.settle_transfer(
+                corrected.id, owner, actual_amount=Decimal("95.50"),
+            ) is True
+
+            db.session.commit()
+            db.session.expire_all()
+            # And the column follows the same three-way decision.
+            assert _shadows(nothing_typed.id)[0].actual_amount is None
+            assert _shadows(echoed.id)[0].actual_amount is None
+            assert _shadows(corrected.id)[0].actual_amount == Decimal("95.50")
+
+    def test_settling_an_ALREADY_settled_transfer_writes_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A settle is idempotent, and the defect this grades was measured.
+
+        ``enters_settled_band`` is False for ``done -> done``, so no settle
+        runs -- and before plan step X-f2-c3's review the kwargs fell through
+        to the ordinary field arms anyway: ``actual_amount`` was written
+        VERBATIM past the echo rule, and ``settled_on`` re-dated both legs
+        through ruling **R-ED**'s correction door, moving the posted
+        ``entry_date`` (findings **N-146** / **N-178**).  The verb returned
+        ``False`` throughout, so the reconcile writer's count under-reported a
+        write it had just made.
+
+        Shown to FIRE: deleting the ``settle_only`` arm in
+        ``_apply_transfer_updates`` fails every assertion below.
+        """
+        with app.app_context():
+            xfer = _plain_transfer(seed_user, seed_periods)
+            db.session.commit()
+            owner = seed_user["user"].id
+            first_day = display_today() - timedelta(days=3)
+
+            transfer_service.settle_transfer(
+                xfer.id, owner, settled_on=first_day,
+            )
+            db.session.commit()
+            db.session.expire_all()
+            assert _shadows(xfer.id)[0].settled_on == first_day
+
+            # A stale tab replays the settle, carrying a figure and a later day.
+            assert transfer_service.settle_transfer(
+                xfer.id, owner,
+                actual_amount=Decimal("999.99"),
+                settled_on=display_today(),
+            ) is False
+            db.session.commit()
+
+            db.session.expire_all()
+            for shadow in _shadows(xfer.id):
+                # The echoed-past-the-rule write did not happen ...
+                assert shadow.actual_amount is None
+                assert shadow.effective_amount == Decimal("250.00")
+                # ... and the day the money moved was not moved.
+                assert shadow.settled_on == first_day
+
+    def test_a_derived_freeze_emits_its_own_event(
+        self, app, db, seed_user, seed_periods, caplog,
+    ):
+        """The one money write no operator asked for must be on the record.
+
+        ``EVT_TRANSFER_AMOUNT_FROZEN`` exists because the figure booked differs
+        from the one the operator saw when the transfer was generated, and
+        nothing else records that it moved.  Without this case, deleting the
+        ``log_event`` call leaves the suite green.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            with caplog.at_level(logging.INFO):
+                transfer_service.settle_transfer(
+                    xfer.id, seed_user["user"].id,
+                )
+                db.session.commit()
+
+        frozen = [
+            record for record in caplog.records
+            if getattr(record, "event", None) == "transfer_amount_frozen"
+        ]
+        assert len(frozen) == 1, "the freeze reports itself exactly once"
+        assert frozen[0].frozen_amount == str(_LIVE_PITI)
+
+    def test_a_settle_carrying_a_CORRECTION_is_not_reported_as_a_freeze(
+        self, app, db, seed_user, seed_periods, caplog,
+    ):
+        """The control: the event means the DERIVATION decided the figure.
+
+        A human's correction beats the freeze, so the figure booked is theirs
+        and no freeze happened.  Without this the event could be emitted on
+        every settle of a loan payment and still pass its sibling above.
+        """
+        with app.app_context():
+            xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
+            with caplog.at_level(logging.INFO):
+                transfer_service.settle_transfer(
+                    xfer.id, seed_user["user"].id,
+                    actual_amount=Decimal("1512.44"),
+                )
+                db.session.commit()
+
+        assert not [
+            record for record in caplog.records
+            if getattr(record, "event", None) == "transfer_amount_frozen"
+        ]

@@ -20,11 +20,12 @@ the loan-posting glue into ``_loan_posting``.  :func:`assert_restorable`
 joined them at plan step X-aj1 (ruling **R-DR**), bringing ``restore_transfer``'s
 four preconditions to the module whose single responsibility they already were.
 
-These FOUR helpers are a cohesive, transfer-service-private cluster (single
-responsibility: validate inputs and load-and-verify the rows a mutation operates
-on).  They write no ``status_id`` and construct no ``Transaction`` -- so they stay
-clear of the W9907 status fence that keeps the status-mirroring appliers in the
-parent module -- and they compute no balance.  :func:`assert_restorable` READS the
+These helpers plus :class:`TransferRows` and its one loader are a cohesive,
+transfer-service-private cluster (single responsibility: validate inputs and
+load-and-verify the rows a mutation operates on).  They write no ``status_id``
+and construct no ``Transaction`` -- so they stay clear of the W9907 status fence
+that keeps the status-mirroring appliers in the parent module -- and they
+compute no balance.  :func:`assert_restorable` READS the
 state machine (:func:`~app.services.state_machine.allowed_transitions`) to decide
 whether a drifted shadow is legally repairable; reading the transition rules is
 not writing a status, so the fence is unaffected.
@@ -33,6 +34,7 @@ Flask-isolated like the parent service: plain data in, ORM objects out, no
 """
 
 import logging
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
@@ -50,6 +52,73 @@ from app.utils.log_events import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TransferRows:
+    """A transfer and its two shadows: the three rows that move together.
+
+    **Transfer Invariant 1 as a TYPE.**  A transfer IS a parent and exactly two
+    shadow transactions, and invariants 3-5 say their amounts, statuses and
+    periods are always equal -- so the three are not three arguments that
+    happen to travel together, they are one value, and a call site that could
+    pair one transfer with another's shadows is a call site that can break the
+    invariant by typo.  The same reasoning
+    :class:`app.services.reconcile_service._rows.Statement` is built on.
+
+    It was introduced at plan step X-f2-c3, and the gate is what asked for it:
+    threading the three through the settle's signature put that function over
+    pylint's argument ceiling, which is the ceiling asking whether the
+    parameters are really one thing.  They are.
+
+    Attributes:
+        transfer: The parent :class:`~app.models.transfer.Transfer`.
+        expense: The expense-side shadow
+            :class:`~app.models.transaction.Transaction` -- the leg that leaves
+            the source account.
+        income: The income-side shadow -- the leg that arrives at the
+            destination.
+    """
+
+    transfer: Transfer
+    expense: Transaction
+    income: Transaction
+
+    @property
+    def shadows(self) -> "tuple[Transaction, Transaction]":
+        """Return both shadows, for the writes that treat them identically.
+
+        Stated here rather than at each caller because "do this to both legs"
+        is the commonest shape in this package, and a loop over an explicit
+        pair cannot silently become a loop over one.
+        """
+        return (self.expense, self.income)
+
+
+def load_transfer_rows(transfer_id, user_id) -> TransferRows:
+    """Load an owned transfer's three rows, verified as a pair.
+
+    The ONE loader a mutation entry point calls, composing the two guards
+    below so the ownership check and the pair-integrity check cannot be run
+    apart -- which is what makes :class:`TransferRows` a value a caller can
+    trust rather than three objects it assembled.
+
+    Args:
+        transfer_id: The primary key of the transfer to load.
+        user_id: The expected owner (defense-in-depth).
+
+    Returns:
+        The :class:`TransferRows`.
+
+    Raises:
+        NotFoundError: If the transfer does not exist, belongs to another
+            user, or is soft-deleted (:func:`_get_transfer_or_raise`).
+        ValidationError: If the shadow pair is corrupt
+            (:func:`_get_shadow_transactions`).
+    """
+    xfer = _get_transfer_or_raise(transfer_id, user_id)
+    expense_shadow, income_shadow = _get_shadow_transactions(transfer_id)
+    return TransferRows(xfer, expense_shadow, income_shadow)
 
 
 def _validate_positive_amount(amount):

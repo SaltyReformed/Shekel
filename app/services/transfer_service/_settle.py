@@ -1,17 +1,18 @@
 """
 Shekel Budget App -- Transfer Service: what SETTLING a transfer means
 
-The amount half of a settle, for all three rows at once.  Moving a transfer
-into the settled band is not just a status change: an auto-derived loan payment
-must FREEZE the live payment-date cash it is actually worth, and a figure a
-human typed must be told apart from the panel's own prefill echoed back.
+The whole act, for all three rows at once: an auto-derived loan payment stops
+deriving and OWNS what it is live worth, the status and the settle day land in
+ONE seam pass, and a figure a human typed is told apart from the panel's own
+prefill echoed back.
 
 **The rule lives here rather than at each door, and that is ruling R-FA applied
 to the transfer table.**  It lived in ONE route branch --
-``routes/transactions/_shadow_mutations.py``'s ``_mark_done_shadow``, which
-called ``loan_payment_service.live_loan_payment_amount`` and handed the answer
-to ``update_transfer`` as an ``actual_amount`` -- and FOUR doors can move a
-transfer into the settled band:
+``routes/transactions/_shadow_mutations``'s ``_mark_done_shadow``, which called
+``loan_payment_service.live_loan_payment_amount`` and handed the answer to
+``update_transfer`` as an ``actual_amount`` -- and FOUR doors could move a
+transfer into the settled band before this step added a fifth (the reconcile
+panel's tick):
 
 * the grid's shadow "Mark Paid" (``_mark_done_shadow``), which froze;
 * the transfers page's "Mark Done" (``routes/transfers/mutations.mark_done``),
@@ -22,56 +23,142 @@ transfer into the settled band:
   not.
 
 That is finding **N-219**'s shape one table over -- a ROUTE holding a money
-rule, so one control books a different figure from another for the same
-payment.  :func:`app.services.transfer_service.update_transfer` is the one door
-every transfer mutation already passes through, so the rule is DISPATCHED there
-and no door can be written without it.
+rule, so one control books a different figure from another for the same payment.
+
+**WHICH COLUMN the freeze writes is deliberately NOT changed here, and the
+reason is measured rather than conservative.**  The figure is the APP's
+derivation, so ruling **R-FH** says it belongs in the row's OWN amount and
+``actual_amount`` should hold a human's figure alone; finding **N-241** records
+that it does not.  This leaf BUILT that move and then withdrew it, because two
+adversarial reviews measured it unsafe on today's schema:
+
+* ``loan_payment_service._manual_shadow_amount`` derives a manual payment's cash
+  as ``estimated_amount + extra`` and documents that column as *"always the
+  generated base"*.  Writing the freeze there makes the derivation read its own
+  output, so a settle / revert / settle cycle COMPOUNDS the standing extra --
+  measured ``$1,599.10 -> $1,699.10 -> $1,799.10``;
+* ``effective_amount`` is ``COALESCE(actual, estimated)``, and nothing clears a
+  leftover ``actual_amount`` when a transfer is reverted (finding **N-257**), so
+  a freeze written to ``estimated_amount`` is silently OUTRANKED by it -- the
+  panel offers the frozen figure and the settle books the stale one, ``$99.10``
+  apart on the reviewed measurement.
+
+Both hazards are the same shape: the write is neither idempotent nor
+authoritative while the schema has no way to say whether a row's amount is its
+OWN or DERIVED.  Ruling **R-FI**'s ``amount_source`` column is exactly that
+statement, and plan step **X-au-c** adds it -- so the column move is that step's,
+and the developer ruled it there (2026-08-12).  What THIS leaf does instead is
+put the write in ONE place, so moving it is a one-line change rather than a hunt
+across four modules.
 
 **What it costs on production today is `$0.00`, and the reason is worth
 stating**: ``budget.loan_payment_settings`` holds ZERO rows, so
-``_loan_payment_config`` answers ``(False, 0.00)`` for every transfer template
-and :func:`frozen_amount` returns ``None`` everywhere.  All 17 settled transfer
-shadows on Checking carry ``actual_amount = NULL``, which is that fact in the
-data.  The split opens the first time a loan payment transfer is created
-through ``routes/loan/payment_transfer.py``, which is a live route.
+``loan_payment_config`` answers ``(False, 0.00)`` for every transfer template
+and :func:`frozen_amount` returns ``None`` everywhere.  All 342 shadows carry
+``actual_amount = NULL`` (re-measured 2026-08-12), which is that fact in the
+data.  The split opens the
+first time a loan payment transfer is created through
+``routes/loan/payment_transfer.py``, which is a live route.
 
 Architecture (``CLAUDE.md``):
-  - No Flask imports.  Reads ORM rows, returns values.
+  - No Flask imports.  Reads and mutates ORM rows; no flush, no commit.
   - All monetary arithmetic uses :class:`~decimal.Decimal`.
-  - PURE: nothing here mutates, flushes or commits.
 """
 
+import logging
+from datetime import date
 from decimal import Decimal
 
+from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services import loan_payment_service
+from app.services.transfer_service._status import apply_status_to_all_three
+from app.services.transfer_service._validation import TransferRows
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_TRANSFER_AMOUNT_FROZEN,
+    log_event,
+)
+
+logger = logging.getLogger(__name__)
 
 
-def frozen_amount(shadow: Transaction) -> "Decimal | None":
+def _reject_unsettleable(shadow: Transaction) -> None:
+    """Refuse a row this module may not settle or price -- both rules, once.
+
+    **The twin of ``transaction_service.reject_unsettleable``, and it exists
+    for the reason that one does** (finding **N-233**): a verb owns its own
+    preconditions, and the two public surfaces here would otherwise state them
+    twice or -- as the first build of this module did -- not at all.
+
+    **A row that is not a transfer shadow** has no parent to move with it, so
+    pricing one here would answer for a row this module cannot settle.  It is
+    the exact complement of the transaction service's own first rule, which
+    refuses a shadow and names this module as the place a shadow goes.
+
+    **A soft-deleted shadow** must not be resurrected by a settle.  It values
+    at ``Decimal("0")`` through ``effective_amount``, so settling one books
+    nothing while stamping both legs Paid and dated: a pair that reads settled
+    and is worth nothing.  ``_get_transfer_or_raise`` already refuses a deleted
+    PARENT, and the reconcile arm's own scope excludes both -- but
+    :func:`settle_amount` is a public pure read with neither in front of it,
+    and a figure this module publishes for a row it refuses to book is the
+    shape plan step X-f2-c3 removed one table over.
+
+    Args:
+        shadow: The row to check.  Reads ``transfer_id`` and ``is_deleted``;
+            neither triggers a lazy load.
+
+    Raises:
+        ValidationError: When *shadow* is not a transfer shadow, or is
+            soft-deleted.
+    """
+    if shadow.transfer_id is None:
+        raise ValidationError(
+            f"Transaction {shadow.id} is not a transfer shadow; a regular row "
+            "settles via transaction_service.settle_transaction.",
+        )
+    if shadow.is_deleted:
+        raise ValidationError(
+            f"Transaction {shadow.id} is soft-deleted; a settle cannot "
+            "resurrect a deleted row.",
+        )
+
+
+def frozen_amount(shadow: Transaction) -> Decimal | None:
     """Return the live payment-date figure a settle FREEZES, or ``None``.
 
     The capture-on-settle rule: when the operator settles an auto-derived loan
-    payment with one click, the cash recorded is the LIVE payment-date amount
+    payment with one click, the figure recorded is the LIVE payment-date amount
     (P&I + escrow-as-of + extra), not the creation-time estimate the shadow was
     generated with.  Because the frozen cash and the genesis split read the same
     ``escrow_monthly_as_of`` on the shadow's own DUE date, ``cash == split``
     holds by construction rather than by luck.
 
-    ``None`` -- meaning "leave the stored estimate alone" -- for every shadow
-    that needs no capture: not a transfer at all, an operator ``is_override``
-    (the operator owns that amount), an already-settled shadow, a transfer that
-    is not a loan payment (no settings row), a MANUAL payment with no standing
+    **Why the stored figure is stale in the first place**, since the freeze
+    reads as arbitrary without it: ``routes/loan/payment_transfer.py`` writes
+    one P&I-plus-escrow SNAPSHOT into ``transfer_templates.default_amount`` when
+    the payment is set up, and ``transfer_recurrence`` copies that same scalar
+    into every transfer it generates, for every period, forever.  The live
+    figure re-resolves the escrow version in effect on each row's own due date.
+    So the stored amount is not stale by accident -- it is a copy of a
+    derivation, taken once and never invalidated, which is finding **N-224**'s
+    shape and what ruling **R-FI** deletes outright.
+
+    ``None`` -- meaning "this row derives nothing; leave its amount alone" --
+    for every shadow that needs no capture: an operator ``is_override`` (the
+    operator owns that amount), an already-settled shadow, a transfer that is
+    not a loan payment (no settings row), a MANUAL payment with no standing
     extra (its stored estimate already IS the cash), or a loan that cannot
     resolve.  ``loan_payment_service.live_loan_payment_amount`` owns that list;
     this is a named seam over it, not a second copy.
 
-    **The ``is_projected`` guard inside makes the freeze ONE-SHOT**, and the
-    dispatch in :func:`~app.services.transfer_service.update_transfer` is placed
-    to keep it that way: it runs BEFORE the status is applied, so a genuine
-    first settle still sees a Projected shadow, while a re-settle of an
-    already-Paid one (the ``done -> done`` identity transition a stale tab can
-    submit) resolves to ``None`` and never rewrites the frozen figure to a later
-    live one that was never paid.
+    **The ``is_projected`` guard inside makes the freeze ONE-SHOT**, and
+    :func:`settle` is placed to keep it that way: it resolves this BEFORE the
+    status is applied, so a genuine first settle still sees a Projected shadow.
+    A re-settle cannot reach it at all -- :func:`settle` runs only on the way
+    INTO the settled band (``enters_settled_band``), so the ``done -> done``
+    identity a stale tab can submit never re-freezes.
 
     Args:
         shadow: Either leg of the transfer -- both share the transfer id, the
@@ -92,10 +179,12 @@ def settle_amount(shadow: Transaction) -> Decimal:
     **The transfer twin of ``transaction_service.settle_amount``, and it exists
     for the same reason**: the reconcile panel must show the figure a tick will
     book, and a panel rendering ``effective_amount`` beside a verb that books
-    the freeze is two answers to one money question, one screen apart.  The
-    dispatch in :func:`~app.services.transfer_service.update_transfer` resolves
-    its own figure through the same two functions, so the displayed figure and
-    the booked one cannot drift.
+    the freeze is two answers to one money question, one screen apart.
+    :func:`settle` resolves its own figure through the same two functions, so
+    the displayed figure and the booked one cannot drift.
+
+    It is a PURE read: nothing here mutates, so the panel calls it per offered
+    row and the verb resolves again at the settle.
 
     Args:
         shadow: The leg being offered, still Projected.
@@ -103,62 +192,134 @@ def settle_amount(shadow: Transaction) -> Decimal:
     Returns:
         The frozen live figure when there is one, else the row's stored
         ``effective_amount``.
+
+    Raises:
+        ValidationError: On a row this module may not settle
+            (:func:`_reject_unsettleable`) -- publishing a figure for one would
+            be publishing a figure :func:`settle` refuses to book.
     """
+    _reject_unsettleable(shadow)
     frozen = frozen_amount(shadow)
     return shadow.effective_amount if frozen is None else frozen
 
 
-def is_correction(shadow: Transaction, submitted: "Decimal | None") -> bool:
-    """Return whether *submitted* is a HUMAN's figure this settle would BOOK.
+def settle(
+    rows: TransferRows,
+    new_status_id: int,
+    *,
+    submitted: Decimal | None,
+    settled_on: date | None,
+) -> bool:
+    """Settle a transfer -- both legs and the parent -- and say whose figure it booked.
 
-    The transfer twin of ``transaction_service.is_correction``, and it answers
-    the same two questions in one expression: did anybody type a figure, and
-    does it DIFFER from what the row would book anyway.  The reconcile panel
-    PREFILLS its amount box, so every correctable row on the form posts a figure
-    whether the user touched it or not; counting or writing an echoed prefill
-    would populate a column that is NULL on all 17 settled transfer shadows in
-    production and destroy the only signal that says a human read one off a
-    statement.
+    **The whole act, in one function, and that is what the four doors buy from
+    it.**  A settle is not a status change with extras: it decides what the row
+    is worth, records that the money moved, and dates it, and a door that does
+    two of those three books a figure the third contradicts.
+
+    Three acts, in this order, and the order is the rule:
+
+    1. **The amount, decided but not yet written.**  :func:`frozen_amount` is
+       resolved ONCE, before anything moves -- it is guarded on ``is_projected``,
+       so asking after the status flip would always answer ``None``.  A figure a
+       HUMAN supplied is compared against what the row would book anyway and is
+       a CORRECTION only if it differs; a correction beats the derivation,
+       because a figure somebody read off a statement is a fact and the freeze
+       is an inference.
+    2. **The status and the settle day, in ONE seam pass.**  The day is the
+       caller's when it has one -- the reconcile tick's statement date -- so
+       the pair is dated once rather than stamped with today and corrected
+       afterwards.  That second write was this module's own defect: the settle
+       went through :func:`~app.services.transfer_service._status.apply_settle_day_correction`,
+       the door ruling **R-ED** built for a user CORRECTING a day, so every
+       tick wrote ``settled_on`` twice and the intermediate value was a day the
+       money did not move.
+    3. **The figure**, written to BOTH legs after the seam so the ledger
+       reconcile in ``update_transfer``'s tail reads the final amount rather
+       than the pre-settle estimate -- and after it, so a refused transition
+       leaves the money columns untouched.
+
+    **An ECHO is not written, and act 3 exists for that.**  The reconcile panel
+    PREFILLS its amount box, so an untouched tick posts the figure the row would
+    book anyway; recording it would populate a column that is NULL on every
+    uncorrected row and destroy the only signal that says a human read a number
+    off a statement (ruling **R-FB**'s production measurement, "11 of 93 settled
+    bills carry a hand-typed correction", is made of exactly that signal).
+
+    **A settle WRITES the column or leaves it, and never CLEARS it.**  Clearing
+    is its own act: a caller that means it says so with an explicit
+    ``actual_amount=None``, which
+    :func:`~app.services.transfer_service._update._fields_the_settle_left`
+    routes past this function to the door that performs it.
+    ``settle_transaction`` follows the same rule one table over, so the two
+    settles cannot come to disagree about what a ``None`` means.
+
+    **Writing the freeze HERE rather than into the row's own amount is finding
+    N-241 left open deliberately**; the module docstring above states the two
+    measured hazards that withdrew the move and names the step that owns it.
+    Because the freeze lands in ``actual_amount``, it OVERWRITES a figure left
+    behind by a reverted settle rather than being outranked by one -- so the
+    booked figure is what :func:`settle_amount` offered, on every row shape.
+    That is the property the column move would have broken, and it is why the
+    move waits for ``amount_source`` rather than shipping beside a workaround.
+
+    Mutates in place.  Does NOT flush, commit, or reconcile the posted ledger
+    -- ``update_transfer``'s tail owns all three, so a settle and an ordinary
+    edit reconcile through one statement.
 
     Args:
-        shadow: The leg being settled, still Projected.
+        rows: The transfer and both shadows, at their pre-settle status.  The
+            freeze is resolved from the EXPENSE leg; either would answer the
+            same (Transfer Invariant 3 -- both share the transfer id, the
+            period and the due date), and naming one means the choice is not
+            made twice.
+        new_status_id: The settled status all three rows move to, as the DOOR
+            asked for it.  Verified by
+            :func:`~app.services.transfer_service._status.apply_status_to_all_three`.
         submitted: The figure a caller supplied, or ``None`` when nobody typed
             one.
+        settled_on: The civil day the money moved, when the caller knows it.
+            ``None`` leaves the pair-day rule in force.
 
     Returns:
-        True when the settle will write *submitted* into both legs'
-        ``actual_amount``.
+        Whether this settle booked a HUMAN's figure -- what the reconcile
+        writer counts (finding **N-231**).  Answered by the act itself rather
+        than by a predicate the caller asks separately, so the count and the
+        write cannot disagree and the freeze is resolved once per settle
+        instead of once per asker.
+
+    Raises:
+        ValidationError: On a row this module may not settle
+            (:func:`_reject_unsettleable`), or from the status seam's own
+            transition and settle-day refusals.
     """
-    return submitted is not None and submitted != settle_amount(shadow)
+    _reject_unsettleable(rows.expense)
 
+    # Resolved ONCE, and everything below reads this answer rather than asking
+    # again.  It was asked up to three times per ticked row before plan step
+    # X-f2-c3 -- by the arm's correction predicate, by the dispatch's own
+    # predicate, and by its fallback -- and each asking is a ``Transfer`` query
+    # plus, for a derive-mode payment, a loan-basis resolve and an escrow load.
+    frozen = frozen_amount(rows.expense)
+    booked = rows.expense.effective_amount if frozen is None else frozen
+    correction = (
+        submitted if submitted is not None and submitted != booked else None
+    )
+    # A human's figure beats the derivation; absent one, the freeze books what
+    # the payment is live worth; absent both, the row keeps what it carries.
+    resolved = frozen if correction is None else correction
 
-def settle_actual(
-    shadow: Transaction, submitted: "Decimal | None",
-) -> "Decimal | None":
-    """Return the figure a settle writes to BOTH legs, or ``None`` for neither.
+    apply_status_to_all_three(rows, new_status_id, settled_on=settled_on)
 
-    The two rules in their precedence order, which is the whole of this
-    module's decision:
-
-    1. **A human's correction wins.**  A figure that differs from what the row
-       would book anyway is a fact somebody read off a statement, and it beats
-       any derivation.
-    2. **Otherwise the FREEZE**, when there is one.  Nobody typed a figure, so
-       an auto-derived loan payment records what it is live worth on its own
-       due date rather than the creation-time escrow its estimate carries.
-    3. **Otherwise nothing.**  ``None`` does NOT mean "clear the column" --
-       ``update_transfer``'s dispatch distinguishes "this settle has no figure
-       of its own" from a caller explicitly clearing one, because those are
-       different acts.
-
-    Args:
-        shadow: The leg being settled, still Projected.
-        submitted: The figure a caller supplied, or ``None``.
-
-    Returns:
-        The ``Decimal`` to write, or ``None`` when this settle supplies no
-        figure of its own.
-    """
-    if is_correction(shadow, submitted):
-        return submitted
-    return frozen_amount(shadow)
+    if resolved is not None:
+        for shadow in rows.shadows:
+            shadow.actual_amount = resolved
+    if frozen is not None and correction is None:
+        log_event(
+            logger, logging.INFO, EVT_TRANSFER_AMOUNT_FROZEN, BUSINESS,
+            "A derived loan payment froze its live payment-date figure",
+            user_id=rows.transfer.user_id,
+            transfer_id=rows.transfer.id,
+            frozen_amount=str(frozen),
+        )
+    return correction is not None
