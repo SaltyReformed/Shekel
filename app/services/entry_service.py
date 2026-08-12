@@ -35,7 +35,7 @@ from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
-from app.utils.balance_predicates import is_cancelled, is_done
+from app.utils.balance_predicates import is_archived, is_cancelled
 # ``is_credit`` from balance_predicates collides with the
 # ``is_credit: bool`` keyword argument on this module's
 # ``create_entry`` / ``update_entry`` functions.  Aliasing the
@@ -61,53 +61,69 @@ _UPDATABLE_FIELDS = frozenset({
 })
 
 
-def _update_actual_if_paid(txn: Transaction) -> None:
-    """Re-compute actual_amount if the transaction is already Paid.
+def _reject_archived_parent(txn: Transaction) -> None:
+    """Refuse an entry mutation against an ARCHIVED (terminal ``Settled``) row.
 
-    Handles the edge case of entries added/edited/deleted after the
-    transaction was marked Paid (late-posting purchases).  Per scope
-    doc section 4.2: the entry sum takes precedence over any manually
-    entered actual once entries exist.
+    **Finding N-229's door half.**  A row in ``StatusEnum.SETTLED`` is a
+    historical record: the state machine gives it no outgoing edge but identity,
+    so what the books say it cost can never be reopened and re-derived.
+    Recording, editing or deleting a purchase against one is therefore either
+    inert or a retroactive rewrite of history, and neither is what the user
+    meant -- so all three doors refuse it, rather than the create door alone.
 
-    Only fires for DONE status -- RECEIVED (income) never has entries,
-    and SETTLED transactions are considered finalized.
-
-    When entries are empty (e.g. all entries deleted from a Paid txn),
-    actual_amount is left unchanged so the previous value persists.
-    The user can manually correct it via the full edit form.
-
-    Does NOT commit or flush -- the calling service function owns the
-    session boundary.
+    It is the ARCHIVE status, not the settled band: a Paid envelope must keep
+    accepting late-posting purchases, which is the whole reason
+    :func:`_resync_settled_envelope` exists.  See
+    :func:`app.utils.balance_predicates.is_archived` for why that distinction
+    gets a name.
 
     Args:
-        txn: The parent Transaction object.
+        txn: The parent transaction the entry belongs (or would belong) to.
+
+    Raises:
+        ValidationError: When *txn* is in the terminal ``Settled`` status.
     """
-    # Centralized ``is_done`` predicate (D6-09 / MED-02) so the
-    # actual-recompute trigger shares one definition with every
-    # other per-status equality check in the project.
-    if is_done(txn) and txn.entries:
-        txn.actual_amount = compute_actual_from_entries(txn.entries)
+    if is_archived(txn):
+        raise ValidationError(
+            f"Transaction {txn.id} is archived (Settled); its purchases are "
+            "a historical record and cannot be added to, changed, or removed."
+        )
 
 
-def _resync_postings_if_settled(txn: Transaction) -> None:
-    """Reconcile a settled envelope's ledger postings after an entry mutation.
+def _resync_settled_envelope(txn: Transaction) -> None:
+    """Re-derive a settled envelope's actual and its postings after an entry change.
 
-    Called after every entry create / update / delete (right after
-    :func:`_update_actual_if_paid`): an entry mutation on a SETTLED envelope
-    changes its confirmed cash effect (``effective_amount - sum(credit
-    entries)``), so its double-entry ledger postings must be reconciled to the
-    new effect (Build-Order Step 3).  Adding a debit purchase to a Paid
-    envelope grows its checking outflow; flipping an entry to/from credit moves
-    the credit-excluded portion; deleting an entry shrinks it -- each re-syncs
-    here.
+    **ONE predicate for what used to be two, and the split was finding N-229.**
+    This was ``_update_actual_if_paid`` (gated on ``is_done`` -- exactly Paid)
+    followed by ``_resync_postings_if_settled`` (gated on the settled BAND), so
+    the two halves of one act graded the same row differently: on any settled
+    status that is not Paid the actual was NOT recomputed while the postings
+    WERE reconciled -- to the stale ``effective_amount``.  The books moved and
+    the figure they were derived from did not.  Two predicates for one act is
+    two answers; the band is the right one, because the act is "this row's money
+    has moved and its purchases just changed".
 
-    Gated on ``is_settled`` because a Projected envelope (the common case for
-    entry edits) has no postings, so reconciling would be a wasted ledger
-    round-trip.  Recording a purchase's ``settled_on`` DOES reach here (it
-    goes through :func:`update_entry`) and the reconcile is a no-op in value:
-    the confirmed cash effect is ``effective_amount - Sigma(credit entries)``,
-    which the posting day does not appear in, so the postings are invariant
-    under it and the sync reconciles to the same target.
+    Both halves, in the order they must run:
+
+      1. ``actual_amount = sum(entries)`` -- the late-posting case (scope doc
+         section 4.2: once entries exist, the entry sum takes precedence over
+         any manually entered actual).  Skipped for an EMPTY entry list, which
+         is the deliberate part: deleting the last purchase from a Paid envelope
+         leaves the previous figure rather than silently rewriting a settled
+         row's cost to ``$0.00``.
+      2. the ledger reconcile (Build-Order Step 3), which must read the actual
+         act 1 just wrote.  An entry mutation on a settled envelope changes its
+         confirmed cash effect (``effective_amount - Sigma(credit entries)``):
+         adding a debit purchase grows the checking outflow, flipping an entry
+         to or from credit moves the credit-excluded portion, deleting one
+         shrinks it.
+
+    Gated whole on the settled band because a Projected envelope -- the common
+    case for entry edits -- has no postings and its actual is not yet a fact, so
+    both acts would be wasted.  Recording a purchase's own ``settled_on`` DOES
+    reach here through :func:`update_entry` and is a no-op in value: the
+    confirmed cash effect does not contain the posting day, so the sync
+    reconciles to the same target.
 
     Does NOT commit -- the calling service function owns the session boundary
     (the reconcile flushes but does not commit, matching this module's
@@ -115,10 +131,13 @@ def _resync_postings_if_settled(txn: Transaction) -> None:
 
     Args:
         txn: The parent envelope transaction whose entries changed.  Its
-            ``status`` relationship is read to gate the reconcile.
+            ``status`` relationship is read to gate both acts.
     """
-    if txn.status.is_settled:
-        posting_service.sync_transaction_postings(txn, settled=True)
+    if not txn.status.is_settled:
+        return
+    if txn.entries:
+        txn.actual_amount = compute_actual_from_entries(txn.entries)
+    posting_service.sync_transaction_postings(txn, settled=True)
 
 
 def resolve_owner_id(user_id: int) -> int:
@@ -320,7 +339,8 @@ def create_entry(
         NotFoundError: Transaction not found or not accessible by this
             user.
         ValidationError: Transaction not entry-capable, is a transfer,
-            is income, or has a blocked status (Cancelled or Credit).
+            is income, or has a blocked status (Cancelled, Credit, or the
+            terminal Settled -- see :func:`_reject_archived_parent`).
     """
     owner_id = resolve_owner_id(user_id)
 
@@ -369,6 +389,11 @@ def create_entry(
             "Cannot add entries to a transaction with Credit status. "
             "Entry-capable transactions handle credit at the entry level."
         )
+    # ARCHIVED (terminal Settled) is the third refusal, and it is finding
+    # **N-229**: it used to be accepted, persisted, and silently inert -- the
+    # actual was not recomputed (that half graded ``is_done``) while the
+    # postings were reconciled anyway (that half graded the settled BAND).
+    _reject_archived_parent(txn)
 
     # Content guard, after the ownership and transaction guards so a
     # non-owner still gets the 404 rather than a validation message that
@@ -399,8 +424,7 @@ def create_entry(
     )
 
     sync_entry_payback(transaction_id, owner_id)
-    _update_actual_if_paid(txn)
-    _resync_postings_if_settled(txn)
+    _resync_settled_envelope(txn)
 
     return entry
 
@@ -427,8 +451,9 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
 
     Raises:
         NotFoundError: Entry not found or not accessible.
-        ValidationError: If no valid fields provided or unknown fields
-            are passed.
+        ValidationError: If no valid fields provided, unknown fields are
+            passed, or the parent row is archived
+            (:func:`_reject_archived_parent`).
     """
     unknown = set(kwargs) - _UPDATABLE_FIELDS
     if unknown:
@@ -449,6 +474,11 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     owner_id = resolve_owner_id(user_id)
     if entry.transaction.pay_period.user_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
+
+    # An archived row's purchases are history (finding **N-229**).  Checked
+    # after ownership so a non-owner still gets the 404 rather than a message
+    # confirming the row exists, exactly as the create door orders its guards.
+    _reject_archived_parent(entry.transaction)
 
     # The same boundary the create door applies, and only when the caller is
     # actually moving the date -- a partial update that leaves ``purchased_on``
@@ -480,8 +510,7 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     )
 
     sync_entry_payback(entry.transaction_id, owner_id)
-    _update_actual_if_paid(entry.transaction)
-    _resync_postings_if_settled(entry.transaction)
+    _resync_settled_envelope(entry.transaction)
 
     return entry
 
@@ -502,6 +531,8 @@ def delete_entry(entry_id: int, user_id: int) -> int:
 
     Raises:
         NotFoundError: Entry not found or not accessible.
+        ValidationError: If the parent row is archived
+            (:func:`_reject_archived_parent`).
     """
     entry = db.session.get(TransactionEntry, entry_id)
     if entry is None:
@@ -511,6 +542,10 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     owner_id = resolve_owner_id(user_id)
     if entry.transaction.pay_period.user_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
+
+    # An archived row's purchases are history (finding **N-229**), and removing
+    # one would rewrite what the books already say the row cost.
+    _reject_archived_parent(entry.transaction)
 
     txn = entry.transaction
     transaction_id = entry.transaction_id
@@ -527,8 +562,7 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     )
 
     sync_entry_payback(transaction_id, owner_id)
-    _update_actual_if_paid(txn)
-    _resync_postings_if_settled(txn)
+    _resync_settled_envelope(txn)
 
     return transaction_id
 

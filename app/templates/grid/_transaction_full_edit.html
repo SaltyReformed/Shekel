@@ -114,7 +114,19 @@
     </div>
     {% endif %}
 
-    {# Amounts side by side -- the everyday edit stays one glance tall #}
+    {# Amounts side by side -- the everyday edit stays one glance tall.
+
+       The Actual box renders only when the settle verb would HONOUR one
+       (ruling R-FF, the same sentence the reconcile panel's tick obeys):
+       a row carrying purchase entries settles at their sum, so a figure
+       typed here would be written, overwritten by the settle, and never
+       mentioned.  ``amount_correctable`` is
+       ``not transaction_service.settles_from_entries(txn)``, resolved in
+       the route -- the template displays it, it does not compute it.  The
+       PATCH handler refuses a submitted actual on such a row as the
+       stale-form backstop.  The default keeps legacy render sites without
+       the context permissive. #}
+    {% set correctable = amount_correctable if amount_correctable is defined else true %}
     <div class="row g-1 mb-2">
       <div class="col">
         <label class="form-label mb-0 small">Estimated</label>
@@ -124,6 +136,7 @@
                placeholder="Estimated amount"
                {{ 'disabled' if locked else '' }}>
       </div>
+      {% if correctable %}
       <div class="col">
         <label class="form-label mb-0 small">Actual</label>
         <input type="number" step="0.01" inputmode="decimal" name="actual_amount"
@@ -132,7 +145,13 @@
                placeholder="Actual amount"
                {{ 'disabled' if locked else '' }}>
       </div>
+      {% endif %}
     </div>
+    {% if not correctable %}
+    <div class="txn-card-meta mb-2">
+      <i class="bi bi-info-circle"></i> Actual comes from the purchases below.
+    </div>
+    {% endif %}
 
     {# Deep-edit fields fold behind "More options" (rebuild decision 2:
        the full-edit surface remains for rare deep edits).  Collapsed

@@ -1875,3 +1875,129 @@ class TestTheMarkPurchaseSettledHelperGuardsItsPrecondition:
             assert db.session.get(
                 TransactionEntry, entry.id,
             ).settled_on == seed_periods[0].start_date
+
+
+class TestAnArchivedRowsPurchasesAreHistory:
+    """Finding **N-229**: the terminal ``Settled`` status refuses entry edits.
+
+    An archived row's cost is already in the books and the state machine gives
+    ``Settled`` no outgoing edge but identity, so it can never be reopened and
+    re-derived.  Before plan step X-ap a new purchase against one was ACCEPTED,
+    persisted, and half-processed: ``actual_amount`` was not recomputed (that
+    half graded ``is_done`` -- exactly Paid) while the postings WERE reconciled
+    (that half graded the settled BAND), so the ledger moved and the figure it
+    was derived from did not.
+
+    Production carries zero rows in this status, which is why the ledger row
+    values the defect at ``$0.00`` and why it had zero coverage --
+    ``StatusEnum.SETTLED`` appeared in neither this module nor
+    ``test_mark_paid_entries``.  It is REACHABLE: the full-edit Status dropdown
+    offers Settled from Paid.
+    """
+
+    @staticmethod
+    def _archive(txn):
+        """Move *txn* Projected -> Paid -> Settled through the real seam."""
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.DONE),
+        )
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.SETTLED),
+        )
+        db.session.flush()
+
+    def test_create_is_refused(self, app, db, seed_user, seed_entry_template):
+        """A purchase cannot be recorded against an archived row.
+
+        Shown to FIRE: without the guard the entry is created and persists.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            self._archive(txn)
+
+            with pytest.raises(ValidationError, match="archived"):
+                entry_service.create_entry(
+                    transaction_id=txn.id,
+                    user_id=seed_user["user"].id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Late purchase",
+                        purchased_on=display_today(),
+                    ),
+                )
+
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).count() == 0
+
+    def test_update_is_refused(self, app, db, seed_user, seed_entry_template):
+        """An existing purchase on an archived row cannot be re-priced.
+
+        The row was archived carrying a $50.00 purchase; re-pricing it to
+        $500.00 would rewrite what the books already say the row cost.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            entry = _make_entry(txn, seed_user["user"], amount="50.00")
+            self._archive(txn)
+
+            with pytest.raises(ValidationError, match="archived"):
+                entry_service.update_entry(
+                    entry.id, seed_user["user"].id, amount=Decimal("500.00"),
+                )
+
+            # No rollback: the guard runs BEFORE the setattr loop, so a refused
+            # call stages nothing -- which is the property being asserted.
+            assert entry.amount == Decimal("50.00")
+
+    def test_delete_is_refused(self, app, db, seed_user, seed_entry_template):
+        """A purchase cannot be removed from an archived row."""
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            entry = _make_entry(txn, seed_user["user"], amount="50.00")
+            self._archive(txn)
+            entry_id = entry.id
+
+            with pytest.raises(ValidationError, match="archived"):
+                entry_service.delete_entry(entry_id, seed_user["user"].id)
+
+            # No rollback: the guard runs BEFORE ``db.session.delete``, so a
+            # refused call stages nothing.
+            assert db.session.get(TransactionEntry, entry_id) is not None
+
+    def test_a_PAID_row_still_takes_a_late_purchase(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The refusal is the ARCHIVE status, never the settled band.
+
+        A Paid envelope must keep accepting late-posting purchases and
+        re-deriving its actual from them -- that is what the hook exists for,
+        and narrowing the refusal to the whole settled band would break it.
+        $50.00 recorded after the close settles the row at $50.00.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.flush()
+
+            entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("50.00"),
+                    description="Late purchase",
+                    purchased_on=display_today(),
+                ),
+            )
+
+            assert txn.actual_amount == Decimal("50.00")

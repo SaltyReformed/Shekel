@@ -54,10 +54,28 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
         assert any("balance:X-f4" in p and "forbids" in p for p in problems), problems
 
     def test_the_control_fires_on_a_hole_in_the_sequence(self, stage):
-        """A gap makes "the first row that is not done" ambiguous."""
-        line = _row("steps", "| balance | X-ap |")
+        """A gap makes "the first row that is not done" ambiguous.
+
+        **Both the subject and the expected hole are DERIVED, and the previous
+        spelling of this control had stopped discriminating.**  It staged
+        ``balance:X-ap`` -- which has since SHIPPED, so it carries no rank and
+        moving it to ``#999`` opened holes at the TAIL rather than the one it
+        named -- and then asserted the substring ``"has no #2"``, which is
+        satisfied by ``"has no #234"``.  A control that any hole above #199
+        passes is not grading the hole it says it is.  Staging the FIRST ranked
+        row and expecting the rank it VACATED makes the assertion exact.
+        """
+        subject = min(
+            (row for row in registry.step_rows() if row.rank is not None),
+            key=lambda row: row.rank,
+        )
+        vacated = subject.rank
+        line = _row("steps", f"| {subject.arc} | {subject.ident} |")
         stage("steps", line, _with_cell(line, 4, "#999"))
-        assert any("has no #2" in p for p in order.rank_violations())
+        problems = order.rank_violations()
+        assert any(
+            f"has no #{vacated}." in p for p in problems
+        ), problems
 
     def test_the_control_fires_on_an_unparseable_order_cell(self, stage):
         """A row a reader cannot place in the sequence."""
@@ -67,9 +85,24 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
         assert any("balance:X-am" in p and "'soon'" in p for p in problems), problems
 
     def test_two_unrelated_steps_may_not_share_one_rank(self, stage):
-        """A rank repeats only where two names are ONE commit."""
-        line = _row("steps", "| balance | X-ad-b |")
-        stage("steps", line, _with_cell(line, 4, "#26"))
+        """A rank repeats only where two names are ONE commit.
+
+        The rank it collides WITH is derived, for the reason the sibling
+        controls give: ``#26`` was a stored copy of a value the live table
+        decides, so a renumbering silently moved which row this collided with
+        while the assertion went on passing.
+        """
+        rows = [row for row in registry.step_rows() if row.rank is not None]
+        subject = next(
+            row for row in rows if row.key == "balance:X-ad-b"
+        )
+        collide_with = next(
+            row.rank for row in rows
+            if row.rank != subject.rank
+            and row.key not in subject.alias_keys()
+        )
+        line = _row("steps", f"| {subject.arc} | {subject.ident} |")
+        stage("steps", line, _with_cell(line, 4, f"#{collide_with}"))
         assert any("not one identity class" in p for p in order.rank_violations())
 
     def test_an_identity_class_sharing_one_rank_is_not_a_violation(self, stage):
@@ -151,15 +184,32 @@ class TestTheStartsCellIsDerivedAndReconciled:
         blocker that does not exist at all.  Without the premise the control
         passed unchanged against `balance:X-NONEXISTENT`, proving the arm fires
         on a typo rather than on the state it names.
+
+        **The SUBJECT is derived too, and it had to be.**  This named
+        `balance:X-ap` until that step shipped, at which point the arm skipped
+        the row and the control stopped firing -- the identical rot its sibling
+        above records for the literals ``#5`` and ``#32``, one column over: a
+        stored copy of a value the live table decides.  The state the control
+        needs is "an open step every one of whose blockers has shipped", which
+        the table can be asked for.
         """
-        blocker = "balance:X-f2-c2"
-        assert {row.key: row for row in registry.step_rows()}[blocker].shipped
-        line = _row("steps", "| balance | X-ap |")
+        rows = {row.key: row for row in registry.step_rows()}
+        subject = next(
+            row for row in registry.step_rows()
+            if not row.shipped and not row.is_container
+            and row.blocked_keys()
+            and all(
+                key in rows and rows[key].shipped for key in row.blocked_keys()
+            )
+        )
+        line = _row("steps", f"| {subject.arc} | {subject.ident} |")
         stage("steps", line, _with_cell(
-            line, 6, f"after #4 / {blocker} (shipped)",
+            line, 6, f"after #4 / {' / '.join(subject.blocked_keys())}",
         ))
         problems = order.starts_violations()
-        assert any("balance:X-ap" in p and "has SHIPPED" in p for p in problems), problems
+        assert any(
+            subject.key in p and "has SHIPPED" in p for p in problems
+        ), problems
 
     def test_the_control_fires_on_a_container_naming_the_wrong_leaf(self, stage):
         """A container ticks with its LAST leaf, not an earlier one."""
