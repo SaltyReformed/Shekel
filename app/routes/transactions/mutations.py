@@ -159,19 +159,122 @@ def _resolve_status_change(txn, data):
     return None
 
 
+def _reject_tracking_on_income(txn, data):
+    """Reject enabling purchase tracking on an income row.
+
+    Purchase tracking is expense-only.  The popover only renders the
+    ``is_envelope`` checkbox for ad-hoc EXPENSE rows, so this is the crafted-
+    request backstop -- the same layering every other route-tier guard here
+    uses.  Checked against the STORED type because ``TransactionUpdateSchema``
+    carries no ``transaction_type_id``, so a PATCH cannot change it.
+
+    It is a function rather than an inline branch so it joins
+    :func:`_apply_regular_update`'s single pre-mutation gate chain: three guards
+    sharing one error exit, which is what keeps that handler inside pylint's
+    return-count limit as the arc adds refusals to it.
+
+    Args:
+        txn: The Transaction being edited.
+        data: The schema-loaded PATCH payload.
+
+    Returns:
+        A designed 400 response tuple, or ``None`` when the edit may proceed.
+    """
+    if data.get("is_envelope") and txn.is_income:
+        return _error_transaction_response(
+            txn.id, "Purchase tracking is only available for expenses.",
+        )
+    return None
+
+
+def _apply_field_updates(txn, data):
+    """Write the submitted fields onto *txn*, refusing what may not be written.
+
+    The FIELD half of :func:`_apply_regular_update`, extracted so the handler
+    keeps one exit per concern rather than growing a branch per rule.  Three
+    acts, and the order is load-bearing:
+
+    1. the ``setattr`` loop.  ``status_id`` and ``settled_on`` are BOTH excluded
+       and routed through the status verb instead: a bare ``setattr`` would
+       assign the column but skip the transition check, the settle-day
+       stamp/clear, and the status-relationship expire that
+       ``status_seam.apply_status_change`` owns -- and for ``settled_on`` it
+       would make this loop a SECOND writer of a column the seam is the single
+       door to (finding **N-185**, the re-run of N-183 on the transaction side).
+    2. the derived-amount refusal (see below), asked AFTER the loop so
+       ``tracks_purchases`` reads the RESULTING row: unchecking "Track
+       individual purchases" in the same save legitimately gives the row its own
+       amount back.
+    3. ``is_override``, which sits with the field writes and ABOVE the status
+       work.  That placement is load-bearing rather than tidy: the settle asks
+       the projection for a fresher amount and SKIPS a row the user has
+       overridden (``income_service.live_projected_net``), so setting the flag
+       afterwards would let a salary row's recompute overwrite the estimate the
+       same form just submitted.
+
+    **The refusal is ruling R-FF's**, the same sentence the reconcile panel
+    already obeys ("a tick is correctable exactly when the settle verb takes its
+    MANUAL branch"), applied to the second door that offers an amount box.  An
+    envelope carrying purchases settles at ``sum(entries)``, so a figure typed
+    beside it is not a correction the app can honour: it would be written here,
+    overwritten by the settle, and never mentioned.  The popover no longer
+    renders the input for such a row (``amount_correctable``), so this is the
+    crafted-request and stale-form backstop.  Only a REAL figure is refused: an
+    empty box loads as an explicit ``None`` (the field is ``allow_none``), which
+    states no amount at all.
+
+    A refused call has already staged the ``setattr`` loop's mutations;
+    ``_error_transaction_response`` rolls them back, exactly as the settle-day
+    refusal in the caller already relies on.
+
+    Args:
+        txn: The Transaction being edited.
+        data: The schema-loaded PATCH payload.
+
+    Returns:
+        A designed 400 response tuple, or ``None`` when every field was
+        written.
+    """
+    for field, value in data.items():
+        if field in _SEAM_OWNED_FIELDS:
+            continue
+        setattr(txn, field, value)
+
+    if (
+        data.get("actual_amount") is not None
+        and transaction_service.settles_from_entries(txn)
+    ):
+        return _error_transaction_response(
+            txn.id,
+            "This row's actual comes from the purchases recorded against it, "
+            "so an amount typed here would be discarded. Record the purchase "
+            "instead, or correct one that is already there.",
+        )
+
+    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
+        txn.is_override = True
+    return None
+
+
 def _apply_regular_update(txn, txn_id, data):
     """Apply a PATCH update to a regular (non-shadow) transaction.
 
-    Validates any status change (:func:`_resolve_status_change`),
-    enforces the expense-only purchase-tracking guard, writes the
-    submitted fields, deletes the auto-generated payback when the
-    change reverts a Credit row (mirroring ``unmark_credit`` via the
-    shared ``credit_workflow.delete_payback_on_credit_revert``), flags
-    template-generated rows as overridden when the amount or period
-    changed, and commits under the optimistic lock.  A
-    ``pay_period_id`` change relocates the row across the grid, so it
-    triggers a full ``gridRefresh`` instead of the in-place
-    ``balanceChanged`` swap.
+    Runs the three pre-mutation gates, writes the submitted fields
+    (:func:`_apply_field_updates`), applies the requested status through
+    ``transaction_service.apply_requested_status``, deletes the auto-generated
+    payback when the change reverts a Credit row (mirroring ``unmark_credit``
+    via the shared ``credit_workflow.delete_payback_on_credit_revert``), and
+    commits under the optimistic lock.  A ``pay_period_id`` change relocates the
+    row across the grid, so it triggers a full ``gridRefresh`` instead of the
+    in-place ``balanceChanged`` swap.
+
+    **This handler does not know what a status change means, and that is plan
+    step X-ap.**  It used to call the status SEAM -- the mechanics primitive --
+    so picking Paid in the popover's Status dropdown flipped an envelope-tracked
+    row into the settled band without ever consulting its purchases: a `$25`
+    purchase against a `$400` estimate booked `$400` here and `$25` through the
+    grid's own Mark Paid button, from two controls in the same card (finding
+    **N-219**).
 
     Args:
         txn: The Transaction being edited.
@@ -184,36 +287,29 @@ def _apply_regular_update(txn, txn_id, data):
         period move) or ``balanceChanged`` on success, a 409 conflict
         cell on a concurrent commit, or a 400 on a rejected status
         change, a locked-field edit of a finalised row (#26), the income
-        purchase-tracking guard, or a bad FK.
+        purchase-tracking guard, an amount the settle would discard, or a bad
+        FK.
     """
-    # The two pre-mutation gates share ONE error exit, the shape
-    # ``transfers.update_transfer`` already uses, so the settle-day refusal
-    # ruling R-EJ added below does not push this handler past pylint's
-    # too-many-returns threshold.  ``or`` preserves the precedence the guards
-    # depend on: an illegal status change reports its own message BEFORE the
-    # finalised-field lock speaks, and each returns ``None`` when it passes.
+    # The three pre-mutation gates share ONE error exit, the shape
+    # ``transfers.update_transfer`` already uses, so each refusal this arc adds
+    # does not push the handler past pylint's too-many-returns threshold.
+    # ``or`` preserves the precedence the guards depend on: an illegal status
+    # change reports its own message BEFORE the finalised-field lock speaks, and
+    # each returns ``None`` when it passes.
     #
     # Gate 1, ``_resolve_status_change``: the state-machine transition check,
     # run before any column is mutated so a rejection leaves the row untouched.
     # Gate 2, the finalised-row edit lock (#26): a Paid/Received/Settled/
     # Credit/Cancelled row's money/period/category/due-date fields cannot be
     # rewritten unless this same request reverts it to Projected.
+    # Gate 3, purchase tracking is expense-only.
     gate_error = (
         _resolve_status_change(txn, data)
         or _finalised_edit_response(txn, data)
+        or _reject_tracking_on_income(txn, data)
     )
     if gate_error is not None:
         return gate_error
-
-    # Purchase tracking is expense-only.  The popover only renders the
-    # is_envelope checkbox for ad-hoc expense rows, but guard the route
-    # too (defense in depth) so a crafted request cannot enable tracking
-    # on an income transaction.  Checked against the stored type because
-    # TransactionUpdateSchema carries no transaction_type_id.
-    if data.get("is_envelope") and txn.is_income:
-        return _error_transaction_response(
-            txn.id, "Purchase tracking is only available for expenses.",
-        )
 
     # Detect a period move before the setattr loop mutates the row.  A
     # move relocates the row to a different period in the grid, which an
@@ -240,28 +336,13 @@ def _apply_regular_update(txn, txn_id, data):
         and data["status_id"] != ref_cache.status_id(StatusEnum.CREDIT)
     )
 
-    # Apply the remaining updates.  ``status_id`` and ``settled_on`` are BOTH
-    # excluded here and routed through the status verb below: a bare setattr
-    # would assign the column but skip the transition check, the settle-day
-    # stamp/clear, and the status-relationship expire that the seam owns -- and
-    # for ``settled_on`` it would make this loop a SECOND writer of a column the
-    # seam is the single door to (finding **N-185**, the re-run of N-183 on the
-    # transaction side).
-    for field, value in data.items():
-        if field in _SEAM_OWNED_FIELDS:
-            continue
-        setattr(txn, field, value)
-
-    # If the user changed amount or period on a template-generated item, flag as
-    # override.  It sits HERE, with the other field writes and above the status
-    # work, because it is one: a flag this request sets from this request's
-    # payload.  The placement is also load-bearing rather than tidy -- the
-    # settle below asks the projection for a fresher amount and SKIPS a row the
-    # user has overridden (``income_service.live_projected_net``), so setting
-    # the flag afterwards would let a salary row's recompute overwrite the
-    # estimate the same form just submitted.
-    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
-        txn.is_override = True
+    # Write the submitted fields, refuse an amount the settle would discard, and
+    # flag a template row as overridden -- three acts whose ORDER is load-bearing
+    # and is documented at the helper.  Extracted so this handler keeps one exit
+    # per concern rather than one per rule.
+    field_error = _apply_field_updates(txn, data)
+    if field_error is not None:
+        return field_error
 
     # Apply the status and the settle day through the ONE status verb, in ONE
     # call, because they are ONE fact: a row is settled if and only if it

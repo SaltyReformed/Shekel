@@ -19,19 +19,20 @@ the user asked for; that function decides what applying it means and dispatches
 a settle to the verb.  It exists because a route was making that decision, and
 making it wrong -- see the paragraph below.
 
-**THREE doors settle a transaction, not two, and only two of them are on this
-verb.**  Saying so here rather than letting the next leaf discover it: the
-grid's Mark Paid calls the verb, the reconcile panel's tick calls it since plan
-step X-f2-c2, and ``routes/transactions/mutations._apply_regular_update`` -- the
-Status dropdown on the full-edit popover -- does NOT.  That third door flips
-the status through the seam and reconciles, but never consults the entries, so
-an envelope-tracked row with a `$25` purchase against a `$400` estimate books
+**THREE doors settle a transaction and all three are now on this verb** (plan
+step X-ap, finding **N-219**).  The grid's Mark Paid calls it, the reconcile
+panel's tick calls it since plan step X-f2-c2, and the Status dropdown on the
+full-edit popover reaches it through :func:`apply_requested_status` -- which it
+did not, until X-ap.  That third door flipped the status through the status
+seam and reconciled the ledger, but never consulted the entries, so an
+envelope-tracked row with a `$25` purchase against a `$400` estimate booked
 `$25` through Mark Paid and **`$400`** through the dropdown, from two controls
-in the same card.  Measured on both this tree and the merge-base, so it is
-PRE-EXISTING and neither caused nor worsened here; ruling **R-FA** named "two
-route branches" and there were three.  It is a live money defect with its own
-ledger row and its own step, because routing it onto this verb CHANGES what a
-full-edit Save books and so cannot ride inside a zero-money commit.
+in the same card.  Ruling **R-FA** named "two route branches" and there were
+three; the census is now closed and stated at :func:`apply_requested_status`.
+
+**The rule this module holds is that a door states an INTENT and the service
+decides what it costs.**  Every public function here is one of those decisions,
+and none of them is reachable from a template or a form field.
 
 Architecture:
   - No Flask imports.  Receives ORM objects, mutates them, and
@@ -56,7 +57,9 @@ from app.models.transaction import Transaction
 from app.services import posting_service
 from app.services.cash_ledger import live_amount_overrides
 from app.services.entry_service import compute_actual_from_entries
+from app.services.state_machine import allowed_transitions
 from app.services.status_seam import apply_status_change
+from app.utils.balance_predicates import settled_status_ids
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSACTION_SETTLED_FROM_ENTRIES,
@@ -98,6 +101,138 @@ def settled_status_id(txn: Transaction) -> int:
     if txn.is_income:
         return ref_cache.status_id(StatusEnum.RECEIVED)
     return ref_cache.status_id(StatusEnum.DONE)
+
+
+def enters_settled_band(txn: Transaction, new_status_id: int) -> bool:
+    """Return whether moving *txn* to *new_status_id* SETTLES it.
+
+    **The predicate that tells a status ASSIGNMENT from a SETTLE**, published
+    because :func:`apply_requested_status` dispatches on it and a door must not
+    restate it.  Settling is entering the band from outside it: Projected ->
+    Paid or Projected -> Received, the only two the state machine admits inward
+    (Credit and Cancelled reach the band through Projected, never directly).
+
+    **Staying inside the band is NOT a settle**, and that half is load-bearing.
+    ``Paid -> Settled`` is an ARCHIVE of a row whose money already moved and
+    whose amount is already a fact, and ``Paid -> Paid`` is an idempotent
+    re-submit; routing either to :func:`settle_transaction` would ask an
+    immutable row to re-price itself, which its envelope branch refuses by
+    precondition and its manual branch would answer by re-reading a projection
+    the row left months ago.
+
+    Args:
+        txn: The row, read for its CURRENT ``status_id``.
+        new_status_id: The status a door is asking for.
+
+    Returns:
+        True when the move crosses INTO the settled band from outside it.
+    """
+    settled = settled_status_ids()
+    return txn.status_id not in settled and new_status_id in settled
+
+
+def _mismatched_settled_status_ids(txn: Transaction) -> frozenset[int]:
+    """Return the settled statuses *txn*'s TYPE does NOT take.
+
+    The settled band minus :func:`settled_status_id`'s answer for this row --
+    one expression for the two things that need it, the refusal
+    (:func:`reject_mismatched_settled_status`) and the dropdown's pre-hint
+    (:func:`offerable_status_ids`).  Stated once so the enforced rule and the
+    displayed rule cannot drift, which is the same reason
+    :func:`settles_from_entries` is published.
+
+    A SET rather than an equality, and deliberately: an inline equality against
+    a resolved status id is the D6-09 shape the project's own census test
+    refuses outside ``balance_predicates``, and the set form is both honest
+    about what is being asked and the one that composes with
+    :func:`app.services.state_machine.allowed_transitions`.
+
+    Args:
+        txn: The row, read for ``is_income``.
+
+    Returns:
+        The ``ref.statuses.id`` values in the settled band that this row may
+        never settle into -- one member today, for either type.
+    """
+    return settled_status_ids() - {settled_status_id(txn)}
+
+
+def reject_mismatched_settled_status(
+    txn: Transaction, new_status_id: int,
+) -> None:
+    """Refuse a settled status that contradicts the row's TYPE.
+
+    :func:`settled_status_id` is the rule -- income settles as Received, an
+    expense as Paid -- and it is the verb's to apply, so a door that asks for
+    the OTHER one is asking for something the domain does not have.  The
+    alternative to refusing is silent substitution: the row lands in a status
+    the user did not pick, with nothing said about it.
+
+    **The state machine cannot make this judgement**, and that is why the rule
+    is here.  Its transaction map admits Projected -> Paid AND Projected ->
+    Received because it is keyed on the STATUS, not on the row: it never sees
+    ``transaction_type_id``.  So the two facts have to meet somewhere, and this
+    is the only place that holds both.
+
+    **It refuses nothing that exists.**  Measured on production: 17 rows carry
+    an income type in the Paid status and all 17 are transfer SHADOWS, whose
+    settle goes through ``transfer_service`` and never reaches here (a transfer
+    sets Paid on both legs deliberately -- the income/expense split is
+    meaningless for a pair whose whole point is that one leg is each).  Every
+    one of the 143 non-shadow settled rows agrees with its own type.
+
+    The full-edit dropdown pre-hints the same rule
+    (:func:`offerable_status_ids`), so reaching this refusal takes a crafted
+    request or a stale form -- which is exactly the layering the route's own
+    purchase-tracking guard uses, and the reason this is a designed 400 rather
+    than a programming error.
+
+    Args:
+        txn: The row being settled, read for ``is_income``.
+        new_status_id: The settled status the door asked for.
+
+    Raises:
+        ValidationError: When *new_status_id* is a settled status other than
+            the one this row's type takes.
+    """
+    if new_status_id not in _mismatched_settled_status_ids(txn):
+        return
+    kind = "Income" if txn.is_income else "An expense"
+    takes = "Received" if txn.is_income else "Paid"
+    raise ValidationError(
+        f"{kind} settles as {takes}.  Transaction {txn.id} was asked to "
+        f"settle as status {new_status_id} instead."
+    )
+
+
+def offerable_status_ids(txn: Transaction) -> frozenset[int]:
+    """Return the statuses a DOOR may offer for *txn* -- the dropdown's set.
+
+    ``state_machine.allowed_transitions`` narrowed by this module's type rule.
+    The state machine grades the STATUS and cannot see the row's type, so its
+    answer for a Projected row contains both Paid and Received; exactly one of
+    them is reachable for any given row, and offering the other is offering a
+    control that 400s at :func:`reject_mismatched_settled_status`.
+
+    It is the pre-hint half of one rule rather than a second rule, which is the
+    shape the status dropdown was already built to (grid audit D2: "options the
+    state machine would reject render disabled, so an illegal transition cannot
+    be picked instead of failing as a 400 after Save").  The enforcement stays
+    at the verb; this only decides what the user is shown.
+
+    Args:
+        txn: The row the dropdown is being rendered for.
+
+    Returns:
+        The legal successor ids, minus the settled status this row's type does
+        not take.  Identity is preserved, so a row already sitting in a
+        mismatched status can still re-submit its own status and be edited.
+    """
+    # ``- {txn.status_id}`` keeps the IDENTITY edge: a row that somehow already
+    # sits in the mismatched status must still be able to re-submit its own
+    # status, or the popover could not save a notes edit on it at all.
+    wrong = _mismatched_settled_status_ids(txn) - {txn.status_id}
+    return allowed_transitions(txn) - wrong
 
 
 def settles_from_entries(txn: Transaction) -> bool:
@@ -281,6 +416,15 @@ def apply_requested_status(
             Deliberately NOT a sibling of ``ValidationError`` -- it must fail
             loud rather than render as a designed refusal.
     """
+    # THE DISPATCH, and it is the whole of finding **N-219**'s fix.  Moving a
+    # row INTO the settled band is a SETTLE, which decides an amount before it
+    # decides a status; every other status change is the mechanics alone.  The
+    # verb reconciles the ledger itself, so this arm returns rather than falling
+    # through to a second reconcile of the same row.
+    if enters_settled_band(txn, new_status_id):
+        reject_mismatched_settled_status(txn, new_status_id)
+        settle_transaction(txn, settled_on=settled_on)
+        return
     apply_status_change(txn, new_status_id, settled_on=settled_on)
     posting_service.sync_transaction_postings(
         txn, settled=txn.status.is_settled,
@@ -344,9 +488,9 @@ def settle_transaction(
     block so ``_emit_balanced_entry``'s flush lands on the batch's index-safe
     final state, so it keeps calling :func:`settle_from_entries` directly and
     owns its own reconcile.  That is the layering: the primitive for a batch,
-    this verb for a settle.  It is not the ONLY non-caller -- the full-edit
-    Status dropdown is a third settle door that is on neither, which is a
-    defect rather than a layering choice; see this module's docstring.
+    this verb for a settle, and since plan step X-ap the batch is the ONLY
+    non-caller -- the full-edit Status dropdown was the other one, and it was a
+    defect rather than a layering choice.
 
     **It takes a settle DAY since plan step X-f2-c2's money commit**, which is
     the caller ruling **R-EC** was waiting for: the reconcile tick knows the day
@@ -581,12 +725,29 @@ def settle_from_entries(
     because it settles a batch and owes its ledger reconcile a different
     moment (see ``docs/carry-forward-aftermath-design.md`` Option F).
 
+    **An EMPTY entry list settles at ``Decimal("0")`` here and at the row's own
+    estimate through :func:`settle_transaction`, and that difference is RULED
+    rather than incidental** (ruling **R-FJ**, finding **N-230**).  The two are
+    answering different questions.  This primitive's caller,
+    ``carry_forward_service``, has ALREADY relocated the unspent money -- it
+    rolls ``estimated - sum(entries)`` into the next period's row and then
+    settles the source at what was spent -- so booking the estimate here would
+    count the same dollars twice.  A DOOR has relocated nothing: pressing Paid
+    on an envelope says the budget is finished, and booking ``$0.00`` would
+    record that no money left the account while marking the row Paid.  The
+    discriminator is therefore the CALLER's act, not the row, which is why the
+    rule cannot live in a shared branch and why :func:`settle_transaction` gates
+    its entries branch on ``and txn.entries``.
+
+    Production carries both signatures, which is how the difference was found:
+    of 9 settled entry-less envelopes, 8 were booked at their estimate
+    (`$794.79`) through a door and 1 -- ``Kayla's Spending Money``, `$157.60` --
+    at `$0.00` through carry-forward.
+
     Effect on *txn* (in place):
       - ``actual_amount`` is set to ``sum(e.amount for e in txn.entries)``,
-        which is ``Decimal("0")`` when ``txn.entries`` is empty.  Empty
-        entries on an envelope row settle at zero spend (the carry-forward
-        branch then folds the full estimated amount into the next
-        period's canonical row).
+        which is ``Decimal("0")`` when ``txn.entries`` is empty -- see the
+        ruling above.
       - ``status_id`` is set to ``DONE`` for expense transactions and
         ``RECEIVED`` for income transactions, matching the display
         convention used by ``app/routes/transactions.py:mark_done``.
