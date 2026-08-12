@@ -646,3 +646,41 @@ class LedgerAccountKind(db.Model):
 
     def __repr__(self):
         return f"<LedgerAccountKind {self.name}>"
+
+
+class AmountSource(db.Model):
+    """WHICH RELATION states a row's amount (ruling **R-FI**, plan step X-au-c1).
+
+    The catalogue behind ``budget.transactions.amount_source_id`` and
+    ``budget.transfers.amount_source_id``.  A row that OWNS its amount carries
+    NULL here and a figure in its amount column; a row whose amount is DERIVED
+    names the relation that prices it and carries no figure at all.  The pairing
+    is a CHECK on each table, so a stale derived figure is unrepresentable
+    rather than merely unlikely.
+
+    Two values: ``template`` (the recurring definition that generated the row
+    states its price) and ``parent_transfer`` (a shadow is worth exactly what
+    its parent transfer is).  Later steps INSERT additional relations -- plan
+    step X-au-i's CC payback would add the row it repays -- and new values are
+    data, never schema.
+
+    **They name the RELATION, not the RULE**, which is a developer ruling of
+    2026-08-12 amending R-FI's own five-value enumeration; the evidence (two
+    live routes that falsify a stored rule) is on
+    :class:`app.enums.AmountSourceEnum`, together with the reason the OWN state
+    is a NULL rather than a row here.
+
+    Application code resolves these via ``ref_cache.amount_source_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+    """
+
+    __tablename__ = "amount_sources"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<AmountSource {self.name}>"

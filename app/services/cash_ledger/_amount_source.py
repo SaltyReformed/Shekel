@@ -11,7 +11,7 @@ would hold, and REFUSES rather than falling back for a row it cannot place.
 **This is the sibling of :mod:`._amounts`, not a second copy of it, and the two
 answer different questions.**  This module answers *what is this row's amount* --
 the quantity ``budget.transactions.estimated_amount`` and
-``budget.transfers.amount`` carry, and the one plan step X-au-c makes NULLABLE.
+``budget.transfers.amount`` carry, and the one plan step X-au-c1 made NULLABLE.
 :mod:`._amounts` answers *what is this row worth to checking*, which composes
 that amount with an entered actual, an excluded status and an envelope's
 purchases.  Splitting them by question is what the package already does
@@ -32,7 +32,7 @@ load-bearing and is stated once, in :func:`amount_rule`:
   1. **OWN** -- the row states its own figure.  An ad-hoc row, a row a human
      re-priced (``is_override``), and every row that is no longer Projected: at
      settle the resolved figure is FROZEN and the row owns it from then on
-     (plan step X-aq, which X-au-c formalises).
+     (plan step X-aq, which plan step X-au-c3 formalises).
   2. **SALARY** -- a paycheck, priced by the salary profile driving its
      template (``income_service.live_projected_net``).  A SUBSET of rule 3:
      ``SalaryProfile.template_id`` names an ordinary transaction template.
@@ -46,12 +46,21 @@ load-bearing and is stated once, in :func:`amount_rule`:
      which is itself priced by rule 1 or rule 3
      (:func:`resolve_transfer_amount`).
 
-**The classification is a function of TODAY's facts, and it is the SEED for the
-column rather than a rival to it.**  R-FI's discriminator is an explicit
-``amount_source``, added at plan step X-au-c; until that column exists the rule
-has to be read off the facts the row already carries, and :func:`amount_rule` is
-where X-au-c's backfill takes its values from.  What it cannot see is the case
-that forced the column: a CC payback carries NEITHER link while its amount is
+**The classification is a function of TODAY's facts, and the column beside it
+records only the part that is NOT a fact about the row.**  Plan step X-au-c1
+added ``amount_source_id`` to both tables: NULL when the row owns its figure, and
+otherwise the RELATION that prices it -- its recurring definition, or its parent
+transfer.  Which PRODUCER that relation reaches (a salary profile against a price
+series, a loan against a stated base) stays a live read of the definition, which
+is why this dispatch is not replaced by a column read: a definition can change
+mode -- ``routes/loan/payment_transfer.track_payment`` flips a payment to
+derive-mode in one click, and archiving a salary profile unlinks a template --
+and a stored RULE would then name a producer that no longer answers.  X-au-c1
+backfills no declaration at all: every existing row keeps its figure and declares
+itself its owner, and the per-kind cutovers (X-au-d..X-au-i) are what stamp a
+relation as each bucket stops being priced.  What this classification cannot see
+is the case that forced the column: a CC payback carries NEITHER link while its
+amount is
 derived (``credit_workflow.create_cc_payback_transaction`` copies the source
 row's figure, ``entry_credit_workflow.sync_entry_payback`` re-states it as the
 sum of the source's credit entries), so it places as OWN here.  That is the
@@ -63,8 +72,9 @@ cannot answer -- no due date to resolve a series on, an EMPTY series, no live
 net for the row's period, a loan whose basis will not resolve, a missing parent
 -- :class:`~app.exceptions.AmountUnresolvable` is raised naming the row and the
 rule.  Falling back to the stored column would publish exactly the stale figure
-this arc exists to delete, and after X-au-c that column is NULL for such a row
-anyway, so the fallback would be a ``None`` in a money path.  Zero rows on
+this arc exists to delete, and once a per-kind cutover (plan steps
+X-au-d..X-au-i) declares that row's relation its column is NULL, so the fallback
+would be a ``None`` in a money path.  Zero rows on
 production take any refusal arm (measured 2026-08-12 over all 997), so each one
 carries a seeded control instead.
 
@@ -96,10 +106,27 @@ from app.utils.money import round_money
 class AmountRule(Enum):
     """Which of ruling R-FI's five sources a row's amount comes from.
 
-    The dispatch key, and the value plan step X-au-c's ``amount_source`` column
-    stores.  An explicit enum rather than a pair of link tests, because the
-    rules are not a partition over the links -- see this module's docstring for
-    the two subset relations that make the order load-bearing.
+    The dispatch key.  An explicit enum rather than a pair of link tests, because
+    the rules are not a partition over the links -- see this module's docstring
+    for the two subset relations that make the order load-bearing.
+
+    **It is NOT what the ``amount_source_id`` column stores, and a first draft of
+    this docstring said it was.**  That column names the RELATION that prices a
+    row -- its definition, or its parent transfer
+    (:class:`app.enums.AmountSourceEnum`) -- and the refinement between SALARY
+    and TEMPLATE, or between LOAN_PAYMENT and TRANSFER, is a property of the
+    DEFINITION rather than of the row, resolved live here.  Storing the rule
+    would put a definition-level fact on every generated row, where two live
+    routes falsify it (ruling **R-FK**, plan step X-au-c1).
+
+    **What DOES move onto the column is the OWN arm, and it has not moved yet**
+    (finding **N-262**): :func:`amount_rule` still INFERS ownership from
+    ``is_override`` and from having left Projected, which the pairing CHECK
+    cannot see -- so a flag written without a figure, or a row cancelled out of
+    Projected before the freeze, is a row the schema admits and this dispatch
+    refuses.  Plan step X-au-c2 makes that arm a read of ``amount_source_id``,
+    which is the one statement of ownership the model has; the status gate then
+    sits ABOVE the resolver rather than inside it.
     """
 
     OWN = "own"
@@ -205,9 +232,10 @@ def amount_rule(txn) -> AmountRule:
 
     **Soft deletion does not change the answer, deliberately.**  Being deleted
     is a statement about whether the row counts, not about who owns its figure,
-    and making it flip the rule would force X-au-c's ``amount_source`` to be
-    REWRITTEN on every delete and restore -- a derived column beside a second
-    writer, which is the shape this arc exists to remove.  A deleted derived row
+    and making it flip the rule would force the ``amount_source_id`` column plan
+    step X-au-c1 added to be REWRITTEN on every delete and restore -- a derived
+    column beside a second writer, which is the shape this arc exists to remove.
+    A deleted derived row
     resolves like any other and contributes nothing either way; the backfill's
     refusal to MINE a deleted row (migration ``a9d3c15e7f42``) is a question
     about evidence, not about ownership.
@@ -277,8 +305,8 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     balance surface folds.
 
     **It is UNWIRED as of this step.**  Nothing in ``app/`` calls it yet; plan
-    step X-au-c routes the readers through it and turns the settle refresh into
-    the freeze.
+    step X-au-c2 routes the readers through it and X-au-c3 turns the settle
+    refresh into the freeze.
 
     **A caller resolving many rows should eager-load SEVEN relationships**, and
     an adversarial review counted them after a first draft named two: per row,
@@ -289,7 +317,7 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     ones cost one query per distinct definition rather than per row (the
     collections are identity-mapped, so 44 templates serve 452 rows on the
     production clone); the per-ROW ones are a true N+1.  Stated rather than
-    hidden: the eager load belongs in the loaders plan step X-au-c routes, not
+    hidden: the eager load belongs in the loaders plan step X-au-c2 routes, not
     in a per-row rule.
 
     Args:
@@ -390,10 +418,10 @@ def _own_figure(amount, kind: str, row_id: int) -> Decimal:
     The OWN rule's whole body, and the refusal in it is this resolver's TOTALITY
     contract rather than defensive padding: a resolver that can answer ``None``
     for a row is not total, and every other rule here raises rather than
-    returning one.  It is unreachable today -- both amount columns are NOT NULL
-    -- and it becomes reachable at plan step X-au-c, where
-    ``ck_transactions_amount_ownership`` is what keeps an OWN row's figure
-    present.  A row that reaches here with no figure has that CHECK broken, and
+    returning one.  It is unreachable on today's DATA -- no row's amount column
+    is NULL yet -- and what keeps it that way is
+    ``ck_transactions_amount_ownership`` (plan step X-au-c1): a row that owns its
+    amount must store one.  A row that reaches here with no figure has that CHECK broken, and
     substituting a zero would remove real money from a balance in silence.
 
     Args:
