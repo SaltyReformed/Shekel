@@ -55,7 +55,9 @@ def _load_dashboard_core_data(user_id, balance_ctx=None):
     Returns:
         A :class:`_DashboardCoreData` with active accounts (ordered for
         display), the balance context, all pay periods, and the current
-        period.
+        period.  **Not the owner's pay cadence** -- see that class's docstring
+        for why a loader every narrow producer runs must not resolve a fact
+        those producers may return before using.
     """
     accounts = (
         db.session.query(Account)

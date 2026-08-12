@@ -56,8 +56,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import RecurrenceConflict, ValidationError
-from app.models.salary_profile import SalaryProfile
-from app.services.recurrence import PlacementOutcome, rule_occurrences
+from app.services.recurrence import rule_occurrences
 from app.services._recurrence_common import (
     check_scenario_ownership,
     existing_rows_by_period,
@@ -66,7 +65,6 @@ from app.services._recurrence_common import (
     partition_regeneration_rows,
     regeneration_bound,
     query_rows_from_effective_date,
-    report_schedule_gaps,
     should_skip_period,
 )
 from app.utils.log_events import (
@@ -136,21 +134,25 @@ class GenerationPlan(NamedTuple):
             -- which is what :func:`refuse_unstorable_repeats` refuses while
             ``idx_transactions_template_period_scenario`` is keyed on the
             paycheck (plan ledger row D19).
-        gaps: Every occurrence date this rule names that the owner's schedule
-            has NO pay period for -- a hole between two periods, not the
-            ordinary tail past the last payday
-            (:class:`~app.services.recurrence.PlacementOutcome`).  Reported by
-            the write path (``_recurrence_common.report_schedule_gaps``) and
-            ignored by the read-only predictor, so predicting never emits an
-            operator alert.  Empty on every schedule the writer has produced
-            (production: 61 contiguous periods, measured 2026-08-08); plan
-            ledger row **D7**, cause F-10.
         projected_id: The ``Projected`` status id every generated row carries.
+
+    **It carried a fourth field until plan step C2-b2**, ``gaps`` -- the
+    occurrence dates the owner's schedule had no pay period for, which the
+    write path reported and the read-only predictor ignored.  A pay period's
+    end is now DERIVED from the next payday, so the periods tile and a hole
+    between two of them is not a state a READER can see; the field, the report
+    and the ``PlacementOutcome`` that fed it went with it (plan ledger rows
+    **D7** / **P27**, recurrence **R-F10**).  A legacy hole is ABSORBED by the
+    preceding paycheck and reported by ``integrity_check`` **BA-07** instead --
+    and it is one of THREE shapes where the derivation and the stored columns
+    disagree, all of which move money and only one of which BA-07 sees.  The
+    other two are the stored cadence against the last stored end (row **P28**)
+    and a stored ordinal that is not ``0..n-1`` (row **P26**);
+    ``recurrence/_occurrence.py``'s module docstring holds the full statement.
     """
 
     rule: RecurrenceRule
     placements: tuple[PlannedOccurrence, ...]
-    gaps: tuple[date, ...]
     projected_id: int
 
 
@@ -240,33 +242,42 @@ def resolve_generation_plan(
         # it).
         return None
 
-    # The occurrence walk answers in SchedulePeriod values; row creation needs
+    # The occurrence walk answers in DerivedPeriod values; row creation needs
     # the ORM rows.  ``write_periods`` is keyed on ``pay_periods.id``, so the
     # single lookup below does BOTH jobs -- narrow to the window, and hand back
     # the row to write into.  Dropping that intersection would make a schedule
     # extend re-walk every historical period and cost O(schedule) writes
     # instead of O(new).
+    #
+    # **The ORM row is resolved BEFORE the bound is applied, and the ORDER is
+    # load-bearing** (found by adversarial review of plan step C2-b2).
+    # ``effective_from`` also bounds the DELETE sweep that
+    # ``regenerate_for_template`` runs before calling here, and that sweep is
+    # SQL over ``pay_periods.end_date`` -- the STORED column
+    # (``_recurrence_common.query_rows_from_effective_date``).  Testing
+    # ``placement.period.end_date`` here would test the DERIVED end instead, so
+    # on a schedule where the two disagree the sweep and the regeneration would
+    # select different periods: rows deleted and never recreated where the
+    # derived end is earlier, and a stale amount surviving an edit where it is
+    # later.  Reading the bound off the same column the sweep reads makes the
+    # two one statement again.  Plan step C4 deletes that column, at which point
+    # the sweep has to move onto the calendar and this comment with it.
     window = schedule.write_periods
     placements = []
-    gaps = []
     for placement in rule_occurrences(rule, schedule.calendar):
-        if placement.outcome is PlacementOutcome.SCHEDULE_GAP:
-            # Owed, and no paycheck covers the day.  Collected rather than
-            # logged here: the WRITE path reports it (see GenerationPlan.gaps),
-            # so the read-only predictor stays silent.
-            gaps.append(placement.occurrence)
         if placement.period is None:
-            continue
-        if (
-            effective_from is not None
-            and placement.period.end_date < effective_from
-        ):
+            # The saved schedule does not reach this occurrence.  Ordinary --
+            # the next schedule extend places it -- and since plan step C2-b2
+            # it is the only way to get a placement with no period.
             continue
         period = window.get(placement.period.period_id)
-        if period is not None:
-            placements.append(PlannedOccurrence(placement.occurrence, period))
+        if period is None:
+            continue
+        if effective_from is not None and period.end_date < effective_from:
+            continue
+        placements.append(PlannedOccurrence(placement.occurrence, period))
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    return GenerationPlan(rule, tuple(placements), tuple(gaps), projected_id)
+    return GenerationPlan(rule, tuple(placements), projected_id)
 
 
 def generate_for_template(template, schedule, scenario_id, effective_from=None):
@@ -301,13 +312,6 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     if plan is None:
         return []
 
-    # A hole in the owner's schedule is named here rather than inside
-    # ``resolve_generation_plan``: the read-only predictor shares that call and
-    # runs once per envelope row on the carry-forward path, so reporting there
-    # would emit N operator alerts for one prediction.  See
-    # _recurrence_common.report_schedule_gaps.
-    report_schedule_gaps(logger, template, scenario_id, plan.gaps)
-
     # What is already there (to avoid duplicates and respect overrides), and
     # the refusal of a paycheck this pass would write into TWICE -- the unique
     # index holds one row per (template, period, scenario), and forward
@@ -320,7 +324,7 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     )
 
     # Check if this template has a linked salary profile for paycheck calculation.
-    salary_profile = _get_salary_profile(template.id)
+    salary_profile = _get_salary_profile(template)
 
     created = []
     for period in (row.period for row in plan.placements):
@@ -413,9 +417,12 @@ def can_generate_in_period(template, period, scenario_id, *, schedule):
     **The schedule is threaded in rather than built here**, and that is a cost
     decision the carry-forward path forces.  This predicate runs ONCE PER
     ENVELOPE ROW being rolled forward (``_classify_leftover_target``), and
-    building a schedule per call would issue one ``get_all_periods`` query and
-    one full forward occurrence walk per row -- the redundant-producer shape
-    ``period_population`` documents avoiding three modules away.  The caller
+    building a schedule per call would issue that schedule's THREE queries --
+    ``get_all_periods``, and the payday and cadence reads
+    ``pay_calendar.calendar_for`` makes (plan step C2-b2 moved the calendar onto
+    that one door) -- plus one full forward occurrence walk, per row.  That is
+    the redundant-producer shape ``period_population`` documents avoiding three
+    modules away.  The caller
     resolves one schedule for the request and passes it down.
 
     Args:
@@ -725,27 +732,32 @@ def _get_existing_map(template_id, scenario_id, period_ids):
     )
 
 
-def is_salary_linked_template(template_id):
-    """Return True iff an active salary profile drives this template's amounts.
+def _get_salary_profile(template):
+    """Return the ACTIVE salary profile driving this template's amounts, or None.
 
-    A salary-linked template's instance amounts are paycheck-calculated per
-    period (:func:`_get_transaction_amount`), so its ``default_amount`` is
-    vestigial: editing it does not change generated rows.  The update route
-    uses this to skip the amount-change conflict chooser for such templates
-    (their ``default_amount`` diff is not a real per-instance amount change).
+    Generation needs the PROFILE, not the boolean -- it prices each row from it
+    (:func:`_get_transaction_amount`) -- and plan step X-au-d deletes both
+    together when generation stops pricing salary rows.  Its boolean twin is
+    :func:`app.services.template_amount_service.is_salary_linked_template`,
+    which moved out of this module at plan step X-au-a so that the recurrence
+    engine can read the amount series at X-au-e without closing an import loop.
+
+    **Both read the same RELATIONSHIP rather than issuing two queries**, so
+    "an active salary profile names this template" has one implementation: an
+    adversarial review noted the split the moment the boolean moved out.  The
+    collection is identity-mapped, which is also what lets a caller archiving a
+    profile see its own pending change (see the twin's docstring).
+
+    Args:
+        template: The :class:`~app.models.transaction_template.TransactionTemplate`
+            to read.
+
+    Returns:
+        The active :class:`~app.models.salary_profile.SalaryProfile`, or ``None``.
     """
-    return _get_salary_profile(template_id) is not None
-
-
-def _get_salary_profile(template_id):
-    """Check if a template has a linked salary profile.
-
-    Returns the SalaryProfile if found, None otherwise.
-    """
-    return (
-        db.session.query(SalaryProfile)
-        .filter_by(template_id=template_id, is_active=True)
-        .first()
+    return next(
+        (profile for profile in template.salary_profiles if profile.is_active),
+        None,
     )
 
 
@@ -753,8 +765,9 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
     """Determine the transaction amount, using paycheck calculator if salary-linked.
 
     Resolves tax configs for the period's OWN tax year via the shared
-    ``load_tax_configs_for_year`` SSOT (current-year fallback when a future
-    year has no configs at all).  The salary projection page and the
+    ``load_tax_configs_for_year`` SSOT, which substitutes the latest
+    CONFIGURED year at or before it when that year has none.  The salary
+    projection page and the
     live net-pay recompute (``income_service.live_projected_net``) resolve
     the SAME way (DH-#30), so the grid's stored income amount and the
     salary page's live-calculated net pay agree on which year's brackets
@@ -814,15 +827,16 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
         # tests' patches of app.services.paycheck_calculator take effect.
         from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
         # Pylint: ``import-outside-toplevel`` -- kept local so the fallback
-        # tests' patches of app.services.tax_config_service.load_tax_configs
-        # take effect (load_tax_configs_for_year calls it internally).
+        # tests' patch of
+        # app.services.tax_config_service.load_tax_configs_for_year takes
+        # effect; a module-level import would bind the name before the patch.
         from app.services.tax_config_service import load_tax_configs_for_year  # pylint: disable=import-outside-toplevel
 
-        # Resolve the period's own tax year, falling back to the current
-        # year when that year has no configs at all (else future-year
-        # periods would produce zero federal tax and the grid would
-        # disagree with the salary page).  The fallback rule is owned ONCE
-        # by load_tax_configs_for_year, the SSOT shared with the salary
+        # Resolve the period's own tax year, substituting the latest
+        # CONFIGURED year at or before it when that year has none (else
+        # future-year periods would produce zero withholding and the grid
+        # would disagree with the salary page).  The rule is owned ONCE by
+        # load_tax_configs_for_year, the SSOT shared with the salary
         # projection and the year-end summary (DH-#30).
         tax_configs = load_tax_configs_for_year(
             salary_profile.user_id, salary_profile, period.start_date.year,

@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Follow-up: each loan is resolved 4x per `/savings` render
 
 **Status:** RESOLVED 2026-07-13 (commits `b61aee9c`, `866e30b0`, `84c6e066`, `7b7c909b`).

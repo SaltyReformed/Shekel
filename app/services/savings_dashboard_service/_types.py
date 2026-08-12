@@ -38,6 +38,17 @@ class _DashboardCoreData:
     :mod:`app.services.balance_at` seam (which loads its own transactions),
     so no pre-loaded transaction set rides here.
 
+    **The owner's pay CADENCE is deliberately NOT here** (plan step R7a-2a).
+    It was, for one draft, and the draft was wrong in a way worth recording:
+    resolving it in this loader made ``/`` -- the budget dashboard -- raise for
+    an owner with no ``budget.pay_schedule`` row, because the tracks section
+    reaches this bundle through ``compute_goal_progress`` and
+    ``compute_debt_summary``, both of which return early for an owner with no
+    goals and no loans.  A page must not fail for a fact it never uses.  The
+    cadence is an input to a CONVERSION, so it is resolved at each of the
+    points where one happens -- after those early returns -- and threaded from
+    there.
+
     Attributes:
         accounts: The user's active accounts, ordered for display.
         balance_ctx: The read pass's

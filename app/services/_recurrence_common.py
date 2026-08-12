@@ -14,7 +14,6 @@ place, where the two cannot drift:
   - the generate row fetch + repeat refusal
     (:func:`existing_rows_refusing_repeats`, over
     :func:`existing_rows_by_period` and :func:`refuse_unstorable_repeats`),
-  - the pay-schedule gap report (:func:`report_schedule_gaps`),
   - the regenerate row-partition (:func:`partition_regeneration_rows`),
   - the regenerate sweep bound (:func:`regeneration_bound`),
   - the regenerate row fetch (:func:`query_rows_from_effective_date`),
@@ -67,7 +66,6 @@ from app.utils.log_events import (
     BUSINESS,
     EVT_ACCESS_DENIED_CROSS_USER,
     EVT_CROSS_USER_BLOCKED,
-    EVT_RECURRENCE_OCCURRENCE_UNPLACED,
     log_event,
 )
 
@@ -382,73 +380,6 @@ def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:
         # Auto-generated, unmodified -- safe to delete and regenerate.
         to_delete.append(row)
     return overridden_ids, deleted_ids, to_delete
-
-
-def report_schedule_gaps(logger: logging.Logger, template, scenario_id, gaps):
-    """Log every occurrence the owner's schedule has NO pay period for.
-
-    **Plan ledger row D7, and the developer's 2026-08-08 ruling: log the gap,
-    skip it.**  The obligation is real and has nowhere to live, and extending
-    the schedule cannot help: the hole is behind its horizon.
-
-    **Both generators of a hole are now closed, and this function outlived
-    them.**  Registration bootstrapped a 14-day period 0 that a later real
-    schedule could start after, until ``balance:X-ad-a`` deleted it; and
-    ``pay_period_service._reject_overlapping_batch`` refused an OVERLAPPING
-    batch and not a GAPPED one, until plan step **C3-b** replaced it with a
-    writer that materialises the derivation -- under which a period ends the
-    day before the next payday, so a hole is not expressible and any surviving
-    one is REPAIRED by the owner's next schedule write.  What can still reach
-    here is a hole written before C3-b that nothing has yet touched.  Plan step
-    **C5a** deletes this function and its two call sites once C4 has dropped
-    the columns a hole was ever stored in.
-
-    The three alternatives were weighed and are worse.  RAISING would make one
-    hole block every generate pass for every definition, including the
-    schedule-extend that might repair it.  Writing the row into an adjacent
-    period would put real money in a paycheck whose span does not contain it --
-    a silent misplacement, which is the failure
-    ``PeriodCalendar.period_containing`` refuses by answering ``None``.  And
-    dropping it silently is what the reverse matcher did, which is how the hole
-    stayed unmeasured for the length of this arc.
-
-    **Only a true hole reaches here**, and that distinction cost a review.  The
-    first draft reported every occurrence with no period, which on a perfectly
-    CONTIGUOUS schedule is the ordinary tail: under
-    ``PERIOD_STARTING_ON_OR_AFTER`` an occurrence dated after the last payday
-    has no paycheck to defer onto, and two neutral reviews measured that at 43%
-    of biweekly schedule openings.  An alert that fires on half of healthy
-    schedules buries the one case it exists to surface, so the answer now says
-    which it is (:class:`~app.services.recurrence.PlacementOutcome`) and this
-    reports one of them.
-
-    **Called from the WRITE path only.**  ``resolve_generation_plan`` collects
-    the dates and does not log them, because the read-only predictor
-    ``recurrence_engine.can_generate_in_period`` shares that call and runs ONCE
-    PER ENVELOPE ROW on the carry-forward path -- so reporting there would emit
-    N identical operator alerts for one request, from a function whose contract
-    is that predicting has no side effect.
-
-    Args:
-        logger: The calling engine's module logger, so the event is attributed
-            to ``recurrence_engine`` or ``transfer_recurrence`` as the rest of
-            that engine's events are.
-        template: The (Transaction|Transfer)Template being generated.
-        scenario_id: The scenario the pass targets.
-        gaps: The occurrence dates with no pay period, ascending
-            (``GenerationPlan.gaps``).  Empty is the normal case and emits
-            nothing.
-    """
-    if not gaps:
-        return
-    log_event(
-        logger, logging.WARNING, EVT_RECURRENCE_OCCURRENCE_UNPLACED, BUSINESS,
-        "Recurrence occurrence falls in a pay-schedule gap; skipped",
-        user_id=template.user_id,
-        template_id=template.id,
-        scenario_id=scenario_id,
-        occurrences=[day.isoformat() for day in gaps],
-    )
 
 
 def existing_rows_refusing_repeats(

@@ -49,7 +49,7 @@ from app.exceptions import ShekelError
 
 #: The cadence bounds, mirroring ``ck_pay_schedule_cadence_range`` on
 #: ``budget.pay_schedule.cadence_days``.  Named here rather than inlined
-#: because :func:`_validate_cadence` states them in its refusal message, and a
+#: because :func:`validate_cadence` states them in its refusal message, and a
 #: message that quotes a bound the code does not enforce is how the first cut
 #: of this module shipped.
 #:
@@ -83,15 +83,27 @@ class PayCalendarError(ShekelError, ValueError):
     where that is Python's own contract; a caller catching either name gets it.
 
     It is NOT the successor of ``recurrence._calendar.RecurrenceScheduleError``,
-    and saying so is a correction the review of C1 made.  That class refuses an
-    overlapping or reversed SCHEDULE at the value boundary, and the plan retires
-    it rather than relocating it: plan step **C2-b2** deletes the class that
-    holds its only two raise sites, because the states they police stop being
+    and saying so is a correction the review of C1 made.  That class refused an
+    overlapping or reversed SCHEDULE at the value boundary, and the plan retired
+    it rather than relocating it: plan step **C2-b2** DELETED the class that
+    held its only two raise sites, because the states they policed stopped being
     expressible once the periods are DERIVED.  (An earlier draft of this
     paragraph credited that deletion to C5a, which had it on its list until the
     C2-b decomposition measured that the class dies three leaves earlier.)
     What this class refuses is different -- a payday SET or a cadence that
     cannot define a calendar in the first place.
+
+    **One of those refusals is reachable from a PAGE rather than from a
+    caller**, which the deleted class had no equivalent of and which plan step
+    C2-b2 therefore introduced.  :func:`~._loader.calendar_for` resolves the
+    cadence through ``pay_schedule_service.resolve_cadence``, whose legacy
+    fallback infers it from the last period's stored length -- bounded below by
+    ``ck_pay_periods_date_order`` and NOT bounded above.  A hand-written period
+    spanning more than a year therefore refuses the calendar, which now means a
+    500 on every page that reads the owner's recurrences.  Failing loud is
+    still right (the alternative is projecting a horizon off a value no write
+    door could have produced), and plan step C4 removes the fallback with the
+    column it reads.
     """
 
 
@@ -241,7 +253,7 @@ def derive_periods(
             component); or a payday appears twice.
     """
     if cadence_days is not None:
-        _validate_cadence(cadence_days)
+        validate_cadence(cadence_days)
     # Sorted on the PAYDAY alone.  Sorting the pairs would break on a ``None``
     # id the moment two paydays tied -- and they cannot tie, which is checked
     # next, so keying the sort on the id would only hide that check.
@@ -296,7 +308,7 @@ def derive_periods(
     )
 
 
-def _validate_cadence(cadence_days: int) -> None:
+def validate_cadence(cadence_days: int) -> None:
     """Refuse a cadence that is not an in-range plain integer.
 
     Held to the same standard as :func:`_validated` holds a payday, and for the
@@ -305,6 +317,13 @@ def _validate_cadence(cadence_days: int) -> None:
     cadence; and a ``float`` was accepted and silently TRUNCATED, because
     ``date.__add__`` reads only ``timedelta.days``, so ``14.9`` produced the
     same calendar as ``14``.
+
+    **Package-internal rather than underscore-private, and plan step R7a-2a is
+    why**: :class:`~._cadence.PayCadence` validates through this same function,
+    so the bound has one implementation across the two values that hold a
+    cadence.  It stays out of the package's public surface -- this module is
+    private and ``__init__`` does not re-export it -- so the name is visible to
+    siblings and to nothing else.
 
     **``None`` is not this function's subject and reaching here with one is a
     caller error**, which is a correction plan step C2-b1 made: absence means

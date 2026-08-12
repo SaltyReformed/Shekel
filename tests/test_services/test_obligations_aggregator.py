@@ -2,7 +2,7 @@
 Shekel Budget App -- obligations_aggregator service tests (E-24, HIGH-05).
 
 Locks the single canonical monthly-equivalent aggregator behind both
-``/obligations`` and the ``/savings`` emergency-fund baseline +
+the Recurring surface and the ``/savings`` emergency-fund baseline +
 per-goal contribution floors. Before this aggregator, four near-
 identical loops applied the filter (skip ONCE / skip expired / skip
 no-rule / skip missing-or-zero amount); only the three
@@ -12,14 +12,24 @@ recurring expense inflated the EF baseline forever (HIGH-05 / D6-05).
 Every test below sets up real ORM templates against the test DB so
 the relationship-driven attribute access in
 ``template_monthly_or_none`` is exercised end-to-end, and computes
-its expected value by hand from the named factors
-(``PAY_PERIODS_PER_YEAR`` / ``MONTHS_PER_YEAR``) -- no test
+its expected value by hand from the named factors -- no test
 inlines a literal 26/12 for the expectation, so a regression of
-the constants would surface here.
+the factor would surface here.
+
+**One of those factors stopped being a constant at plan step R7a-2a.**
+``PAY_PERIODS_PER_YEAR`` was a module-level ``Decimal("26")`` while
+``budget.pay_schedule.cadence_days`` is user-selectable 1..365, so this
+"single canonical aggregator" produced a figure that was simply wrong for an
+owner not paid biweekly.  Every case here now states the cadence it was
+hand-computed at (:data:`_BIWEEKLY`) and no assertion moved.
+``test_the_conversion_side_paycheck_count_has_one_producer`` is where a second
+cadence is exercised end to end, and it is the regression guard that replaced
+the constant's own.
 """
 
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,7 +40,14 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator
-from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR
+from app.services.pay_calendar import PayCadence
+from app.services.recurrence import RecurrenceResolutionError
+from app.utils.money import MONTHS_PER_YEAR
+
+#: 14 days between paydays, 26 a year -- the cadence every hand-computed
+#: figure in this file assumes, and the one the retired
+#: ``PAY_PERIODS_PER_YEAR`` constant assumed for every owner (R7a-2a).
+_BIWEEKLY = PayCadence(cadence_days=14)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -101,11 +118,13 @@ class TestObligationsAggregator:
             )
             db.session.commit()
 
-            result = obligations_aggregator.committed_monthly([tmpl], as_of)
+            result = obligations_aggregator.committed_monthly(
+                [tmpl], as_of, _BIWEEKLY,
+            )
 
             assert result == Decimal("0.00"), (
                 f"Expired template must not contribute (HIGH-05). "
-                f"Pre-fix value was {Decimal('100') * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR}; "
+                f"Pre-fix value was {Decimal('100') * _BIWEEKLY.periods_per_year / MONTHS_PER_YEAR}; "
                 f"got {result}."
             )
 
@@ -128,9 +147,11 @@ class TestObligationsAggregator:
             db.session.commit()
 
             expected = (
-                Decimal("100") * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
+                Decimal("100") * _BIWEEKLY.periods_per_year / MONTHS_PER_YEAR
             ).quantize(Decimal("0.01"))
-            result = obligations_aggregator.committed_monthly([tmpl], as_of)
+            result = obligations_aggregator.committed_monthly(
+                [tmpl], as_of, _BIWEEKLY,
+            )
 
             assert result == Decimal("216.67"), (
                 f"Active biweekly $100 -> $100 * 26/12 = {expected}; got {result}"
@@ -165,7 +186,7 @@ class TestObligationsAggregator:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [once_tmpl, recurring_tmpl], as_of,
+                [once_tmpl, recurring_tmpl], as_of, _BIWEEKLY,
             )
 
             # Hand-computed: ONCE excluded -> $100 * 26 / 12 = $216.67.
@@ -230,43 +251,181 @@ class TestObligationsAggregator:
                 .all()
             )
             agg_total = obligations_aggregator.committed_monthly(
-                templates, date.today(),
+                templates, date.today(), _BIWEEKLY,
             )
             assert agg_total == Decimal("716.67"), (
                 f"Aggregator total must equal /obligations subtotal "
                 f"($716.67); got {agg_total}"
             )
 
-    def test_factor_single_definition(self):
-        """C23-5: the 26/12 biweekly-to-monthly factor is defined in
-        exactly one module after this commit (app.utils.money).
+    def test_an_unmodelled_pattern_is_refused_not_silently_dropped(self, app):
+        """A rule the app cannot read stops the total instead of shrinking it.
 
-        A grep for ``Decimal("26")`` / ``Decimal("12")`` / `` 26 / 12 ``
-        across app/services/ must show only the canonical
-        ``PAY_PERIODS_PER_YEAR`` / ``MONTHS_PER_YEAR`` definitions in
-        app/utils/money.py for the biweekly-to-monthly cluster
-        (HIGH-05 / D6-05 scope). Sites that use ``Decimal("12")`` for
-        a different concept (annual rate -> monthly compounding in
-        loan_resolver / escrow_calculator / interest_projection) are
-        out of HIGH-05's scope and remain.
+        Plan step R7a-2b, ruled 2026-08-11.  The filter used to end "skip if
+        the conversion returns ``None``", so a rule naming a pattern the enum
+        does not name was left OUT of every total this module feeds -- while
+        the Recurring surface 500'd on the same row, because ``read_rule``
+        resolves and raises.  One row, counted on one page and not the other,
+        and the quiet side was the one feeding the emergency-fund baseline.
+
+        The surplus id is computed from the enum rather than written down: a
+        literal would stop naming an unmodelled pattern the day an eighth
+        member is added.
         """
-        # The constants imported at module top resolve to the canonical
-        # values defined in app/utils/money.py. Asserting the imported
-        # values pins the import path: any future code that imports
-        # locally-redefined ``_PAY_PERIODS_PER_YEAR`` would not satisfy
-        # this assertion if HIGH-05's "one module" rule were violated.
-        assert PAY_PERIODS_PER_YEAR == Decimal("26")
-        assert MONTHS_PER_YEAR == Decimal("12")
+        surplus = max(
+            ref_cache.recurrence_pattern_id(member)
+            for member in RecurrencePatternEnum
+        ) + 1
+        with app.app_context():
+            template = SimpleNamespace(
+                recurrence_rule=SimpleNamespace(
+                    end_date=None, pattern_id=surplus, interval_n=1,
+                ),
+                default_amount=Decimal("100.00"),
+            )
+            with pytest.raises(RecurrenceResolutionError):
+                obligations_aggregator.committed_monthly(
+                    [template], date(2026, 5, 20), _BIWEEKLY,
+                )
 
-        # Sanity: the constants live in app/utils/money, not in
-        # savings_goal_service (where they used to be defined as
-        # private ``_PAY_PERIODS_PER_YEAR`` / ``_MONTHS_PER_YEAR``).
-        from app.utils import money
+    def test_the_three_surviving_filters_still_answer_none(self, app):
+        """The control on the case above: only the fourth rule went.
+
+        No rule, expired, and zero amount are all still ``None`` -- they are
+        statements about a definition that is not a recurring commitment, not
+        about one the app cannot read.  Without this, "raise whenever the
+        conversion cannot run" would pass the test above while turning three
+        legitimate skips into 500s.
+        """
+        as_of = date(2026, 5, 20)
+        every_period = ref_cache.recurrence_pattern_id(
+            RecurrencePatternEnum.EVERY_PERIOD,
+        )
+        with app.app_context():
+            no_rule = SimpleNamespace(
+                recurrence_rule=None, default_amount=Decimal("100.00"),
+            )
+            expired = SimpleNamespace(
+                recurrence_rule=SimpleNamespace(
+                    end_date=as_of - timedelta(days=1),
+                    pattern_id=every_period, interval_n=1,
+                ),
+                default_amount=Decimal("100.00"),
+            )
+            zero = SimpleNamespace(
+                recurrence_rule=SimpleNamespace(
+                    end_date=None, pattern_id=every_period, interval_n=1,
+                ),
+                default_amount=Decimal("0.00"),
+            )
+            for template in (no_rule, expired, zero):
+                assert obligations_aggregator.template_monthly_or_none(
+                    template, as_of, _BIWEEKLY,
+                ) is None
+
+    def test_the_conversion_reproduces_every_retired_branch(self, app):
+        """One expression, seven hand-computed answers.
+
+        ``amount_to_monthly`` was a seven-branch switch; this is
+        ``amount * units_per_year / (interval_n * 12)``.  Each figure below is
+        hand-computed at the biweekly cadence from the branch it replaced, so
+        the derivation has to reproduce all seven before it is trusted to
+        answer for the cadences plan step R8 adds.
+        """
+        cases = [
+            (RecurrencePatternEnum.EVERY_PERIOD, 1, "216.67"),   # 100*26/12
+            (RecurrencePatternEnum.EVERY_N_PERIODS, 2, "108.33"),  # 100*26/2/12
+            (RecurrencePatternEnum.MONTHLY, 1, "100.00"),        # unchanged
+            (RecurrencePatternEnum.MONTHLY_FIRST, 1, "100.00"),  # unchanged
+            (RecurrencePatternEnum.QUARTERLY, 1, "33.33"),       # 100/3
+            (RecurrencePatternEnum.SEMI_ANNUAL, 1, "16.67"),     # 100/6
+            (RecurrencePatternEnum.ANNUAL, 1, "8.33"),           # 100/12
+        ]
+        with app.app_context():
+            for pattern, interval_n, expected in cases:
+                template = SimpleNamespace(
+                    recurrence_rule=SimpleNamespace(
+                        end_date=None,
+                        pattern_id=ref_cache.recurrence_pattern_id(pattern),
+                        interval_n=interval_n,
+                    ),
+                    default_amount=Decimal("100.00"),
+                )
+                assert obligations_aggregator.committed_monthly(
+                    [template], date(2026, 5, 20), _BIWEEKLY,
+                ) == Decimal(expected), pattern
+
+    def test_the_conversion_side_paycheck_count_has_one_producer(self):
+        """C23-5, as plan step R7a-2a restated it: ONE producer, no constant.
+
+        This test's SUBJECT moved and its purpose did not.  It used to assert
+        that the biweekly-to-monthly factor was a constant defined in exactly
+        one module (``app.utils.money.PAY_PERIODS_PER_YEAR``); the defect that
+        step fixed is that "how many paychecks a year" is not a constant at
+        all -- ``budget.pay_schedule.cadence_days`` is user-selectable 1..365.
+        So the invariant is now "one DERIVATION, reachable through both doors,
+        and no module-level number to drift from it", and this is where a
+        reintroduced constant is caught.
+
+        **Named for the CONVERSION side, because it is not the whole story.**
+        ``salary.salary_profiles.pay_periods_per_year`` is a second, stored,
+        user-selected paycheck count on the PRODUCTION side -- the divisor the
+        paycheck engine uses -- and nothing ties the two together.  This test
+        does not and cannot assert against it; the developer ruled that second
+        producer's removal into this arc on 2026-08-11, as the leaf after
+        R7a-2a.  A name claiming "one producer" flat would be the false claim
+        this file exists to catch.
+
+        ``MONTHS_PER_YEAR`` stays a constant and stays here, because 12 is a
+        property of the calendar rather than of an owner.
+        """
         from app.services import savings_goal_service
-        assert money.PAY_PERIODS_PER_YEAR is PAY_PERIODS_PER_YEAR
+        from app.services.pay_calendar import PayCadence as _Cadence
+        from app.utils import money
+
+        # 1. The month denominator is still one named constant in one module.
+        assert MONTHS_PER_YEAR == Decimal("12")
         assert money.MONTHS_PER_YEAR is MONTHS_PER_YEAR
+
+        # 2. The paycheck count is GONE as a constant -- from the module that
+        #    held it and from the module that held it privately before that.
+        assert not hasattr(money, "PAY_PERIODS_PER_YEAR"), (
+            "app.utils.money must not re-declare a paychecks-per-year "
+            "constant: the count is a function of the owner's cadence "
+            "(plan step R7a-2a)."
+        )
         assert not hasattr(savings_goal_service, "_PAY_PERIODS_PER_YEAR")
         assert not hasattr(savings_goal_service, "_MONTHS_PER_YEAR")
+
+        # 3. The one derivation, at the three cadences a real schedule uses.
+        #    round(365.2425 / days): 14 -> 26, 7 -> 52, 30 -> 12.
+        assert _Cadence(cadence_days=14).periods_per_year == Decimal("26")
+        assert _Cadence(cadence_days=7).periods_per_year == Decimal("52")
+        assert _Cadence(cadence_days=30).periods_per_year == Decimal("12")
+
+        # 4. The aggregator reads THAT value and nothing else: a cadence the
+        #    old constant would have called 26 answers 52 here.  A duck-typed
+        #    template rather than an ORM row -- the exception to this file's
+        #    "real ORM templates" rule, taken because the subject is the
+        #    CADENCE and an ORM round-trip would add a second variable to a
+        #    test whose whole point is that only one thing changed.
+        #    $100 every paycheck weekly = 100 * 52 / 12 = $433.33.
+        weekly_template = SimpleNamespace(
+            recurrence_rule=SimpleNamespace(
+                end_date=None,
+                pattern_id=ref_cache.recurrence_pattern_id(
+                    RecurrencePatternEnum.EVERY_PERIOD,
+                ),
+                interval_n=1,
+            ),
+            default_amount=Decimal("100.00"),
+        )
+        assert obligations_aggregator.committed_monthly(
+            [weekly_template], date(2026, 5, 20), _Cadence(cadence_days=7),
+        ) == Decimal("433.33")
+        assert obligations_aggregator.committed_monthly(
+            [weekly_template], date(2026, 5, 20), _BIWEEKLY,
+        ) == Decimal("216.67")
 
     def test_emergency_fund_baseline_excludes_expired(
         self, app, auth_client, seed_user, seed_periods,
@@ -303,7 +462,7 @@ class TestObligationsAggregator:
             # Hand-computed pre-fix inflated baseline -- the assertion
             # that protects against regression.
             inflated = (
-                Decimal("1500") * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
+                Decimal("1500") * _BIWEEKLY.periods_per_year / MONTHS_PER_YEAR
             ).quantize(Decimal("0.01"))
             assert inflated == Decimal("3250.00")
             assert "$3,250/mo" not in html, (

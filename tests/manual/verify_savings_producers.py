@@ -70,6 +70,17 @@ them, and it was shown FIRING on a planted one-cent defect in
 ``_project_one_account`` (56 diff lines, reaching the projections, the chart
 payload, the net worth and the debt summary) before plan step X-t trusted it.
 
+**One blind spot, measured 2026-08-11 and stated here rather than rediscovered.**
+``_compute_avg_monthly_expenses`` publishes ``max(historical, floor)``, so a
+change to the COMMITTED-TEMPLATE floor is invisible to this harness whenever
+the historical average is the larger of the two -- which it is on the current
+data (``$6,988.08`` against ``$5,945.13``).  A planted defect in the
+monthly-equivalent conversion for MONTH-unit templates moved **zero** lines
+here while moving 220 in the Recurring-surface harness beside it.  That is the
+``max()`` behaving correctly and this file reporting honestly; what it means is
+that "no diff here" is NOT evidence for a change to
+``obligations_aggregator``'s conversion.  Diff the Recurring surface for that.
+
 Like its ``verify_*`` siblings here it is deliberately outside pytest's
 collection (``pytest.ini`` sets ``python_files = test_*.py``): it needs a
 populated database chosen by the operator, not the seeded test template.

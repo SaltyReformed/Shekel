@@ -113,7 +113,7 @@ def modelled_pattern(pattern_id: int) -> RecurrencePatternEnum | None:
     doors reading user input: an id the application does not model is bad
     input to refuse with a flash, not a broken invariant to 500 on.  The
     raising form belongs one layer down, where a rule that is already
-    PERSISTED cannot be read (``_resolution._pattern_member``), and that
+    PERSISTED cannot be read (``_frequency.pattern_member``), and that
     function is built on this one so the two cannot disagree about the set.
 
     Resolved by comparing INTEGER ids through :mod:`app.ref_cache`, never by

@@ -1,6 +1,6 @@
 """Tests for scripts/integrity_check.py (Phase 8C WU-4)."""
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app.extensions import db
@@ -15,7 +15,7 @@ from app.models.user import User
 from app.enums import StatusEnum
 from app.services.auth_service import hash_password
 from app.services import account_service
-from tests._test_helpers import add_txn
+from tests._test_helpers import add_txn, open_calendar_hole
 from scripts.integrity_check import (
     CheckResult,
     check_balance_anomalies,
@@ -288,12 +288,14 @@ class TestBalanceAnomalies:
     def test_clean_database_no_anomalies(self, app, db, seed_user, seed_periods):
         """No balance anomalies on a properly seeded database."""
         results = check_balance_anomalies(db.session)
-        # 5: BA-02 ("anchor period beyond the user's last period") went with
+        # 6: BA-02 ("anchor period beyond the user's last period") went with
         # the column it queried at plan step X-f1c3c and BA-01 was RE-POINTED
         # at "an account with no balance assertion at all" -- the state that
         # actually breaks a producer -- leaving 4; BA-06 was added 2026-08-11
-        # with the deletion of pay_calendar C3-b's coverage rule.
-        assert len(results) == 5
+        # with the deletion of pay_calendar C3-b's coverage rule, and BA-07
+        # with pay_calendar C2-b2, which took away the generation-time report
+        # of a pay-period date gap.
+        assert len(results) == 6
         ba01 = next(r for r in results if r.check_id == "BA-01")
         assert ba01.passed
 
@@ -337,7 +339,7 @@ class TestBalanceAnomalies:
     def test_the_other_balance_checks_stay_warnings(
         self, app, db, seed_user, seed_periods,
     ):
-        """BA-03/04/05/06 are warnings; only BA-01 escalated.
+        """BA-03/04/05/06/07 are warnings; only BA-01 escalated.
 
         The complement of the assertion above, so "severity is per check"
         is graded in both directions: an edit that promoted the whole family
@@ -357,6 +359,7 @@ class TestBalanceAnomalies:
         assert by_id["BA-04"] == "warning"
         assert by_id["BA-05"] == "warning"
         assert by_id["BA-06"] == "warning"
+        assert by_id["BA-07"] == "warning"
 
     def _settled_txn(self, seed_user, period, settled_on):
         """File a SETTLED transaction in *period* whose cash moved on a day."""
@@ -407,6 +410,77 @@ class TestBalanceAnomalies:
         results = check_balance_anomalies(db.session)
         ba06 = next(r for r in results if r.check_id == "BA-06")
         assert ba06.passed, ba06.details
+
+    def test_ba07_detects_a_day_covered_by_no_pay_period(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """BA-07 fires on the state plan step C2-b2 stopped reporting at generation.
+
+        Until that step the recurrence engine answered
+        ``PlacementOutcome.SCHEDULE_GAP`` for an occurrence dated in a hole and
+        logged ``recurrence_occurrence_unplaced`` at WARNING naming the dates.
+        C2-b2 pointed the engine at the DERIVED calendar, in which a period
+        runs to the day before the next payday, so the preceding paycheck
+        ABSORBS those days and the engine says nothing (plan ledger row P27).
+        This is where the state is reported instead.
+
+        The hole is written directly, because since plan step C3-b that is the
+        only way to make one: ``pay_period_write`` materialises the derivation
+        and any write through it repairs a hole rather than leaving one.
+        """
+        hole_start, hole_end = open_calendar_hole(
+            db.session, seed_periods[0],
+            seed_periods[0].start_date + timedelta(days=1),
+        )
+
+        results = check_balance_anomalies(db.session)
+        ba07 = next(r for r in results if r.check_id == "BA-07")
+
+        assert not ba07.passed
+        assert ba07.detail_count == 1
+        detail = ba07.details[0]
+        assert detail["user_id"] == seed_user["user"].id
+        assert detail["last_covered_day"] == hole_start - timedelta(days=1)
+        assert detail["next_payday"] == hole_end + timedelta(days=1)
+        assert detail["uncovered_days"] == (hole_end - hole_start).days + 1
+
+    def test_ba07_ignores_the_tail_past_the_last_payday(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The control: a schedule simply ENDING is not a hole.
+
+        Every schedule stops somewhere, and its last period's ``end_date`` has
+        no next payday to be measured against.  A check that reported that
+        would fire on every owner on every sweep, which is the failure mode
+        BA-06's own control guards against.
+        """
+        results = check_balance_anomalies(db.session)
+        ba07 = next(r for r in results if r.check_id == "BA-07")
+
+        assert ba07.passed, ba07.details
+
+    def test_ba07_ignores_an_over_long_period_that_covers_its_days(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The second control: a LONG paycheck is not a gapped one.
+
+        A period running right up to the day before the next payday covers
+        every day between them however long that is -- which is exactly what
+        the derived calendar produces, so a check that flagged length rather
+        than coverage would report the ruled model working.
+        """
+        # Stretch the first period over its successor's span by deleting the
+        # successor's payday, which is what an absorb looks like from the
+        # stored side: one period, no uncovered day.
+        stretched, dropped = seed_periods[0], seed_periods[1]
+        stretched.end_date = seed_periods[2].start_date - timedelta(days=1)
+        db.session.delete(dropped)
+        db.session.flush()
+
+        results = check_balance_anomalies(db.session)
+        ba07 = next(r for r in results if r.check_id == "BA-07")
+
+        assert ba07.passed, ba07.details
 
     def test_ba03_detects_period_gap(self, app, db, seed_user):
         """BA-03 detects a gap in the pay period index sequence."""
@@ -911,10 +985,12 @@ class TestRunAllChecks:
             f"{[(r.check_id, r.description, r.detail_count) for r in critical_failures]}"
         )
         # Total check count should cover all 4 categories:
-        # 12 FK + 6 OR + 5 BA + 8 DC = 31 checks (DC-01 removed
+        # 12 FK + 6 OR + 6 BA + 8 DC = 32 checks (DC-01 removed
         # 2026-06-11 -- estimated-only settles are a legal state).
         # It was 30 from plan step X-f1c3c, where FK-03 and BA-02 both
         # queried ``accounts.current_anchor_*`` and went with the columns;
         # BA-06 was added 2026-08-11 beside the deletion of pay_calendar
-        # C3-b's coverage rule, which is what made its state reachable.
-        assert len(results) == 31
+        # C3-b's coverage rule, which is what made its state reachable, and
+        # BA-07 beside pay_calendar C2-b2, which took away the
+        # generation-time report of a pay-period date gap.
+        assert len(results) == 32

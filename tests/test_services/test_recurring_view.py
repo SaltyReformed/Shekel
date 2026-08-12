@@ -8,11 +8,15 @@ next date, and share of section committed total.
 
 The producer has exactly one monthly source of truth
 (``obligations_aggregator.template_monthly_or_none``); the per-paycheck
-value is DERIVED from it by ``MONTHS_PER_YEAR / PAY_PERIODS_PER_YEAR``.
-Every expectation below is hand-computed from the named factors, never a
-literal 26/12, so a regression of the constants or the derivation surfaces
-here.  Real ORM templates run against the test DB so the relationship-driven
-attribute access and ``ref_cache`` lookups are exercised end to end.
+value is DERIVED from it by
+``PayCadence.monthly_to_per_paycheck`` -- the OWNER's cadence since plan step
+R7a-2a, a hardcoded ``12 / 26`` before it.
+Every expectation below is a LITERAL hand-computed at the biweekly cadence
+with its arithmetic in a comment, never a re-derivation through the producer's
+own value object -- an expectation computed with ``PayCadence`` would move with
+a derivation bug instead of catching it.  Real ORM templates run against the
+test DB so the relationship-driven attribute access and ``ref_cache`` lookups
+are exercised end to end.
 """
 
 import logging
@@ -30,8 +34,13 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service, recurring_view
 from app.services.obligations_aggregator import committed_monthly
+from app.services.pay_calendar import (
+    PayCadence,
+    PayCalendar,
+    PayCalendarError,
+    calendar_for,
+)
 from app.services.recurrence import (
-    PeriodCalendar,
     RecurrenceResolutionError,
     read_rule,
 )
@@ -41,28 +50,38 @@ from app.services.recurrence import rule_occurrences
 # names would leave the composition calling the real ones.
 from app.services.recurrence import _reading
 from app.services.recurrence_engine import compute_due_date
-from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
+
+#: The cadence ``seed_periods_today`` builds and every figure below is
+#: hand-computed at: 14 days between paydays, 26 a year.  An explicit input
+#: since plan step R7a-2a, where the per-paycheck column read a hardcoded
+#: ``MONTHS_PER_YEAR / PAY_PERIODS_PER_YEAR`` ratio.
+_BIWEEKLY = PayCadence(cadence_days=14)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
 def _calendar(periods):
-    """Return the owner's schedule as the resolver reads it.
+    """Return the owner's schedule as the surface reads it.
 
     ``recurring_view.build_view`` takes a
-    :class:`~app.services.recurrence.PeriodCalendar` rather than a period list
+    :class:`~app.services.pay_calendar.PayCalendar` rather than a period list
     since plan step R4b-1: a recurrence's next date is measured against the
     OWNER's schedule, so the surface has to be handed that schedule rather
     than rebuild one per row.
 
+    **Loaded through the one door since plan step C2-b2**, rather than built
+    from the rows the caller happens to hold.  ``calendar_for`` reads the whole
+    payday set and the owner's cadence and derives the rest, so the calendar a
+    test hands the surface is the one the route would.
+
     Args:
-        periods: The owner's pay periods, in ``period_index`` order.
+        periods: The owner's pay periods -- read only for whose they are.
 
     Returns:
-        The :class:`~app.services.recurrence.PeriodCalendar` for their owner.
+        The :class:`~app.services.pay_calendar.PayCalendar` for their owner.
     """
-    return PeriodCalendar.from_pay_periods(periods, periods[0].user_id)
+    return calendar_for(periods[0].user_id)
 
 
 def _create_rule(seed_user, pattern_enum, *, interval_n=1,
@@ -161,17 +180,10 @@ class TestUnitEquivalents:
             [], [tmpl], [], _calendar(seed_periods_today), date.today(),
         )
         row = view.expenses.rows[0]
-        # 100 * 26 / 12 = 216.6667 -> 216.67
-        expected_monthly = round_money(
-            Decimal("100") * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR,
-        )
-        # 216.6667 * 12 / 26 collapses back to the original 100.00.
-        expected_pp = round_money(
-            Decimal("100") * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-            * MONTHS_PER_YEAR / PAY_PERIODS_PER_YEAR,
-        )
-        assert row.equivalent.monthly == expected_monthly == Decimal("216.67")
-        assert row.equivalent.per_paycheck == expected_pp == Decimal("100.00")
+        # Hand-computed at 26 paychecks a year: 100 * 26 / 12 = 216.6667 ->
+        # 216.67, and 216.6667 * 12 / 26 collapses back to the original 100.00.
+        assert row.equivalent.monthly == Decimal("216.67")
+        assert row.equivalent.per_paycheck == Decimal("100.00")
 
     def test_monthly_both_units(self, seed_user, seed_periods_today):
         """A $500 monthly expense: monthly = $500.00,
@@ -186,11 +198,9 @@ class TestUnitEquivalents:
             [], [tmpl], [], _calendar(seed_periods_today), date.today(),
         )
         row = view.expenses.rows[0]
-        expected_pp = round_money(
-            Decimal("500") * MONTHS_PER_YEAR / PAY_PERIODS_PER_YEAR,
-        )
+        # Hand-computed: 500 * 12 / 26 = 230.7692... -> 230.77.
         assert row.equivalent.monthly == Decimal("500.00")
-        assert row.equivalent.per_paycheck == expected_pp == Decimal("230.77")
+        assert row.equivalent.per_paycheck == Decimal("230.77")
 
     def test_annual_both_units(self, seed_user, seed_periods_today):
         """A $1,200 annual expense: monthly = 1200 / 12 = $100.00,
@@ -206,9 +216,10 @@ class TestUnitEquivalents:
             [], [tmpl], [], _calendar(seed_periods_today), date.today(),
         )
         row = view.expenses.rows[0]
-        expected_pp = round_money(Decimal("1200") / PAY_PERIODS_PER_YEAR)
+        # Hand-computed: 1200 / 12 = 100.00 a month; 100 * 12 / 26 =
+        # 46.1538... -> 46.15 a paycheck.
         assert row.equivalent.monthly == Decimal("100.00")
-        assert row.equivalent.per_paycheck == expected_pp == Decimal("46.15")
+        assert row.equivalent.per_paycheck == Decimal("46.15")
 
 
 # ── Subtotals and the aggregator SSOT ────────────────────────────────
@@ -239,7 +250,7 @@ class TestSubtotals:
         )
         assert view.expenses.subtotal.monthly == Decimal("716.67")
         assert view.expenses.subtotal.monthly == committed_monthly(
-            [e1, e2], as_of,
+            [e1, e2], as_of, _BIWEEKLY,
         )
 
     def test_subtotal_per_paycheck_derives_from_monthly(
@@ -261,14 +272,8 @@ class TestSubtotals:
         view = recurring_view.build_view(
             [], [e1, e2], [], _calendar(seed_periods_today), date.today(),
         )
-        full_monthly = (
-            Decimal("100") * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-            + Decimal("500")
-        )
-        expected_pp = round_money(
-            full_monthly * MONTHS_PER_YEAR / PAY_PERIODS_PER_YEAR,
-        )
-        assert view.expenses.subtotal.per_paycheck == expected_pp
+        # Hand-computed: (100 * 26 / 12) + 500 = 716.6667 a month at full
+        # precision, then * 12 / 26 = 330.7692... -> 330.77 a paycheck.
         assert view.expenses.subtotal.per_paycheck == Decimal("330.77")
 
     def test_empty_section_subtotal_is_zero(self, seed_user, seed_periods_today):
@@ -786,6 +791,15 @@ class TestNoneMeansDoesNotRepeat:
     ordinal wire key and with it the Marshmallow floor this sentence used to
     cite -- ``reset_pay_periods`` deletes and regenerates in one transaction),
     so it is refused rather than worded.
+
+    **The empty calendars below carry a CADENCE, and that is deliberate** (plan
+    step R7a-2a).  "No pay periods" and "no stated pay cadence" are two
+    different states, and this class is about the first: an owner who HAS said
+    how often they are paid but whose payday list is empty.  The second is
+    refused one door earlier, by a different value, with a different exception
+    -- see :class:`TestAnAbsentCadenceIsRefused`.  Building these fixtures with
+    ``cadence_days=None`` would trip that earlier door and report a pass for a
+    claim these cases never reached.
     """
 
     def test_an_empty_schedule_refuses_rather_than_reading_one_time(
@@ -797,7 +811,9 @@ class TestNoneMeansDoesNotRepeat:
             day_of_month=2, month_of_year=3,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("60.00"))
-        empty = PeriodCalendar(user_id=seed_user["user"].id, periods=())
+        empty = PayCalendar.from_paydays(
+            paydays=(), cadence_days=14, user_id=seed_user["user"].id,
+        )
 
         with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
             recurring_view.build_view([], [tmpl], [], empty, date.today())
@@ -812,7 +828,9 @@ class TestNoneMeansDoesNotRepeat:
         tmpl = _create_expense(seed_user, rule, Decimal("25.00"))
         tmpl.is_active = False
         db.session.flush()
-        empty = PeriodCalendar(user_id=seed_user["user"].id, periods=())
+        empty = PayCalendar.from_paydays(
+            paydays=(), cadence_days=14, user_id=seed_user["user"].id,
+        )
 
         with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
             recurring_view.build_archived_rows([tmpl], empty)
@@ -826,7 +844,9 @@ class TestNoneMeansDoesNotRepeat:
         two cases above while breaking the only state ``None`` may describe.
         """
         tmpl = _create_expense(seed_user, None, Decimal("25.00"))
-        empty = PeriodCalendar(user_id=seed_user["user"].id, periods=())
+        empty = PayCalendar.from_paydays(
+            paydays=(), cadence_days=14, user_id=seed_user["user"].id,
+        )
 
         view = recurring_view.build_view([], [tmpl], [], empty, date.today())
 
@@ -834,6 +854,93 @@ class TestNoneMeansDoesNotRepeat:
         assert recurring_view.build_archived_rows(
             [tmpl], empty,
         )[0].recurrence is None
+
+
+class TestAnAbsentCadenceIsRefused:
+    """No stated pay cadence -> no per-paycheck column (plan step R7a-2a).
+
+    A DIFFERENT state from :class:`TestNoneMeansDoesNotRepeat`'s empty
+    schedule, and refused one door earlier.  Every money figure this surface
+    publishes exists in two units, and the second unit is "per paycheck" --
+    which is unanswerable for an owner who has never said how often they are
+    paid.  The alternative was to assume biweekly, which is precisely the
+    hardcoded ``PAY_PERIODS_PER_YEAR = 26`` this step deleted: it would have
+    reported a weekly-paid owner's commitments at double their per-paycheck
+    cost with nothing on the page saying so.
+
+    Unreachable through any application path -- registration writes the
+    ``budget.pay_schedule`` row (plan step X-ad-a) and
+    ``pay_schedule_service.resolve_cadence`` falls back to the last period's
+    length for legacy owners -- so this is the control on a broken invariant,
+    not on a user state.
+    """
+
+    def test_the_active_sections_refuse_an_owner_with_no_cadence(
+        self, seed_user, seed_periods_today,
+    ):
+        """A rule-LESS definition is refused too, and that is the point.
+
+        The row itself needs no conversion, but the section subtotal it lands
+        in is published in both units, so the page cannot be rendered honestly
+        without the cadence.  Pinning the rule-less case is what stops a later
+        change from making the refusal conditional on there being a figure to
+        convert -- which would leave the subtotal's own per-paycheck value
+        computed against an assumed rhythm.
+        """
+        tmpl = _create_expense(seed_user, None, Decimal("25.00"))
+        cadence_less = PayCalendar.from_paydays(
+            paydays=(), cadence_days=None, user_id=seed_user["user"].id,
+        )
+
+        with pytest.raises(PayCalendarError, match="no pay cadence"):
+            recurring_view.build_view(
+                [], [tmpl], [], cadence_less, date.today(),
+            )
+
+    def test_the_archived_drawer_does_NOT_need_a_cadence(
+        self, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The drawer has no money columns, so it must not read the cadence.
+
+        **The asymmetry cannot be shown with a fixture, and an earlier draft of
+        this test pretended otherwise.** It passed a normal calendar and
+        asserted the drawer rendered -- which it would whether or not it read
+        the cadence, so the control could not fail.  The two states that would
+        distinguish it are both unconstructible: ``derive_periods`` refuses a
+        non-empty payday set with ``cadence_days=None``, and an EMPTY calendar
+        makes the drawer raise ``RecurrenceResolutionError`` for an unrelated
+        reason (its sibling above pins that).
+
+        So the cadence is made to REFUSE on a calendar that is otherwise
+        healthy.  The drawer must still answer; ``build_view`` on the same
+        calendar must not.  Both halves are asserted, because the first alone
+        would pass if the property were removed from the value entirely.
+        """
+        rule = _create_rule(
+            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=9,
+        )
+        tmpl = _create_expense(seed_user, rule, Decimal("25.00"))
+        tmpl.is_active = False
+        db.session.flush()
+        calendar = _calendar(seed_periods_today)
+
+        def _refuse(_self):
+            raise PayCalendarError("the cadence was read")
+
+        monkeypatch.setattr(PayCalendar, "cadence", property(_refuse))
+
+        # The drawer words each rule's cadence phrase off the schedule -- which
+        # needs paydays -- and converts no money, so it must not touch this.
+        rows = recurring_view.build_archived_rows([tmpl], calendar)
+        assert rows[0].recurrence.cadence == "Monthly (day 9)"
+
+        # The control on the control: the active sections DO convert, so the
+        # same planted refusal must reach them.  Without this half, deleting
+        # ``PayCalendar.cadence`` outright would pass the assertion above.
+        tmpl.is_active = True
+        db.session.flush()
+        with pytest.raises(PayCalendarError, match="the cadence was read"):
+            recurring_view.build_view([], [tmpl], [], calendar, date.today())
 
 
 class TestTheValuesCannotDisagree:

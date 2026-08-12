@@ -342,6 +342,41 @@ class TestQuickEditShadowGuard:
 # ── Regular Transaction Regression ─────────────────────────────────
 
 
+class TestASoftDeletedRowCannotBeSettled:
+    """Finding **N-233** at the door that made it reachable.
+
+    ``get_accessible_transaction`` does not filter ``is_deleted``, so the
+    mark-done route accepted a soft-deleted row: the verb's MANUAL branch had
+    no deleted-row refusal (its envelope branch always had one), so the row
+    flipped into the settled band and was stamped with a settle day while
+    ``effective_amount`` valued it at ``Decimal("0")``.  Production carries 102
+    soft-deleted rows.
+    """
+
+    def test_mark_done_on_a_soft_deleted_row_is_a_designed_400(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The route refuses it, and the row is left exactly as it was.
+
+        Shown to FIRE: without the refusal the response is a 200 and the row
+        comes back Paid with today's settle day.
+        """
+        with app.app_context():
+            txn = _create_regular_txn(seed_user, seed_periods_today)
+            txn.is_deleted = True
+            db.session.commit()
+            txn_id = txn.id
+
+            resp = auth_client.post(f"/transactions/{txn_id}/mark-done")
+
+            assert resp.status_code == 400
+            assert b"soft-deleted" in resp.data
+            db.session.expire_all()
+            reloaded = db.session.get(Transaction, txn_id)
+            assert reloaded.status.name == "Projected"
+            assert reloaded.settled_on is None
+
+
 class TestRegularTransactionUnaffected:
     """Verify guards do not interfere with regular (non-shadow) transactions."""
 

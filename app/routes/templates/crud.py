@@ -1,25 +1,31 @@
 """
-Shekel Budget App -- Template Management Routes
+Shekel Budget App -- Recurring route package: recurring-transaction CRUD.
 
-CRUD pages for transaction templates and their recurrence rules.
-Updating a template triggers recurrence regeneration.
+Create, edit, update, archive, unarchive and hard-delete a recurring
+TRANSACTION definition (a :class:`~app.models.transaction_template.TransactionTemplate`)
+and the recurrence rule it carries, plus the kind-agnostic recurrence-preview
+fragment endpoint both template forms point at.  Updating a template triggers
+recurrence regeneration.
+
+The unified Recurring LIST page is the sibling module
+:mod:`app.routes.templates.surface`: it spans both template kinds, so it is not
+part of this one.
 """
 
 import logging
 from datetime import date
 
-from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
+from flask import Response, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.dates import display_today
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
-from app.models.transfer_template import TransferTemplate
 from app.models.category import Category
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.ref import Status, TransactionType
-from app.models.user import UserSettings
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.utils import archive_helpers
@@ -29,19 +35,23 @@ from app.services import (
     category_service,
     pay_period_service,
     recurrence_engine,
-    recurring_view,
+    template_amount_service,
 )
 from app.services.generation_schedule import GenerationSchedule
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.recurrence import calendar_for, pattern_choices
+from app.services.recurrence import pattern_choices
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     StaleConflictContext,
     commit_or_handle_stale,
+)
+from app.routes._amount_version_actions import (
+    AmountVersionAction,
+    withdraw_amount_version,
 )
 from app.routes._recurrence_preview import recurrence_preview_fragment
 from app.routes._recurrence_conflict_chooser import (
@@ -60,8 +70,10 @@ from app.routes._recurrence_form_helpers import (
 )
 from app.routes._form_errors import validate_form_or_redirect
 from app.routes._redirect_target import RedirectTarget
+from app.routes.templates._bp import templates_bp
 
 logger = logging.getLogger(__name__)
+
 
 # Field allowlist for the template update route: which submitted form
 # fields may be written back to the template via setattr.
@@ -74,16 +86,33 @@ logger = logging.getLogger(__name__)
 # flip with the projected-transaction soft-delete this route does not
 # perform -- allowlisting it here would invite a future schema field to
 # silently archive a template without that cleanup.
+#
+# ``default_amount`` is absent for the same shape of reason since plan step
+# X-au-a: the amount is no longer a bare column but a dated SERIES, and
+# ``template_amount_service.set_amount`` is the one door that moves the scalar
+# and the series together.  A setattr here would move one without the other.
 _TEMPLATE_UPDATE_FIELDS = {
-    "name", "default_amount", "category_id", "transaction_type_id",
+    "name", "category_id", "transaction_type_id",
     "account_id", "is_envelope", "companion_visible",
 }
-
-templates_bp = Blueprint("templates", __name__)
 
 _create_schema = TemplateCreateSchema()
 _update_schema = TemplateUpdateSchema()
 
+# Where this kind's amount-history withdrawal reports back to; the act itself is
+# shared with the transfer-template twin (plan step X-au-a).
+_AMOUNT_VERSION_ACTION = AmountVersionAction(
+    logger=logger,
+    edit_endpoint="templates.edit_template",
+    noun="recurring transaction",
+)
+
+# Query-param hint the Recurring surface's "New" picker passes so the
+# creation form pre-selects the right transaction type.  "income" selects
+# the income type; any other value (including the default Expense picker
+# entry and a hand-crafted request) falls back to expense, the most common
+# recurring definition.
+_NEW_TYPE_INCOME = "income"
 
 def _is_tracking_on_non_expense(data, template=None):
     """Check whether tracking is being set on a non-expense template.
@@ -207,211 +236,6 @@ def _apply_fields_and_propagate_rename(template, data):
         ).update({"name": template.name}, synchronize_session="fetch")
 
 
-# Form values the unit-preference toggle submits, mapped to the stored
-# boolean.  Any other value is ignored (the toggle only ever sends one of
-# these two), so a hand-crafted request cannot force an unexpected state.
-_UNIT_MONTHLY = "monthly"
-_UNIT_PER_PAYCHECK = "per_paycheck"
-
-# Query-param hint the Recurring surface's "New" picker passes so the
-# creation form pre-selects the right transaction type.  "income" selects
-# the income type; any other value (including the default Expense picker
-# entry and a hand-crafted request) falls back to expense, the most common
-# recurring definition.
-_NEW_TYPE_INCOME = "income"
-
-
-def _load_active_transaction_templates(user_id):
-    """Load the user's active income and expense templates, partitioned.
-
-    One query (relationships are ``lazy="joined"`` on the model, so no
-    N+1), split by transaction type so the producer receives the income
-    and expense sections separately.  ``sort_order, name`` fixes the
-    tie-break order the producer then re-sorts by monthly cost.
-    """
-    income_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    expense_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    templates = (
-        db.session.query(TransactionTemplate)
-        .filter(
-            TransactionTemplate.user_id == user_id,
-            TransactionTemplate.is_active.is_(True),
-        )
-        .order_by(TransactionTemplate.sort_order, TransactionTemplate.name)
-        .all()
-    )
-    income = [t for t in templates if t.transaction_type_id == income_id]
-    expense = [t for t in templates if t.transaction_type_id == expense_id]
-    return income, expense
-
-
-def _load_active_transfer_templates(user_id):
-    """Load the user's active transfer templates, ordered for display."""
-    return (
-        db.session.query(TransferTemplate)
-        .filter(
-            TransferTemplate.user_id == user_id,
-            TransferTemplate.is_active.is_(True),
-        )
-        .order_by(TransferTemplate.sort_order, TransferTemplate.name)
-        .all()
-    )
-
-
-def _load_archived_rows(user_id, calendar):
-    """Shape the Archived drawer's rows for both template kinds.
-
-    Returns ``(archived_transactions, archived_transfers)`` as
-    ``recurring_view.ArchivedRow`` tuples; the unified page renders both under
-    one collapsed Archived section with Unarchive actions.  Archived rows carry
-    no monthly equivalent, no next date and no share -- they are inactive and
-    excluded from every total -- but they DO carry how the definition repeated,
-    which since plan step R7a is a producer's answer rather than a phrase a
-    template assembles from the rule's columns.
-
-    Args:
-        user_id: The owner.
-        calendar: The owner's pay-period schedule, built once by the caller and
-            shared with the active-section producer -- the cadence phrase is
-            measured against it, and building a second copy for the drawer
-            would be a second resolution point in one request.
-    """
-    archived_transactions = (
-        db.session.query(TransactionTemplate)
-        .filter(
-            TransactionTemplate.user_id == user_id,
-            TransactionTemplate.is_active.is_(False),
-        )
-        .order_by(TransactionTemplate.sort_order, TransactionTemplate.name)
-        .all()
-    )
-    archived_transfers = (
-        db.session.query(TransferTemplate)
-        .filter(
-            TransferTemplate.user_id == user_id,
-            TransferTemplate.is_active.is_(False),
-        )
-        .order_by(TransferTemplate.sort_order, TransferTemplate.name)
-        .all()
-    )
-    return (
-        recurring_view.build_archived_rows(archived_transactions, calendar),
-        recurring_view.build_archived_rows(archived_transfers, calendar),
-    )
-
-
-def _load_recurring_view(user_id, calendar):
-    """Build the unified Recurring display model for a user.
-
-    Shared by the full-page ``list_templates`` render and the
-    ``set_unit_preference`` HTMX toggle, so both paths produce identical
-    figures from one code path.  The toggle only re-picks which unit the
-    template displays; it does not open a second money path.
-
-    Args:
-        user_id: The owner.
-        calendar: The owner's pay-period schedule, taken as an argument rather
-            than built here so the full-page render shares ONE with the
-            Archived drawer.
-    """
-    income_templates, expense_templates = _load_active_transaction_templates(
-        user_id,
-    )
-    transfer_templates = _load_active_transfer_templates(user_id)
-    return recurring_view.build_view(
-        income_templates=income_templates,
-        expense_templates=expense_templates,
-        transfer_templates=transfer_templates,
-        calendar=calendar,
-        as_of=date.today(),
-    )
-
-
-@templates_bp.route("/templates")
-@login_required
-@require_owner
-def list_templates():
-    """Render the unified Recurring surface.
-
-    One page for every recurring definition -- income, expense, and
-    transfer templates -- replacing the retired ``/transfers`` list and
-    ``/obligations`` page.  ``recurring_view.build_view`` produces the
-    summary band (the /obligations monthly kernel), the three grouped
-    sections with per-section subtotals, and per row the monthly +
-    per-paycheck equivalents, engine-backed next date, and share of section
-    committed total.  ``show_per_paycheck`` seeds which unit the page-wide
-    toggle shows first, read from the user's stored preference.
-    """
-    user_id = current_user.id
-    # ONE schedule for the whole page: the active sections measure every
-    # cadence and next date against it, and so does the Archived drawer.
-    calendar = calendar_for(user_id)
-    view = _load_recurring_view(user_id, calendar)
-    archived_transactions, archived_transfers = _load_archived_rows(
-        user_id, calendar,
-    )
-
-    settings = current_user.settings
-    show_per_paycheck = bool(settings and settings.recurring_show_per_paycheck)
-
-    return render_template(
-        "templates/list.html",
-        view=view,
-        archived_transactions=archived_transactions,
-        archived_transfers=archived_transfers,
-        show_per_paycheck=show_per_paycheck,
-    )
-
-
-@templates_bp.route("/templates/unit-preference", methods=["POST"])
-@login_required
-@require_owner
-def set_unit_preference():
-    """Persist the Recurring surface's Monthly / Per-paycheck unit choice.
-
-    The page-wide unit toggle POSTs ``unit=monthly`` or
-    ``unit=per_paycheck``; the choice is stored on the user's settings so
-    it survives across devices and sessions (the producer renders both
-    units regardless -- this only sets which one shows first).  Any other
-    ``unit`` value is ignored.
-
-    Response shape depends on the caller.  An HTMX toggle (``HX-Request``
-    header) gets the re-rendered ``_recurring_body`` fragment in the
-    EFFECTIVE unit, swapped live into ``#recurring-body`` -- money is
-    formatted once, server-side, so the toggle never recomputes a figure in
-    JS.  A plain (no-JS) POST redirects back to the list, which then
-    re-renders in the stored unit.
-
-    An unrecognized ``unit`` leaves the stored preference untouched; the
-    response still matches the caller (a fragment in the unchanged unit for
-    HTMX, a redirect otherwise), so an HTMX request never receives a
-    redirect it would follow and swap the whole page into the body.
-    """
-    unit = request.form.get("unit")
-    if unit in (_UNIT_MONTHLY, _UNIT_PER_PAYCHECK):
-        settings = current_user.settings
-        if settings is None:
-            settings = UserSettings(user_id=current_user.id)
-            db.session.add(settings)
-        settings.recurring_show_per_paycheck = unit == _UNIT_PER_PAYCHECK
-        db.session.commit()
-
-    if request.headers.get("HX-Request"):
-        settings = current_user.settings
-        show_per_paycheck = bool(settings and settings.recurring_show_per_paycheck)
-        # The toggle re-renders the body only; the Archived drawer is not part
-        # of the swapped fragment, so this path needs no rows for it.
-        view = _load_recurring_view(
-            current_user.id, calendar_for(current_user.id),
-        )
-        return render_template(
-            "templates/_recurring_body.html",
-            view=view,
-            show_per_paycheck=show_per_paycheck,
-        )
-    return redirect(url_for("templates.list_templates"))
-
-
 @templates_bp.route("/templates/new", methods=["GET"])
 @login_required
 @require_owner
@@ -444,6 +268,11 @@ def new_template():
         periods=periods,
         current_period=current_period,
         default_txn_type_id=default_txn_type_id,
+        # A template that does not exist yet has no amount history; passed so
+        # the shared form never references an undefined value.
+        amount_history_rows=[],
+        amount_today=None,
+        amount_version_delete_endpoint="templates.delete_amount_version",
     )
 
 
@@ -514,6 +343,17 @@ def create_template():
     db.session.add(template)
     db.session.flush()
 
+    # Open the amount's dated series at today (plan step X-au-a).  The
+    # constructor above also carries the figure because the column is NOT NULL;
+    # this call is what makes the SERIES exist, and plan step X-au-e removes the
+    # redundancy by removing the column.  A template created today generates
+    # rows into historical pay periods too, and those resolve by the series
+    # holding flat before its earliest version
+    # (``template_amount_service.amount_as_of``).
+    template_amount_service.set_amount(
+        template, template.default_amount, effective_on=display_today(),
+    )
+
     # Auto-generate transactions from the rule into future periods.
     if rule:
         scenario = get_baseline_scenario(current_user.id)
@@ -562,6 +402,19 @@ def edit_template(template_id):
         # Unused when editing (the form reads the template's own type), but
         # passed so the shared template never references an undefined value.
         default_txn_type_id=None,
+        # The amount's dated history (plan step X-au-a), precomputed into
+        # display rows.  Empty for a salary-linked template, whose amount the
+        # paycheck calculator derives and which therefore has no series at all.
+        amount_history_rows=template_amount_service.build_amount_history(
+            template, display_today(),
+        ),
+        # What the definition costs NOW, which is not the stored column whenever
+        # a rise is SCHEDULED; the form's date input defaults to today, so the
+        # two have to be the same question.
+        amount_today=template_amount_service.current_amount(
+            template, display_today(),
+        ),
+        amount_version_delete_endpoint="templates.delete_amount_version",
     )
 
 
@@ -644,7 +497,7 @@ def update_template(template_id):
             current=template.version_id,
         )
 
-    effective_from = data.pop("effective_from", date.today())
+    effective_from = data.pop("effective_from", display_today())
 
     # Remove start_period_id from update data (set once at creation).
     data.pop("start_period_id", None)
@@ -693,6 +546,25 @@ def update_template(template_id):
     if invalid is not None:
         return invalid
 
+    # State the amount through its one write door, which moves the scalar and
+    # the dated series together (plan step X-au-a).  ``effective_from`` is the
+    # form's "Amount effective from" date, which also bounds the regeneration
+    # below -- ONE value, though the two apply it with different predicates: the
+    # series answers by a row's own DUE date and the sweep selects by its pay
+    # PERIOD's end, so an edit can rewrite a row whose due date precedes the
+    # date it states (finding **N-247**, owned by X-au-e, which deletes the
+    # sweep's amount arm and dissolves it).  Absent from a partial update means
+    # the amount was not restated, and the series is untouched.
+    #
+    # **BEFORE the field loop, because that loop can FLUSH.**  A rename issues a
+    # bulk UPDATE over this template's instances, which autoflushes whatever is
+    # dirty; stating the amount afterwards would leave a second dirty write for
+    # the commit and bump the optimistic-lock counter twice for one edit.
+    if "default_amount" in data:
+        template_amount_service.set_amount(
+            template, data["default_amount"], effective_on=effective_from,
+        )
+
     # Apply allowlisted field updates, propagating any rename to existing
     # instances (see _apply_fields_and_propagate_rename for the rationale).
     _apply_fields_and_propagate_rename(template, data)
@@ -702,8 +574,8 @@ def update_template(template_id):
     # chooser rolls the pending edit back; its Apply re-runs this same edit).
     diverted = regenerate_or_conflict_chooser(
         template, before, effective_from, _TXN_TEMPLATE_KIND,
-        amount_drives_instances=not recurrence_engine.is_salary_linked_template(
-            template.id,
+        amount_drives_instances=not template_amount_service.is_salary_linked_template(
+            template,
         ),
     )
 
@@ -736,6 +608,35 @@ def update_template(template_id):
     else:
         flash(f"Recurring transaction '{template.name}' updated.", "success")
     return redirect(url_for("templates.list_templates"))
+
+
+@templates_bp.route(
+    "/templates/<int:template_id>/amount-versions/<int:version_id>/delete",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def delete_amount_version(template_id, version_id):
+    """Withdraw one entry from a template's amount history.
+
+    The correction path for a price stamped against the wrong DATE: restating
+    the amount writes a version at the date it names and leaves the mis-dated
+    one standing, so removing it is a separate act.  The EARLIEST entry is
+    refused by the service -- it is what every date before the series answers
+    from -- and the way to move it is to state the amount at the right date
+    first, which makes the old one no longer earliest.
+
+    Ownership is the ``get_or_404`` on the TEMPLATE: the shared action looks the
+    version up inside that template's own collection, so a ``version_id``
+    belonging to another user's template is simply not found and the refusal is
+    indistinguishable from "no such entry" (the security response rule).  The
+    act itself is shared with the transfer-template twin
+    (:func:`app.routes._amount_version_actions.withdraw_amount_version`).
+    """
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
+    return withdraw_amount_version(template, version_id, _AMOUNT_VERSION_ACTION)
 
 
 @templates_bp.route("/templates/<int:template_id>/archive", methods=["POST"])

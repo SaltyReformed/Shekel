@@ -159,19 +159,130 @@ def _resolve_status_change(txn, data):
     return None
 
 
+def _reject_tracking_on_income(txn, data):
+    """Reject enabling purchase tracking on an income row.
+
+    Purchase tracking is expense-only.  The popover only renders the
+    ``is_envelope`` checkbox for ad-hoc EXPENSE rows, so this is the crafted-
+    request backstop -- the same layering every other route-tier guard here
+    uses.  Checked against the STORED type because ``TransactionUpdateSchema``
+    carries no ``transaction_type_id``, so a PATCH cannot change it.
+
+    It is a function rather than an inline branch so it joins
+    :func:`_apply_regular_update`'s single pre-mutation gate chain: three guards
+    sharing one error exit, which is what keeps that handler inside pylint's
+    return-count limit as the arc adds refusals to it.
+
+    Args:
+        txn: The Transaction being edited.
+        data: The schema-loaded PATCH payload.
+
+    Returns:
+        A designed 400 response tuple, or ``None`` when the edit may proceed.
+    """
+    if data.get("is_envelope") and txn.is_income:
+        return _error_transaction_response(
+            txn.id, "Purchase tracking is only available for expenses.",
+        )
+    return None
+
+
+def _apply_field_updates(txn, data):
+    """Write the submitted fields onto *txn*, refusing what may not be written.
+
+    The FIELD half of :func:`_apply_regular_update`, extracted so the handler
+    keeps one exit per concern rather than growing a branch per rule.  Three
+    acts, and the order is load-bearing:
+
+    1. the ``setattr`` loop.  ``status_id`` and ``settled_on`` are BOTH excluded
+       and routed through the status verb instead: a bare ``setattr`` would
+       assign the column but skip the transition check, the settle-day
+       stamp/clear, and the status-relationship expire that
+       ``status_seam.apply_status_change`` owns -- and for ``settled_on`` it
+       would make this loop a SECOND writer of a column the seam is the single
+       door to (finding **N-185**, the re-run of N-183 on the transaction side).
+    2. ``is_override``, which sits with the field writes and ABOVE both the
+       refusal below and the status work.  Two separate reasons, and both are
+       load-bearing.  The settle asks the projection for a fresher amount and
+       SKIPS a row the user has overridden
+       (``income_service.live_projected_net``), so setting the flag afterwards
+       would let a salary row's recompute overwrite the estimate the same form
+       just submitted.  And act 3 FLUSHES (see below), so a flag written after
+       it is written after the UPDATE it belongs in -- which for a period move
+       leaves the row inside
+       ``idx_transactions_template_period_scenario``'s partial predicate
+       (``is_override = FALSE``) and trips a unique violation on a move into a
+       period the recurrence engine has already populated.
+    3. the derived-amount refusal, asked AFTER the loop so ``tracks_purchases``
+       reads the RESULTING row: unchecking "Track individual purchases" in the
+       same save legitimately gives the row its own amount back.  **It reads a
+       LAZY relationship and therefore autoflushes**, which is why this whole
+       helper is called from inside the caller's exception net rather than
+       above it.
+
+    **The refusal is ruling R-FF's**, the same sentence the reconcile panel
+    already obeys ("a tick is correctable exactly when the settle verb takes its
+    MANUAL branch"), applied to the second door that offers an amount box.  An
+    envelope carrying purchases settles at ``sum(entries)``, so a figure typed
+    beside it is not a correction the app can honour: it would be written here,
+    overwritten by the settle, and never mentioned.  The popover no longer
+    renders the input for such a row (``amount_correctable``), so this is the
+    crafted-request and stale-form backstop.  Only a REAL figure is refused: an
+    empty box loads as an explicit ``None`` (the field is ``allow_none``), which
+    states no amount at all.
+
+    A refused call has already staged the ``setattr`` loop's mutations;
+    ``_error_transaction_response`` rolls them back, exactly as the settle-day
+    refusal in the caller already relies on.
+
+    Args:
+        txn: The Transaction being edited.
+        data: The schema-loaded PATCH payload.
+
+    Returns:
+        A designed 400 response tuple, or ``None`` when every field was
+        written.
+    """
+    for field, value in data.items():
+        if field in _SEAM_OWNED_FIELDS:
+            continue
+        setattr(txn, field, value)
+
+    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
+        txn.is_override = True
+
+    if (
+        data.get("actual_amount") is not None
+        and transaction_service.settles_from_entries(txn)
+    ):
+        return _error_transaction_response(
+            txn.id,
+            "This row's actual comes from the purchases recorded against it, "
+            "so an amount typed here would be discarded. Record the purchase "
+            "instead, or correct one that is already there.",
+        )
+    return None
+
+
 def _apply_regular_update(txn, txn_id, data):
     """Apply a PATCH update to a regular (non-shadow) transaction.
 
-    Validates any status change (:func:`_resolve_status_change`),
-    enforces the expense-only purchase-tracking guard, writes the
-    submitted fields, deletes the auto-generated payback when the
-    change reverts a Credit row (mirroring ``unmark_credit`` via the
-    shared ``credit_workflow.delete_payback_on_credit_revert``), flags
-    template-generated rows as overridden when the amount or period
-    changed, and commits under the optimistic lock.  A
-    ``pay_period_id`` change relocates the row across the grid, so it
-    triggers a full ``gridRefresh`` instead of the in-place
-    ``balanceChanged`` swap.
+    Runs the three pre-mutation gates, writes the submitted fields
+    (:func:`_apply_field_updates`), applies the requested status through
+    ``transaction_service.apply_requested_status``, deletes the auto-generated
+    payback when the change reverts a Credit row (mirroring ``unmark_credit``
+    via the shared ``credit_workflow.delete_payback_on_credit_revert``), and
+    commits under the optimistic lock.  A ``pay_period_id`` change relocates the
+    row across the grid, so it triggers a full ``gridRefresh`` instead of the
+    in-place ``balanceChanged`` swap.
+
+    **This handler does not know what a status change means, and that is plan
+    step X-ap.**  It used to call the status SEAM -- the mechanics primitive --
+    so picking Paid in the popover's Status dropdown flipped an envelope-tracked
+    row into the settled band without ever consulting its purchases: a `$25`
+    purchase against a `$400` estimate booked `$400` here and `$25` through the
+    grid's own Mark Paid button, from two controls in the same card (finding
+    **N-219**).
 
     Args:
         txn: The Transaction being edited.
@@ -184,36 +295,29 @@ def _apply_regular_update(txn, txn_id, data):
         period move) or ``balanceChanged`` on success, a 409 conflict
         cell on a concurrent commit, or a 400 on a rejected status
         change, a locked-field edit of a finalised row (#26), the income
-        purchase-tracking guard, or a bad FK.
+        purchase-tracking guard, an amount the settle would discard, or a bad
+        FK.
     """
-    # The two pre-mutation gates share ONE error exit, the shape
-    # ``transfers.update_transfer`` already uses, so the settle-day refusal
-    # ruling R-EJ added below does not push this handler past pylint's
-    # too-many-returns threshold.  ``or`` preserves the precedence the guards
-    # depend on: an illegal status change reports its own message BEFORE the
-    # finalised-field lock speaks, and each returns ``None`` when it passes.
+    # The three pre-mutation gates share ONE error exit, the shape
+    # ``transfers.update_transfer`` already uses, so each refusal this arc adds
+    # does not push the handler past pylint's too-many-returns threshold.
+    # ``or`` preserves the precedence the guards depend on: an illegal status
+    # change reports its own message BEFORE the finalised-field lock speaks, and
+    # each returns ``None`` when it passes.
     #
     # Gate 1, ``_resolve_status_change``: the state-machine transition check,
     # run before any column is mutated so a rejection leaves the row untouched.
     # Gate 2, the finalised-row edit lock (#26): a Paid/Received/Settled/
     # Credit/Cancelled row's money/period/category/due-date fields cannot be
     # rewritten unless this same request reverts it to Projected.
+    # Gate 3, purchase tracking is expense-only.
     gate_error = (
         _resolve_status_change(txn, data)
         or _finalised_edit_response(txn, data)
+        or _reject_tracking_on_income(txn, data)
     )
     if gate_error is not None:
         return gate_error
-
-    # Purchase tracking is expense-only.  The popover only renders the
-    # is_envelope checkbox for ad-hoc expense rows, but guard the route
-    # too (defense in depth) so a crafted request cannot enable tracking
-    # on an income transaction.  Checked against the stored type because
-    # TransactionUpdateSchema carries no transaction_type_id.
-    if data.get("is_envelope") and txn.is_income:
-        return _error_transaction_response(
-            txn.id, "Purchase tracking is only available for expenses.",
-        )
 
     # Detect a period move before the setattr loop mutates the row.  A
     # move relocates the row to a different period in the grid, which an
@@ -240,28 +344,23 @@ def _apply_regular_update(txn, txn_id, data):
         and data["status_id"] != ref_cache.status_id(StatusEnum.CREDIT)
     )
 
-    # Apply the remaining updates.  ``status_id`` and ``settled_on`` are BOTH
-    # excluded here and routed through the status seam below: a bare setattr
-    # would assign the column but skip the transition check, the settle-day
-    # stamp/clear, and the status-relationship expire that the seam owns -- and
-    # for ``settled_on`` it would make this loop a SECOND writer of a column the
-    # seam is the single door to (finding **N-185**, the re-run of N-183 on the
-    # transaction side).
-    for field, value in data.items():
-        if field in _SEAM_OWNED_FIELDS:
-            continue
-        setattr(txn, field, value)
-
-    # Apply the status and the settle day through the single seam, in ONE call,
-    # because they are ONE fact: a row is settled if and only if it carries the
-    # day its money moved, and the seam writes both in the same statement.  The
-    # status is the SUBMITTED one when the PATCH carried one, else the row's own
-    # -- a day-only edit is an identity transition, exactly as the transfer
-    # side's :func:`_transfer_status.apply_settle_day_to_pair` does it.
+    # Apply the status and the settle day through the ONE status verb, in ONE
+    # call, because they are ONE fact: a row is settled if and only if it
+    # carries the day its money moved, and the seam underneath writes both in
+    # the same statement.  The status is the SUBMITTED one when the PATCH
+    # carried one, else the row's own -- a day-only edit is an identity
+    # transition, exactly as the transfer side's
+    # :func:`_transfer_status.apply_settle_day_to_pair` does it.
     # ``settle_day_for_status`` drops a day submitted alongside a revert out of
     # the settled band (ruling **R-EG**), so the documented unlock path (set
     # Status to Projected to edit the amounts) is not broken by the form
     # re-submitting the day the row already carried.
+    #
+    # **This route does NOT decide what applying a status MEANS** --
+    # ``transaction_service.apply_requested_status`` does, and it reconciles the
+    # ledger as part of the act.  Calling the seam here instead is finding
+    # **N-219**: the seam is the MECHANICS primitive, so a door that reaches for
+    # it settles a row without ever asking what the row is worth.
     #
     # ``_resolve_status_change`` already pre-verified a SUBMITTED transition for
     # error precedence, and the identity transition a day-only edit performs is
@@ -279,40 +378,67 @@ def _apply_regular_update(txn, txn_id, data):
     # ``except``: both are ordinary input from the correction box, and both must
     # render as a designed 400 with the staged ``setattr`` mutations rolled back.
     new_status_id = data.get("status_id", txn.status_id)
+
+    # **The three excepts cover the WHOLE tail, and they were split by the order
+    # the phases were written in rather than by a decision** -- the same
+    # unification :func:`_mark_done_regular` records, forced here by the same
+    # cause: the status verb now reconciles the ledger, so one call raises both
+    # the designed ``ValidationError`` (a 400) and the concurrency
+    # ``StaleDataError`` (a 409) and cannot be split across two nets.  Nothing
+    # moves the other way: ``PostingError`` is a SIBLING of ``ValidationError``
+    # under ``ShekelError`` rather than a subclass, so a broken ledger invariant
+    # still fails loud instead of rendering as a designed refusal, and
+    # ``credit_workflow.delete_payback_on_credit_revert`` raises neither (its
+    # three ``ValidationError`` siblings are in ``mark_as_credit`` /
+    # ``unmark_credit``, which this path does not call).
     try:
+        # Write the submitted fields, flag a template row as overridden, and
+        # refuse an amount the settle would discard -- three acts whose ORDER is
+        # load-bearing and is documented at the helper.  Extracted so this
+        # handler keeps one exit per concern rather than one per rule.
+        #
+        # **INSIDE the net, because it FLUSHES.**  Its derived-amount guard asks
+        # ``settles_from_entries``, which lazy-loads ``template`` (or
+        # ``entries``) and so autoflushes the ``setattr`` loop's staged
+        # mutations as the version-pinned UPDATE.  Left above the ``try`` that
+        # was the request's FIRST flush sitting outside its own exception net: a
+        # concurrent commit surfaced as a 500 instead of the designed 409, and a
+        # period move whose ``is_override`` had not yet been written tripped
+        # ``idx_transactions_template_period_scenario`` as an uncaught
+        # ``IntegrityError``.  Found by adversarial review; the comment below
+        # claimed the three excepts covered the whole tail, and they covered the
+        # tail while the first flush had moved above it.
+        field_error = _apply_field_updates(txn, data)
+        if field_error is not None:
+            return field_error
         settle_day = status_seam.settle_day_for_status(
             current_user.id, new_status_id, data.get("settled_on"),
         )
         if "status_id" in data or settle_day is not None:
-            status_seam.apply_status_change(
+            transaction_service.apply_requested_status(
                 txn, new_status_id, settled_on=settle_day,
             )
-    except ValidationError as exc:
-        return _error_transaction_response(txn_id, str(exc))
-
-    # If the user changed amount or period on a template-generated item,
-    # flag as override.
-    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
-        txn.is_override = True
-
-    try:
-        # Posting ledger reconcile (Build-Order Step 3): after every effect
-        # field is applied above (the setattr loop, the status seam, the
-        # is_override flag), bring the double-entry ledger back in step with the
-        # transaction's now-current settled effect.  Placed LAST -- NOT at the
-        # status flip -- so it reads the FINAL amount and category, the exact
-        # discipline ``transfer_service.update_transfer`` documents (the 2.8b
-        # HIGH: a settle-and-recategorize PATCH applies category_id after
-        # status_id, so posting at the flip would book the stale category).  The
-        # reconcile reads the OLD category's posted legs back from the ledger by
-        # transaction_id, so a revert-and-recategorize reverses the old category
-        # cleanly even though ``txn.category_id`` already points at the new one
-        # (the 2.8 CRITICAL).  Gated on ``_POSTING_RELEVANT_FIELDS`` so a
-        # notes-only edit posts nothing.  Inside the StaleDataError net for the
-        # same reason as the payback delete below: the reconcile's flush
-        # autoflushes the version-pinned row, so a concurrent commit surfaces
-        # here as a 409, not a 500.
-        if _POSTING_RELEVANT_FIELDS & data.keys():
+        elif _POSTING_RELEVANT_FIELDS & data.keys():
+            # Posting ledger reconcile (Build-Order Step 3) for the edit that
+            # moves a posted effect WITHOUT touching the status: a re-category,
+            # a corrected amount.  The status arm above owns the reconcile for
+            # every other case, which is what keeps this request to exactly ONE
+            # ledger round-trip -- ``status_id`` and ``settled_on`` are both in
+            # ``_POSTING_RELEVANT_FIELDS``, so an ungated call here would be a
+            # second reconcile of the same row on every status change.  Placed
+            # LAST -- NOT at the field write -- so it reads the FINAL amount and
+            # category, the exact discipline
+            # ``transfer_service.update_transfer`` documents (the 2.8b HIGH: a
+            # settle-and-recategorize PATCH applies category_id after status_id,
+            # so posting at the flip would book the stale category).  The
+            # reconcile reads the OLD category's posted legs back from the
+            # ledger by transaction_id, so a revert-and-recategorize reverses
+            # the old category cleanly even though ``txn.category_id`` already
+            # points at the new one (the 2.8 CRITICAL).  Gated so a notes-only
+            # edit posts nothing.  Inside the StaleDataError net for the same
+            # reason as the payback delete below: the reconcile's flush
+            # autoflushes the version-pinned row, so a concurrent commit
+            # surfaces here as a 409, not a 500.
             posting_service.sync_transaction_postings(
                 txn, settled=txn.status.is_settled,
             )
@@ -328,6 +454,8 @@ def _apply_regular_update(txn, txn_id, data):
                 txn, current_user.id,
             )
         db.session.commit()
+    except ValidationError as exc:
+        return _error_transaction_response(txn_id, str(exc))
     except StaleDataError:
         logger.info(
             "Stale-data conflict on update_transaction id=%d", txn_id,
@@ -779,32 +907,29 @@ def cancel_transaction(txn_id):
         return _cancel_shadow(txn, txn_id, cancelled_id)
     # --- End guard ---
 
-    # Route the cancel through the single status seam (state-machine check +
-    # status_id + settled_on).  Cancelled is reachable only from Projected (or the
-    # Cancelled identity edge for idempotent re-submits); a direct done ->
-    # cancelled or settled -> cancelled would erase the paid/archived audit
-    # trail and raises ValidationError -> 400.  Cancelled is non-settled, so the
-    # seam leaves settled_on clear.  Audit reference: F-047 / F-161 follow-up to
-    # commit C-21.
+    # Route the cancel through the ONE status verb (state-machine check +
+    # status_id + settled_on + the ledger reconcile).  Cancelled is reachable
+    # only from Projected (or the Cancelled identity edge for idempotent
+    # re-submits); a direct done -> cancelled or settled -> cancelled would
+    # erase the paid/archived audit trail and raises ValidationError -> 400.
+    # Cancelled is non-settled, so the seam leaves settled_on clear.  Audit
+    # reference: F-047 / F-161 follow-up to commit C-21.
+    #
+    # The reconcile inside the verb is what this handler used to run itself:
+    # reconcile to the new status's settled sense as the final step, mirroring
+    # the transfer pattern (reconcile on every status change).  Cancelled is
+    # non-settled and is reachable only from Projected, so it is an idempotent
+    # no-op today (a Projected source has no postings to reverse), but it keeps
+    # the "every status change reconciles last" invariant complete and
+    # self-heals if the state machine ever admits cancelling a settled row.
+    # Inside the StaleDataError net: the reconcile's flush autoflushes the
+    # version-pinned row, so a concurrent commit surfaces here as a 409, not a
+    # 500.
     try:
-        status_seam.apply_status_change(txn, cancelled_id)
+        transaction_service.apply_requested_status(txn, cancelled_id)
+        db.session.commit()
     except ValidationError as exc:
         return _error_transaction_response(txn_id, str(exc))
-
-    # Posting ledger reconcile (Build-Order Step 3): reconcile to the new
-    # status's settled sense as the final step, mirroring the transfer pattern
-    # (reconcile on every status change).  Cancelled is non-settled and is
-    # reachable only from Projected, so this is an idempotent no-op today (a
-    # Projected source has no postings to reverse), but it keeps the "every
-    # status handler reconciles last" invariant complete and self-heals if the
-    # state machine ever admits cancelling a settled row.  Inside the
-    # StaleDataError net: the reconcile's flush autoflushes the version-pinned
-    # row, so a concurrent commit surfaces here as a 409, not a 500.
-    try:
-        posting_service.sync_transaction_postings(
-            txn, settled=txn.status.is_settled,
-        )
-        db.session.commit()
     except StaleDataError:
         logger.info(
             "Stale-data conflict on cancel_transaction id=%d", txn_id,

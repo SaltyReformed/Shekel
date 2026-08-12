@@ -101,6 +101,19 @@ class TransferTemplate(
         "LoanPaymentSettings", uselist=False, back_populates="template",
         cascade="all, delete-orphan",
     )
+    # The effective-dated history of ``default_amount`` (plan step X-au-a).  A
+    # DERIVE-mode loan payment has NONE and must not: its ``default_amount`` is
+    # a stored snapshot of P&I plus escrow, so a version here would record a
+    # derived quantity as a stated price.  A MANUAL loan payment DOES have one
+    # -- there the operator owns the base cash.
+    # :mod:`app.services.template_amount_service` owns both the predicate and
+    # the write door.
+    amount_versions = db.relationship(
+        "TemplateAmountVersion",
+        back_populates="transfer_template",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
 
     def __repr__(self):
         return f"<TransferTemplate '{self.name}' ${self.default_amount}>"

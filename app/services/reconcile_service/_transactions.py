@@ -176,7 +176,7 @@ def _wholly_spent_by(txn: Transaction, observed_on: date) -> bool:
     it is about the row's VALUE rather than its landing day.**  An envelope
     settles at ``sum(entries)`` over EVERY entry it holds
     (``entry_service.compute_actual_from_entries``, and
-    ``entry_service._update_actual_if_paid`` re-derives it the same way after
+    ``entry_service._resync_settled_envelope`` re-derives it the same way after
     any later mutation), so a row still holding a purchase made AFTER the
     statement day would book that purchase too -- dated on the statement's day,
     at a figure the panel offers with no correction box because an

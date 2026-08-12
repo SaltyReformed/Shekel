@@ -41,8 +41,8 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services import pay_period_service, paycheck_calculator
 from app.services.tax_config_service import (
-    load_tax_configs,
     load_tax_configs_for_periods,
+    load_tax_configs_for_year,
 )
 from app.utils.balance_predicates import is_projected
 
@@ -125,7 +125,13 @@ def get_current_gross_biweekly(
         return ZERO
 
     all_periods = pay_period_service.get_all_periods(user_id)
-    tax_configs = load_tax_configs(user_id, profile)
+    # Resolved for the RESOLVED PERIOD's own tax year rather than the clock's,
+    # which is the key ``live_projected_net`` below already uses for every
+    # period it prices -- so a caller reading one period and a caller reading
+    # the horizon cannot resolve the same period against different rules.
+    tax_configs = load_tax_configs_for_year(
+        user_id, profile, current_period.start_date.year,
+    )
     breakdown = paycheck_calculator.calculate_paycheck(
         profile, current_period, all_periods, tax_configs,
     )

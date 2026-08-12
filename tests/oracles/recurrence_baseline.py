@@ -74,7 +74,8 @@ from app import ref_cache
 from app.enums import RecurrencePatternEnum
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
-from app.services.recurrence import PeriodCalendar, RecurrenceSpec
+from app.services.pay_calendar import PayCalendar
+from app.services.recurrence import RecurrenceSpec
 # Both imported as MODULES, not as names, and the recurrence producer is
 # imported from its DEFINITION site (``_reading``) rather than through the
 # package's re-export.  ``from ... import rule_occurrences`` would bind the
@@ -279,7 +280,7 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
 
     ``start_period_id`` is deliberately left unset.  The baseline captures with
     no lower window bound (``capture_shape``), and ``resolve`` reaches the
-    schedule's opening through ``PeriodCalendar.opening_bound()`` -- so a start
+    schedule's opening through ``PayCalendar.opening_bound()`` -- so a start
     period here would add a bound the captured answers were never measured
     under.
 
@@ -305,17 +306,31 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
     )
 
 
-def build_shape_calendar(periods: list[PayPeriod]) -> PeriodCalendar:
+def build_shape_calendar(
+    periods: list[PayPeriod], cadence_days: int,
+) -> PayCalendar:
     """Return the resolver's view of one of this module's schedules.
+
+    **Built from the PAYDAYS since plan step C2-b2**, which is what the
+    application does: a period's ordinal and its last covered day are derived
+    from the payday set and the owner's cadence, so handing over the stored
+    columns would hand over a second answer.  Both schedules here are
+    contiguous and generated at one cadence, so the derived ends reproduce the
+    stored ones exactly -- which is why the frozen baseline blob does not move.
 
     Args:
         periods: A schedule from :func:`build_schedule`.
+        cadence_days: The cadence that schedule was generated at.
 
     Returns:
-        The :class:`~app.services.recurrence.PeriodCalendar` for
+        The :class:`~app.services.pay_calendar.PayCalendar` for
         :data:`SHAPE_USER_ID`.
     """
-    return PeriodCalendar.from_pay_periods(periods, SHAPE_USER_ID)
+    return PayCalendar.from_paydays(
+        paydays=[(period.id, period.start_date) for period in periods],
+        cadence_days=cadence_days,
+        user_id=SHAPE_USER_ID,
+    )
 
 
 def parse_baseline_rows(blob: str) -> dict[str, list[tuple[int, date]]]:
@@ -644,7 +659,9 @@ def build_shapes() -> list[RuleShape]:
     return sorted(acc.shapes, key=lambda shape: shape.label)
 
 
-def capture_shape(shape: RuleShape, periods: list[PayPeriod]) -> list[str]:
+def capture_shape(
+    shape: RuleShape, periods: list[PayPeriod], cadence_days: int,
+) -> list[str]:
     """Return the blob lines for one shape.
 
     Calls the two public entry points exactly as ``generate_for_template``
@@ -670,6 +687,8 @@ def capture_shape(shape: RuleShape, periods: list[PayPeriod]) -> list[str]:
     Args:
         shape: The configuration to capture.
         periods: The schedule to capture it against.
+        cadence_days: The cadence that schedule was generated at, which the
+            calendar reads for the last period's end (plan step C2-b2).
 
     Returns:
         One line per matched period, or a single ``(none)`` line.
@@ -678,7 +697,7 @@ def capture_shape(shape: RuleShape, periods: list[PayPeriod]) -> list[str]:
     # The whole schedule, as plan step R4b-1 made explicit: the baseline has
     # always captured against the FULL period list, so building the calendar
     # from the same list is the same measurement.  There is no lower window
-    # bound -- the anchor's own floor is ``PeriodCalendar.opening_bound()``, so
+    # bound -- the anchor's own floor is ``PayCalendar.opening_bound()``, so
     # no walk can emit an occurrence placed before it.
     #
     # **Unplaced occurrences are dropped by ``placed_periods`` since plan step
@@ -690,7 +709,9 @@ def capture_shape(shape: RuleShape, periods: list[PayPeriod]) -> list[str]:
     # them, so ``tests/test_services/test_recurrence_occurrence.py``'s
     # ``_EXPECTED_UNPLACED`` names each one exactly and is what gates them.
     matched = _reading.placed_periods(
-        _reading.rule_occurrences(rule, build_shape_calendar(periods)),
+        _reading.rule_occurrences(
+            rule, build_shape_calendar(periods, cadence_days),
+        ),
     )
     if not matched:
         return [f"{shape.label} (none)"]
@@ -736,7 +757,9 @@ def capture_baseline() -> str:
         f"# shapes: {len(shapes)}",
     ]
     for shape in shapes:
-        lines.extend(capture_shape(
-            shape, long_cadence if shape.long_cadence else biweekly,
-        ))
+        lines.extend(
+            capture_shape(shape, long_cadence, LONG_CADENCE_DAYS)
+            if shape.long_cadence
+            else capture_shape(shape, biweekly, SCHEDULE_CADENCE_DAYS)
+        )
     return "\n".join(lines) + "\n"

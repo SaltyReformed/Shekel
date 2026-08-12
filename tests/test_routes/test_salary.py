@@ -3199,14 +3199,16 @@ class TestCalibrationServerDerivedSnapshot:
                 pay_period_service, paycheck_calculator,
             )
             from app.services.tax_config_service import (  # pylint: disable=import-outside-toplevel
-                load_tax_configs,
+                load_tax_configs_for_year,
             )
             profile = db.session.query(SalaryProfile).filter_by(
                 id=cal.salary_profile_id,
             ).one()
             current_period = pay_period_service.get_current_period(user.id)
             periods = pay_period_service.get_all_periods(user.id)
-            tax_configs = load_tax_configs(user.id, profile)
+            tax_configs = load_tax_configs_for_year(
+                user.id, profile, current_period.start_date.year,
+            )
             breakdown = paycheck_calculator.calculate_paycheck(
                 profile, current_period, periods, tax_configs,
                 calibration=profile.calibration,

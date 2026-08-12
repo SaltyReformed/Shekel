@@ -31,7 +31,7 @@ from app.extensions import db
 from app.models.ref import FilingStatus, RaiseType, Status, TaxType, TransactionType
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
-from app.models.tax_config import StateTaxConfig
+from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
@@ -41,7 +41,10 @@ from app.services import (
     paycheck_calculator,
     savings_dashboard_service,
 )
-from app.services.tax_config_service import load_tax_configs
+from app.services.tax_config_service import (
+    load_tax_configs,
+    load_tax_configs_for_year,
+)
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import freeze_today, make_investment_account
 
@@ -334,7 +337,9 @@ class TestLiveIncomeThroughBalanceResolver:
             )
             db.session.commit()
 
-            tax_configs = load_tax_configs(user_id, profile)
+            tax_configs = load_tax_configs_for_year(
+                user_id, profile, period.start_date.year,
+            )
             breakdowns = paycheck_calculator.project_salary(
                 profile, periods, tax_configs, calibration=profile.calibration,
             )
@@ -688,3 +693,154 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             )
             assert overrides[txn.id] == net_2027_rate
             assert overrides[txn.id] != net_2026_rate
+
+
+class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
+    """The New Year cliff: a projection may not change because a date passed.
+
+    Tax configuration is seeded per year and nothing seeds the next one, so on
+    every January 1 the CURRENT year is an unconfigured year.  The retired
+    resolution rule substituted "the current calendar year", which cannot
+    answer for the year it is itself: a request for the now-current year found
+    nothing to redirect to and resolved to no configuration at all.  The
+    paycheck engine reads a missing ``fica_config`` as ZERO Social Security
+    (``tax_calculator.capped_social_security`` documents that arm for
+    bootstrap), so the whole SS line silently vanished from every projected
+    paycheck in that year and later.
+
+    Measured on a clone of production 2026-08-11, before the fix: on
+    2027-01-01, with no write and no user action, 40 of 51 live-priced salary
+    rows changed and projected income over the horizon rose by **$8,460.50**;
+    counting the 11 periods the grid's own rolling top-up creates that same
+    day, **$10,914.93** over 51 of 62 rows.  One period went from
+    ``NET 2,639.30`` (ss 205.19) to ``NET 2,844.49`` (ss 0.00).
+
+    Neither figure was only a display defect.  A settle writes the live amount
+    into ``estimated_amount`` before the status flip
+    (``transaction_service._reconcile_cached_amount``), after which the row
+    leaves this producer's Projected-only candidate set and nothing can repair
+    it; and any salary or tax-config save regenerates every row from today
+    forward.  The read-time gap had two write-back doors.
+    """
+
+    def _seed_2026_only(self, user_id, profile):
+        """Seed NC state tax and FICA for 2026 and for no other year."""
+        flat_type = db.session.query(TaxType).filter_by(name="flat").one()
+        db.session.add_all([
+            StateTaxConfig(
+                user_id=user_id, state_code="NC", tax_year=2026,
+                tax_type_id=flat_type.id,
+                filing_status_id=profile.filing_status_id,
+                flat_rate=Decimal("0.0399"),
+            ),
+            FicaConfig(
+                user_id=user_id, tax_year=2026,
+                ss_rate=Decimal("0.0620"),
+                ss_wage_base=Decimal("184500.00"),
+                medicare_rate=Decimal("0.0145"),
+            ),
+        ])
+        db.session.commit()
+
+    def test_a_2027_paycheck_is_priced_the_same_in_2026_and_in_2027(
+        self, app, db, monkeypatch, seed_user, seed_periods_52,
+    ):
+        """The same row, the same inputs, two different "todays", one answer.
+
+        The property the resolution rule exists for.  Nothing about the row or
+        its inputs changes between the two reads -- only the wall clock -- so
+        any difference is the app rewriting a projection because a date passed.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            profile = _create_profile(user_id, scenario_id)  # $104k, NC
+            template = _make_salary_template(seed_user, profile)
+            self._seed_2026_only(user_id, profile)
+
+            periods = pay_period_service.get_all_periods(user_id)
+            period_2027 = next(
+                (p for p in periods if p.start_date.year == 2027), None,
+            )
+            assert period_2027 is not None, "seed_periods_52 must reach 2027"
+            txn = _make_txn(
+                seed_user, period_2027, template=template,
+                estimated_amount="1.00",
+            )
+            db.session.commit()
+
+            freeze_today(monkeypatch, date(2026, 6, 1))
+            priced_in_2026 = income_service.live_projected_net(
+                user_id, scenario_id, [txn],
+            )[txn.id]
+
+            freeze_today(monkeypatch, date(2027, 6, 1))
+            priced_in_2027 = income_service.live_projected_net(
+                user_id, scenario_id, [txn],
+            )[txn.id]
+
+            assert priced_in_2027 == priced_in_2026
+
+    def test_every_withholding_line_is_what_an_unresolved_year_deletes(
+        self, app, db, seed_user, seed_periods_52,
+    ):
+        """Non-vacuity: an unresolved 2027 really does zero the withholding.
+
+        Without this the sibling above could pass with both reads equally
+        wrong.  It prices the same 2027 period against the EXACT-year loader
+        -- which substitutes nothing and so returns the three ``None``s the
+        retired rule produced on 2027-01-01 -- and shows every withholding
+        line collapsing to zero, which raises the net by their sum.
+
+        On production only the Social Security line moved, because that
+        profile carries an ACTIVE calibration and the calibrated path takes
+        federal and state from stored effective rates; only SS still reads
+        ``fica_config``.  This fixture has no calibration, so it exercises the
+        bracket path and all three lines move.  Both are the same defect --
+        a config set that resolved to nothing -- seen through different tax
+        paths.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            profile = _create_profile(user_id, scenario_id)  # $104k, NC
+            _make_salary_template(seed_user, profile)
+            self._seed_2026_only(user_id, profile)
+
+            periods = pay_period_service.get_all_periods(user_id)
+            period_2027 = next(
+                p for p in periods if p.start_date.year == 2027
+            )
+
+            resolved = paycheck_calculator.calculate_paycheck(
+                profile, period_2027, periods,
+                load_tax_configs_for_year(user_id, profile, 2027),
+            )
+            unresolved = paycheck_calculator.calculate_paycheck(
+                profile, period_2027, periods,
+                load_tax_configs(user_id, profile, 2027),
+            )
+
+            # $104,000 / 26 = $4,000.00 gross, no pre-tax deductions, so each
+            # line is a flat rate on the full gross:
+            #   state    4000.00 * 0.0399 = 159.60
+            #   SS       4000.00 * 0.0620 = 248.00  (under the $184,500 base)
+            #   medicare 4000.00 * 0.0145 =  58.00
+            #   federal                    =   0.00  (no bracket set seeded)
+            # net = 4000.00 - 159.60 - 248.00 - 58.00 = 3,534.40
+            assert resolved.earnings.gross_biweekly == Decimal("4000.00")
+            assert resolved.taxes.state == Decimal("159.60")
+            assert resolved.taxes.social_security == Decimal("248.00")
+            assert resolved.taxes.medicare == Decimal("58.00")
+            assert resolved.earnings.net_pay == Decimal("3534.40")
+
+            assert unresolved.taxes.state == Decimal("0.00")
+            assert unresolved.taxes.social_security == Decimal("0.00")
+            assert unresolved.taxes.medicare == Decimal("0.00")
+            assert unresolved.earnings.net_pay == Decimal("4000.00")
+
+            # The whole withholding, handed back to the projection as income.
+            assert (
+                unresolved.earnings.net_pay - resolved.earnings.net_pay
+                == Decimal("465.60")
+            )

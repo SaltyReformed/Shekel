@@ -5,14 +5,12 @@ Tests the auto-generation of transactions from templates with
 recurrence rules (§4.7) and the state machine behavior (§4.8).
 """
 
-import logging
 
 import pytest
 from datetime import date, timedelta
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
@@ -20,13 +18,9 @@ from app.models.ref import RecurrencePattern, TransactionType, Status
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
 from app.services import pay_period_service, pay_period_write, recurrence_engine
+from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.recurrence import RecurrenceResolutionError
-from app.services.recurrence import (
-    PeriodCalendar,
-    PlacementOutcome,
-    placed_periods,
-    rule_occurrences,
-)
+from app.services.recurrence import placed_periods, rule_occurrences
 from app.exceptions import (
     RecurrenceCadenceUnsupported,
     RecurrenceConflict,
@@ -53,6 +47,12 @@ _PATTERN_NAME_TO_ENUM = {e.value: e for e in RecurrencePatternEnum}
 #: calendar from ``rule.user_id`` itself, so the owner check compared a value
 #: against itself and could not fail.
 _MATCH_USER_ID = 1
+
+#: The cadence the hand-built schedules below are generated at.  Named because
+#: :func:`_calendar` has to STATE it: since plan step C2-b2 a calendar derives
+#: every period's end from the NEXT payday, and the last one's from the owner's
+#: cadence, so the cadence is an input rather than a column to copy.
+_CADENCE_DAYS = 14
 
 
 def build_rule(pattern_name="Every Period", interval_n=1,
@@ -357,22 +357,38 @@ class TestRecurrenceGeneration:
 # instead of against a private helper that no longer exists.
 
 
-def _calendar(periods):
-    """Return the resolver's view of a ``FakePeriod`` schedule.
+def _calendar(periods, cadence_days=_CADENCE_DAYS):
+    """Return the owner's :class:`~app.services.pay_calendar.PayCalendar`.
 
-    Period selection takes the OWNER's schedule as a
-    :class:`~app.services.recurrence.PeriodCalendar` since plan step R4b-1,
-    rather than building one from whatever candidate list it was handed.
-    Named once here so each pattern test states the rule and nothing else.
+    Period selection takes the OWNER's schedule as one calendar VALUE since
+    plan step R4b-1, rather than building one from whatever candidate list it
+    was handed.  Named once here so each pattern test states the rule and
+    nothing else.
+
+    **It reads the PAYDAY and the id, and nothing else** (plan step C2-b2).
+    A period's ordinal and its last covered day are DERIVED from the payday
+    set, so passing a row's stored ``end_date`` in would be passing a second
+    answer -- the denormalization the pay-calendar arc exists to remove.  Every
+    schedule these tests build is contiguous and generated at one cadence, so
+    the derived ends reproduce the stated ones exactly.
 
     Args:
-        periods: The schedule, in ``period_index`` order.
+        periods: The schedule as rows carrying ``id`` and ``start_date``, in
+            any order -- the derivation sorts by payday.  **The owner's WHOLE
+            payday set**: a slice re-indexes from zero, which is plan ledger
+            row P26.
+        cadence_days: Days between paydays.  Read only for the LAST period's
+            end; every other end is dictated by the next payday.
 
     Returns:
-        The :class:`~app.services.recurrence.PeriodCalendar` for
+        The :class:`~app.services.pay_calendar.PayCalendar` for
         :data:`_MATCH_USER_ID`.
     """
-    return PeriodCalendar.from_pay_periods(periods, _MATCH_USER_ID)
+    return PayCalendar.from_paydays(
+        paydays=[(period.id, period.start_date) for period in periods],
+        cadence_days=cadence_days,
+        user_id=_MATCH_USER_ID,
+    )
 
 
 def _matched_periods(rule, calendar, effective_from):
@@ -401,7 +417,7 @@ def _matched_periods(rule, calendar, effective_from):
             no bound.
 
     Returns:
-        The matched :class:`~app.services.recurrence.SchedulePeriod` values,
+        The matched :class:`~app.services.pay_calendar.DerivedPeriod` values,
         ascending by occurrence date, one entry per occurrence.
     """
     return placed_periods(
@@ -414,15 +430,15 @@ def _matches(rule, periods):
 
     ``effective_from`` is ``None`` -- no lower window bound.  It used to be
     ``periods[0].start_date``, which plan step R4b-1 proved redundant: the
-    anchor's own floor is ``PeriodCalendar.opening_bound()``, so no walk can
-    emit an occurrence placed before it.
+    anchor's own floor is ``PayCalendar.opening_bound()``, so no walk can emit
+    an occurrence placed before it.
 
     Args:
         rule: The unsaved rule from :func:`build_rule`.
-        periods: The schedule to match against, in ``period_index`` order.
+        periods: The schedule to match against.
 
     Returns:
-        The matched :class:`~app.services.recurrence.SchedulePeriod` values,
+        The matched :class:`~app.services.pay_calendar.DerivedPeriod` values,
         ascending by occurrence date.
     """
     return _matched_periods(rule, _calendar(periods), None)
@@ -732,30 +748,45 @@ class TestTheEveryNPeriodsPhase:
     def test_the_stored_column_is_used_when_the_calendar_lacks_the_period(
         self, biweekly_periods,
     ):
-        """A window that excludes the start period falls back to the column.
+        """A start period the calendar cannot find falls back to the column.
 
-        ``PeriodCalendar.period_by_id`` answers ``None`` for a period outside
-        the list it was built from, so the derivation has nothing to derive
-        from and the authored ``offset_periods`` stands.  Reachable on the
-        extend path, which hands the engine only the NEW periods -- and
-        harmless while the two agree, which every rule written through the
-        door since plan step R2c-1 does by construction.  Plan ledger row D24
-        carries what happens when they do not.
+        ``PayCalendar.period_by_id`` answers ``None`` for an id no period in
+        the schedule carries, so the derivation has nothing to derive from and
+        the authored ``offset_periods`` stands -- harmless while the two agree,
+        which every rule written through the door since plan step R2c-1 does by
+        construction.  Plan ledger row D24 carries what happens when they do
+        not.
+
+        **The state is built with a STALE id rather than with a partial
+        calendar, and plan step C2-b2 is why** (plan ledger row **P26**).  This
+        test used to slice the fixture -- ``biweekly_periods[6:]`` -- so the
+        start period fell outside the list the calendar was built from.  A
+        DERIVED calendar cannot express that: ``period_index`` is a period's
+        position in the payday set it is HANDED, so a slice comes back
+        renumbered from zero and this assertion would be reading a different
+        schedule's ordinals.  What remains is the way production actually
+        reaches the branch -- ``recurrence_rules.start_period_id`` is
+        ``ON DELETE SET NULL``, but a rule already read into memory outlives
+        the row its id named -- so the calendar is the owner's WHOLE schedule
+        and the id names no period in it.
         """
-        # The window starts at index 6, so the start period (index 4) is not
-        # in it and the derivation cannot see it.
-        window = biweekly_periods[6:]
+        unknown_period_id = max(period.id for period in biweekly_periods) + 1
         rule = build_rule(
             pattern_name="Every N Periods",
             interval_n=3,
             offset_periods=1,
-            start_period_id=biweekly_periods[4].id,
+            start_period_id=unknown_period_id,
         )
 
-        matched = _matched_periods(rule, _calendar(window), window[0].start_date)
+        matched = _matched_periods(
+            rule, _calendar(biweekly_periods), biweekly_periods[0].start_date,
+        )
 
-        # Phase 1 of 3: indices 7, 10, 13, ... -- the STORED column's cadence.
-        assert [p.period_index for p in matched] == [7, 10, 13, 16, 19, 22, 25]
+        # Phase 1 of 3: indices 1, 4, 7, ... -- the STORED column's cadence,
+        # now read over the whole schedule rather than over a window's tail.
+        assert [p.period_index for p in matched] == [
+            1, 4, 7, 10, 13, 16, 19, 22, 25,
+        ]
 
 
 class TestMatchPeriodsFull:
@@ -1088,7 +1119,8 @@ class TestGenerateForTemplate:
             # would pass vacuously if the engine ever stopped duplicating, and
             # the guard would be a gate over nothing.
             matched = _matched_periods(
-                template.recurrence_rule, _calendar(long_periods),
+                template.recurrence_rule,
+                calendar_for(seed_user["user"].id),
                 long_periods[0].start_date,
             )
             assert len(matched) > len(
@@ -1392,35 +1424,45 @@ class TestThePlacedPeriodsBound:
         return template
 
 
-class TestAnOccurrenceInAScheduleGap:
-    """A bill owed on a day no pay period covers: logged, skipped, not lost.
+class TestALegacyScheduleHole:
+    """A day no pay period covers: ABSORBED by the paycheck before it.
 
-    **Plan ledger row D7, ruled 2026-08-08 and built at plan step R4b-2.**  Pay
-    periods were not contiguous by construction: the only bound the batch guard
-    of the day (``pay_period_service._reject_overlapping_batch``) applied was
-    that a new batch must start AFTER the latest existing ``end_date``, so a
-    batch starting later than that left a calendar hole.  These tests built the
-    hole through the REAL writer rather than by hand, because "can this state
-    exist?" was the premise the whole finding rested on.
+    **This class asserted the opposite until plan step C2-b2, and the reversal
+    IS the step** (plan ledger rows **D7** / **P27**).  Pay periods were not
+    contiguous by construction, so a day could belong to no paycheck; the
+    engine answered ``PlacementOutcome.SCHEDULE_GAP``, logged
+    ``recurrence_occurrence_unplaced`` at WARNING naming the orphaned dates,
+    and generated no row for them.  C2-b2 pointed the engine at the DERIVED
+    calendar, in which a period runs to the day before the next payday.  A hole
+    is then not a state a READER can see: the preceding paycheck covers those
+    days.  The outcome enum, ``GenerationPlan.gaps`` and
+    ``report_schedule_gaps`` went with the state they described.
 
-    **Plan step C3-b closed that writer, which is what finding F-10 asked for,
-    and the first test below is now the CONTROL for the closure rather than the
-    premise.**  ``pay_period_write`` materialises the payday derivation, in
-    which a period ends the day before the next payday, so an append absorbs
-    the days it used to leave behind.  The state is still reachable in the
-    wild, from rows written before that step, so the remaining tests keep their
-    subject and build it with ``_test_helpers.open_calendar_hole``, which
-    writes the column directly.  What moved is which half of the claim each
-    test carries: the writer no longer PERMITS a hole, and the reader still has
-    to answer for one.
+    **Two writers had to close before the reader could stop looking, and both
+    have**: ``balance:X-ad-a`` deleted the registration bootstrap payday, and
+    plan step **C3-b** replaced the batch guard with a writer that materialises
+    the derivation.  The first test below is the CONTROL for that closure.  The
+    stored rows can still HOLD a hole -- written before C3-b, or written
+    directly, which is what ``_test_helpers.open_calendar_hole`` does -- so
+    what these tests pin now is what a READER does with one.
 
-    **A hole is not the same as "the schedule has not got there yet"**, and the
-    class ends with the control that says so.  Two neutral reviews of this
-    step's first draft measured it reporting the second as the first: under
-    ``PERIOD_STARTING_ON_OR_AFTER`` an occurrence dated after the LAST PAYDAY
-    has no paycheck to defer onto even on a perfectly contiguous schedule, and
-    that is 43% of biweekly schedule openings.  The answer now says which it is
-    (:class:`~app.services.recurrence.PlacementOutcome`).
+    **What replaces the alert is a query**: ``scripts/integrity_check.py``
+    **BA-07** reports any owner whose stored ``end_date`` is not the day before
+    the next payday, and dies with that column at plan step C4.
+    ``tests/test_scripts/test_integrity_check.py`` grades it.
+
+    **The absorption is not free, and the third test says so.**  An absorbed
+    hole leaves an OVER-LONG paycheck, and a monthly bill can fall inside one
+    more than once -- which ``idx_transactions_template_period_scenario``
+    cannot hold, so ``refuse_unstorable_repeats`` refuses the pass.  That is
+    the same refusal a 30-day-or-longer cadence already earns; plan step C5b
+    lifts it.
+
+    **"Not yet" was never a gap**, and the class still ends with the control
+    that says so: under ``PERIOD_STARTING_ON_OR_AFTER`` an occurrence dated
+    after the LAST PAYDAY has no paycheck to defer onto even on a perfectly
+    contiguous schedule, and that is 43% of biweekly schedule openings.  Since
+    C2-b2 it is the ONLY way a placement answers ``None``.
     """
 
     #: Days after the seed schedule's last covered day that the second batch
@@ -1459,13 +1501,23 @@ class TestAnOccurrenceInAScheduleGap:
         )
         return later, gap_start, gap_end
 
-    def _days_between(self, first, last):
-        """Every ``_DAY_OF_MONTH`` in ``first..last``, inclusive, ascending."""
+    def _days_between(self, first, last, day=None):
+        """Every *day* of the month in ``first..last``, inclusive, ascending.
+
+        Args:
+            first: Inclusive lower bound.
+            last: Inclusive upper bound.
+            day: Day of the month, defaulting to :data:`_DAY_OF_MONTH`.
+
+        Returns:
+            The matching dates, ascending.
+        """
+        day = self._DAY_OF_MONTH if day is None else day
         return [
-            date(year, month, self._DAY_OF_MONTH)
+            date(year, month, day)
             for year in range(first.year, last.year + 1)
             for month in range(1, 13)
-            if first <= date(year, month, self._DAY_OF_MONTH) <= last
+            if first <= date(year, month, day) <= last
         ]
 
     def test_the_writer_no_longer_leaves_a_gapped_batch(
@@ -1512,72 +1564,30 @@ class TestAnOccurrenceInAScheduleGap:
             )
             assert preceding.end_date == later_start - timedelta(days=1)
 
-    def test_only_the_occurrence_in_the_gap_is_skipped(
+    def test_the_calendar_absorbs_the_hole_into_the_preceding_paycheck(
         self, app, db, seed_user, seed_periods,
     ):
-        """The bill in the hole gets no row; every OTHER occurrence still does.
+        """The occurrence in the hole is SEATED, not skipped.
 
-        The count is derived from the schedule rather than typed, and it is
-        load-bearing: with only ``assert created`` a pass that generated one row
-        out of eight would look identical to a correct one.  A neutral review
-        built exactly that mutant and this class did not notice.
+        Read off the generation seam's own plan, which is where the fact lives:
+        every occurrence the rule names has a period, and the one dated inside
+        the hole carries the paycheck that opened before it.  This same fixture
+        produced a placement with NO period before plan step C2-b2.
 
-        The alternatives to skipping are worse and are why this is a skip:
-        writing the row into a neighbouring paycheck would put real money in a
-        period whose span does not contain it, and raising would make one hole
-        block every generate pass for every definition -- the schedule extend
-        that could repair it included.
+        A day-5 rule rather than the class's day-15 one, deliberately.  The
+        absorbing paycheck opens 2026-05-08 and derives an end of 2026-07-02,
+        so the 5th falls inside it exactly ONCE (2026-06-05: May's is in the
+        previous paycheck and July's in the next).  This test is therefore
+        about the SEATING, and the next one -- where two occurrences of the 15th land in
+        that one paycheck -- is about the repeat.
         """
+        absorbed_day = 5
         with app.app_context():
             _later, gap_start, gap_end = self._schedule_with_a_gap(
                 seed_user, seed_periods,
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly", day_of_month=self._DAY_OF_MONTH,
-            )
-            schedule = GenerationSchedule.for_user(template.user_id)
-            created = recurrence_engine.generate_for_template(
-                template, schedule, seed_user["scenario"].id,
-            )
-
-            # What the rule NAMES: every 15th from the schedule's opening
-            # through its horizon.  Derived here from the same two facts the
-            # engine derives it from, so a fixture change moves both together.
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            named = self._days_between(
-                periods[0].start_date, periods[-1].end_date,
-            )
-            in_gap = [day for day in named if gap_start <= day <= gap_end]
-            assert len(in_gap) == 1, (
-                f"the fixture must put exactly one {self._DAY_OF_MONTH}th in "
-                f"the hole {gap_start}..{gap_end}, got {in_gap}"
-            )
-
-            # Exactly the named occurrences, less the homeless one.
-            assert len(created) == len(named) - 1
-            assert {txn.due_date for txn in created} == set(named) - set(in_gap)
-            for txn in created:
-                period = db.session.get(PayPeriod, txn.pay_period_id)
-                assert period.start_date <= txn.due_date <= period.end_date
-
-    def test_the_plan_reports_the_gap_and_omits_it_from_the_placements(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The seam's own answer: named in ``gaps``, absent from ``placements``.
-
-        Asserted where it is OBSERVABLE.  Checking only that no generated row
-        carries the missing date proves nothing here -- ``compute_due_date``
-        derives a row's month from its period's two ENDPOINTS, and no period in
-        this fixture has an endpoint in the gap month, so no row could carry
-        that date however badly placement broke.  The plan is where the fact
-        lives, so the plan is what this reads.
-        """
-        with app.app_context():
-            _later, gap_start, gap_end = self._schedule_with_a_gap(
-                seed_user, seed_periods,
-            )
-            template = self._make_template_with_rule(
-                seed_user, "Monthly", day_of_month=self._DAY_OF_MONTH,
+                seed_user, "Monthly", day_of_month=absorbed_day,
             )
             schedule = GenerationSchedule.for_user(template.user_id)
             plan = recurrence_engine.resolve_generation_plan(
@@ -1585,28 +1595,204 @@ class TestAnOccurrenceInAScheduleGap:
                 block_message="test",
             )
 
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            named = self._days_between(
-                periods[0].start_date, periods[-1].end_date,
+            absorbing = next(
+                period
+                for period in pay_period_service.get_all_periods(
+                    seed_user["user"].id,
+                )
+                if period.start_date == seed_periods[-1].start_date
             )
-            missing = [day for day in named if gap_start <= day <= gap_end]
-
-            assert plan.gaps == tuple(missing)
-            # And the pairs carry the OTHER occurrence dates, in order --
-            # the one place a non-repeating pass observes the occurrence at all.
-            assert [row.occurrence for row in plan.placements] == [
-                day for day in named if day not in set(missing)
+            # The premise, asserted rather than assumed: the fixture really
+            # does name an occurrence inside the hole.  Without it the
+            # assertions below could pass over an empty list.
+            in_hole = [
+                row for row in plan.placements
+                if gap_start <= row.occurrence <= gap_end
             ]
+            assert len(in_hole) == 1, (
+                f"the fixture must name exactly one occurrence in the hole "
+                f"{gap_start}..{gap_end}, got "
+                f"{[row.occurrence for row in plan.placements]}"
+            )
+            assert in_hole[0].period.id == absorbing.id
+            assert absorbing.end_date < in_hole[0].occurrence, (
+                "the STORED end must still precede the occurrence -- that is "
+                "what makes this an absorption by the derivation rather than a "
+                "period that genuinely contains the day"
+            )
 
-    def test_the_skipped_occurrence_is_logged_by_its_date(
-        self, app, db, seed_user, seed_periods, caplog,
+            # **The COUNT, and it is load-bearing** -- the assertion an
+            # adversarial review of plan step C2-b2 caught this test dropping
+            # when it replaced the gap-era one.  Without it a pass that seated
+            # the absorbed occurrence and dropped the other eight would look
+            # identical to a correct one, which is the exact mutant the class
+            # was burned by before.  Derived from the calendar the engine
+            # itself walks, so a fixture change moves both together.
+            named = self._days_between(
+                schedule.calendar.opening_bound(),
+                schedule.calendar.horizon(),
+                day=absorbed_day,
+            )
+            assert [row.occurrence for row in plan.placements] == named
+            # And nothing is left homeless: every occurrence has a paycheck,
+            # each inside the DERIVED span of the one it was seated in.
+            assert all(row.period is not None for row in plan.placements)
+            for row in plan.placements:
+                derived = schedule.calendar.period_by_id(row.period.id)
+                assert derived.start_date <= row.occurrence <= derived.end_date
+
+    def test_the_regenerate_sweep_and_the_regeneration_share_ONE_period_end(
+        self, app, db, seed_user, seed_periods,
     ):
-        """Skipping is not dropping: the event names the date that is owed.
+        """The bound both halves of a regenerate read must be the same column.
 
-        The whole difference between this and the reverse matcher, which never
-        looked for the occurrence and so could not report it.  WARNING because
-        the obligation is real and has no paycheck to live in -- an operator
-        needs to see it.
+        ``regenerate_for_template`` DELETES every non-overridden row whose pay
+        period ends on or after ``effective_from`` and then regenerates from
+        the same bound.  The delete half is SQL over ``pay_periods.end_date``
+        -- the STORED column
+        (``_recurrence_common.query_rows_from_effective_date``).  Plan step
+        C2-b2 gave the recurrence engine a calendar whose ends are DERIVED, and
+        an adversarial review caught the regeneration half reading THAT end
+        instead: two independently-sourced answers to "when does this paycheck
+        end", compared against one date.
+
+        Where they disagree and the bound falls between them the failure is
+        silent and asymmetric -- rows deleted and never recreated when the
+        derived end is EARLIER (the shrunk-cadence shape, plan ledger row
+        **P28**), a stale amount surviving an edit when it is LATER (the
+        absorbed hole, row **P27**).  ``resolve_generation_plan`` now resolves
+        the ORM row before applying the bound, so both halves read one column.
+
+        This is the LATER case, which is the one this fixture can build: the
+        absorbing paycheck's stored end is 2026-05-21 and its derived end
+        2026-07-02, so a bound of 2026-06-01 falls between them.
+        """
+        with app.app_context():
+            self._schedule_with_a_gap(seed_user, seed_periods)
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=5,
+            )
+            absorbing = next(
+                period
+                for period in pay_period_service.get_all_periods(
+                    seed_user["user"].id,
+                )
+                if period.start_date == seed_periods[-1].start_date
+            )
+            bound = date(2026, 6, 1)
+
+            # The premise: the bound really does fall between the two ends.
+            assert absorbing.end_date < bound
+            assert GenerationSchedule.for_user(
+                template.user_id,
+            ).calendar.period_by_id(absorbing.id).end_date >= bound
+
+            plan = recurrence_engine.resolve_generation_plan(
+                template, GenerationSchedule.for_user(template.user_id),
+                seed_user["scenario"].id, bound, block_message="test",
+            )
+
+            # The DELETE sweep would not collect this period's rows, because
+            # its STORED end precedes the bound.  The regeneration must not
+            # write into it either.
+            assert absorbing.id not in {
+                row.period.id for row in plan.placements
+            }
+
+    def test_an_absorbed_occurrence_is_DATED_by_its_paycheck_not_its_cadence(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Plan ledger row **D18**, reached through a door plan step C2-b2 opens.
+
+        **This asserts a DEFECT, deliberately, so the step that fixes it has a
+        control.**  ``compute_due_date`` dates a generated row by scanning the
+        two ENDPOINT months of the paycheck it landed in, and the occurrence
+        date the walk actually found is discarded.  When a paycheck absorbs a
+        hole it spans months neither endpoint names, so the row is dated in the
+        wrong month entirely.  Measured here: the 2026-06-05 occurrence is
+        seated in the 2026-05-08 paycheck and generated with
+        ``due_date = 2026-05-05`` -- a month early, and colliding with the date
+        the PREVIOUS paycheck's row already carries.
+
+        Before C2-b2 this occurrence produced no row at all (it fell in the
+        hole, was logged, and was skipped), so the wrong date is new even
+        though the defect is not: a 30-day-or-longer cadence already reaches it
+        without any hole.  **Recurrence plan step R5 owns the fix** -- it splits
+        a generated row's dates into ``occurs_on`` (the cadence),
+        ``pay_period_id`` (the funding) and ``due_on`` (the installment), and
+        deletes ``compute_due_date`` -- and this test goes red when it lands,
+        which is what it is for.
+
+        Not fixed here: the repair changes every generated row's date and would
+        move the frozen 430-shape baseline, which this step must leave
+        byte-identical.
+        """
+        absorbed_day = 5
+        with app.app_context():
+            _later, gap_start, gap_end = self._schedule_with_a_gap(
+                seed_user, seed_periods,
+            )
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=absorbed_day,
+            )
+            created = recurrence_engine.generate_for_template(
+                template,
+                GenerationSchedule.for_user(template.user_id),
+                seed_user["scenario"].id,
+            )
+
+            absorbing = next(
+                period
+                for period in pay_period_service.get_all_periods(
+                    seed_user["user"].id,
+                )
+                if period.start_date == seed_periods[-1].start_date
+            )
+            seated = [
+                txn for txn in created if txn.pay_period_id == absorbing.id
+            ]
+            assert len(seated) == 1, (
+                "the fixture must seat exactly one absorbed occurrence in the "
+                "paycheck that swallowed the hole"
+            )
+            # The occurrence the cadence named, for the record.
+            assert gap_start <= date(2026, 6, absorbed_day) <= gap_end
+            # ...and the date the row actually carries, which is not it.
+            assert seated[0].due_date == date(2026, 5, absorbed_day)
+            # The collision that makes it visible: two rows, two paychecks,
+            # one date.
+            assert [txn.due_date for txn in created].count(
+                date(2026, 5, absorbed_day),
+            ) == 2
+
+    def test_an_absorbed_hole_can_make_one_paycheck_owe_a_bill_twice(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The cost of absorbing, refused rather than written.
+
+        The hole spans a whole calendar month, so the paycheck that absorbs it
+        covers the 15th twice.  ``idx_transactions_template_period_scenario`` is
+        UNIQUE over ``(template, pay_period, scenario)``, so writing both would
+        raise an ``IntegrityError`` naming nothing and roll back whatever
+        transaction it was inside.  ``refuse_unstorable_repeats`` refuses
+        first, names the definition, the paycheck and both dates, and writes
+        NOTHING -- the same refusal a 30-day-or-longer cadence already earns.
+
+        **This is ONE of the ways plan step C2-b2 moves money, not the only
+        one**, and an adversarial review of this step refuted the claim that it
+        was.  Wherever a stored column disagrees with the payday derivation the
+        engine now believes the derivation, and there are THREE such columns --
+        the hole this test builds (plan ledger row **P27**), the stored cadence
+        against the last stored end (**P28**), and a stored ordinal that is not
+        ``0..n-1`` (**P26**).  ``recurrence/_occurrence.py``'s module docstring
+        states all three and what each one costs.
+
+        None is reachable through a live door: ``pay_period_write`` writes the
+        derivation over the whole payday list on every write and REPAIRS such a
+        row, so each means data written before plan step C3-b or edited outside
+        that module.  Production carries none of the three (61 contiguous
+        periods, 0 index mismatches, 0 end mismatches, measured 2026-08-10).
+        Plan step C5b re-keys the index and lifts this particular refusal.
         """
         with app.app_context():
             _later, gap_start, gap_end = self._schedule_with_a_gap(
@@ -1615,87 +1801,40 @@ class TestAnOccurrenceInAScheduleGap:
             template = self._make_template_with_rule(
                 seed_user, "Monthly", day_of_month=self._DAY_OF_MONTH,
             )
-            with caplog.at_level(
-                logging.WARNING, logger="app.services.recurrence_engine",
-            ):
-                recurrence_engine.generate_for_template(
-                    template,
-                    GenerationSchedule.for_user(template.user_id),
-                    seed_user["scenario"].id,
-                )
-
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            missing = [
-                day
-                for day in self._days_between(
-                    periods[0].start_date, periods[-1].end_date,
-                )
-                if gap_start <= day <= gap_end
-            ]
-            unplaced = [
-                record for record in caplog.records
-                if getattr(record, "event", None)
-                == "recurrence_occurrence_unplaced"
-            ]
-            assert len(unplaced) == 1, (
-                f"expected exactly one unplaced-occurrence event, saw "
-                f"{[getattr(r, 'event', None) for r in caplog.records]}"
-            )
-            record = unplaced[0]
-            assert record.levelno == logging.WARNING
-            assert record.occurrences == [day.isoformat() for day in missing]
-            assert record.template_id == template.id
-            assert record.user_id == template.user_id
-
-    def test_a_read_only_prediction_reports_nothing(
-        self, app, db, seed_user, seed_periods, caplog,
-    ):
-        """``can_generate_in_period`` predicts; it does not raise the alert.
-
-        It runs ONCE PER ENVELOPE ROW on the carry-forward path, so reporting
-        from the shared preamble would emit N identical operator alerts for one
-        request -- from a function whose contract is that predicting has no
-        side effect.  The plan still CARRIES the gap; only the write path says
-        so.
-        """
-        with app.app_context():
-            later, _gap_start, _gap_end = self._schedule_with_a_gap(
-                seed_user, seed_periods,
-            )
-            template = self._make_template_with_rule(
-                seed_user, "Monthly", day_of_month=self._DAY_OF_MONTH,
-            )
             schedule = GenerationSchedule.for_user(template.user_id)
-            with caplog.at_level(
-                logging.WARNING, logger="app.services.recurrence_engine",
-            ):
-                predicted = recurrence_engine.can_generate_in_period(
-                    template, later[0], seed_user["scenario"].id,
-                    schedule=schedule,
+
+            with pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
+                recurrence_engine.generate_for_template(
+                    template, schedule, seed_user["scenario"].id,
                 )
 
-            assert predicted is True, (
-                "the prediction must be exercised for its silence to mean "
-                "anything"
+            # The refusal names BOTH dates: the one the hole used to swallow,
+            # and the one the absorbing paycheck already owed.
+            in_hole = self._days_between(gap_start, gap_end)
+            assert len(in_hole) == 1, (
+                f"the fixture must put exactly one {self._DAY_OF_MONTH}th in "
+                f"the hole {gap_start}..{gap_end}, got {in_hole}"
             )
-            assert [
-                record for record in caplog.records
-                if getattr(record, "event", None)
-                == "recurrence_occurrence_unplaced"
-            ] == []
+            assert in_hole[0] in excinfo.value.occurrence_dates
+            assert len(excinfo.value.occurrence_dates) == 2
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).count() == 0, "a refused pass must write nothing"
 
-    def test_a_contiguous_schedule_past_its_last_payday_logs_nothing(
-        self, app, db, seed_user, seed_periods, caplog,
+    def test_a_contiguous_schedule_past_its_last_payday_places_nothing_there(
+        self, app, db, seed_user, seed_periods,
     ):
-        """The control that matters: "not yet" is not a gap.
+        """The control that matters: "not yet" is ordinary, and now unique.
 
         A ``Monthly First`` rule places on the first paycheck STARTING on or
         after the 1st of each month, so an occurrence after the last payday has
         nothing to defer onto -- and the schedule below is CONTIGUOUS, built by
         the real writer, with its final period straddling a month boundary so
-        that case is reached.  This step's first draft reported it as a
+        that case is reached.  Plan step R4b-2's first draft reported it as a
         corrupt schedule; two neutral reviews measured that at 43% of biweekly
-        schedule openings, and this is the case that goes red if it returns.
+        schedule openings.  Since plan step C2-b2 it is the ONLY way a
+        placement answers ``None``, and this is the case that goes red if a
+        second one is ever reintroduced.
 
         A ``Monthly`` (CONTAINING_DATE) rule cannot exercise it -- the first
         draft's control used one, which is why the defect survived a green
@@ -1724,36 +1863,38 @@ class TestAnOccurrenceInAScheduleGap:
                 template, schedule, seed_user["scenario"].id, None,
                 block_message="test",
             )
+            placements = rule_occurrences(
+                template.recurrence_rule, schedule.calendar,
+            )
             # The premise: the rule really does name an occurrence with no
-            # paycheck to defer onto.  Without this the silence below could
+            # paycheck to defer onto.  Without this the assertions below could
             # simply mean nothing was unplaceable.
             unplaceable = [
-                placement
-                for placement in rule_occurrences(
-                    template.recurrence_rule, schedule.calendar,
-                )
+                placement for placement in placements
                 if placement.period is None
             ]
             assert len(unplaceable) == 1, (
                 f"the control must exercise an unplaceable occurrence, got "
                 f"{[p.occurrence for p in unplaceable]}"
             )
-            assert unplaceable[0].outcome is PlacementOutcome.BEYOND_THE_SCHEDULE
+            # Past the last PAYDAY and still inside the covered span -- exactly
+            # the shape the deleted SCHEDULE_GAP branch used to misread.
+            assert unplaceable[0].occurrence > last.start_date
+            assert schedule.calendar.period_containing(
+                unplaceable[0].occurrence,
+            ) is not None
 
-            with caplog.at_level(
-                logging.WARNING, logger="app.services.recurrence_engine",
-            ):
-                created = recurrence_engine.generate_for_template(
-                    template, schedule, seed_user["scenario"].id,
-                )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
 
-            assert plan.gaps == ()
             assert created, "the control generated nothing to be a control over"
-            assert [
-                record for record in caplog.records
-                if getattr(record, "event", None)
-                == "recurrence_occurrence_unplaced"
-            ] == []
+            # The unplaceable occurrence is simply absent from the plan; it is
+            # not reported, and it is not written anywhere.
+            assert [row.occurrence for row in plan.placements] == [
+                placement.occurrence for placement in placements
+                if placement.period is not None
+            ]
 
     def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
         """Helper: create a template + recurrence rule."""
@@ -2764,7 +2905,15 @@ class TestPaycheckAmountFallback:
 
     @staticmethod
     def _fake_tax_configs(*args, **kwargs):
-        """Stub load_tax_configs to avoid DB hits in unit tests."""
+        """Stub the RESOLVING loader to avoid DB hits in unit tests.
+
+        Patched at ``load_tax_configs_for_year`` -- the function
+        ``_get_transaction_amount`` actually calls -- rather than at the
+        exact-year primitive beneath it.  The resolver reads the profile's
+        filing status and state to build its candidate set, which these
+        deliberately minimal fakes do not carry; stubbing the entry point
+        keeps the test hermetic and on the narrowing behaviour it is about.
+        """
         return {
             "bracket_set": "fake", "state_config": "fake",
             "fica_config": "fake",
@@ -2780,7 +2929,7 @@ class TestPaycheckAmountFallback:
                 ZeroDivisionError("division by zero")),
         )
         monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs",
+            "app.services.tax_config_service.load_tax_configs_for_year",
             self._fake_tax_configs,
         )
         from app.services.recurrence_engine import _get_transaction_amount
@@ -2814,7 +2963,7 @@ class TestPaycheckAmountFallback:
             "app.services.paycheck_calculator.calculate_paycheck", _boom,
         )
         monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs",
+            "app.services.tax_config_service.load_tax_configs_for_year",
             self._fake_tax_configs,
         )
         from app.services.recurrence_engine import _get_transaction_amount
@@ -2846,7 +2995,7 @@ class TestPaycheckAmountFallback:
             "app.services.paycheck_calculator.calculate_paycheck", _boom,
         )
         monkeypatch.setattr(
-            "app.services.tax_config_service.load_tax_configs",
+            "app.services.tax_config_service.load_tax_configs_for_year",
             self._fake_tax_configs,
         )
         from app.services.recurrence_engine import _get_transaction_amount
@@ -2957,7 +3106,7 @@ class TestEndDate:
         matched = _matched_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
 
-        # ``rule_occurrences`` answers in the resolver's own ``SchedulePeriod``
+        # ``rule_occurrences`` answers in the calendar's own ``DerivedPeriod``
         # values since plan step R4b-1, so identity against the fixture's
         # ``FakePeriod`` no longer holds; the schedule ordinal is the stable
         # identity either way.

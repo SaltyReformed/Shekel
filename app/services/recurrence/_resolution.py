@@ -30,8 +30,9 @@ Plan step R2e-3 deleted it: "does not recur" is ``recurrence_rule_id IS NULL``
 on either template kind, which never reaches this module at all.
 
 Pure: no Flask, no ORM, no clock, no database.  Its two inputs are the
-authored spec and the owner's :class:`~app.services.recurrence._calendar.PeriodCalendar`,
-so every derivation below can be exercised at exact dates.
+authored spec and the owner's
+:class:`~app.services.pay_calendar.PayCalendar`, so every derivation below can
+be exercised at exact dates.
 
 The four derivations
 --------------------
@@ -126,28 +127,21 @@ from app.enums import (
     RecurrencePatternEnum,
     RecurrenceUnitEnum,
 )
-from app.exceptions import ShekelError
-from app.services.recurrence._calendar import PeriodCalendar, SchedulePeriod
+from app.services.pay_calendar import DerivedPeriod, PayCalendar
+from app.services.recurrence._frequency import (
+    FAMILY_FIRST_OF_MONTH,
+    FAMILY_PERIOD,
+    PATTERN_DERIVATIONS,
+    PatternDerivation,
+    RecurrenceResolutionError,
+    pattern_member,
+    resolved_interval,
+)
 from app.services.recurrence._months import (
     MONTHS_PER_YEAR,
     month_ordinal,
     walk_months,
 )
-from app.services.recurrence._vocabulary import modelled_pattern
-
-
-class RecurrenceResolutionError(ShekelError):
-    """A recurrence could not be resolved into a complete row.
-
-    A broken invariant rather than bad user input, which is why it is not a
-    ``ValidationError`` a route flashes: every user has had at least one pay
-    period since registration bootstraps one (``auth_service.register_user``),
-    and ``pattern_id`` is written only from
-    :class:`~app.enums.RecurrencePatternEnum`.  Raised loudly so a recurrence
-    can never be READ with a fabricated cadence, and -- because
-    ``app.services.recurrence.author_rule`` resolves before it writes -- so a
-    rule that cannot be resolved is never persisted in the first place.
-    """
 
 
 @dataclass(frozen=True)
@@ -268,86 +262,6 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
         return self.nominal_day
 
 
-#: Families of anchor derivation.  Three, because the anchor is measured in
-#: three different spaces -- the paycheck rhythm, the calendar, and "each
-#: month's first paycheck" -- not because there are three groups of patterns.
-_FAMILY_PERIOD = "period"
-_FAMILY_CALENDAR = "calendar"
-_FAMILY_FIRST_OF_MONTH = "first_of_month"
-
-
-@dataclass(frozen=True)
-class _PatternDerivation:
-    """The two-axis reading of one closed-set pattern.
-
-    Attributes:
-        interval_n: The interval the pattern names, or ``None`` for
-            ``Every N Periods``, which keeps the authored one -- it is the one
-            pattern whose interval was already a column rather than a name.
-        unit: The cadence unit the pattern counts in.
-        placement: How its occurrences map onto pay periods.
-        family: Which anchor derivation applies (one of the ``_FAMILY_*``
-            constants above).
-        month_step: The interval expressed in MONTHS for the calendar family
-            -- the residue class its occurrence months fall in -- and ``None``
-            elsewhere.
-    """
-
-    interval_n: int | None
-    unit: RecurrenceUnitEnum
-    placement: PeriodPlacementEnum
-    family: str
-    month_step: int | None
-
-
-#: How each closed-set pattern reads on the two axes.
-#:
-#: Total over :class:`~app.enums.RecurrencePatternEnum`, and every entry names
-#: a real cadence.  ``Once`` used to sit here holding INERT values copied from
-#: ``Every Period`` -- byte-identical, so a consumer holding only a
-#: :class:`ResolvedRecurrence` could not tell "does not recur" from "every
-#: paycheck", and plan step R7c's downgrade could not have round-tripped
-#: ``(1, period, containing_date)`` back to one pattern.  Plan step R2e-3
-#: deleted the member instead (ruling R-R4 as amended by R-R11): "does not
-#: recur" is ``recurrence_rule_id IS NULL``, which never reaches a resolver.
-_PATTERN_DERIVATIONS: dict[RecurrencePatternEnum, _PatternDerivation] = {
-    RecurrencePatternEnum.EVERY_PERIOD: _PatternDerivation(
-        interval_n=1, unit=RecurrenceUnitEnum.PERIOD,
-        placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=_FAMILY_PERIOD, month_step=None,
-    ),
-    RecurrencePatternEnum.EVERY_N_PERIODS: _PatternDerivation(
-        interval_n=None, unit=RecurrenceUnitEnum.PERIOD,
-        placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=_FAMILY_PERIOD, month_step=None,
-    ),
-    RecurrencePatternEnum.MONTHLY: _PatternDerivation(
-        interval_n=1, unit=RecurrenceUnitEnum.MONTH,
-        placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=_FAMILY_CALENDAR, month_step=1,
-    ),
-    RecurrencePatternEnum.MONTHLY_FIRST: _PatternDerivation(
-        interval_n=1, unit=RecurrenceUnitEnum.MONTH,
-        placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
-        family=_FAMILY_FIRST_OF_MONTH, month_step=None,
-    ),
-    RecurrencePatternEnum.QUARTERLY: _PatternDerivation(
-        interval_n=3, unit=RecurrenceUnitEnum.MONTH,
-        placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=_FAMILY_CALENDAR, month_step=3,
-    ),
-    RecurrencePatternEnum.SEMI_ANNUAL: _PatternDerivation(
-        interval_n=6, unit=RecurrenceUnitEnum.MONTH,
-        placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=_FAMILY_CALENDAR, month_step=6,
-    ),
-    RecurrencePatternEnum.ANNUAL: _PatternDerivation(
-        interval_n=1, unit=RecurrenceUnitEnum.YEAR,
-        placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=_FAMILY_CALENDAR, month_step=12,
-    ),
-}
-
 #: The units that fire on a DAY OF THE MONTH, and therefore the only ones whose
 #: anchor day can be month-end clamped.
 #:
@@ -432,43 +346,10 @@ class RecurrenceSpec:  # pylint: disable=too-many-instance-attributes
     max_occurrences: int | None = None
 
 
-def _pattern_member(pattern_id: int) -> RecurrencePatternEnum:
-    """Return the enum member *pattern_id* names, or RAISE.
-
-    The read-side half of
-    :func:`~app.services.recurrence.modelled_pattern`, which owns the lookup
-    itself (including why it scans rather than inverting a map).  The two
-    differ only in what an unmodelled id MEANS at each layer, and that
-    difference is the whole reason both exist: at a form door an unmodelled id
-    is user input to refuse with a flash, while here it names a rule already in
-    the table whose cadence cannot be derived -- a broken invariant, raised
-    loudly.  Built on the same function so the door and the reader can never
-    disagree about which patterns the application models.
-
-    Args:
-        pattern_id: A ``ref.recurrence_patterns`` id.
-
-    Returns:
-        The matching :class:`~app.enums.RecurrencePatternEnum` member.
-
-    Raises:
-        RecurrenceResolutionError: When no member names *pattern_id*.
-    """
-    member = modelled_pattern(pattern_id)
-    if member is not None:
-        return member
-    raise RecurrenceResolutionError(
-        f"recurrence pattern id {pattern_id} matches no RecurrencePatternEnum "
-        f"member.  A rule may only name a pattern this application models; "
-        f"leaving one unresolved would persist a rule with no derivable "
-        f"cadence."
-    )
-
-
 def _effective_start(
     spec: RecurrenceSpec,
-    calendar: PeriodCalendar,
-    start_period: SchedulePeriod | None,
+    calendar: PayCalendar,
+    start_period: DerivedPeriod | None,
 ) -> date:
     """Return the date this rule's first occurrence is measured from.
 
@@ -569,7 +450,7 @@ def _next_month_first(day: date) -> date:
     return date(day.year, day.month + 1, 1)
 
 
-def _first_of_month_anchor(calendar: PeriodCalendar, effective: date) -> date:
+def _first_of_month_anchor(calendar: PayCalendar, effective: date) -> date:
     """Return the 1st of the first month whose own first paycheck qualifies.
 
     Derivation 4 in the module docstring, answered by SCANNING the schedule's
@@ -623,7 +504,7 @@ def _first_of_month_anchor(calendar: PeriodCalendar, effective: date) -> date:
 
 
 def _phased_period_anchor(
-    calendar: PeriodCalendar, effective: date, interval_n: int, offset: int,
+    calendar: PayCalendar, effective: date, interval_n: int, offset: int,
 ) -> date:
     """Return the first period start at or after *effective* in the phase.
 
@@ -664,8 +545,8 @@ def _phased_period_anchor(
 
 def _resolve_anchor(
     spec: RecurrenceSpec,
-    derivation: _PatternDerivation,
-    calendar: PeriodCalendar,
+    derivation: PatternDerivation,
+    calendar: PayCalendar,
     effective: date,
     phase: tuple[int, int],
 ) -> tuple[date, int | None]:
@@ -684,14 +565,14 @@ def _resolve_anchor(
         every family whose occurrences are not day-of-month based, so no
         month-anchor row can belong to them.
     """
-    if derivation.family == _FAMILY_PERIOD:
+    if derivation.family == FAMILY_PERIOD:
         interval_n, offset = phase
         if interval_n > 1:
             return _phased_period_anchor(
                 calendar, effective, interval_n, offset,
             ), None
         return effective, None
-    if derivation.family == _FAMILY_FIRST_OF_MONTH:
+    if derivation.family == FAMILY_FIRST_OF_MONTH:
         return _first_of_month_anchor(calendar, effective), None
     # ``is None``, not ``or``, and the change is plan step R4a's.  The reverse
     # matcher coerced with ``rule.day_of_month or 1``, mapping 0 onto 1
@@ -743,7 +624,7 @@ def _month_anchor_day(
     return None
 
 
-def _require_owner(spec: RecurrenceSpec, calendar: PeriodCalendar) -> None:
+def _require_owner(spec: RecurrenceSpec, calendar: PayCalendar) -> None:
     """Refuse a spec resolved against somebody else's schedule.
 
     An anchor is measured against a pay-period schedule, so pairing a rule
@@ -773,50 +654,6 @@ def _require_owner(spec: RecurrenceSpec, calendar: PeriodCalendar) -> None:
         )
 
 
-def _resolved_interval(
-    spec: RecurrenceSpec, derivation: _PatternDerivation,
-) -> int:
-    """Return the two-axis interval, refusing a non-positive authored one.
-
-    **The check is on the AUTHORED value, not the resolved one**, and the
-    difference is a live defect an adversarial review measured.  For every
-    calendar pattern the resolved interval is a hard-coded 1, 3, 6 or 1, which
-    can never be non-positive -- so checking it looked at nothing, while
-    ``app.services.recurrence._authoring._author`` wrote ``spec.interval_n``
-    verbatim into a ``NOT NULL`` column carrying
-    ``CHECK (interval_n > 0)``.  An authored 0 therefore reached the flush as
-    an unhandled ``IntegrityError``.  The authored value is the one that
-    becomes a column, so the authored value is the one the door must refuse;
-    the resolved value is positive by construction once it is.
-
-    Args:
-        spec: The authored recurrence.
-        derivation: The pattern's two-axis reading.
-
-    Returns:
-        The pattern's own interval, or the authored one for the single
-        pattern (``Every N Periods``) whose interval was already a column.
-
-    Raises:
-        RecurrenceResolutionError: When the AUTHORED interval is not positive.
-            Mirrors ``ck_recurrence_rules_positive_interval``, refused here so
-            the caller sees the offending value rather than an IntegrityError
-            at flush, and so the phase modulo cannot divide by zero.
-    """
-    if spec.interval_n < 1:
-        raise RecurrenceResolutionError(
-            f"recurrence interval_n must be positive, got {spec.interval_n} "
-            f"for pattern id {spec.pattern_id} (user {spec.user_id}).  It is "
-            f"written to a NOT NULL column with CHECK (interval_n > 0), so "
-            f"letting it through would raise an unhandled IntegrityError at "
-            f"the flush instead of here."
-        )
-    return (
-        spec.interval_n if derivation.interval_n is None
-        else derivation.interval_n
-    )
-
-
 def _require_authored_calendar_fields(spec: RecurrenceSpec) -> None:
     """Refuse a day or month outside the domain its own column allows.
 
@@ -833,7 +670,7 @@ def _require_authored_calendar_fields(spec: RecurrenceSpec) -> None:
     loud crash for a plausible wrong date, which is the worse of the two.
 
     The check is on the AUTHORED value for the same reason
-    :func:`_resolved_interval`'s is: ``app.services.recurrence._authoring._author``
+    :func:`resolved_interval`'s is: ``app.services.recurrence._authoring._author``
     writes ``spec.day_of_month`` / ``spec.month_of_year`` verbatim into columns
     carrying ``ck_recurrence_rules_dom`` and ``ck_recurrence_rules_moy``, so an
     out-of-domain value reaches the flush as an unhandled ``IntegrityError``
@@ -900,7 +737,7 @@ def _derive_offset_periods(
     spec: RecurrenceSpec,
     pattern: RecurrencePatternEnum,
     interval_n: int,
-    start_period: SchedulePeriod | None,
+    start_period: DerivedPeriod | None,
 ) -> int:
     """Return the ``offset_periods`` phase an authored recurrence fires on.
 
@@ -934,7 +771,7 @@ def _derive_offset_periods(
     return start_period.period_index % interval_n
 
 
-def resolve(spec: RecurrenceSpec, calendar: PeriodCalendar) -> ResolvedRecurrence:
+def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
     """Resolve an authored recurrence into its two-axis meaning.
 
     The single producer of that value.  Nothing persists what it returns --
@@ -959,9 +796,11 @@ def resolve(spec: RecurrenceSpec, calendar: PeriodCalendar) -> ResolvedRecurrenc
             read with a fabricated cadence is worse than a refused read.
     """
     _require_owner(spec, calendar)
-    pattern = _pattern_member(spec.pattern_id)
-    derivation = _PATTERN_DERIVATIONS[pattern]
-    interval_n = _resolved_interval(spec, derivation)
+    pattern = pattern_member(spec.pattern_id)
+    derivation = PATTERN_DERIVATIONS[pattern]
+    interval_n = resolved_interval(
+        spec.pattern_id, spec.interval_n, derivation, spec.user_id,
+    )
     _require_authored_calendar_fields(spec)
 
     start_period = calendar.period_by_id(spec.start_period_id)

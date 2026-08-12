@@ -62,6 +62,12 @@ class TestComputeGapData:
                 "salary_profiles", "pensions",
                 "gap_net_biweekly", "swr", "planned_retirement_date",
                 "estimated_tax_rate",
+                # Plan step R7a-2a.  Published for the same reason
+                # ``gap_net_biweekly`` and ``swr`` are: the readiness producer
+                # re-runs this gap in the net frame and must measure income
+                # against the SAME cadence rather than resolve a second one.
+                # Its consumer is ``retirement_readiness._net_frame``.
+                "pay_cadence",
             }
             assert set(result.keys()) == expected_keys
 

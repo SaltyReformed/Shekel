@@ -28,6 +28,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from _classes import decomposition_leaf_keys
 from _plan_gate import (
     CHECKBOX_RX,
     COMMIT_SHA,
@@ -61,6 +62,11 @@ STEPS_COUNT_RX = re.compile(r"\*\*(?P<total>\d+) steps?, (?P<open>\d+) open\.?\*
 BLOCKED_GRAPH_RX = re.compile(
     r"holds (?P<edges>\d+) edges? over (?P<rows>\d+) rows?",
 )
+
+#: An ``order`` cell placing a step in the sequence: ``#12``.  The three legal
+#: spellings of that column are this, ``container`` and ``SHIPPED``; anything
+#: else is a row a reader cannot place.
+ORDER_CELL_RX = re.compile(r"^#(?P<rank>\d+)$")
 
 #: A ``steps.md`` ``commit`` cell naming a hash: the WHOLE cell is one
 #: backticked sha.  The shape comes from :data:`_plan_gate.COMMIT_SHA` so the
@@ -101,6 +107,19 @@ class LedgerRow:
     def key(self) -> str:
         """The row's real primary key: the arc AND the id, never the id alone."""
         return f"{self.arc}:{self.ident}"
+
+    @property
+    def width(self) -> int:
+        """The row's total character width, which rule 4's per-row cap grades.
+
+        A property on the row rather than a sum at each call site, so the arm
+        and its controls cannot disagree about what a row's size even is --
+        the same reason ``COMMIT_SHA`` is shared rather than re-spelled.
+        """
+        return sum(len(cell) for cell in (
+            self.arc, self.ident, self.also, self.finding,
+            self.worst, self.status, self.owner,
+        ))
 
 
 @dataclass(frozen=True)
@@ -147,6 +166,22 @@ class StepRow:
         exactly what Phase G exists to delete.
         """
         return "decomposed parent" in self.title.casefold()
+
+    @property
+    def rank(self) -> int | None:
+        """This step's place in the execution order, or ``None``.
+
+        ``None`` for a container and for a shipped step, which is the whole
+        point of the column: neither is a thing a reader can pick up, so
+        neither carries a position in the sequence.
+        """
+        match = ORDER_CELL_RX.match(self.state)
+        return int(match.group("rank")) if match else None
+
+    @property
+    def is_container(self) -> bool:
+        """Whether the ``order`` cell declares this row a grouping."""
+        return self.state == "container"
 
     def blocked_keys(self) -> list[str]:
         """The ``arc:id`` keys this step may not ship before (rule 13).
@@ -349,7 +384,12 @@ def steps_stated_count_violation() -> list[str]:
     else:
         stated_total = int(match.group("total"))
         stated_open = int(match.group("open"))
-        actual_open = sum(1 for row in rows if row.state.lower() == "open")
+        # OPEN is the complement of SHIPPED, never a literal word in the cell.
+        # The `order` column now carries a rank, `container` or `SHIPPED`, and
+        # an arm keyed on the word "open" counted ZERO the moment that column
+        # started saying something useful -- a gate that reads a spelling
+        # rather than a state stops grading the instant the spelling improves.
+        actual_open = sum(1 for row in rows if not row.shipped)
         if stated_total != len(rows):
             problems.append(
                 f"steps.md says it holds {stated_total} steps and the table "
@@ -677,11 +717,14 @@ def decomposition_violations() -> list[str]:
     a container is not a task.
 
     **The parent set is DECLARED** (:attr:`StepRow.is_decomposed_parent`) and
-    the leaf set is derived by id prefix FROM that set.  Deriving both would
-    claim ``R-F1`` as the parent of ``R-F10`` / ``R-F12`` / ``R-F13``; deriving
-    neither would need a name list, which is N-147's defect.  Declaring the
-    small set and deriving the large one costs one phrase per parent and has no
-    list to rot.
+    the leaf set is derived by :func:`decomposition_leaf_keys` FROM that set.
+    Deriving both would claim ``R-F1`` as the parent of ``R-F10`` / ``R-F12`` /
+    ``R-F13``; deriving neither would need a name list, which is N-147's defect.
+    Declaring the small set and deriving the large one costs one phrase per
+    parent and has no list to rot.  **This arm re-spelled that derivation
+    inline until 2026-08-11**, per-arc, so it could not see a class whose leaves
+    are filed under a sibling's name -- marking all three of `X-l` / `C2` /
+    `R-F12` shipped over five open leaves reported ONE of the three.
 
     **A parent with NO leaves in the table is NOT a failure.**  Rule 5 archives
     a completed span, and ``X-f1``'s fourteen leaves have already left this
@@ -696,12 +739,10 @@ def decomposition_violations() -> list[str]:
     for parent in rows:
         if not parent.is_decomposed_parent or not parent.shipped:
             continue
+        by_key = {row.key: row for row in rows}
         open_leaves = sorted(
-            row.ident for row in rows
-            if row.arc == parent.arc
-            and row.ident != parent.ident
-            and row.ident.startswith(parent.ident)
-            and not row.shipped
+            key for key in decomposition_leaf_keys(parent, rows)
+            if not by_key[key].shipped
         )
         if open_leaves:
             problems.append(
@@ -837,4 +878,84 @@ def blocked_by_violations() -> list[str]:
                 f"otherwise one of the two rows reads as READY "
                 f"(conventions.md rule 13)",
             )
+    return problems
+
+
+#: Rule 4's cap, for the registries.  **They went uncapped until 2026-08-11
+#: while rule 4 said "Every document is capped", and the arc documents were the
+#: only four the gate held** -- which is rule 3's own sentence one rule over: a
+#: rule stated for one artifact and graded on one artifact is a rule the second
+#: artifact does not have.  ``ledger.md`` is the one that actually grows, and it
+#: is the one that had no forcing function at all.
+#:
+#: Each is a CEILING WITH ROOM TO WORK, not a number fitted to today's file.
+#: When one binds, rule 5 is the answer: archive a completed span.  Raising it
+#: is not.
+REGISTRY_CAPS = {
+    "ledger.md": 240,
+    "steps.md": 260,
+    "conventions.md": 280,
+    "verification.md": 120,
+    "lessons.md": 200,
+}
+
+#: The widest a single ``ledger.md`` row may be, in characters.
+#:
+#: **A row had reached 3,536 characters against a 409-character median.**  At
+#: that size it is not an index entry, it is the arc document's argument living
+#: in the registry -- which is exactly what rule 5 exists to keep out, and what
+#: makes the table unreadable as a table.  ``steps.md`` has held its
+#: descriptions to one sentence since rule 14; this is that rule's twin for the
+#: ledger, and the ledger went without it for as long as it did because rule 14
+#: was written about the index and graded only there.
+#:
+#: **2,000 is a FIRST FLOOR, deliberately above the p90 of 1,674.**  It is set
+#: where it catches rows that have become specifications without demanding a
+#: rewrite of the 51 rows over 1,200, which would be an unreviewed edit to half
+#: the registry.  It comes DOWN as rule 5 archives closed findings, the way the
+#: arc-document caps came down when the registries left.
+LEDGER_ROW_CAP = 2000
+
+
+def registry_line_cap_violations() -> list[str]:
+    """Rule 4: every registry is under its line cap.
+
+    Returns:
+        One message per registry over :data:`REGISTRY_CAPS`.
+    """
+    problems = []
+    for name, cap in sorted(REGISTRY_CAPS.items()):
+        path = PLANS / name
+        lines = len(path.read_text(encoding="utf-8").splitlines())
+        if lines <= cap:
+            continue
+        problems.append(
+            f"{name} is {lines} lines against rule 4's {cap}-line cap (over by "
+            f"{lines - cap}). Archive a COMPLETED span under rule 5 -- closed "
+            "findings to their arc's as-built record, shipped steps to theirs. "
+            "Do not raise the cap and do not trim a live row."
+        )
+    return problems
+
+
+def ledger_row_cap_violations() -> list[str]:
+    """Rule 4: no ``ledger.md`` row has grown into a specification.
+
+    Returns:
+        One message per row over :data:`LEDGER_ROW_CAP`.
+    """
+    problems = []
+    for row in ledger_rows():
+        width = row.width
+        if width <= LEDGER_ROW_CAP:
+            continue
+        problems.append(
+            f"{row.key} is {width} characters against rule 4's "
+            f"{LEDGER_ROW_CAP}-character row cap (over by "
+            f"{width - LEDGER_ROW_CAP}). A ledger row is an INDEX entry: the "
+            "defect, what it costs, what is ruled, who owns it. The narrative "
+            "of how it was found, what each review said and what was tried "
+            "belongs in the owning step's specification, where the person who "
+            "picks that step up will read it."
+        )
     return problems

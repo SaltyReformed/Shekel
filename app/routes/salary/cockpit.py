@@ -315,9 +315,10 @@ def anatomy(profile_id, period_id):
     profile, period = _get_owned_profile_and_period(profile_id, period_id)
 
     periods = pay_period_service.get_all_periods(current_user.id)
-    # Resolve the period's OWN tax year (DH-#30), current-year fallback --
-    # identical resolution to the projection path so the fragment and the
-    # cockpit's initial render agree on a period's figures.
+    # Resolve the period's OWN tax year (DH-#30), substituting the latest
+    # CONFIGURED year at or before it -- identical resolution to the
+    # projection path so the fragment and the cockpit's initial render agree
+    # on a period's figures.
     tax_configs = load_tax_configs_for_year(
         current_user.id, profile, period.start_date.year,
     )

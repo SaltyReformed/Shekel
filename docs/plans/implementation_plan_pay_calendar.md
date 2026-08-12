@@ -2,38 +2,39 @@
 
 ## Where this stands
 
-**C1** (`f9d148fe`), **C2-a** (`3cb3082f`), **C2-b1** (`90f2fbb7`), **C2-d** (`3e6cd4ec`) and **C3**
-(both leaves, `7e3fb33b`) are built; what has reached `main` and production is a MEASUREMENT --
-`git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`.
+**C1** (`f9d148fe`), **C2-a** (`3cb3082f`), **C2-b1** (`90f2fbb7`), **C2-d** (`3e6cd4ec`), **C3**
+(both leaves, `7e3fb33b`) and **C2-b** (both leaves, `fe365de1`, which also ticked **C5a** and the
+recurrence arc's **R-F10**) are built. What reached `main` and production is a MEASUREMENT
+(`git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`), and what is ready now is
+`steps.md`'s order table; do not re-derive either here.
 
-**C3 unblocked four leaves at once**: C2-b2 / C2-c / C2-e / C2-f each waited on it and nothing else,
-and `C4` waits on C2 and C3 together. Run the ready-set query (`tools/plan_gate/_registry.py`); do
-not read the table. **The writer is now ONE module** -- `pay_period_write`, the only code in `app/`
-that constructs or deletes a pay period -- so C4 changes one file plus the readers section 3 names.
+**The writer is ONE module** -- `pay_period_write`, the only code in `app/` that constructs or
+deletes a pay period -- so C4 changes one file plus the readers section 3 names.
 **R-PC1's coverage half was DELETED 2026-08-11** (developer), leaving the floor as this arc's only
-write refusal, `integrity_check` **BA-06** asking what it refused, and rows **P32** / **P33** open.
+write refusal, `integrity_check` **BA-06** asking what it refused, and **P32** / **P33** open.
 
 The arc opened 2026-08-08 out of the recurrence arc's **F-10**, a missing NORMALIZATION rather than
 a missing check; `balance:N-128` / `X-l` are the same defect from a third side. `C2` ticks as ONE
-step under three names -- `C2` == `balance:X-l` == `recurrence:R-F12` -- and **R-F10** / **R-F12**
-tick with **C5a** / **C2**. **P16** was ruled to **C5b** 2026-08-09, **C5 DECOMPOSED** into C5a
-(after C4) and C5b (after R5); **C8** was opened 2026-08-11 to own **P30**.
-**A cold session starts at section 4**, whose preamble names four things a cutover must not assume;
-findings, steps and rules are the shared registries.
+step under three names -- `C2` == `balance:X-l` == `recurrence:R-F12`.
+**The recurrence engine reads the DERIVED calendar since C2-b2**, so where a stored column disagrees
+with the payday derivation the engine believes the derivation: three shapes, all legacy, stated in
+`recurrence/_occurrence.py` and owned by **C4**. **A cold session starts at section 4.** The shared
+registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 
 ## Rulings
 
 | fork | ruling |
 |---|---|
 | **The pay-period model** | **NORMALIZE. `budget.pay_periods` stores the PAYDAY; `end_date` and `period_index` are derived by one producer and dropped from the table. Ruled 2026-08-08 (developer), option "store paydays only"** |
-| **A gapped or overlapping batch** | **Neither is refused, because neither is expressible once the derived columns are gone. The "refuse it" and "bridge it with a filler period" options were both weighed and rejected -- see section 6** |
+| **A gapped or overlapping batch** | **Neither is refused, because neither is expressible once the derived columns are gone. The "refuse it" and "bridge it with a filler period" options were both weighed and rejected -- see `historical/pay_calendar_evidence_2026-08-11.md`** |
 | **A payday inserted BETWEEN two existing ones** | **REFUSE when the period it splits is locked by the existing `pay_period_admin.classify_period_lock` (historical, settled, posted, or a recurrence anchor); otherwise insert and re-derive. Ruled 2026-08-08 (developer). No row may ever be left dated outside its own paycheck** |
 | **The last payday's period end** | Projected as `start_date + cadence_days - 1` from `budget.pay_schedule`. It is the ONLY derived end that is not `lead(paid_on) - 1`, and it is a projection stated as one -- `DerivedPeriod.end_is_projected`, ruled 2026-08-08 (developer), because a consumer holding one period out of its calendar cannot recompute it and a window VIEW must keep it |
 | **What a derived period carries** | **`period_id`, `int \| None`. Ruled 2026-08-08 (developer)**: `None` IS the marker for a period no foreign key can point at, which is the distinction `C2` must draw between "which paycheck does this row live in" and "which span does this day fall in". One value type for the arc, so C2 MOVES `SchedulePeriod` rather than merging two |
-| **Table and column names** | `budget.pay_periods.start_date` KEEPS both names. A period is identified one-to-one by the payday that opens it, `transactions.pay_period_id` reads correctly against it, and a rename is a four-FK migration that buys nothing. See section 6 |
-| **An entry dated outside the schedule** | **A legitimate SECOND QUESTION, named on the one value -- not a compensator to delete. Ruled 2026-08-10 (developer).** The calendar gains `period_starting_on_or_before`, the missing mirror of the `period_starting_on_or_after` it already carries, and the FILING rule is DERIVED from it rather than scanning again. The alternative (drop the ledger's stored paycheck and derive it from `entry_date`) was measured against `shekel-prod-db` and REFUTED: 14 days carry TWO paychecks for one date, so `entry_date` does not determine it; 35 of 327 entries are dated outside their own paycheck by design; and 4 loan-opening entries predate the first payday by up to seven years, so the clamp is live rather than hypothetical. See section 6 |
+| **Table and column names** | `budget.pay_periods.start_date` KEEPS both names. A period is identified one-to-one by the payday that opens it, `transactions.pay_period_id` reads correctly against it, and a rename is a four-FK migration that buys nothing. See `historical/pay_calendar_evidence_2026-08-11.md` |
+| **An entry dated outside the schedule** | **A legitimate SECOND QUESTION, named on the one value -- not a compensator to delete. Ruled 2026-08-10 (developer).** The calendar gains `period_starting_on_or_before`, the missing mirror of the `period_starting_on_or_after` it already carries, and the FILING rule is DERIVED from it rather than scanning again. The alternative (drop the ledger's stored paycheck and derive it from `entry_date`) was measured against `shekel-prod-db` and REFUTED: 14 days carry TWO paychecks for one date, so `entry_date` does not determine it; 35 of 327 entries are dated outside their own paycheck by design; and 4 loan-opening entries predate the first payday by up to seven years, so the clamp is live rather than hypothetical. See `historical/pay_calendar_evidence_2026-08-11.md` |
 | **Past the last stored payday** | **The calendar ANSWERS, projecting forward at the OWNER's cadence with `period_id = None`. Ruled 2026-08-10 (developer)**, which is what makes it the TOTAL function `balance:X-l` asks for. `growth_engine.generate_projection_periods` and `SyntheticPeriod` retire into it (rows **P17**, **P20**). Containment over SAVED periods stays its own named method, because the recurrence engine needs to tell a schedule HOLE from "the schedule has not reached there yet" |
 | **The forward-only rule (R-PC1)** | **REPLACE `_reject_overlapping_batch`, do not delete it. Ruled 2026-08-10 (developer), SPLIT IN TWO, corrected twice by C3-b's neutral reviews, then HALVED 2026-08-11 (developer).** The rule the plan stated -- "the last paycheck must hold no row dated on or after the new payday" -- was measured wrong in both directions. What survives is a forward-only FLOOR of one full cadence after the latest payday, whose only job is keeping C6 closed and which C6 deletes. **The COVERAGE half is DELETED**: it refused a write taking a day out of every paycheck while a SETTLED row's `settled_on` fell on it, on the claim that stranding such a day reproduces `balance:N-128` -- and the claim was false. `_cash_periods` values each column at its OWN `end_date`, so a day off the top of the window is absent from both sides of R-K and reports as `period_timing`. See C3-b |
+| **When the gap machinery dies** | **With `C2-b2`, the leaf that makes its subject unreachable -- not with `C4`. Ruled 2026-08-11 (developer).** `C5a` was gated on C4 and the gate had no code behind it: `PlacementOutcome.SCHEDULE_GAP`, `GenerationPlan.gaps` and `report_schedule_gaps` read no stored column, so all three went dead when the recurrence engine took the derived calendar, and shipping a branch that cannot fire is what rule 1 forbids. The visibility it took is replaced by `integrity_check` **BA-07**, which asks the stored question as a query and dies with the column at C4. Rejected: leaving it dead with a docstring note (ledger row **P25**'s original disposition), which ships code that lies about a state the app cannot hold |
 | **C2's shape** | **DECOMPOSED into `C2-a`..`C2-f`, the value first with nothing calling it. Ruled 2026-08-10 (developer).** A single commit over 66 call sites cannot be proven against production BEFORE its consumers depend on it, which is exactly the technique that made C1 safe, cannot be reviewed in focus, and cannot be reverted precisely -- and two of the cutovers move money |
 
 ---
@@ -104,84 +105,9 @@ Not one of them would exist under the normalized model, because none of them wou
 
 ## 2. Evidence
 
-### The table is ALREADY the paydays table
-
-`uq_pay_periods_user_start UNIQUE (user_id, start_date)` is live on production -- the payday model's
-exact key, already enforced. The two derived columns are pure redundancy on a correctly-keyed fact
-table, which is why C4 is two `DROP COLUMN`s and not a rewrite: row `id` never moves, so all four
-inbound FKs (`transactions`, `transfers`, `journal_entries`, `recurrence_rules`) are untouched.
-
-### Live census, `shekel-prod-db`, 2026-08-08, re-verified 2026-08-10
-
-```text
-owner user 1 : 61 paydays, FIRST 2026-03-26, LAST 2028-07-13 (the last stored end_date
-               is 2028-07-26; quoting that as the range's top would be the very
-               conflation this document argues against).
-               0 non-contiguous pairs, 0 periods of a length other than 14
-               pay_schedule: cadence 14, rolling ON, target 52
-user 2       : companion, 0 paydays -- CORRECT by design (it reads the owner's).
-recurrence   : 46 rules, interval_n > 1 on ZERO, offset_periods <> 0 on ZERO
-derivation   : row_number()-1 and coalesce(lead(start_date)-1, start+cadence-1)
-               reproduce the two stored columns on 61 of 61 rows, 0 mismatches.
-```
-
-**Production has no hole today**, so this arc is entirely about what the writer PERMITS.
-
-### P2 -- the writer accepts a hole, and only two paths can pass it one
-
-**ONE `PayPeriod` constructor now exists in `app/` and `scripts/`** -- `generate_pay_periods`. *This
-paragraph named a second, `auth_service`'s registration bootstrap, until `balance:X-ad-a` deleted
-it; re-measured 2026-08-10.* Of its `app/` callers, `extend_pay_periods` cannot gap (it starts at
-the last end + 1), `reset_pay_periods` cannot (it wipes first), and `top_up_rolling_window` inherits
-extend's safety. **The gap-bearing paths are the two that take a free date from a form**:
-`/pay-periods/generate` and `regenerate_pay_periods`. Cost when a hole exists is `-$140.63`, cited
-from balance **N-128** rather than measured here: production is contiguous and no gapped clone
-exists.
-
-### P3 -- a new owner cannot enter their real first payday
-
-**CLOSED by `balance:X-ad-a` (`2a4eb477`).** Kept as EVIDENCE: under the payday model that input
-needed no code at all, so the special case existed only to keep two columns honest.
-
-### P4 / P5 -- BOTH gates inherit the write door's blind spot
-
-`integrity_check`'s BA-03/BA-04 and the suite's `_pp_assert_structure` each police OVERLAP and say
-nothing about a HOLE, so neither could have caught P2. BA-04 is additionally off by one. Both rows
-carry the predicates and their line cites.
-
-### P8 / P12 / P29 -- the cadence, read circularly and written by accident
-
-Three defects on `budget.pay_schedule.cadence_days`, all sharpened by the payday model because the
-column becomes an INPUT to the last period's derived end. **P8**: `resolve_cadence` infers the
-cadence from the last period's LENGTH, which after C4 reads back the value it produces (its
-write-door half shipped at `balance:X-ad-a`). **P12**: a batch that creates NOTHING still rewrites
-the stored cadence. **P29**, found 2026-08-10, is P12 in the mirror: the extend door generates at a
-cadence it never persists. C3-b's one rule closes both. All three rows carry the traces.
-
-### P9 -- a legal schedule the CHECK forbids
-
-`ck_pay_periods_date_order CHECK (start_date < end_date)` makes a one-day pay period illegal, and
-two paydays one day apart legitimately produce one. An artifact of `end_date` being authored.
-
-### P13 -- `period_index` was the wire key of a destructive form
-
-**CLOSED by `C3-a`.** Kept as EVIDENCE: a user-supplied ORDINAL selected which rows a CASCADE
-destroyed, across a browser round trip, and was stable only while nothing renumbers.
-
-### P6 -- SEVEN implementations, not three, which is what C2 is sized against
-
-An AST census found **six**, not the three this row claimed until 2026-08-10, and a review of C2-a
-found a SEVENTH the census structurally could not see -- it keyed on the predicate. Row **P6**
-carries the site list and the lesson; the six `pay_period_service` readers carry **66** call sites.
-
-### P14 -- the derivation is window-dependent where the stored column was not
-
-Derived over a PARTIAL payday set, the last row falls to `start + cadence - 1` instead of
-`lead(start_date) - 1`, so
-**the same period reports a different end depending on which window asked** -- a disagreement a
-stored column cannot produce. Row **P14** records the mechanism it first named as REFUTED; row
-**P26** carries the half that survives on the other column. C2-a shipped the structural answer: a
-calendar is built ONLY from a complete set, and a slice is a `PeriodWindow`.
+**Archived to `historical/pay_calendar_evidence_2026-08-11.md`.** The measurements and the rejected
+options are a HISTORICAL RECORD: the rulings above state what was decided and the code states what
+was built. Cite the archive for how a decision came to be, never for what is true now.
 
 ## 3. Target model
 
@@ -266,32 +192,38 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       Proof: `_derive.py`'s docstring.
 
 - [ ] **C2 -- one calendar value answers every "which period" question** -- the DECOMPOSED parent,
-  RULED on three forks 2026-08-10. Ticks with the last of its leaves, and that tick is also
-  `balance:X-l` and `recurrence:R-F12`: one step under three names, one commit each.
+      RULED on three forks 2026-08-10. Ticks with the last of its leaves, and that tick is also
+      `balance:X-l` and `recurrence:R-F12`: one step under three names, one commit each.
+      **The CENSUS row P6 counts, and it is not final.** Seven implementations of "which pay period
+      contains this date" were found, one has gone: `recurrence/_calendar.py:287` (bisect, `None`
+      outside; 1 call site), `balance_at/_cash_periods.py:320` (bisect, `None` outside; 3 sites, all
+      in-module, scoped to the reported WINDOW), `investment_dashboard_service/_chart.py:200`
+      (linear scan over SYNTHETIC periods), `pay_period_service.get_current_period` (`:226`, SQL,
+      `.first()` with NO `ORDER BY` -- row **P19**), `get_overlapping_periods` (`:364`, SQL range),
+      and `savings_dashboard_service/_horizon.py:246-271` `_period_id_at` (linear containment scan
+      with a FORWARD clamp). `loan_ledger/_visible.py:150` was DELETED at C2-d (`3e6cd4ec`) with
+      `resolve_anchor_pay_period` and `owner_pay_periods`. `entry_service.py:816` is EXCLUDED: it
+      asks MEMBERSHIP, the primitive the searches are built on, not a search.
+      **The lesson, and why the count may still be low:** an AST census keyed on the containment
+      PREDICATE could not see `_period_id_at` -- it was found by reading the consumers of the
+      producer C2-e retires, and its own docstring says why it exists (its synthetic periods "carry
+      no `period_index` for the general `find_period_containing_date`"). Do not treat seven as
+      final.
 
 - [x] **C2-a -- the one calendar VALUE, and nothing calls it.** `3cb3082f`. Opened **P21**-**P25**.
       Proof: `_calendar.py`'s docstring.
 
-- [ ] **C2-b -- the recurrence cutover.** The DECOMPOSED parent, split 2026-08-10 by an instrumented
-      full-suite run: the derived calendar differs from the stored rows at
-      **55 shapes over 53 tests**, in two classes -- hole absorption (**P25**, **P27**) and the
-      SILENT re-index of a partial payday set (**P26**). `period_starting_on_or_after` does NOT move
-      -- C2-a shipped it -- so two move, not three. Ticks with its last leaf.
+- [x] **C2-b -- the recurrence cutover.** `fe365de1`. The DECOMPOSED parent, ticked with C2-b2, its
+      last leaf.
 
 - [x] **C2-b1 -- the last two questions, the cadence rule, and one door.** `90f2fbb7`. Opened
       **P28**. Proof: `_loader.py`'s docstring.
 
-- [ ] **C2-b2 -- the cutover.** `PeriodCalendar` / `SchedulePeriod` / `RecurrenceScheduleError`
-      DELETE; 10 `calendar_for` call sites and 8 `app/` modules take the one value.
-      **Its stated P14 work is FALSE and row P14 says so**: all three constructors take
-      `get_all_periods`, the COMPLETE set. **`SCHEDULE_GAP` goes unsatisfiable here** (**P25**) and
-      `__post_init__`'s two refusals go with the class, so C5a's "it deletes no visibility" is true
-      only because this leaf already took it (**P27**).
-      **Sized by a simulated cutover over the whole suite: 5 failures, not the 53 diverging tests**
-      -- P26's phase test plus the four `TestAnOccurrenceInAScheduleGap` tests, which build a state
-      this leaf makes unconstructible. The 430-shape baseline stays byte-identical and sees NO
-      divergence class: its schedules are contiguous, complete, and read at the cadence they were
-      generated with (**P28**).
+- [x] **C2-b2 -- the cutover.** `fe365de1`. Closed **P2** (= recurrence **F-10**) and **P25**;
+      opened **P34**, **P35**. Proof: `recurrence/_occurrence.py`'s docstring, which states the
+      THREE shapes where the derivation and the stored columns disagree, and the byte-identical
+      430-shape baseline. **P26**, **P27** and **P28** re-pointed to **C4**: each owed a STATEMENT
+      here and now owes only the column.
 
 - [ ] **C2-c -- the cash-view cutover.** `_cash_periods._PeriodSpans` retires. Its three call sites
   keep answering `None` outside the reported window, a VIEW question and not the calendar's --
@@ -348,20 +280,11 @@ four surviving fences of section 1, including BA-03/BA-04 and `_pp_assert_struct
 row P16 and are not one commit: one is a pure deletion gated on C4, the other is a migration gated
 on an arc this document does not own. It ticks with the last of them.
 
-- [ ] **C5a -- delete what is now unconstructible.**
-
-`GenerationPlan.gaps` (`recurrence_engine.py:153`), `_recurrence_common.report_schedule_gaps` and
-its two call sites (`recurrence_engine.py:309`, `transfer_recurrence.py:81`), and
-`PlacementOutcome.SCHEDULE_GAP` with its **six** further references (`recurrence_engine.py:253`,
-`recurrence/_occurrence.py:235,250,656,704`, `recurrence/_reading.py:126`). Every one exists to
-describe or police a state the model can no longer produce. Ticks recurrence **R-F10**.
-Deletion-only: the recurrence arc's 430-shape baseline must stay byte-identical.
-**`PeriodCalendar.__post_init__`'s two refusals were on this list and are NOT any more** -- C2-b2
-deletes the class that holds them, three leaves earlier, which is row **P25**'s shape a second time.
-**It deletes no visibility, and that correction is why the split is safe.** P16 argued the gap
-machinery was the last thing reporting the under-bill; it is not. `report_schedule_gaps` logs an
-occurrence no period CONTAINS, and the cadence-30/31 case has no hole at all -- both occurrences
-land inside one period. Nothing reports that today.
+- [x] **C5a -- delete what is now unconstructible.** `fe365de1`. Ticked at **C2-b2**, not after C4:
+      nothing in the gap chain read a stored column, so all of it went dead the moment that leaf
+      pointed the engine at the derived calendar. `PlacementOutcome` went WHOLE -- its last member
+      said only what `period is None` says. Ticks recurrence **R-F10**. Deletion-only; the 430-shape
+      baseline stayed byte-identical.
 
 - [ ] **C5b -- a paycheck may owe one template more than once.**
 
@@ -394,6 +317,17 @@ deliberate materialization with the second definition's cost stated. Sequenced a
 2026-08-09), because a derived paycheck should be derived from the calendar this arc normalizes
 rather than from the one it is replacing. Closes **P18**.
 
+**"DERIVABLE FROM `entry_date`" IS FALSE, measured 2026-08-10 against `shekel-prod-db` while ruling
+C2's first fork. Do not carry the assumption into this step.** 14 days carry TWO different
+`pay_period_id` values for ONE `entry_date` (a single owner), so the date does not determine the
+paycheck; 35 of 327 entries (10.7%) are dated outside their own paycheck BY DESIGN; and 4
+loan-opening entries predate the first payday by up to seven years, so the clamp is live rather than
+hypothetical. **The column has 11 references in 7 `app/` modules**, 2 of them docstrings:
+`_posting_reconcile.py:186`, `posting_service.py:145,153`, `pay_period_admin.py:876-879`,
+`ledger_report_service/_income_statement.py:165`, `account_posting_service/_walk.py:322`,
+`loan_posting_service/_payments.py:163`. The income statement GROUPS by it, so it is a real query
+key and not dead weight.
+
 - [ ] **C8 -- the forecast cadence gets ONE control.**
 
 Recording paydays and setting the forward cadence are two operations welded onto one form, on
@@ -412,37 +346,9 @@ two ledgers, and one of those pairs went unnoticed for months.
 
 ## 6. Alternatives considered and rejected
 
-**Refuse a gapped batch at the write door.** The first option weighed, and the one finding F-10 was
-written as. It is a SIXTH fence around the same functional dependency, and C3 would delete it. It
-also makes two live features unusable: `regenerate_pay_periods`' "Corrected first payday" field
-could only ever accept the single day after the retained coverage ends, so it could correct a
-cadence and never a payday; and P3's blockage gets worse rather than better.
-
-**Bridge a hole with a filler period.** Insert `[latest_end + 1, new_start - 1]` as its own period.
-It fabricates a paycheck that never happened: the templates generate a full set of recurring bills
-into it, the paycheck calculator writes it an income row, and `growth_engine.period_return_rate`
-prorates a return into it (`:288`). A model that invents money events to preserve a stored column is
-worse than the hole.
-
-**Rename the table to `budget.paydays`.** Correct about what the row holds, and rejected on cost
-with no correctness gain: four inbound foreign keys would move,
-`transactions.pay_period_id -> paydays.id` reads worse than what it replaces, and a pay period
-genuinely IS identified one-to-one by the payday that opens it. The name `start_date` is kept for
-the same reason.
-
-**Delete the out-of-schedule answer and derive the ledger's paycheck from `entry_date`** (C2's fork
-1). Rejected 2026-08-10 on `shekel-prod-db`, because its premise is false:
-**14 days carry TWO paychecks for one date** and **35 of 327 entries** are dated outside their own
-paycheck. The measurement of record is `filing_period`'s docstring and row **P18**, which also shows
-the column holds TWO relationships -- a COPY on 174 of 174 transaction-sourced entries, a derivation
-only for assertions. That is `C7`'s subject, not this step's.
-
-**Keep `period_index` stored and derive only `end_date`.** Half the normalization, keeping the half
-that needs the advisory lock and the uniqueness constraint. *The first draft rejected it on a claim
-adversarial review REFUTED -- that the index is never a persisted reference or a wire key; it was
-both.* It SURVIVES on better grounds: the index's only stable referent is its position in payday
-order, so storing it stores the functional dependency **P1** describes. Its one IDENTITY use, the
-truncate form, was wrong before this arc and C3-a re-keyed it onto `id` regardless.
+**Archived to `historical/pay_calendar_evidence_2026-08-11.md`.** The measurements and the rejected
+options are a HISTORICAL RECORD: the rulings above state what was decided and the code states what
+was built. Cite the archive for how a decision came to be, never for what is true now.
 
 ## 7. Document rules (GATED)
 

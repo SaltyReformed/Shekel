@@ -40,12 +40,12 @@ from app.models.ref import AccountType, RecurrencePattern
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
+from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     UNAVAILABLE_PATTERN_LABEL,
     UNAVAILABLE_PATTERN_MESSAGE,
     RecurrenceResolutionError,
     RecurrenceSpec,
-    calendar_for,
     pattern_choices,
     resolve,
 )
@@ -421,7 +421,7 @@ class TestTheCreateDoorRefusesAnUnmodelledPattern:
             # The ROUTE needs a schedule: without one it refuses before it
             # reaches the pattern at all ("No pay periods generated yet" on the
             # preview; no period for a template's rows).  ``resolve`` itself
-            # does not -- it calls ``_pattern_member`` (``_resolution.py:803``)
+            # does not -- it calls ``pattern_member`` (``_frequency.py``)
             # before ``_effective_start`` (``:808``), so the membership error
             # fires on an empty calendar too.
             assert seed_periods_today
@@ -454,7 +454,7 @@ class TestTheCreateDoorRefusesAnUnmodelledPattern:
             # The ROUTE needs a schedule: without one it refuses before it
             # reaches the pattern at all ("No pay periods generated yet" on the
             # preview; no period for a template's rows).  ``resolve`` itself
-            # does not -- it calls ``_pattern_member`` (``_resolution.py:803``)
+            # does not -- it calls ``pattern_member`` (``_frequency.py``)
             # before ``_effective_start`` (``:808``), so the membership error
             # fires on an empty calendar too.
             assert seed_periods_today
@@ -497,7 +497,7 @@ class TestTheEditDoorRefusesAnUnmodelledPattern:
             # The ROUTE needs a schedule: without one it refuses before it
             # reaches the pattern at all ("No pay periods generated yet" on the
             # preview; no period for a template's rows).  ``resolve`` itself
-            # does not -- it calls ``_pattern_member`` (``_resolution.py:803``)
+            # does not -- it calls ``pattern_member`` (``_frequency.py``)
             # before ``_effective_start`` (``:808``), so the membership error
             # fires on an empty calendar too.
             assert seed_periods_today
@@ -544,7 +544,7 @@ class TestThePreviewRefusesAnUnmodelledPattern:
             # The ROUTE needs a schedule: without one it refuses before it
             # reaches the pattern at all ("No pay periods generated yet" on the
             # preview; no period for a template's rows).  ``resolve`` itself
-            # does not -- it calls ``_pattern_member`` (``_resolution.py:803``)
+            # does not -- it calls ``pattern_member`` (``_frequency.py``)
             # before ``_effective_start`` (``:808``), so the membership error
             # fires on an empty calendar too.
             assert seed_periods_today

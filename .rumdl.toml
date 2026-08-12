@@ -241,6 +241,23 @@ names = [
 code_blocks = false
 
 # ---------------------------------------------------------------------------
+# MD046 - Code Block Style
+# ---------------------------------------------------------------------------
+# Fenced code blocks, always. Pinned rather than left to rumdl's default
+# "consistent" inference, which derives the expected style from whichever kind
+# a document already has the most of -- so the rule's verdict depends on the
+# document's current contents rather than on a decision. Measured 2026-08-11:
+# archiving one section out of implementation_plan_pay_calendar.md took its
+# fenced blocks from 4 to 3, the inferred style flipped, and rumdl then
+# demanded INDENTED blocks in a file that contains none, in three places. A
+# gate whose expectation moves when unrelated prose is deleted reports the
+# editor's change as the defect. MD048 already pins the fence CHARACTER, so
+# pinning the block KIND here just finishes the same decision.
+
+[MD046]
+style = "fenced"
+
+# ---------------------------------------------------------------------------
 # MD048 - Code Fence Style
 # ---------------------------------------------------------------------------
 # Use backtick fences (```) rather than tilde fences (~~~).

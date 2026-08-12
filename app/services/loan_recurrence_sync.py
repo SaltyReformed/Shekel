@@ -49,11 +49,8 @@ from typing import TYPE_CHECKING
 from app.extensions import db
 from app.models.account import Account
 from app.services import balance_at, loan_loaders, rate_period_engine
-from app.services.recurrence import (
-    calendar_for,
-    reauthor_rule,
-    recurrence_spec,
-)
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import reauthor_rule, recurrence_spec
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )

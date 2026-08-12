@@ -28,7 +28,6 @@ from app.services._recurrence_common import (
     partition_regeneration_rows,
     regeneration_bound,
     query_rows_from_effective_date,
-    report_schedule_gaps,
     should_skip_period,
 )
 from app.services.recurrence_engine import compute_due_date, resolve_generation_plan
@@ -73,12 +72,6 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     )
     if plan is None:
         return []
-
-    # The transaction engine makes the identical call, and for the identical
-    # reason: the WRITE path names a hole in the owner's schedule, the
-    # read-only predictor does not.  See
-    # ``_recurrence_common.report_schedule_gaps``.
-    report_schedule_gaps(logger, template, scenario_id, plan.gaps)
 
     # What is already there, and the refusal of a paycheck this pass would
     # write into TWICE -- ``idx_transfers_template_period_scenario`` holds one

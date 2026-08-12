@@ -49,6 +49,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
+from app.models.template_amount_version import TemplateAmountVersion
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.ledger_account import LedgerAccount
 from app.models.journal_entry import JournalEntry, Posting
@@ -122,6 +123,7 @@ __all__ = [
     "TransactionEntry",
     "TransferTemplate",
     "Transfer",
+    "TemplateAmountVersion",
     "LoanPaymentSettings",
     "LedgerAccount",
     "JournalEntry",

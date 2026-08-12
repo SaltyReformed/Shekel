@@ -52,13 +52,10 @@ from app.services import (
     user_write_lock,
 )
 from app.services._recurrence_common import log_resource_access_denied
+from app.services.pay_calendar import calendar_for
 from app.services.pay_period_locks import classify_periods_bulk
 from app.services.period_population import populate_periods_from_active_templates
-from app.services.recurrence import (
-    calendar_for,
-    reauthor_rule,
-    recurrence_spec,
-)
+from app.services.recurrence import reauthor_rule, recurrence_spec
 from app.utils.balance_predicates import is_projected_clause, settled_status_ids
 from app.utils.log_events import (
     ACCESS,

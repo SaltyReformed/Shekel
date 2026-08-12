@@ -29,11 +29,10 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.services import pay_period_service
+from app.services.pay_calendar import DerivedPeriod, PayCalendar, calendar_for
 from app.services.recurrence import (
-    PeriodCalendar,
     RecurrenceResolutionError,
     RecurrenceSpec,
-    SchedulePeriod,
     build_transient_rule,
     modelled_pattern,
     placed_periods,
@@ -107,7 +106,7 @@ def _submitted_end_date() -> date | None:
 def build_preview_rule(
     pattern_id: int,
     start_period: PayPeriod | None,
-    calendar: PeriodCalendar,
+    calendar: PayCalendar,
 ) -> RecurrenceRule:
     """Build an unsaved, fully resolved rule from the preview request args.
 
@@ -149,14 +148,14 @@ def build_preview_rule(
 
 
 def render_preview_html(
-    preview_periods: list[SchedulePeriod],
+    preview_periods: list[DerivedPeriod],
 ) -> Markup:
     """Render the occurrence-preview HTML fragment for *preview_periods*.
 
     Args:
         preview_periods: The matched
-            :class:`~app.services.recurrence.SchedulePeriod` values to list --
-            the resolver's own view of a pay period, which is what
+            :class:`~app.services.pay_calendar.DerivedPeriod` values to list --
+            the calendar's own view of a pay period, which is what
             :func:`~app.services.recurrence.rule_occurrences` answers in.  Only
             the two dates are rendered.
 
@@ -223,8 +222,15 @@ def recurrence_preview_fragment() -> str:
     if modelled_pattern(pattern_id) is None:
         return "<small class='text-muted'>Unknown pattern</small>"
 
-    periods = pay_period_service.get_all_periods(current_user.id)
-    if not periods:
+    # The schedule is resolved BEFORE the rule: the authoring seam measures a
+    # rule's first occurrence against it, so an empty schedule is refused
+    # rather than anchored against nothing.  ONE calendar, from the same door
+    # the SAVE goes through, serves the authoring seam, the match and the
+    # empty-schedule check below -- which is what stops the preview from
+    # resolving against a different schedule than the save would (plan step
+    # R4b-1), and since plan step C2-b2 it is the same door and the same TYPE.
+    calendar = calendar_for(current_user.id)
+    if not calendar.periods:
         return "<small class='text-muted'>No pay periods generated yet</small>"
 
     start_period = owned_preview_start_period()
@@ -238,18 +244,10 @@ def recurrence_preview_fragment() -> str:
         current_period = pay_period_service.get_current_period(current_user.id)
         effective_from = (
             current_period.start_date if current_period
-            else periods[0].start_date
+            else calendar.opening_bound()
         )
 
     try:
-        # The schedule is resolved BEFORE the rule: the authoring seam
-        # measures a rule's first occurrence against it, so an empty schedule
-        # is refused rather than anchored against nothing.  Built from the
-        # periods already loaded, so this adds no query -- and ONE calendar
-        # serves both the authoring seam and the match, which is what stops
-        # the preview from resolving against a different schedule than the
-        # save would (plan step R4b-1).
-        calendar = PeriodCalendar.from_pay_periods(periods, current_user.id)
         rule = build_preview_rule(pattern_id, start_period, calendar)
         # ``effective_from`` is this ROUTE's display choice, made above --
         # "show me the next five from here" -- never the rule's opening bound,

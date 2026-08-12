@@ -3,17 +3,105 @@ Shekel Budget App -- Unit Tests for Retirement Income Gap Calculator
 
 Tests the gap analysis pipeline including income calculation,
 pension integration, required savings, and after-tax views.
+
+**Every hand-computed figure below assumes the BIWEEKLY cadence**, which plan
+step R7a-2a made an explicit input rather than a hardcoded ``26``.  Each case
+passes :data:`_BIWEEKLY`, so ``2500 * 26 / 12 = 5416.67`` still holds and no
+assertion moved; :class:`TestCadenceIsTheOwners` is where a different cadence
+is exercised.
 """
 
 from decimal import Decimal
 
 import pytest
 
+from app.services.pay_calendar import PayCadence
 from app.services.retirement_gap_calculator import (
     RetirementGapAnalysis,
     calculate_gap,
     ZERO,
 )
+
+#: The cadence every pre-existing case in this file was hand-computed at:
+#: 14 days between paydays, 26 paychecks a year.
+_BIWEEKLY = PayCadence(cadence_days=14)
+
+#: A weekly owner: 7 days between paydays, 52 paychecks a year.  Every figure
+#: this cadence produces is DOUBLE the biweekly one for the same per-paycheck
+#: pay, which is what makes it the clearest counterexample to the retired
+#: constant.
+_WEEKLY = PayCadence(cadence_days=7)
+
+
+class TestCadenceIsTheOwners:
+    """The pre-retirement income basis is the OWNER's cadence (R7a-2a).
+
+    Before this step ``calculate_gap`` multiplied the per-paycheck net by a
+    hardcoded ``26 / 12``.  For a weekly-paid owner that reported HALF their
+    real pre-retirement monthly income, and because the required-savings figure
+    is that income annualised over the safe-withdrawal rate, it understated the
+    retirement target by the same factor -- the single largest number on the
+    page.
+    """
+
+    def test_weekly_owner_earns_double_the_biweekly_monthly_income(self):
+        """$2,000 a paycheck is $8,666.67/mo weekly, $4,333.33/mo biweekly.
+
+        Hand-computed: 2000 * 52 / 12 = 8666.666... -> $8,666.67 half-up, and
+        2000 * 26 / 12 = 4333.333... -> $4,333.33.  Two owners with the same
+        paycheck and different rhythms do not have the same monthly income,
+        which is exactly what the constant asserted.
+        """
+        weekly = calculate_gap(
+            pay_cadence=_WEEKLY,
+            net_biweekly_pay=Decimal("2000"),
+            monthly_pension_income=ZERO,
+        )
+        biweekly = calculate_gap(
+            pay_cadence=_BIWEEKLY,
+            net_biweekly_pay=Decimal("2000"),
+            monthly_pension_income=ZERO,
+        )
+        assert weekly.pre_retirement_net_monthly == Decimal("8666.67")
+        assert biweekly.pre_retirement_net_monthly == Decimal("4333.33")
+
+    def test_the_required_savings_target_moves_with_the_cadence(self):
+        """The weekly owner's target is twice the biweekly owner's.
+
+        required = monthly gap * 12 / 0.04.  With no pension the gap IS the
+        pre-retirement monthly income, so 8666.67 * 12 / 0.04 = 2,600,001.00
+        against 4333.33 * 12 / 0.04 = 1,299,999.00.  The gap between those two
+        answers -- $1,300,002.00 -- is what the hardcoded 26 cost a weekly-paid
+        owner.
+        """
+        weekly = calculate_gap(
+            pay_cadence=_WEEKLY,
+            net_biweekly_pay=Decimal("2000"),
+            monthly_pension_income=ZERO,
+            safe_withdrawal_rate=Decimal("0.04"),
+        )
+        biweekly = calculate_gap(
+            pay_cadence=_BIWEEKLY,
+            net_biweekly_pay=Decimal("2000"),
+            monthly_pension_income=ZERO,
+            safe_withdrawal_rate=Decimal("0.04"),
+        )
+        assert weekly.required_retirement_savings == Decimal("2600001.00")
+        assert biweekly.required_retirement_savings == Decimal("1299999.00")
+
+    def test_a_monthly_paid_owner_reads_their_paycheck_as_their_month(self):
+        """At a 30-day cadence, 12 paychecks a year, so a paycheck IS a month.
+
+        ``round(365.2425 / 30) = 12``, so 2000 * 12 / 12 = $2,000.00.  The old
+        constant answered $4,333.33 -- more than double -- for an owner whose
+        whole monthly income is that one paycheck.
+        """
+        result = calculate_gap(
+            pay_cadence=PayCadence(cadence_days=30),
+            net_biweekly_pay=Decimal("2000"),
+            monthly_pension_income=ZERO,
+        )
+        assert result.pre_retirement_net_monthly == Decimal("2000.00")
 
 
 class TestCalculateGap:
@@ -26,6 +114,7 @@ class TestCalculateGap:
         shortfall = 500000 - 1025001 = -525,001.00
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("2000"),
             retirement_account_projections=[
@@ -65,6 +154,7 @@ class TestCalculateGap:
         shortfall = 100000 - 1625001.00 = -1525001.00
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=ZERO,
             retirement_account_projections=[
@@ -77,6 +167,7 @@ class TestCalculateGap:
     def test_no_pension(self):
         """Full gap equals net income when no pension."""
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
         )
@@ -85,6 +176,7 @@ class TestCalculateGap:
     def test_pension_covers_all_income(self):
         """Pension covers all income → zero gap."""
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=Decimal("10000"),
         )
@@ -100,6 +192,7 @@ class TestCalculateGap:
         after_tax_surplus = 420000 - 1299999 = -879999.00
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
             retirement_account_projections=[
@@ -124,6 +217,7 @@ class TestCalculateGap:
     def test_after_tax_all_roth(self):
         """All Roth → no tax impact."""
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
             retirement_account_projections=[
@@ -142,11 +236,13 @@ class TestCalculateGap:
         required_3 = (4333.33*12/0.03).quantize(0.01) = (51999.96/0.03) = 1733332.00
         """
         result_4 = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
             safe_withdrawal_rate=Decimal("0.04"),
         )
         result_3 = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
             safe_withdrawal_rate=Decimal("0.03"),
@@ -157,6 +253,7 @@ class TestCalculateGap:
     def test_zero_net_pay(self):
         """Zero income results in zero gap."""
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=ZERO,
             monthly_pension_income=ZERO,
         )
@@ -167,6 +264,7 @@ class TestCalculateGap:
     def test_multiple_accounts_summed(self):
         """Multiple retirement accounts summed correctly."""
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
             retirement_account_projections=[
@@ -186,6 +284,7 @@ class TestCalculateGap:
         shortfall = 0 - 1299999.00 = -1299999.00
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
             retirement_account_projections=[],
@@ -196,6 +295,7 @@ class TestCalculateGap:
     def test_no_tax_rate_skips_after_tax(self):
         """No tax rate → after-tax fields are None."""
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
             estimated_tax_rate=None,
@@ -206,6 +306,7 @@ class TestCalculateGap:
     def test_pension_taxed_when_tax_rate_provided(self):
         """Pension income reduced by estimated tax rate when provided."""
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("5000"),
             estimated_tax_rate=Decimal("0.20"),
@@ -224,6 +325,7 @@ class TestCalculateGap:
     def test_pension_not_taxed_without_tax_rate(self):
         """Without tax rate, pension used as-is (gross) -- backward compatible."""
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("5000"),
         )
@@ -235,6 +337,7 @@ class TestCalculateGap:
     def test_pension_tax_creates_gap_where_none_existed(self):
         """Gross pension > net income, but after-tax pension < net income."""
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=Decimal("5000"),
             estimated_tax_rate=Decimal("0.25"),
@@ -252,6 +355,7 @@ class TestCalculateGap:
     def test_pension_tax_zero_pension(self):
         """Tax on zero pension is still zero -- no division issues."""
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2000"),
             monthly_pension_income=ZERO,
             estimated_tax_rate=Decimal("0.20"),
@@ -275,6 +379,7 @@ class TestCalculateGap:
         savings_surplus_or_shortfall = 500000 - 0 = 500000
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("1000"),
             retirement_account_projections=[
@@ -309,6 +414,7 @@ class TestCalculateGap:
         savings_surplus_or_shortfall = 500000 - 0 = 500000
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("1000"),
             retirement_account_projections=[
@@ -336,6 +442,7 @@ class TestCalculateGap:
         after_tax_surplus = 100000.00 - 1625001.00 = -1525001.00
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("2000"),
             retirement_account_projections=[
@@ -368,6 +475,7 @@ class TestCalculateGap:
         after_tax_surplus = 500000.00 - 1025001.00 = -525001.00
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("2000"),
             retirement_account_projections=[
@@ -411,6 +519,7 @@ class TestCalculateGap:
         after_tax_surplus = 540000.00 - 965001.00 = -425001.00
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("2000"),
             retirement_account_projections=[
@@ -442,6 +551,7 @@ class TestCalculateGap:
         surplus = 0 - 0.00 = 0.00
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("-500.00"),
             monthly_pension_income=ZERO,
         )
@@ -461,6 +571,7 @@ class TestCalculateGap:
         surplus = 800000 - 1950000.00 = -1150000.00
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("3000"),
             monthly_pension_income=ZERO,
             retirement_account_projections=[
@@ -481,6 +592,7 @@ class TestCalculateGap:
         is no pre-retirement income to replace. Required savings = 0.
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=ZERO,
             monthly_pension_income=ZERO,
             retirement_account_projections=[],
@@ -499,6 +611,7 @@ class TestCalculateGap:
         for all optional fields.
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("2500"),
             monthly_pension_income=Decimal("1000"),
             retirement_account_projections=[
@@ -541,6 +654,7 @@ class TestCalculateGap:
         surplus = 10000000 - 11499999.00 = -1499999.00
         """
         result = calculate_gap(
+            pay_cadence=_BIWEEKLY,
             net_biweekly_pay=Decimal("20000"),
             monthly_pension_income=Decimal("5000"),
             retirement_account_projections=[

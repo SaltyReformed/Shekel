@@ -36,12 +36,19 @@ from app.routes.loan._helpers import (
     _total_payment_from_seam,
     _transfer_schema,
 )
-from app.services import escrow_calculator, loan_loaders, loan_recurrence_sync
-from app.services.recurrence import RecurrenceSpec, author_rule, calendar_for
+from app.services import (
+    escrow_calculator,
+    loan_loaders,
+    loan_recurrence_sync,
+    template_amount_service,
+)
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import RecurrenceSpec, author_rule
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )
 from app.utils.auth_helpers import require_owner
+from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +202,16 @@ def create_payment_transfer(account_id):
     # row, which every reader defaults to non-derive).
     template.settings = LoanPaymentSettings(
         derive_from_loan=derive_from_loan, extra_principal=extra_principal,
+    )
+
+    # Open the amount's dated series, AFTER the settings row is attached and for
+    # exactly that reason (plan step X-au-a): a DERIVE-mode payment's
+    # ``default_amount`` is a P&I + escrow snapshot, so it owns no stated amount
+    # and must get no version -- and the write door reads the mode off the
+    # settings row this line has just set.  A MANUAL payment (the operator typed
+    # the base) does open a series here.
+    template_amount_service.set_amount(
+        template, transfer_amount, effective_on=display_today(),
     )
 
     namedup_redirect = flush_template_or_namedup_redirect(
@@ -357,16 +374,25 @@ def track_payment(account_id):
         return dashboard.to_response()
 
     contract = _contractual_monthly_payment(account)
-    template.default_amount = contract
-    # Flip to derive, creating the settings row for a legacy manual payment that
-    # never had one (a missing settings row IS manual mode); the standing extra is
-    # preserved, added live on top of the tracked base exactly as before.
+    # Flip to derive FIRST, creating the settings row for a legacy manual payment
+    # that never had one (a missing settings row IS manual mode); the standing
+    # extra is preserved, added live on top of the tracked base exactly as
+    # before.  **The order is load-bearing since plan step X-au-a**: the stored
+    # base written below is a DERIVED figure (P&I + today's escrow), so it must
+    # not be recorded as a stated price in the amount series -- and the write
+    # door reads the mode off the settings row, so flipping after the write
+    # would stamp exactly the fake history ruling R-FI refuses.  Versions the
+    # template recorded while it was manual stay as the record of what was
+    # stated then.
     if template.settings is None:
         template.settings = LoanPaymentSettings(
             derive_from_loan=True, extra_principal=Decimal("0.00"),
         )
     else:
         template.settings.derive_from_loan = True
+    template_amount_service.set_amount(
+        template, contract, effective_on=display_today(),
+    )
 
     # Re-sync the recurrence end date.  **Load-bearing since plan C8d, where it
     # used to be defensive:** the payoff is now a fold over the forward PLAN, and

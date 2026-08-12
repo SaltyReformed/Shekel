@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
+{% from "_amount_macros.html" import amount_field, amount_history with context %}
 {% from "_recurrence_fields.html" import recurrence_pattern_select, recurrence_detail_fields, recurrence_preview, start_period_field with context %}
 {% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if template else 'New' }} Recurring Transaction -- Shekel{% endblock title %}
@@ -29,14 +30,7 @@
                value="{{ template.name if template else '' }}" placeholder="e.g. Car Payment">
       </div>
 
-      <div class="mb-3">
-        <label for="default_amount" class="form-label">Amount</label>
-        <div class="input-group">
-          <span class="input-group-text">$</span>
-          <input type="number" step="0.01" id="default_amount" name="default_amount" class="form-control" required
-                 value="{{ template.default_amount if template else '' }}">
-        </div>
-      </div>
+      {{ amount_field(template, amount_today) }}
 
       <div class="row mb-3">
         <div class="col">
@@ -105,22 +99,6 @@
         </div>
       </div>
 
-      {% if template %}
-      {# --- Apply changes (edit only) --- #}
-      <div class="form-section">
-        <h6 class="form-section__title">Apply changes</h6>
-        <div class="mb-3">
-          <label for="effective_from" class="form-label">Regenerate effective from</label>
-          <input type="date" id="effective_from" name="effective_from" class="form-control"
-                 aria-describedby="effective-from-help">
-          <div id="effective-from-help" class="form-text">
-            Changes take effect from this date. Future budget entries will be regenerated.
-            Leave blank to apply immediately.
-          </div>
-        </div>
-      </div>
-      {% endif %}
-
       <div class="d-flex gap-2 mt-4">
         <button type="submit" class="btn btn-primary">
           <i class="bi bi-check-circle"></i> {{ 'Update' if template else 'Create' }}
@@ -128,6 +106,10 @@
         <a href="{{ url_for('templates.list_templates') }}" class="btn btn-outline-secondary">Cancel</a>
       </div>
     </form>
+    {# OUTSIDE the edit form: each entry carries its own POST form and nested
+       forms are not valid HTML. #}
+    {{ amount_history(amount_history_rows, amount_version_delete_endpoint,
+                      template.id if template else none) }}
     {% endcall %}
   </div>
 </div>

@@ -13,11 +13,49 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import GoalModeEnum
 from app.extensions import db
+from app.models.pay_period import PayPeriod
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator, savings_goal_service
-from app.services.savings_goal_service import GoalTrajectory
+from app.services.pay_calendar import PayCadence
+from app.services.savings_goal_service import GoalTargetSpec, GoalTrajectory
 from app.utils.money import percent_complete
+
+
+@dataclass(frozen=True)
+class _GoalInputs:
+    """The read-pass facts every goal datum in one build shares.
+
+    A parameter object introduced at plan step R7a-2a, and forced by that
+    step's third field: :func:`_compute_goal_progress` and
+    :func:`_build_goal_datum` each took five positional arguments, and the
+    owner's pay cadence -- which the contribution floor and the income-relative
+    target both need -- would have been a sixth on both.  A raised ``max-args``
+    is not the project's answer; grouping is, and these three ARE one thing:
+    the per-owner facts resolved once for the whole build that no individual
+    goal changes.
+
+    Scalars and loaded rows rather than the whole
+    :class:`~.._types._DashboardCoreData`, so a helper here stays constructible
+    in a test without a ``BalanceContext`` and an account list it never reads.
+
+    Attributes:
+        all_periods: All of the owner's pay periods, for the
+            periods-until-target count.
+        net_biweekly_pay: Current projected net pay for one paycheck, from the
+            canonical paycheck engine.  ``Decimal("0.00")`` when the owner has
+            no salary configured, which is what
+            :attr:`GoalProgress.has_salary_data` reports.
+        pay_cadence: How often the owner is paid
+            (:class:`~app.services.pay_calendar.PayCadence`) -- what turns
+            ``net_biweekly_pay`` into a monthly figure for a "months of salary"
+            goal, and what a paycheck-space contribution template's monthly
+            equivalent is measured against.
+    """
+
+    all_periods: list[PayPeriod]
+    net_biweekly_pay: Decimal
+    pay_cadence: PayCadence
 
 
 @dataclass(frozen=True)
@@ -187,12 +225,12 @@ def _goal_account_balance(account_data, account_id):
 
 
 def _build_goal_datum(
-    goal, acct_balance, monthly_contribution, all_periods, net_biweekly_pay,
+    goal, acct_balance, monthly_contribution, inputs: _GoalInputs,
 ) -> GoalProgress:
     """Build the per-goal progress record for one savings goal.
 
     For income-relative goals the resolved target is calculated from the
-    user's net biweekly pay and the goal's multiplier/unit; for fixed
+    user's net pay, their pay cadence and the goal's multiplier/unit; for fixed
     goals the stored target_amount is used directly.  Computes progress
     percent, required contribution, a human-readable income descriptor,
     and the projected trajectory.
@@ -202,27 +240,30 @@ def _build_goal_datum(
         acct_balance: Current balance of the goal's backing account.
         monthly_contribution: Committed monthly contribution into the
             account, from the canonical obligations aggregator.
-        all_periods: All pay periods for the user.
-        net_biweekly_pay: Current net biweekly pay (Decimal), used to
-            resolve income-relative goal targets.
+        inputs: The build's shared per-owner facts (:class:`_GoalInputs`) --
+            the pay periods, the net pay for one paycheck, and the pay
+            cadence.
 
     Returns:
         The goal's :class:`GoalProgress` (an eleven-key dict until plan step
         X-w4, ruling R-CI).
     """
     fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
-    has_salary = net_biweekly_pay > Decimal("0.00")
+    has_salary = inputs.net_biweekly_pay > Decimal("0.00")
 
     resolved_target = savings_goal_service.resolve_goal_target(
-        goal.goal_mode_id,
-        goal.target_amount,
-        goal.income_unit_id,
-        goal.income_multiplier,
-        net_biweekly_pay,
+        GoalTargetSpec(
+            goal_mode_id=goal.goal_mode_id,
+            target_amount=goal.target_amount,
+            income_unit_id=goal.income_unit_id,
+            income_multiplier=goal.income_multiplier,
+        ),
+        inputs.net_biweekly_pay,
+        inputs.pay_cadence,
     )
 
     remaining_periods = savings_goal_service.count_periods_until(
-        goal.target_date, all_periods
+        goal.target_date, inputs.all_periods
     )
     required = savings_goal_service.calculate_required_contribution(
         acct_balance, resolved_target, remaining_periods,
@@ -275,12 +316,12 @@ def _build_goal_datum(
 
 
 def _compute_goal_progress(
-    user_id, account_data, all_periods, net_biweekly_pay, goals,
+    user_id, account_data, inputs: _GoalInputs, goals,
 ) -> list[GoalProgress]:
     """Compute savings goal progress, contributions, and trajectory.
 
     For income-relative goals, the resolved target is calculated from
-    the user's net biweekly pay and the goal's multiplier/unit.  For
+    the user's net pay, their pay cadence and the goal's multiplier/unit.  For
     fixed goals, the stored target_amount is used directly.
 
     Trajectory is computed for each goal by discovering the monthly
@@ -291,9 +332,9 @@ def _compute_goal_progress(
         user_id: Integer ID of the current user.
         account_data: The per-account projections from
             _compute_account_projections.
-        all_periods: All pay periods for the user.
-        net_biweekly_pay: Current net biweekly pay (Decimal).  Used to
-            resolve income-relative goal targets.
+        inputs: The build's shared per-owner facts (:class:`_GoalInputs`) --
+            the pay periods, the net pay for one paycheck, and the pay
+            cadence every monthly equivalent here is measured against.
         goals: The user's active :class:`SavingsGoal` instances, already
             loaded by the caller via :func:`_load_active_goals`.  Passed
             in rather than re-queried so the active-goal lookup runs once
@@ -315,12 +356,11 @@ def _compute_goal_progress(
         # expired-rule guard and inflated per-goal floors indefinitely.
         acct_templates = templates_by_account.get(goal.account_id, [])
         monthly_contribution = obligations_aggregator.committed_monthly(
-            acct_templates, date.today(),
+            acct_templates, date.today(), inputs.pay_cadence,
         )
 
         goal_data.append(_build_goal_datum(
-            goal, acct_balance, monthly_contribution, all_periods,
-            net_biweekly_pay,
+            goal, acct_balance, monthly_contribution, inputs,
         ))
 
     return goal_data

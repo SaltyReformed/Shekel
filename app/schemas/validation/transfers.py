@@ -10,6 +10,8 @@ from marshmallow import (
 )
 
 from app.schemas.validation._helpers import (
+    EFFECTIVE_DATE_MAX,
+    EFFECTIVE_DATE_MIN,
     BaseSchema,
     RecurrencePatternField,
     RowId,
@@ -104,8 +106,23 @@ class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):
     to_account_id = RowId()
     category_id = RowId(allow_none=True)
 
-    # Date from which regeneration takes effect.
-    effective_from = fields.Date()
+    # The date this amount takes effect: STORED as a version of the
+    # template's amount (plan step X-au-a) and, in the same value, the
+    # bound the regeneration sweeps from.
+    #
+    # Bounded because an HTML date input accepts a four-digit-year typo
+    # and the consequence is permanent: an adversarial review submitted
+    # ``0202-08-11`` and it became the series' EARLIEST version, which
+    # anchors every date before the series and which the withdrawal door
+    # refuses to remove.  The window matches the tax-config year bound
+    # (``routes/salary/tax_config.py``), and
+    # ``ck_template_amount_versions_effective_date_range`` mirrors it at
+    # the storage tier for raw-SQL writers.
+    effective_from = fields.Date(
+        validate=validate.Range(
+            min=EFFECTIVE_DATE_MIN, max=EFFECTIVE_DATE_MAX,
+        ),
+    )
 
     # Optimistic-locking pin (commit C-18).
     version_id = RowId(validate=validate.Range(min=1))

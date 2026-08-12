@@ -32,7 +32,6 @@ R7c, where the form starts collecting them.
 What this package offers
 ------------------------
 
-* :func:`calendar_for` -- load an owner's schedule once, thread it.
 * :func:`resolve` -- ``(spec, calendar) -> ResolvedRecurrence``, the two-axis
   meaning.  Pure: no Flask, no ORM, no clock, no database.
 * :func:`author_rule` / :func:`reauthor_rule` / :func:`build_transient_rule`
@@ -41,8 +40,8 @@ What this package offers
 * :func:`occurrences` / :func:`place` / :func:`occurrence_placements` -- the
   forward occurrence engine (plan step R3), AUTHORITATIVE since plan step R4a,
   so every pay period the application generates a row into is selected here.
-  An occurrence with no pay period says WHICH of the two "no period" answers
-  it is (:class:`PlacementOutcome`).
+  An occurrence with no pay period means the SAVED schedule does not reach it,
+  which since plan step C2-b2 is the only way to get one.
 * :func:`recurrence_spec` / :func:`read_rule` / :func:`resolved_recurrence` /
   :func:`rule_occurrences` / :func:`placed_periods` -- the READ door,
   symmetric with the write door: a rule's authored state back out, the one
@@ -50,6 +49,10 @@ What this package offers
   three surfaces take of the second.  Since plan step R4b-2 the generation
   seam, the Recurring surface, the form preview and the frozen baseline all
   answer from one call.
+* :func:`cadence_of` -- ``(pattern_id, interval_n) -> Cadence``, how often a
+  stored pattern fires, with no schedule involved (plan step R7a-2b).  With
+  :meth:`Cadence.units_per_year` it is what makes a monthly equivalent one
+  expression instead of a branch per pattern.
 * :func:`describe` -- what a recurrence's cadence is CALLED, one function over
   ``(interval_n, unit)`` (plan step R7a).  It replaced eight hand-written
   template branches keyed on the closed pattern set, so a cadence nothing
@@ -58,18 +61,21 @@ What this package offers
 What lives where
 ----------------
 
-* ``_calendar`` -- :class:`PeriodCalendar`, the pay-period schedule reduced to
-  the questions the derivation and the occurrence engine ask -- its opening
-  bound and horizon, one period by id, a month's earliest payday, and the two
-  placement searches -- plus its owner, so a resolution against the wrong
-  user's schedule is refused rather than silently wrong.  It also REFUSES a
-  schedule whose periods overlap or run backwards, because the placement
-  searches bisect over that order.
+* ``_frequency`` -- what a pattern means with NO schedule: :class:`Cadence`,
+  the pattern table both readings share, and the yearly counts every monthly
+  equivalent rests on.  Split out at plan step R7a-2b because
+  ``obligations_aggregator`` and the calendar's infrequent badge ask "how
+  often" and hold no calendar, so they could not use the two-axis vocabulary
+  at all while it was fused to the anchor derivation.  ``_resolution`` reads
+  this table rather than holding its own, so the two cannot disagree.
 * ``_resolution`` -- :class:`RecurrenceSpec`, :class:`ResolvedRecurrence` and
-  :func:`resolve`, the pure derivation.
-* ``_authoring`` -- the WRITE door: load the schedule, refuse the
-  unresolvable, write the authored spec.  The only module here that holds a
-  session.
+  :func:`resolve`, the pure derivation of what a recurrence means AGAINST a
+  schedule.
+* ``_authoring`` -- the WRITE door: refuse the unresolvable, write the
+  authored spec.  The only module here that holds a session.  The SCHEDULE it
+  resolves against is :class:`~app.services.pay_calendar.PayCalendar`, loaded
+  through that package's one door -- this package held a second calendar type
+  and a second loader until plan step **C2-b2** deleted both.
 * ``_occurrence`` -- the forward occurrence engine: walk the cadence, place
   each occurrence on a pay period.  Consumes :class:`ResolvedRecurrence`.
 * ``_reading`` -- the READ door: a stored rule's authored state, its
@@ -99,13 +105,13 @@ nothing -- nothing above the door does.
 from app.services.recurrence._authoring import (
     author_rule,
     build_transient_rule,
-    calendar_for,
     reauthor_rule,
 )
-from app.services.recurrence._calendar import (
-    PeriodCalendar,
-    RecurrenceScheduleError,
-    SchedulePeriod,
+from app.services.recurrence._frequency import (
+    Cadence,
+    RecurrenceFrequencyError,
+    RecurrenceResolutionError,
+    cadence_of,
 )
 from app.services.recurrence._describe import (
     RecurrenceDescription,
@@ -114,7 +120,6 @@ from app.services.recurrence._describe import (
 )
 from app.services.recurrence._occurrence import (
     OccurrencePlacement,
-    PlacementOutcome,
     RecurrenceGenerationError,
     occurrence_placements,
     occurrences,
@@ -129,7 +134,6 @@ from app.services.recurrence._reading import (
     rule_occurrences,
 )
 from app.services.recurrence._resolution import (
-    RecurrenceResolutionError,
     RecurrenceSpec,
     ResolvedRecurrence,
     resolve,
@@ -146,22 +150,20 @@ from app.services.recurrence._vocabulary import (
 __all__ = [
     "UNAVAILABLE_PATTERN_LABEL",
     "UNAVAILABLE_PATTERN_MESSAGE",
+    "Cadence",
     "OccurrencePlacement",
     "PatternChoice",
-    "PeriodCalendar",
-    "PlacementOutcome",
     "RecurrenceDescription",
     "RecurrenceDescriptionError",
+    "RecurrenceFrequencyError",
     "RecurrenceGenerationError",
     "RecurrenceResolutionError",
-    "RecurrenceScheduleError",
     "RecurrenceSpec",
     "ResolvedRecurrence",
     "RuleReading",
-    "SchedulePeriod",
     "author_rule",
     "build_transient_rule",
-    "calendar_for",
+    "cadence_of",
     "describe",
     "modelled_pattern",
     "occurrence_placements",

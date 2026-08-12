@@ -3431,12 +3431,19 @@ def open_calendar_hole(db_session, period, last_covered_day):
     """Shorten one period's stored ``end_date`` so a calendar hole opens after it.
 
     **The hole is HAND-BUILT, and since plan step C3-b that is the only way to
-    build one.**  Four suites need a schedule with a day no pay period covers,
-    because that is the state ledger row D7 / finding **P2** describes and the
-    recurrence engine's ``SCHEDULE_GAP`` answer exists for.  They used to reach
-    it through the REAL writer -- append a batch starting later than the
-    current coverage ends -- deliberately, so that "can this state exist?" was
-    proven rather than assumed.
+    build one.**  Five suites need a schedule with a day no pay period covers,
+    because that is the state ledger row D7 / finding **P2** describes.  They
+    used to reach it through the REAL writer -- append a batch starting later
+    than the current coverage ends -- deliberately, so that "can this state
+    exist?" was proven rather than assumed.
+
+    **What a hole MEANS to a reader changed at plan step C2-b2**, and the
+    callers changed with it.  The recurrence engine used to answer
+    ``PlacementOutcome.SCHEDULE_GAP`` and log the orphaned dates; it now reads
+    the DERIVED calendar, in which the preceding paycheck runs to the day
+    before the next payday and so absorbs them.  The state is reported by
+    ``scripts/integrity_check.py`` **BA-07** instead, which reads the very
+    column this writes.
 
     ``pay_period_write`` closed that door: it materialises the payday
     derivation, in which a period ends the day before the next payday, so an

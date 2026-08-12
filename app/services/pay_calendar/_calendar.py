@@ -8,11 +8,14 @@ and ``recurrence:R-F12``.
 ``app/`` called this at all -- that was C2-a's leaf boundary.  C1 built the
 derivation and proved it byte-identical against production's 61 paydays before
 anything read it; C2-a built the value and proved it the same way.  The cutover
-leaves then move one consumer package each, and **C2-d took the first**: both
+leaves then move one consumer package each.  **C2-d took the first**: both
 anchor-correction posting writers file every ledger entry's ``pay_period_id``
-through :meth:`PayCalendar.filing_period`.  ``C2-b2`` (the recurrence engine),
-``C2-c`` (the cash period view), ``C2-e`` (the projection axis) and ``C2-f``
-(``pay_period_service``'s readers) remain.
+through :meth:`PayCalendar.filing_period`.  **C2-b2 took the second**: the
+recurrence engine resolves, walks and places against this value, and the
+``PeriodCalendar`` it used -- which COPIED each period's stored end and ordinal
+-- was deleted with the fences it carried.  ``C2-c`` (the cash period view),
+``C2-e`` (the projection axis) and ``C2-f`` (``pay_period_service``'s readers)
+remain.
 
 Why the value exists at all: an AST census on 2026-08-10 found **SIX**
 implementations of "which pay period contains this date" in ``app/`` -- ledger
@@ -30,11 +33,10 @@ and they are named here so a caller has to choose:
 question                              method
 ===================================== ==================================
 which SAVED paycheck covers this day  :meth:`PayCalendar.period_containing`
-                                      -- ``None`` in a hole or outside,
-                                      which is what the recurrence engine
-                                      needs to tell a schedule hole from
-                                      "the schedule has not reached there
-                                      yet"
+                                      -- ``None`` only BEFORE the first
+                                      payday or PAST the horizon; these
+                                      periods tile, so a hole is not a
+                                      third case (ledger row **P25**)
 which span covers this day, saved or  :meth:`PayCalendar.span_containing`
 projected                             -- TOTAL from the first payday on
 which SAVED paycheck does a record    :meth:`PayCalendar.filing_period`
@@ -91,6 +93,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from operator import attrgetter
 
+from ._cadence import PayCadence
 from ._derive import DerivedPeriod, PayCalendarError, derive_periods
 
 #: The bisect key for every search here: a period's opening payday.  Module
@@ -440,6 +443,51 @@ class PayCalendar:
             paydays=tuple(paydays),
             cadence_days=cadence_days,
         )
+
+    # ---- how often this owner is paid --------------------------------
+
+    @property
+    def cadence(self) -> PayCadence:
+        """Return how often this owner is paid, as a value of its own.
+
+        **So that a caller already holding a calendar never builds a second
+        answer** (plan step R7a-2a).  :class:`~._cadence.PayCadence` is the one
+        producer of "how many paychecks in a year" and of the unit conversions
+        that rest on it; this is the door for the consumers that have a whole
+        calendar in hand -- the Recurring surface, the recurrence write paths --
+        while :func:`~._loader.cadence_for` serves the ones that need the
+        cadence and nothing else.  Both answer from :attr:`cadence_days`, so
+        there is one fact and one derivation however it is reached.
+
+        Returns:
+            The owner's :class:`~._cadence.PayCadence`.
+
+        Raises:
+            PayCalendarError: This calendar holds no cadence, which
+                :attr:`cadence_days` documents as possible ONLY for an empty
+                calendar.  An owner with no paydays and no schedule row has
+                never stated how often they are paid, and every monthly
+                equivalent on every page is a function of that -- so there is
+                nothing to answer with.  Refused rather than defaulted for the
+                reason :func:`app.services.recurrence._resolution._effective_start`
+                refuses the same owner: a broken invariant rather than a state
+                to paper over, and a silently assumed biweekly rhythm would
+                render a weekly-paid owner every figure at half its true value.
+                Unreachable through a registered owner since plan step X-ad-a,
+                which made registration write the ``budget.pay_schedule`` row.
+        """
+        if self.cadence_days is None:
+            raise PayCalendarError(
+                f"user {self.user_id} has no pay cadence, so how many "
+                f"paychecks they receive in a year is unanswerable.  Their "
+                f"calendar holds {len(self.periods)} payday(s) and no "
+                f"budget.pay_schedule row to read a cadence from; since plan "
+                f"step X-ad-a registration writes one, so this is legacy or "
+                f"companion data rather than a state to default.  Assuming "
+                f"biweekly would report a weekly-paid owner's commitments at "
+                f"half their true monthly value."
+            )
+        return PayCadence(cadence_days=self.cadence_days)
 
     # ---- the schedule's own bounds -----------------------------------
 

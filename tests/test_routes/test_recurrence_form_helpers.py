@@ -39,7 +39,8 @@ from app.routes._recurrence_form_helpers import (
     update_recurrence_rule_from_form,
 )
 from app.routes._redirect_target import RedirectTarget
-from app.services.recurrence import calendar_for, recurrence_spec, resolve
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import recurrence_spec, resolve
 
 
 class TestBuildRecurrenceRuleFromForm:

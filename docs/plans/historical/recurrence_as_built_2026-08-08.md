@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Recurrence redesign, as built: the R4 cluster (2026-08-08)
 
 **Read-only history. Nothing here governs anything.** The live document is

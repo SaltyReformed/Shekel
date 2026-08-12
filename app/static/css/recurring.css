@@ -112,3 +112,62 @@
 .recurring-filter[disabled] {
   opacity: 0.5;
 }
+
+/* =============================================
+   AMOUNT HISTORY (plan step X-au-a)
+   The dated price series a recurring definition's edit form records and
+   renders (_amount_macros.html).  Four aligned columns -- status | effective
+   date | amount | remove -- deliberately the same vocabulary as the loan
+   card's escrow-version drawer (.escrow-ver in loan.css), because it answers
+   the same question about a different quantity; status is column 1 in BOTH so
+   every row carries a text label and never colour alone.
+   ============================================= */
+.amount-versions {
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+
+.amount-ver {
+  display: grid;
+  grid-template-columns: auto minmax(9rem, 1.4fr) 1fr auto;
+  gap: 0.375rem;
+  align-items: center;
+  padding: 0.25rem 0;
+  min-width: 22rem;
+}
+
+.amount-ver--head {
+  border-bottom: 1px solid var(--shekel-border-subtle);
+  padding-bottom: 0.375rem;
+  color: var(--shekel-text-muted);
+  font-size: 0.875rem;
+}
+
+.amount-ver--past,
+.amount-ver--earliest {
+  color: var(--shekel-text-muted);
+}
+
+.amount-ver__badge {
+  font-weight: 600;
+}
+
+.amount-ver--current .amount-ver__badge {
+  color: var(--shekel-done);
+  background: color-mix(in srgb, var(--shekel-done) 16%, transparent);
+}
+
+.amount-ver--scheduled .amount-ver__badge {
+  color: var(--shekel-warning);
+  background: color-mix(in srgb, var(--shekel-warning) 16%, transparent);
+}
+
+.amount-ver--past .amount-ver__badge,
+.amount-ver--earliest .amount-ver__badge {
+  color: var(--shekel-text-muted);
+  background: color-mix(in srgb, var(--shekel-text-muted) 12%, transparent);
+}
+
+.amount-ver__del {
+  display: inline;
+}

@@ -358,22 +358,32 @@ class TestTransferGenerationSharesTheOccurrencePairs:
                 transfer_template_id=template.id,
             ).count() == 0
 
-    def test_a_transfer_occurrence_in_a_schedule_gap_is_logged_and_skipped(
+    def test_a_transfer_occurrence_in_an_absorbed_hole_is_refused_too(
         self, app, db, seed_user, seed_periods, caplog,
     ):
-        """The gap report reaches the transfer engine too (plan ledger row D7).
+        """The transfer engine takes the absorption identically (row **P27**).
 
-        Emitted from the transfer engine's own logger, so an operator filtering
-        by module sees it where the pass ran rather than under the transaction
-        engine that owns the shared preamble.
+        **This test asserted the opposite until plan step C2-b2.**  A day no
+        pay period covered used to produce ``PlacementOutcome.SCHEDULE_GAP``,
+        which ``report_schedule_gaps`` logged from the TRANSFER engine's own
+        logger, and the occurrence generated nothing.  A calendar now derives
+        each period's end from the next payday, so the preceding paycheck
+        absorbs those days -- the hole is not a state a reader can see, and the
+        report went with it.
+
+        What the absorption leaves is an OVER-LONG paycheck holding the 15th
+        twice,
+        which ``idx_transfers_template_period_scenario`` cannot hold, so the
+        pass refuses and writes nothing.  Identical to the transaction engine's
+        answer, which is the point: the two are deliberate parallels and this
+        asserts they did not diverge across the cutover.  The transaction twin
+        is ``test_recurrence_engine.TestALegacyScheduleHole``.
 
         **The hole is re-opened after the append, and plan step C3-b is why**:
         ``pay_period_write`` materialises the payday derivation, so the batch
-        below now ABSORBS the days it used to skip.  ``open_calendar_hole``
-        writes the stored end back down, which is the only way to reach the
-        state this test is about -- and in the wild that state is rows written
-        before C3-b.  The control for the closure itself lives in
-        ``test_recurrence_engine.TestAnOccurrenceInAScheduleGap``.
+        below ABSORBS the days it used to skip.  ``open_calendar_hole`` writes
+        the stored end back down, which is the only way to reach the state this
+        test is about -- and in the wild that state is rows written before C3-b.
         """
         with app.app_context():
             last_covered = seed_periods[-1].end_date
@@ -393,33 +403,33 @@ class TestTransferGenerationSharesTheOccurrencePairs:
 
             with caplog.at_level(
                 logging.WARNING, logger="app.services.transfer_recurrence",
-            ):
-                created = transfer_recurrence.generate_for_template(
+            ), pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
+                transfer_recurrence.generate_for_template(
                     template,
                     GenerationSchedule.for_user(template.user_id),
                     seed_user["scenario"].id,
                 )
 
-            missing = [
+            absorbed = [
                 date(year, month, 15)
                 for year in range(gap_start.year, gap_end.year + 1)
                 for month in range(1, 13)
                 if gap_start <= date(year, month, 15) <= gap_end
             ]
-            assert len(missing) == 1, "the fixture built no homeless occurrence"
-            unplaced = [
+            assert len(absorbed) == 1, "the fixture built no absorbed occurrence"
+            # The refusal names the absorbed date beside the one the paycheck
+            # already owed -- so nothing was dropped, it was refused.
+            assert absorbed[0] in excinfo.value.occurrence_dates
+            assert len(excinfo.value.occurrence_dates) == 2
+            # Nothing is logged any more, and nothing is written.
+            assert [
                 record for record in caplog.records
                 if getattr(record, "event", None)
                 == "recurrence_occurrence_unplaced"
-            ]
-            assert len(unplaced) == 1
-            assert unplaced[0].name == "app.services.transfer_recurrence"
-            assert unplaced[0].occurrences == [
-                day.isoformat() for day in missing
-            ]
-            # Every other occurrence still generated a transfer.
-            assert created
-            assert missing[0] not in {xfer.due_date for xfer in created}
+            ] == []
+            assert db.session.query(Transfer).filter_by(
+                transfer_template_id=template.id,
+            ).count() == 0
 
 
 class TestTransferRegeneration:

@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Recurrence redesign -- as built (through R3)
 
 Archived under section 7 rule 5 of `docs/plans/implementation_plan_recurrence_redesign.md`: a

@@ -25,41 +25,6 @@ import pytest
 import _registry as registry
 
 
-@pytest.fixture(name="stage")
-def _stage(tmp_path, monkeypatch):
-    """Return a helper that mutates a registry copy and re-points the module."""
-
-    def _apply(which: str, old: str, new: str) -> None:
-        source = {"ledger": registry.LEDGER, "steps": registry.STEPS}[which]
-        text = source.read_text()
-        assert old in text, f"control anchor {old!r} is not in the real {which}"
-        target = tmp_path / source.name
-        target.write_text(text.replace(old, new, 1))
-        monkeypatch.setattr(registry, which.upper(), target)
-
-    return _apply
-
-
-@pytest.fixture(name="stage_arc")
-def _stage_arc(tmp_path, monkeypatch):
-    """Return a helper that mutates an ARC DOCUMENT copy and re-points the map.
-
-    Separate from ``stage`` because ``ARC_DOCS`` is a dict rather than a module
-    attribute, and because the defects it plants are in the SPECIFICATIONS
-    rather than in a registry table.
-    """
-
-    def _apply(arc: str, old: str, new: str) -> None:
-        source = registry.ARC_DOCS[arc]
-        text = source.read_text()
-        assert old in text, f"control anchor {old!r} is not in the real {arc} doc"
-        target = tmp_path / source.name
-        target.write_text(text.replace(old, new, 1))
-        monkeypatch.setitem(registry.ARC_DOCS, arc, target)
-
-    return _apply
-
-
 def _a_live_fork():
     """Return the first live fork, its ``steps.md`` line, and a remedy's line.
 
@@ -177,7 +142,7 @@ class TestStepsStatesItsOwnSize:
     def test_the_control_fires_on_a_wrong_step_count(self, stage):
         """The control fires on a wrong step count."""
         rows = registry.step_rows()
-        opened = sum(1 for row in rows if row.state.lower() == "open")
+        opened = sum(1 for row in rows if not row.shipped)
         stage("steps", f"**{len(rows)} steps, {opened} open.**",
               f"**{len(rows) - 7} steps, {opened} open.**")
         problems = registry.steps_stated_count_violation()
@@ -191,7 +156,7 @@ class TestStepsStatesItsOwnSize:
         single count arm would report clean over the edit that ships a step.
         """
         rows = registry.step_rows()
-        opened = sum(1 for row in rows if row.state.lower() == "open")
+        opened = sum(1 for row in rows if not row.shipped)
         stage("steps", f"**{len(rows)} steps, {opened} open.**",
               f"**{len(rows)} steps, {opened - 3} open.**")
         problems = registry.steps_stated_count_violation()
@@ -243,9 +208,14 @@ class TestEveryFindingNamesALiveOwner:
         assert any("names no step" in p for p in problems), problems
 
     def test_the_control_fires_on_an_owner_that_has_shipped(self, stage):
-        """pay_calendar:C1 is SHIPPED, so a live row may not point at it."""
+        """pay_calendar:C1 is SHIPPED, so a live row may not point at it.
+
+        The staged row was ``pay_calendar:P2`` until that finding CLOSED at
+        ``C2-b2`` and left the ledger, which is the arm working on its own
+        control.  Any live row serves; ``P16`` is one this commit did not move.
+        """
         assert registry.arc_checkboxes("pay_calendar")["C1"], "C1 must be ticked"
-        line = _row("ledger", "| pay_calendar | P2 |")
+        line = _row("ledger", "| pay_calendar | P16 |")
         stage("ledger", line, _with_cell(line, -1, "C1"))
         problems = registry.owner_violations()
         assert any("SHIPPED" in p and "rule 2" in p for p in problems), problems
@@ -470,9 +440,14 @@ class TestTheTwoAlsoRelationsMeanOppositeThings:
         assert "= " in cells and "~ " in cells
 
     def test_the_control_fires_when_a_merged_target_is_still_live(self, stage):
-        """`=` says the target was absorbed, so it must not still be a row."""
+        """`=` says the target was absorbed, so it must not still be a row.
+
+        Named ``pay_calendar:P2`` until that row closed at ``C2-b2``; the
+        target only has to be a row that still EXISTS and whose id cell is
+        BARE, since the `also` grammar takes an unannotated id.
+        """
         line = _row("ledger", "| balance | N-128 |")
-        stage("ledger", line, _with_cell(line, 2, "= pay_calendar:P2"))
+        stage("ledger", line, _with_cell(line, 2, "= pay_calendar:P16"))
         problems = registry.also_violations()
         assert any("still its own live row" in p for p in problems), problems
 
@@ -711,19 +686,28 @@ class TestAParentTicksWithTheLastOfItsLeaves:
         """The reason the parent set is DECLARED rather than derived.
 
         ``R-F1`` is SHIPPED and is a string prefix of ``R-F10``, ``R-F12`` and
-        ``R-F13``, which are unrelated findings-steps and all open.  Deriving
-        parenthood from the id alone would report three failures the moment the
-        arm was switched on -- and the tempting fix is an exception list, which
-        is finding N-147's defect.  This control keeps that measurement alive:
-        if the corpus ever stops containing the trap, the reason for the design
-        should be re-read rather than assumed.
+        ``R-F13``, which are unrelated findings-steps.  Deriving parenthood
+        from the id alone would report failures the moment the arm was switched
+        on -- and the tempting fix is an exception list, which is finding
+        N-147's defect.  This control keeps that measurement alive: if the
+        corpus ever stops containing the trap, the reason for the design should
+        be re-read rather than assumed.
+
+        **It asserts that at least one prefix-sharer is OPEN, not that all
+        are.**  ``R-F10`` shipped at ``pay_calendar:C2-b2``, which turned an
+        ``all`` assertion red without the trap having gone anywhere -- a
+        control that fails when the corpus merely PROGRESSES is grading the
+        wrong thing.  What matters is that a shipped step still shares a prefix
+        with an open one, because that is the pair a derived arm would misread.
         """
         rows = {row.ident: row for row in registry.step_rows()
                 if row.arc == "recurrence"}
         assert rows["R-F1"].shipped
         tempting = [i for i in rows if i != "R-F1" and i.startswith("R-F1")]
         assert tempting, "the R-F1 prefix trap has left the corpus"
-        assert not any(rows[i].shipped for i in tempting)
+        assert any(not rows[i].shipped for i in tempting), (
+            "the trap needs an OPEN prefix-sharer beside the shipped R-F1"
+        )
         assert not rows["R-F1"].is_decomposed_parent, (
             "R-F1 must NOT declare itself a parent -- it has no decomposition"
         )
@@ -787,6 +771,28 @@ class TestAParentTicksWithTheLastOfItsLeaves:
         assert any("balance:X-f" in p for p in problems), problems
         assert not any("'X-f1'" in p for p in problems), (
             f"a SHIPPED leaf must not be reported as open: {problems}"
+        )
+
+
+    def test_a_parent_is_graded_over_its_whole_identity_class(self, stage):
+        """A container's leaves may be filed under a SIBLING's name.
+
+        **This arm re-spelled the leaf derivation inline, per-arc, until
+        2026-08-11.**  ``balance:X-l``, ``pay_calendar:C2`` and
+        ``recurrence:R-F12`` are ONE step under three names and every leaf of
+        the class is a ``pay_calendar:C2-*`` row, so shipping ``X-l`` over five
+        open leaves reported NOTHING: the arm looked for a `balance` row whose
+        id starts with `X-l` and there is none.  The class row `C2` happened to
+        cover it, which is why the hole was invisible -- one rename away from
+        being live.
+        """
+        line = _row("steps", "| balance | X-l |")
+        stage("steps", line, _with_cell(line, 4, "SHIPPED"))
+        problems = [p for p in registry.decomposition_violations()
+                    if "balance:X-l" in p]
+        assert problems, registry.decomposition_violations()
+        assert "pay_calendar:C2-" in problems[0], (
+            f"the failure names no leaf of the class: {problems}"
         )
 
 
@@ -882,3 +888,85 @@ class TestTheParserSurvivesTheShapesTheRealFilesUse:
             f"the gate cites rules conventions.md does not state: {missing}. "
             f"conventions.md states {sorted(numbers)}"
         )
+
+
+class TestEveryRegistryIsUnderItsCap:
+    """conventions.md rule 4, on the five documents it did not used to reach."""
+
+    @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
+    def test_the_registry_is_within_its_line_cap(self, name):
+        """The registry is within its line cap."""
+        problems = [p for p in registry.registry_line_cap_violations()
+                    if p.startswith(name)]
+        assert not problems, problems[0]
+
+    @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
+    def test_the_cap_still_has_headroom(self, name):
+        """A cap already binding cannot absorb the next finding."""
+        cap = registry.REGISTRY_CAPS[name]
+        actual = len((registry.PLANS / name).read_text().splitlines())
+        assert actual <= cap - 20, (
+            f"{name} is at {actual} of {cap} -- under 20 lines of headroom. "
+            f"conventions.md rule 5: archive a completed span, do not raise the cap"
+        )
+
+    def test_the_control_fires_when_a_registry_grows_past_its_cap(self, tmp_path,
+                                                                 monkeypatch):
+        """A cap nobody has seen fail is a number, not a gate.
+
+        EVERY registry is staged, not just the one being pushed over: the arm
+        walks all five, so a directory holding one file raises
+        ``FileNotFoundError`` and the control fails for a reason that has
+        nothing to do with the cap.
+        """
+        over = "ledger.md"
+        for name, cap in registry.REGISTRY_CAPS.items():
+            padding = cap + 1 if name == over else 1
+            (tmp_path / name).write_text("filler\n" * padding)
+        monkeypatch.setattr(registry, "PLANS", tmp_path)
+        problems = registry.registry_line_cap_violations()
+        assert len(problems) == 1, problems
+        assert problems[0].startswith(over) and "rule 4" in problems[0]
+
+
+class TestNoLedgerRowHasGrownIntoASpecification:
+    """conventions.md rule 4's per-row half -- rule 14's twin for the ledger."""
+
+    def test_no_row_is_over_the_row_cap(self):
+        """No row is over the row cap."""
+        assert not registry.ledger_row_cap_violations()
+
+    def test_the_arm_has_rows_to_grade(self):
+        """Zero violations must mean zero, not "read nothing"."""
+        rows = registry.ledger_rows()
+        assert len(rows) >= 100, "the ledger parsed almost no rows"
+
+    def test_the_cap_targets_outliers_rather_than_the_corpus(self):
+        """A cap most rows crowd is a cap fitted to the file, which rule 4 refuses.
+
+        **Deliberately not a "widest row has headroom" check.**  That is the
+        right instrument for a LINE cap, where headroom means the document can
+        absorb another finding.  A row has a different remedy always available
+        -- move its narrative to the owning step -- so the meaningful property
+        is that the cap bites on outliers, not on ordinary rows.  The median
+        sat at 409 against a 2,000 cap when this was written; if it ever
+        approaches half the cap, the ledger has become a plan document again.
+        """
+        widths = sorted(row.width for row in registry.ledger_rows())
+        median = widths[len(widths) // 2]
+        assert median <= registry.LEDGER_ROW_CAP // 2, (
+            f"the MEDIAN row is {median} of {registry.LEDGER_ROW_CAP}. The cap "
+            "is no longer catching outliers -- the whole table has grown into "
+            "specifications. conventions.md rule 4"
+        )
+
+    def test_the_control_fires_on_a_row_that_became_a_specification(self, stage):
+        """The shape eight rows carried until 2026-08-11.
+
+        Planted on a REAL row so the control exercises the real seven-cell
+        parser, not a synthetic table it wrote itself.
+        """
+        stage("ledger", "| balance | FU-3 |", "| balance | FU-3 " + "x" * 2100 + " |")
+        problems = registry.ledger_row_cap_violations()
+        assert problems, "a row over the cap must be reported"
+        assert "owning step's specification" in problems[0]

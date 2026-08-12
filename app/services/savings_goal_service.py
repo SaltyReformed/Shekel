@@ -11,11 +11,11 @@ from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 from app import ref_cache
-from app.enums import GoalModeEnum, IncomeUnitEnum, RecurrencePatternEnum
+from app.enums import GoalModeEnum, IncomeUnitEnum
+from app.services.pay_calendar import PayCadence
 from app.utils.dates import add_months, months_between
 from app.utils.money import (
     MONTHS_PER_YEAR,
-    PAY_PERIODS_PER_YEAR,
     round_money,
     round_money_ceiling,
 )
@@ -110,7 +110,10 @@ class SavingsCoverage:
             footer's one-decimal grain.  ``0`` when there are no expenses to
             cover.
         paychecks_covered: How many biweekly pay periods the same savings
-            cover -- the raw ratio times ``26/12``, then rounded.
+            cover -- the raw ratio through
+            :meth:`~app.services.pay_calendar.PayCadence.months_to_paychecks`,
+            then rounded.  The owner's own cadence since plan step R7a-2a; it
+            was a hardcoded ``26/12``.
         years_covered: The same span in years -- the raw ratio over ``12``,
             then rounded.
     """
@@ -120,16 +123,54 @@ class SavingsCoverage:
     years_covered: Decimal
 
 
+@dataclass(frozen=True)
+class GoalTargetSpec:
+    """The four columns that define what a savings goal is AIMING AT.
+
+    :func:`resolve_goal_target`'s input, grouped into a value at plan step
+    R7a-2a.  They were four positional parameters beside the owner's pay, and
+    adding the fifth input that step gives the resolver -- the owner's pay
+    CADENCE, which is what turns a per-paycheck figure into a monthly one --
+    would have taken the signature to six.  A parameter object rather than a
+    raised ``max-args``: the four are meaningless apart (a multiplier with no
+    unit names no target, a unit with no mode is not consulted) and they are
+    exactly ``budget.savings_goals``' four target columns, so they are one
+    concept rather than a bag assembled to satisfy a count.
+
+    Scalars rather than the ``SavingsGoal`` row, which is what the four
+    parameters were: this service is pure and Flask-free by contract, and its
+    tests drive the resolver over shapes no row has to exist for.
+
+    Mirrors the ``RecurrenceSpec`` / ``TransferSpec`` / ``RegistrationSpec``
+    precedent -- a frozen record of what a caller STATES.
+
+    Attributes:
+        goal_mode_id: The goal's mode id (``ref.goal_modes``).  FIXED means the
+            target is :attr:`target_amount`; anything else is income-relative
+            and reads the two fields below.
+        target_amount: The stored dollar target.  Used for a FIXED goal, and
+            ``None`` by design for an income-relative one -- where it is still
+            the fallback if the unit cannot be read.
+        income_unit_id: The unit the multiplier counts (``ref.income_units``:
+            paychecks or months).  ``None`` for a FIXED goal.
+        income_multiplier: How many of that unit the goal targets.  ``None``
+            for a FIXED goal.
+    """
+
+    goal_mode_id: int
+    target_amount: Decimal | None
+    income_unit_id: int | None
+    income_multiplier: Decimal | None
+
+
 def resolve_goal_target(
-    goal_mode_id: int,
-    target_amount: Decimal | None,
-    income_unit_id: int | None,
-    income_multiplier: Decimal | None,
+    spec: GoalTargetSpec,
     net_biweekly_pay: Decimal,
+    pay_cadence: PayCadence,
 ) -> Decimal:
     """Resolve the dollar target for a savings goal.
 
-    For fixed-mode goals, returns target_amount directly.
+    For fixed-mode goals, returns the spec's ``target_amount`` directly.
     For income-relative goals, computes the target from the income
     multiplier and the user's current net biweekly pay.
 
@@ -137,7 +178,13 @@ def resolve_goal_target(
 
     Conversion factors:
         Paychecks: target = multiplier * net_biweekly_pay
-        Months:    target = multiplier * (net_biweekly_pay * 26 / 12)
+        Months:    target = multiplier * pay_cadence.per_paycheck_to_monthly(
+                   net_biweekly_pay)
+
+    **The months conversion is per-OWNER since plan step R7a-2a**, where it read
+    a hardcoded ``26 / 12``.  A "3 months of salary" goal for a weekly-paid
+    owner resolved to ``multiplier * pay * 26 / 12`` -- half the true target,
+    because they receive 52 paychecks a year and not 26.
 
     Intermediate results are NOT quantized -- only the final result
     is rounded to 2 decimal places to avoid penny-level rounding
@@ -145,63 +192,64 @@ def resolve_goal_target(
     not $12,999.99).
 
     Args:
-        goal_mode_id: The goal's mode ID (from ref.goal_modes).
-        target_amount: The stored target amount (used for fixed goals;
-            may be None for income-relative goals).
-        income_unit_id: The income unit ID (from ref.income_units).
-            Required when mode is income-relative.
-        income_multiplier: The multiplier value.  Required when mode
-            is income-relative.
-        net_biweekly_pay: Current projected net biweekly pay from
+        spec: What the goal is aiming at -- see :class:`GoalTargetSpec`.
+        net_biweekly_pay: Current projected net pay for one paycheck, from
             the paycheck calculator.  Used only for income-relative
             goals.
+        pay_cadence: How often the owner is paid
+            (:class:`~app.services.pay_calendar.PayCadence`).  Read only by the
+            MONTHS unit, which is the only branch that leaves paycheck space.
 
     Returns:
         The resolved dollar target as a Decimal, quantized to 2
         decimal places.
 
     Raises:
-        ValueError: If the goal is income-relative but income_unit_id
-            or income_multiplier is None.
+        ValueError: If the goal is income-relative but ``income_unit_id``
+            or ``income_multiplier`` is None.
     """
 
     fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
 
-    if goal_mode_id == fixed_id:
-        if target_amount is None:
+    if spec.goal_mode_id == fixed_id:
+        if spec.target_amount is None:
             return Decimal("0.00")
-        return target_amount
+        return spec.target_amount
 
     # Income-relative mode -- validate required fields.
-    if income_unit_id is None or income_multiplier is None:
+    if spec.income_unit_id is None or spec.income_multiplier is None:
         raise ValueError(
             "Income-relative goal requires income_unit_id and "
             "income_multiplier."
         )
 
     multiplier = (
-        income_multiplier if isinstance(income_multiplier, Decimal)
-        else Decimal(str(income_multiplier))
+        spec.income_multiplier if isinstance(spec.income_multiplier, Decimal)
+        else Decimal(str(spec.income_multiplier))
     )
 
     paychecks_id = ref_cache.income_unit_id(IncomeUnitEnum.PAYCHECKS)
     months_id = ref_cache.income_unit_id(IncomeUnitEnum.MONTHS)
 
-    if income_unit_id == paychecks_id:
+    if spec.income_unit_id == paychecks_id:
         result = multiplier * net_biweekly_pay
-    elif income_unit_id == months_id:
-        # Convert biweekly to monthly: 26 pay periods / 12 months.
+    elif spec.income_unit_id == months_id:
+        # Paycheck space to month space, at the OWNER's cadence.
         # Quantize only the final result, not the intermediate.
-        monthly_net = net_biweekly_pay * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-        result = multiplier * monthly_net
+        result = multiplier * pay_cadence.per_paycheck_to_monthly(
+            net_biweekly_pay,
+        )
     else:
         # Unknown unit -- defensive fallback with warning.
         logger.warning(
             "Unknown income_unit_id=%d for income-relative goal; "
             "falling back to target_amount.",
-            income_unit_id,
+            spec.income_unit_id,
         )
-        return target_amount if target_amount is not None else Decimal("0.00")
+        return (
+            spec.target_amount if spec.target_amount is not None
+            else Decimal("0.00")
+        )
 
     return round_money(result)
 
@@ -261,6 +309,7 @@ def _to_coverage_grain(value: Decimal) -> Decimal:
 def calculate_savings_metrics(
     savings_balance: Decimal,
     average_monthly_expenses: Decimal,
+    pay_cadence: PayCadence,
 ) -> SavingsCoverage:
     """Calculate how long savings would cover expenses.
 
@@ -286,12 +335,13 @@ def calculate_savings_metrics(
     :data:`_COVERAGE_GRAIN` FIRST and the other two derived from that rounded
     value, so both were rounded twice.  That is the drift the two functions
     beside this one forbid in terms -- :func:`resolve_goal_target`
-    ("Intermediate results are NOT quantized") and :func:`amount_to_monthly`
-    ("The result is NOT quantized -- callers are responsible for rounding at
-    their own aggregation boundary").
+    ("Intermediate results are NOT quantized") and
+    ``obligations_aggregator.template_monthly_or_none`` (full precision until
+    one ``round_money`` at the boundary).
 
     What the paychecks figure ANSWERS is "how many pay periods would my savings
-    cover", which is ``savings / (monthly expenses * 12/26)``.  Converting the
+    cover", which is ``savings / (monthly expenses / paychecks per month)``.
+    Converting the
     already-rounded months answers a different question -- how many pay periods
     the DISPLAYED months figure corresponds to -- which is a fact about the
     display, not about the user's money.  Measured on the prod-shape clone:
@@ -306,6 +356,9 @@ def calculate_savings_metrics(
     conversions of each other at the displayed grain, so a reader multiplying
     the rendered ``0.7`` by ``26/12`` gets ``1.5`` and the line beside it says
     ``1.6``.  Each figure is the best answer to its own question instead.
+    (Every figure in the two paragraphs above was measured at the developer's
+    biweekly cadence, which is where ``26/12`` comes from; the RULE is
+    *paychecks per month* and is the owner's own since plan step R7a-2a.)
 
     **The shape that cost can take, measured and ruled acceptable** (plan step
     X-z8, ruling R-CW, out of X-z's adversarial design review, which found the
@@ -321,6 +374,12 @@ def calculate_savings_metrics(
     Args:
         savings_balance: The user's total liquid savings.
         average_monthly_expenses: The average monthly expense total.
+        pay_cadence: How often the owner is paid
+            (:class:`~app.services.pay_calendar.PayCadence`), which is what
+            :attr:`SavingsCoverage.paychecks_covered` is measured in.  Read as
+            the OWNER's cadence since plan step R7a-2a: the span was converted
+            at a hardcoded ``26 / 12``, so a weekly-paid owner was told their
+            savings covered half as many paychecks as they do.
 
     Returns:
         The :class:`SavingsCoverage` (a three-key dict until plan step
@@ -340,7 +399,7 @@ def calculate_savings_metrics(
     return SavingsCoverage(
         months_covered=_to_coverage_grain(months),
         paychecks_covered=_to_coverage_grain(
-            months * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR,
+            pay_cadence.months_to_paychecks(months),
         ),
         years_covered=_to_coverage_grain(months / MONTHS_PER_YEAR),
     )
@@ -365,96 +424,6 @@ def count_periods_until(target_date, periods):
         if period.start_date >= today and period.start_date <= target_date:
             count += 1
     return count
-
-
-def amount_to_monthly(
-    amount: Decimal,
-    pattern_id: int,
-    interval_n: int = 1,
-) -> Decimal | None:
-    """Convert a per-occurrence amount to its monthly equivalent.
-
-    Uses the biweekly pay period convention (26 periods per year) to
-    translate recurrence frequencies into monthly values.  Returns
-    None for a pattern this application does not model.
-
-    Conversion factors (biweekly-to-monthly: 26 pay periods / 12 months):
-
-      - every_period:    amount * 26 / 12
-      - every_n_periods: amount * (26 / n) / 12
-      - monthly:         amount  (already monthly)
-      - monthly_first:   amount  (already monthly)
-      - quarterly:       amount / 3
-      - semi_annual:     amount / 6
-      - annual:          amount / 12
-
-    **"Does not recur" never reaches this function.**  It is
-    ``recurrence_rule_id IS NULL``, and the sole caller
-    (``obligations_aggregator.template_monthly_or_none``) returns ``None``
-    for a rule-less template before there is a ``pattern_id`` to pass.  A
-    ``Once`` branch used to sit here for the pattern that meant the same
-    thing; plan step R2e-3 retired it.
-
-    The result is NOT quantized -- callers are responsible for rounding
-    at their own aggregation boundary.
-
-    Args:
-        amount: The per-occurrence Decimal amount.
-        pattern_id: The recurrence pattern integer ID (from ref_cache).
-        interval_n: The interval for EVERY_N_PERIODS patterns.
-            Defaults to 1 (every period).
-
-    Returns:
-        Decimal monthly equivalent, or ``None`` when *pattern_id* names no
-        modelled pattern -- the surviving ``Once`` ``ref`` row (plan step
-        R2e-3) or a hand-edited id.
-    """
-
-    every_period_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.EVERY_PERIOD
-    )
-    every_n_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.EVERY_N_PERIODS
-    )
-    monthly_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.MONTHLY
-    )
-    monthly_first_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.MONTHLY_FIRST
-    )
-    quarterly_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.QUARTERLY
-    )
-    semi_annual_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.SEMI_ANNUAL
-    )
-    annual_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.ANNUAL
-    )
-
-    # Single-return dispatch (one Decimal-or-None per pattern); the per-pattern
-    # conversion factors are documented in the module docstring above.
-    if pattern_id == every_period_id:
-        monthly = amount * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-    elif pattern_id == every_n_id:
-        n = Decimal(str(interval_n))
-        monthly = amount * PAY_PERIODS_PER_YEAR / n / MONTHS_PER_YEAR
-    elif pattern_id in (monthly_id, monthly_first_id):
-        monthly = amount
-    elif pattern_id == quarterly_id:
-        monthly = amount / Decimal("3")
-    elif pattern_id == semi_annual_id:
-        monthly = amount / Decimal("6")
-    elif pattern_id == annual_id:
-        monthly = amount / MONTHS_PER_YEAR
-    else:
-        # A pattern this application does not model.  Unreachable through any
-        # write door -- ``RecurrencePatternField`` refuses one at the schema --
-        # so this covers the surviving ``Once`` ``ref`` row and hand-edited
-        # data, and it must stay: dropping the contribution is the safe answer
-        # where guessing a cadence would misstate a monthly commitment.
-        monthly = None
-    return monthly
 
 
 def calculate_trajectory(

@@ -16,6 +16,8 @@ from app.services.tax_config_service import (
     load_tax_configs,
     load_tax_configs_for_periods,
     load_tax_configs_for_year,
+    profile_tax_series,
+    resolve_tax_year,
 )
 
 # pylint: disable=redefined-outer-name
@@ -96,7 +98,9 @@ class TestLoadTaxConfigs:
             db.session.add(profile)
             db.session.flush()
 
-            result = load_tax_configs(seed_user["user"].id, profile)
+            result = load_tax_configs(
+                seed_user["user"].id, profile, date.today().year,
+            )
 
             assert isinstance(result, dict)
             assert set(result.keys()) == {"bracket_set", "state_config", "fica_config"}
@@ -162,7 +166,7 @@ class TestLoadTaxConfigs:
             db.session.add(fica_config)
             db.session.flush()
 
-            result = load_tax_configs(user.id, profile)
+            result = load_tax_configs(user.id, profile, date.today().year)
 
             assert result["bracket_set"] is not None
             assert isinstance(result["bracket_set"], TaxBracketSet)
@@ -218,8 +222,10 @@ class TestLoadTaxConfigs:
             db.session.add_all([state_current, state_other])
             db.session.flush()
 
-            # Without explicit tax_year, should return current year's config.
-            result_default = load_tax_configs(user.id, profile)
+            # The current year's own configs.
+            result_default = load_tax_configs(
+                user.id, profile, date.today().year,
+            )
             assert result_default["state_config"] is not None
             assert result_default["state_config"].flat_rate == Decimal("0.0399")
 
@@ -256,72 +262,266 @@ class TestLoadTaxConfigs:
             assert result["fica_config"] is None
 
 
-class TestLoadTaxConfigsForYear:
-    """load_tax_configs_for_year: per-year load with a current-year fallback (DH-#30)."""
+class TestResolveTaxYear:
+    """resolve_tax_year: the ONE substitution rule, and it reads no clock.
 
-    def test_returns_target_year_configs_when_present(self, app, db, seed_user):
-        """A future year that HAS configs returns them, not the current year's."""
+    A pure function over the configured-year set, so these cases use ABSOLUTE
+    years and pass on every calendar day -- which is itself the property under
+    test.  The rule it replaced consulted ``date.today().year`` and therefore
+    could not be stated without one.
+    """
+
+    def test_an_exactly_configured_year_resolves_to_itself(self):
+        """A year with its own configuration is never substituted."""
+        assert resolve_tax_year(2026, (2025, 2026)) == 2026
+
+    def test_a_future_year_resolves_to_the_latest_configured(self):
+        """An unconfigured FUTURE year takes the newest published rules."""
+        assert resolve_tax_year(2029, (2025, 2026)) == 2026
+
+    def test_it_reaches_back_not_forward_when_both_are_possible(self):
+        """With configuration on both sides, the year AT OR BEFORE wins.
+
+        Tax rules take effect and persist, so 2027 is governed by 2026's
+        published rules, not by 2030's -- even though 2030 is the nearer year
+        in absolute distance.
+        """
+        assert resolve_tax_year(2027, (2026, 2030)) == 2026
+
+    def test_a_year_predating_all_configuration_reaches_forward(self):
+        """The weaker arm: a historical year with nothing at or before it.
+
+        An approximation for a year the user never configured, and the only
+        answer available other than none at all.
+        """
+        assert resolve_tax_year(2019, (2025, 2026)) == 2025
+
+    def test_no_configuration_at_all_resolves_to_nothing(self):
+        """An empty candidate set has nothing to substitute, so it says so."""
+        assert resolve_tax_year(2026, ()) is None
+
+    def test_the_current_year_being_unconfigured_does_not_strand_it(self):
+        """The New Year cliff, stated as the rule that removes it.
+
+        The retired rule substituted the CURRENT calendar year, so a request
+        FOR that year found nothing to redirect to and resolved to no
+        configuration -- which the paycheck engine reads as zero Social
+        Security.  Measured on production data 2026-08-11: 40 of 51 live-priced
+        salary rows moved and projected income rose $8,460.50 on 2027-01-01.
+        Here 2027 is both the requested year and "today", and it still resolves.
+        """
+        assert resolve_tax_year(2027, (2025, 2026)) == 2026
+
+
+class TestProfileTaxSeries:
+    """profile_tax_series: three INDEPENDENT candidate sets, scoped as the loader is."""
+
+    def test_each_kind_keeps_its_own_years(self, app, db, seed_user):
+        """The three series are separate; one kind's year is not another's."""
         with app.app_context():
             profile = _make_profile(seed_user)
-            current_year = date.today().year
-            _seed_state_config(seed_user, current_year, Decimal("0.0399"))
-            _seed_state_config(seed_user, current_year + 1, Decimal("0.0500"))
+            _seed_state_config(seed_user, 2024, Decimal("0.0399"))
+            db.session.add(FicaConfig(
+                user_id=seed_user["user"].id, tax_year=2031,
+                ss_rate=Decimal("0.0620"), ss_wage_base=Decimal("200000.00"),
+                medicare_rate=Decimal("0.0145"),
+            ))
+            db.session.flush()
+
+            series = profile_tax_series(seed_user["user"].id, profile)
+
+            assert sorted(series.state_configs) == [2024]
+            assert sorted(series.fica_configs) == [2031]
+            assert sorted(series.bracket_sets) == []
+
+    def test_a_year_configured_for_another_filing_status_is_not_a_candidate(
+        self, app, db, seed_user,
+    ):
+        """Scoping matches the loader's, so no cross-status substitution.
+
+        ``load_tax_configs`` reads the state config by
+        ``(user, state, year, filing_status)``.  A year counted as configured
+        on another status would resolve to it and then load ``None`` -- the
+        silent-zero-withholding outcome this rule exists to prevent.
+        """
+        with app.app_context():
+            profile = _make_profile(seed_user, filing_status_name="single")
+            _seed_state_config(
+                seed_user, 2024, Decimal("0.0500"),
+                filing_status_name="married_jointly",
+            )
+            db.session.flush()
+
+            series = profile_tax_series(seed_user["user"].id, profile)
+
+            assert series.state_configs == {}
+
+
+class TestOneKindsYearsDoNotDecideAnotherKinds:
+    """A PARTIALLY configured year must not zero the kinds it lacks.
+
+    The defect an adversarial review caught in this change's first draft, which
+    resolved ONE year for the profile from the UNION of the three tables.  A
+    year present in only one table then became the resolved year for itself AND
+    every later year, and the two missing kinds silently returned ``None`` --
+    the same zero-withholding failure the change exists to remove, widened from
+    one year to the whole horizon.
+
+    It is the state the app's own settings screen produces: that screen writes
+    ``StateTaxConfig`` and ``FicaConfig`` for any year in ``[2000, 2100]``, and
+    nothing in ``app/`` ever creates a ``TaxBracketSet`` outside the signup
+    seed.  Measured on a clone of production 2026-08-11 under the union rule:
+    saving one 2027 state-tax row dropped a 2028 paycheck's Social Security to
+    ``$0.00`` and raised its net by **$216.63**.
+    """
+
+    def test_a_state_only_year_does_not_strand_the_bracket_set_or_fica(
+        self, app, db, seed_user,
+    ):
+        """2027 has only a state config; the other two still resolve to 2026."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            profile = _make_profile(seed_user)
+            flat_type = db.session.query(TaxType).filter_by(name="flat").one()
+            _seed_state_config(seed_user, 2026, Decimal("0.0399"))
+            db.session.add_all([
+                TaxBracketSet(
+                    user_id=user_id, tax_year=2026,
+                    filing_status_id=profile.filing_status_id,
+                    standard_deduction=Decimal("15000.00"),
+                ),
+                FicaConfig(
+                    user_id=user_id, tax_year=2026,
+                    ss_rate=Decimal("0.0620"),
+                    ss_wage_base=Decimal("184500.00"),
+                    medicare_rate=Decimal("0.0145"),
+                ),
+                # The one form save: a 2027 STATE config and nothing else.
+                StateTaxConfig(
+                    user_id=user_id, state_code="NC", tax_year=2027,
+                    tax_type_id=flat_type.id,
+                    filing_status_id=profile.filing_status_id,
+                    flat_rate=Decimal("0.0450"),
+                ),
+            ])
+            db.session.flush()
+
+            for requested in (2027, 2028):
+                result = load_tax_configs_for_year(user_id, profile, requested)
+                assert result["bracket_set"] is not None, requested
+                assert result["bracket_set"].tax_year == 2026, requested
+                assert result["fica_config"] is not None, requested
+                assert result["fica_config"].tax_year == 2026, requested
+                # The state config resolves on its OWN series, so it takes the
+                # 2027 row the user actually saved.
+                assert result["state_config"].tax_year == 2027, requested
+
+    def test_a_fica_only_year_does_not_strand_the_state_config_or_brackets(
+        self, app, db, seed_user,
+    ):
+        """The mirror image: a FICA-only year leaves the other two on 2026."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            profile = _make_profile(seed_user)
+            _seed_state_config(seed_user, 2026, Decimal("0.0399"))
+            db.session.add_all([
+                TaxBracketSet(
+                    user_id=user_id, tax_year=2026,
+                    filing_status_id=profile.filing_status_id,
+                    standard_deduction=Decimal("15000.00"),
+                ),
+                FicaConfig(
+                    user_id=user_id, tax_year=2026,
+                    ss_rate=Decimal("0.0620"),
+                    ss_wage_base=Decimal("184500.00"),
+                    medicare_rate=Decimal("0.0145"),
+                ),
+                FicaConfig(
+                    user_id=user_id, tax_year=2027,
+                    ss_rate=Decimal("0.0620"),
+                    ss_wage_base=Decimal("190000.00"),
+                    medicare_rate=Decimal("0.0145"),
+                ),
+            ])
+            db.session.flush()
+
+            result = load_tax_configs_for_year(user_id, profile, 2028)
+
+            assert result["fica_config"].tax_year == 2027
+            assert result["fica_config"].ss_wage_base == Decimal("190000.00")
+            assert result["state_config"].tax_year == 2026
+            assert result["bracket_set"].tax_year == 2026
+
+
+class TestLoadTaxConfigsForYear:
+    """load_tax_configs_for_year: resolve which year applies, then load it (DH-#30)."""
+
+    def test_returns_target_year_configs_when_present(self, app, db, seed_user):
+        """A year that HAS configs returns them, with no substitution."""
+        with app.app_context():
+            profile = _make_profile(seed_user)
+            _seed_state_config(seed_user, 2025, Decimal("0.0399"))
+            _seed_state_config(seed_user, 2026, Decimal("0.0500"))
 
             result = load_tax_configs_for_year(
-                seed_user["user"].id, profile, current_year + 1,
+                seed_user["user"].id, profile, 2026,
             )
 
             assert result["state_config"].flat_rate == Decimal("0.0500")
-            assert result["state_config"].tax_year == current_year + 1
+            assert result["state_config"].tax_year == 2026
 
-    def test_falls_back_to_current_year_when_target_missing(self, app, db, seed_user):
-        """A future year with NO configs at all falls back to the current year's."""
+    def test_an_unconfigured_year_loads_the_latest_configured_year(
+        self, app, db, seed_user,
+    ):
+        """A year with no configs loads the newest configured year's."""
         with app.app_context():
             profile = _make_profile(seed_user)
-            current_year = date.today().year
-            _seed_state_config(seed_user, current_year, Decimal("0.0399"))
-            # No configs for current_year + 5.
+            _seed_state_config(seed_user, 2026, Decimal("0.0399"))
 
             result = load_tax_configs_for_year(
-                seed_user["user"].id, profile, current_year + 5,
+                seed_user["user"].id, profile, 2031,
             )
 
             assert result["state_config"].flat_rate == Decimal("0.0399")
-            assert result["state_config"].tax_year == current_year
+            assert result["state_config"].tax_year == 2026
 
-    def test_no_fallback_when_target_is_the_fallback_year(self, app, db, seed_user):
-        """When the target IS the fallback year, a missing config stays None.
+    def test_a_user_with_no_configuration_gets_none(self, app, db, seed_user):
+        """Nothing configured anywhere is the ONLY way all three come back None.
 
-        The fallback only redirects OTHER years to the current year; it
-        must not loop or fabricate a config for the current year itself.
+        It is never merely because the REQUESTED year is unconfigured, which is
+        what the retired current-year fallback produced every New Year.
         """
         with app.app_context():
             profile = _make_profile(seed_user)
-            current_year = date.today().year
-            # Nothing seeded for the current year.
+            # Nothing seeded for any year.
 
             result = load_tax_configs_for_year(
-                seed_user["user"].id, profile, current_year,
+                seed_user["user"].id, profile, date.today().year,
             )
 
             assert result["bracket_set"] is None
             assert result["state_config"] is None
             assert result["fica_config"] is None
 
-    def test_explicit_fallback_year_overrides_current_year(self, app, db, seed_user):
-        """An explicit fallback_year is used instead of the current year."""
+    def test_the_resolution_does_not_move_with_the_calendar(
+        self, app, db, seed_user,
+    ):
+        """The same request resolves the same way whatever year it is asked in.
+
+        The property the whole change exists for: 2027, 2028 and 2029 all
+        resolve to 2026's rules, and none of them consults today.  Under the
+        retired rule, whichever of those years happened to BE the current year
+        resolved to nothing at all.
+        """
         with app.app_context():
             profile = _make_profile(seed_user)
-            current_year = date.today().year
-            _seed_state_config(seed_user, current_year - 1, Decimal("0.0425"))
+            _seed_state_config(seed_user, 2026, Decimal("0.0399"))
 
-            result = load_tax_configs_for_year(
-                seed_user["user"].id, profile, current_year + 3,
-                fallback_year=current_year - 1,
-            )
-
-            assert result["state_config"].flat_rate == Decimal("0.0425")
-            assert result["state_config"].tax_year == current_year - 1
+            for requested in (2027, 2028, 2029):
+                result = load_tax_configs_for_year(
+                    seed_user["user"].id, profile, requested,
+                )
+                assert result["state_config"].tax_year == 2026, requested
 
 
 class TestLoadTaxConfigsForPeriods:
@@ -349,25 +549,30 @@ class TestLoadTaxConfigsForPeriods:
             assert result[current_year]["state_config"].flat_rate == Decimal("0.0399")
             assert result[future_year]["state_config"].flat_rate == Decimal("0.0500")
 
-    def test_missing_future_year_falls_back_in_its_own_slot(self, app, db, seed_user):
-        """A period year with no configs falls back to the current year in its slot."""
+    def test_an_unconfigured_period_year_resolves_in_its_own_slot(
+        self, app, db, seed_user,
+    ):
+        """A period year with no configs keys its own slot to the resolved year.
+
+        The slot stays keyed by the PERIOD's year -- the caller looks it up by
+        ``period.start_date.year`` -- while the configs inside it are the
+        latest configured year's.
+        """
         with app.app_context():
             profile = _make_profile(seed_user)
-            current_year = date.today().year
-            _seed_state_config(seed_user, current_year, Decimal("0.0399"))
+            _seed_state_config(seed_user, 2026, Decimal("0.0399"))
 
             periods = [
-                _FakePeriod(date(current_year, 6, 1)),
-                _FakePeriod(date(current_year + 4, 1, 1)),  # no configs for this year
+                _FakePeriod(date(2026, 6, 1)),
+                _FakePeriod(date(2030, 1, 1)),  # no configs for this year
             ]
             result = load_tax_configs_for_periods(
                 seed_user["user"].id, profile, periods,
             )
 
-            assert (
-                result[current_year + 4]["state_config"].flat_rate
-                == Decimal("0.0399")
-            )
+            assert set(result.keys()) == {2026, 2030}
+            assert result[2030]["state_config"].flat_rate == Decimal("0.0399")
+            assert result[2030]["state_config"].tax_year == 2026
 
     def test_empty_periods_returns_empty_mapping(self, app, db, seed_user):
         """No periods -> empty mapping."""

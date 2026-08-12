@@ -379,11 +379,16 @@ def is_cancelled(txn: Transaction) -> bool:
 def is_done(txn: Transaction) -> bool:
     """Return True iff *txn*'s status is ``Paid`` (``StatusEnum.DONE``).
 
-    Centralizes the inline ``status_id == done_id`` comparison in
-    ``entry_service._update_actual_if_paid`` (recompute
-    ``actual_amount`` from entries when the parent transaction is
-    already Paid). Pure status equality, does not consider
-    ``is_deleted``.
+    Centralized the inline ``status_id == done_id`` comparison in
+    ``entry_service``'s actual-recompute hook. Pure status equality, does
+    not consider ``is_deleted``.
+
+    **It has NO caller in ``app/`` as of plan step X-ap**, which merged that
+    hook with its posting-reconcile sibling onto the settled BAND -- the two
+    halves of one act were grading the same row differently (finding
+    **N-229**). Reported for plan step **X-e**, whose subject is exactly the
+    callerless public helper, rather than deleted inside a step scoped to the
+    settle doors.
 
     Note on the name: ``StatusEnum.DONE`` is the enum member; the
     ref-table row carries display name "Paid" and ``is_settled=True``.
@@ -402,6 +407,44 @@ def is_done(txn: Transaction) -> bool:
             reference cache has not been initialized.
     """
     return txn.status_id == ref_cache.status_id(StatusEnum.DONE)
+
+
+def is_archived(txn: Transaction) -> bool:
+    """Return True iff *txn*'s status is the TERMINAL ``Settled``.
+
+    **Read the name twice: this is not the settled BAND.**
+    ``Status.is_settled`` is True for Paid, Received AND Settled -- "the money
+    moved" -- and is what every balance and posting reader consumes.  This
+    predicate is the single terminal status ``StatusEnum.SETTLED``, the archive:
+    the state machine gives it no outgoing edge but identity, so a row that
+    reaches it is a historical record.  The two are one word apart and mean
+    opposite-sized things, which is exactly why the equality gets a NAME rather
+    than being spelled inline beside ``status.is_settled`` in the same function
+    -- the shape finding **N-229** is made of.
+
+    Added at plan step X-ap for ``entry_service``, which must refuse a purchase
+    recorded against an archived envelope: the row's cost is already history and
+    a new entry would either be silently inert or retroactively rewrite what the
+    books say it cost.  Pure status equality; does not consider ``is_deleted``.
+
+    Production carries ZERO rows in this status (finding **N-177**, which
+    proposes deleting it outright as plan step **X-am**), so the predicate is a
+    guard against a state the full-edit Status dropdown can still reach rather
+    than a description of live data.
+
+    Args:
+        txn: a ``Transaction`` instance with ``status_id`` populated.
+
+    Returns:
+        ``True`` if ``txn.status_id`` equals the cached integer ID for
+        ``StatusEnum.SETTLED``; ``False`` for every other status, INCLUDING the
+        other two members of the settled band.
+
+    Raises:
+        RuntimeError: propagated from ``ref_cache.status_id`` if the
+            reference cache has not been initialized.
+    """
+    return txn.status_id == ref_cache.status_id(StatusEnum.SETTLED)
 
 
 def is_projected_clause(model_class):

@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Scenario UI Requirements (Phase 7 Preparation)
 
 This document was created during UI/UX Remediation Phase 6 to capture the UI requirements that the Scenarios feature (application development Phase 7) will need to satisfy. It references audit findings from `docs/ui_ux_audit.md` Section 6 ("Future-Proofing for Phase 7") and the reserved UI slots added during this phase.

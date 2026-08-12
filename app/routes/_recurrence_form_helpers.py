@@ -70,12 +70,12 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.routes._commit_helpers import StaleConflictContext
 from app.routes._redirect_target import RedirectTarget
+from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     UNAVAILABLE_PATTERN_MESSAGE,
     PatternChoice,
     RecurrenceSpec,
     author_rule,
-    calendar_for,
     modelled_pattern,
     pattern_choices_for,
     reauthor_rule,
@@ -405,10 +405,11 @@ def update_recurrence_rule_from_form(
     # input is hidden for every pattern but EVERY_N_PERIODS and a hidden input
     # still SUBMITS, so the submitted value lands on a Quarterly rule's column
     # -- where it means nothing and nobody reads it.  ``interval_n`` carries
-    # one meaning only, "repeat every N pay PERIODS", consulted by
-    # the occurrence engine's PERIOD-unit walk, by
-    # ``savings_goal_service.amount_to_monthly`` under the same condition, and
-    # by ``_recurrence_macros.html`` inside the same branch.  The interval of
+    # one meaning only, "repeat every N pay PERIODS", consulted by the
+    # occurrence engine's PERIOD-unit walk, by ``obligations_aggregator``'s
+    # monthly equivalent under the same condition (through
+    # ``recurrence.cadence_of``), and by ``_recurrence_macros.html`` inside
+    # the same branch.  The interval of
     # a MONTH- or YEAR-unit recurrence is a different fact, derived from the
     # pattern by ``resolve`` and stored nowhere (plan step R2d), so no value
     # this form can submit is able to say a Quarterly bill recurs monthly.
