@@ -7946,6 +7946,58 @@ class TestAnchorDifference:
             # and the ``change`` arm sees the typed value for the first time.
             assert "," not in spec, f"more than one trigger spec: {spec!r}"
 
+    def test_the_region_targets_itself_rather_than_inheriting_the_forms(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The preview swaps into ITSELF, never into the form containing it.
+
+        **``hx-target`` is an INHERITED htmx attribute, and this region sits
+        inside the true-up form, which declares ``hx-target="this"`` for its own
+        PATCH.**  htmx resolves an inherited ``"this"`` to the element that
+        DECLARED the attribute, never to the element issuing the request
+        (``getTarget`` -> ``closest(elt, '[hx-target]')``).  So a region with no
+        target of its own lands its ``innerHTML`` response on the FORM: the
+        first preview replaces the balance box, the date box and both buttons
+        with the difference table, mid-keystroke.
+
+        Reproduced in a real browser against production data before this test
+        existed.  Typing ``2193.69`` with a pause after ``21`` fired the preview,
+        the editor ceased to exist, and the htmx trace read
+        ``elt=div#anchor-difference-1 target=form.d-inline-block`` followed by
+        ``htmx:beforeCleanupElement`` on the balance input and the Save button.
+        No balance could be entered and none was ever recorded -- the account
+        sat at a stale anchor while every projection flowed forward from it.
+
+        **Asserting the attribute is the only thing that keeps this fixed.**  The
+        route, the fragment and the trigger were all correct; a response body
+        cannot show where it will be swapped, so every route test here passed
+        with the editor being destroyed on each preview.  The sibling test above
+        pins the trigger for the same reason -- both are attributes no assertion
+        over the rendered figures can see.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/anchor-form"
+            ).data.decode()
+
+            region = re.search(
+                rf'<div id="anchor-difference-{acct_id}"[^>]*>', html,
+            )
+            assert region is not None, "the preview region is not rendered"
+            target = re.search(r'hx-target="([^"]*)"', region.group(0))
+            assert target is not None, (
+                "the preview region declares no hx-target, so it inherits the "
+                "form's and swaps over the editor"
+            )
+            # "this" resolves to the declaring element -- now the region itself;
+            # its own id is the equally correct spelling.  Anything else names
+            # an element outside the region.
+            assert target.group(1) in ("this", f"#anchor-difference-{acct_id}"), (
+                f"the preview targets {target.group(1)!r}, not itself"
+            )
+
     def test_it_renders_records_entered_and_difference(
         self, app, auth_client, seed_user, seed_periods_today,
     ):

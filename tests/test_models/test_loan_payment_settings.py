@@ -4,7 +4,7 @@ The 1:1 ``budget.loan_payment_settings`` table holds a recurring loan payment's
 ``derive_from_loan`` (moved off ``transfer_templates``) and ``extra_principal``
 (the overpayment feature).  These tests pin the storage-tier guards (the
 non-negative-extra CHECK, the one-row-per-template UNIQUE, the CASCADE delete)
-and the ``_loan_payment_config`` accessor's row-absent defaults, which every
+and the ``loan_payment_config`` accessor's row-absent defaults, which every
 live-derive / overpayment reader relies on to stay dormant for non-loan
 transfers.
 """
@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transfer_template import TransferTemplate
-from app.services.loan_payment_service import _loan_payment_config
+from app.services.loan_payment_service import loan_payment_config
 from tests._test_helpers import create_account_of_type
 
 
@@ -43,7 +43,7 @@ def _make_template(seed_user, *, name="Payment"):
 
 
 class TestLoanPaymentConfigAccessor:
-    """The ``_loan_payment_config`` accessor: row-absent defaults + row values."""
+    """The ``loan_payment_config`` accessor: row-absent defaults + row values."""
 
     def test_no_settings_row_defaults_to_non_derive_zero_extra(
         self, app, seed_user,
@@ -56,7 +56,7 @@ class TestLoanPaymentConfigAccessor:
         """
         with app.app_context():
             template = _make_template(seed_user)
-            derive, extra = _loan_payment_config(template)
+            derive, extra = loan_payment_config(template)
             assert derive is False
             assert extra == Decimal("0.00")
 
@@ -72,7 +72,7 @@ class TestLoanPaymentConfigAccessor:
                 derive_from_loan=True, extra_principal=Decimal("125.50"),
             )
             db.session.flush()
-            derive, extra = _loan_payment_config(template)
+            derive, extra = loan_payment_config(template)
             assert derive is True
             assert extra == Decimal("125.50")
 

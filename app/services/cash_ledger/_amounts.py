@@ -52,6 +52,8 @@ from decimal import Decimal
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import is_balance_contributing, is_projected
 
+from ._amount_source import amount_basis
+
 
 @dataclass(frozen=True)
 class ReconciledThrough:
@@ -663,6 +665,22 @@ def live_amount_overrides(account, scenario_id, transactions):
     :func:`_expense_amount` beside it consume; producing it and reading it
     are one concern, which is why they share a module (plan step D1c).
 
+    **The two seams are CALLED by :func:`~._amount_source.amount_basis` and
+    merged here (plan step X-au-b), rather than called here.**  That resolver
+    needs the two answers APART -- which rule prices a row is a fact about the
+    row, never about which map its id turned up in, and conflating them is the
+    link-derived discriminator ruling R-FI refuted -- while this map's four
+    consumers want them merged.  Building the basis and flattening it keeps ONE
+    call path to the producers: two call sites would be two producers of one
+    answer, which is the shape this module's own docstring says it exists to
+    prevent.  The merge is unchanged in value and in precedence -- same
+    producers, same arguments, same evaluation order, and the loan half still
+    wins a collision.  The key sets are disjoint in practice (salary income rows
+    against loan-payment transfer shadows) but that rests on a CONVENTION rather
+    than a constraint -- the balance README says so of ``template_id`` /
+    ``transfer_id`` exclusivity -- which is why this says the precedence is
+    preserved rather than that a collision is impossible.
+
     Args:
         account: The :class:`~app.models.account.Account` whose rows are
             being priced; only its ``user_id`` is read (the income seam
@@ -675,16 +693,5 @@ def live_amount_overrides(account, scenario_id, transactions):
         ``dict`` mapping ``transaction_id`` to the live ``Decimal``
         amount, empty when neither seam has a candidate.
     """
-    # Pylint: ``import-outside-toplevel`` -- imported locally to keep the
-    # income_service (paycheck/tax) and loan_payment_service (loan-resolver)
-    # stacks off this module's load path and out of any import cycle; the
-    # helpers are only needed at call time.
-    # pylint: disable=import-outside-toplevel
-    from app.services import income_service, loan_payment_service
-    income_overrides = income_service.live_projected_net(
-        account.user_id, scenario_id, transactions,
-    )
-    loan_overrides = loan_payment_service.live_loan_transfer_amounts(
-        scenario_id, transactions,
-    )
-    return {**income_overrides, **loan_overrides}
+    basis = amount_basis(account, scenario_id, transactions)
+    return {**basis.salary_net, **basis.loan_cash}
