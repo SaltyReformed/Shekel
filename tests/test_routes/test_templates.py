@@ -1882,7 +1882,7 @@ class TestTemplateHardDelete:
             # The defense-in-depth filter inside the route is what must
             # save the RECEIVED row.
             monkeypatch.setattr(
-                "app.routes.templates.archive_helpers.template_has_paid_history",
+                "app.routes.templates.crud.archive_helpers.template_has_paid_history",
                 lambda _template_id: False,
             )
 
