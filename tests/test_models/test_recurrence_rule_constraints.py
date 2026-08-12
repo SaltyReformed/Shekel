@@ -164,7 +164,8 @@ class TestRecurrenceRuleRangeConstraints:
         them lands a real integer once persisted -- never NULL.  The
         recurrence engine (the PERIOD-unit occurrence walk), the
         obligations frequency label, and
-        ``savings_goal_service.amount_to_monthly`` read these directly --
+        ``obligations_aggregator``'s monthly equivalent reads these directly,
+        through ``recurrence.cadence_of`` --
         ``interval_n`` as a modulus / division divisor -- with NO
         ``or 1`` / ``or 0`` coalesce (deep-hunt #65), so this pins the
         invariant that makes that safe: a persisted rule can never feed

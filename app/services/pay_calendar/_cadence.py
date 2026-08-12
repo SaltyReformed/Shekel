@@ -73,12 +73,13 @@ Six call sites spelled the biweekly-to-monthly factor inline as
 the factor in one place per DIRECTION.
 
 **One direction is still spelled inline and it is deliberate**:
-``savings_goal_service.amount_to_monthly``'s ``Every N Periods`` arm writes
-``amount * periods_per_year / n / MONTHS_PER_YEAR``, because dividing the
-amount first (``per_paycheck_to_monthly(amount / n)``) would round twice.  It
-is a genuine fifth direction rather than an oversight, and plan step R7a-2b
-deletes the whole switch it lives in -- replacing every arm with one expression
-over ``(interval_n, unit)`` -- so it gets no method of its own here.
+``obligations_aggregator`` writes
+``amount * units_per_year / (interval_n * MONTHS_PER_YEAR)`` rather than
+calling a method here, and plan step R7a-2b measured why: that form divides
+ONCE, by an exact integer, where dividing the amount by the interval FIRST --
+``per_paycheck_to_monthly(amount / n)`` -- rounds twice.  (At ``n = 1`` the two
+are byte-identical; the cost is only in the interval.)  It is a genuine fifth
+direction rather than an oversight, and the one that must not be wrapped.
 
 **Each keeps the sequential order, and that is an accuracy claim rather than a
 style one.**  ``periods_per_year`` is an integral ``Decimal``, so ``x * ppy``

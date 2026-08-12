@@ -24,11 +24,16 @@ The shared filter applied here, in one place, by every consumer:
      ``compute_committed_monthly``.
   3. Skip if ``default_amount is None`` or ``default_amount == 0``
      -- nothing to contribute.
-  4. Skip if ``amount_to_monthly`` returns ``None`` -- a pattern this
-     application does not model has no cadence to normalize.  (Step 1's
-     no-rule skip is what excludes a NON-REPEATING definition; the two
-     were separate cases until plan step R2e-3 retired the ``Once``
-     pattern that was the second spelling of it.)
+
+**There is no fourth rule, and its removal is plan step R7a-2b's.**  The filter
+used to end "skip if the conversion returns ``None`` -- a pattern this
+application does not model has no cadence to normalize", which made this the
+only surface in the app that answered a broken rule with silence: ``resolve``
+RAISES for the same state, so the Recurring surface already 500'd on such a
+rule through ``read_rule`` while THIS filter quietly left the same obligation
+out of the emergency-fund baseline -- one row, counted on one page and not the
+other.  ``recurrence.cadence_of`` raises now (ruled 2026-08-11), so the skip
+has no subject.
 
 **How often the owner is paid is an INPUT, not a constant** (plan step
 R7a-2a).  The paycheck-space patterns' monthly equivalent used to be computed
@@ -39,6 +44,17 @@ for an owner not paid biweekly.  Both entry points now take the owner's
 the caller and threaded, never looked up per row.  The month denominator
 (``MONTHS_PER_YEAR``) stays a constant, because 12 is a property of the
 calendar rather than of an owner.
+
+**And the conversion itself is ONE expression** (plan step R7a-2b).  It lived
+in ``savings_goal_service.amount_to_monthly`` as a seven-branch switch over
+``pattern_id`` -- in a savings module, though no savings code called it and its
+inputs are a recurrence and a pay cadence.  A monthly equivalent is
+``amount * occurrences_per_year / 12`` for every cadence there is, so the
+branches were seven spellings of one formula, each of which had to be written
+again for every cadence plan step R8 adds.  The formula lives here, where this
+module's own first sentence says it should; how often a cadence FIRES is
+``recurrence.Cadence.occurrences_per_year``, which is the recurrence package's
+to answer.
 
 All functions are pure: they accept ORM template instances (or any
 object exposing the same ``recurrence_rule`` / ``default_amount``
@@ -54,8 +70,8 @@ from typing import Iterable, Union
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services.pay_calendar import PayCadence
-from app.services.savings_goal_service import amount_to_monthly
-from app.utils.money import round_money
+from app.services.recurrence import cadence_of
+from app.utils.money import MONTHS_PER_YEAR, round_money
 
 # Either ORM template class exposes ``recurrence_rule`` and
 # ``default_amount`` -- the aggregator reads them via attribute
@@ -97,12 +113,16 @@ def template_monthly_or_none(
     """Return the monthly equivalent of one recurring template, or None.
 
     Applies the shared filter (no rule -- which is how a definition says
-    it does not repeat -- expired, missing/zero amount, unmodelled
-    pattern). The returned Decimal is NOT quantized -- callers
-    that aggregate first then round (``committed_monthly``) need full
-    precision; callers that display a per-row value
-    (``/obligations`` route loop) round at the display boundary with
-    ``round_money``.
+    it does not repeat -- expired, missing/zero amount).  The returned Decimal
+    is NOT quantized -- callers that aggregate first then round
+    (``committed_monthly``) need full precision; callers that display a per-row
+    value round at the display boundary with ``round_money``.
+
+    **The conversion is one expression**, and the same one for every cadence:
+    an amount times how often it happens in a year, over twelve.  Plan step
+    R7a-2b replaced a seven-branch switch with it, so ``(2, MONTH)`` and
+    ``(1, WEEK)`` -- the cadences plan step R8 makes authorable -- already
+    total correctly rather than falling to a ``None`` the caller drops.
 
     Args:
         template: A ``TransactionTemplate`` or ``TransferTemplate``
@@ -127,6 +147,14 @@ def template_monthly_or_none(
         the template is filtered out by any of the shared-filter
         rules. ``None`` means "do not include this template in any
         monthly-equivalent total."
+
+    Raises:
+        RecurrenceResolutionError: The rule names a pattern this application
+            does not model, so it has no derivable cadence.  A REFUSAL rather
+            than a skip since plan step R7a-2b: a rule the app cannot read is
+            a broken invariant, and dropping it silently understated every
+            total this module feeds while the Recurring surface 500'd on the
+            same row.
     """
     rule = template_rule(template)
     if rule is None:
@@ -143,8 +171,17 @@ def template_monthly_or_none(
     if amount == 0:
         return None
 
-    return amount_to_monthly(
-        amount, rule.pattern_id, rule.interval_n, pay_cadence,
+    # ONE division, and the denominator is an exact integer: a monthly
+    # equivalent is an amount times how often it happens in a year, over
+    # twelve.  Dividing by ``interval_n`` HERE rather than taking
+    # ``occurrences_per_year`` is what keeps it to one rounding -- that
+    # quotient is inexact for an interval that does not divide its unit's
+    # year, and multiplying money by it moved 31,072 displayed cents in a
+    # 52,000,000-case sweep, wrongly (see ``Cadence.units_per_year``).
+    cadence = cadence_of(rule.pattern_id, rule.interval_n)
+    return (
+        amount * cadence.units_per_year(pay_cadence)
+        / (cadence.interval_n * MONTHS_PER_YEAR)
     )
 
 
@@ -156,8 +193,8 @@ def committed_monthly(
     """Sum monthly equivalents across a set of recurring templates.
 
     Routes every template through ``template_monthly_or_none``, which
-    applies the shared filter (no rule, expired, missing/zero amount,
-    unmodelled pattern). Templates returning ``None`` contribute zero to
+    applies the shared filter (no rule, expired, missing/zero amount).
+    Templates returning ``None`` contribute zero to
     the total; only non-None Decimals are summed. The final result is
     rounded once at the boundary with ``round_money`` (ROUND_HALF_UP
     via ``app.utils.money``) -- intermediate sums stay at full
@@ -188,6 +225,15 @@ def committed_monthly(
         The total monthly-equivalent Decimal, rounded to cents with
         ``ROUND_HALF_UP``. Returns ``Decimal("0.00")`` if every input
         template is filtered out or the iterable is empty.
+
+    Raises:
+        RecurrenceResolutionError: A template's rule names a pattern this
+            application does not model, so the total cannot be completed.  The
+            whole sum is refused rather than shrunk by one row -- see
+            :func:`template_monthly_or_none`, and note that this function's
+            three callers (the Recurring surface, the emergency-fund floor and
+            the per-goal contribution floors) each publish a figure a missing
+            row would silently understate.
     """
     total = Decimal("0")
     for template in templates:

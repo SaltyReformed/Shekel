@@ -41,6 +41,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator
 from app.services.pay_calendar import PayCadence
+from app.services.recurrence import RecurrenceResolutionError
 from app.utils.money import MONTHS_PER_YEAR
 
 #: 14 days between paydays, 26 a year -- the cadence every hand-computed
@@ -256,6 +257,103 @@ class TestObligationsAggregator:
                 f"Aggregator total must equal /obligations subtotal "
                 f"($716.67); got {agg_total}"
             )
+
+    def test_an_unmodelled_pattern_is_refused_not_silently_dropped(self, app):
+        """A rule the app cannot read stops the total instead of shrinking it.
+
+        Plan step R7a-2b, ruled 2026-08-11.  The filter used to end "skip if
+        the conversion returns ``None``", so a rule naming a pattern the enum
+        does not name was left OUT of every total this module feeds -- while
+        the Recurring surface 500'd on the same row, because ``read_rule``
+        resolves and raises.  One row, counted on one page and not the other,
+        and the quiet side was the one feeding the emergency-fund baseline.
+
+        The surplus id is computed from the enum rather than written down: a
+        literal would stop naming an unmodelled pattern the day an eighth
+        member is added.
+        """
+        surplus = max(
+            ref_cache.recurrence_pattern_id(member)
+            for member in RecurrencePatternEnum
+        ) + 1
+        with app.app_context():
+            template = SimpleNamespace(
+                recurrence_rule=SimpleNamespace(
+                    end_date=None, pattern_id=surplus, interval_n=1,
+                ),
+                default_amount=Decimal("100.00"),
+            )
+            with pytest.raises(RecurrenceResolutionError):
+                obligations_aggregator.committed_monthly(
+                    [template], date(2026, 5, 20), _BIWEEKLY,
+                )
+
+    def test_the_three_surviving_filters_still_answer_none(self, app):
+        """The control on the case above: only the fourth rule went.
+
+        No rule, expired, and zero amount are all still ``None`` -- they are
+        statements about a definition that is not a recurring commitment, not
+        about one the app cannot read.  Without this, "raise whenever the
+        conversion cannot run" would pass the test above while turning three
+        legitimate skips into 500s.
+        """
+        as_of = date(2026, 5, 20)
+        every_period = ref_cache.recurrence_pattern_id(
+            RecurrencePatternEnum.EVERY_PERIOD,
+        )
+        with app.app_context():
+            no_rule = SimpleNamespace(
+                recurrence_rule=None, default_amount=Decimal("100.00"),
+            )
+            expired = SimpleNamespace(
+                recurrence_rule=SimpleNamespace(
+                    end_date=as_of - timedelta(days=1),
+                    pattern_id=every_period, interval_n=1,
+                ),
+                default_amount=Decimal("100.00"),
+            )
+            zero = SimpleNamespace(
+                recurrence_rule=SimpleNamespace(
+                    end_date=None, pattern_id=every_period, interval_n=1,
+                ),
+                default_amount=Decimal("0.00"),
+            )
+            for template in (no_rule, expired, zero):
+                assert obligations_aggregator.template_monthly_or_none(
+                    template, as_of, _BIWEEKLY,
+                ) is None
+
+    def test_the_conversion_reproduces_every_retired_branch(self, app):
+        """One expression, seven hand-computed answers.
+
+        ``amount_to_monthly`` was a seven-branch switch; this is
+        ``amount * units_per_year / (interval_n * 12)``.  Each figure below is
+        hand-computed at the biweekly cadence from the branch it replaced, so
+        the derivation has to reproduce all seven before it is trusted to
+        answer for the cadences plan step R8 adds.
+        """
+        cases = [
+            (RecurrencePatternEnum.EVERY_PERIOD, 1, "216.67"),   # 100*26/12
+            (RecurrencePatternEnum.EVERY_N_PERIODS, 2, "108.33"),  # 100*26/2/12
+            (RecurrencePatternEnum.MONTHLY, 1, "100.00"),        # unchanged
+            (RecurrencePatternEnum.MONTHLY_FIRST, 1, "100.00"),  # unchanged
+            (RecurrencePatternEnum.QUARTERLY, 1, "33.33"),       # 100/3
+            (RecurrencePatternEnum.SEMI_ANNUAL, 1, "16.67"),     # 100/6
+            (RecurrencePatternEnum.ANNUAL, 1, "8.33"),           # 100/12
+        ]
+        with app.app_context():
+            for pattern, interval_n, expected in cases:
+                template = SimpleNamespace(
+                    recurrence_rule=SimpleNamespace(
+                        end_date=None,
+                        pattern_id=ref_cache.recurrence_pattern_id(pattern),
+                        interval_n=interval_n,
+                    ),
+                    default_amount=Decimal("100.00"),
+                )
+                assert obligations_aggregator.committed_monthly(
+                    [template], date(2026, 5, 20), _BIWEEKLY,
+                ) == Decimal(expected), pattern
 
     def test_the_conversion_side_paycheck_count_has_one_producer(self):
         """C23-5, as plan step R7a-2a restated it: ONE producer, no constant.

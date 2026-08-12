@@ -11,7 +11,7 @@ from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 from app import ref_cache
-from app.enums import GoalModeEnum, IncomeUnitEnum, RecurrencePatternEnum
+from app.enums import GoalModeEnum, IncomeUnitEnum
 from app.services.pay_calendar import PayCadence
 from app.utils.dates import add_months, months_between
 from app.utils.money import (
@@ -335,9 +335,9 @@ def calculate_savings_metrics(
     :data:`_COVERAGE_GRAIN` FIRST and the other two derived from that rounded
     value, so both were rounded twice.  That is the drift the two functions
     beside this one forbid in terms -- :func:`resolve_goal_target`
-    ("Intermediate results are NOT quantized") and :func:`amount_to_monthly`
-    ("The result is NOT quantized -- callers are responsible for rounding at
-    their own aggregation boundary").
+    ("Intermediate results are NOT quantized") and
+    ``obligations_aggregator.template_monthly_or_none`` (full precision until
+    one ``round_money`` at the boundary).
 
     What the paychecks figure ANSWERS is "how many pay periods would my savings
     cover", which is ``savings / (monthly expenses / paychecks per month)``.
@@ -424,115 +424,6 @@ def count_periods_until(target_date, periods):
         if period.start_date >= today and period.start_date <= target_date:
             count += 1
     return count
-
-
-def amount_to_monthly(
-    amount: Decimal,
-    pattern_id: int,
-    interval_n: int,
-    pay_cadence: PayCadence,
-) -> Decimal | None:
-    """Convert a per-occurrence amount to its monthly equivalent.
-
-    Translates a recurrence frequency into a monthly value, using the OWNER's
-    pay cadence for the two patterns that count in paychecks.
-
-    Conversion factors, where ``ppy`` is
-    :attr:`~app.services.pay_calendar.PayCadence.periods_per_year`:
-
-      - every_period:    amount * ppy / 12
-      - every_n_periods: amount * (ppy / n) / 12
-      - monthly:         amount  (already monthly)
-      - monthly_first:   amount  (already monthly)
-      - quarterly:       amount / 3
-      - semi_annual:     amount / 6
-      - annual:          amount / 12
-
-    **``ppy`` was a hardcoded 26 until plan step R7a-2a**, so a weekly-paid
-    owner's ``$100`` every-paycheck bill reported ``$216.67`` a month against
-    a true ``$433.33``.  Plan step R7a-2b replaces the switch below with one
-    expression over ``(interval_n, unit)``, at which point every row here is a
-    consequence of that one line rather than an entry in a table.
-
-    **"Does not recur" never reaches this function.**  It is
-    ``recurrence_rule_id IS NULL``, and the sole caller
-    (``obligations_aggregator.template_monthly_or_none``) returns ``None``
-    for a rule-less template before there is a ``pattern_id`` to pass.  A
-    ``Once`` branch used to sit here for the pattern that meant the same
-    thing; plan step R2e-3 retired it.
-
-    The result is NOT quantized -- callers are responsible for rounding
-    at their own aggregation boundary.
-
-    Args:
-        amount: The per-occurrence Decimal amount.
-        pattern_id: The recurrence pattern integer ID (from ref_cache).
-        interval_n: The interval for EVERY_N_PERIODS patterns.  Read only by
-            that branch; every other pattern's interval is a property of the
-            pattern, which is why a hidden form input landing on a Quarterly
-            rule's column cannot make it read as monthly
-            (``routes/_recurrence_form_helpers.py``).  It carries no default:
-            the column is ``NOT NULL`` with a server default of 1, so a
-            persisted rule always has one, and a default here would let a
-            caller omit the fact rather than state it.
-        pay_cadence: How often the owner is paid
-            (:class:`~app.services.pay_calendar.PayCadence`).  Read only by the
-            two paycheck-space patterns; a calendar-space cadence needs no
-            schedule at all.
-
-    Returns:
-        Decimal monthly equivalent, or ``None`` when *pattern_id* names no
-        modelled pattern -- the surviving ``Once`` ``ref`` row (plan step
-        R2e-3) or a hand-edited id.
-    """
-
-    every_period_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.EVERY_PERIOD
-    )
-    every_n_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.EVERY_N_PERIODS
-    )
-    monthly_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.MONTHLY
-    )
-    monthly_first_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.MONTHLY_FIRST
-    )
-    quarterly_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.QUARTERLY
-    )
-    semi_annual_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.SEMI_ANNUAL
-    )
-    annual_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.ANNUAL
-    )
-
-    # Single-return dispatch (one Decimal-or-None per pattern); the per-pattern
-    # conversion factors are documented in the module docstring above.
-    if pattern_id == every_period_id:
-        monthly = pay_cadence.per_paycheck_to_monthly(amount)
-    elif pattern_id == every_n_id:
-        n = Decimal(str(interval_n))
-        monthly = (
-            amount * pay_cadence.periods_per_year / n / MONTHS_PER_YEAR
-        )
-    elif pattern_id in (monthly_id, monthly_first_id):
-        monthly = amount
-    elif pattern_id == quarterly_id:
-        monthly = amount / Decimal("3")
-    elif pattern_id == semi_annual_id:
-        monthly = amount / Decimal("6")
-    elif pattern_id == annual_id:
-        monthly = amount / MONTHS_PER_YEAR
-    else:
-        # A pattern this application does not model.  Unreachable through any
-        # write door -- ``RecurrencePatternField`` refuses one at the schema --
-        # so this covers the surviving ``Once`` ``ref`` row and hand-edited
-        # data, and it must stay: dropping the contribution is the safe answer
-        # where guessing a cadence would misstate a monthly commitment.
-        monthly = None
-    return monthly
 
 
 def calculate_trajectory(

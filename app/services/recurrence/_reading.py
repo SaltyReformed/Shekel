@@ -67,8 +67,8 @@ from app.services.recurrence._occurrence import (
     OccurrencePlacement,
     occurrence_placements,
 )
+from app.services.recurrence._frequency import RecurrenceResolutionError
 from app.services.recurrence._resolution import (
-    RecurrenceResolutionError,
     RecurrenceSpec,
     ResolvedRecurrence,
     resolve,

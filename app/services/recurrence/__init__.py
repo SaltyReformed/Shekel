@@ -49,6 +49,10 @@ What this package offers
   three surfaces take of the second.  Since plan step R4b-2 the generation
   seam, the Recurring surface, the form preview and the frozen baseline all
   answer from one call.
+* :func:`cadence_of` -- ``(pattern_id, interval_n) -> Cadence``, how often a
+  stored pattern fires, with no schedule involved (plan step R7a-2b).  With
+  :meth:`Cadence.units_per_year` it is what makes a monthly equivalent one
+  expression instead of a branch per pattern.
 * :func:`describe` -- what a recurrence's cadence is CALLED, one function over
   ``(interval_n, unit)`` (plan step R7a).  It replaced eight hand-written
   template branches keyed on the closed pattern set, so a cadence nothing
@@ -57,8 +61,16 @@ What this package offers
 What lives where
 ----------------
 
+* ``_frequency`` -- what a pattern means with NO schedule: :class:`Cadence`,
+  the pattern table both readings share, and the yearly counts every monthly
+  equivalent rests on.  Split out at plan step R7a-2b because
+  ``obligations_aggregator`` and the calendar's infrequent badge ask "how
+  often" and hold no calendar, so they could not use the two-axis vocabulary
+  at all while it was fused to the anchor derivation.  ``_resolution`` reads
+  this table rather than holding its own, so the two cannot disagree.
 * ``_resolution`` -- :class:`RecurrenceSpec`, :class:`ResolvedRecurrence` and
-  :func:`resolve`, the pure derivation.
+  :func:`resolve`, the pure derivation of what a recurrence means AGAINST a
+  schedule.
 * ``_authoring`` -- the WRITE door: refuse the unresolvable, write the
   authored spec.  The only module here that holds a session.  The SCHEDULE it
   resolves against is :class:`~app.services.pay_calendar.PayCalendar`, loaded
@@ -95,6 +107,12 @@ from app.services.recurrence._authoring import (
     build_transient_rule,
     reauthor_rule,
 )
+from app.services.recurrence._frequency import (
+    Cadence,
+    RecurrenceFrequencyError,
+    RecurrenceResolutionError,
+    cadence_of,
+)
 from app.services.recurrence._describe import (
     RecurrenceDescription,
     RecurrenceDescriptionError,
@@ -116,7 +134,6 @@ from app.services.recurrence._reading import (
     rule_occurrences,
 )
 from app.services.recurrence._resolution import (
-    RecurrenceResolutionError,
     RecurrenceSpec,
     ResolvedRecurrence,
     resolve,
@@ -133,10 +150,12 @@ from app.services.recurrence._vocabulary import (
 __all__ = [
     "UNAVAILABLE_PATTERN_LABEL",
     "UNAVAILABLE_PATTERN_MESSAGE",
+    "Cadence",
     "OccurrencePlacement",
     "PatternChoice",
     "RecurrenceDescription",
     "RecurrenceDescriptionError",
+    "RecurrenceFrequencyError",
     "RecurrenceGenerationError",
     "RecurrenceResolutionError",
     "RecurrenceSpec",
@@ -144,6 +163,7 @@ __all__ = [
     "RuleReading",
     "author_rule",
     "build_transient_rule",
+    "cadence_of",
     "describe",
     "modelled_pattern",
     "occurrence_placements",

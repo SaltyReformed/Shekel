@@ -4909,7 +4909,7 @@ class TestGridPeriodSubtotalCanonical:
     def test_obligations_has_no_period_subtotal_loop(self):
         """Static guard: obligations.py has no period-subtotal arithmetic.
 
-        Obligations computes ``amount_to_monthly`` per template
+        Obligations computes a monthly equivalent per template
         (E-24 / Commit 23 territory), not per-period transaction
         subtotals.  The plan's verification gate covers both files;
         this assertion locks that obligations never grows the same
