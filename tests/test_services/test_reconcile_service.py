@@ -30,6 +30,7 @@ from app.services import (
     reconcile_service,
     status_seam,
 )
+from app.utils.log_events import EVT_TRANSACTIONS_RECONCILED
 from tests._test_helpers import create_transfer
 
 
@@ -1388,6 +1389,121 @@ class TestWhatATickBooks:
                 "payment_count", "payment_total",
                 "deposit_count", "deposit_total",
             }
+
+
+class TestTheCorrectionCountIsWhatAHumanTyped:
+    """Finding **N-231**: the count says how many figures a HUMAN supplied.
+
+    ``transactions_reconciled`` describes its rows as "some carrying a
+    corrected amount", and ruling **R-FB**'s production measurement ("11 of 93
+    settled bills carry a hand-typed correction") is made of this same signal.
+    It was read off the COLUMN -- rows whose ``actual_amount`` changed -- and
+    an envelope's close ALWAYS writes that column, so every envelope tick
+    incremented it.  It now asks the verb's own published predicate
+    (``transaction_service.is_correction``) before the settle.
+
+    Four shapes, and the first two are the ones the column reading got wrong.
+    """
+
+    _bill = staticmethod(TestTheTransactionArm._bill)
+    _settle = staticmethod(TestTheTransactionArm._settle)
+
+    @staticmethod
+    def _corrected_count(caplog):
+        """Return ``corrected_count`` off the one reconcile event emitted."""
+        events = [
+            record for record in caplog.records
+            if getattr(record, "event", None) == EVT_TRANSACTIONS_RECONCILED
+        ]
+        assert len(events) == 1, "expected exactly one reconcile event"
+        return events[0].corrected_count
+
+    def test_an_envelope_close_with_no_correction_counts_ZERO(
+        self, app, db, seed_user, seed_periods, seed_entry_template, caplog,
+    ):
+        """The defect, reproduced from the failing direction.
+
+        An envelope carrying `$40.00` of purchases settles at `$40.00` and its
+        ``actual_amount`` moves from NULL to `$40.00` -- a MACHINE write, in the
+        same statement as the status.  Nobody typed anything, so the count is
+        zero.  Measured before the fix on a probe of this exact shape: it
+        logged ``corrected_count: 1``.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            db.session.commit()
+
+            with caplog.at_level("INFO"):
+                assert self._settle(seed_user, [txn.id]) == 1
+
+            assert self._corrected_count(caplog) == 0
+            db.session.expire_all()
+            assert db.session.get(
+                Transaction, txn.id,
+            ).actual_amount == Decimal("40.00")
+
+    def test_a_forged_box_on_a_DERIVED_row_counts_ZERO(
+        self, app, db, seed_user, seed_periods, seed_entry_template, caplog,
+    ):
+        """A figure the verb IGNORES was not a correction.
+
+        The panel renders no box for an entries-derived row, so the only way to
+        submit one is by hand -- and ``settle_transaction`` drops it.  A count
+        that read the submission rather than the outcome would report a
+        correction the ledger never made.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            db.session.commit()
+
+            with caplog.at_level("INFO"):
+                assert self._settle(
+                    seed_user, [txn.id], {txn.id: Decimal("999.99")},
+                ) == 1
+
+            assert self._corrected_count(caplog) == 0
+
+    def test_a_bill_ticked_at_its_prefill_counts_ZERO(
+        self, app, db, seed_user, seed_periods, seed_entry_template, caplog,
+    ):
+        """The echo: an untouched box is not a correction.
+
+        The panel PREFILLS the box, so every correctable row on the form posts
+        a figure whether the user touched it or not.  Counting submissions
+        would measure how many boxes the panel drew.
+        """
+        with app.app_context():
+            bill = self._bill(seed_user, seed_periods[0], amount="180.00")
+            db.session.commit()
+
+            with caplog.at_level("INFO"):
+                assert self._settle(
+                    seed_user, [bill.id], {bill.id: Decimal("180.00")},
+                ) == 1
+
+            assert self._corrected_count(caplog) == 0
+
+    def test_a_bill_ticked_at_a_DIFFERENT_figure_counts_ONE(
+        self, app, db, seed_user, seed_periods, seed_entry_template, caplog,
+    ):
+        """The one shape that IS a correction, so the count is not inert.
+
+        Production's Electricity, to the cent: estimated `$300.00`, statement
+        `$245.32`.  Without this case the three zeros above are satisfied by a
+        count that is always zero.
+        """
+        with app.app_context():
+            bill = self._bill(seed_user, seed_periods[0], amount="300.00")
+            db.session.commit()
+
+            with caplog.at_level("INFO"):
+                assert self._settle(
+                    seed_user, [bill.id], {bill.id: Decimal("245.32")},
+                ) == 1
+
+            assert self._corrected_count(caplog) == 1
 
 
 class TestTheSectionsAndTheOrder:
