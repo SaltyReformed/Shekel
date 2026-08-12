@@ -3,14 +3,14 @@
 ## Where this stands
 
 **Plan of record** for the two-axis recurrence model and the cash-date / installment-date split.
-R1-R4 ARCHIVED. **R1-R4b-2, R-F1, R-F8 and R7a-1 are IN PRODUCTION** (PRs #85 / #86 / #87): R7a-1
-made the Recurrence column one function over `(interval, unit)` and closed D17.
-**R7a-2 is COMPLETE** (`003e3657`, `7c417b90`) and opened **F-16** / **F-17**, two more hardcoded
-paycheck counts, both ruled into this arc.
+R1-R4 ARCHIVED. **R1-R4b-2, R-F1, R-F8, R7a-1 and R7a-2 are IN PRODUCTION** (PRs #85 / #86 / #87,
+then `003e3657` and `7c417b90`); R7a-2 opened **F-16** / **F-17**, both ruled into this arc.
+**R7b DECOMPOSED into four leaves** 2026-08-12; its first (`e7eb3b1a`) made the authored vocabulary
+the two axes.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** One ruling is still owed
-and section 0 states its two options: "R6 ships with X-an" was unsatisfiable, and the index has
-sequenced R6 behind R5 without the developer saying whether that discharges it.
+and section 0 states its two options: the index sequenced R6 behind R5 without the developer saying
+whether that discharges "R6 ships with X-an", which was unsatisfiable.
 
 **A new finding RESPECIFIES R7c: row D28.** R-R13 makes `starts_on` the opening validity BOUND and
 drops `month_of_year` onto `starts_on.month`; those cannot both hold, because a calendar rule's
@@ -375,37 +375,18 @@ and form work is not carried into it.
       pair. The seam is `recurrence.cadence_of` on the ONE table `resolve()` reads
       (`_frequency.py`); the `None` arm raises now.
 
-- [ ] **R7b-1 -- the authored vocabulary becomes the two axes.**
-
-**R7b is FOUR leaves**, split with the developer 2026-08-12: the form becomes interval + unit +
-anchor + optional due row and `max_occurrences` gains its first writer, and the vocabulary swap, the
-form, the bounds and the opening bound are four independently revertible commits of which only the
-last carries a migration. Every leaf still authors through the closed-set columns -- the form
-collects the two-axis vocabulary and the seam maps it -- so the schema does not move until R7c.
-
-`RecurrenceSpec` stops carrying a `pattern_id` and carries `(interval_n, unit, placement)`. The
-closed set is demoted to a STORAGE ENCODING with exactly two crossings, both in `_frequency`:
-`encode_cadence` at the write door and `decode_pattern` at the read door, the second built by
-INVERTING `PATTERN_DERIVATIONS` at import rather than by a second table. `resolve` reads no `ref` id
-at all and derives the anchor FAMILY from `(unit, placement)`; `_months.months_per_step` becomes the
-one producer of a calendar cadence's month stride, which the anchor took off the pattern table while
-the walk computed `interval_n * 12` for itself, and `MONTH_SPANNING_UNITS` becomes the one statement
-of which units fire on a day of the month -- deriving it deleted a guard whose only reachable state
-was two hand-written sets disagreeing.
-
-**A calendar cadence encodes its interval into the pattern's NAME and writes `interval_n = 1`** --
-what every live row holds; writing the two-axis interval there would put a month count in a column
-spelled "every N pay periods". No form change and no schema change.
-**Two STORED columns normalise**, found by adversarial review after the step claimed "no behaviour
-change" flatly: `(1, PERIOD)` stores as `Every Period` whatever it was authored as, and a phase on
-an interval-1 rule resolves to 0 rather than being carried. Neither moves an occurrence, a period or
-an amount, and neither is visible to the step's own evidence -- the 430-shape baseline never calls
-the write door and no live rule has either shape -- so both have their own controls. The honest
-claim is **no occurrence, period or amount moves**, measured on a production clone in both
-directions: all 46 live rules resolve and place identically, and re-authoring every one of them
-moves zero columns.
+- [x] **R7b-1 -- the authored vocabulary becomes the two axes.** `e7eb3b1a`. A caller states
+      `(interval_n, unit, placement)`; the closed set is a STORAGE ENCODING crossed by
+      `_frequency.encode_cadence` and `decode_pattern`, the latter INVERTED from
+      `PATTERN_DERIVATIONS` at import. The `month_step` column, the `family` column and the second
+      statement of which units fire on a day of the month are gone with it. Baseline byte-identical;
+      on a production clone all 46 rules read and re-author unmoved.
 
 - [ ] **R7b-2 -- the form authors that vocabulary.**
+
+**R7b is FOUR leaves**, split with the developer 2026-08-12: the vocabulary swap, the form, the
+bounds and the opening bound, of which only the last carries a migration. Every leaf authors through
+the closed-set columns, so the schema does not move until R7c.
 
 The pattern `<select>` becomes a unit select, an interval control and a placement select, with the
 offered intervals per unit SERVED FROM the encoder's own table -- so a cadence the closed set cannot
