@@ -86,10 +86,16 @@ What lives where
   ``_authoring`` carries the session while nothing here needs one -- and
   rather than a line in ``_occurrence`` because that module is pure by
   contract and this one takes an ORM row.
-* ``_vocabulary`` -- which patterns the application MODELS, and what the
-  PICKER calls them: the set every form surface offers and every door
-  validates against, so a ``ref`` row the enum does not name can be neither
-  offered nor accepted (plan step R2e-2).
+* ``_vocabulary`` -- which patterns the application MODELS, so a ``ref`` row
+  the enum does not name can be neither read nor accepted (plan step R2e-2).
+  It held the PICKER too until plan step R7b-2 moved that out.
+* ``_picker`` -- what the recurrence form OFFERS and what each option is
+  called.  Its own module rather than a line in ``_vocabulary`` because the two
+  answer different questions from different tables: membership is per closed-set
+  pattern and is asked of STORED rows, while the offer set is derived from the
+  ENCODER's table and asked of a blank form.  Serving the options from the
+  encoder is what makes a cadence the closed set cannot store unofferable
+  rather than merely unoffered (plan step R7b-2).
 * ``_describe`` -- what a RESOLVED recurrence is called on a display surface.
   Its own module rather than a line in ``_vocabulary`` because the two are
   keyed on different things: the picker's labels are per closed-set pattern
@@ -118,6 +124,7 @@ from app.services.recurrence._frequency import (
     RecurrenceResolutionError,
     cadence_of,
     decode_pattern,
+    is_authorable,
 )
 from app.services.recurrence._describe import (
     RecurrenceDescription,
@@ -145,22 +152,28 @@ from app.services.recurrence._resolution import (
     ResolvedRecurrence,
     resolve,
 )
+from app.services.recurrence._picker import (
+    CadenceOption,
+    PickerModel,
+    SelectedCadence,
+    cadence_options,
+    picker_model,
+    selected_cadence,
+)
 from app.services.recurrence._vocabulary import (
-    UNAVAILABLE_PATTERN_LABEL,
     UNAVAILABLE_PATTERN_MESSAGE,
-    PatternChoice,
     modelled_pattern,
-    pattern_choices,
-    pattern_choices_for,
+    modelled_placement,
+    modelled_unit,
 )
 
 __all__ = [
-    "UNAVAILABLE_PATTERN_LABEL",
     "UNAVAILABLE_PATTERN_MESSAGE",
     "Cadence",
+    "CadenceOption",
     "OccurrencePlacement",
-    "PatternChoice",
     "PatternReading",
+    "PickerModel",
     "RecurrenceDescription",
     "RecurrenceDescriptionError",
     "RecurrenceFrequencyError",
@@ -169,16 +182,20 @@ __all__ = [
     "RecurrenceSpec",
     "ResolvedRecurrence",
     "RuleReading",
+    "SelectedCadence",
     "author_rule",
     "build_transient_rule",
     "cadence_of",
+    "cadence_options",
     "decode_pattern",
     "describe",
+    "is_authorable",
     "modelled_pattern",
+    "modelled_placement",
+    "modelled_unit",
     "occurrence_placements",
     "occurrences",
-    "pattern_choices",
-    "pattern_choices_for",
+    "picker_model",
     "place",
     "placed_periods",
     "read_rule",
@@ -188,4 +205,5 @@ __all__ = [
     "resolve",
     "resolved_recurrence",
     "rule_occurrences",
+    "selected_cadence",
 ]

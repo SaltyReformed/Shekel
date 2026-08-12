@@ -13,9 +13,11 @@ from app.schemas.validation._helpers import (
     EFFECTIVE_DATE_MAX,
     EFFECTIVE_DATE_MIN,
     BaseSchema,
-    RecurrencePatternField,
+    PeriodPlacementField,
+    RecurrenceUnitField,
     RowId,
     _normalize_empty_inputs,
+    validate_authorable_cadence,
 )
 
 
@@ -55,30 +57,15 @@ class TransferTemplateCreateSchema(BaseSchema):
     to_account_id = RowId(required=True)
     category_id = RowId(required=True)
 
-    # Recurrence rule fields.
-    # The value is the integer primary key of a ref.recurrence_patterns row,
-    # submitted as a string via HTML form data.  ``RecurrencePatternField``
-    # rather than a bare ``RowId``: it also refuses an id no
-    # ``RecurrencePatternEnum`` member names -- what the application MODELS is
-    # narrower than what the table HOLDS, and the gap is a 500 (plan step
-    # R2e-2).  Carrying the rule in the FIELD is what stops a third schema
-    # declaring a pattern without it; ``validate.Range(min=1)`` went with the
-    # move because ``RowId`` already floors at ``MIN_ROW_ID``.
-    #
-    # ``RowId`` underneath rather than ``Integer`` because it IS a row id
-    # despite the name (plan step X-ae): an adversarial review found
-    # ``Integer`` reading '١', ' 2 ', '+3', '007' and '1_0' as pattern ids,
-    # and the completeness gate could not see it while that gate matched on a
-    # ``_id`` SUFFIX.
-    #
-    # ``allow_none`` so the form's "Does not repeat" option survives
-    # the pre_load hook as an explicit ``None`` rather than a dropped key
-    # (plan step R2e-1) -- see the identical field on
+    # Recurrence rule fields -- the two AUTHORED axes since plan step R7b-2.
+    # See the identical pair on
     # :class:`~app.schemas.validation.templates.TemplateCreateSchema` for why
-    # a present ``None`` and an absent key must stay distinguishable.
-    recurrence_pattern = RecurrencePatternField(allow_none=True)
+    # they are typed ``RowId`` subclasses that deserialize to enum members,
+    # why a present ``None`` and an absent key must stay distinguishable, and
+    # why ``offset_periods`` is gone (defect D8).
+    recurrence_unit = RecurrenceUnitField(allow_none=True)
+    recurrence_placement = PeriodPlacementField(allow_none=True)
     interval_n = fields.Integer(validate=validate.Range(min=1))
-    offset_periods = fields.Integer(validate=validate.Range(min=0))
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
     month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
     start_period_id = RowId()
@@ -88,6 +75,20 @@ class TransferTemplateCreateSchema(BaseSchema):
     def validate_different_accounts(self, data, **kwargs):
         """Reject a transfer whose source and destination are the same account."""
         _reject_same_account_transfer(data)
+
+    @validates_schema
+    def validate_cadence_is_storable(self, data, **kwargs):
+        """Reject a submitted cadence the closed pattern set cannot store.
+
+        Shared with the transaction-template schema through
+        :func:`~app.schemas.validation._helpers.validate_authorable_cadence`,
+        which carries the reasoning.
+
+        Raises:
+            ValidationError: The triple has no closed-set pattern to be stored
+                as.
+        """
+        validate_authorable_cadence(data)
 
 
 class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):

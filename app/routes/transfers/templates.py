@@ -38,7 +38,7 @@ from app.services import (
     transfer_recurrence,
     transfer_service,
 )
-from app.services.recurrence import pattern_choices
+from app.services.recurrence import picker_model
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     StaleConflictContext,
@@ -59,7 +59,7 @@ from app.routes._recurrence_form_helpers import (
     STALE_EDITING_MESSAGE,
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
-    edit_form_pattern_choices,
+    edit_form_cadence,
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
@@ -141,7 +141,8 @@ def new_transfer_template():
         template=None,
         accounts=accounts,
         categories=categories,
-        pattern_choices=pattern_choices(),
+        picker=picker_model(),
+        selected_cadence=None,
         periods=periods,
         current_period=current_period,
         prefill_from=prefill_from,
@@ -281,12 +282,13 @@ def edit_transfer_template(template_id):
         template=template,
         accounts=accounts,
         categories=categories,
-        # The EDIT picker: see ``templates.edit_template``.  Since plan step
-        # R2e-3 this form offers the same empty "Does not repeat" option the
-        # transaction form does, and it is FIRST -- so an unmodelled stored
-        # pattern left unselected would default to the DESTRUCTIVE clear, not
-        # to a wrong cadence.  ``edit_form_pattern_choices`` keeps it selected.
-        pattern_choices=edit_form_pattern_choices(template),
+        # The EDIT controls' starting state: see ``templates.edit_template``.
+        # Since plan step R2e-3 this form offers the same empty "Does not
+        # repeat" option the transaction form does, and it is FIRST -- so a
+        # cadence left unselected would default to the DESTRUCTIVE clear, not
+        # to a wrong cadence.  ``edit_form_cadence`` is what selects it.
+        picker=picker_model(),
+        selected_cadence=edit_form_cadence(template),
         periods=[],
         current_period=None,
         # The amount's dated history (plan step X-au-a), precomputed into

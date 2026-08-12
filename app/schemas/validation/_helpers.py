@@ -262,40 +262,64 @@ class RowId(fields.Integer):
         return row_id
 
 
-class RecurrencePatternField(RowId):
-    """A submitted recurrence pattern id the application MODELS.
+class _RefEnumField(RowId):
+    """A submitted ``ref`` row id, deserialized to the ENUM member it names.
 
     :class:`RowId` answers "does this name a row"; this answers the narrower
-    question every recurrence surface actually needs -- "does this name a
-    cadence we can resolve".  ``ref.recurrence_patterns`` is a TABLE and
-    :class:`~app.enums.RecurrencePatternEnum` is the set
-    :func:`app.services.recurrence.resolve` can read back, and the two are
-    deliberately allowed to diverge, and DO: plan step R2e-3 deleted the
-    ``Once`` enum member while its row SURVIVES to R9, because
-    ``ref_cache.init`` raises for an enum member with no row and the deploy
-    auto-rolls back to the previous image (ruling R-R11).  This field is what
-    refuses that surviving row at the door.
+    question a domain surface actually needs -- "does this name a value the
+    application MODELS" -- and hands back that value rather than the integer
+    that spelled it.
 
-    **Declared as a FIELD TYPE rather than a ``validate=`` argument on purpose.**
-    The rule then travels with the value: a future schema that declares a
-    recurrence pattern gets the refusal without its author remembering, which
-    is the failure this placement exists to remove.  Before plan step R2e-2 the
-    check lived in the two route-layer form readers -- so it was the same rule
-    written twice, and any third caller would have had neither copy.
+    **Returning the member rather than the id is what stops the lookup
+    happening twice.**  A submitted id is the WIRE format and the enum member
+    is the logic value, so the schema -- the boundary between them -- is where
+    the conversion belongs.  Every consumer downstream (the write door's
+    :class:`~app.services.recurrence.RecurrenceSpec`, the cross-field cadence
+    validator, the preview reader) takes members, so a field returning ids
+    would make each of them repeat a scan that can only ever give one answer.
+    It remains IDs-for-logic in the sense the project means: nothing compares a
+    ``name`` string, and the integer is what crosses the wire and what the
+    column holds.
 
-    The last-resort invariant stays where it was: ``resolve`` still RAISES for
-    an unmodelled pattern, so a value that reaches the write door some other
-    way is refused loudly rather than persisted.  This field is what turns that
-    500 into a field error the form can flash.
+    **Declared as a FIELD TYPE rather than a ``validate=`` argument on
+    purpose.**  The rule then travels with the value: a future schema that
+    declares one of these axes gets the refusal without its author
+    remembering, which is the failure this placement exists to remove.  Before
+    plan step R2e-2 the check lived in the two route-layer form readers -- so
+    it was the same rule written twice, and any third caller would have had
+    neither copy.
+
+    The last-resort invariant stays where it was: the write door still RAISES
+    for a value it cannot encode, so one that reaches it some other way is
+    refused loudly rather than persisted.  This field is what turns that 500
+    into a field error the form can flash.
 
     No guard for an uninitialised ``ref_cache``: the lookup raises there, but a
-    form cannot render in that window either (``pattern_choices`` and
+    form cannot render in that window either (``cadence_options`` and
     ``register_ref_id_globals`` both need the same cache), so a guard would be
     dead code that only made the failure quieter.
+
+    Subclasses supply :meth:`_member_for` and ``_invalid_message``.
     """
 
+    #: What a refusal says.  Per subclass because the axis is what the user
+    #: chose, and "Invalid recurrence value" names no control on the form.
+    _invalid_message: str = "Invalid value."
+
+    def _member_for(self, row_id):
+        """Return the enum member *row_id* names, or ``None``.
+
+        Args:
+            row_id: A validated ``ref`` row id.
+
+        Returns:
+            The enum member, or ``None`` when the application models no value
+            for that id.
+        """
+        raise NotImplementedError
+
     def _deserialize(self, value, attr, data, **kwargs):
-        """Return the row id, refusing one the application does not model.
+        """Return the enum member, refusing an id the application does not model.
 
         Args:
             value: The submitted value.
@@ -304,24 +328,128 @@ class RecurrencePatternField(RowId):
             **kwargs: Forwarded to :class:`RowId`.
 
         Returns:
-            The pattern id as an ``int``.
+            The enum member *value* names.
 
         Raises:
             ValidationError: *value* names no row (via :class:`RowId`), or
-                names a row no ``RecurrencePatternEnum`` member does.
+                names a row no member of this axis's enum does.
+        """
+        row_id = super()._deserialize(value, attr, data, **kwargs)
+        member = self._member_for(row_id)
+        if member is None:
+            raise ValidationError(self._invalid_message)
+        return member
+
+
+class RecurrenceUnitField(_RefEnumField):
+    """A submitted ``ref.recurrence_units`` id, as its enum member.
+
+    The first of the two axes a recurrence form authors since plan step R7b-2:
+    what ``interval_n`` counts.  It replaced ``RecurrencePatternField``, which
+    validated the closed pattern set the form used to post -- that set is now
+    an ENCODING the write door chooses, never a thing a user picks.
+
+    Whether the cadence this unit belongs to can be stored at all is a property
+    of the ``(interval, unit, placement)`` triple rather than of any one field,
+    so it is checked by :func:`validate_authorable_cadence` and not here.
+    """
+
+    _invalid_message = "Invalid repeat unit."
+
+    def _member_for(self, row_id):
+        """Return the :class:`~app.enums.RecurrenceUnitEnum` member, or ``None``.
+
+        Args:
+            row_id: A validated ``ref.recurrence_units`` id.
+
+        Returns:
+            The member, or ``None`` when unmodelled.
         """
         # Pylint: ``import-outside-toplevel`` -- deferred so this shared schema
         # helper, which every domain module imports, does not pull the
         # recurrence service package in at import time for the two schemas that
         # need it.
         from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
-            modelled_pattern,
+            modelled_unit,
         )
 
-        pattern_id = super()._deserialize(value, attr, data, **kwargs)
-        if modelled_pattern(pattern_id) is None:
-            raise ValidationError("Invalid recurrence pattern.")
-        return pattern_id
+        return modelled_unit(row_id)
+
+
+class PeriodPlacementField(_RefEnumField):
+    """A submitted ``ref.period_placements`` id, as its enum member.
+
+    The second axis a recurrence form authors: which pay period funds an
+    occurrence.  See :class:`RecurrenceUnitField` for why the storable-set
+    question is not asked here.
+    """
+
+    _invalid_message = "Invalid funding choice."
+
+    def _member_for(self, row_id):
+        """Return the :class:`~app.enums.PeriodPlacementEnum` member, or ``None``.
+
+        Args:
+            row_id: A validated ``ref.period_placements`` id.
+
+        Returns:
+            The member, or ``None`` when unmodelled.
+        """
+        # Pylint: ``import-outside-toplevel`` -- see
+        # :meth:`RecurrenceUnitField._member_for`.
+        from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
+            modelled_placement,
+        )
+
+        return modelled_placement(row_id)
+
+
+def validate_authorable_cadence(data):
+    """Refuse a submitted cadence the application cannot STORE.
+
+    The cross-field half of the recurrence form's validation, shared by the
+    transaction-template and transfer-template schemas so the rule is stated
+    once.  Whether a reading can be written is a property of the whole
+    ``(interval, unit, placement)`` triple and of no single field: until plan
+    step R7c the cadence is stored as a closed-set pattern id, and that set
+    covers every N pay periods but only 1, 3 or 6 months, and pairs the
+    first-paycheck placement with a ONE-month interval only.
+
+    **This is the door's copy of a rule the FORM already makes unreachable.**
+    Plan step R7b-2 serves the picker's options from
+    :func:`~app.services.recurrence.cadence_options`, derived from the same
+    table, so no combination a user can assemble by clicking arrives here
+    refused.  It is what a hand-assembled POST meets, and it is why the write
+    door's :class:`~app.services.recurrence.RecurrenceResolutionError` stays a
+    broken-invariant 500 rather than becoming a user-facing path.
+
+    Skipped when either axis is absent: "does not repeat" is the absence of a
+    cadence, and a partial update that omits the recurrence keys leaves the
+    stored one alone.
+
+    Args:
+        data: The deserialized schema payload.
+
+    Raises:
+        ValidationError: The submitted triple has no closed-set pattern to be
+            stored as.
+    """
+    # Pylint: ``import-outside-toplevel`` -- see
+    # :meth:`RecurrenceUnitField._member_for`.
+    from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
+        is_authorable,
+    )
+
+    unit = data.get("recurrence_unit")
+    placement = data.get("recurrence_placement")
+    if unit is None or placement is None:
+        return
+    if not is_authorable(data.get("interval_n", 1), unit, placement):
+        raise ValidationError(
+            "That repeat schedule cannot be saved yet. Pick a different "
+            "interval or a different funding choice.",
+            field_name="recurrence_unit",
+        )
 
 
 class BaseSchema(Schema):

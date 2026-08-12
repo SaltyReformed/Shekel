@@ -13,15 +13,14 @@ The helpers:
 * :func:`build_recurrence_rule_from_form` -- consumes a Marshmallow-
   validated payload, pops the recurrence-related keys, and returns a
   fresh :class:`RecurrenceRule` (added to the session and flushed),
-  ``None`` when no pattern was selected, or a Flask redirect
-  :class:`Response` when validation fails (invalid pattern id,
-  invalid start period for every-N-periods auto-offset).  [F-24]
+  ``None`` when no cadence was selected, or a Flask redirect
+  :class:`Response` when the submitted start period is not this
+  user's.  [F-24]
 * :func:`update_recurrence_rule_from_form` -- sibling of the builder
-  for the pattern-changed-on-an-existing-rule branch: re-points the
+  for the cadence-changed-on-an-existing-rule branch: re-points the
   template's current :class:`RecurrenceRule` in place (preserving its
   id and the owning FK), pops the recurrence keys, and returns
-  ``None`` on success or a redirect :class:`Response` for an invalid
-  pattern id.  [F-24]
+  ``None``; it cannot fail.  [F-24]
 * :func:`resolve_recurrence_rule_for_update` -- dispatches the three
   update-form branches (re-point an existing rule, build + link a new
   one, or CLEAR the recurrence the user set to "Does not repeat") so
@@ -73,14 +72,13 @@ from app.routes._redirect_target import RedirectTarget
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     UNAVAILABLE_PATTERN_MESSAGE,
-    PatternChoice,
     RecurrenceSpec,
+    SelectedCadence,
     author_rule,
-    decode_pattern,
     modelled_pattern,
-    pattern_choices_for,
     reauthor_rule,
     recurrence_spec_with_cadence,
+    selected_cadence,
 )
 from app.utils.log_events import (
     BUSINESS,
@@ -117,8 +115,8 @@ hard-delete) where "while you were editing" would be misleading."""
 # stays in one place.
 
 _BASE_RECURRENCE_KEYS: tuple[str, ...] = (
+    "recurrence_placement",
     "interval_n",
-    "offset_periods",
     "day_of_month",
     "month_of_year",
     "end_date",
@@ -152,8 +150,7 @@ class RecurrenceFormContext:
         end_date_value: The recurrence end date from the form; copied
             verbatim onto the rule's ``end_date``.
         redirect: Where to redirect on a recoverable validation failure
-            (invalid pattern id, or -- for the builder -- an invalid
-            every-N-periods start period).
+            (a start period that is not this user's).
         include_due_day_of_month: ``True`` for transaction templates,
             ``False`` for transfer templates.  Transfer-template schemas
             do not expose ``due_day_of_month``; passing ``True`` for a
@@ -166,29 +163,44 @@ class RecurrenceFormContext:
     include_due_day_of_month: bool = False
 
 
-def edit_form_pattern_choices(template: Any) -> tuple[PatternChoice, ...]:
-    """Return an EDIT form's pattern options, warning when the stored one is gone.
+def edit_form_cadence(template: Any) -> SelectedCadence | None:
+    """Return what an EDIT form's cadence controls start on, warning if unreadable.
 
     The render-side counterpart of the write door below, and the reason both
-    edit routes call one function rather than each assembling the picker: the
-    stored pattern and the offered set can disagree, and a ``<select>`` answers
-    that disagreement by SILENTLY picking its first option (see
-    :func:`app.services.recurrence.pattern_choices_for`, which measured what
-    that costs on each form).
+    edit routes call one function rather than each decoding the rule: the
+    stored pattern and the set the application models can disagree, and until
+    plan step R9 drops the table they DO -- the ``Once`` row survives its
+    deleted enum member (ruling R-R11), and a hand-edited or migration-missed
+    rule can name it.
+
+    **Answering ``None`` is what makes the repair reachable.**  Before plan
+    step R7b-2 the form met that state by keeping the stored pattern as a
+    trailing ``<select>`` option, because a ``<select>`` whose selected value is
+    absent from its options silently submits a DIFFERENT one -- on both forms
+    the first entry, "Does not repeat", which deletes the rule and sweeps its
+    future rows.  The two-axis controls carry no pattern id to preserve, so
+    there is nothing to append and nothing to silently fall back to: they
+    render UNSET, the warning says to choose a cadence, and saving without one
+    is refused by the same validator that refuses any missing cadence.
 
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate`` being
             edited.  Read for ``recurrence_rule`` only; not mutated.
 
     Returns:
-        The modelled choices, plus the stored pattern when the application no
-        longer models it.
+        The :class:`~app.services.recurrence.SelectedCadence` to preselect, or
+        ``None`` when the template does not repeat OR when its rule names a
+        pattern this application no longer models -- the second case having
+        flashed the explanation.
+
     """
     rule = template.recurrence_rule
-    pattern_id = rule.pattern_id if rule is not None else None
-    if pattern_id is not None and modelled_pattern(pattern_id) is None:
+    if rule is None:
+        return None
+    if modelled_pattern(rule.pattern_id) is None:
         flash(UNAVAILABLE_PATTERN_MESSAGE, "warning")
-    return pattern_choices_for(pattern_id)
+        return None
+    return selected_cadence(rule.pattern_id, rule.interval_n)
 
 
 def build_recurrence_rule_from_form(
@@ -208,7 +220,7 @@ def build_recurrence_rule_from_form(
     This helper's own job is what only a ROUTE can do: read the form and
     owner-check the submitted start period.
 
-    **It does NOT validate the pattern id.**  That the id names a cadence the
+    **It does NOT validate the cadence.**  That the submitted axes name a cadence the
     application MODELS -- narrower than "names a ``ref`` row", and the
     difference is a 500 -- is a property of the SUBMISSION, so it belongs to
     the submission's validator:
@@ -220,8 +232,8 @@ def build_recurrence_rule_from_form(
 
     Args:
         data: Marshmallow-validated payload; mutated in place.  The
-            helper pops ``recurrence_pattern``, ``interval_n``,
-            ``offset_periods``, ``day_of_month``, ``month_of_year``,
+            helper pops ``recurrence_unit``, ``recurrence_placement``,
+            ``interval_n``, ``day_of_month``, ``month_of_year``,
             ``end_date``, and -- when ``ctx.include_due_day_of_month``
             is ``True`` -- ``due_day_of_month``.
         user_id: Owner of the resulting :class:`RecurrenceRule` row, and the
@@ -249,7 +261,7 @@ def build_recurrence_rule_from_form(
           directly so the route's control flow matches the pre-extraction
           shape.
     """
-    pattern_id = data.pop("recurrence_pattern", None)
+    unit = data.pop("recurrence_unit", None)
 
     # Verify ownership of any submitted start period BEFORE anything is
     # persisted -- for every pattern, and for NO pattern.  ``start_period_id``
@@ -277,8 +289,8 @@ def build_recurrence_rule_from_form(
             flash("Invalid start period.", "danger")
             return ctx.redirect.to_response()
 
-    if not pattern_id:
-        # No pattern: drop every recurrence-related key so the caller's
+    if unit is None:
+        # Does not repeat: drop every recurrence-related key so the caller's
         # model constructor does not receive stray kwargs.
         for key in _BASE_RECURRENCE_KEYS:
             data.pop(key, None)
@@ -286,12 +298,12 @@ def build_recurrence_rule_from_form(
             data.pop(_DUE_DAY_KEY, None)
         return None
 
+    placement = data.pop("recurrence_placement")
     interval_n = data.pop("interval_n", 1)
-    offset_periods = data.pop("offset_periods", 0)
     # Pop ``end_date`` from data even though the value comes from
     # ``ctx.end_date_value`` -- keeps the "all recurrence keys removed
-    # from data" contract symmetric between the pattern and
-    # no-pattern branches, so the caller's downstream model
+    # from data" contract symmetric between the repeats and
+    # does-not-repeat branches, so the caller's downstream model
     # constructor never receives ``end_date`` as a stray kwarg.
     data.pop("end_date", None)
     day_of_month = data.pop("day_of_month", None)
@@ -307,19 +319,22 @@ def build_recurrence_rule_from_form(
     # derivation and wrote the schema default instead, re-phasing every
     # future occurrence on an amount-only edit.
     #
-    # ``decode_pattern`` is the ONE place a submitted pattern id becomes the
-    # cadence the seam authors in (plan step R7b).  The form still POSTS the
-    # closed-set id -- plan step R7b's own next leaf is what replaces the
-    # picker -- so this call is the translation, taken from the same table the
-    # write door encodes back through.  It goes when the picker does.
-    reading = decode_pattern(pattern_id, interval_n)
+    # **No decode step, since plan step R7b-2**: the form now POSTS the two
+    # axes, so what the user authored reaches the write door unchanged and
+    # ``encode_cadence`` chooses the pattern that stores it.  The translation
+    # that used to sit here read a submitted pattern id back into a cadence,
+    # which made the form's vocabulary and the door's differ by one hop for no
+    # reason once the picker could state the cadence itself.
+    #
+    # ``offset_periods`` is not read from the payload at all -- the schemas no
+    # longer declare it (defect D8) -- so the spec's default stands and
+    # ``resolve`` derives the phase from the rule's own start period.
     return author_rule(
         RecurrenceSpec(
             user_id=user_id,
-            unit=reading.cadence.unit,
-            interval_n=reading.cadence.interval_n,
-            placement=reading.placement,
-            offset_periods=offset_periods,
+            unit=unit,
+            interval_n=interval_n,
+            placement=placement,
             day_of_month=day_of_month,
             due_day_of_month=due_day_of_month,
             month_of_year=month_of_year,
@@ -364,7 +379,7 @@ def update_recurrence_rule_from_form(
             The caller guarantees it is non-``None`` (the branch guard
             tests ``template.recurrence_rule``).
         data: Marshmallow-validated payload; mutated in place.  Pops
-            ``recurrence_pattern``, ``interval_n``, ``offset_periods``,
+            ``recurrence_unit``, ``recurrence_placement``, ``interval_n``,
             ``day_of_month``, ``month_of_year``, and -- when
             ``ctx.include_due_day_of_month`` is ``True`` --
             ``due_day_of_month``.
@@ -376,32 +391,34 @@ def update_recurrence_rule_from_form(
 
     Returns:
         ``None``.  **It cannot fail**, which is what plan step R2e-2 changed:
-        the one failure it used to have -- an unmodelled ``recurrence_pattern``
+        the one failure it used to have -- an unmodelled cadence
         -- is refused by
         :class:`~app.schemas.validation._helpers.RecurrencePatternField` before
         the route reads the payload, so there is no redirect left to return and
         the signature says so.
     """
-    pattern_id = data.pop("recurrence_pattern")
+    unit = data.pop("recurrence_unit")
+    placement = data.pop("recurrence_placement")
 
     # The form's every-recurrence-key pops happen unconditionally, so the
     # caller's downstream ``setattr`` loop never sees a stray kwarg whichever
-    # pattern was chosen.
+    # cadence was chosen.
     submitted_interval = data.pop("interval_n", 1)
     day_of_month = data.pop("day_of_month", None)
     month_of_year = data.pop("month_of_year", None)
-    # The submitted phase is passed through, and resolution IGNORES it for any
-    # rule that names a start period -- deriving the phase from that period
-    # instead.  That is defect D1's fix, and it is scoped exactly where D1
-    # bites: no template renders an offset input, so this value is always the
-    # schema's default 0, which the pre-seam path wrote unconditionally and
-    # thereby re-phased every future occurrence of an ``Every N Periods`` rule
-    # on an amount-only edit.  A rule with NO start period has nothing to
-    # derive from, so the payload remains its only statement of phase -- and
-    # it cannot carry a stale non-zero one, because a period that is a rule's
-    # anchor is HARD-LOCKED against deletion
-    # (``pay_period_locks.PeriodLockReason.RECURRENCE_ANCHOR``).
-    submitted_offset = data.pop("offset_periods", 0)
+    # **The phase is no longer read from the payload at all** (defect D8).  The
+    # schemas stopped declaring ``offset_periods`` at plan step R7b-2, so the
+    # rule's STORED phase rides through ``recurrence_spec_with_cadence``
+    # untouched and there is no submitted value able to overwrite it.
+    #
+    # That finishes what plan step R2d started on defect D1.  Resolution
+    # already IGNORED the submitted phase for any rule naming a start period,
+    # deriving it from that period instead; the remaining exposure was a rule
+    # with NO start period, for which the payload was the only statement of
+    # phase -- and the field no form rendered an input for therefore submitted
+    # the schema's default 0 on every edit.  Deleting the field is what makes
+    # "an amount-only edit cannot re-phase a cadence" structural rather than
+    # conditional on a column being set.
 
     # The rule's CURRENT authored state, with the form's fields replaced.
     # Everything the form does not collect -- ``start_period_id`` (fixed at
@@ -432,23 +449,24 @@ def update_recurrence_rule_from_form(
     # **Read with the SUBMITTED cadence, never the stored one**, and the
     # difference is the repair path this form advertises: an edit page may be
     # showing a rule whose stored pattern the application no longer models
-    # (``pattern_choices_for`` keeps it selectable and
-    # ``UNAVAILABLE_PATTERN_MESSAGE`` says to pick a new one before saving), and
-    # reading that rule's cadence on the way to REPLACING it raises.  Measured
-    # against ``origin/dev``: routing this through ``recurrence_spec`` turned
-    # the one action the surface tells the user to take into a 500.
-    reading = decode_pattern(pattern_id, submitted_interval)
+    # (``edit_form_cadence`` renders the controls UNSET and
+    # ``UNAVAILABLE_PATTERN_MESSAGE`` says to choose a cadence before saving),
+    # and reading that rule's cadence on the way to REPLACING it raises.
+    # Measured against ``origin/dev``: routing this through ``recurrence_spec``
+    # turned the one action the surface tells the user to take into a 500.
+    #
+    # Since plan step R7b-2 the submitted cadence needs no decoding -- the form
+    # states the axes -- so what arrives here is what the user chose.
     current = recurrence_spec_with_cadence(
         rule,
-        interval_n=reading.cadence.interval_n,
-        unit=reading.cadence.unit,
-        placement=reading.placement,
+        interval_n=submitted_interval,
+        unit=unit,
+        placement=placement,
     )
     reauthor_rule(
         rule,
         replace(
             current,
-            offset_periods=submitted_offset,
             day_of_month=day_of_month,
             due_day_of_month=(
                 data.pop("due_day_of_month", None)
@@ -590,7 +608,7 @@ def resolve_recurrence_rule_for_update(
 
     **A submitted-empty pattern and an absent one are different requests**, and
     keeping them apart is what stops the third branch from breaking the
-    partial-update contract.  Both schemas declare ``recurrence_pattern`` as
+    partial-update contract.  Both schemas declare ``recurrence_unit`` as
     ``allow_none``, so the form's "Does not repeat" option survives
     ``_normalize_empty_inputs`` as a present ``None`` while a field the caller
     never submitted stays absent -- and only the first clears.  Without that
@@ -645,7 +663,7 @@ def resolve_recurrence_rule_for_update(
             place.
         data: Marshmallow-validated payload; the recurrence keys are
             popped by the delegated helper.  Read for whether
-            ``recurrence_pattern`` is PRESENT before that pop consumes it.
+            ``recurrence_unit`` is PRESENT before that pop consumes it.
         ctx: The :class:`RecurrenceFormContext` forwarded unchanged to
             the delegated builder / updater (its ``end_date_value``,
             ``redirect`` target, and ``include_due_day_of_month`` flag).
@@ -654,20 +672,20 @@ def resolve_recurrence_rule_for_update(
         * ``None`` -- the rule was resolved; the caller continues to
           the field-update loop.
         * :class:`Response` -- a Flask redirect for an invalid
-          recurrence pattern id; the caller returns it directly.
+          start period; the caller returns it directly.
     """
     # Read BEFORE the delegated helper pops the key.
-    recurrence_submitted = "recurrence_pattern" in data
+    recurrence_submitted = "recurrence_unit" in data
     clearing = (
         recurrence_submitted
-        and not data.get("recurrence_pattern")
+        and data.get("recurrence_unit") is None
         and template.recurrence_rule is not None
     )
     if clearing and _is_loan_payment(template):
         flash(LOAN_PAYMENT_CANNOT_BE_ONE_TIME, "danger")
         return ctx.redirect.to_response()
 
-    if data.get("recurrence_pattern") and template.recurrence_rule:
+    if data.get("recurrence_unit") is not None and template.recurrence_rule:
         # Re-points the rule in place and cannot fail, so this branch has no
         # redirect to propagate -- it returns the same ``None`` the other two
         # branches do on success.
@@ -744,7 +762,7 @@ __all__ = [
     "STALE_ACTION_MESSAGE",
     "RecurrenceFormContext",
     "build_recurrence_rule_from_form",
-    "edit_form_pattern_choices",
+    "edit_form_cadence",
     "update_recurrence_rule_from_form",
     "resolve_recurrence_rule_for_update",
     "handle_stale_form_conflict",

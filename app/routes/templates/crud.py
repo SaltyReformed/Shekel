@@ -42,7 +42,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.recurrence import pattern_choices
+from app.services.recurrence import picker_model
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
@@ -64,7 +64,7 @@ from app.routes._recurrence_form_helpers import (
     STALE_EDITING_MESSAGE,
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
-    edit_form_pattern_choices,
+    edit_form_cadence,
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
@@ -263,7 +263,8 @@ def new_template():
         template=None,
         categories=categories,
         accounts=accounts,
-        pattern_choices=pattern_choices(),
+        picker=picker_model(),
+        selected_cadence=None,
         txn_types=txn_types,
         periods=periods,
         current_period=current_period,
@@ -391,11 +392,14 @@ def edit_template(template_id):
         template=template,
         categories=categories,
         accounts=accounts,
-        # The EDIT picker, not the create one: a rule whose stored pattern the
-        # application no longer models must stay selected, or the browser picks
-        # the first option for the user -- the empty "Does not repeat" entry,
-        # whose save DELETES the rule (R2e-1).
-        pattern_choices=edit_form_pattern_choices(template),
+        # The options never vary; what an EDIT form adds is where the three
+        # controls START.  A rule whose stored pattern the application no
+        # longer models resolves to ``None`` -- the controls render UNSET and
+        # ``edit_form_cadence`` flashes why -- rather than to a stale selection
+        # the browser would silently replace with the first option, the empty
+        # "Does not repeat" entry whose save DELETES the rule (R2e-1).
+        picker=picker_model(),
+        selected_cadence=edit_form_cadence(template),
         txn_types=txn_types,
         periods=[],
         current_period=None,

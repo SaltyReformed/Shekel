@@ -356,6 +356,88 @@ _PATTERNS_BY_READING: dict[
 }
 
 
+@dataclass(frozen=True)
+class AuthorableCadence:
+    """One reading the closed pattern set is able to STORE.
+
+    :func:`authorable_cadences` returns these, and they are
+    :data:`_PATTERNS_BY_READING`'s own keys rather than a description of them:
+    the set a form may offer IS the set :func:`encode_cadence` can encode, so
+    the two cannot be made to disagree by editing one.
+
+    Attributes:
+        interval_n: The interval this reading fixes, or ``None`` when ANY
+            positive interval is storable -- true of exactly the one pattern
+            that takes its interval from a column (``Every N Periods``).
+        unit: The cadence unit.
+        placement: Which pay period an occurrence is funded from.
+    """
+
+    interval_n: int | None
+    unit: RecurrenceUnitEnum
+    placement: PeriodPlacementEnum
+
+
+def authorable_cadences() -> tuple[AuthorableCadence, ...]:
+    """Return every ``(interval, unit, placement)`` the closed set can store.
+
+    **The producer plan step R7b-2 serves the form's options from**, which is
+    what makes :func:`encode_cadence`'s refusal unreachable rather than fenced.
+    Until this existed the picker iterated ``RecurrencePatternEnum`` while the
+    encoder read :data:`PATTERN_DERIVATIONS`, so "nothing offers an unstorable
+    cadence" held only because the two sets happened to coincide -- see
+    :func:`encode_cadence`, whose docstring names this step as the fix.
+
+    **A placement is a property of the ``(unit, interval)`` pair, not of the
+    unit**, and reading it as the latter is how a form comes to offer what
+    cannot be stored.  ``MONTHLY_FIRST`` is ``(1, MONTH,
+    PERIOD_STARTING_ON_OR_AFTER)`` and there is no quarterly or semi-annual
+    twin, so "MONTH allows either placement" is true at interval 1 and false at
+    3 and 6.  Returning the whole triple leaves that dependency in the data
+    instead of asking a caller to rediscover it.
+
+    Returns:
+        One entry per storable reading, in
+        :class:`~app.enums.RecurrencePatternEnum` declaration order -- which is
+        most frequent first (paycheck, month, year), the order the picker has
+        always rendered.
+
+    """
+    return tuple(
+        AuthorableCadence(interval_n=interval_n, unit=unit, placement=placement)
+        for interval_n, unit, placement in _PATTERNS_BY_READING
+    )
+
+
+def is_authorable(
+    interval_n: int,
+    unit: RecurrenceUnitEnum,
+    placement: PeriodPlacementEnum,
+) -> bool:
+    """Return whether this reading can be STORED, without raising.
+
+    :func:`encode_cadence`'s question asked by a validator rather than by a
+    write door: the door refuses with an exception because reaching it with an
+    unstorable cadence is a broken invariant, while a SUBMISSION carrying one
+    is bad input to refuse with a field error.  Built on the same table, so the
+    validator and the door cannot disagree about the set.
+
+    Args:
+        interval_n: The authored interval.
+        unit: The cadence unit.
+        placement: Which pay period an occurrence is funded from.
+
+    Returns:
+        ``True`` when some closed-set pattern stores this reading.
+    """
+    if interval_n < 1:
+        return False
+    return (
+        (interval_n, unit, placement) in _PATTERNS_BY_READING
+        or (None, unit, placement) in _PATTERNS_BY_READING
+    )
+
+
 class RecurrenceResolutionError(ShekelError):
     """A recurrence could not be resolved into a complete row.
 
@@ -590,13 +672,16 @@ def cadence_of(pattern_id: int, interval_n: int) -> Cadence:
 
 __all__ = [
     "PATTERN_DERIVATIONS",
+    "AuthorableCadence",
     "Cadence",
     "EncodedPattern",
     "PatternDerivation",
     "PatternReading",
     "RecurrenceFrequencyError",
     "RecurrenceResolutionError",
+    "authorable_cadences",
     "cadence_of",
     "decode_pattern",
     "encode_cadence",
+    "is_authorable",
 ]

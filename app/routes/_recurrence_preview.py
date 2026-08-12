@@ -25,6 +25,7 @@ from flask import request
 from flask_login import current_user
 from markupsafe import Markup
 
+from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
@@ -34,8 +35,8 @@ from app.services.recurrence import (
     RecurrenceResolutionError,
     RecurrenceSpec,
     build_transient_rule,
-    decode_pattern,
-    modelled_pattern,
+    modelled_placement,
+    modelled_unit,
     placed_periods,
     rule_occurrences,
 )
@@ -105,7 +106,8 @@ def _submitted_end_date() -> date | None:
 
 
 def build_preview_rule(
-    pattern_id: int,
+    unit: RecurrenceUnitEnum,
+    placement: PeriodPlacementEnum,
     start_period: PayPeriod | None,
     calendar: PayCalendar,
 ) -> RecurrenceRule:
@@ -117,38 +119,36 @@ def build_preview_rule(
     the saved one would, including the ``Every N Periods`` phase this route
     used to derive for itself.
 
-    Takes the pattern's ID rather than its ``ref`` row (plan step R2e-2): the
-    caller now validates the submitted id against what the application MODELS,
-    which needs no row, and the row it used to fetch was written onto the
-    transient rule's ``pattern`` relationship for a reader that does not
-    exist.  Since plan step R7b the id is DECODED into a cadence here and
-    ``resolve`` never sees an id at all; the transient rule is discarded
-    immediately afterwards either way.
+    Takes the AXES the form authors rather than a pattern id (plan step
+    R7b-2): the preview reads the same two controls the save posts, so neither
+    can read one submission as a different cadence than the other.  Before that
+    it took the closed-set id and decoded it here, which was one translation
+    the form no longer needs -- and the ``ref`` row it fetched before plan step
+    R2e-2 was written onto the transient rule's ``pattern`` relationship for a
+    reader that does not exist.
+
+    ``interval_n`` is read straight from the query args and NOT bounded here:
+    the authoring seam refuses a non-positive interval, which is the caller's
+    ``RecurrenceResolutionError`` handler's job -- see :func:`preview_fragment`
+    for why every bound is stated once, on the column and its mirror in
+    ``resolve``, rather than a third time on this endpoint.
 
     Args:
-        pattern_id: The ``ref.recurrence_patterns`` id being previewed,
-            already checked as modelled by the caller.
+        unit: The submitted cadence unit, already checked as modelled by the
+            caller.
+        placement: The submitted placement, likewise.
         start_period: The owner-checked start period, or ``None``.
         calendar: The user's pay-period schedule.
 
     Returns:
         The transient :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
-    # ``decode_pattern`` translates the submitted closed-set id into the
-    # cadence the seam authors in (plan step R7b), through the same table the
-    # write door encodes back through -- so the preview and the save cannot
-    # read one submission as two different cadences.  It refuses a
-    # non-positive ``interval_n`` for the caller's ``RecurrenceResolutionError``
-    # handler, which is why the raw query arg is safe to pass here.
-    reading = decode_pattern(
-        pattern_id, request.args.get("interval_n", type=int, default=1),
-    )
     return build_transient_rule(
         RecurrenceSpec(
             user_id=current_user.id,
-            unit=reading.cadence.unit,
-            interval_n=reading.cadence.interval_n,
-            placement=reading.placement,
+            unit=unit,
+            interval_n=request.args.get("interval_n", type=int, default=1),
+            placement=placement,
             day_of_month=request.args.get("day_of_month", type=int),
             month_of_year=request.args.get("month_of_year", type=int),
             start_period_id=start_period.id if start_period else None,
@@ -226,12 +226,25 @@ def recurrence_preview_fragment() -> str:
         The fragment markup, or a muted one-line explanation when there is
         nothing to preview.
     """
-    pattern_id = request.args.get("recurrence_pattern", type=int)
-    if not pattern_id:
-        return "<small class='text-muted'>No preview for this pattern</small>"
+    unit_id = request.args.get("recurrence_unit", type=int)
+    if not unit_id:
+        return "<small class='text-muted'>No preview for this cadence</small>"
 
-    if modelled_pattern(pattern_id) is None:
-        return "<small class='text-muted'>Unknown pattern</small>"
+    # The placement is REQUIRED once a unit is named: it is the second axis of
+    # the cadence, not an optional refinement, and defaulting it here would let
+    # the preview show a schedule the save would not produce.
+    #
+    # ONE refusal for both axes, because they share a disposition and a
+    # reachability: the form posts ids it derived from
+    # ``cadence_options``, so neither can be unmodelled through any click.  The
+    # ABSENT unit above keeps its own message because that one IS reachable --
+    # it is what "does not repeat" posts, and its copy is read by users.
+    unit = modelled_unit(unit_id)
+    placement = modelled_placement(
+        request.args.get("recurrence_placement", type=int) or 0,
+    )
+    if unit is None or placement is None:
+        return "<small class='text-muted'>Unknown cadence</small>"
 
     # The schedule is resolved BEFORE the rule: the authoring seam measures a
     # rule's first occurrence against it, so an empty schedule is refused
@@ -259,7 +272,9 @@ def recurrence_preview_fragment() -> str:
         )
 
     try:
-        rule = build_preview_rule(pattern_id, start_period, calendar)
+        rule = build_preview_rule(
+            unit, placement, start_period, calendar,
+        )
         # ``effective_from`` is this ROUTE's display choice, made above --
         # "show me the next five from here" -- never the rule's opening bound,
         # which is its anchor.  The retired ``match_periods`` adapter applied

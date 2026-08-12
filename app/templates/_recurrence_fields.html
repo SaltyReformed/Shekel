@@ -21,53 +21,115 @@
    repeat has no rule on either kind -- so both forms now offer the empty
    option and the flag went with the divergence it described.
 
-   The REC_* pattern ids in the data-* attributes are Jinja globals, registered
-   by register_ref_id_globals in app/jinja_globals.py, so they resolve whether
-   or not the importing form uses `with context`.  This form is now their ONLY
-   reader: plan step R7a deleted the recurrence_cell macro's per-pattern
-   branches and the two globals nothing else named, and plan step R7b deletes
-   the remaining five with this form.  The pattern select needs nothing from
-   the context either: since plan step R2e-2 its options arrive as
-   (pattern_id, label) pairs from app.services.recurrence.pattern_choices.
-   recurrence_form.js drives the show / hide + live preview off the element ids
-   emitted here. #}
+   The REC_* pattern-id Jinja globals LEFT at plan step R7b-2, with the pattern
+   <select> whose data-* attributes were their last reader: the controls here
+   carry no pattern id at all, because the closed set is a storage encoding the
+   write door chooses rather than a vocabulary the form speaks.  Plan step R7a
+   had already deleted the recurrence_cell macro's per-pattern branches and the
+   two globals nothing else named.
+
+   This partial needs nothing from the context: since plan step R7b-2 its
+   options arrive as a PickerModel from app.services.recurrence.picker_model.
+   recurrence_form.js drives the linked controls, the show / hide and the live
+   preview off the element ids emitted here. #}
 
 
-{# The pattern <select>.  ``choices`` is the ordered PatternChoice tuple the
-   route resolved from app.services.recurrence.pattern_choices -- the picker
-   offers exactly the patterns the application MODELS, never whatever rows the
-   ref table happens to hold, because a pattern RecurrencePatternEnum does not
-   name cannot be resolved and so cannot be authored (plan step R2e-2).
+{# The CADENCE controls (plan step R7b-2): a unit select, an interval control
+   and a placement select, replacing the single pattern <select>.
 
-   ``template`` is the TransactionTemplate / TransferTemplate being edited, or
-   None on a create form.  The macro reads only its rule's pattern_id, to mark
-   one option ``selected``.  That derivation lives HERE rather than in each
-   form because both forms need the identical expression, and a <select> whose
-   stored value matches no option does not fail -- it silently submits a
-   DIFFERENT one (see app.services.recurrence.pattern_choices_for, which
-   measured what that costs).  One copy of the rule is one thing to get right.
+   ``picker`` is the PickerModel the route resolved from
+   app.services.recurrence.picker_model.  Its ``options`` are the readings the
+   closed pattern set can actually STORE -- derived from the encoder's own
+   table, not from the pattern enum -- so a cadence encode_cadence would refuse
+   is never offered, and that refusal is unreachable through this form rather
+   than fenced behind it (developer ruling 2026-08-12).  ``options_json`` is
+   the same set for recurrence_form.js, which LINKS the three: the unit decides
+   which intervals may show, and the (unit, interval) pair decides which
+   placements may.  That pair dependency is real -- the closed set stores
+   "every 1 month funded from the first paycheck" and has no quarterly twin --
+   so a placement list keyed on the unit alone would offer the unstorable.
 
-   Every option in ``choices`` recurs.  The leading empty option is what "does
-   not repeat" is on both kinds since plan step R2e-3: it posts an empty
-   value, which the create routes read as "author no rule" and the update
-   routes read as "delete the rule this template had" (plan step R2e-1). #}
-{% macro recurrence_pattern_select(choices, template) %}
-{% set selected_pattern_id = template.recurrence_rule.pattern_id if template and template.recurrence_rule else none %}
-<div class="mb-3">
-  <label for="recurrence_pattern" class="form-label">Pattern</label>
-  <select id="recurrence_pattern" name="recurrence_pattern" class="form-select"
-          data-every-n="{{ REC_EVERY_N_PERIODS }}"
-          data-monthly="{{ REC_MONTHLY }}"
-          data-quarterly="{{ REC_QUARTERLY }}"
-          data-semi-annual="{{ REC_SEMI_ANNUAL }}"
-          data-annual="{{ REC_ANNUAL }}">
-    <option value="" {{ 'selected' if selected_pattern_id is none else '' }}>Does not repeat</option>
-    {% for choice in choices %}
-    <option value="{{ choice.pattern_id }}" {{ 'selected' if selected_pattern_id == choice.pattern_id else '' }}>
-      {{ choice.label }}
+   ``selected`` is the SelectedCadence the edit routes resolved through
+   edit_form_cadence, or None on a create form AND for a rule whose stored
+   pattern the application no longer models.  The second case renders the
+   controls unset above a flashed explanation: there is no pattern id left to
+   preserve as a trailing option, so there is nothing for the browser to
+   silently replace with the first entry -- the destructive "Does not repeat".
+
+   The empty unit option is what "does not repeat" is on both kinds since plan
+   step R2e-3: it posts an empty value, which the create routes read as "author
+   no rule" and the update routes read as "delete the rule this template had"
+   (plan step R2e-1).
+
+   Both interval controls post ``interval_n``, so exactly one is ever enabled;
+   a disabled control does not submit, which is what keeps two spellings of one
+   field from reaching the schema together.  The script owns that toggle, and
+   the server renders the state matching ``selected`` so a form is correct
+   before any script runs. #}
+{% macro recurrence_cadence_controls(picker, selected) %}
+{% set sel_unit = selected.unit_id if selected else none %}
+{% set sel_interval = selected.interval_n if selected else none %}
+{% set sel_placement = selected.placement_id if selected else none %}
+{# The units, in offer order, de-duplicated: one <option> per unit however
+   many readings it has. #}
+{% set unit_ids = [] %}
+{% set unit_labels = {} %}
+{% for opt in picker.options if opt.unit_id not in unit_ids %}
+  {% set _ = unit_ids.append(opt.unit_id) %}
+  {% set _ = unit_labels.update({opt.unit_id: opt.unit_label_many}) %}
+{% endfor %}
+{# A unit whose offer set includes a null interval takes ANY positive N, which
+   is what selects the number box over the fixed <select>. #}
+{% set free_units = picker.options | selectattr('interval_n', 'none') | map(attribute='unit_id') | list %}
+<div class="mb-3" id="cadence-controls" data-cadence-options="{{ picker.options_json }}">
+  <label for="recurrence_unit" class="form-label">Repeats</label>
+  <div class="row g-2 align-items-center">
+    <div class="col-auto">
+      <select id="recurrence_unit" name="recurrence_unit" class="form-select">
+        <option value="" {{ 'selected' if sel_unit is none else '' }}>Does not repeat</option>
+        {% for unit_id in unit_ids %}
+        <option value="{{ unit_id }}" {{ 'selected' if sel_unit == unit_id else '' }}>
+          {{ unit_labels[unit_id] }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-auto d-none" id="field-interval">
+      <div class="input-group">
+        <span class="input-group-text">every</span>
+        {# The free-N box: one unit uses it (paychecks), and R7c widens it to
+           every unit when the authored columns land. #}
+        <input type="number" id="interval_n_free" name="interval_n"
+               class="form-control" min="1" style="max-width: 6rem"
+               value="{{ sel_interval if sel_interval else 1 }}"
+               {{ '' if sel_unit in free_units else 'disabled' }}>
+        {# The fixed set: every interval any unit offers, each tagged with the
+           unit that offers it so the script can show only that unit's. #}
+        <select id="interval_n_fixed" name="interval_n" class="form-select"
+                {{ 'disabled' if sel_unit in free_units or sel_unit is none else '' }}>
+          {% for opt in picker.options if opt.interval_n is not none %}
+          <option value="{{ opt.interval_n }}" data-unit="{{ opt.unit_id }}"
+            {{ 'selected' if sel_unit == opt.unit_id and sel_interval == opt.interval_n else '' }}>
+            {{ opt.interval_n }} {{ opt.unit_label_one if opt.interval_n == 1 else opt.unit_label_many }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="mb-3 d-none" id="field-placement">
+  <label for="recurrence_placement" class="form-label">Funded from</label>
+  <select id="recurrence_placement" name="recurrence_placement" class="form-select">
+    {% set seen_placements = [] %}
+    {% for opt in picker.options if opt.placement_id not in seen_placements %}
+    {% set _ = seen_placements.append(opt.placement_id) %}
+    <option value="{{ opt.placement_id }}" {{ 'selected' if sel_placement == opt.placement_id else '' }}>
+      {{ opt.placement_label }}
     </option>
     {% endfor %}
   </select>
+  <div class="form-text">Which paycheck pays for each occurrence.</div>
 </div>
 {% endmacro %}
 
@@ -76,27 +138,14 @@
    day / due-day / month row, and the end date.  recurrence_form.js toggles
    each on by id for the selected pattern.  Does NOT include the pay-period
    selector or the preview (each form places those). #}
+{# The remaining pattern-dependent fields.  The interval moved OUT at plan step
+   R7b-2: it is one of the three cadence axes now, so it lives beside the unit
+   it counts in recurrence_cadence_controls rather than as a detail toggled on
+   for one pattern.  That also retired its pattern-scoped prefill, which
+   existed because a value labelled "every N paychecks" could otherwise be read
+   off a Quarterly rule's column -- a column whose validity depended on the
+   pattern, the exact defect this redesign removes. #}
 {% macro recurrence_detail_fields(template, include_due_day) %}
-<div class="mb-3 d-none" id="field-interval">
-  <label for="interval_n" class="form-label">Repeat every N paychecks</label>
-  {# Prefilled from the rule ONLY for the pattern this input belongs to.
-     The div is d-none by default and recurrence_form.js toggles it on for
-     EVERY_N_PERIODS, but the input submits either way.  ``interval_n`` means
-     "repeat every N pay PERIODS" and is meaningful for no other pattern, so
-     an unconditional prefill would put a Quarterly rule's leftover value into
-     a field labelled "every N paychecks" the moment its pattern is switched.
-     Reading a column whose validity depends on the pattern is the exact
-     defect the redesign exists to remove.  (An earlier note here said the
-     column carried 3 on a Quarterly rule and 6 on a Semi-Annual one, which
-     plan step R2b did and plan step R2d withdrew -- the interval of a
-     MONTH-unit recurrence is now derived from the pattern and stored
-     nowhere.  The pattern-scoped prefill is still correct either way.) #}
-  <input type="number" id="interval_n" name="interval_n" class="form-control" min="1"
-         value="{{ template.recurrence_rule.interval_n
-                   if template and template.recurrence_rule
-                      and template.recurrence_rule.pattern_id == REC_EVERY_N_PERIODS
-                   else 1 }}">
-</div>
 <div class="row mb-3">
   <div class="col d-none" id="field-dom">
     <label for="day_of_month" class="form-label">Day of Month</label>

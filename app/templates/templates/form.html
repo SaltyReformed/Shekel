@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
 {% from "_amount_macros.html" import amount_field, amount_history with context %}
-{% from "_recurrence_fields.html" import recurrence_pattern_select, recurrence_detail_fields, recurrence_preview, start_period_field with context %}
+{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_detail_fields, recurrence_preview, start_period_field with context %}
 {% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if template else 'New' }} Recurring Transaction -- Shekel{% endblock title %}
 
@@ -91,7 +91,7 @@
       {# --- Recurrence (accent emphasis section) --- #}
       <div class="form-section--accent">
         <h6 class="form-section__title">Recurrence</h6>
-        {{ recurrence_pattern_select(pattern_choices, template) }}
+        {{ recurrence_cadence_controls(picker, selected_cadence) }}
         <div id="recurrence-fields" class="d-none">
           {% if not template %}{{ start_period_field(periods, current_period) }}{% endif %}
           {{ recurrence_detail_fields(template, include_due_day=true) }}
