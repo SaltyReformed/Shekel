@@ -26,6 +26,7 @@ from __future__ import annotations
 import re
 
 import _registry as registry
+from _classes import decomposition_leaf_keys
 
 #: A ``starts`` cell's DERIVED head, reconciled by :func:`starts_violations`
 #: against the blocker keys in the same cell.  ``NOW`` is the ready state,
@@ -46,22 +47,26 @@ DESCRIPTION_CAP = 400
 #: Cited by every message below, so a failure sends the reader to the rule.
 _RULE = "conventions.md rule 14"
 
+#: ``steps.md``'s THIRD self-count, and the one rule 3's arms did not reach.
+#: "38 of these steps are legal to start right now" is a statement about the
+#: corpus that no arm graded, and it was stale by three the moment a commit
+#: added a ready row -- rule 3's own sentence, on a fourth number: a count
+#: stated in a registry and checked nowhere is a count that rots.  Anchored on
+#: the LIVE wording, because a pattern matching nothing reads as "no count is
+#: claimed" and passes.
+READY_COUNT_RX = re.compile(
+    r"(?P<ready>\d+) of these steps are legal to start right now",
+)
 
-def _leaf_keys(parent: registry.StepRow,
-               rows: list[registry.StepRow]) -> list[str]:
-    """The keys of *parent*'s decomposition leaves, derived by id prefix.
 
-    The same derivation :func:`_registry.decomposition_violations` uses, and
-    deliberately the same asymmetry: the PARENT set is DECLARED and only the
-    leaf set is derived.  Deriving both would claim ``R-F1`` as the parent of
-    ``R-F10``, ``R-F12`` and ``R-F13``, three unrelated findings-steps.
-    """
-    return [
-        row.key for row in rows
-        if row.arc == parent.arc
-        and row.ident != parent.ident
-        and row.ident.startswith(parent.ident)
-    ]
+#: The ONE derivation of a container's leaves, shared with
+#: :func:`_registry.decomposition_violations` rather than re-spelled here.
+#: Three copies of it existed until 2026-08-11 and two were per-arc, which made
+#: a container whose leaves are filed under an identity SIBLING's name in
+#: another arc invisible to its own reconciler -- ``balance:X-l`` and
+#: ``recurrence:R-F12`` kept a ``ticks with #10`` a renumber had moved to
+#: ``#17``, with every gate green.
+_leaf_keys = decomposition_leaf_keys
 
 
 def rank_map() -> dict[str, int]:
@@ -85,7 +90,8 @@ def rank_map() -> dict[str, int]:
         changed = False
         for parent in containers:
             leaf_ranks = [
-                ranks[key] for key in _leaf_keys(parent, rows) if key in ranks
+                ranks[key] for key in _leaf_keys(parent, rows)
+                if key in ranks
             ]
             if not leaf_ranks:
                 continue
@@ -220,7 +226,9 @@ def _container_starts_problem(
             f"{row.key} is a container and its `starts` reads {head!r}.  A "
             f"container does not START, it TICKS with its last leaf ({_RULE})"
         )
-    leaf_ranks = [ranks[key] for key in _leaf_keys(row, rows) if key in ranks]
+    leaf_ranks = [
+        ranks[key] for key in _leaf_keys(row, rows) if key in ranks
+    ]
     if leaf_ranks and int(stated) != max(leaf_ranks):
         return (
             f"{row.key} says it ticks with #{stated} and its last open leaf is "
@@ -258,6 +266,41 @@ def _step_starts_problem(
             f"blocker is ranked #{max(waits)} ({_RULE})"
         )
     return None
+
+
+def ready_count_violation() -> list[str]:
+    """Rule 3 on ``steps.md``'s third self-count: how many rows say ``NOW``.
+
+    The sibling of :func:`_registry.steps_stated_count_violation`, here rather
+    than there because the READY state is this module's: it is the ``starts``
+    head, and a third spelling of "read the head off the cell" is the
+    denormalization these registries exist to remove.
+
+    A container is excluded for the same reason it leaves the order entirely --
+    it is not a thing a reader picks up, so it is not work that can start.
+
+    Returns:
+        One message when the stated figure disagrees with the table, else none.
+    """
+    text = registry.STEPS.read_text()
+    match = READY_COUNT_RX.search(text)
+    if match is None:
+        return [
+            "steps.md states no ready count.  conventions.md rule 3 requires "
+            f"the phrase 'N of these steps are legal to start right now' ({_RULE})",
+        ]
+    ready = sum(
+        1 for row in registry.step_rows()
+        if not row.shipped and not row.is_container
+        and row.blocked.split(" / ")[0].strip() == "NOW"
+    )
+    if int(match.group("ready")) == ready:
+        return []
+    return [
+        f"steps.md says {match.group('ready')} steps are legal to start right "
+        f"now and {ready} are.  A stale ready count tells a cold reader how "
+        f"much work is available using a number nothing checks ({_RULE})",
+    ]
 
 
 def starts_violations() -> list[str]:

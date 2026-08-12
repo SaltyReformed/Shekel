@@ -28,6 +28,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from _classes import decomposition_leaf_keys
 from _plan_gate import (
     CHECKBOX_RX,
     COMMIT_SHA,
@@ -716,11 +717,14 @@ def decomposition_violations() -> list[str]:
     a container is not a task.
 
     **The parent set is DECLARED** (:attr:`StepRow.is_decomposed_parent`) and
-    the leaf set is derived by id prefix FROM that set.  Deriving both would
-    claim ``R-F1`` as the parent of ``R-F10`` / ``R-F12`` / ``R-F13``; deriving
-    neither would need a name list, which is N-147's defect.  Declaring the
-    small set and deriving the large one costs one phrase per parent and has no
-    list to rot.
+    the leaf set is derived by :func:`decomposition_leaf_keys` FROM that set.
+    Deriving both would claim ``R-F1`` as the parent of ``R-F10`` / ``R-F12`` /
+    ``R-F13``; deriving neither would need a name list, which is N-147's defect.
+    Declaring the small set and deriving the large one costs one phrase per
+    parent and has no list to rot.  **This arm re-spelled that derivation
+    inline until 2026-08-11**, per-arc, so it could not see a class whose leaves
+    are filed under a sibling's name -- marking all three of `X-l` / `C2` /
+    `R-F12` shipped over five open leaves reported ONE of the three.
 
     **A parent with NO leaves in the table is NOT a failure.**  Rule 5 archives
     a completed span, and ``X-f1``'s fourteen leaves have already left this
@@ -735,12 +739,10 @@ def decomposition_violations() -> list[str]:
     for parent in rows:
         if not parent.is_decomposed_parent or not parent.shipped:
             continue
+        by_key = {row.key: row for row in rows}
         open_leaves = sorted(
-            row.ident for row in rows
-            if row.arc == parent.arc
-            and row.ident != parent.ident
-            and row.ident.startswith(parent.ident)
-            and not row.shipped
+            key for key in decomposition_leaf_keys(parent, rows)
+            if not by_key[key].shipped
         )
         if open_leaves:
             problems.append(

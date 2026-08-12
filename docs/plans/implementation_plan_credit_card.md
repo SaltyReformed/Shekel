@@ -238,14 +238,14 @@ real forward model, this is the ONE place that changes").
   minimum_payment / fixed), dual-seeded; AUDITED_TABLES. Creation flow mirrors the loan payment
   transfer flow: monthly rule `day_of_month = payment_due_day`, one active template per card.
   Straddling close/due periods: due-date-wins placement pinned.
-- [ ] **CC4b** `feat(cards): the payment you owe is the payment the card derives` --
-      `card_payment_service.live_card_transfer_amounts` wired into
-      `cash_events.live_amount_overrides` beside the loan's: projected payment amount = statement
-      balance at last close minus `reward_redemption` rows posted since close, floor 0; min mode
-      substitutes CC2a's minimum; fixed leaves `default_amount`. ONE override map per pass
-      (`BalanceContext` memo, injection shape). Oracles: derived amount renders identically on
-      grid/card/checking; redemption after close reduces, before close does not (both controls);
-      floor-0.
+- [ ] **CC4b** `feat(cards): the payment you owe is the payment the card derives` -- a CARD rule
+      behind the amount resolver (`balance:X-au-b`, ruling **R-FI**), NOT another entry in
+      `live_amount_overrides`, which that arc deletes: projected payment amount = statement balance
+      at last close minus `reward_redemption` rows posted since close, floor 0; min mode substitutes
+      CC2a's minimum; fixed mode is a template amount the card owns. The card row stores no amount,
+      so nothing can hold a figure the derivation contradicts. Oracles: derived amount renders
+      identically on grid/card/checking; redemption after close reduces, before close does not (both
+      controls); floor-0.
 - [ ] **CC4c** `feat(cards): underpayment warns and projects its finance charge` -- C7-style warning
       (payment < minimum due) + one-click "pay statement balance" (flips mode);
       `card_recurrence_sync` maintains ONE projected finance-charge expense

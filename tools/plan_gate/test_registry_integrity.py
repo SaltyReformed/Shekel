@@ -774,6 +774,28 @@ class TestAParentTicksWithTheLastOfItsLeaves:
         )
 
 
+    def test_a_parent_is_graded_over_its_whole_identity_class(self, stage):
+        """A container's leaves may be filed under a SIBLING's name.
+
+        **This arm re-spelled the leaf derivation inline, per-arc, until
+        2026-08-11.**  ``balance:X-l``, ``pay_calendar:C2`` and
+        ``recurrence:R-F12`` are ONE step under three names and every leaf of
+        the class is a ``pay_calendar:C2-*`` row, so shipping ``X-l`` over five
+        open leaves reported NOTHING: the arm looked for a `balance` row whose
+        id starts with `X-l` and there is none.  The class row `C2` happened to
+        cover it, which is why the hole was invisible -- one rename away from
+        being live.
+        """
+        line = _row("steps", "| balance | X-l |")
+        stage("steps", line, _with_cell(line, 4, "SHIPPED"))
+        problems = [p for p in registry.decomposition_violations()
+                    if "balance:X-l" in p]
+        assert problems, registry.decomposition_violations()
+        assert "pay_calendar:C2-" in problems[0], (
+            f"the failure names no leaf of the class: {problems}"
+        )
+
+
 class TestTheParserSurvivesTheShapesTheRealFilesUse:
     """The measured false positives, kept as controls rather than as prose."""
 

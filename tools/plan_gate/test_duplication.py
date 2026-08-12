@@ -59,12 +59,17 @@ class TestTheOrderIsStatedOnlyInStepsMd:
         stage_arc(
             "balance",
             "## Where the arc stands",
-            "## Where the arc stands\n\nOrder from here: **X-ar**, then **X-ap**, "
+            "## Where the arc stands\n\nOrder from here: **X-aq**, then **X-ap**, "
             "then **X-f3** -> X-f4.\n",
         )
         problems = duplication.order_restatement_violations()
         assert problems, "a four-step chain must be reported"
         assert "rule 16" in problems[0]
+        # The PAYLOAD, not just that something fired: this fixture named a step
+        # the corpus later deleted, which silently degraded it to a three-id
+        # chain that still passed.  A control that cannot tell four from three
+        # cannot notice its own subject rotting.
+        assert "X-aq -> X-ap -> X-f3 -> X-f4" in problems[0], problems
 
     def test_the_control_fires_on_the_shortest_chain(self, stage_arc):
         """Two steps and one connective is already a sequence.

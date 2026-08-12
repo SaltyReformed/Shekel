@@ -75,14 +75,14 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
     def test_an_identity_class_sharing_one_rank_is_not_a_violation(self, stage):
         """`C5a` and `R-F10` are one commit at one position, and that is legal.
 
-        **The class SHIPPED at `pay_calendar:C2-b2`, so it no longer holds a
-        rank and the clean corpus stops exercising the exemption.**  It is
-        staged back onto a rank here rather than deleted with it: the exemption
-        is still the rule, the next identity class to be ranked will need it,
-        and a reader deleting it would otherwise learn nothing from a passing
-        suite.  The pair is the real one, read out of the Shipped table, so the
-        control still rests on a relation the corpus states rather than on a
-        fixture.
+        **The class SHIPPED at `pay_calendar:C2-b2` (`fe365de1`), so it no
+        longer holds a rank and the clean corpus stops exercising the
+        exemption.**  It is staged back onto a rank rather than deleted with
+        it: the exemption is still the rule, the next identity class to be
+        ranked will need it, and a reader deleting it would otherwise learn
+        nothing from a passing suite.  The pair is the real one, read out of
+        the Shipped table, so this still rests on a relation the corpus states
+        rather than on a fixture.
         """
         rows = {row.key: row for row in registry.step_rows()}
         left, right = rows["pay_calendar:C5a"], rows["recurrence:R-F10"]
@@ -90,9 +90,9 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
         assert right.key in left.alias_keys()
         assert left.key in right.alias_keys()
 
-        # A rank NO live row holds, so the only thing under test is whether
-        # two names at one rank are exempt.  The density arm fires on the hole
-        # that leaves, which is why this reads one arm's messages and not all.
+        # A rank NO live row holds, so the only thing under test is whether two
+        # names at one rank are exempt.  The density arm fires on the hole that
+        # leaves, which is why this reads one arm's messages and not all.
         free = max(r.rank for r in rows.values() if r.rank is not None) + 2
         for row in (left, right):
             line = _row("steps", f"| {row.arc} | {row.ident} |")
@@ -124,31 +124,118 @@ class TestTheStartsCellIsDerivedAndReconciled:
         assert any("balance:X-f4" in p and "stale NOW" in p for p in problems), problems
 
     def test_the_control_fires_when_the_named_rank_is_not_the_latest(self, stage):
-        """Naming an earlier blocker understates the wait."""
+        """Naming an earlier blocker understates the wait.
+
+        **The rank it stages and the rank it expects are both DERIVED**, and
+        that is this suite's own subject applied to itself: the literals ``#5``
+        and ``#32`` were a stored copy of a value the live table decides, and
+        they rotted on the first commit that renumbered it.
+        """
         line = _row("steps", "| credit_card | CC0a |")
-        stage("steps", line, _with_cell(line, 6, "after #5 / balance:X-f4 / balance:X-am"))
+        stage("steps", line, _with_cell(
+            line, 6, "after #1 / balance:X-f4 / balance:X-am",
+        ))
+        latest = max(
+            order.rank_map()[key] for key in ("balance:X-f4", "balance:X-am")
+        )
         problems = order.starts_violations()
-        latest = order.rank_map()["balance:X-am"]
         assert any(
             "credit_card:CC0a" in p and f"#{latest}" in p for p in problems
         ), problems
 
     def test_the_control_fires_when_a_ready_row_claims_to_be_blocked(self, stage):
-        """A stale `after` hides work the reader can pick up today."""
-        line = _row("steps", "| balance | X-ar |")
-        stage("steps", line, _with_cell(line, 6, "after #4 / balance:X-aq (shipped)"))
+        """A stale `after` hides work the reader can pick up today.
+
+        **The blocker's SHIPPED-ness is ASSERTED, not assumed.**  A shipped step
+        carries no rank, so `waits` is empty for it -- and equally empty for a
+        blocker that does not exist at all.  Without the premise the control
+        passed unchanged against `balance:X-NONEXISTENT`, proving the arm fires
+        on a typo rather than on the state it names.
+        """
+        blocker = "balance:X-f2-c2"
+        assert {row.key: row for row in registry.step_rows()}[blocker].shipped
+        line = _row("steps", "| balance | X-ap |")
+        stage("steps", line, _with_cell(
+            line, 6, f"after #4 / {blocker} (shipped)",
+        ))
         problems = order.starts_violations()
-        assert any("balance:X-ar" in p and "has SHIPPED" in p for p in problems), problems
+        assert any("balance:X-ap" in p and "has SHIPPED" in p for p in problems), problems
 
     def test_the_control_fires_on_a_container_naming_the_wrong_leaf(self, stage):
         """A container ticks with its LAST leaf, not an earlier one."""
         line = _row("steps", "| balance | X-i |")
-        last = order.rank_map()["balance:X-i2"]
-        stage("steps", line, _with_cell(line, 6, f"ticks with #{last - 1}"))
+        stage("steps", line, _with_cell(line, 6, "ticks with #1"))
+        ticks = order.rank_map()["balance:X-i"]
+        problems = order.starts_violations()
+        assert any("balance:X-i" in p and f"#{ticks}" in p for p in problems), problems
+
+    def test_the_control_fires_on_a_container_whose_leaves_are_a_siblings(self, stage):
+        """A container's leaves may be filed under an identity SIBLING's name.
+
+        **This arm was BLIND until 2026-08-11.**  `balance:X-l`,
+        `pay_calendar:C2` and `recurrence:R-F12` are ONE step under three names,
+        and every leaf of the class is a `pay_calendar:C2-*` row -- so a per-arc
+        leaf derivation answered eight keys for one member and NOTHING for the
+        other two, both of which then fell through the `if leaf_ranks` guard.
+        No commit ever held the split state: a working-tree renumber produced
+        one identity class stating TWO tick ranks and every gate stayed green
+        over it, which is the equally damning and accurate version.
+        """
+        line = _row("steps", "| balance | X-l |")
+        stage("steps", line, _with_cell(line, 6, "ticks with #1"))
+        ticks = order.rank_map()["balance:X-l"]
         problems = order.starts_violations()
         assert any(
-            "balance:X-i" in p and f"#{last}" in p for p in problems
+            "balance:X-l" in p and f"#{ticks}" in p for p in problems
         ), problems
+
+    def test_the_control_fires_on_a_one_way_alias_cell(self, stage):
+        """Class membership is UNDIRECTED, or a blanked cell re-opens the hole.
+
+        `balance:X-l` carries no arc-local leaf, so its tick rank comes entirely
+        from the class.  Read the class off the parent's own `also` cell alone
+        and blanking that cell restores the exact blindness the sibling control
+        above grades -- a stale tick rank with every arm green.  Measured on a
+        staged copy 2026-08-11: 1 problem with the class intact, 0 without.
+        """
+        ticks = order.rank_map()["balance:X-l"]
+        line = _row("steps", "| balance | X-l |")
+        staged = _with_cell(_with_cell(line, 6, f"ticks with #{ticks - 1}"), 2, "--")
+        stage("steps", line, staged)
+        problems = order.starts_violations()
+        assert any(
+            "balance:X-l" in p and f"#{ticks}" in p for p in problems
+        ), problems
+
+    def test_the_ready_count_matches_the_table(self):
+        """steps.md's THIRD self-count, and the one rule 3's arms did not reach."""
+        assert not order.ready_count_violation()
+
+    def test_the_control_fires_on_a_stale_ready_count(self, stage):
+        """A stale ready count tells a cold reader how much work is available.
+
+        It is its OWN arm rather than more of the step/open/graph counts,
+        because it moves for a different reason than any of them: a row becomes
+        ready when its last blocker SHIPS, which changes neither the size, the
+        open count nor the graph. Measured 2026-08-11: the sentence read 38
+        against a table holding 41, and no arm had an opinion.
+        """
+        ready = sum(
+            1 for row in registry.step_rows()
+            if not row.shipped and not row.is_container
+            and row.blocked.split(" / ")[0].strip() == "NOW"
+        )
+        stage(
+            "steps",
+            f"{ready} of these steps are legal to start right now",
+            f"{ready - 3} of these steps are legal to start right now",
+        )
+        problems = order.ready_count_violation()
+        assert any("are legal to start right" in p for p in problems), problems
+
+    def test_the_ready_pattern_still_matches_the_live_document(self):
+        """A pattern matching nothing reads as 'no count is claimed' and passes."""
+        assert order.READY_COUNT_RX.search(registry.STEPS.read_text())
 
     def test_the_control_fires_on_an_unparseable_head(self, stage):
         """Every other spelling of readiness used to read as legal."""
