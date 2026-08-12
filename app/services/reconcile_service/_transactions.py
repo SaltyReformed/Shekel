@@ -44,13 +44,50 @@ from decimal import Decimal
 from sqlalchemy.orm import selectinload
 
 from app.models.transaction import Transaction
-from app.services import transaction_service
+from app.services import cash_ledger, transaction_service
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
     OutstandingTransaction,
 )
 from app.utils.log_events import EVT_TRANSACTIONS_RECONCILED
+
+
+def _cash_amount(txn: Transaction, booked: Decimal) -> "Decimal | None":
+    """Return what the STATEMENT shows for *txn*, or ``None`` when it is *booked*.
+
+    Finding **N-226**.  An envelope settles at ``sum(entries)`` over EVERY
+    entry it holds, and a card purchase is one of those -- but a card purchase
+    never touches checking: it leaves later through its own CC Payback sibling,
+    which is exactly why the purchase arm refuses to OFFER one.  So the figure
+    a tick books and the figure the bank showed are two different numbers for
+    one row, and this screen is the one read beside a paper statement.
+
+    **It prints both rather than changing what a tick books**, which is the
+    only correct direction: ``actual_amount`` legitimately IS total spend, the
+    posted ledger already subtracts the credit sum
+    (``cash_ledger.settled_cash_leg``), and moving the booked figure would make
+    the panel disagree with the grid and the analytics.
+
+    The credit term is ``cash_ledger.credit_entry_sum`` rather than a second
+    ``entry.is_credit`` reduction here: one rule, one statement, so a change to
+    what "on a card" means cannot leave the panel saying the old thing.
+
+    Args:
+        txn: The row being offered, with ``entries`` loaded.
+        booked: What a tick would book (``transaction_service.settle_amount``).
+
+    Returns:
+        ``booked`` minus the card entries when the row holds any, else
+        ``None`` -- which is every bill, every deposit and every envelope whose
+        purchases were all debits.  Production carries 18 card entries in
+        history and ZERO on a Projected envelope today, so this is latent
+        rather than live.
+    """
+    on_card = cash_ledger.credit_entry_sum(txn)
+    if not on_card:
+        return None
+    return booked - on_card
 
 
 def _offer_kind(txn: Transaction) -> OfferKind:
@@ -184,13 +221,31 @@ def outstanding_transactions(
     """
     statement = _rows.Statement(owner_id, account_id, observed_on)
     return {
-        txn.id: OutstandingTransaction(
-            transaction_id=txn.id,
-            attributed_on=_rows.attributed_on(txn),
-            amount=transaction_service.settle_amount(txn),
-            is_correctable=not transaction_service.settles_from_entries(txn),
-            is_income=txn.is_income,
-            kind=_offer_kind(txn),
-        )
+        txn.id: _offer(txn)
         for txn in _rows.outstanding_rows(ARM, statement)
     }
+
+
+def _offer(txn: Transaction) -> OutstandingTransaction:
+    """Return the offer this arm makes for one row.
+
+    Args:
+        txn: A row in scope, with ``entries``, ``pay_period`` and ``template``
+            loaded.
+
+    Returns:
+        Its :class:`OutstandingTransaction`.  ``amount`` is resolved once and
+        passed to :func:`_cash_amount` rather than resolved twice: the two
+        figures are the same number seen two ways, and asking the verb again
+        would be a second answer to one money question.
+    """
+    booked = transaction_service.settle_amount(txn)
+    return OutstandingTransaction(
+        transaction_id=txn.id,
+        attributed_on=_rows.attributed_on(txn),
+        amount=booked,
+        cash_amount=_cash_amount(txn, booked),
+        is_correctable=not transaction_service.settles_from_entries(txn),
+        is_income=txn.is_income,
+        kind=_offer_kind(txn),
+    )

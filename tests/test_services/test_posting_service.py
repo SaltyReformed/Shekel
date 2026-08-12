@@ -1549,7 +1549,7 @@ class TestSettledTransactionEffect:
         ``actual_amount`` 150, has a confirmed cash effect of
         ``effective(150) - credit_sum(40) = 110`` of expense, so the signed
         effect is -110.00 -- the SQL credit-sum subquery excludes the credit
-        portion exactly as the go-forward ``_credit_entry_sum`` does.
+        portion exactly as the go-forward ``credit_entry_sum`` does.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]

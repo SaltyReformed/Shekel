@@ -25,6 +25,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
     account_service,
+    cash_ledger,
     pay_period_service,
     pay_period_write,
     reconcile_service,
@@ -1748,6 +1749,137 @@ class TestWhatATickBooks:
                 "payment_count", "payment_total",
                 "deposit_count", "deposit_total",
             }
+
+
+class TestTheCashFigureBesideTheBookedOne:
+    """Finding **N-226**: what a tick BOOKS is not always what a statement shows.
+
+    An envelope settles at ``sum(entries)`` over EVERY entry it holds, and a
+    card purchase is one of those -- but a card purchase never touches
+    checking, which is exactly why the purchase arm refuses to OFFER one.  So a
+    `$40` debit plus a `$60` card purchase is offered at `$100.00` on a screen
+    captioned "tick everything your statement shows", against a statement
+    showing `$40`.
+
+    **The LEDGER was right either way** -- ``settled_cash_leg`` subtracts the
+    credit sum -- so the fix prints both figures rather than changing what a
+    tick books: ``actual_amount`` legitimately IS total spend, and moving it
+    would make the panel disagree with the grid and the analytics.
+
+    Production carries 18 card entries in history and ZERO on a Projected
+    envelope today, so this is latent rather than live.
+    """
+
+    _bill = staticmethod(TestTheTransactionArm._bill)
+    _offered = staticmethod(TestTheTransactionArm._offered)
+
+    def test_an_envelope_holding_a_CARD_purchase_publishes_both_figures(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """`$40` debit + `$60` card: booked `$100.00`, statement `$40.00`."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            _make_entry(
+                txn, seed_user["user"], amount="60.00",
+                description="Amazon", is_credit=True,
+            )
+            db.session.commit()
+
+            offer = self._offered(seed_user)[txn.id]
+            assert offer.amount == Decimal("100.00")
+            assert offer.cash_amount == Decimal("40.00")
+
+    def test_an_envelope_of_DEBITS_publishes_no_second_figure(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The negative control, and it is what stops the caption being noise.
+
+        Nothing on the card means the booked figure IS what the statement
+        shows, so there is no second number to print.  Without this the case
+        above passes for a panel that captions every envelope.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            db.session.commit()
+
+            assert self._offered(seed_user)[txn.id].cash_amount is None
+
+    def test_a_bill_and_a_transfer_publish_no_second_figure(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """A row that carries no entries has no card half to disagree with.
+
+        Graded across BOTH source-row arms because the field is on the shared
+        offer type: a bill can hold no entries, and a transfer shadow
+        structurally cannot (production: 342 shadows, 0 entries).
+        """
+        with app.app_context():
+            bill = self._bill(seed_user, seed_periods[0], amount="180.00")
+            savings = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    name="Savings",
+                    account_type_id=seed_user["account"].account_type_id,
+                    anchor_balance=Decimal("100.00"),
+                ),
+            )
+            db.session.flush()
+            transfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], amount=Decimal("75.00"),
+            )
+            db.session.commit()
+
+            shadow = (
+                db.session.query(Transaction)
+                .filter(
+                    Transaction.transfer_id == transfer.id,
+                    Transaction.account_id == seed_user["account"].id,
+                )
+                .one()
+            )
+            offered = self._offered(seed_user)
+            assert offered[bill.id].cash_amount is None
+            assert offered[shadow.id].cash_amount is None
+
+    def test_the_cash_figure_matches_what_the_LEDGER_will_post(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The panel's second figure IS the posted one, not a lookalike.
+
+        Both come from ``cash_ledger.credit_entry_sum``, and this grades that
+        by settling the row and comparing against ``settled_cash_leg`` -- the
+        expression the ledger writer and the cash walk both reduce through.
+        Two numbers that agree by construction rather than by coincidence is
+        the whole reason the term was published instead of re-summed.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            _make_entry(
+                txn, seed_user["user"], amount="60.00",
+                description="Amazon", is_credit=True,
+            )
+            db.session.commit()
+
+            offered_cash = self._offered(seed_user)[txn.id].cash_amount
+            assert reconcile_service.record_reconciliation(
+                reconcile_service.ReconcileSubmission(
+                    owner_id=seed_user["user"].id,
+                    account_id=seed_user["account"].id,
+                    entry_ids=set(),
+                    transaction_ids={txn.id},
+                    corrections={},
+                    observed_on=_OBSERVED_ON,
+                ),
+            ) == 1
+            db.session.commit()
+
+            db.session.expire_all()
+            settled = db.session.get(Transaction, txn.id)
+            assert cash_ledger.settled_cash_leg(settled) == -offered_cash
 
 
 class TestTheCorrectionCountIsWhatAHumanTyped:

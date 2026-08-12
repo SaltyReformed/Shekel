@@ -196,7 +196,7 @@ def settled_transaction_effect(account_id: int, scenario_id: int) -> Decimal:
     accumulate via :func:`account_posting_total`.  ``effective`` is
     ``COALESCE(actual, estimated)``; the per-transaction credit-entry sum is a
     correlated subquery (the SQL counterpart of the go-forward
-    ``_credit_entry_sum``).  Settled statuses are non-excluded by construction
+    ``credit_entry_sum``).  Settled statuses are non-excluded by construction
     (``settled_status_ids`` is disjoint from the balance-excluded set), so no
     excluded-status guard is needed.
 
@@ -226,7 +226,7 @@ def settled_transaction_effect(account_id: int, scenario_id: int) -> Decimal:
     )
     # Per-transaction sum of credit-card entry amounts, correlated to the outer
     # transaction so it excludes the credit portion exactly as the go-forward
-    # ``_credit_entry_sum`` does (the CC Payback posts that portion separately).
+    # ``credit_entry_sum`` does (the CC Payback posts that portion separately).
     credit_sum = (
         db.session.query(
             db.func.coalesce(db.func.sum(TransactionEntry.amount), Decimal("0"))

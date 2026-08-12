@@ -316,6 +316,13 @@ _FENCED_MODULE_RULINGS = {
         # exactly the reason its projected siblings above are: an amount per
         # TRANSACTION is not a balance per ACCOUNT.
         "settled_cash_leg",
+        # One TERM of the rule above -- ``Sigma(credit entry amounts)`` for one
+        # row -- published at plan step X-f2-c3 so the reconcile panel can print
+        # what a STATEMENT shows beside what a tick books (finding **N-226**)
+        # without writing ``entry.is_credit`` a second time.  A non-producer by
+        # the same reasoning one step further along: it is not even an amount
+        # per transaction, it is a component of one.
+        "credit_entry_sum",
         # ``_flows`` -- what a SET of rows sums to: what MOVED, not what is HELD
         # at a date.  A peer reduction over the same rows a balance folds, not a
         # step toward one.  ``sum_projected`` is the shared engine BOTH cash

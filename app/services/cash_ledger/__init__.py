@@ -67,6 +67,7 @@ from ._amounts import (
     ReconciledThrough,
     income_amount,
     live_amount_overrides,
+    credit_entry_sum,
     settled_cash_leg,
 )
 from ._events import (
@@ -107,6 +108,7 @@ __all__ = [
     "reconciled_through",
     "resolve_anchor",
     "settled_cash_facts",
+    "credit_entry_sum",
     "settled_cash_leg",
     "sum_projected",
     "walk_cash_ledger",

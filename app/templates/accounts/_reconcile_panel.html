@@ -31,6 +31,15 @@
       {{ period_start.strftime('%b %-d') }} - {{ period_end.strftime('%b %-d') }}
     </span>
     {% endif %}
+    {% if group.settle.cash_amount is not none %}
+    {# Finding N-226: an envelope books ``sum(entries)`` over EVERY entry, and
+       a card purchase is one of those -- but it never touches checking, so
+       the statement shows LESS than the tick books.  Both figures are the
+       producer's; this prints them and composes neither. #}
+    <span class="d-block text-body-secondary fw-normal fs-xs">
+      {{ money(group.settle.cash_amount) }} on your statement -- the rest went on a card
+    </span>
+    {% endif %}
   </label>
   {% if group.settle.is_correctable %}
   <div class="input-group input-group-sm flex-shrink-0 reconcile-amount">

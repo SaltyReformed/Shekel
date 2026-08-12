@@ -3080,6 +3080,298 @@ class TestTheReconcileRoute:
 # ── Account Type CRUD ─────────────────────────────────────────────
 
 
+
+class TestTheReconcileRoutesUngradedBranches:
+    """Finding **N-232**: three branches of the POST that nothing could fail.
+
+    Opened by X-f2-c2's own adversarial correctness review.  The route's code
+    is correct under trace -- which is exactly why the holes survived -- but
+    three of its arms had ZERO coverage, and one of them is the arm the route's
+    own docstring argues matters most:
+
+    * the PARTIAL-landing notice (``recorded < asked``).  The one test that
+      reached this code took the nothing-landed arm, so deleting the partial
+      branch or swapping the two message constants left the suite green.  For
+      the purchase arm a dropped tick hides a column stamp; since X-f2-c2 it
+      hides a status change, an amount and a ledger posting.
+    * the ``StaleDataError`` refusal, which renders the panel as a designed 400
+      rather than letting htmx leave a broken button.
+    * that an amount box submitted WITHOUT its checkbox is INERT.  That is the
+      modal case rather than an exotic one: the panel renders a box on every
+      correctable row and an HTML form posts them ALL, so a five-row panel
+      posts five figures on every submit.
+    """
+
+    _make_grocery_txn_with_entries = (
+        TestTheReconcileRoute._make_grocery_txn_with_entries
+    )
+    _true_up = staticmethod(TestTheReconcileRoute._true_up)
+    _entries_of = staticmethod(TestTheReconcileRoute._entries_of)
+
+    @staticmethod
+    def _bill(seed_user, period, *, name="Electricity", amount="180.00"):
+        """Create a projected NON-envelope row -- correctable, so it draws a box."""
+        from app.models.transaction_template import TransactionTemplate
+
+        projected = db.session.query(Status).filter_by(name="Projected").one()
+        expense_type = db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one()
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=expense_type.id,
+            name=name,
+            default_amount=Decimal(amount),
+            is_envelope=False,
+        )
+        db.session.add(template)
+        db.session.flush()
+        txn = Transaction(
+            template_id=template.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            account_id=seed_user["account"].id,
+            status_id=projected.id,
+            name=name,
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=expense_type.id,
+            estimated_amount=Decimal(amount),
+        )
+        db.session.add(txn)
+        db.session.flush()
+        return txn
+
+    def test_a_PARTLY_landed_submission_says_so(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """One tick lands, one was already settled: the partial notice, not "saved".
+
+        The ordinary way to reach it is a second device settling a row while a
+        statement is being walked.  Answered as a 200 -- the request succeeded
+        and the refreshed list is the useful part -- with the sentence that
+        says half of it was left alone.  Shown to FIRE: swapping the partial
+        and stale message constants fails this and its sibling below.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [
+                    ("106.86", past, False, None),
+                    ("249.71", past, False, None),
+                ],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+            lands, already = self._entries_of(txn.id)
+            lands_id, already_id = lands.id, already.id
+            # The second entry is settled behind the panel's back -- the second
+            # device.  The form still posts both ids.
+            db.session.get(type(already), already_id).settled_on = past
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"entry_ids": [str(lands_id), str(already_id)]},
+            )
+
+            assert response.status_code == 200
+            assert b"had already been settled elsewhere" in response.data
+            assert b"nothing was recorded" not in response.data
+            by_id = {e.id: e for e in self._entries_of(txn.id)}
+            assert by_id[lands_id].settled_on == display_today()
+
+    def test_a_submission_that_lands_on_NOTHING_says_something_else(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The control for the sibling above: the two arms say different things.
+
+        Without both, one message constant answers every case and the branch
+        that chooses between them grades nothing.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("106.86", past, False, None)],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+            entry_id = self._entries_of(txn.id)[0].id
+            db.session.get(
+                type(self._entries_of(txn.id)[0]), entry_id,
+            ).settled_on = past
+            db.session.commit()
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"entry_ids": [str(entry_id)]},
+            )
+
+            assert response.status_code == 200
+            assert b"nothing was recorded" in response.data
+            assert b"had already been settled elsewhere" not in response.data
+
+    def test_a_stale_settle_re_renders_the_panel_as_a_designed_400(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A concurrent commit mid-reconcile is a designed refusal, not a 500.
+
+        The race is engineered the way ``test_optimistic_locking_c18`` does it:
+        a ``before_update`` mapper event bumps the row's version from a
+        separate connection during the UPDATE, defeating the version-pinned
+        WHERE.  The response carries ``Shekel-Designed-Fragment`` because htmx
+        leaves a 4xx non-swapping, so a refusal without it renders NOTHING and
+        the button reads as broken -- worse than the error it reports.  Shown
+        to FIRE: deleting the route's ``except StaleDataError`` arm turns this
+        into a 500.
+        """
+        from sqlalchemy import event
+
+        with app.app_context():
+            bill = self._bill(seed_user, seed_periods_today[0])
+            bill_id = bill.id
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            fired = {"flag": False}
+
+            def make_stale(_mapper, _connection, target):
+                if fired["flag"] or target.id != bill_id:
+                    return
+                fired["flag"] = True
+                with db.engine.connect() as conn:
+                    conn.execute(
+                        text(
+                            "UPDATE budget.transactions "
+                            "SET version_id = version_id + 1 WHERE id = :id"
+                        ),
+                        {"id": bill_id},
+                    )
+                    conn.commit()
+
+            event.listen(Transaction, "before_update", make_stale)
+            try:
+                response = auth_client.post(
+                    f"/accounts/{seed_user['account'].id}/reconcile",
+                    data={"transaction_ids": [str(bill_id)]},
+                )
+            finally:
+                event.remove(Transaction, "before_update", make_stale)
+
+            assert response.status_code == 400, response.data
+            assert response.headers.get("Shekel-Designed-Fragment") == "1"
+            assert b"changed while you were reconciling" in response.data
+
+            db.session.expire_all()
+            assert db.session.get(Transaction, bill_id).settled_on is None
+
+    def test_an_amount_box_submitted_WITHOUT_its_checkbox_is_inert(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The modal case: an HTML form posts every box it renders.
+
+        The panel prefills a box on every correctable row, so a five-row panel
+        posts five figures on every submit whether or not the user ticked
+        those rows.  Nothing may happen to a row whose id is not in
+        ``transaction_ids`` -- the corrections map is passed through and the
+        arm's own scope is what decides, so an unticked row is simply not in
+        the narrowed set.
+        """
+        with app.app_context():
+            ticked = self._bill(seed_user, seed_periods_today[0],
+                                name="Electricity", amount="180.00")
+            unticked = self._bill(seed_user, seed_periods_today[0],
+                                  name="Water", amount="60.00")
+            ticked_id, unticked_id = ticked.id, unticked.id
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={
+                    "transaction_ids": [str(ticked_id)],
+                    f"actual_amount-{ticked_id}": "175.42",
+                    f"actual_amount-{unticked_id}": "1.00",
+                },
+            )
+            assert response.status_code == 200
+
+            db.session.expire_all()
+            settled = db.session.get(Transaction, ticked_id)
+            left_alone = db.session.get(Transaction, unticked_id)
+            assert settled.actual_amount == Decimal("175.42")
+            assert left_alone.actual_amount is None
+            assert left_alone.settled_on is None
+            assert left_alone.status.name == "Projected"
+
+    def test_a_forged_box_for_ANOTHER_accounts_row_changes_nothing(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A crafted correction cannot reach outside the reconciled account.
+
+        The ids never leave the arm's scope, so a row on a second account is
+        not in the narrowed set and its amount box is read by nothing.  The
+        negative half of the "the scope is the security property" claim, taken
+        from the ROUTE rather than from the service.
+        """
+        with app.app_context():
+            other = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    name="Second Checking",
+                    account_type_id=seed_user["account"].account_type_id,
+                    anchor_balance=Decimal("100.00"),
+                ),
+            )
+            db.session.flush()
+            elsewhere = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [], account=other,
+                name="Elsewhere",
+            )
+            elsewhere_id = elsewhere.id
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={
+                    "transaction_ids": [str(elsewhere_id)],
+                    f"actual_amount-{elsewhere_id}": "999.99",
+                },
+            )
+            assert response.status_code == 200
+            assert b"nothing was recorded" in response.data
+
+            db.session.expire_all()
+            untouched = db.session.get(Transaction, elsewhere_id)
+            assert untouched.actual_amount is None
+            assert untouched.settled_on is None
+
+    def test_a_row_the_verb_would_not_read_a_box_for_renders_NONE(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The negative control for ruling **R-FF**'s box.
+
+        An envelope CARRYING entries derives its amount, so the settle verb
+        ignores a submitted figure -- and the panel must therefore render no
+        input for it.  Without this the correctable cases are satisfied by a
+        panel that draws a box on every row and silently drops two thirds of
+        what it collects.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            envelope = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("106.86", past, False, None)],
+            )
+            bill = self._bill(seed_user, seed_periods_today[0])
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            response = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+            )
+            assert response.status_code == 200
+            body = response.data.decode()
+            assert f'name="actual_amount-{bill.id}"' in body
+            assert f'name="actual_amount-{envelope.id}"' not in body
+
 class TestAccountTypes:
     """Tests for account type create, rename, and delete."""
 

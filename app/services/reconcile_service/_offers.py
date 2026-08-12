@@ -174,6 +174,18 @@ class OutstandingTransaction:
             (envelope-tracked AND carrying entries).  Read off
             ``transaction_service.settles_from_entries`` so the panel cannot
             offer a box for a value the verb would ignore.
+        cash_amount: What the STATEMENT shows, when that is LESS than
+            :attr:`amount` -- and ``None`` whenever the two agree, which is
+            every row but one shape.  Finding **N-226**: an envelope settles at
+            ``sum(entries)`` over EVERY entry including the card ones, while
+            what leaves checking is the debit half alone (the card half leaves
+            later through its own CC Payback).  So a `$40` debit plus a `$60`
+            card purchase is offered at `$100.00` on a screen captioned "tick
+            everything your statement shows", against a statement showing
+            `$40`.  The LEDGER was right either way -- ``settled_cash_leg``
+            subtracts the credit sum -- and only the panel's figure was, so the
+            fix is to print both rather than to change what a tick books:
+            ``actual_amount`` legitimately IS total spend.
         is_income: Whether this row is money ARRIVING.  The panel counts
             deposits separately from payments (ruling **R-FD**) because a
             deposit and a bill do not sum to anything a reader wants.
@@ -188,6 +200,7 @@ class OutstandingTransaction:
     transaction_id: int
     attributed_on: date
     amount: Decimal
+    cash_amount: "Decimal | None"
     is_correctable: bool
     is_income: bool
     kind: OfferKind

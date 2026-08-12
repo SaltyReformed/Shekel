@@ -207,6 +207,9 @@ def outstanding_transfers(
             transaction_id=shadow.id,
             attributed_on=_rows.attributed_on(shadow),
             amount=transfer_service.settle_amount(shadow),
+            # Always the whole figure: a shadow can hold no entries, so there
+            # is no card half for the statement to disagree with (N-226).
+            cash_amount=None,
             is_correctable=True,
             is_income=shadow.is_income,
             kind=OfferKind.TRANSFER,
