@@ -23,12 +23,13 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.journal_entry import JournalEntry
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern, Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.services import transaction_service
+from app.services import posting_service, transaction_service
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -1097,3 +1098,114 @@ class TestASettleBooksTheFreshestFigure:
             ]
             assert txn.estimated_amount == Decimal("4000.00")
             assert txn.actual_amount is None
+
+
+class TestApplyRequestedStatusTheDoorVerb:
+    """``apply_requested_status`` -- the route layer's ONE status entry point.
+
+    **It exists because a ROUTE was deciding what a status change means.**  The
+    transaction PATCH handler and the cancel handler each called
+    ``status_seam.apply_status_change`` -- the MECHANICS primitive, which
+    assigns the column and posts nothing -- so the PATCH door could flip a row
+    into the settled band without ever asking what the row was worth (finding
+    **N-219**).  These grade the verb's two acts: the status change, and the
+    ledger reconcile that every status change owes.
+    """
+
+    @staticmethod
+    def _plain_row(seed_user, period, *, estimated_amount="100.00"):
+        """Return a Projected, NON-envelope row: the verb's manual branch."""
+        template = _make_envelope_template(seed_user)
+        template.is_envelope = False
+        txn = _make_projected_txn(
+            seed_user, period, template=template,
+            estimated_amount=estimated_amount,
+        )
+        db.session.flush()
+        return txn
+
+    def test_a_status_change_reconciles_the_ledger(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A settled status posts the row's effect, in the same call.
+
+        Act 2 is the point: the seam alone assigns a column and posts nothing,
+        so a door that called it settled a row while the double-entry ledger
+        stayed flat.  A $100.00 expense settles and exactly ONE journal entry
+        appears against it, booking $100.00 out of the cash account.
+
+        Shown to FIRE: deleting the reconcile leaves zero entries.
+        """
+        with app.app_context():
+            txn = self._plain_row(seed_user, seed_periods[0])
+
+            transaction_service.apply_requested_status(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            )
+
+            assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
+            assert txn.settled_on == display_today()
+            entries = (
+                db.session.query(JournalEntry)
+                .filter_by(transaction_id=txn.id).all()
+            )
+            assert len(entries) == 1
+            # effective_amount == estimated_amount == 100.00, nothing credited,
+            # so the cash account's settled effect is a 100.00 outflow.
+            assert posting_service.settled_transaction_effect(
+                seed_user["account"].id, seed_user["scenario"].id,
+            ) == Decimal("-100.00")
+
+    def test_a_cancel_leaves_the_ledger_flat(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Cancelling a Projected row posts nothing, and that IS the reconcile.
+
+        The non-settled arm.  A Projected row has never posted, so reconciling
+        to Cancelled's empty target is an idempotent no-op -- the property the
+        cancel handler used to spell out for itself and now inherits.  The
+        settle day is cleared by the seam, because a cancelled row's money
+        never moved.
+        """
+        with app.app_context():
+            txn = self._plain_row(seed_user, seed_periods[0])
+
+            transaction_service.apply_requested_status(
+                txn, ref_cache.status_id(StatusEnum.CANCELLED),
+            )
+
+            assert txn.status_id == ref_cache.status_id(StatusEnum.CANCELLED)
+            assert txn.settled_on is None
+            assert (
+                db.session.query(JournalEntry)
+                .filter_by(transaction_id=txn.id).count() == 0
+            )
+
+    def test_an_illegal_transition_raises_and_posts_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A refused transition leaves both the row and the ledger untouched.
+
+        Cancelled -> Paid is not in the transaction workflow: a cancelled row
+        must be reprojected first, so the audit trail records both moves.  The
+        verb must refuse BEFORE it reconciles -- a reconcile run against a
+        status the state machine rejected would post an effect the row is not
+        entitled to.
+        """
+        with app.app_context():
+            txn = self._plain_row(seed_user, seed_periods[0])
+            transaction_service.apply_requested_status(
+                txn, ref_cache.status_id(StatusEnum.CANCELLED),
+            )
+
+            with pytest.raises(ValidationError) as exc:
+                transaction_service.apply_requested_status(
+                    txn, ref_cache.status_id(StatusEnum.DONE),
+                )
+
+            assert "transition" in str(exc.value)
+            assert txn.status_id == ref_cache.status_id(StatusEnum.CANCELLED)
+            assert (
+                db.session.query(JournalEntry)
+                .filter_by(transaction_id=txn.id).count() == 0
+            )

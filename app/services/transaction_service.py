@@ -13,6 +13,12 @@ the envelope PRIMITIVE underneath it, and it stays public for
 ``carry_forward_service``, which settles a BATCH and must reconcile the ledger
 after its ``no_autoflush`` block, so it owns that act itself.
 
+**Beside them sits :func:`apply_requested_status`, which is not a settle entry
+point but the route layer's ONE status entry point.**  A door states the status
+the user asked for; that function decides what applying it means and dispatches
+a settle to the verb.  It exists because a route was making that decision, and
+making it wrong -- see the paragraph below.
+
 **THREE doors settle a transaction, not two, and only two of them are on this
 verb.**  Saying so here rather than letting the next leaf discover it: the
 grid's Mark Paid calls the verb, the reconcile panel's tick calls it since plan
@@ -184,6 +190,73 @@ def settle_amount(txn: Transaction) -> Decimal:
         return compute_actual_from_entries(txn.entries)
     live = _freshest_amount(txn)
     return txn.effective_amount if live is None else live
+
+
+def apply_requested_status(
+    txn: Transaction,
+    new_status_id: int,
+    *,
+    settled_on: date | None = None,
+) -> None:
+    """Apply the status a DOOR requested, and reconcile the ledger to it.
+
+    **The route layer's ONE status entry point, and the reason it exists is
+    that a route was deciding what a status change MEANS.**  The transaction
+    PATCH handler and the cancel handler each called
+    ``status_seam.apply_status_change`` directly -- the MECHANICS primitive,
+    which verifies the transition, assigns the column and maintains the settle
+    day, and deliberately does nothing else.  For "the user cancelled this row"
+    the mechanics ARE the whole act.  For "the user marked this row Paid" they
+    are not: settling also decides what the row is WORTH
+    (:func:`settle_transaction`), and a door that flips the status without
+    asking books whatever figure the row happened to be carrying.  That is
+    finding **N-219** on the transaction PATCH door, and the shape of it is a
+    ROUTE holding a money rule -- this arc's own root cause 1.
+
+    So the routes stop choosing.  A door states the status the USER asked for
+    and this decides what applying it means.  After plan step X-ap the only
+    ``app/`` callers of the seam are this function, :func:`settle_transaction`,
+    :func:`settle_from_entries`, ``credit_workflow`` (Credit and its revert,
+    neither of them settled statuses) and ``_transfer_status`` (a transfer and
+    its two shadows, which settle through ``transfer_service`` by transfer
+    invariants 3 and 4) -- so a FOURTH transaction settle door cannot be opened
+    by reaching for the obvious primitive, which is how the third one was.
+
+    **The ledger reconcile is here rather than at each door** for the reason
+    :func:`settle_transaction` states for its own: every status change moves
+    the row's posted effect (a settle posts it, a cancel reverses it), and a
+    door that forgets posts nothing while reporting success.  It is reconciled
+    LAST, after the caller's own field writes, so it reads the final amount and
+    category rather than the pre-edit ones -- the discipline
+    ``transfer_service.update_transfer`` documents.  A caller that edits
+    posting-relevant fields WITHOUT changing the status still owes its own
+    reconcile; there is no status change for this function to hang one on.
+
+    Does NOT flush or commit -- the caller owns the session boundary.
+
+    Args:
+        txn: The transaction whose status the door is changing.  Must be a
+            REGULAR row: a transfer shadow's status is its parent's
+            (``transfer_service.update_transfer``), and the PATCH route branches
+            a shadow away before it reaches here.
+        new_status_id: The ``ref.statuses.id`` the door asked for -- the
+            SUBMITTED status when the form carried one, else the row's own (an
+            edit that changes only the settle day is an identity transition).
+        settled_on: The civil day the money moved, when the door knows it, after
+            the door's own :func:`app.services.status_seam.settle_day_for_status`
+            reading of the submission.  ``None`` leaves the seam's rule in force.
+
+    Raises:
+        ValidationError: From an illegal transition or the seam's settle-day
+            refusals.  A 400 at the route.
+        PostingError: From the reconcile, on a broken ledger invariant.
+            Deliberately NOT a sibling of ``ValidationError`` -- it must fail
+            loud rather than render as a designed refusal.
+    """
+    apply_status_change(txn, new_status_id, settled_on=settled_on)
+    posting_service.sync_transaction_postings(
+        txn, settled=txn.status.is_settled,
+    )
 
 
 def settle_transaction(

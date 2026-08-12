@@ -241,7 +241,7 @@ def _apply_regular_update(txn, txn_id, data):
     )
 
     # Apply the remaining updates.  ``status_id`` and ``settled_on`` are BOTH
-    # excluded here and routed through the status seam below: a bare setattr
+    # excluded here and routed through the status verb below: a bare setattr
     # would assign the column but skip the transition check, the settle-day
     # stamp/clear, and the status-relationship expire that the seam owns -- and
     # for ``settled_on`` it would make this loop a SECOND writer of a column the
@@ -252,16 +252,34 @@ def _apply_regular_update(txn, txn_id, data):
             continue
         setattr(txn, field, value)
 
-    # Apply the status and the settle day through the single seam, in ONE call,
-    # because they are ONE fact: a row is settled if and only if it carries the
-    # day its money moved, and the seam writes both in the same statement.  The
-    # status is the SUBMITTED one when the PATCH carried one, else the row's own
-    # -- a day-only edit is an identity transition, exactly as the transfer
-    # side's :func:`_transfer_status.apply_settle_day_to_pair` does it.
+    # If the user changed amount or period on a template-generated item, flag as
+    # override.  It sits HERE, with the other field writes and above the status
+    # work, because it is one: a flag this request sets from this request's
+    # payload.  The placement is also load-bearing rather than tidy -- the
+    # settle below asks the projection for a fresher amount and SKIPS a row the
+    # user has overridden (``income_service.live_projected_net``), so setting
+    # the flag afterwards would let a salary row's recompute overwrite the
+    # estimate the same form just submitted.
+    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
+        txn.is_override = True
+
+    # Apply the status and the settle day through the ONE status verb, in ONE
+    # call, because they are ONE fact: a row is settled if and only if it
+    # carries the day its money moved, and the seam underneath writes both in
+    # the same statement.  The status is the SUBMITTED one when the PATCH
+    # carried one, else the row's own -- a day-only edit is an identity
+    # transition, exactly as the transfer side's
+    # :func:`_transfer_status.apply_settle_day_to_pair` does it.
     # ``settle_day_for_status`` drops a day submitted alongside a revert out of
     # the settled band (ruling **R-EG**), so the documented unlock path (set
     # Status to Projected to edit the amounts) is not broken by the form
     # re-submitting the day the row already carried.
+    #
+    # **This route does NOT decide what applying a status MEANS** --
+    # ``transaction_service.apply_requested_status`` does, and it reconciles the
+    # ledger as part of the act.  Calling the seam here instead is finding
+    # **N-219**: the seam is the MECHANICS primitive, so a door that reaches for
+    # it settles a row without ever asking what the row is worth.
     #
     # ``_resolve_status_change`` already pre-verified a SUBMITTED transition for
     # error precedence, and the identity transition a day-only edit performs is
@@ -279,40 +297,48 @@ def _apply_regular_update(txn, txn_id, data):
     # ``except``: both are ordinary input from the correction box, and both must
     # render as a designed 400 with the staged ``setattr`` mutations rolled back.
     new_status_id = data.get("status_id", txn.status_id)
+
+    # **The three excepts cover the WHOLE tail, and they were split by the order
+    # the phases were written in rather than by a decision** -- the same
+    # unification :func:`_mark_done_regular` records, forced here by the same
+    # cause: the status verb now reconciles the ledger, so one call raises both
+    # the designed ``ValidationError`` (a 400) and the concurrency
+    # ``StaleDataError`` (a 409) and cannot be split across two nets.  Nothing
+    # moves the other way: ``PostingError`` is a SIBLING of ``ValidationError``
+    # under ``ShekelError`` rather than a subclass, so a broken ledger invariant
+    # still fails loud instead of rendering as a designed refusal, and
+    # ``credit_workflow.delete_payback_on_credit_revert`` raises neither (its
+    # three ``ValidationError`` siblings are in ``mark_as_credit`` /
+    # ``unmark_credit``, which this path does not call).
     try:
         settle_day = status_seam.settle_day_for_status(
             current_user.id, new_status_id, data.get("settled_on"),
         )
         if "status_id" in data or settle_day is not None:
-            status_seam.apply_status_change(
+            transaction_service.apply_requested_status(
                 txn, new_status_id, settled_on=settle_day,
             )
-    except ValidationError as exc:
-        return _error_transaction_response(txn_id, str(exc))
-
-    # If the user changed amount or period on a template-generated item,
-    # flag as override.
-    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
-        txn.is_override = True
-
-    try:
-        # Posting ledger reconcile (Build-Order Step 3): after every effect
-        # field is applied above (the setattr loop, the status seam, the
-        # is_override flag), bring the double-entry ledger back in step with the
-        # transaction's now-current settled effect.  Placed LAST -- NOT at the
-        # status flip -- so it reads the FINAL amount and category, the exact
-        # discipline ``transfer_service.update_transfer`` documents (the 2.8b
-        # HIGH: a settle-and-recategorize PATCH applies category_id after
-        # status_id, so posting at the flip would book the stale category).  The
-        # reconcile reads the OLD category's posted legs back from the ledger by
-        # transaction_id, so a revert-and-recategorize reverses the old category
-        # cleanly even though ``txn.category_id`` already points at the new one
-        # (the 2.8 CRITICAL).  Gated on ``_POSTING_RELEVANT_FIELDS`` so a
-        # notes-only edit posts nothing.  Inside the StaleDataError net for the
-        # same reason as the payback delete below: the reconcile's flush
-        # autoflushes the version-pinned row, so a concurrent commit surfaces
-        # here as a 409, not a 500.
-        if _POSTING_RELEVANT_FIELDS & data.keys():
+        elif _POSTING_RELEVANT_FIELDS & data.keys():
+            # Posting ledger reconcile (Build-Order Step 3) for the edit that
+            # moves a posted effect WITHOUT touching the status: a re-category,
+            # a corrected amount.  The status arm above owns the reconcile for
+            # every other case, which is what keeps this request to exactly ONE
+            # ledger round-trip -- ``status_id`` and ``settled_on`` are both in
+            # ``_POSTING_RELEVANT_FIELDS``, so an ungated call here would be a
+            # second reconcile of the same row on every status change.  Placed
+            # LAST -- NOT at the field write -- so it reads the FINAL amount and
+            # category, the exact discipline
+            # ``transfer_service.update_transfer`` documents (the 2.8b HIGH: a
+            # settle-and-recategorize PATCH applies category_id after status_id,
+            # so posting at the flip would book the stale category).  The
+            # reconcile reads the OLD category's posted legs back from the
+            # ledger by transaction_id, so a revert-and-recategorize reverses
+            # the old category cleanly even though ``txn.category_id`` already
+            # points at the new one (the 2.8 CRITICAL).  Gated so a notes-only
+            # edit posts nothing.  Inside the StaleDataError net for the same
+            # reason as the payback delete below: the reconcile's flush
+            # autoflushes the version-pinned row, so a concurrent commit
+            # surfaces here as a 409, not a 500.
             posting_service.sync_transaction_postings(
                 txn, settled=txn.status.is_settled,
             )
@@ -328,6 +354,8 @@ def _apply_regular_update(txn, txn_id, data):
                 txn, current_user.id,
             )
         db.session.commit()
+    except ValidationError as exc:
+        return _error_transaction_response(txn_id, str(exc))
     except StaleDataError:
         logger.info(
             "Stale-data conflict on update_transaction id=%d", txn_id,
@@ -779,32 +807,29 @@ def cancel_transaction(txn_id):
         return _cancel_shadow(txn, txn_id, cancelled_id)
     # --- End guard ---
 
-    # Route the cancel through the single status seam (state-machine check +
-    # status_id + settled_on).  Cancelled is reachable only from Projected (or the
-    # Cancelled identity edge for idempotent re-submits); a direct done ->
-    # cancelled or settled -> cancelled would erase the paid/archived audit
-    # trail and raises ValidationError -> 400.  Cancelled is non-settled, so the
-    # seam leaves settled_on clear.  Audit reference: F-047 / F-161 follow-up to
-    # commit C-21.
+    # Route the cancel through the ONE status verb (state-machine check +
+    # status_id + settled_on + the ledger reconcile).  Cancelled is reachable
+    # only from Projected (or the Cancelled identity edge for idempotent
+    # re-submits); a direct done -> cancelled or settled -> cancelled would
+    # erase the paid/archived audit trail and raises ValidationError -> 400.
+    # Cancelled is non-settled, so the seam leaves settled_on clear.  Audit
+    # reference: F-047 / F-161 follow-up to commit C-21.
+    #
+    # The reconcile inside the verb is what this handler used to run itself:
+    # reconcile to the new status's settled sense as the final step, mirroring
+    # the transfer pattern (reconcile on every status change).  Cancelled is
+    # non-settled and is reachable only from Projected, so it is an idempotent
+    # no-op today (a Projected source has no postings to reverse), but it keeps
+    # the "every status change reconciles last" invariant complete and
+    # self-heals if the state machine ever admits cancelling a settled row.
+    # Inside the StaleDataError net: the reconcile's flush autoflushes the
+    # version-pinned row, so a concurrent commit surfaces here as a 409, not a
+    # 500.
     try:
-        status_seam.apply_status_change(txn, cancelled_id)
+        transaction_service.apply_requested_status(txn, cancelled_id)
+        db.session.commit()
     except ValidationError as exc:
         return _error_transaction_response(txn_id, str(exc))
-
-    # Posting ledger reconcile (Build-Order Step 3): reconcile to the new
-    # status's settled sense as the final step, mirroring the transfer pattern
-    # (reconcile on every status change).  Cancelled is non-settled and is
-    # reachable only from Projected, so this is an idempotent no-op today (a
-    # Projected source has no postings to reverse), but it keeps the "every
-    # status handler reconciles last" invariant complete and self-heals if the
-    # state machine ever admits cancelling a settled row.  Inside the
-    # StaleDataError net: the reconcile's flush autoflushes the version-pinned
-    # row, so a concurrent commit surfaces here as a 409, not a 500.
-    try:
-        posting_service.sync_transaction_postings(
-            txn, settled=txn.status.is_settled,
-        )
-        db.session.commit()
     except StaleDataError:
         logger.info(
             "Stale-data conflict on cancel_transaction id=%d", txn_id,
