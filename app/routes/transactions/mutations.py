@@ -201,16 +201,24 @@ def _apply_field_updates(txn, data):
        ``status_seam.apply_status_change`` owns -- and for ``settled_on`` it
        would make this loop a SECOND writer of a column the seam is the single
        door to (finding **N-185**, the re-run of N-183 on the transaction side).
-    2. the derived-amount refusal (see below), asked AFTER the loop so
-       ``tracks_purchases`` reads the RESULTING row: unchecking "Track
-       individual purchases" in the same save legitimately gives the row its own
-       amount back.
-    3. ``is_override``, which sits with the field writes and ABOVE the status
-       work.  That placement is load-bearing rather than tidy: the settle asks
-       the projection for a fresher amount and SKIPS a row the user has
-       overridden (``income_service.live_projected_net``), so setting the flag
-       afterwards would let a salary row's recompute overwrite the estimate the
-       same form just submitted.
+    2. ``is_override``, which sits with the field writes and ABOVE both the
+       refusal below and the status work.  Two separate reasons, and both are
+       load-bearing.  The settle asks the projection for a fresher amount and
+       SKIPS a row the user has overridden
+       (``income_service.live_projected_net``), so setting the flag afterwards
+       would let a salary row's recompute overwrite the estimate the same form
+       just submitted.  And act 3 FLUSHES (see below), so a flag written after
+       it is written after the UPDATE it belongs in -- which for a period move
+       leaves the row inside
+       ``idx_transactions_template_period_scenario``'s partial predicate
+       (``is_override = FALSE``) and trips a unique violation on a move into a
+       period the recurrence engine has already populated.
+    3. the derived-amount refusal, asked AFTER the loop so ``tracks_purchases``
+       reads the RESULTING row: unchecking "Track individual purchases" in the
+       same save legitimately gives the row its own amount back.  **It reads a
+       LAZY relationship and therefore autoflushes**, which is why this whole
+       helper is called from inside the caller's exception net rather than
+       above it.
 
     **The refusal is ruling R-FF's**, the same sentence the reconcile panel
     already obeys ("a tick is correctable exactly when the settle verb takes its
@@ -240,6 +248,9 @@ def _apply_field_updates(txn, data):
             continue
         setattr(txn, field, value)
 
+    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
+        txn.is_override = True
+
     if (
         data.get("actual_amount") is not None
         and transaction_service.settles_from_entries(txn)
@@ -250,9 +261,6 @@ def _apply_field_updates(txn, data):
             "so an amount typed here would be discarded. Record the purchase "
             "instead, or correct one that is already there.",
         )
-
-    if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
-        txn.is_override = True
     return None
 
 
@@ -336,14 +344,6 @@ def _apply_regular_update(txn, txn_id, data):
         and data["status_id"] != ref_cache.status_id(StatusEnum.CREDIT)
     )
 
-    # Write the submitted fields, refuse an amount the settle would discard, and
-    # flag a template row as overridden -- three acts whose ORDER is load-bearing
-    # and is documented at the helper.  Extracted so this handler keeps one exit
-    # per concern rather than one per rule.
-    field_error = _apply_field_updates(txn, data)
-    if field_error is not None:
-        return field_error
-
     # Apply the status and the settle day through the ONE status verb, in ONE
     # call, because they are ONE fact: a row is settled if and only if it
     # carries the day its money moved, and the seam underneath writes both in
@@ -392,6 +392,25 @@ def _apply_regular_update(txn, txn_id, data):
     # three ``ValidationError`` siblings are in ``mark_as_credit`` /
     # ``unmark_credit``, which this path does not call).
     try:
+        # Write the submitted fields, flag a template row as overridden, and
+        # refuse an amount the settle would discard -- three acts whose ORDER is
+        # load-bearing and is documented at the helper.  Extracted so this
+        # handler keeps one exit per concern rather than one per rule.
+        #
+        # **INSIDE the net, because it FLUSHES.**  Its derived-amount guard asks
+        # ``settles_from_entries``, which lazy-loads ``template`` (or
+        # ``entries``) and so autoflushes the ``setattr`` loop's staged
+        # mutations as the version-pinned UPDATE.  Left above the ``try`` that
+        # was the request's FIRST flush sitting outside its own exception net: a
+        # concurrent commit surfaced as a 500 instead of the designed 409, and a
+        # period move whose ``is_override`` had not yet been written tripped
+        # ``idx_transactions_template_period_scenario`` as an uncaught
+        # ``IntegrityError``.  Found by adversarial review; the comment below
+        # claimed the three excepts covered the whole tail, and they covered the
+        # tail while the first flush had moved above it.
+        field_error = _apply_field_updates(txn, data)
+        if field_error is not None:
+            return field_error
         settle_day = status_seam.settle_day_for_status(
             current_user.id, new_status_id, data.get("settled_on"),
         )

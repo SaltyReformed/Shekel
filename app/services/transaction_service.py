@@ -69,6 +69,28 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
+def settled_status_member(txn: Transaction) -> StatusEnum:
+    """Return the settled STATUS a row of this TYPE takes, as the enum member.
+
+    The type rule, stated ONCE.  :func:`settled_status_id` resolves it to a
+    ``ref.statuses.id`` for the writers and
+    :func:`reject_mismatched_settled_status` reads its ``value`` for the human
+    message -- which used to be a third spelling, ``"Received" if txn.is_income
+    else "Paid"``, sitting two lines below the resolution it was restating.  A
+    message derived from a second copy of a rule tells the user something the
+    code may have stopped doing.
+
+    Args:
+        txn: The transaction about to settle.  Read for ``is_income`` only.
+
+    Returns:
+        ``StatusEnum.RECEIVED`` for income, ``StatusEnum.DONE`` otherwise.  The
+        member's ``value`` is the DISPLAY name ("Received" / "Paid"), which is
+        what makes one expression answer both needs.
+    """
+    return StatusEnum.RECEIVED if txn.is_income else StatusEnum.DONE
+
+
 def settled_status_id(txn: Transaction) -> int:
     """Return the settled status a row of this TYPE takes.
 
@@ -98,9 +120,7 @@ def settled_status_id(txn: Transaction) -> int:
     Returns:
         The ``ref.statuses.id`` for Received or Paid.
     """
-    if txn.is_income:
-        return ref_cache.status_id(StatusEnum.RECEIVED)
-    return ref_cache.status_id(StatusEnum.DONE)
+    return ref_cache.status_id(settled_status_member(txn))
 
 
 def enters_settled_band(txn: Transaction, new_status_id: int) -> bool:
@@ -131,15 +151,88 @@ def enters_settled_band(txn: Transaction, new_status_id: int) -> bool:
     return txn.status_id not in settled and new_status_id in settled
 
 
-def _mismatched_settled_status_ids(txn: Transaction) -> frozenset[int]:
-    """Return the settled statuses *txn*'s TYPE does NOT take.
+def leaves_settled_band(txn: Transaction, new_status_id: int) -> bool:
+    """Return whether moving *txn* to *new_status_id* UNSETTLES it.
 
-    The settled band minus :func:`settled_status_id`'s answer for this row --
-    one expression for the two things that need it, the refusal
+    :func:`enters_settled_band`'s mirror, and it exists for the same reason:
+    the two directions are different acts and a door must not decide which is
+    which.  The only edges out of the band are ``Paid -> Projected`` and
+    ``Received -> Projected`` -- the documented unlock path, where the user is
+    saying the money did not move after all.
+
+    Args:
+        txn: The row, read for its CURRENT ``status_id``.
+        new_status_id: The status a door is asking for.
+
+    Returns:
+        True when the move crosses OUT of the settled band.
+    """
+    settled = settled_status_ids()
+    return txn.status_id in settled and new_status_id not in settled
+
+
+def _release_derived_actual(txn: Transaction) -> None:
+    """Drop an envelope's DERIVED actual when the row stops being settled.
+
+    **A settle writes ``actual_amount`` for an envelope; a revert must take it
+    back**, because what that column holds for such a row is not a fact the
+    user authored -- it is ``sum(entries)`` at the moment of the settle, which
+    :func:`settle_from_entries` wrote in the same statement as the status and
+    the settle day.  The seam already clears ``settled_on`` on the way out, on
+    exactly this reasoning; the derived amount is the same kind of value and was
+    being left behind.
+
+    **Measured, and it is why this exists rather than being argued.**
+    Production row 2281 *Groceries* is Projected today carrying
+    ``actual_amount = 533.08`` against a `$500.00` budget -- written by
+    ``settle_from_entries`` (audit_log id 2978, one statement with ``status_id``
+    and ``settled_on``) and left behind by a later revert.  ``effective_amount``
+    is ``COALESCE(actual, estimated)``, so that row projects at its SPEND rather
+    than its budget, and a purchase deleted while it is Projected does not move
+    the figure: :func:`app.services.entry_service._resync_settled_envelope` is
+    gated on the settled band, correctly, because a Projected row's actual is
+    not yet a fact.  The result is a stored derived value with nothing that can
+    re-derive it.
+
+    **Only the DERIVED kind is released**, which is what makes this narrow
+    enough to be right: a BILL's ``actual_amount`` is a figure a HUMAN read off
+    a statement (ruling **R-FB**), and clearing that on a revert would delete
+    the user's own correction.  :func:`settles_from_entries` is the same
+    predicate the settle branches on and the same one the edit doors offer an
+    amount box on (ruling **R-FF**), so a row's amount is derived, correctable
+    and released by ONE rule rather than three.
+
+    Mutates in place; does NOT flush or commit.
+
+    Args:
+        txn: The row leaving the settled band, still in its settled status.
+            Read for ``tracks_purchases`` and ``entries``.
+    """
+    if settles_from_entries(txn):
+        txn.actual_amount = None
+
+
+def _mismatched_settled_status_ids(txn: Transaction) -> frozenset[int]:
+    """Return the TYPE-specific settled statuses *txn* does NOT take.
+
+    One expression for the two things that need it, the refusal
     (:func:`reject_mismatched_settled_status`) and the dropdown's pre-hint
     (:func:`offerable_status_ids`).  Stated once so the enforced rule and the
     displayed rule cannot drift, which is the same reason
     :func:`settles_from_entries` is published.
+
+    **It is the TYPE PAIR minus this row's, NOT the settled band minus this
+    row's, and the difference is a capability.**  The band has THREE members and
+    the third is ``Settled`` -- the archive, which is not type-specific: an
+    expense reaches it from Paid and an income row from Received.  A first draft
+    subtracted the whole band, so ``Settled`` counted as "mismatched" for every
+    row and :func:`offerable_status_ids` removed it from every dropdown --
+    silently retiring the only control that offers the archive, while the state
+    machine still called ``Paid -> Settled`` legal and the seam still preserved
+    the settle day across it.  Caught by adversarial review, and two assertions
+    written in the same step said the opposite ("the full-edit Status dropdown
+    can still reach it"), which is what made it a mistake rather than a
+    decision.
 
     A SET rather than an equality, and deliberately: an inline equality against
     a resolved status id is the D6-09 shape the project's own census test
@@ -151,10 +244,14 @@ def _mismatched_settled_status_ids(txn: Transaction) -> frozenset[int]:
         txn: The row, read for ``is_income``.
 
     Returns:
-        The ``ref.statuses.id`` values in the settled band that this row may
-        never settle into -- one member today, for either type.
+        The ``ref.statuses.id`` values this row's TYPE forbids it settling
+        into -- exactly one member, for either type.
     """
-    return settled_status_ids() - {settled_status_id(txn)}
+    type_specific = frozenset({
+        ref_cache.status_id(StatusEnum.DONE),
+        ref_cache.status_id(StatusEnum.RECEIVED),
+    })
+    return type_specific - {settled_status_id(txn)}
 
 
 def reject_mismatched_settled_status(
@@ -198,7 +295,7 @@ def reject_mismatched_settled_status(
     if new_status_id not in _mismatched_settled_status_ids(txn):
         return
     kind = "Income" if txn.is_income else "An expense"
-    takes = "Received" if txn.is_income else "Paid"
+    takes = settled_status_member(txn).value
     raise ValidationError(
         f"{kind} settles as {takes}.  Transaction {txn.id} was asked to "
         f"settle as status {new_status_id} instead."
@@ -220,19 +317,24 @@ def offerable_status_ids(txn: Transaction) -> frozenset[int]:
     be picked instead of failing as a 400 after Save").  The enforcement stays
     at the verb; this only decides what the user is shown.
 
+    **There is deliberately NO exemption for a row already sitting in the
+    mismatched status.**  A first draft carried one -- ``- {txn.status_id}``, so
+    such a row could still re-submit its own status -- and it was UNREACHABLE:
+    the only mismatched rows in existence are the 17 income-typed Paid transfer
+    SHADOWS, and ``routes/transactions/forms`` branches a shadow to the transfer
+    popover before this is called, while ``TransactionUpdateSchema`` carries no
+    ``transaction_type_id`` for a PATCH to flip.  A guard whose only possible
+    test cannot fail is not a guard (finding **N-184**), and this module's own
+    seam deleted one for that reason at plan step X-f1c.
+
     Args:
         txn: The row the dropdown is being rendered for.
 
     Returns:
         The legal successor ids, minus the settled status this row's type does
-        not take.  Identity is preserved, so a row already sitting in a
-        mismatched status can still re-submit its own status and be edited.
+        not take.
     """
-    # ``- {txn.status_id}`` keeps the IDENTITY edge: a row that somehow already
-    # sits in the mismatched status must still be able to re-submit its own
-    # status, or the popover could not save a notes edit on it at all.
-    wrong = _mismatched_settled_status_ids(txn) - {txn.status_id}
-    return allowed_transitions(txn) - wrong
+    return allowed_transitions(txn) - _mismatched_settled_status_ids(txn)
 
 
 def settles_from_entries(txn: Transaction) -> bool:
@@ -425,7 +527,17 @@ def apply_requested_status(
         reject_mismatched_settled_status(txn, new_status_id)
         settle_transaction(txn, settled_on=settled_on)
         return
+    # The other direction is the settle's own act undone: an envelope's
+    # ``actual_amount`` was DERIVED from its entries by the settle, so leaving
+    # the band takes it back.  Read BEFORE the seam and applied AFTER it, and
+    # both halves of that matter -- the predicate is about the status the row
+    # is LEAVING, and a refused transition must leave the row untouched (the
+    # ordering ``apply_status_change`` uses for its own three refusals).  It
+    # lands before the reconcile below, which reads ``effective_amount``.
+    releases_derived_actual = leaves_settled_band(txn, new_status_id)
     apply_status_change(txn, new_status_id, settled_on=settled_on)
+    if releases_derived_actual:
+        _release_derived_actual(txn)
     posting_service.sync_transaction_postings(
         txn, settled=txn.status.is_settled,
     )
@@ -571,8 +683,17 @@ def settle_transaction(
         # made of ("11 of 93 settled bills carry a hand-typed correction").
         # That half is load-bearing rather than tidy: the reconcile panel
         # PREFILLS its amount box, so an untouched tick submits the figure the
-        # row would have booked anyway, and plan step X-ap routes a full-edit
-        # form here that submits ``actual_amount`` on EVERY save.
+        # row would have booked anyway.
+        #
+        # **The panel is the ONLY caller that reaches it**, and saying so
+        # replaces a claim this comment used to make that plan step X-ap turned
+        # out NOT to be true.  It predicted the full-edit door would thread its
+        # submitted ``actual_amount`` into this parameter; X-ap instead lets the
+        # PATCH handler's own ``setattr`` loop write that column and calls this
+        # verb with no figure, because two writers of one column in one request
+        # is the shape this arc removes.  A justification naming a caller that
+        # does not exist is the defect ruling R-EC deleted a whole parameter
+        # for; it is corrected here rather than left to read as coverage.
         #
         # **It is compared against the REFRESHED ``effective_amount``**, which
         # is why act 1a runs first: comparing a prefill taken from

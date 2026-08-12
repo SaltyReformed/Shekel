@@ -37,10 +37,11 @@ from app.schemas.validation import (
     InvestmentParamsCreateSchema,
     InvestmentParamsUpdateSchema,
 )
-from app.services import investment_dashboard_service
+from app.services import investment_dashboard_service, template_amount_service
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.dates import display_today
 from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
@@ -277,6 +278,20 @@ def create_contribution_transfer(account_id):
         rule=rule,
         name=template_name,
         default_amount=transfer_amount,
+    )
+
+    # Open the amount's dated series at today (plan step X-au-a).  A
+    # contribution carries no loan-payment settings row, so nothing re-derives
+    # its amount afterwards and the write door records it as stated; the builder
+    # above also sets the column because it is NOT NULL, and plan step X-au-e
+    # removes that redundancy.  **The FIGURE above was computed** -- an annual
+    # limit over the pay cadence, or the suggested default -- which is one of
+    # the twelve stored-derived values finding **N-243** censuses (owned by
+    # X-au-b); what makes recording it honest here is that no mechanism ever
+    # recomputes it, so from creation on it behaves as a price the owner
+    # accepted.
+    template_amount_service.set_amount(
+        template, transfer_amount, effective_on=display_today(),
     )
 
     namedup_redirect = flush_template_or_namedup_redirect(

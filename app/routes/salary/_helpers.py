@@ -18,6 +18,7 @@ from flask_login import current_user
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.utils.auth_helpers import get_or_404
+from app.utils.dates import display_today
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.pay_period import PayPeriod
@@ -33,6 +34,7 @@ from app.services import (
     paycheck_calculator,
     pay_period_service,
     recurrence_engine,
+    template_amount_service,
 )
 from app.services.generation_schedule import GenerationSchedule
 from app.services.scenario_resolver import get_baseline_scenario
@@ -153,7 +155,14 @@ def _regenerate_salary_transactions(profile):
             profile, current_period, periods, tax_configs,
             calibration=profile.calibration,
         )
-        profile.template.default_amount = pay_breakdown.earnings.net_pay
+        # Through the amount's one write door (plan step X-au-a).  The profile
+        # is salary-linked and active, so the door moves the column and records
+        # NO version: a paycheck-calculated figure is derived, not a price
+        # anybody stated.
+        template_amount_service.set_amount(
+            profile.template, pay_breakdown.earnings.net_pay,
+            effective_on=display_today(),
+        )
 
     # Regenerate transactions
     try:

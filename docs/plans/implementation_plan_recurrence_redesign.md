@@ -5,8 +5,8 @@
 **Plan of record** for the two-axis recurrence model and the cash-date / installment-date split.
 R1-R4 ARCHIVED. **R1-R4b-2, R-F1, R-F8 and R7a-1 are IN PRODUCTION** (PRs #85 / #86 / #87): R7a-1
 made the Recurrence column one function over `(interval, unit)` and closed D17.
-**R7a is TWO leaves** and this was the first; the plan's single entry was measured wrong in three
-ways, all corrected in R7a-2's entry.
+**R7a-2 is COMPLETE** (`003e3657`, `7c417b90`) and opened **F-16** / **F-17**, two more hardcoded
+paycheck counts, both ruled into this arc.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** One ruling is still owed
 and section 0 states its two options: "R6 ships with X-an" was unsatisfiable, and the index has
@@ -369,35 +369,11 @@ and form work is not carried into it.
       `round(365.2425 / cadence_days)` (section 4a), reached through two doors and refusing an owner
       who has stated none. **Opened F-16 and F-17.**
 
-- [ ] **R7a-2b -- the monthly equivalent becomes one function over `(interval_n, unit)`.**
-
-`savings_goal_service.amount_to_monthly` becomes one expression over `(interval_n, unit)`, and
-`calendar_service._INFREQUENT_PATTERNS` is DERIVED from the same pair -- "less frequent than
-monthly" is `occurrences_per_year < 12`, which reproduces today's three-member set exactly and
-extends to the cadences R8 authors. It MOVES MONEY -- `/savings`, the Recurring surface's
-equivalents and the retirement projection all read it -- so it carries its own review pass.
-
-**It must land BEFORE R8**, and R7a-1 is what makes that an ordering constraint rather than a
-preference: the Recurring row now derives "how often" from `(interval, unit)` while its monthly
-equivalent still derives it from `pattern_id`. The two cannot disagree over today's closed set, but
-the first cadence R8 authors -- `(2, MONTH)` -- reads "Every 2 months" in the cell beside a BLANK
-equivalent, because `amount_to_monthly`'s unmodelled-pattern branch answers `None`.
-
-**The seam this needs, and R7a-2a did not build.** `resolve()` requires the owner's `PayCalendar`
-and `obligations_aggregator.template_monthly_or_none` has none -- so the two-axis reading has to be
-split at its own seam: `pattern -> (interval_n, unit, placement)` needs no schedule, and only the
-ANCHOR does. Publish the first half as a schedule-free `cadence_of(pattern_id, interval_n)` built
-from the SAME `_PATTERN_DERIVATIONS` table `resolve()` reads, so one table serves both.
-
-**The unmodelled-pattern arm goes.** `amount_to_monthly` answers `None` for a pattern the enum does
-not name while `resolve()` RAISES for the same state -- one state, two dispositions, and the
-Recurring surface already 500s on such a rule through `read_rule` while `/savings` silently drops
-the obligation from its baseline. Ruled 2026-08-11: RAISE, one disposition. Zero live rows.
-
-**Two corrections R7a-1 measured in this step's former specification.** (1) The counts were 7, not
-8: `Once` left at R2e-3. (2) The `REC_*` globals do NOT all die here: R7a-1 deleted the two the
-macro was the only reader of, and `_recurrence_fields.html:57-61,95` reads the other five until R7b
-rewrites the form.
+- [x] **R7a-2b -- the monthly equivalent is ONE expression.** `7c417b90`. Over `(interval_n, unit)`:
+      `amount_to_monthly` is DELETED, `obligations_aggregator` computes
+      `amount * units_per_year / (interval_n * 12)`, and the infrequent badge derives from the same
+      pair. The seam is `recurrence.cadence_of` on the ONE table `resolve()` reads
+      (`_frequency.py`); the `None` arm raises now.
 
 - [ ] **R7b -- bounds and the form.**
 

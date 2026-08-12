@@ -14,6 +14,7 @@ from markupsafe import Markup
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.dates import display_today
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction_template import TransactionTemplate
@@ -31,6 +32,7 @@ from app.services import (
     paycheck_calculator,
     pay_period_service,
     recurrence_engine,
+    template_amount_service,
 )
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import RecurrenceSpec, author_rule
@@ -210,7 +212,15 @@ def create_profile():
             init_breakdown = paycheck_calculator.calculate_paycheck(
                 profile, ref_period, periods, tax_configs
             )
-            template.default_amount = init_breakdown.earnings.net_pay
+            # Through the amount's one write door (plan step X-au-a).  The
+            # profile above is already flushed and active, so the door sees a
+            # salary-linked template: the column moves and NO version is
+            # recorded, because a paycheck-calculated figure is derived, not a
+            # price anybody stated.
+            template_amount_service.set_amount(
+                template, init_breakdown.earnings.net_pay,
+                effective_on=display_today(),
+            )
 
         db.session.commit()
     except SQLAlchemyError:
@@ -320,7 +330,10 @@ def update_profile(profile_id):
     # guard below picks up the commit.
     if profile.template and "annual_salary" in data:
         pay_periods = profile.pay_periods_per_year or 26
-        profile.template.default_amount = data["annual_salary"] / pay_periods
+        template_amount_service.set_amount(
+            profile.template, data["annual_salary"] / pay_periods,
+            effective_on=display_today(),
+        )
         if "name" in data:
             profile.template.name = data["name"]
 
@@ -376,6 +389,22 @@ def delete_profile(profile_id):
     profile.is_active = False
     if profile.template:
         profile.template.is_active = False
+        # The template's amount stops being DERIVED the moment the profile is
+        # archived (plan step X-au-a): with no ACTIVE profile the recurrence
+        # engine prices its rows from ``default_amount``
+        # (``recurrence_engine._get_transaction_amount``), so that column
+        # becomes the definition's stated price and the write door opens its
+        # series at it.  Without this the template would satisfy
+        # ``owns_its_amount`` while holding NO version -- an eligible
+        # definition with an empty series, which is the one gap
+        # ``amount_as_of`` reports as ``None`` and which plan step X-au-b's
+        # resolver is specified to REFUSE rather than fall back on.  Found by
+        # adversarial review; measured at 58 rows on production's one salary
+        # template.
+        template_amount_service.set_amount(
+            profile.template, profile.template.default_amount,
+            effective_on=display_today(),
+        )
 
     conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,

@@ -114,7 +114,17 @@ class SalaryProfile(
 
     # Relationships
     scenario = db.relationship("Scenario", lazy="joined")
-    template = db.relationship("TransactionTemplate", lazy="joined")
+    # The backref is what lets "is this template salary-linked" be answered from
+    # the SESSION's state rather than from the last committed row (plan step
+    # X-au-a).  ``template_amount_service.is_salary_linked_template`` reads the
+    # collection, so a profile deactivated but not yet flushed already reads as
+    # inactive -- the template gains its own stated amount at that instant, and
+    # the amount write door opens its series in the same unit of work.  A
+    # predicate issuing its own SELECT could not see that pending change.
+    template = db.relationship(
+        "TransactionTemplate", lazy="joined",
+        backref=db.backref("salary_profiles", lazy="select"),
+    )
     filing_status = db.relationship("FilingStatus", lazy="joined")
     raises = db.relationship(
         "SalaryRaise", back_populates="salary_profile",

@@ -589,18 +589,19 @@ class TestTemplateUpdate:
         would otherwise mis-state a paycheck on 'use'.
         """
         with app.app_context():
-            from app.services.recurrence_engine import (
+            from app.services.template_amount_service import (
                 is_salary_linked_template,
             )
             from tests._test_helpers import make_salary_profile
             template = _create_template(seed_user, txn_type="Income")
-            assert is_salary_linked_template(template.id) is False
+            assert is_salary_linked_template(template) is False
 
             profile = make_salary_profile(seed_user, db.session)
             profile.template_id = template.id
             profile.is_active = True
             db.session.commit()
-            assert is_salary_linked_template(template.id) is True
+            db.session.refresh(template)
+            assert is_salary_linked_template(template) is True
 
     def test_chooser_use_on_deleted_conflict_restores_with_current_name(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1882,7 +1883,7 @@ class TestTemplateHardDelete:
             # The defense-in-depth filter inside the route is what must
             # save the RECEIVED row.
             monkeypatch.setattr(
-                "app.routes.templates.archive_helpers.template_has_paid_history",
+                "app.routes.templates.crud.archive_helpers.template_has_paid_history",
                 lambda _template_id: False,
             )
 

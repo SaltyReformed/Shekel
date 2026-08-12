@@ -1106,7 +1106,7 @@ class TestASettleBooksTheFreshestFigure:
         version that priced a shadow off the loan-payment seam would publish a
         figure ``settle_transaction`` then refuses -- which is what plan step
         X-f2-c3 would have walked into with the transfer arm.  One rule
-        (``reject_transfer_shadow``), two doors.
+        (``reject_unsettleable``), three doors.
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)

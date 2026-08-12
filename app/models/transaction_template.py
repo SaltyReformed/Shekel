@@ -82,6 +82,19 @@ class TransactionTemplate(
     transactions = db.relationship(
         "Transaction", back_populates="template", lazy="select"
     )
+    # The effective-dated history of ``default_amount`` (plan step X-au-a).  A
+    # salary-linked template has NONE and must not: the paycheck calculator
+    # prices its rows, so a version here would record a figure nobody stated.
+    # :mod:`app.services.template_amount_service` owns both the predicate and
+    # the write door; ``delete-orphan`` disposes the history with the template
+    # (the DB FK is ON DELETE CASCADE too, for the hard-delete route's bulk
+    # path).
+    amount_versions = db.relationship(
+        "TemplateAmountVersion",
+        back_populates="transaction_template",
+        cascade="all, delete-orphan",
+        lazy="select",
+    )
 
     def __repr__(self):
         return f"<TransactionTemplate '{self.name}' ${self.default_amount}>"

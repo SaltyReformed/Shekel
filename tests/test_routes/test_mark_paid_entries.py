@@ -459,7 +459,8 @@ class TestPostPaidEntryMutation:
     ):
         """Entry mutations on projected transactions do not touch actual_amount.
 
-        _update_actual_if_paid only fires for DONE status.
+        The entry-mutation hook (``_resync_settled_envelope`` since plan
+        step X-ap) fires only for a row in the settled band.
         """
         with app.app_context():
             txn = _create_tracked_txn(seed_user, seed_periods)
