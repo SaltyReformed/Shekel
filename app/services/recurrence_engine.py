@@ -56,7 +56,6 @@ from app.models.recurrence_rule import RecurrenceRule
 from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import RecurrenceConflict, ValidationError
-from app.models.salary_profile import SalaryProfile
 from app.services.recurrence import rule_occurrences
 from app.services._recurrence_common import (
     check_scenario_ownership,
@@ -325,7 +324,7 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     )
 
     # Check if this template has a linked salary profile for paycheck calculation.
-    salary_profile = _get_salary_profile(template.id)
+    salary_profile = _get_salary_profile(template)
 
     created = []
     for period in (row.period for row in plan.placements):
@@ -733,27 +732,32 @@ def _get_existing_map(template_id, scenario_id, period_ids):
     )
 
 
-def is_salary_linked_template(template_id):
-    """Return True iff an active salary profile drives this template's amounts.
+def _get_salary_profile(template):
+    """Return the ACTIVE salary profile driving this template's amounts, or None.
 
-    A salary-linked template's instance amounts are paycheck-calculated per
-    period (:func:`_get_transaction_amount`), so its ``default_amount`` is
-    vestigial: editing it does not change generated rows.  The update route
-    uses this to skip the amount-change conflict chooser for such templates
-    (their ``default_amount`` diff is not a real per-instance amount change).
+    Generation needs the PROFILE, not the boolean -- it prices each row from it
+    (:func:`_get_transaction_amount`) -- and plan step X-au-d deletes both
+    together when generation stops pricing salary rows.  Its boolean twin is
+    :func:`app.services.template_amount_service.is_salary_linked_template`,
+    which moved out of this module at plan step X-au-a so that the recurrence
+    engine can read the amount series at X-au-e without closing an import loop.
+
+    **Both read the same RELATIONSHIP rather than issuing two queries**, so
+    "an active salary profile names this template" has one implementation: an
+    adversarial review noted the split the moment the boolean moved out.  The
+    collection is identity-mapped, which is also what lets a caller archiving a
+    profile see its own pending change (see the twin's docstring).
+
+    Args:
+        template: The :class:`~app.models.transaction_template.TransactionTemplate`
+            to read.
+
+    Returns:
+        The active :class:`~app.models.salary_profile.SalaryProfile`, or ``None``.
     """
-    return _get_salary_profile(template_id) is not None
-
-
-def _get_salary_profile(template_id):
-    """Check if a template has a linked salary profile.
-
-    Returns the SalaryProfile if found, None otherwise.
-    """
-    return (
-        db.session.query(SalaryProfile)
-        .filter_by(template_id=template_id, is_active=True)
-        .first()
+    return next(
+        (profile for profile in template.salary_profiles if profile.is_active),
+        None,
     )
 
 

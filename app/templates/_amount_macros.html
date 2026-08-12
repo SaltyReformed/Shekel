@@ -1,0 +1,96 @@
+{# Shared amount-and-its-history macros for the two recurring-definition forms.
+
+   Usage:
+     {% from "_amount_macros.html" import amount_field, amount_history with context %}
+
+   The recurring-transaction form and the recurring-transfer form state the same
+   thing -- what this definition costs, from when -- so they state it through one
+   pair of macros rather than two divergent copies (plan step X-au-a).
+
+   ``amount_field`` is the Amount input plus, when editing, the date that amount
+   takes effect.  That date used to be a transient "Regenerate effective from"
+   box: it bounded one delete-and-recreate sweep and was then thrown away, so
+   the app could never say what a definition cost last March.  It is now STORED
+   as a version of the amount, and still bounds the same sweep, so the date a
+   price starts and the entries this edit rebuilds are one value.
+
+   ``amount_history`` renders that stored series.  It carries its own per-row
+   POST forms, so it MUST be placed OUTSIDE the enclosing edit <form> -- nested
+   forms are not valid HTML and the inner one would be dropped.  Every cell is
+   precomputed by ``template_amount_service.build_amount_history``; the status
+   key is interpolated into a class rather than compared here.  #}
+
+{% from "_money_macros.html" import money %}
+
+{% macro amount_field(template, amount_today, min_amount="") %}
+<div class="mb-3">
+  <label for="default_amount" class="form-label">Amount</label>
+  <div class="input-group">
+    <span class="input-group-text">$</span>
+    {# ``amount_today`` -- what the definition costs NOW -- not the stored
+       column, which carries the NEWEST stated price.  The two differ whenever a
+       rise is scheduled, and prefilling the column beside a date input whose
+       blank value means today is what let a rename restate a December rise as
+       having happened today. #}
+    <input type="number" step="0.01"
+           {% if min_amount %}min="{{ min_amount }}"{% endif %}
+           id="default_amount" name="default_amount" class="form-control" required
+           value="{{ amount_today if template else '' }}">
+  </div>
+</div>
+{% if template %}
+<div class="mb-3">
+  <label for="effective_from" class="form-label">Amount effective from</label>
+  <input type="date" id="effective_from" name="effective_from" class="form-control"
+         aria-describedby="effective-from-help">
+  <div id="effective-from-help" class="form-text">
+    The date this amount takes effect. It is kept in the amount history below,
+    and upcoming entries from that date are rebuilt. Leave blank for today.
+  </div>
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro amount_history(rows, delete_endpoint, template_id) %}
+{% if rows %}
+<div class="form-section">
+  <h6 class="form-section__title">Amount history</h6>
+  <div class="amount-versions">
+    <div class="amount-ver amount-ver--head">
+      <span>Status</span>
+      <span>Effective from</span>
+      <span class="text-end">Amount</span>
+      <span class="visually-hidden">Actions</span>
+    </div>
+    {% for row in rows %}
+    <div class="amount-ver amount-ver--{{ row.status_key }}">
+      <span><span class="badge amount-ver__badge">{{ row.status_label }}</span></span>
+      <span>{{ row.effective_date.strftime('%b %-d, %Y') }}</span>
+      <span class="text-end font-mono">{{ money(row.amount) }}</span>
+      <span class="text-end">
+        {% if row.is_deletable %}
+        <form method="POST" class="amount-ver__del"
+              action="{{ url_for(delete_endpoint, template_id=template_id, version_id=row.id) }}"
+              onsubmit="return confirm('Remove this amount history entry?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-sm btn-outline-danger"
+                  title="Remove this amount history entry"
+                  aria-label="Remove the {{ row.effective_date.strftime('%b %-d, %Y') }} amount">
+            <i class="bi bi-trash"></i>
+          </button>
+        </form>
+        {% endif %}
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="form-text">
+    What this definition cost, and from when. Dates before the earliest entry
+    are priced from that entry, which is why it cannot be removed -- record the
+    amount at the date you want first, then remove the one you replaced. An
+    entry that would change the current amount is changed from the Amount field
+    above, so removing one here never moves what you are budgeting.
+  </div>
+</div>
+{% endif %}
+{% endmacro %}

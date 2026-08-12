@@ -53,6 +53,7 @@ restore into a ``PendingRollbackError`` that replaces the real error.
 """
 from __future__ import annotations
 
+import pathlib
 import re
 from contextlib import ExitStack, contextmanager
 from typing import NamedTuple
@@ -332,6 +333,45 @@ class TestMigrationRevisionPair:
         assert _MIGRATION.down_revision == "a3f8b1c40d92"
 
 
+def _revisions_at_or_before(head: str) -> set[str]:
+    """Return every revision reachable by walking ``down_revision`` from *head*.
+
+    Alembic records only the head in ``alembic_version``, so the applied SET has
+    to be derived from the chain on disk.  Reads each migration module's
+    ``revision`` / ``down_revision`` with a regex rather than importing all ~127
+    of them -- importing a migration executes its module body, and several build
+    SQL constants at import time.
+
+    Args:
+        head: The revision id stored in ``public.alembic_version``.
+
+    Returns:
+        ``{head}`` plus every ancestor of it; a head with no matching file
+        yields just itself, which fails the caller's membership check loudly.
+    """
+    versions_dir = (
+        pathlib.Path(__file__).resolve().parents[2] / "migrations" / "versions"
+    )
+    parents: dict[str, str | None] = {}
+    for path in versions_dir.glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        revision = re.search(r"^revision = ['\"]([^'\"]+)", source, re.M)
+        down = re.search(r"^down_revision = (.+)$", source, re.M)
+        if revision is None:
+            continue
+        raw = down.group(1).strip() if down else "None"
+        parents[revision.group(1)] = (
+            None if raw == "None" else raw.strip("'\"")
+        )
+
+    chain: set[str] = set()
+    node: str | None = head
+    while node is not None and node not in chain:
+        chain.add(node)
+        node = parents.get(node)
+    return chain
+
+
 class TestTheDatabaseUnderTestIsMigrationBuilt:
     """The gate is only meaningful on a database the migrations built.
 
@@ -348,16 +388,44 @@ class TestTheDatabaseUnderTestIsMigrationBuilt:
     """
 
     def test_this_revision_is_applied(self, app, db):
-        """``alembic_version`` carries this migration's revision."""
+        """This migration is somewhere in the chain the database was built by.
+
+        ``alembic_version`` stores the HEAD, not the set of revisions that ran,
+        so "is this revision applied" is answered by walking ``down_revision``
+        back from the stored head -- reaching it proves the chain that built the
+        template passed through it, and NOT reaching it proves the template is
+        older and every assertion below is about the wrong database.
+
+        **The membership test used to be ``_REVISION in applied``**, which is
+        the same question only while this revision IS the head: the first
+        migration added after it in ANY arc turned this gate red without a ref
+        sequence having moved.  Plan step X-au-a's
+        ``a9d3c15e7f42_template_amount_versions`` is what demonstrated it.
+        """
         with app.app_context():
-            applied = db.session.execute(text(
+            head = db.session.execute(text(
                 "SELECT version_num FROM public.alembic_version"
-            )).scalars().all()
-            assert _REVISION in applied, (
-                f"the test database is at {applied}, not {_REVISION} -- "
-                f"rebuild it with scripts/build_test_template.py.  Until then "
-                f"every assertion in this file is about the wrong database."
+            )).scalars().one()
+            chain = _revisions_at_or_before(head)
+            assert _REVISION in chain, (
+                f"the test database's head is {head}, whose migration chain "
+                f"does not include {_REVISION} -- rebuild it with "
+                f"scripts/build_test_template.py.  Until then every assertion "
+                f"in this file is about the wrong database."
             )
+
+    def test_an_older_head_would_not_reach_this_revision(self):
+        """The negative control: the walk still catches a STALE template.
+
+        Replacing a head-equality check with a chain-membership one is only a
+        widening if it still fails on a database built BEFORE this migration.
+        Walking from this migration's own parent must not reach it -- if it did,
+        the gate would pass on any template at all and the file's whole claim to
+        be about the right database would be empty.
+        """
+        parent = _MIGRATION.down_revision
+        assert _REVISION not in _revisions_at_or_before(parent)
+        assert _REVISION in _revisions_at_or_before(_REVISION)
 
 
 class TestEveryRefSequenceCanHandOutAFreshId:

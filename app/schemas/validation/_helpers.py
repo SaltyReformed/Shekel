@@ -8,6 +8,7 @@ base and helpers from here so the percent-conversion, monetary-range and
 submitted-id rules have a single home."""
 
 
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from marshmallow import (
@@ -48,6 +49,18 @@ _PERCENT_INPUT_RANGE = validate.Range(
 _NON_NEGATIVE_MONETARY = validate.Range(
     min=Decimal("0"), max=Decimal("10000000"),
 )
+
+# The window a recurring definition's amount may be stated to take effect in
+# (plan step X-au-a).  An HTML date input accepts a four-digit-year typo, and
+# ``budget.template_amount_versions`` STORES the date -- a stray ``0202`` becomes
+# the series' earliest version, which anchors every date before the series and
+# which the withdrawal door refuses to remove.  The bounds are the ones
+# ``routes/salary/tax_config.py`` already uses for a tax YEAR, so the app states
+# one opinion about how far its calendar reaches, and
+# ``ck_template_amount_versions_effective_date_range`` mirrors them in the
+# database for writers that never see a schema.
+EFFECTIVE_DATE_MIN: date = date(2000, 1, 1)
+EFFECTIVE_DATE_MAX: date = date(2100, 12, 31)
 
 
 # E-28 / HIGH-06 (Commit 24): the percent-to-fraction divisor used by

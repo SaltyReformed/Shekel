@@ -19,6 +19,7 @@ from flask import Response, abort, flash, redirect, render_template, request, ur
 from flask_login import current_user, login_required
 
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.dates import display_today
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
 from app.models.category import Category
@@ -34,6 +35,7 @@ from app.services import (
     category_service,
     pay_period_service,
     recurrence_engine,
+    template_amount_service,
 )
 from app.services.generation_schedule import GenerationSchedule
 from app.services.account_projection import (
@@ -46,6 +48,10 @@ from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     StaleConflictContext,
     commit_or_handle_stale,
+)
+from app.routes._amount_version_actions import (
+    AmountVersionAction,
+    withdraw_amount_version,
 )
 from app.routes._recurrence_preview import recurrence_preview_fragment
 from app.routes._recurrence_conflict_chooser import (
@@ -80,13 +86,26 @@ logger = logging.getLogger(__name__)
 # flip with the projected-transaction soft-delete this route does not
 # perform -- allowlisting it here would invite a future schema field to
 # silently archive a template without that cleanup.
+#
+# ``default_amount`` is absent for the same shape of reason since plan step
+# X-au-a: the amount is no longer a bare column but a dated SERIES, and
+# ``template_amount_service.set_amount`` is the one door that moves the scalar
+# and the series together.  A setattr here would move one without the other.
 _TEMPLATE_UPDATE_FIELDS = {
-    "name", "default_amount", "category_id", "transaction_type_id",
+    "name", "category_id", "transaction_type_id",
     "account_id", "is_envelope", "companion_visible",
 }
 
 _create_schema = TemplateCreateSchema()
 _update_schema = TemplateUpdateSchema()
+
+# Where this kind's amount-history withdrawal reports back to; the act itself is
+# shared with the transfer-template twin (plan step X-au-a).
+_AMOUNT_VERSION_ACTION = AmountVersionAction(
+    logger=logger,
+    edit_endpoint="templates.edit_template",
+    noun="recurring transaction",
+)
 
 # Query-param hint the Recurring surface's "New" picker passes so the
 # creation form pre-selects the right transaction type.  "income" selects
@@ -249,6 +268,11 @@ def new_template():
         periods=periods,
         current_period=current_period,
         default_txn_type_id=default_txn_type_id,
+        # A template that does not exist yet has no amount history; passed so
+        # the shared form never references an undefined value.
+        amount_history_rows=[],
+        amount_today=None,
+        amount_version_delete_endpoint="templates.delete_amount_version",
     )
 
 
@@ -319,6 +343,17 @@ def create_template():
     db.session.add(template)
     db.session.flush()
 
+    # Open the amount's dated series at today (plan step X-au-a).  The
+    # constructor above also carries the figure because the column is NOT NULL;
+    # this call is what makes the SERIES exist, and plan step X-au-e removes the
+    # redundancy by removing the column.  A template created today generates
+    # rows into historical pay periods too, and those resolve by the series
+    # holding flat before its earliest version
+    # (``template_amount_service.amount_as_of``).
+    template_amount_service.set_amount(
+        template, template.default_amount, effective_on=display_today(),
+    )
+
     # Auto-generate transactions from the rule into future periods.
     if rule:
         scenario = get_baseline_scenario(current_user.id)
@@ -367,6 +402,19 @@ def edit_template(template_id):
         # Unused when editing (the form reads the template's own type), but
         # passed so the shared template never references an undefined value.
         default_txn_type_id=None,
+        # The amount's dated history (plan step X-au-a), precomputed into
+        # display rows.  Empty for a salary-linked template, whose amount the
+        # paycheck calculator derives and which therefore has no series at all.
+        amount_history_rows=template_amount_service.build_amount_history(
+            template, display_today(),
+        ),
+        # What the definition costs NOW, which is not the stored column whenever
+        # a rise is SCHEDULED; the form's date input defaults to today, so the
+        # two have to be the same question.
+        amount_today=template_amount_service.current_amount(
+            template, display_today(),
+        ),
+        amount_version_delete_endpoint="templates.delete_amount_version",
     )
 
 
@@ -449,7 +497,7 @@ def update_template(template_id):
             current=template.version_id,
         )
 
-    effective_from = data.pop("effective_from", date.today())
+    effective_from = data.pop("effective_from", display_today())
 
     # Remove start_period_id from update data (set once at creation).
     data.pop("start_period_id", None)
@@ -498,6 +546,25 @@ def update_template(template_id):
     if invalid is not None:
         return invalid
 
+    # State the amount through its one write door, which moves the scalar and
+    # the dated series together (plan step X-au-a).  ``effective_from`` is the
+    # form's "Amount effective from" date, which also bounds the regeneration
+    # below -- ONE value, though the two apply it with different predicates: the
+    # series answers by a row's own DUE date and the sweep selects by its pay
+    # PERIOD's end, so an edit can rewrite a row whose due date precedes the
+    # date it states (finding **N-247**, owned by X-au-e, which deletes the
+    # sweep's amount arm and dissolves it).  Absent from a partial update means
+    # the amount was not restated, and the series is untouched.
+    #
+    # **BEFORE the field loop, because that loop can FLUSH.**  A rename issues a
+    # bulk UPDATE over this template's instances, which autoflushes whatever is
+    # dirty; stating the amount afterwards would leave a second dirty write for
+    # the commit and bump the optimistic-lock counter twice for one edit.
+    if "default_amount" in data:
+        template_amount_service.set_amount(
+            template, data["default_amount"], effective_on=effective_from,
+        )
+
     # Apply allowlisted field updates, propagating any rename to existing
     # instances (see _apply_fields_and_propagate_rename for the rationale).
     _apply_fields_and_propagate_rename(template, data)
@@ -507,8 +574,8 @@ def update_template(template_id):
     # chooser rolls the pending edit back; its Apply re-runs this same edit).
     diverted = regenerate_or_conflict_chooser(
         template, before, effective_from, _TXN_TEMPLATE_KIND,
-        amount_drives_instances=not recurrence_engine.is_salary_linked_template(
-            template.id,
+        amount_drives_instances=not template_amount_service.is_salary_linked_template(
+            template,
         ),
     )
 
@@ -541,6 +608,35 @@ def update_template(template_id):
     else:
         flash(f"Recurring transaction '{template.name}' updated.", "success")
     return redirect(url_for("templates.list_templates"))
+
+
+@templates_bp.route(
+    "/templates/<int:template_id>/amount-versions/<int:version_id>/delete",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def delete_amount_version(template_id, version_id):
+    """Withdraw one entry from a template's amount history.
+
+    The correction path for a price stamped against the wrong DATE: restating
+    the amount writes a version at the date it names and leaves the mis-dated
+    one standing, so removing it is a separate act.  The EARLIEST entry is
+    refused by the service -- it is what every date before the series answers
+    from -- and the way to move it is to state the amount at the right date
+    first, which makes the old one no longer earliest.
+
+    Ownership is the ``get_or_404`` on the TEMPLATE: the shared action looks the
+    version up inside that template's own collection, so a ``version_id``
+    belonging to another user's template is simply not found and the refusal is
+    indistinguishable from "no such entry" (the security response rule).  The
+    act itself is shared with the transfer-template twin
+    (:func:`app.routes._amount_version_actions.withdraw_amount_version`).
+    """
+    template = get_or_404(TransactionTemplate, template_id)
+    if template is None:
+        abort(404)
+    return withdraw_amount_version(template, version_id, _AMOUNT_VERSION_ACTION)
 
 
 @templates_bp.route("/templates/<int:template_id>/archive", methods=["POST"])

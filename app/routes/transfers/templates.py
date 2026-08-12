@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.dates import display_today
 from app.extensions import db
 from app.models.category import Category
 from app.models.transfer_template import TransferTemplate
@@ -33,6 +34,7 @@ from app.services import (
     account_service,
     category_service,
     pay_period_service,
+    template_amount_service,
     transfer_recurrence,
     transfer_service,
 )
@@ -42,6 +44,10 @@ from app.routes._commit_helpers import (
     StaleConflictContext,
     commit_or_handle_stale,
     handle_stale_conflict,
+)
+from app.routes._amount_version_actions import (
+    AmountVersionAction,
+    withdraw_amount_version,
 )
 from app.routes._recurrence_conflict_chooser import (
     PreEditTemplateState,
@@ -80,10 +86,23 @@ logger = logging.getLogger(__name__)
 
 # Field allowlist for the transfer-template update route: which submitted
 # form fields may be written back to the template via setattr.
+#
+# ``default_amount`` is deliberately absent since plan step X-au-a: the amount
+# is a dated SERIES as well as a column, and
+# ``template_amount_service.set_amount`` is the one door that moves both
+# together.  A setattr here would move one without the other.
 _TEMPLATE_UPDATE_FIELDS = {
-    "name", "default_amount", "from_account_id", "to_account_id",
+    "name", "from_account_id", "to_account_id",
     "category_id", "is_active", "sort_order",
 }
+
+# Where this kind's amount-history withdrawal reports back to; the act itself is
+# shared with the transaction-template twin (plan step X-au-a).
+_AMOUNT_VERSION_ACTION = AmountVersionAction(
+    logger=logger,
+    edit_endpoint="transfers.edit_transfer_template",
+    noun="recurring transfer",
+)
 
 
 
@@ -127,6 +146,11 @@ def new_transfer_template():
         current_period=current_period,
         prefill_from=prefill_from,
         prefill_to=prefill_to,
+        # A template that does not exist yet has no amount history; passed so
+        # the shared form never references an undefined value.
+        amount_history_rows=[],
+        amount_today=None,
+        amount_version_delete_endpoint="transfers.delete_amount_version",
     )
 
 
@@ -217,6 +241,14 @@ def create_transfer_template():
     if namedup_redirect is not None:
         return namedup_redirect
 
+    # Open the amount's dated series at today (plan step X-au-a).  The
+    # constructor above also carries the figure because the column is NOT NULL;
+    # this call is what makes the SERIES exist, and plan step X-au-e removes the
+    # redundancy by removing the column.
+    template_amount_service.set_amount(
+        template, template.default_amount, effective_on=display_today(),
+    )
+
     # Create the initial transfer instance(s) for the new template: a single
     # Transfer when it does not repeat, or a recurrence-engine fan-out when it
     # does.  Returns a redirect Response on a missing / invalid period or a
@@ -257,6 +289,18 @@ def edit_transfer_template(template_id):
         pattern_choices=edit_form_pattern_choices(template),
         periods=[],
         current_period=None,
+        # The amount's dated history (plan step X-au-a), precomputed into
+        # display rows.  Empty for a DERIVE-mode loan payment, whose
+        # ``default_amount`` is a P&I + escrow snapshot and which therefore has
+        # no series at all.
+        amount_history_rows=template_amount_service.build_amount_history(
+            template, display_today(),
+        ),
+        # What the definition costs NOW; see the transaction twin.
+        amount_today=template_amount_service.current_amount(
+            template, display_today(),
+        ),
+        amount_version_delete_endpoint="transfers.delete_amount_version",
     )
 
 
@@ -324,7 +368,7 @@ def update_transfer_template(template_id):
             current=template.version_id,
         )
 
-    effective_from = data.pop("effective_from", date.today())
+    effective_from = data.pop("effective_from", display_today())
     data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
 
@@ -377,6 +421,18 @@ def update_transfer_template(template_id):
         if field in _TEMPLATE_UPDATE_FIELDS:
             setattr(template, field, value)
 
+    # State the amount through its one write door, which moves the scalar and
+    # the dated series together (plan step X-au-a).  ``effective_from`` is the
+    # form's "Amount effective from" date, which also bounds the regeneration
+    # below -- ONE value, applied by two different predicates (the series reads
+    # a row's DUE date, the sweep its pay PERIOD's end); finding **N-247** holds
+    # that seam and X-au-e dissolves it.  Absent from a partial update means the
+    # amount was not restated.
+    if "default_amount" in data:
+        template_amount_service.set_amount(
+            template, data["default_amount"], effective_on=effective_from,
+        )
+
     # Flush template changes first so name-uniqueness violations are caught
     # before regeneration dirties the session with transfer deletes/creates.
     namedup_redirect = flush_template_or_namedup_redirect(
@@ -391,6 +447,31 @@ def update_transfer_template(template_id):
     return _regenerate_and_commit_template(
         template, before, effective_from, template_id,
     )
+
+
+@transfers_bp.route(
+    "/transfers/<int:template_id>/amount-versions/<int:version_id>/delete",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def delete_amount_version(template_id, version_id):
+    """Withdraw one entry from a transfer template's amount history.
+
+    The correction path for a price stamped against the wrong DATE: restating
+    the amount writes a version at the date it names and leaves the mis-dated
+    one standing, so removing it is a separate act.  The EARLIEST entry is
+    refused by the service -- it is what every date before the series answers
+    from.
+
+    Ownership is the ``get_or_404`` on the TEMPLATE; the act itself is shared
+    with the transaction-template twin
+    (:func:`app.routes._amount_version_actions.withdraw_amount_version`).
+    """
+    template = get_or_404(TransferTemplate, template_id)
+    if template is None:
+        abort(404)
+    return withdraw_amount_version(template, version_id, _AMOUNT_VERSION_ACTION)
 
 
 @transfers_bp.route("/transfers/<int:template_id>/archive", methods=["POST"])
