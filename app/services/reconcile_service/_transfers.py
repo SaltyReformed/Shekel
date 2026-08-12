@@ -5,10 +5,19 @@ The last of the package's three arms (see :mod:`app.services.reconcile_service`
 for what an arm is): a TRANSFER's shadow on the account whose balance was
 asserted.  Money moving between two of the owner's own accounts still leaves
 one of them, so a checking statement shows it exactly as it shows a bill -- and
-until plan step X-f2-c3 the panel could not settle one.  Replayed over
-production's 57 Checking assertion days, **8 days would have carried a transfer
-offer, `$5,442.89`**: six `$500.00` savings transfers, one `$1,910.95` Mortgage
-payment and one `$531.94` Van Loan payment.
+until plan step X-f2-c3 the panel could not settle one.  **Replayed through
+this producer over all 53 of production's Checking assertion DAYS** -- on a
+throwaway clone, with each day's transfer shadows restored to the status they
+held then -- **8 days would have carried an offer, 8 rows worth `$5,442.89`**:
+six `$500.00` savings sweeps, one `$1,910.95` Mortgage payment and one
+`$531.94` Van Loan payment, every one of them an expense leg.  That reproduces
+ruling **R-FA**'s own OF-WHICH figure to the cent.
+
+**53 DAYS, not 57**: the account carries 57 assertion ROWS over 53 distinct
+days, and X-f2-c's own text records that confusing the two is how a figure in
+this arc went wrong before.  At the LATEST assertion (2026-08-06) this arm
+offers NOTHING, because every projected shadow starts 2026-08-13 -- so the
+panel is unchanged on production today.
 
 **Its settle is ``transfer_service.update_transfer``, and that is the whole
 reason it is a separate arm** (ruling **R-FA**).  A transfer is THREE rows -- a
@@ -103,9 +112,6 @@ def _settle_one(
         shadow.transfer_id, statement.owner_id, **updates,
     )
     return corrected
-
-
-
 
 
 def arm(owner_id: int) -> _rows.Arm:

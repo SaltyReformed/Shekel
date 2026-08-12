@@ -65,9 +65,9 @@ in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 from ._amounts import (
     ProjectedBasis,
     ReconciledThrough,
+    credit_entry_sum,
     income_amount,
     live_amount_overrides,
-    credit_entry_sum,
     settled_cash_leg,
 )
 from ._events import (
@@ -101,6 +101,7 @@ __all__ = [
     "ProjectedBasis",
     "ReconciledThrough",
     "cash_anchor_facts",
+    "credit_entry_sum",
     "dated_deltas",
     "income_amount",
     "live_amount_overrides",
@@ -108,7 +109,6 @@ __all__ = [
     "reconciled_through",
     "resolve_anchor",
     "settled_cash_facts",
-    "credit_entry_sum",
     "settled_cash_leg",
     "sum_projected",
     "walk_cash_ledger",

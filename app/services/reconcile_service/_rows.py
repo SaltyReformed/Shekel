@@ -21,17 +21,19 @@ copying the transaction arm would have put ~250 lines of one scope into two
 files that can then drift about what "outstanding" means, on a screen that
 moves money.
 
-**What is NOT here, and why, because the finding guessed at more.**  N-225
-proposed the shared shape as ``(extra scope clause, settle callable,
-OfferKind)`` -- i.e. the WRITER's loop parameterised too.  Measured against the
-two arms as built, that loop is six lines of glue around one rule, *count what
-the verb applied rather than what the column did* (finding **N-231**), and a
-rule is stated once by PUBLISHING it, not by threading two callables through a
-reduction: each settle verb publishes its own ``is_correction`` predicate and
-each arm reads it.  The arms keep their own writers, which is also what lets
-each own its log event and its refusals.  What is shared here is the part where
-copying would have been a defect: the SCOPE, which is the security property,
-and the BOUND, which is the money one.
+**The WRITER is here too, and this leaf had to be argued out of leaving it per
+arm.**  N-225 named the shared shape as *(extra scope clause, settle callable,
+OfferKind)*; X-f2-c3's first design read that as over-reach and kept each arm's
+loop, on the argument that it was six lines of glue around one rule.  Writing
+the second one settled it: pylint's cross-file ``duplicate-code`` check
+reported the pair twice -- first the telemetry tails, then the whole body once
+those were shared -- because the two loops were not similar, they were the same
+function.  The finding was right and the first reading of it was not.
+
+So :func:`record_settled` narrows the ticked ids through the arm's own scope,
+settles each row through the arm's own verb, counts what that verb says was a
+HUMAN's correction (finding **N-231**), and reports how much of what was asked
+for landed.  What stays the arm's is :class:`Arm`.
 
 **Membership of an arm is the arm's own clause, and it is the ONE thing this
 module refuses to decide.**  ``kind_clauses`` is not a convenience: the
@@ -39,20 +41,10 @@ transaction arm's ``transfer_id IS NULL`` and the transfer arm's
 ``transfer_id IS NOT NULL`` partition the table, and a shared default would be
 a third place for that partition to be stated.
 
-**The WRITER's loop joined the shared half when the second arm arrived, and
-the gate is what said so.**  X-f2-c2's design left it per-arm on the argument
-that it was six lines of glue -- correct until there were two of them, at
-which point pylint's cross-file ``duplicate-code`` check reported the two
-telemetry tails as what they are.  What is shared is the LOOP and the REPORT:
-narrow the ticked ids to the rows this arm actually owes, settle each through
-the arm's own verb, count what the verb says was a human's correction
-(**N-231**), and say how much of what was asked for landed.  What stays the
-arm's is :class:`ArmWrite` -- how a row of its kind settles, and what its act
-is called in the log.
-
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, ORM rows out.
-  - Reads only.  Nothing here mutates, flushes or commits.
+  - The reads are pure.  :func:`record_settled` MUTATES through the arms'
+    service verbs and does NOT commit -- the caller owns the session boundary.
 """
 
 import logging

@@ -193,8 +193,8 @@ class OutstandingTransaction:
             produced it rather than derived downstream -- see
             :class:`OfferKind` for the two defects deriving it caused.  This
             arm sets ``DEPOSIT`` for income, ``ENVELOPE`` for a purchase-tracked
-            row and ``BILL`` for the rest; plan step X-f2-c3's arm will set
-            ``TRANSFER`` on every offer it makes.
+            row and ``BILL`` for the rest; the transfer arm sets ``TRANSFER``
+            on every offer it makes (plan step X-f2-c3).
     """
 
     transaction_id: int
@@ -325,8 +325,10 @@ class OutstandingGroup:
         becomes offerable -- a mis-section, no wrong figure.  Left as a
         derivation rather than fixed here because the repair belongs with the
         arms: the purchase arm knows its parent and should TAG its blocks like
-        the other arm does, which is plan step X-f2-c3's extraction (finding
-        **N-225**).
+        the other two do.  **X-f2-c3's extraction (finding N-225) did NOT do
+        it** -- ``_purchases`` is byte-unchanged by that leaf -- so this
+        sentence named a completed step for work nobody had done, and the
+        repair is still owed.
 
         **The settle's tag wins over the purchases**, and the case is real: an
         envelope with outstanding purchases AND an overdue close is one block,

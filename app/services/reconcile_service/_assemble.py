@@ -215,14 +215,13 @@ def outstanding_set(
     The reconcile panel's list.  It asks each arm what it still owes against
     *observed_on*, labels every parent that came back, and reduces the result
     into the :class:`~app.services.reconcile_service.OutstandingSet` the
-    boundary publishes.  Two arms answer today -- purchases, and the source
-    rows themselves (plan step X-f2-c2) -- and plan step X-f2-c3 adds transfer
-    shadows.
+    boundary publishes.  THREE arms answer: purchases, the source rows
+    themselves (plan step X-f2-c2) and transfer shadows (plan step X-f2-c3).
 
-    **The two arms are unioned on the PARENT's id**, which is why both key
-    their offers on it: an envelope with outstanding purchases AND an overdue
-    close is ONE block carrying both, which is ruling **R-EW**'s shape, while a
-    bill is a block with a close and no children.
+    **All three are unioned on the PARENT's id**, which is why each keys its
+    offers on it: an envelope with outstanding purchases AND an overdue close
+    is ONE block carrying both, which is ruling **R-EW**'s shape, while a bill
+    and a transfer shadow are each a block with a close and no children.
 
     **The parents are read in ONE narrow statement, and that is a fix rather
     than a tidy-up.**  The flat reader this replaced returned bare
@@ -250,8 +249,12 @@ def outstanding_set(
         an account with nothing outstanding -- **which stopped being the steady
         state at plan step X-f2-c2**, because an envelope's close is offerable
         for the whole of its own period and only closing it clears one.
-        Replayed over production's 48 Checking assertion days, 44 carry at
-        least one offer.  Finding **N-227** owns that bound.
+        Replayed over production's 53 Checking assertion DAYS (57 assertion
+        ROWS -- the two figures answer different questions and one word was
+        doing both jobs), 46 carry at least one offer.  This docstring said 48
+        and 44 until plan step X-f2-c3 re-took the measurement; its two
+        siblings said 53 and 46, so one package held two answers to one count.
+        Finding **N-227** owns that bound.
     """
     blocks = _purchases.outstanding_purchases(
         owner_id, account_id, observed_on,
