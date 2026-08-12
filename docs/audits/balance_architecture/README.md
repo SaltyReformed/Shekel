@@ -38,11 +38,11 @@ staleness was invisible because nothing here is a predicate.
 | **how it was measured** | **Nine planted mutants across the two steps, each killed by a distinct test -- and then THREE pairs of neutral adversarial reviews found ELEVEN things the mutants could not, including a money bug in work two of those pairs had already passed.** The load-bearing ones: the transaction arm bounded the PARENT by the statement day and never its ENTRIES, so an envelope still being spent from booked the later purchases at the statement's date -- planting one `$137.45` purchase on a prod clone offered *Close Groceries* at `$622.55` instead of `$485.10` and raised the projected balance by exactly `+$137.45` at +30d/+90d/+365d; X-aq's refresh wrote the CACHE's value into `actual_amount`, the column three subsystems read as a human's fact; `_freshest_amount` OVERWRITING a hand-typed actual; the echo rule stated twice with two scopes; a `synchronize_session` justification a probe FALSIFIED; the block's kind DERIVED from its shape, mis-sectioning production's `$1,958.87` deposit as a bill; and a summary sentence overstating the panel's own effect by `$488.16`. **Two of N-227's own claims were also measured WRONG** -- its mechanism describes 4 of 231 envelope rows, and its hazard is false for the status a close writes (**R-FG**). X-f2-c's scope is not an estimate either: replayed over all 48 Checking assertion days, 46 carry an offer, worst 9 rows, mean 3.85 | Section 5.0, X-f2-c |
 | **in flight** | nothing OF THIS ARC. **Neither the live branch state nor what production runs is recorded here, and neither may be** -- read them from `git branch -vv` and `docker inspect shekel-prod-app --format '{{.Image}}'`. This row asserted "no feature branches exist" on 2026-08-08 while block 10's `C1` was being built on `feat/pay-calendar`, and it then stored a prod image digest that a deploy falsified on 2026-08-09 -- twice over, a volatile value beside no reconciler, which is this arc's own root cause worn as a signpost. The migration head is **`c7f3a9d1e864`**; nothing since has added one | -- |
 | **blocked on you** | **ONE, and it is not this arc's**: the SEQUENCING ruling the recurrence arc opened at X-an-a, whose two options are stated in that arc's section 0. `steps.md` has since sequenced `R6` behind `R5`; whether that DISCHARGES the ruling or merely records one of its options is the developer's to say. **N-227 is RULED (R-FG)**: the attribution bound stays, two of that finding's own claims are withdrawn as measured wrong, and the real defect underneath it -- an envelope's close booking a purchase the statement never saw -- is fixed structurally by `_wholly_spent_by`. Everything X-f2-c2 was waiting on is ruled: the bill's amount (**R-FB**), the panel's shape (**R-FC**), income rows (**R-FD**), the settle's amount rule and where it lives (**R-FE**, amended by **R-FH** to write the cache rather than the human's column), and what makes a tick correctable (**R-FF**) | `implementation_plan_recurrence_redesign.md` section 0 |
-| **next** | **Read it off `../../plans/steps.md`'s order table, never off this row** -- the first row of that table is the next step, and a row whose `starts` reads `NOW` can be picked up today whatever its rank. This row states only what CHANGED the order and is not derivable from the index: **X-ar was PROMOTED out of "unsequenced"** on the developer's ruling of 2026-08-11, so the restructure stops being deferred and X-aq is now its first increment rather than a compensating layer (**R-FH**). X-f2-c2's two zero-money commits are already done (`9f255bb4` the package split, `f4512a2f` R-FA's verb), both because folding a structural refactor into a money-moving leaf is what **R-EY** refused | `../../plans/steps.md`, Section 5 |
+| **next** | **Read it off `../../plans/steps.md`'s order table, never off this row** -- the first row of that table is the next step, and a row whose `starts` reads `NOW` can be picked up today whatever its rank. This row states only what CHANGED the order and is not derivable from the index: **X-ar is SUPERSEDED by the amount model (`X-au`, ruling R-FI, developer 2026-08-11)** -- a derived amount stops being stored at all instead of being kept true by a reconciler, so block 11 replaces X-ar's slot with eight leaves and two new steps. X-f2-c2's two zero-money commits are already done (`9f255bb4` the package split, `f4512a2f` R-FA's verb), both because folding a structural refactor into a money-moving leaf is what **R-EY** refused | `../../plans/steps.md`, Section 5 |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it -- the recurrence redesign (block 9) and the pay calendar (block 10, opened 2026-08-08). **The pay calendar's `C2` IS this arc's `X-l`**, and also recurrence `R-F12`: one commit under three names, so whoever builds it must satisfy all three specifications. How either arc's steps interleave with this one's is the index's answer and is not restated here | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md`, blocks 9 / 10 |
 | **why this shape** | the anchor half was redesigned from scratch by ruling **R-EB**; R-EQ designed the duplicate rule that had only ever been re-keyed, R-ER put the day rule in the module that owns what an assertion is, X-f1e1 deleted the second DOOR, X-f1e2 the second WRITER, X-f1e3 the mount that was destroying its own message | Section 3.3, and R-EB / R-EQ / R-ER / R-ES / R-ET in Section 4 |
-| **the live lesson** | **a new door must not be asked to choose between two answers the app already holds.** X-f2-c2's design asked which figure the reconcile panel should show for a row the projection prices LIVE and the writers price from a stale column. Every answer to that question was wrong, because the question was: the panel is a third reader of a denormalization (**N-224**), and the fix is one rule in the settle VERB (**X-aq**); deleting the second answer outright (**X-ar**) is what finishes it. When a new surface forces a choice between two existing answers, the choice is the finding | Section 8, R-FE |
-| **the ledger** | Counted by `grep -c '^| balance' ../../plans/ledger.md`, never stored here -- the figure this row carried was wrong in both directions on two successive edits, which is rule 6's own prohibition demonstrated. X-f2-c2's design opened **N-224**: `transactions.estimated_amount` is a CACHE of a derivation, `income_service.live_projected_net` repairs it at READ time and writes nothing back, so a reader and a writer looking at one row get two figures -- owned by **X-ar**, with **X-aq** making every settle door agree meanwhile. Before it, X-f2-c1 closed **N-216** (the reconcile panel's doors had no kind gate) and opened two. **N-217**: a ruling id can resolve to TWO different rulings and no gate can see it -- two sessions appended a different `R-EX` on one day, both reached `dev`, and X-f2-c2 / X-f2-c3 cited it ambiguously until a reviewer read the table. The instance is fixed (this arc's is **R-FA**, naming its old id); the class is the new step **X-ao**'s. **N-218**: twelve files cite `anchor_settle_partition.md` at a path that does not exist -- it was archived -- and they are the modules ruling R-DH is about; **X-f4**'s. Before them, X-f2-b closed **N-204** / **N-206**, narrowed **N-205** to the 16 modelled-account assertions and re-pointed it to **X-j**, and opened **N-215** | `../../plans/ledger.md` |
+| **the live lesson** | **a new door must not be asked to choose between two answers the app already holds.** X-f2-c2's design asked which figure the reconcile panel should show for a row the projection prices LIVE and the writers price from a stale column. Every answer to that question was wrong, because the question was: the panel is a third reader of a denormalization (**N-224**), and the fix is one rule in the settle VERB (**X-aq**); not storing the derived answer at all (**R-FI**, block 11) is what finishes it. When a new surface forces a choice between two existing answers, the choice is the finding | Section 8, R-FI |
+| **the ledger** | Counted by `grep -c '^| balance' ../../plans/ledger.md`, never stored here -- the figure this row carried was wrong in both directions on two successive edits, which is rule 6's own prohibition demonstrated. X-f2-c2's design opened **N-224**: `transactions.estimated_amount` is a CACHE of a derivation, `income_service.live_projected_net` repairs it at READ time and writes nothing back, so a reader and a writer looking at one row get two figures -- owned by **X-au-d** since R-FI, with **X-aq** making every settle door agree meanwhile. The same 2026-08-11 trace opened **N-237** (the base annual salary is a scalar with no effective date), **N-238** (`is_override` carries two facts) and **N-239** (a period's gross depends on how far the schedule has been generated). Before it, X-f2-c1 closed **N-216** (the reconcile panel's doors had no kind gate) and opened two. **N-217**: a ruling id can resolve to TWO different rulings and no gate can see it -- two sessions appended a different `R-EX` on one day, both reached `dev`, and X-f2-c2 / X-f2-c3 cited it ambiguously until a reviewer read the table. The instance is fixed (this arc's is **R-FA**, naming its old id); the class is the new step **X-ao**'s. **N-218**: twelve files cite `anchor_settle_partition.md` at a path that does not exist -- it was archived -- and they are the modules ruling R-DH is about; **X-f4**'s. Before them, X-f2-b closed **N-204** / **N-206**, narrowed **N-205** to the 16 modelled-account assertions and re-pointed it to **X-j**, and opened **N-215** | `../../plans/ledger.md` |
 | **resuming cold** | Branch from `dev`. Whether it is ahead of `main`, and whether by documents or by code, is a MEASUREMENT (`git log --oneline origin/main..dev`) and this row no longer claims it -- the previous revision said "DOCUMENTS ONLY" and block 10's `C1` shipped `app/services/pay_calendar/` into that gap. The repo head is **`c7f3a9d1e864`** and the test template is already stamped at it -- VERIFIED by reading `alembic_version` in `shekel_test_template`, not assumed; rebuild only if you add a migration. Baseline **8,673** green (`./scripts/test.sh`, 231 s, 2026-08-10, re-measured on `dev` at the X-f2-c1 merge `b7c3aba3`); it read 8,663 before X-f2-c1's 10 controls, 8,486 before X-ad-a's and X-f2-b's, and 8,258 before R7a-1 and C1. **Pass `TEST_DB_PREFIX=<name>` when another checkout may be running the suite**, and put the venv on `PATH` -- `scripts/test.sh` execs bare `pytest`. The registries have their own gate (`pytest tools/plan_gate -c /dev/null -q`; its green count is a MEASUREMENT and is not stored here), and **what to do next is the FIRST ROW of `steps.md`'s order table**, and a row whose `starts` column reads `NOW` can be picked up today whatever its rank -- see `docs/plans/conventions.md` rule 14. **The venv must be ACTIVE for `git commit`**: pre-commit hooks are `language: system` and the first attempt failed with `Executable pylint not found`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x). This row used to name one hand-made prod restore point; **the recurrence arc's R-F8 made every deploy dump unconditionally**, so `~/shekel-backups/` now holds one per release and the deploy REFUSES a rollback its image cannot resolve | `../../plans/verification.md` |
 
 Section 5 is the work that remains and Section 4 the rulings that govern it; `archive/` is what
@@ -251,6 +251,7 @@ Section 5 entry restates it inline (rule 5).
 | **R-FF** | 2026-08-11 | **A tick's amount is CORRECTABLE exactly when the settle verb takes its MANUAL branch**, i.e. when the row is not (envelope-tracked AND carrying entries). One predicate, read off the verb's own branch, rather than a second classification kept in sync by hand. It makes **R-FB** true by construction -- an envelope with entries is the derived case R-EW protects -- and answers the case neither ruling names: production's `Kayla's Spending Money` is envelope-tracked, budgeted `$100.00` and carries ZERO entries, so the verb already treats it as manual and there is no derived value to protect. Rejected: correctable iff not envelope-tracked, which books that `$100.00` blind and sends the only correction path back to the full-edit popover R-FB rejected |
 | **R-FG** | 2026-08-11 | **A row is offerable when EVERYTHING it would book had moved by the statement day, and that is the whole bound.** Ruling N-227: the attribution bound STAYS. The bound was challenged because an envelope has no meaningful landing day of its own, so its close is offerable for the whole period it is being spent in; the proposed remedy `period_end <= observed_on` is **REFUTED by the owner's own behaviour** -- measured on production, they close envelopes DURING the period **21 of 33 times (64%)**, as early as 9 days before period end, mean 2.7 days before, so it would have refused two thirds of the closes they really made and empties today's panel. Two of N-227's own claims were also WRONG and are withdrawn: its stated mechanism ("an envelope carries no `due_date` so `attribution_date` falls back to the period start") describes **4 of 231** envelope rows, while **185** carry an explicit `due_date` EQUAL to the period start -- a value the recurrence engine writes, not a fallback; and its hazard ("closing early makes every later purchase on that row inert") is FALSE for the `Paid` status the close actually writes -- `entry_service._update_actual_if_paid` recomputes `actual_amount` and `_resync_postings_if_settled` re-posts, which an existing green test and 24 of 24 production rows both confirm. What the challenge correctly identified is a DIFFERENT defect, and it is fixed structurally rather than by a calendar bound: an envelope's value is an AGGREGATE, so it could book a purchase the statement never saw. `_wholly_spent_by` is that fix. Rejected: narrowing the post-true-up modal to statement-observable rows, measured to move the prompt from 46 of 48 assertion days to 42 -- a UI palliative for a bound that is now correct | 
 | **R-FH** | 2026-08-11 | **A settle's refresh of a derived amount writes the CACHE (`estimated_amount`); `actual_amount` receives a HUMAN's figure and nothing else.** Amends **R-FE**, whose first implementation wrote the live derivation to `actual_amount`. That column's NULL-ness is read as "a human entered this fact" by three subsystems -- `income_service` (a settled income row's actual is never a recomputable projection), `spending_analysis` (only an explicitly entered actual is a surprise, so a machine write manufactures one) and the grid cell (which strikes through the estimate whenever the two differ, rendering a figure the owner never saw). The write was also PERMANENT and unlabelled: the row leaves `live_projected_net`'s Projected-only candidate set at that same flip, so the stale estimate could never be repaired afterwards and **X-ar's reconciler could not have told a machine write from a real correction**. Writing the cache instead makes X-aq X-ar's FIRST INCREMENT rather than a compensating layer -- the same column, one trigger instead of several -- and leaves the booked figure, `effective_amount` and R-DH (c)'s invariant unchanged. `is_override` is deliberately not set; the recurrence engine's `resolve_conflicts` rewrites `estimated_amount` with it False for the same reason. Rejected: keeping the single column and teaching the three readers to tolerate it, which spreads one denormalization into three | 
+| **R-FI** | 2026-08-11 (amended the same day by the two adversarial reviews it was written against) | **A row's amount is either its OWN -- a human authored the figure, or the money moved -- or it is DERIVED, and a DERIVED AMOUNT IS NOT STORED.** Two rules, the second following the first: every financial quantity that VARIES OVER TIME is a dated series resolved as-of; every quantity DERIVED from those is not stored at all. **The discriminator is an EXPLICIT `amount_source`, and the first draft's link-derived one was REFUTED by tracing**: the rules are not a partition over `template_id` / `transfer_id`, because salary is a SUBSET of template (`income_service.py:217` keys on `SalaryProfile.template_id`), loan payment is a SUBSET of transfer, and a CC payback row carries NEITHER link (`credit_workflow.py:529-539` builds it with `template_id=None` and no transfer) while its amount is derived -- so the proposed `CHECK (estimated_amount IS NOT NULL OR template_id IS NOT NULL OR transfer_id IS NOT NULL)` would have made storing THAT derived value structurally mandatory, which is the ruling inverted. A declared source cannot go stale against the links because the links never decided the rule. The CHECK becomes `(amount_source = OWN) = (estimated_amount IS NOT NULL)`, so a derived row is structurally incapable of holding a figure that can go stale and a reader that skips the resolver gets `None` rather than a plausible wrong number. The kinds this arc moves are salary, template, transfer, loan payment and the card payment `credit_card:CC4b` currently plans as another override-map entry; **they are not the whole census** -- an adversarial review counted about twelve stored-derived monetary values, which is **N-243**, and the arc SEQUENCES the rest rather than claiming to have found them all. **This SUPERSEDES R-FE's remedy and step X-ar**, whose "one stored amount kept true by a reconciler" preserves the denormalization, rests forever on trigger completeness, and moves salary in the OPPOSITE direction from the other four; **X-aq (`9cabc206`) survives as the FREEZE** -- the moment a derived amount becomes a fact. Rejected: reconciler-plus-detector, which needs a detector precisely because staleness stays representable; and deriving a template row from `template.default_amount` directly, a scalar with no time dimension, so a June price change retroactively rewrites March. The evidence is that the codebase already obeys rule 1 for loan rates (`RateHistory`), escrow (`EscrowComponentVersion`), tax years (`ffb9514c`) and raises (`apply_raises`), obeys rule 2 nowhere, and that the template edit form's "Regenerate effective from" field is already an effective date used once to bound a destructive sweep and never stored |
 | **R-ES** | 2026-08-05 | **`account_anchor_history.notes` is DELETED and the origination assertion goes through the SAME write door as every later one**, so the table has ONE writer. An assertion is (account, day, balance) and nothing else -- the sentence ruling R-EO already wrote into the model. Measured: no code in `app/` READS the column (AST census), 76 of 78 production rows are NULL, and it labels the origination on 2 of 9 accounts. It is a SECOND answer to a question the app already decides positionally (`CashAnchorFact.is_opening` -> `account_opening` / `account_trueup`), and the forensic trail it was nominally for is `system.audit_log`, which records every INSERT with the full row and the acting user. The loan twin's typed `source_id` STAYS: that one is read |
 
 ## 5. The steps
@@ -276,6 +277,7 @@ group the same work by SUBJECT; this groups it by CAUSE.**
 | 8 | **E2 and G** | Runs LAST by ruling. `G2` must not begin before the boundary it rests on is proven |
 | 9 | **the recurrence redesign** (own document) -- **NOT part of this arc** | Overlaps every live block of this arc by ONE file (`_recurrence_common.py`, measured against the `xd-attempt-1-parked-n155` tag), so it pauses nothing here. Its own document holds its argument; how its steps interleave with this arc's is `steps.md`'s answer |
 | 10 | **the pay calendar** (own document) -- **NOT part of this arc** | Opened 2026-08-08 out of the recurrence arc's F-10: `budget.pay_periods` stores the payday and DERIVES `end_date` / `period_index`, so a gap, an overlap and an index out of date order all stop being expressible. **Its `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, and whoever builds it must satisfy all three specifications, including this arc's N-82 / N-128 / N-79-far |
+| 11 | **the amount model** (ruling **R-FI**) | It is the ROOT CAUSE of block 1's last open finding and of three mechanisms nothing else will delete, so it precedes every step that reads a projected figure. Its first two leaves touch no file block 1 does, which is why they run beside the anchor half rather than after it |
 
 **Blocks 9 and 10 are SEPARATE ARCS and blocks 4 and 5 are FEATURES consuming this arc's output.**
 None is a correctness fix inside this arc, and **none owns a `ledger.md` row whose `arc` reads
@@ -314,44 +316,16 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   leaves remain.
 * [x] **X-aq** `9cabc206` a settle books the freshest derivation of the row's amount, in the VERB,
   so all its doors agree (**R-FE**). **`c4932746` then made it write `estimated_amount` and not
-  `actual_amount` (ruling R-FH)**, which is what makes this step **X-ar's FIRST INCREMENT** rather
-  than a compensating layer -- X-ar must keep that column, not undo this one. Figure-neutral on
+  `actual_amount` (ruling R-FH)**, which is what makes this step the FREEZE **X-au-c** formalises
+  rather than a compensating layer -- the amount model keeps that column, not undoes it. Figure-neutral on
   production (0 rows, `$0.00`); **51 rows / `$4,897.50`** on a clone after one un-regenerated 3%
   raise. Also fixed at `41f678e5`. Opened **N-224**.
 * [x] **X-as** `ffb9514c` a tax year resolves to the latest CONFIGURED year's rules at or before it,
   PER CONFIG KIND, never to the clock's year -- which on 2027-01-01 resolved to NOTHING and dropped
   **$8,460.50** of withholding out of the projection (`$10,914.93` with that day's top-up), because
-  the engine reads a missing `fica_config` as zero Social Security. **X-ar's PRECONDITION**: a stored
-  derived amount is reconcilable only when its inputs are enumerable, and "what day is it" has no
-  write to hang a trigger on. Opened **N-235**, **N-236**.
-* [ ] **X-ar** `refactor(cash): a projected row's amount has ONE answer` (**R-FE**) -- closes
-  **N-40** and **N-224**. `transactions.estimated_amount` is a CACHE of a derivation and
-  `income_service.live_projected_net` repairs it at READ time without writing back, so readers and
-  writers hold two answers with no reconciler. Make the stored amount authoritative, keep it true
-  with a reconciler run on every input change, then DELETE `live_amount_overrides`,
-  `ProjectedBasis.amount_overrides` and the `sum_projected` override thread.
-  **Two of its stated premises were REFUTED by tracing 2026-08-11 and the step is corrected rather
-  than re-scoped.** (a) "No reconciler" is too strong: `transaction_service._reconcile_cached_amount`
-  writes the cache at every settle (X-aq) and `routes/salary/_helpers._regenerate_salary_transactions`
-  rebuilds the rows from 12 salary write doors. What has no trigger is a PAY-PERIOD write, a clock
-  change and a code change -- and `pay_period_write` is one door since C3-b, so completing the set is
-  small. (b) The deploy-time half is **UNRULED and X-ar must rule it**, against a hazard R-FE could
-  not have known: a blind re-derive at deploy would have written X-as's `$8,460.50` permanently into
-  66 rows on the first deploy after New Year, because the derivation itself was wrong on that date.
-  R-FE named "on input change AND at deploy"; what the measurement shows is that an automatic
-  re-derive turns a transient derivation defect into a stored one, so the option space is at least
-  three: RE-DERIVE as R-FE says; CHECK and refuse the deploy, leaving a derivation change to ship its
-  own backfill migration; or NEITHER, relying on write triggers alone. Each is defensible and none is
-  chosen here -- naming one would be deciding it (rule 8).
-  **It also needs its input set SHRUNK first**: `_gross_biweekly_for_period` groups the rounding
-  residue over "the periods that exist in this calendar year" and falls back to half-up under 26, so
-  extending the schedule retroactively rewrites earlier rows -- measured at 6 rows / `$0.06` after
-  one rolling top-up. Horizon-dependence with no business meaning is recurrence **D10**'s class.
-  **The LOAN half awaits a developer decision and is NOT in this step's scope**: it is dormant on
-  production (`budget.loan_payment_settings` is EMPTY -- both loan payments predate migration `c2a2c508e103`,
-  which deliberately did not backfill), and its derivation reads `date.today()` through
-  `_resolve_loan_basis`, so no stored value can be kept true until a ruling puts a shadow's P&I on
-  its own DUE date as ruling D5 already put its escrow.
+  the engine reads a missing `fica_config` as zero Social Security. **The amount model's PRECONDITION** (**X-au-b**): a
+  resolver may not read the wall clock, and "what year is it" was the last clock read in the salary
+  derivation. Opened **N-235**, **N-236**.
 * [ ] **X-f2-c** the OUTSTANDING SET, widened (**R-EW**) -- the panel offers everything the statement
   can settle, and ticking stamps the STATEMENT date. This is **N-172**'s churn on the transaction
   side. Measured on production over all 53 assertion DAYS (57 assertion ROWS -- the two figures are
@@ -412,6 +386,129 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   residue still needs classification -- exactly X-f2's outstanding set and X-f3's residual path, fed
   automatically instead of by hand. **Its first act is a trace, not code**: which import surface,
   what matching rule, and what a match does to `settled_on`. Opens after X-f5 ships.
+
+### Phase X -- the amount model (ruling R-FI)
+
+**What this phase is about, in one sentence: the app stores five amounts it also computes, and each
+one grew its own private repair mechanism.** Salary income is repaired at READ time by
+`income_service.live_projected_net`, which writes nothing back (**N-224**); a loan-payment shadow by
+`loan_payment_service.live_loan_transfer_amounts`, which also reads the wall clock (**N-40**); a
+transfer shadow by a two-line copy in `transfer_service.update_transfer` beside a drift corrector
+that logs `"Correcting shadow %d estimated_amount drift"`; an ordinary template row by
+`regenerate_for_template`, which DELETES and recreates every non-override row from a date the form
+supplies and never stores. `credit_card:CC4b` plans a fifth. **R-FI deletes the class**: a derived
+amount is not stored, one total resolver answers, and the CHECK makes a stale derived figure
+unrepresentable rather than merely unlikely.
+
+**Measured on production 2026-08-11**, so the size of each cutover is known rather than estimated:
+**997 rows, and the buckets RECONCILE to it** because a set of measurements that does not is a
+census nobody can check: 51 projected non-overridden salary rows (`$139,642.27`) + 511 non-override
+template rows + 342 transfer shadows + 49 ad-hoc rows that own their amount and always will + 37
+override rows + 7 already-settled salary rows = 997. `template_id` and `transfer_id` are mutually
+exclusive across every one of them -- by CONVENTION, with no constraint enforcing it -- but the five
+rules are NOT a partition over those two columns (ruling R-FI), which is why the discriminator is
+declared. Stored-vs-derived
+drift TODAY is **0 rows / `$0.00`** -- which `../../plans/conventions.md` rule 8 says is not
+resolved, and which the read-time repair is what hides.
+
+* [ ] **X-au** `feat(cash): a row's amount is either its own or derived` -- the DECOMPOSED parent
+  (**R-FI**), carrying **N-40**, **N-224**, **N-228**, **N-238**. It ticks with the last of its
+  leaves. **It SUPERSEDES X-ar**, whose two stated premises tracing also refuted: its deletion set was
+  unreachable (`live_amount_overrides` merges the salary and loan halves at
+  `cash_ledger/_amounts.py:684`, and the loan half feeds BOTH shadow legs, so the loan half being out
+  of scope left nothing deletable), and it claimed **N-40**, which `../../plans/ledger.md` owned to
+  `X-i2`.
+* [ ] **X-au-a** `feat(templates): a template's amount is an effective-dated series` -- rule 1 of
+  R-FI, applied to the one input that has no history at all. A transaction or transfer template's
+  amount becomes a supersession series on the `EscrowComponentVersion` model (a version is active
+  until the next supersedes it, so an overlap is unrepresentable and no exclusion constraint is
+  needed), with the write door replacing the edit form's transient "Regenerate effective from" field.
+  **The backfill reads the price history the ROWS already record**: production's `Geico` template
+  says `$165.30` for all time while its rows say `$178.00`, `$178.32`, `$165.30` in period order,
+  which is three versions. Salary-linked templates get none -- their amounts derive from the engine --
+  and NEITHER do derive-mode loan-payment templates, whose `default_amount` is a stored snapshot of
+  P&I plus escrow (`routes/loan/payment_transfer.py:187`): building a price series over a derived
+  quantity manufactures a fake history. **The signal is CONTAMINATED and the backfill must say how it
+  handles that**: `_recurrence_conflict_chooser.py:446` passes `template.default_amount` into
+  `resolve_conflicts`, which writes that CURRENT scalar onto a past row and clears `is_override`
+  (`recurrence_engine.py:620-623`) -- the retroactive rewrite R-FI rejects, on the very rows this
+  backfill mines. Additive: `default_amount` stays authoritative and nothing reads the series yet.
+* [ ] **X-au-b** `feat(cash): one resolver answers what a projected row is worth` -- the TOTAL
+  dispatcher in `cash_ledger/_amounts.py`, which is already the module that owns per-row valuation.
+  Five rules, each delegating to the producer that exists today, and a refusal rather than a fallback
+  for a row it cannot place. **Unwired and additive, and its proof is exhaustive**: for every row in a
+  production clone the resolver's answer equals the answer the app gives today, salary rows included.
+  **"The answer the app gives today" is not single-valued, and the oracle must name which one it
+  grades** -- `routes/grid.py:595` reads the override map while `dashboard_service.py:279` reads the
+  raw column, and that two-answer state IS **N-224**. The oracle grades the OVERRIDE-MAP answer,
+  because that is the one every balance surface folds.
+* [ ] **X-au-c** `refactor(transactions): the column says who owns the amount` -- the migration.
+  `transactions.estimated_amount` and `transfers.amount` become NULLABLE under
+  `ck_transactions_amount_ownership`, every reader of a projected amount routes through X-au-b's
+  resolver, and X-aq's settle refresh becomes the FREEZE: at settle the resolved figure is written and
+  the row owns it from then on. No row is NULLed in this step, so no figure moves -- but it is NOT
+  "byte-identical by construction", and the first draft's claim that it was is withdrawn.
+  **`Transaction.effective_amount` and `Transfer.effective_amount` are MODEL PROPERTIES**
+  (`models/transaction.py:348`, `models/transfer.py:198`) with no DB access, so neither can resolve a
+  derived amount at all; this step must rule what they answer for a row that owns no amount, and 17
+  modules read one of them. **The reader census is this step's first act**, and the four the first
+  draft named are not the set: `carry_forward_service/_execute.py:336` and `:350` do arithmetic
+  directly on the column, `routes/entries.py:141` and `entry_service.py:736` compute an envelope's
+  remaining budget from it, `investment_projection.py:560` sums `effective_amount` over PROJECTED
+  contribution shadows, and `posting_service._settle_effective:242` reads it in SQL with no status
+  predicate (**N-242**).
+* [ ] **X-au-d** `refactor(salary): a projected paycheck is not stored` -- the SALARY cutover. The
+  recurrence engine stops pricing salary rows, the 51 live rows go NULL, and
+  `income_service.live_projected_net`, `transaction_service._freshest_amount` and
+  `_reconcile_cached_amount` are deleted. Closes **N-224** and **N-228** (the batch producer called
+  with a one-element list, which disappears with the mechanism rather than by threading a map).
+* [ ] **X-au-e** `refactor(recurrence): a template row reads its template's series` -- the TEMPLATE
+  cutover, onto X-au-a's series. Generation stops pricing, 511 rows go NULL, and regeneration's amount
+  arm plus the conflict chooser's keep-vs-use decision are deleted: a hand-edited month owns its
+  figure, so the collision the chooser mediates cannot occur (developer, 2026-08-11). **This is where
+  the measured `$502.45` defect class dies** -- `_get_transaction_amount` priced a third paycheck from
+  a truncated period list, and a generator that prices nothing cannot mis-price.
+* [ ] **X-au-g** `refactor(loans): a loan payment resolves on its own due date` -- the LOAN-PAYMENT
+  cutover, closing **N-40**. **It must RULE first**, and the ruling is forced rather than optional: a
+  resolver may not read the wall clock, and `live_loan_transfer_amounts` resolves its basis through
+  `_resolve_loan_basis(..., date.today())`. The rule ruling D5 already applied to escrow -- a shadow's
+  figure resolves on the shadow's own DUE date -- is what makes the loan half resolvable. Dormant on
+  production (`budget.loan_payment_settings` is EMPTY, both payments predating migration
+  `c2a2c508e103`, which deliberately did not backfill), so it moves `$0.00` there and is graded on a
+  seeded loan.
+* [ ] **X-au-f** `refactor(transfers): a shadow's amount is its parent's` -- the TRANSFER cutover.
+  `transfers.amount` resolves from the template series for a generated transfer, a shadow resolves
+  from its parent, and the copy at `transfer_service.py:534` with the drift corrector at `:814` both
+  go. **Transfer Invariant 3 becomes STRUCTURAL rather than maintained.** `uq_transfers_adhoc_dedupe`
+  is unaffected: its predicate is `transfer_template_id IS NULL`, and an ad-hoc transfer owns its
+  amount. **It runs AFTER the loan leaf and the first draft had them the other way round**, which an
+  adversarial review reproduced: a loan-payment shadow IS a transfer shadow, so this step NULLs it,
+  while `loan_payment_service._manual_shadow_amount:660` reads `shadow.estimated_amount` under a
+  docstring asserting that column is "NOT NULL, always the generated base" -- manual-mode loan
+  payments would be broken for the whole interval between the two leaves.
+* [ ] **X-au-h** `refactor(transactions): is_override says one thing` -- closes **N-238**. The flag
+  carries FOUR facts, not the two the first draft named, and an adversarial review found the other
+  two. (1) the user RE-PRICED the row and (2) the user MOVED it to another period -- both written at
+  `routes/transactions/mutations.py:295`; (3) this row SURVIVES the regeneration sweep
+  (`_recurrence_common.py:375`, and `pay_period_admin.py:821` escalates it to "deleting this period
+  loses data"); and (4) this row is EXEMPT from the partial unique index, whose predicate is literally
+  `is_override = FALSE` (`models/transaction.py:199-203`, `models/transfer.py:64`) --
+  `carry_forward_service/_execute.py:352` sets the flag purely to stay index-safe. **So the naive
+  absorption is unsafe and measured so**: a moved-but-not-repriced row would carry a NULL amount, fall
+  back INSIDE `idx_transactions_template_period_scenario`, and collide with the target period's
+  canonical generated row. Meanings 3 and 4 need representation before the flag can go.
+* [ ] **X-av** `fix(salary): the base annual salary is a dated series` -- closes **N-237**. Rule 1 of
+  R-FI applied to the last scalar input: `apply_raises(base_salary, raises, as_of)` resolves RAISES
+  as-of, but `profile.annual_salary` is the base for all time, so the app cannot tell "I got a raise"
+  from "I typed the wrong salary" and a correction reprices only from today forward -- the same
+  half-effective-dating the template amount had.
+* [ ] **X-aw** `fix(salary): a period's gross does not depend on the horizon` -- closes **N-239**.
+  `paycheck_calculator._gross_biweekly_for_period:543` distributes the annual rounding residue when
+  the row's calendar year holds `pay_periods_per_year` periods IN THE LIST IT WAS HANDED and falls
+  back to `ROUND_HALF_UP` otherwise, so the answer depends on how far the schedule has been
+  generated. Measured: filling 2028 from 14 periods to 26 moves **6 rows by `-$0.06`**; shrinking a
+  full 2027 to 25 moves none. Recurrence **D10**'s class, and the fix is to count a year's paydays
+  from the stored cadence rather than from whichever rows exist.
 
 ### Phase X -- the posting restructure
 
@@ -570,8 +667,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   financial statement); the rest are a different question one tier down -- what may a WRITE do
   without a scenario -- and deserve their own answer. Sequenced after X-x.
 * [ ] **X-i** `refactor(balance): one read pass, one derivation, one clock` -- closes **FU-3**,
-  **N-14**, **N-40**, **N-56**, **N-72**'s second half, **N-89**, **N-91**, **N-92**, **N-93**,
-  **N-115**. **Nine rows, one root cause:** `BalanceContext` pins the pass's `as_of` and `scenario`
+  **N-14**, **N-56**, **N-72**'s second half, **N-89**, **N-91**, **N-92**, **N-93**,
+  **N-115**. **N-40 LEFT this set on 2026-08-11** (ruling R-FI): the clock read is a property of a
+  DERIVED amount being stored, so it closes at **X-au-g** and no gate reads a prose closes-set. **Nine rows, one root cause:** `BalanceContext` pins the pass's `as_of` and `scenario`
   and memoizes three LOAN derivations, and every OTHER input is loaded ad hoc at the wall clock. The
   arc solved this for loans at D-ctx and stopped there. Two symptom families the ledger filed apart
   are one defect. RECOMPUTED: the calendar loaded three times per modelled grid render, the
