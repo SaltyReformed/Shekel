@@ -251,6 +251,98 @@ class TestTheDropdownBooksWhatTheRowCost:
             assert archived.settled_on == settled_day
 
 
+class TestARevertTakesBackWhatTheSettleDerived:
+    """A settle writes an envelope's actual; leaving the band takes it back.
+
+    The seam already clears ``settled_on`` on the way out of the settled band.
+    ``actual_amount`` on an envelope is the same kind of value -- ``sum(entries)``
+    at the moment of the settle, written by ``settle_from_entries`` in one
+    statement with the status and the day -- and was being left behind.
+
+    **Production row 2281 *Groceries* is that state today**: Projected, carrying
+    ``actual_amount = 533.08`` against a `$500.00` budget from a settle that was
+    later reverted, so it projects at its SPEND rather than its budget.  Plan
+    step X-ap made that figure UNREACHABLE as well as wrong -- the popover stops
+    rendering an Actual box for a row whose amount the settle derives -- so the
+    release is what keeps the removal of that box honest.
+    """
+
+    def test_reverting_an_envelope_releases_its_derived_actual(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Settle, then revert: the row is back to projecting its budget.
+
+        $80.00 budget, one $48.98 purchase.  The settle books $48.98; the
+        revert releases it, so the row projects at $80.00 again -- which is what
+        Projected means for an envelope that has not finished being spent.
+
+        Shown to FIRE: without the release the reverted row still reads $48.98.
+        """
+        with app.app_context():
+            txn = _gas_envelope(seed_user, seed_periods_today[3])
+            txn_id = txn.id
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+            ).status_code == 200
+
+            db.session.expire_all()
+            paid = db.session.get(Transaction, txn_id)
+            assert paid.actual_amount == Decimal("48.98")
+
+            resp = _full_edit_save(
+                auth_client, paid, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            reverted = db.session.get(Transaction, txn_id)
+            assert reverted.actual_amount is None
+            assert reverted.settled_on is None
+            assert reverted.effective_amount == Decimal("80.00")
+            # The settle's postings reverse with it: nothing is left booked.
+            assert _cash_leg(txn_id, seed_user["account"].id) == Decimal("0.00")
+
+    def test_a_BILLs_hand_typed_actual_survives_a_revert(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Only the DERIVED kind is released, and this is the control for it.
+
+        A bill's ``actual_amount`` is a figure a HUMAN read off a statement
+        (ruling **R-FB**).  Clearing that on a revert would delete the user's
+        own correction -- so the release is gated on the same predicate the
+        settle branches on and the edit doors offer a box on.
+
+        A $500.00 bill corrected to $245.32 keeps $245.32 through the revert.
+        """
+        with app.app_context():
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods_today[3],
+                "Electricity", Decimal("500.00"),
+            )
+            txn.template.is_envelope = False
+            db.session.commit()
+            txn_id = txn.id
+
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+                data={"actual_amount": "245.32"},
+            ).status_code == 200
+            db.session.expire_all()
+            assert db.session.get(
+                Transaction, txn_id,
+            ).actual_amount == Decimal("245.32")
+
+            paid = db.session.get(Transaction, txn_id)
+            assert _full_edit_save(
+                auth_client, paid, ref_cache.status_id(StatusEnum.PROJECTED),
+            ).status_code == 200
+
+            db.session.expire_all()
+            assert db.session.get(
+                Transaction, txn_id,
+            ).actual_amount == Decimal("245.32")
+
+
 class TestASettledStatusMustMatchTheRowsType:
     """Income settles as Received, an expense as Paid -- never the other one."""
 
