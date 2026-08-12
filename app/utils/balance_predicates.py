@@ -32,10 +32,16 @@ This module is the single source of truth for the predicate. It exposes:
   zero, ``excludes_from_balance`` statuses contribute zero, everything
   else contributes its effective amount. This is the Python predicate
   for in-memory iteration.
-- ``is_projected(txn) -> bool`` is the equality form ("is this txn
+- ``is_projected(row) -> bool`` is the equality form ("is this row
   Projected?") used by the inline ``!= projected_id`` / ``== projected_id``
   sites. Pure status equality; does not consider ``is_deleted`` (callers
-  that need the combined gate use ``is_balance_contributing``).
+  that need the combined gate use ``is_balance_contributing``). It takes a
+  ``Transaction`` OR a ``Transfer``, for the same reason
+  ``is_projected_clause`` below is parameterised on the model class: both
+  tables carry a ``status_id`` into ``ref.statuses``, and "is this row still
+  Projected" is ONE question. The row form was Transaction-only until plan
+  step X-au-b asked it of a transfer (``cash_ledger._amount_source``), where
+  the alternative was a second spelling of the same comparison.
 - ``balance_excluded_status_ids() -> frozenset[int]`` is the cached
   ``{Credit.id, Cancelled.id}`` set, derived from the same ``ref_cache``
   lookups as the clause builder so they can never disagree.
@@ -79,6 +85,7 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import UndatedSettleError
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 
 
 def balance_excluded_status_ids() -> frozenset[int]:
@@ -356,8 +363,8 @@ def is_balance_contributing(txn: Transaction) -> bool:
     return status_contributes_to_balance(txn)
 
 
-def is_projected(txn: Transaction) -> bool:
-    """Return True iff *txn*'s status is ``Projected``.
+def is_projected(row: Transaction | Transfer) -> bool:
+    """Return True iff *row*'s status is ``Projected``.
 
     Centralizes the inline ``status_id != ref_cache.status_id(
     StatusEnum.PROJECTED)`` and ``status_id == projected_id`` comparisons
@@ -368,11 +375,20 @@ def is_projected(txn: Transaction) -> bool:
     ``is_balance_contributing``, or use ``is_balance_contributing``
     alone when they only need the exclusion set semantics.
 
+    **It takes a ``Transaction`` OR a ``Transfer``**, which is the same
+    generality :func:`is_projected_clause` has always had one tier down: both
+    tables carry a ``status_id`` into ``ref.statuses``, and "is this row still
+    Projected" is one question with one answer. It was annotated
+    Transaction-only until plan step X-au-b needed it for a transfer
+    (:func:`app.services.cash_ledger.resolve_transfer_amount`), where the only
+    alternative was a second spelling of this comparison -- the drift this
+    module exists to prevent.
+
     Args:
-        txn: a ``Transaction`` instance with ``status_id`` populated.
+        row: a ``Transaction`` or ``Transfer`` with ``status_id`` populated.
 
     Returns:
-        ``True`` if ``txn.status_id`` equals the cached integer ID for
+        ``True`` if ``row.status_id`` equals the cached integer ID for
         ``StatusEnum.PROJECTED``; ``False`` for every other status,
         including ``Paid``, ``Received``, ``Credit``, ``Cancelled``,
         and ``Settled``.
@@ -381,7 +397,7 @@ def is_projected(txn: Transaction) -> bool:
         RuntimeError: propagated from ``ref_cache.status_id`` if the
             reference cache has not been initialized.
     """
-    return txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+    return row.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
 
 
 def is_credit(txn: Transaction) -> bool:

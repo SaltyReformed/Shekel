@@ -57,6 +57,33 @@ class UndatedSettleError(ShekelError, ValueError):
     """
 
 
+class AmountUnresolvable(ShekelError, ValueError):
+    """A row was asked what its amount is and no rule could answer.
+
+    Raised by ``app.services.cash_ledger.resolve_transaction_amount`` and its
+    transfer twin (plan step X-au-b, ruling **R-FI**): a row's amount is either
+    its OWN or DERIVED, and where the rule that owns it cannot produce a figure
+    -- no due date to resolve a price series on, an EMPTY series, no live net
+    for the row's pay period, a loan whose basis will not resolve, a shadow with
+    no parent -- this refusal is the answer.
+
+    **It is a refusal rather than a fallback, and the fallback is what the arc
+    is deleting.**  Reading the stored column instead would publish exactly the
+    stale derived figure R-FI exists to make unrepresentable, and once plan step
+    X-au-c makes both amount columns NULLABLE that column holds ``None`` for a
+    derived row, so the fallback would put a ``None`` into a money path.  The
+    message names the row and what the rule needed, because every one of these
+    conditions is repairable data rather than a transient.
+
+    A ``ValueError`` as well as a ``ShekelError``, mirroring
+    :class:`UndatedSettleError` above and for the same reason: the condition is
+    a broken invariant in stored data rather than user input, and no route
+    translates it -- reaching a user as a 500 is the correct disposition,
+    because the request cannot be answered correctly and answering it wrongly is
+    worse.
+    """
+
+
 class BaselineMissingError(ShekelError, ValueError):
     """The balance seam was asked for a figure by a user with no baseline scenario.
 

@@ -291,6 +291,22 @@ _FENCED_MODULE_RULINGS = {
         # ruling -- structure retiring a fence entry, which is Phase D's point.
         "live_amount_overrides",
         "income_amount",
+        # ``_amount_source`` -- WHERE one row's amount comes from (plan step
+        # X-au-b, ruling R-FI).  Four names, one ruling, because they are one
+        # question at two tiers: ``amount_basis`` resolves the live producers
+        # ONCE for a row set, ``amount_rule`` says which of the five sources
+        # prices a row, and the two ``resolve_*_amount`` entries answer what one
+        # row's AMOUNT COLUMN holds or would hold.  Non-producers on exactly the
+        # ground their ``_amounts`` siblings above stand on, and one tier
+        # further from a balance than those: an amount per ROW is not a balance
+        # per ACCOUNT, and this tier does not even value the row against
+        # checking -- it answers a figure the valuation rules then compose with
+        # a status, an entered actual and an envelope's purchases.  Nothing here
+        # folds, dates, sums, or reads an anchor.
+        "amount_basis",
+        "amount_rule",
+        "resolve_transaction_amount",
+        "resolve_transfer_amount",
         # The ONE statement of "is this movement already inside the balance the
         # user declared" (ruling R-DH (a)), and since the one-partition step it
         # is a METHOD on ``ReconciledThrough`` rather than a free function, so
@@ -549,6 +565,12 @@ _FENCED_MODULE_RULINGS = {
         # extra) -- what a payment is worth, not what an account owes.
         "live_loan_payment_amount",
         "live_loan_transfer_amounts",
+        # Two BOOLEAN-and-a-Decimal settings off a transfer template: does this
+        # payment's cash derive from the loan, and what standing extra rides on
+        # it.  Public since plan step X-au-b, whose amount resolver has to know
+        # the MODE before it can price a payment; a configuration read, and the
+        # furthest thing here from a balance-at-T.
+        "loan_payment_config",
     })),
     # The PURE loan-resolver tier (:data:`_LOAN_RESOLVER_ENGINE_MODULES`,
     # closing finding B-12).  Package-scoped, so a new submodule is covered the
