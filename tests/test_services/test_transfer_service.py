@@ -1086,7 +1086,8 @@ class TestSoftDeleteHandling:
             # Bypass _get_transfer_or_raise by importing the helper directly.
             # This simulates a future code path that allows deleted transfers
             # through and hits the shadow count check.
-            from app.services._transfer_validation import (  # pylint: disable=import-outside-toplevel
+            # pylint: disable-next=import-outside-toplevel
+            from app.services.transfer_service._validation import (
                 _get_shadow_transactions,
             )
 

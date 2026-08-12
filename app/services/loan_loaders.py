@@ -624,7 +624,7 @@ def installment_for(
 
     Extracted so a payment that does not EXIST yet can be keyed on the same rule
     as one that does.  The transfer write boundary
-    (:func:`app.services._transfer_loan_posting._reject_payment_before_origination`,
+    (:func:`app.services.transfer_service._loan_posting._reject_payment_before_origination`,
     plan step C9b) must decide "which installment would this be?" before any row
     is written, and a guard keying on a rule of its own would refuse a different
     set of payments than the fold erases -- the boundary-predicate drift this

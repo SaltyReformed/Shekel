@@ -210,7 +210,7 @@ class TestSyncRecurringPaymentBounds:
         The not-a-loan guard's own shape, and it is reachable: an account whose
         TYPE is amortizing but whose loan details were never filled in still
         classifies as amortizing, so a transfer settling into it reaches this
-        sync (``_transfer_loan_posting`` gates on the account TYPE, not on the
+        sync (``transfer_service._loan_posting`` gates on the account TYPE, not on the
         params row).  The seam's ``loan_figures`` answers ``None`` for it, which
         is what this must return on -- without the guard the payoff read would
         raise on ``None``, from a WRITE path, mid-mutation.

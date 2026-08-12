@@ -471,7 +471,7 @@ def _grade_submitted_settle_day(xfer, data):
     re-submit the row's whole state, and the documented way to unlock a
     finalised transfer is to set Status to Projected in that same form -- so a
     revert arrives carrying the day the row already had.  Keeping it would make
-    ``_transfer_status.apply_settle_day_correction`` raise and break the unlock
+    ``transfer_service._status.apply_settle_day_correction`` raise and break the unlock
     path on every settled transfer.
 
     Args:

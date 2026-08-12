@@ -15,8 +15,8 @@ oracle).
 
 Extracted from ``transfer_service`` so that module stays under the 1000-line
 module limit as the Build-Order Step 2-4 posting-ledger wiring lands -- the
-same split that moved the ownership loaders into ``_transfer_ownership`` and
-the loan-posting glue into ``_transfer_loan_posting``.  :func:`assert_restorable`
+same split that moved the ownership loaders into ``_ownership`` and
+the loan-posting glue into ``_loan_posting``.  :func:`assert_restorable`
 joined them at plan step X-aj1 (ruling **R-DR**), bringing ``restore_transfer``'s
 four preconditions to the module whose single responsibility they already were.
 

@@ -13,13 +13,20 @@ finding **N-152** recorded that the next change to it would hit the gate again.
 This is that change.  The split is by responsibility rather than by line count:
 these two functions are the ONLY place the three rows' shared status and shared
 settle day are resolved, and Transfer Invariant 3 (shadow statuses and settle
-days always equal the parent's) is a property of this module.
+days always equal the parent's) is a property of this module.  Plan step
+X-f2-c3 then made ``transfer_service`` a PACKAGE (**N-152** / **N-156**) and
+this module a leaf of it; the responsibility is unchanged and the file moved
+from ``app/services/_transfer_status.py``.
 
 **Neither function writes ``status_id`` and neither constructs a status-bearing
 model**, so this module stays clear of the W9907 status fence: both go through
 :func:`app.services.status_seam.apply_status_change`, which is the sanctioned
-door.  The fence's ``transfer_service`` allowlist entry is held open by the two
-CONSTRUCTORS that stay behind there (``_build_shadow`` and ``create_transfer``),
+door.  **The package move is where that sentence could have quietly stopped
+being true**: the fence's allowlist read ``app.services.transfer_service`` and
+:func:`_module_in_allowlist` matches a package PREFIX, so this leaf would have
+become exempt without anybody deciding it should be.  The entry now names
+:mod:`app.services.transfer_service._create` -- the one leaf holding the two
+CONSTRUCTORS that hold it open (``_build_shadow`` and ``create_transfer``),
 which plan step X-aj2 replaces.
 
 Flask-isolated like the parent service: plain data and ORM rows in, mutations
@@ -173,7 +180,8 @@ def apply_settle_day_correction(
     statement and the money moved on a different day than the settle was
     recorded on.  Since plan step E1a that day IS the ``entry_date`` the
     transfer's postings are filed under, so this is a money-moving edit and
-    ``transfer_service._run_posting_reconciles`` re-dates the ledger after it.
+    ``transfer_service._update._reconcile_postings_after_update`` re-dates the
+    ledger after it.
 
     **It routes through the status seam rather than assigning the column, and
     that is finding N-183's fix.**  ``update_transfer`` used to write

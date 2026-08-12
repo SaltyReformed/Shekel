@@ -482,7 +482,7 @@ def apply_requested_status(
     and this decides what applying it means.  After plan step X-ap the only
     ``app/`` callers of the seam are this function, :func:`settle_transaction`,
     :func:`settle_from_entries`, ``credit_workflow`` (Credit and its revert,
-    neither of them settled statuses) and ``_transfer_status`` (a transfer and
+    neither of them settled statuses) and ``transfer_service._status`` (a transfer and
     its two shadows, which settle through ``transfer_service`` by transfer
     invariants 3 and 4) -- so a FOURTH transaction settle door cannot be opened
     by reaching for the obvious primitive, which is how the third one was.

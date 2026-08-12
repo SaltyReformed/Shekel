@@ -256,7 +256,7 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
     Called from every chokepoint that can move the projected payoff: loan-params
     create / update, the ARM / origination-rate change, the balance true-up, the
     recurring-transfer creation, and the transfer settle / revert / edit / delete
-    / restore paths (via :mod:`app.services._transfer_loan_posting`).
+    / restore paths (via :mod:`app.services.transfer_service._loan_posting`).
 
     Args:
         account_id: The loan account whose recurring-payment validity window
