@@ -492,7 +492,7 @@ def _freshest_amount(txn: Transaction) -> Decimal | None:
 
     Args:
         txn: The row about to settle, still in its pre-settle status.  Read for
-            its account, scenario, and the fields the override map's candidate
+            its owner, scenario, and the fields the override map's candidate
             filters test; not mutated.
 
     Returns:
@@ -502,7 +502,7 @@ def _freshest_amount(txn: Transaction) -> Decimal | None:
     if txn.actual_amount is not None:
         return None
     live = live_amount_overrides(
-        txn.account, txn.scenario_id, [txn],
+        txn.account.user_id, txn.scenario_id, [txn],
     ).get(txn.id)
     if live is None or live == txn.estimated_amount:
         return None

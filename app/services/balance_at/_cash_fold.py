@@ -522,7 +522,7 @@ def _cash_plan(
         by_day=dict(by_day),
         basis=ProjectedBasis(
             amount_overrides=live_amount_overrides(
-                account, scenario_id, rows,
+                account.user_id, scenario_id, rows,
             ),
             reconciled_through=reconciled_through,
         ),

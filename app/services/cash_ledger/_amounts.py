@@ -647,7 +647,7 @@ def _expense_amount(txn, basis: ProjectedBasis):
     return _entry_aware_amount(txn, basis.reconciled_through)
 
 
-def live_amount_overrides(account, scenario_id, transactions):
+def live_amount_overrides(user_id, scenario_id, transactions):
     """Build the live per-transaction amount-override map for ``transactions``.
 
     Merges two read-time live-recompute seams, both keyed by transaction
@@ -690,9 +690,10 @@ def live_amount_overrides(account, scenario_id, transactions):
     preserved rather than that a collision is impossible.
 
     Args:
-        account: The :class:`~app.models.account.Account` whose rows are
-            being priced; only its ``user_id`` is read (the income seam
-            scopes its salary lookup by user).
+        user_id: The owner whose rows are being priced; the income seam scopes
+            its salary lookup by owner.  It was an ``Account`` until plan step
+            X-au-c2 re-keyed :func:`~._amount_source.amount_basis`, which only
+            ever read ``account.user_id`` off it.
         scenario_id: The scenario the amounts are resolved under.
         transactions: The loaded rows to price.  Each seam picks its own
             candidates out of this list and ignores the rest.
@@ -701,5 +702,5 @@ def live_amount_overrides(account, scenario_id, transactions):
         ``dict`` mapping ``transaction_id`` to the live ``Decimal``
         amount, empty when neither seam has a candidate.
     """
-    basis = amount_basis(account, scenario_id, transactions)
+    basis = amount_basis(user_id, scenario_id, transactions)
     return {**basis.salary_net, **basis.loan_cash}
