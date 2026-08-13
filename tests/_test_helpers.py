@@ -4363,17 +4363,31 @@ def seed_tax_bracket_set(user_id, tax_year=2026):
 
 # ── Recurrence cadence payloads (plan step R7b-2) ─────────────────
 #
-# The two AXES a recurrence form posts, in one place.  Before R7b-2 a test
+# The two AXES a recurrence form authors, in one place.  Before R7b-2 a test
 # wrote ``{"recurrence_pattern": str(monthly.id)}`` and every suite carried its
-# own spelling of that; the form now posts a unit, an interval and a placement,
-# and plan step R7c changes the wire shape again when the authored columns
-# land.  One producer is one edit then -- and it is also what stops a test
-# authoring a cadence the application cannot store, because it states the axes
-# and lets the encoder choose the pattern, exactly as the form does.
+# own spelling of that; the form now states a unit, an interval and a
+# placement, and plan step R7c changes the wire shape again when the authored
+# columns land.  One producer is one edit then -- and it is also what stops a
+# test authoring a cadence the application cannot store, because it states the
+# axes and lets the encoder choose the pattern, exactly as the form does.
+#
+# TWO shapes, because the cadence crosses two boundaries and looks different at
+# each.  A BROWSER posts ``ref`` ids spelled as strings; the Marshmallow field
+# (``_helpers.RecurrenceUnitField`` / ``PeriodPlacementField``) deserializes
+# each to its enum MEMBER, and that is what the route helpers in
+# ``app.routes._recurrence_form_helpers`` receive.  A test that drives a route
+# through the client wants the first; one that calls a helper directly wants
+# the second, and handing it strings would test a payload no schema produces.
+# :func:`cadence_payload` is built from :func:`validated_cadence` so the key
+# names and the defaults are stated once for both.
 
 
-def cadence_payload(unit=None, interval_n=1, placement=None):
-    """Return the form keys that author one cadence.
+def validated_cadence(unit=None, interval_n=1, placement=None):
+    """Return one cadence as a SCHEMA hands it to a route helper.
+
+    The post-``load()`` shape: enum members and a real ``int``, which is what
+    :func:`app.routes._recurrence_form_helpers.build_recurrence_rule_from_form`
+    and its siblings read.
 
     Args:
         unit: A :class:`~app.enums.RecurrenceUnitEnum` member.  Defaults to
@@ -4383,26 +4397,59 @@ def cadence_payload(unit=None, interval_n=1, placement=None):
             to ``CONTAINING_DATE``, the placement every unit offers.
 
     Returns:
-        A dict of form values -- strings, as an HTML form submits them -- ready
-        to splat into a POST payload.
+        A dict of deserialized payload values, ready to splat into the ``data``
+        a helper is called with.
     """
     # Imported inside the function rather than at module scope: this helpers
     # module is imported by tests that run before the Flask app, and therefore
     # the ref cache, exists.
     # Pylint: ``import-outside-toplevel`` is the point, not an oversight.
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
     from app.enums import (  # pylint: disable=import-outside-toplevel
         PeriodPlacementEnum,
         RecurrenceUnitEnum,
     )
 
-    unit = unit if unit is not None else RecurrenceUnitEnum.PERIOD
-    placement = (
-        placement if placement is not None
-        else PeriodPlacementEnum.CONTAINING_DATE
-    )
     return {
-        "recurrence_unit": str(ref_cache.recurrence_unit_id(unit)),
-        "interval_n": str(interval_n),
-        "recurrence_placement": str(ref_cache.period_placement_id(placement)),
+        "recurrence_unit": (
+            unit if unit is not None else RecurrenceUnitEnum.PERIOD
+        ),
+        "interval_n": interval_n,
+        "recurrence_placement": (
+            placement if placement is not None
+            else PeriodPlacementEnum.CONTAINING_DATE
+        ),
+    }
+
+
+def cadence_payload(unit=None, interval_n=1, placement=None):
+    """Return the form keys that author one cadence, as a BROWSER posts them.
+
+    :func:`validated_cadence`'s wire form: each enum member resolved to its
+    ``ref`` row id, every value a string.  Derived from that function rather
+    than written beside it, so the key names and the defaults have one
+    statement and plan step R7c moves both together.
+
+    Args:
+        unit: A :class:`~app.enums.RecurrenceUnitEnum` member.  Defaults to
+            ``PERIOD``.
+        interval_n: How many units pass between occurrences.
+        placement: A :class:`~app.enums.PeriodPlacementEnum` member.  Defaults
+            to ``CONTAINING_DATE``.
+
+    Returns:
+        A dict of form values -- strings, as an HTML form submits them -- ready
+        to splat into a POST payload.
+    """
+    # Pylint: ``import-outside-toplevel`` -- see :func:`validated_cadence`.
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+
+    loaded = validated_cadence(unit, interval_n, placement)
+    return {
+        "recurrence_unit": str(
+            ref_cache.recurrence_unit_id(loaded["recurrence_unit"]),
+        ),
+        "interval_n": str(loaded["interval_n"]),
+        "recurrence_placement": str(
+            ref_cache.period_placement_id(loaded["recurrence_placement"]),
+        ),
     }

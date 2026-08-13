@@ -23,8 +23,7 @@ from decimal import Decimal
 
 import pytest
 
-from app import ref_cache
-from app.enums import AcctTypeEnum, RecurrencePatternEnum
+from app.enums import AcctTypeEnum, RecurrenceUnitEnum
 from app.models.category import Category
 from app.models.scenario import Scenario
 from app.models.transfer import Transfer
@@ -41,6 +40,7 @@ from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
 from tests._test_helpers import (
+    cadence_payload,
     create_account_of_type,
     create_loan_account,
     make_transfer_template,
@@ -428,16 +428,14 @@ class TestNoPaymentGeneratesBeforeTheLoan:
         db.session.commit()
 
         with auth_client.application.app_context():
-            monthly_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.MONTHLY,
-            )
+            monthly = cadence_payload(unit=RecurrenceUnitEnum.MONTH)
         resp = auth_client.post("/transfers", data={
             "name": "Manual Mortgage",
             "from_account_id": str(checking.id),
             "to_account_id": str(acct.id),
             "default_amount": "1200.00",
             "category_id": str(category.id),
-            "recurrence_pattern": str(monthly_id),
+            **monthly,
             "day_of_month": "1",
         })
         assert resp.status_code == 302
@@ -472,16 +470,14 @@ class TestNoPaymentGeneratesBeforeTheLoan:
         db.session.commit()
 
         with auth_client.application.app_context():
-            monthly_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.MONTHLY,
-            )
+            monthly = cadence_payload(unit=RecurrenceUnitEnum.MONTH)
         auth_client.post("/transfers", data={
             "name": "To Savings",
             "from_account_id": str(seed_user["account"].id),
             "to_account_id": str(savings.id),
             "default_amount": "100.00",
             "category_id": str(category.id),
-            "recurrence_pattern": str(monthly_id),
+            **monthly,
             "day_of_month": "1",
         })
 

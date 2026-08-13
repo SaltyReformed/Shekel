@@ -15,6 +15,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -29,7 +30,7 @@ from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services import account_service
 from app.services.generation_schedule import GenerationSchedule
-from tests._test_helpers import create_loan_account
+from tests._test_helpers import cadence_payload, create_loan_account
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -76,11 +77,6 @@ def _create_template(seed_user, name="Rent", amount="1200.00",
     db.session.add(template)
     db.session.commit()
     return template
-
-
-def _pattern_id(name="Every Period"):
-    """Return a recurrence pattern's id by name (display lookup, test-only)."""
-    return db.session.query(RecurrencePattern).filter_by(name=name).one().id
 
 
 def _future_override_txn(seed_user, template, amount="1500.00"):
@@ -221,7 +217,12 @@ class TestTemplateCreate:
             assert b"New Recurring Transaction" in resp.data
             assert b'name="name"' in resp.data
             assert b'name="default_amount"' in resp.data
-            assert b'name="recurrence_pattern"' in resp.data
+            # The three cadence controls plan step R7b-2 put in place of the
+            # single pattern <select>.  Both interval inputs carry the same
+            # name, which is why only one of them is ever enabled.
+            assert b'name="recurrence_unit"' in resp.data
+            assert b'name="interval_n"' in resp.data
+            assert b'name="recurrence_placement"' in resp.data
 
     def test_create_template_no_recurrence(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates creates a template without recurrence."""
@@ -251,9 +252,6 @@ class TestTemplateCreate:
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
 
             resp = auth_client.post("/templates", data={
                 "name": "Rent Payment",
@@ -261,7 +259,7 @@ class TestTemplateCreate:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(every_period.id),
+                **cadence_payload(),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -484,7 +482,7 @@ class TestTemplateUpdate:
 
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "recurrence_pattern": str(_pattern_id()),
+                **cadence_payload(),
             })
             assert resp.status_code == 200
             assert b"hand-edited" in resp.data
@@ -510,7 +508,7 @@ class TestTemplateUpdate:
 
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "recurrence_pattern": str(_pattern_id()),
+                **cadence_payload(),
                 "conflict_apply": "1",
                 f"conflict_decision_{txn_id}": "use",
             }, follow_redirects=True)
@@ -537,7 +535,7 @@ class TestTemplateUpdate:
 
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "recurrence_pattern": str(_pattern_id()),
+                **cadence_payload(),
                 "conflict_apply": "1",
                 f"conflict_decision_{txn_id}": "keep",
             }, follow_redirects=True)
@@ -567,7 +565,7 @@ class TestTemplateUpdate:
             resp = auth_client.post(f"/templates/{tid}", data={
                 "name": "Apartment Rent",
                 "default_amount": "1200.00",
-                "recurrence_pattern": str(_pattern_id()),
+                **cadence_payload(),
             }, follow_redirects=True)
             assert resp.status_code == 200
             assert b"hand-edited" not in resp.data
@@ -632,7 +630,7 @@ class TestTemplateUpdate:
             resp = auth_client.post(f"/templates/{tid}", data={
                 "name": "Apartment Rent",
                 "default_amount": "1400.00",
-                "recurrence_pattern": str(_pattern_id()),
+                **cadence_payload(),
                 "conflict_apply": "1",
                 f"conflict_decision_{txn_id}": "use",
             }, follow_redirects=True)
@@ -1016,76 +1014,120 @@ class TestPreviewRecurrence:
     """Tests for GET /templates/preview-recurrence."""
 
     def test_preview_monthly(self, app, auth_client, seed_user, seed_periods_today):
-        """Preview for monthly pattern returns occurrence list."""
+        """Preview for a monthly cadence returns an occurrence list."""
         with app.app_context():
-            monthly = db.session.query(RecurrencePattern).filter_by(
-                name="Monthly"
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence"
-                f"?recurrence_pattern={monthly.id}&day_of_month=15"
+                "/templates/preview-recurrence",
+                query_string={
+                    **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
+                    "day_of_month": "15",
+                },
             )
             assert resp.status_code == 200
             assert b"occurrences" in resp.data or b"No matching" in resp.data
 
-    def test_preview_the_retired_once_row(
+    def test_preview_an_unmodelled_unit_is_unknown_not_blank(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The surviving ``Once`` ``ref`` row previews as UNKNOWN, not blank.
+        """A ``recurrence_units`` id the app does not model previews as UNKNOWN.
 
-        It used to have its own "No preview for this pattern" branch beside
-        the empty-submission one, because it was a modelled pattern that did
-        not recur.  Plan step R2e-3 retired the enum member and kept the row
-        (ruling R-R11), so the row is now simply a pattern the application
-        does not model -- the same answer as any other unmodelled id, and the
-        honest one: it reached the preview at all only through hand-crafted
-        input, and saying "no preview" would read as "this is fine".
+        The successor to the ``Once``-``ref``-row case: since plan step R7b-2
+        the preview takes the two AXES rather than a closed-set pattern id, so
+        the unmodelled input it can be handed is a unit or a placement.  The
+        honest answer is "unknown", not "no preview" -- it is reachable only
+        through hand-crafted input, and "no preview" would read as "this is
+        fine".  ONE message covers both axes because they share a disposition
+        and a reachability; the ABSENT unit below keeps its own, because that
+        one is what "Does not repeat" posts and users read it.
         """
         with app.app_context():
-            once = db.session.query(RecurrencePattern).filter_by(
-                name="Once"
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence?recurrence_pattern={once.id}"
+                "/templates/preview-recurrence",
+                query_string={
+                    **cadence_payload(),
+                    "recurrence_unit": "999999",
+                },
             )
             assert resp.status_code == 200
-            assert b"Unknown pattern" in resp.data
+            assert b"Unknown cadence" in resp.data
 
-    def test_preview_unknown_pattern(self, app, auth_client, seed_user, seed_periods_today):
-        """Preview for unknown pattern ID returns unknown message."""
+    def test_preview_an_unmodelled_placement_is_unknown(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The second axis takes the same answer as the first."""
         with app.app_context():
             resp = auth_client.get(
-                "/templates/preview-recurrence?recurrence_pattern=999999"
+                "/templates/preview-recurrence",
+                query_string={
+                    **cadence_payload(),
+                    "recurrence_placement": "999999",
+                },
             )
             assert resp.status_code == 200
-            assert b"Unknown pattern" in resp.data
+            assert b"Unknown cadence" in resp.data
+
+    def test_preview_a_named_unit_with_no_placement_is_unknown(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A placement is REQUIRED once a unit is named, not an optional refinement.
+
+        Defaulting it would let the preview show a schedule the save would not
+        produce: ``(1, MONTH)`` funded from the covering paycheck and the same
+        cadence funded from the month's first paycheck are different rules.
+        """
+        with app.app_context():
+            payload = cadence_payload(unit=RecurrenceUnitEnum.MONTH)
+            del payload["recurrence_placement"]
+            resp = auth_client.get(
+                "/templates/preview-recurrence",
+                query_string={**payload, "day_of_month": "15"},
+            )
+            assert resp.status_code == 200
+            assert b"Unknown cadence" in resp.data
 
     def test_preview_no_pattern(self, app, auth_client, seed_user, seed_periods_today):
-        """Preview with no pattern parameter returns no-preview message."""
+        """Preview with no cadence parameter returns the no-preview message."""
         with app.app_context():
             resp = auth_client.get("/templates/preview-recurrence")
             assert resp.status_code == 200
             assert b"No preview" in resp.data
 
     @pytest.mark.parametrize(
-        ("pattern_name", "query"),
+        ("cadence_name", "unit", "interval_n", "query"),
         [
             # Live 500s before plan step R4a: the first two raised
             # ``ValueError`` out of the matcher it deleted, the third out of
             # the authoring seam.
-            ("Annual", "month_of_year=13&day_of_month=15"),
-            ("Monthly", "day_of_month=-5"),
-            ("Every N Periods", "interval_n=0"),
+            (
+                "Annual", RecurrenceUnitEnum.YEAR, 1,
+                {"month_of_year": "13", "day_of_month": "15"},
+            ),
+            (
+                "Monthly", RecurrenceUnitEnum.MONTH, 1,
+                {"day_of_month": "-5"},
+            ),
+            (
+                "Every N Periods", RecurrenceUnitEnum.PERIOD, 0, {},
+            ),
             # Worse than a crash: 200 with a silently clamped or modulo-wrapped
             # date the user never named.
-            ("Quarterly", "month_of_year=99&day_of_month=15"),
-            ("Monthly", "day_of_month=32"),
-            ("Monthly", "day_of_month=0"),
+            (
+                "Quarterly", RecurrenceUnitEnum.MONTH, 3,
+                {"month_of_year": "99", "day_of_month": "15"},
+            ),
+            (
+                "Monthly", RecurrenceUnitEnum.MONTH, 1,
+                {"day_of_month": "32"},
+            ),
+            (
+                "Monthly", RecurrenceUnitEnum.MONTH, 1,
+                {"day_of_month": "0"},
+            ),
         ],
     )
     def test_preview_refuses_out_of_domain_arguments_without_a_500(
         self, app, auth_client, seed_user, seed_periods_today,
-        pattern_name, query,
+        cadence_name, unit, interval_n, query,
     ):
         """Unbounded query args answer a muted line, never a stack trace.
 
@@ -1101,18 +1143,101 @@ class TestPreviewRecurrence:
         columns' own domains.
         """
         with app.app_context():
-            pattern = db.session.query(RecurrencePattern).filter_by(
-                name=pattern_name
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence"
-                f"?recurrence_pattern={pattern.id}&{query}"
+                "/templates/preview-recurrence",
+                query_string={
+                    **cadence_payload(unit=unit, interval_n=interval_n),
+                    **query,
+                },
             )
 
             assert resp.status_code == 200, (
-                f"{pattern_name} with {query} answered {resp.status_code}"
+                f"{cadence_name} with {query} answered {resp.status_code}"
             )
-            assert b"No preview for this pattern" in resp.data
+            assert b"No preview for this cadence" in resp.data
+
+    @pytest.mark.parametrize(
+        ("label", "unit", "interval_n"),
+        [
+            # 10000 YEARS is 120000 months; the walk's ordinal divides back out
+            # to a year past 9999 and ``date()`` raises ValueError.
+            ("years past the calendar", RecurrenceUnitEnum.YEAR, 10_000),
+            ("months past the calendar", RecurrenceUnitEnum.MONTH, 120_000),
+        ],
+    )
+    def test_preview_refuses_an_interval_that_walks_off_the_calendar(
+        self, app, auth_client, seed_user, seed_periods_today,
+        label, unit, interval_n,
+    ):
+        """A huge interval answers the muted line, not a stack trace.
+
+        **Opened by plan step R7b-2 and found by an adversarial review of it.**
+        Before the step the preview posted a pattern id and ``decode_pattern``
+        DISCARDED the submitted interval for every calendar pattern, so only
+        the pay-period walk -- which cannot overflow -- ever saw it.  The form
+        now posts the interval as the cadence itself, so the raw query arg
+        reaches ``months_per_step`` and then ``date()``, whose ``ValueError``
+        is not the ``RecurrenceResolutionError`` this endpoint catches.
+
+        The remedy is not a third bound on this endpoint: it is that the
+        preview refuses what the SAVE would refuse, which is the same
+        ``is_authorable`` question the schema asks.  No calendar unit has a
+        storable interval above 6.
+        """
+        assert seed_periods_today
+        resp = auth_client.get(
+            "/templates/preview-recurrence",
+            query_string=cadence_payload(unit=unit, interval_n=interval_n),
+        )
+
+        assert resp.status_code == 200, label
+        assert b"No preview" in resp.data, label
+
+    def test_preview_refuses_a_cadence_the_save_would_refuse(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The preview must not show a schedule that cannot be saved.
+
+        ``(2, MONTH)`` walks correctly and has no closed-set pattern to be
+        stored as, so previewing five real dates for it advertises a schedule
+        the save then refuses with a field error.  Not reachable by clicking --
+        the script offers 1 / 3 / 6 for months -- so this is the crafted-args
+        door, pinned because the endpoint's own reasoning about the absent
+        placement stops one case short of it.
+        """
+        assert seed_periods_today
+        resp = auth_client.get(
+            "/templates/preview-recurrence",
+            query_string={
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH, interval_n=2),
+                "day_of_month": "15",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert b"No preview" in resp.data
+        assert b"occurrences" not in resp.data
+
+    def test_preview_refuses_a_placement_the_pair_cannot_take(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The same, on the placement axis.
+
+        ``(PERIOD, first paycheck)`` resolves -- the pay-period anchor does not
+        read the placement at all -- so it previewed five dates for a cadence
+        ``encode_cadence`` has no name for.
+        """
+        assert seed_periods_today
+        resp = auth_client.get(
+            "/templates/preview-recurrence",
+            query_string=cadence_payload(
+                placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            ),
+        )
+
+        assert resp.status_code == 200
+        assert b"No preview" in resp.data
+        assert b"occurrences" not in resp.data
 
     def test_preview_ignores_an_unparseable_end_date(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1127,26 +1252,24 @@ class TestPreviewRecurrence:
         refused -- see ``_recurrence_preview._submitted_end_date``.
         """
         with app.app_context():
-            pattern = db.session.query(RecurrencePattern).filter_by(
-                name="Monthly"
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence"
-                f"?recurrence_pattern={pattern.id}&day_of_month=15"
-                f"&end_date=garbage"
+                "/templates/preview-recurrence",
+                query_string={
+                    **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
+                    "day_of_month": "15",
+                    "end_date": "garbage",
+                },
             )
 
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
 
     def test_preview_every_period(self, app, auth_client, seed_user, seed_periods_today):
-        """Preview for every_period pattern returns occurrence list."""
+        """Preview for the every-paycheck cadence returns an occurrence list."""
         with app.app_context():
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence?recurrence_pattern={every_period.id}"
+                "/templates/preview-recurrence",
+                query_string=cadence_payload(),
             )
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
@@ -1164,36 +1287,12 @@ class TestPreviewRecurrence:
         seam fixed it incidentally, because resolution always emits an int.
         """
         with app.app_context():
-            every_n = db.session.query(RecurrencePattern).filter_by(
-                name="Every N Periods"
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence"
-                f"?recurrence_pattern={every_n.id}&interval_n=2"
+                "/templates/preview-recurrence",
+                query_string=cadence_payload(interval_n=2),
             )
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
-
-    def test_preview_tolerates_a_zero_day_of_month(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """``?day_of_month=0`` answers 200, as it did before the seam.
-
-        ``<input type="number" min="1">`` does not stop a user typing 0, and
-        the endpoint reads the value straight from ``request.args``.  The
-        engine coerces a 0 day with ``or 1``; resolution mirrors that exactly,
-        so this stays a preview rather than becoming a 500 on
-        ``date(y, m, 0)``.
-        """
-        with app.app_context():
-            monthly = db.session.query(RecurrencePattern).filter_by(
-                name="Monthly"
-            ).one()
-            resp = auth_client.get(
-                f"/templates/preview-recurrence"
-                f"?recurrence_pattern={monthly.id}&day_of_month=0"
-            )
-            assert resp.status_code == 200
 
     def test_preview_rejects_other_users_start_period(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1208,14 +1307,10 @@ class TestPreviewRecurrence:
         disclosure (H3).
         """
         with app.app_context():
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-
             # Baseline: request with no start_period_id.
             baseline_resp = auth_client.get(
                 "/templates/preview-recurrence",
-                query_string={"recurrence_pattern": every_period.id},
+                query_string=cadence_payload(),
             )
 
             # Request with User B's period ID -- should fall through
@@ -1223,7 +1318,7 @@ class TestPreviewRecurrence:
             resp = auth_client.get(
                 "/templates/preview-recurrence",
                 query_string={
-                    "recurrence_pattern": every_period.id,
+                    **cadence_payload(),
                     "start_period_id": seed_second_periods[0].id,
                 },
             )
@@ -1254,17 +1349,13 @@ class TestPreviewRecurrence:
                 name="Expense"
             ).one()
             category = seed_user["categories"]["Rent"]
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-
             resp = auth_client.post("/templates", data={
                 "name": "Recurring IDOR Template",
                 "default_amount": "1500.00",
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(every_period.id),
+                **cadence_payload(),
                 # Second user's period on a recurring (non-EVERY_N) pattern.
                 "start_period_id": str(seed_second_periods[0].id),
             }, follow_redirects=True)
@@ -1284,13 +1375,10 @@ class TestPreviewRecurrence:
     ):
         """Passing own start_period_id works normally (positive regression)."""
         with app.app_context():
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
             resp = auth_client.get(
                 "/templates/preview-recurrence",
                 query_string={
-                    "recurrence_pattern": every_period.id,
+                    **cadence_payload(),
                     "start_period_id": seed_periods_today[0].id,
                 },
             )
@@ -1308,20 +1396,16 @@ class TestPreviewRecurrence:
         the user's own period list.
         """
         with app.app_context():
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-
             # Baseline: no start_period_id.
             baseline_resp = auth_client.get(
                 "/templates/preview-recurrence",
-                query_string={"recurrence_pattern": every_period.id},
+                query_string=cadence_payload(),
             )
 
             resp = auth_client.get(
                 "/templates/preview-recurrence",
                 query_string={
-                    "recurrence_pattern": every_period.id,
+                    **cadence_payload(),
                     "start_period_id": 999999,
                 },
             )
@@ -1961,7 +2045,6 @@ class TestDueDayOfMonth:
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
-            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
 
             resp = auth_client.post("/templates", data={
                 "name": "Rent w/ Due Day",
@@ -1969,7 +2052,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "22",
                 "due_day_of_month": "1",
             }, follow_redirects=True)
@@ -1985,7 +2068,6 @@ class TestDueDayOfMonth:
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
-            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
 
             auth_client.post("/templates", data={
                 "name": "Rent No Due",
@@ -1993,7 +2075,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "15",
             }, follow_redirects=True)
 
@@ -2007,7 +2089,6 @@ class TestDueDayOfMonth:
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
-            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
 
             # Create without due_day first.
             auth_client.post("/templates", data={
@@ -2016,7 +2097,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "10",
             }, follow_redirects=True)
 
@@ -2032,7 +2113,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "10",
                 "due_day_of_month": "15",
             }, follow_redirects=True)
@@ -2045,7 +2126,6 @@ class TestDueDayOfMonth:
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
-            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
 
             # Create with due_day.
             auth_client.post("/templates", data={
@@ -2054,7 +2134,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "10",
                 "due_day_of_month": "15",
             }, follow_redirects=True)
@@ -2071,7 +2151,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "10",
             }, follow_redirects=True)
 

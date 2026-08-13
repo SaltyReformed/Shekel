@@ -63,16 +63,19 @@ What this package offers
 What lives where
 ----------------
 
-* ``_frequency`` -- what a pattern means with NO schedule: :class:`Cadence`,
-  the pattern table both readings share, and the yearly counts every monthly
-  equivalent rests on.  Split out at plan step R7a-2b because
-  ``obligations_aggregator`` and the calendar's infrequent badge ask "how
-  often" and hold no calendar, so they could not use the two-axis vocabulary
-  at all while it was fused to the anchor derivation.  ``_resolution`` reads
-  this table rather than holding its own, so the two cannot disagree.
+* ``_frequency`` -- what a cadence means with NO schedule: :class:`Cadence`,
+  the pattern table both readings share, the yearly counts every monthly
+  equivalent rests on, and (since plan step R7b-2) the anchor-family router
+  that says WHICH derivation a ``(unit, placement)`` uses.  Split out at plan
+  step R7a-2b because ``obligations_aggregator`` and the calendar's infrequent
+  badge ask "how often" and hold no calendar, so they could not use the
+  two-axis vocabulary at all while it was fused to the anchor derivation.
+  ``_resolution`` reads this module's tables rather than holding its own, so
+  the two cannot disagree.
 * ``_resolution`` -- :class:`RecurrenceSpec`, :class:`ResolvedRecurrence` and
   :func:`resolve`, the pure derivation of what a recurrence means AGAINST a
-  schedule.
+  schedule.  It holds WHERE each family puts the anchor; the family router
+  itself is one module down, because that answer needs no schedule.
 * ``_authoring`` -- the WRITE door: refuse the unresolvable, write the
   authored spec.  The only module here that holds a session.  The SCHEDULE it
   resolves against is :class:`~app.services.pay_calendar.PayCalendar`, loaded

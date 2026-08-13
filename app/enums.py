@@ -150,10 +150,15 @@ class RecurrencePatternEnum(enum.Enum):
 
     Every recurrence surface reads this enum rather than the table
     (:mod:`app.services.recurrence._vocabulary`), so the surplus row is
-    unreachable: not offered by the picker, not accepted by
-    :class:`~app.schemas.validation._helpers.RecurrencePatternField`, and not
-    previewed.  "Does not recur" is now ``recurrence_rule_id IS NULL``, the
-    shape transaction templates always used.
+    unreachable.  Since plan step R7b-2 it is unreachable more simply than
+    that: no form posts a pattern id at all -- a submission states
+    ``(interval_n, unit, placement)`` and the write door ENCODES it -- so the
+    row cannot be offered, accepted or previewed because there is no control
+    that speaks its vocabulary.  The one surface that still reads a STORED
+    pattern id is the edit form deciding what to preselect, and
+    ``modelled_pattern`` answers ``None`` for it there.  "Does not recur" is
+    ``recurrence_rule_id IS NULL``, the shape transaction templates always
+    used.
     """
 
     EVERY_PERIOD = "Every Period"

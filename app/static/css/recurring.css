@@ -171,3 +171,19 @@
 .amount-ver__del {
   display: inline;
 }
+
+/* The recurrence form's free-interval number box (plan step R7b-2).
+
+   A width, and it lives here because the CSP forbids the obvious spelling:
+   ``style-src 'self'`` blocks a ``style=`` attribute outright, so the
+   ``style="max-width: 6rem"`` this replaced was not merely against the
+   coding rules -- it never applied, and every render of both recurrence
+   forms logged a blocked-inline-style error. Found by driving the form in a
+   real browser; a rendered-HTML assertion cannot see a style the browser
+   refuses.
+
+   6rem fits "every 26 paychecks" without the box stretching to the width of
+   the input group, which is what a bare .form-control does inside one. */
+.interval-box {
+  max-width: 6rem;
+}

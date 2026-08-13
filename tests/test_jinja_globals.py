@@ -132,9 +132,15 @@ def test_register_ref_id_globals_is_idempotent(app):
         #   * the total, which changes only on a deliberate edit here;
         #   * exact coverage for the recurrence patterns, the one group steps
         #     have actually narrowed -- R2e-3 removed ``ONCE`` from the enum,
-        #     and R7a removed two more globals with the ``recurrence_cell``
-        #     macro's per-pattern branches.
-        assert len(registered_keys) == 46, (
+        #     R7a removed two more globals with the ``recurrence_cell`` macro's
+        #     per-pattern branches, and plan step R7b-2 removed the last five
+        #     with the pattern ``<select>`` whose ``data-*`` attributes read
+        #     them.  **That arm is still live at zero, not vacuous**: it fails
+        #     the moment either side moves alone -- a REC_* global registered
+        #     with no template reader (which is what caught these five) or a
+        #     template naming one nothing registers, which Jinja would evaluate
+        #     as a silent ``False`` rather than raise.
+        assert len(registered_keys) == 41, (
             "the ID-derived globals changed count -- update this number "
             "deliberately, and check the template that reads the new or "
             "removed constant"

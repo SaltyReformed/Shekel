@@ -169,8 +169,16 @@ class TestTemplateCreateSchema:
             })
         assert "name" in exc.value.messages
 
-    def test_invalid_recurrence_pattern(self):
-        """Non-integer recurrence_pattern fails Integer field validation."""
+    def test_invalid_recurrence_unit(self):
+        """A non-integer recurrence unit fails the row-id field's parse.
+
+        ``recurrence_unit`` replaced ``recurrence_pattern`` at plan step
+        R7b-2: the form authors the two axes and the closed pattern set is a
+        storage encoding, so what a submission names is a
+        ``ref.recurrence_units`` row.  The refusal is
+        :class:`~app.schemas.validation._helpers.RowId`'s, which
+        ``RecurrenceUnitField`` derives from.
+        """
         with pytest.raises(ValidationError) as exc:
             TemplateCreateSchema().load({
                 "name": "Test",
@@ -178,9 +186,31 @@ class TestTemplateCreateSchema:
                 "category_id": "1",
                 "transaction_type_id": "1",
                 "account_id": "1",
-                "recurrence_pattern": "daily",  # Not a valid integer.
+                "recurrence_unit": "daily",  # Not a valid integer.
             })
-        assert "recurrence_pattern" in exc.value.messages
+        assert "recurrence_unit" in exc.value.messages
+
+    def test_offset_periods_is_not_a_field_at_all(self):
+        """Defect **D8**: no submission can state a rule's PHASE.
+
+        The field was vestigial -- no template ever rendered an input for it,
+        so every submission carried the schema default of 0 and the update
+        path wrote that over the rule's real phase.  Plan step R7b-2 deleted
+        it rather than guarding it, and ``unknown = EXCLUDE`` is what makes
+        "an amount-only edit cannot re-phase a cadence" structural: a
+        hand-crafted POST carrying the key is dropped here, so it never
+        reaches the route helper that used to read it.
+        """
+        assert "offset_periods" not in TemplateCreateSchema().fields
+        data = TemplateCreateSchema().load({
+            "name": "Test",
+            "default_amount": "100.00",
+            "category_id": "1",
+            "transaction_type_id": "1",
+            "account_id": "1",
+            "offset_periods": "7",
+        })
+        assert "offset_periods" not in data
 
     def test_day_of_month_range(self):
         """day_of_month outside 1-31 fails Range validation."""
@@ -205,14 +235,18 @@ class TestTemplateCreateSchema:
         which always submits, as ``""`` -- means "not provided" and the key is
         dropped, leaving partial-update semantics intact.
 
-        ``recurrence_pattern`` IS ``allow_none`` (plan step R2e-1), so its
-        empty value is the null STATE rather than a missing one: it is what the
-        form's "Does not repeat" option posts, and the update route
-        reads a present ``None`` as "clear this template's recurrence".  If it
-        were dropped like ``interval_n``, choosing that option would be
-        indistinguishable from an amount-only PATCH that submits no recurrence
-        keys at all -- which is exactly how the option came to be a silent
-        no-op before R2e-1.
+        ``recurrence_unit`` IS ``allow_none`` (plan step R2e-1, on the field
+        R7b-2 renamed), so its empty value is the null STATE rather than a
+        missing one: it is what the form's "Does not repeat" option posts, and
+        the update route reads a present ``None`` as "clear this template's
+        recurrence".  If it were dropped like ``interval_n``, choosing that
+        option would be indistinguishable from an amount-only PATCH that
+        submits no recurrence keys at all -- which is exactly how the option
+        came to be a silent no-op before R2e-1.
+
+        ``recurrence_placement`` takes the same side, because the browser
+        posts both controls whatever the unit says: an empty placement beside
+        an empty unit must not read as a partial update either.
         """
         data = TemplateCreateSchema().load({
             "name": "Test",
@@ -220,7 +254,8 @@ class TestTemplateCreateSchema:
             "category_id": "1",
             "transaction_type_id": "1",
             "account_id": "1",
-            "recurrence_pattern": "",
+            "recurrence_unit": "",
+            "recurrence_placement": "",
             "interval_n": "",
             "day_of_month": "",
         })
@@ -228,8 +263,10 @@ class TestTemplateCreateSchema:
         assert "interval_n" not in data
         assert "day_of_month" not in data
         # Nullable -- "" IS the value, so the key stays and carries None.
-        assert "recurrence_pattern" in data
-        assert data["recurrence_pattern"] is None
+        assert "recurrence_unit" in data
+        assert data["recurrence_unit"] is None
+        assert "recurrence_placement" in data
+        assert data["recurrence_placement"] is None
 
 
 # ── TemplateUpdateSchema ─────────────────────────────────────────────

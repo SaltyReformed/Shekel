@@ -152,9 +152,15 @@ def modelled_placement(placement_id: int) -> PeriodPlacementEnum | None:
 #: Since plan step R7b-2 the form carries no pattern option to word, so this is
 #: the whole of that explanation rather than half of it: the message names the
 #: state and the repair, and the cadence controls it appears above are rendered
-#: UNSET so the repair is the only way forward.  Saving without choosing is
-#: refused by the same validator that refuses any missing cadence, which is what
-#: keeps the warning honest rather than advisory.
+#: UNSET so the repair is the only way forward.
+#:
+#: **The last sentence is a promise the ROUTE keeps**, not the schema: an unset
+#: unit ``<select>`` has its empty "Does not repeat" entry selected, so saving
+#: unchanged posts a legitimate CLEAR that both form schemas accept -- they must,
+#: because that is how a cadence is ended.  ``app.routes
+#: ._recurrence_form_helpers.UNREPAIRED_CADENCE_CANNOT_BE_CLEARED`` is the
+#: refusal, made from the stored rule plus the submission, which is what keeps
+#: this warning honest rather than advisory.
 UNAVAILABLE_PATTERN_MESSAGE: str = (
     "This recurring definition uses a repeat pattern that is no longer "
     "available. Choose how often it repeats before saving -- saving it "

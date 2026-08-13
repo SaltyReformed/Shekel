@@ -190,10 +190,12 @@ class RowId(fields.Integer):
     mean" (plan step X-ae, finding N-141), consuming the same
     :func:`~app.utils.digit_strings.parse_row_id` as the form doors and the
     URL converter.  Declared on every field in this package that names a ROW
-    -- 75 of them, which is the 73 called ``*_id`` PLUS the two
-    ``recurrence_pattern`` fields, whose name does not say so and which a
-    completeness gate matching on a ``_id`` suffix could not see.  An id means
-    the same thing whether it arrives in a path or a form body.
+    -- 77 of them, which is the 73 called ``*_id`` PLUS the four
+    ``recurrence_unit`` / ``recurrence_placement`` fields, whose names do not
+    say so and which a completeness gate matching on an ``_id`` suffix could
+    not see.  (It was the two ``recurrence_pattern`` fields those replaced at
+    plan step R7b-2 -- same blind spot, one vocabulary later.)  An id means the
+    same thing whether it arrives in a path or a form body.
 
     **What it refuses that ``fields.Integer`` accepts.**  Marshmallow's
     ``Integer`` is crash-safe -- it catches the ``ValueError`` -- but it is
@@ -423,16 +425,36 @@ def validate_authorable_cadence(data):
     door's :class:`~app.services.recurrence.RecurrenceResolutionError` stays a
     broken-invariant 500 rather than becoming a user-facing path.
 
-    Skipped when either axis is absent: "does not repeat" is the absence of a
+    Skipped when NO unit is named: "does not repeat" is the absence of a
     cadence, and a partial update that omits the recurrence keys leaves the
     stored one alone.
+
+    **A named unit with no placement is REFUSED rather than skipped**, and two
+    independent adversarial reviews of plan step R7b-2 found the same 500 in
+    the version that skipped it.  The two axes are halves of one value, not two
+    optional refinements: both write doors pop the placement with no default,
+    so half a cadence reached ``build_recurrence_rule_from_form`` as an
+    unhandled ``KeyError``.  Its EMPTY spelling was worse -- the field is
+    ``allow_none``, so :func:`_normalize_empty_inputs` keeps the key with a
+    present ``None``, marshmallow never deserializes it, and the route built a
+    spec with ``placement=None`` that RESOLVED (the ``PERIOD`` unit's anchor
+    does not read the placement) and then died inside ``encode_cadence``.  That
+    is precisely the refusal this function exists to turn into a field error,
+    arriving as a 500 instead.
+
+    It is defect **D13**'s shape one field over, and the transfer route's own
+    docstring records that one: ``recurrence_pattern`` was ``allow_none`` while
+    a comment claimed it required, so an omitted key 500'd there too.  Refusing
+    the pair HERE rather than defaulting the placement in the route is what
+    stops a rule being authored from a cadence the user only half stated -- a
+    default would pick which paycheck pays a bill on the user's behalf.
 
     Args:
         data: The deserialized schema payload.
 
     Raises:
-        ValidationError: The submitted triple has no closed-set pattern to be
-            stored as.
+        ValidationError: A unit is named with no placement, or the submitted
+            triple has no closed-set pattern to be stored as.
     """
     # Pylint: ``import-outside-toplevel`` -- see
     # :meth:`RecurrenceUnitField._member_for`.
@@ -441,9 +463,14 @@ def validate_authorable_cadence(data):
     )
 
     unit = data.get("recurrence_unit")
-    placement = data.get("recurrence_placement")
-    if unit is None or placement is None:
+    if unit is None:
         return
+    placement = data.get("recurrence_placement")
+    if placement is None:
+        raise ValidationError(
+            "Choose which paycheck funds each occurrence.",
+            field_name="recurrence_placement",
+        )
     if not is_authorable(data.get("interval_n", 1), unit, placement):
         raise ValidationError(
             "That repeat schedule cannot be saved yet. Pick a different "

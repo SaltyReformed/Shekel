@@ -191,17 +191,19 @@ def recurrence_preview_fragment() -> str:
     helpers it composes rather than in the transaction-template CRUD module
     that merely routes to it.
 
-    The submitted pattern is checked against what the application MODELS (plan
-    step R2e-2).  It used to be checked against the ``ref`` table, and the two
-    are not the same set: a row ``RecurrencePatternEnum`` does not name passes
-    a table lookup and then raises inside the authoring seam
-    :func:`build_preview_rule` goes through -- so the preview would 500 on the
-    same input the picker refuses to offer.
+    **Both submitted AXES are checked against what the application MODELS**
+    (plan step R2e-2's rule, on the two fields plan step R7b-2 replaced its one
+    with).  They used to be checked against the ``ref`` table, and the two are
+    not the same set: a row no enum member names passes a table lookup and then
+    raises inside the authoring seam :func:`build_preview_rule` goes through --
+    so the preview would 500 on the same input the picker refuses to offer.
 
-    An ABSENT pattern is the form's "does not repeat" option, which has no
-    occurrences to preview.  A second guard used to sit beside it for the
-    ``Once`` pattern that meant the same thing; plan step R2e-3 retired it, so
-    the empty submission is the only non-recurring input left.
+    An ABSENT unit is the form's "does not repeat" option, which has no
+    occurrences to preview, and it keeps its own message because users read it.
+    An absent PLACEMENT is not the same state: a placement is the cadence's
+    second half rather than an optional refinement, so it takes the unmodelled
+    answer (via the ``or 0`` below, which no ``ref`` row can carry) rather than
+    being defaulted into a schedule the save would not produce.
 
     **Every OTHER query arg is unvalidated, and plan step R4a made that a 200
     instead of a 500.**  ``interval_n`` / ``day_of_month`` / ``month_of_year``
@@ -287,18 +289,23 @@ def recurrence_preview_fragment() -> str:
             ending_on_or_after=effective_from,
         )
     except RecurrenceResolutionError as exc:
-        # The submitted arguments do not name a recurrence this application
-        # can resolve.  The user gets the same muted line an unmodelled
-        # pattern gets, because from the form's side both mean "there is
-        # nothing to preview for what you typed" -- but the LOG carries the
-        # refusal's own message, which names the field, the value and the
-        # constraint it broke.  Dropping it would waste the one thing the
-        # door goes to length to produce.
+        # The submitted arguments do not name a recurrence this application can
+        # resolve OR can store.  The user gets a muted line either way, because
+        # from the form's side both mean "there is nothing to preview for what
+        # you typed" -- but the LOG carries the refusal's own message, which
+        # names the field, the value and the constraint it broke.  Dropping it
+        # would waste the one thing the door goes to length to produce.
+        #
+        # **The unstorable half arrives here because ``_author`` ENCODES before
+        # it resolves**, which an adversarial review of plan step R7b-2 made
+        # the order: a cadence with no closed-set pattern is refused before the
+        # month walk touches it, so ``(10000, YEAR)`` is this muted line rather
+        # than a ``ValueError`` out of ``date()`` that no handler here catches.
         logger.info(
             "Recurrence preview refused unresolvable arguments for user %s: %s",
             current_user.id, exc,
         )
-        return "<small class='text-muted'>No preview for this pattern</small>"
+        return "<small class='text-muted'>No preview for this cadence</small>"
 
     preview_periods = matching[:PREVIEW_OCCURRENCE_LIMIT]
     if not preview_periods:

@@ -74,19 +74,32 @@ def _author(
     cannot half-drift.  Plan step R7c deletes this line together with the
     columns.
 
+    **The encode runs FIRST, and an adversarial review of plan step R7b-2
+    measured why.**  It is a pure table lookup that asks "has this cadence
+    anywhere to be written at all", while ``resolve`` walks the cadence against
+    a real calendar -- so resolving first meant doing arbitrary month
+    arithmetic on a cadence that was about to be refused anyway.  Measured:
+    ``(10000, YEAR)`` reached ``_months.clamped_day``, which builds a ``date``
+    from a month ordinal, and raised ``ValueError: year must be in 1..9999``
+    -- OUTSIDE this package's error hierarchy, so the recurrence preview's
+    ``RecurrenceResolutionError`` handler did not catch it and a signed-in GET
+    was an unhandled 500.  Refusing the unstorable before walking it makes that
+    unreachable for every caller rather than for the ones with a schema in
+    front of them.
+
     Args:
         rule: The rule to write, new or existing.
         spec: Its complete authored state.
         calendar: The owner's pay-period schedule.
 
     Raises:
-        RecurrenceResolutionError: When *spec* cannot be resolved against
-            *calendar* (see :func:`~app.services.recurrence.resolve`), or when
-            it names a cadence the closed pattern set cannot store (see
-            ``encode_cadence``).
+        RecurrenceResolutionError: When *spec* names a cadence the closed
+            pattern set cannot store (see ``encode_cadence``), or cannot be
+            resolved against *calendar* (see
+            :func:`~app.services.recurrence.resolve`).
     """
-    resolved = resolve(spec, calendar)
     encoded = encode_cadence(spec.interval_n, spec.unit, spec.placement)
+    resolved = resolve(spec, calendar)
 
     rule.user_id = spec.user_id
     rule.pattern_id = ref_cache.recurrence_pattern_id(encoded.pattern)

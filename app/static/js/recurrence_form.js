@@ -15,6 +15,12 @@
  * what the write door accepts.  Filtering is what makes the refusal
  * unreachable: a combination the closed set cannot store is never selectable.
  *
+ * Each offer also CARRIES what the calendar detail rows are shown from --
+ * whether the cadence anchors on a day of the month, and how many months one
+ * of its units spans -- because both are properties of the resolver's anchor
+ * derivation rather than of anything visible here.  This file reads them; it
+ * does not restate them.
+ *
  * Both interval controls post ``interval_n``, so exactly one is ever enabled --
  * a disabled control does not submit, which keeps two spellings of one field
  * from reaching the schema together.
@@ -73,33 +79,71 @@
     return isNaN(n) ? 1 : n;
   }
 
+  // The offer chosen right now: the (unit, interval, placement) triple whose
+  // server-stated facts the calendar detail rows are shown from.  Read from
+  // the offer set rather than inferred, because both facts belong to the
+  // WHOLE triple: "every 1 month funded from the first paycheck" anchors on a
+  // paycheck and reads no day of the month, while "every 1 month" on the same
+  // unit does.
+  function currentOption(id, interval, placementId) {
+    var matches = options.filter(function(o) {
+      return String(o.unit_id) === String(id) &&
+             (o.interval_n === null || o.interval_n === interval) &&
+             String(o.placement_id) === String(placementId);
+    });
+    return matches.length ? matches[0] : null;
+  }
+
   // The placements storable for this (unit, interval) pair -- NOT for the unit
   // alone.  The closed set stores "every 1 month funded from the first
   // paycheck" and has no quarterly or semi-annual twin, so keying on the unit
   // would offer what encode_cadence refuses.
+  // DISTINCT placement ids, and the de-duplication is load-bearing rather
+  // than tidy: the row hides itself when a pair offers fewer than two, and the
+  // paycheck unit has TWO offers at interval 1 (every paycheck, and every N
+  // paychecks with N = 1) that carry the SAME placement.  Without this the
+  // most common cadence on the form rendered a "Funded from" select with one
+  // usable choice beside a hidden one.
   function placementsFor(id, interval) {
-    return options.filter(function(o) {
-      return String(o.unit_id) === String(id) &&
-             (o.interval_n === null || o.interval_n === interval);
-    }).map(function(o) { return String(o.placement_id); });
+    var found = [];
+    options.forEach(function(o) {
+      if (String(o.unit_id) !== String(id)) return;
+      if (o.interval_n !== null && o.interval_n !== interval) return;
+      var value = String(o.placement_id);
+      if (found.indexOf(value) === -1) found.push(value);
+    });
+    return found;
   }
 
   // Show only this unit's fixed intervals, and keep the selection on one of
-  // them: a <select> whose selected <option> is hidden still SUBMITS that
-  // value, so leaving a stale month interval selected under a different unit
-  // would post a cadence the user cannot see.
+  // THEM -- identified by the option itself, never by its value.
+  //
+  // An interval value is not unique across units: "1" is offered by paychecks,
+  // months AND years, so `select.value = "1"` selects whichever carries it
+  // FIRST in document order, which is another unit's. Driving the real form in
+  // a browser is what caught it, and the damage was not cosmetic: choosing
+  // "months" left the selection on the hidden, disabled "1 paycheck" option,
+  // so the control rendered BLANK and -- because a disabled option submits
+  // nothing -- the form posted no interval_n at all. A validity test that
+  // compared values agreed the selection was fine ("1" === "1") while
+  // selectedIndex pointed at the wrong unit's entry.
+  //
+  // The key is the (unit, interval) PAIR, which is what the offer set says, so
+  // ownership is read off data-unit and the selection is moved by INDEX.
   function syncFixedIntervals(id) {
-    var first = null;
-    var stillValid = false;
-    Array.prototype.forEach.call(intervalFixed.options, function(opt) {
+    var firstIndex = null;
+    var current = intervalFixed.options[intervalFixed.selectedIndex] || null;
+    var stillValid = current !== null &&
+                     current.getAttribute('data-unit') === String(id);
+    Array.prototype.forEach.call(intervalFixed.options, function(opt, index) {
       var mine = opt.getAttribute('data-unit') === String(id);
       opt.hidden = !mine;
       opt.disabled = !mine;
-      if (!mine) return;
-      if (first === null) first = opt.value;
-      if (opt.value === intervalFixed.value) stillValid = true;
+      if (mine && firstIndex === null) firstIndex = index;
     });
-    if (!stillValid && first !== null) intervalFixed.value = first;
+    if (!stillValid && firstIndex !== null) {
+      intervalFixed.selectedIndex = firstIndex;
+    }
   }
 
   // Same hazard on the placement select, plus one more: when a unit offers a
@@ -145,20 +189,29 @@
     intervalFree.classList.toggle('d-none', !free);
     intervalFixed.classList.toggle('d-none', free);
     if (!free) syncFixedIntervals(id);
-    syncPlacements(id, currentInterval());
+    var interval = currentInterval();
+    syncPlacements(id, interval);
 
     container.classList.remove('d-none');
 
-    // A day-of-month is meaningful only for a cadence measured in calendar
-    // units; a paycheck-space one fires on the paycheck itself.  Asked of the
-    // OFFER SET rather than of a pattern id, so a unit added at plan step R8
-    // needs no branch here.
-    var showsDay = !free;
+    // Both calendar detail rows are shown from facts the SERVER stated about
+    // the chosen triple, never inferred here.  Inferring them is what an
+    // earlier draft of this file did -- it read "the interval control is a
+    // free number box" as "this cadence has no day of the month", which is
+    // true of every cadence offered today and is not the same fact.  It also
+    // read "the interval exceeds 1" as "the cycle skips months", which is
+    // wrong for an ANNUAL rule: its interval is 1 and its cycle is 12 months,
+    // so the Month control it needs was hidden.
+    var chosen = currentOption(id, interval, placementSelect.value);
+    var showsDay = chosen !== null && chosen.anchors_day_of_month;
     dom.classList.toggle('d-none', !showsDay);
     if (dueDom) dueDom.classList.toggle('d-none', !showsDay);
-    // The month-of-year cell narrows a cycle that skips months, which is a
-    // cadence firing less often than every month.
-    moy.classList.toggle('d-none', !(showsDay && currentInterval() > 1));
+    // The month-of-year cell narrows a cycle that SKIPS months, so it is the
+    // cycle's own span in months that decides -- the unit's span times the
+    // chosen interval, which is quarterly (3), semi-annual (6) and annual (12)
+    // but not monthly (1).
+    var spansMonths = showsDay && chosen.months_per_unit * interval > 1;
+    moy.classList.toggle('d-none', !spansMonths);
 
     if (startPeriod) {
       startPeriod.classList.remove('d-none');
@@ -224,10 +277,15 @@
 
   // Listen for changes.  The unit re-links everything below it; the interval
   // re-links the placements, because which are storable depends on the pair.
+  // The PLACEMENT re-links too, and it is not decoration: a monthly cadence
+  // funded from the month's first paycheck anchors on that paycheck and reads
+  // no day of the month, so switching the funding choice adds or removes the
+  // Day of Month row.  Setting a <select>'s value from script fires no change
+  // event, so syncPlacements' own corrections cannot re-enter this.
   unitSelect.addEventListener('change', toggleFields);
   intervalFree.addEventListener('change', toggleFields);
   intervalFixed.addEventListener('change', toggleFields);
-  placementSelect.addEventListener('change', fetchPreview);
+  placementSelect.addEventListener('change', toggleFields);
   ['day_of_month', 'due_day_of_month', 'month_of_year', 'end_date'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('change', fetchPreview);

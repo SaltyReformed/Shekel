@@ -70,26 +70,23 @@
 {% set sel_unit = selected.unit_id if selected else none %}
 {% set sel_interval = selected.interval_n if selected else none %}
 {% set sel_placement = selected.placement_id if selected else none %}
-{# The units, in offer order, de-duplicated: one <option> per unit however
-   many readings it has. #}
-{% set unit_ids = [] %}
-{% set unit_labels = {} %}
-{% for opt in picker.options if opt.unit_id not in unit_ids %}
-  {% set _ = unit_ids.append(opt.unit_id) %}
-  {% set _ = unit_labels.update({opt.unit_id: opt.unit_label_many}) %}
-{% endfor %}
-{# A unit whose offer set includes a null interval takes ANY positive N, which
-   is what selects the number box over the fixed <select>. #}
-{% set free_units = picker.options | selectattr('interval_n', 'none') | map(attribute='unit_id') | list %}
+{# Every projection of the offer set is served ready-made off the PickerModel --
+   picker.units, picker.fixed_intervals, picker.placements, and
+   picker.free_unit_ids (the units taking ANY positive N, which is what selects
+   the number box over the fixed <select>).  They were de-duplicating loops and
+   a selectattr chain here until the interval one shipped a visible defect:
+   MONTHLY and MONTHLY_FIRST are two triples over one (1, MONTH) interval, so it
+   rendered "1 month" twice and marked BOTH selected.  A projection is a
+   computation, and this partial displays. #}
 <div class="mb-3" id="cadence-controls" data-cadence-options="{{ picker.options_json }}">
   <label for="recurrence_unit" class="form-label">Repeats</label>
   <div class="row g-2 align-items-center">
     <div class="col-auto">
       <select id="recurrence_unit" name="recurrence_unit" class="form-select">
         <option value="" {{ 'selected' if sel_unit is none else '' }}>Does not repeat</option>
-        {% for unit_id in unit_ids %}
-        <option value="{{ unit_id }}" {{ 'selected' if sel_unit == unit_id else '' }}>
-          {{ unit_labels[unit_id] }}
+        {% for opt in picker.units %}
+        <option value="{{ opt.unit_id }}" {{ 'selected' if sel_unit == opt.unit_id else '' }}>
+          {{ opt.unit_label_many }}
         </option>
         {% endfor %}
       </select>
@@ -100,14 +97,14 @@
         {# The free-N box: one unit uses it (paychecks), and R7c widens it to
            every unit when the authored columns land. #}
         <input type="number" id="interval_n_free" name="interval_n"
-               class="form-control" min="1" style="max-width: 6rem"
-               value="{{ sel_interval if sel_interval else 1 }}"
-               {{ '' if sel_unit in free_units else 'disabled' }}>
-        {# The fixed set: every interval any unit offers, each tagged with the
+               class="form-control interval-box" min="1"
+               value="{{ sel_interval if sel_interval is not none else 1 }}"
+               {{ '' if sel_unit in picker.free_unit_ids else 'disabled' }}>
+        {# The fixed set: one entry per (unit, interval), each tagged with the
            unit that offers it so the script can show only that unit's. #}
         <select id="interval_n_fixed" name="interval_n" class="form-select"
-                {{ 'disabled' if sel_unit in free_units or sel_unit is none else '' }}>
-          {% for opt in picker.options if opt.interval_n is not none %}
+                {{ 'disabled' if sel_unit in picker.free_unit_ids or sel_unit is none else '' }}>
+          {% for opt in picker.fixed_intervals %}
           <option value="{{ opt.interval_n }}" data-unit="{{ opt.unit_id }}"
             {{ 'selected' if sel_unit == opt.unit_id and sel_interval == opt.interval_n else '' }}>
             {{ opt.interval_n }} {{ opt.unit_label_one if opt.interval_n == 1 else opt.unit_label_many }}
@@ -121,9 +118,7 @@
 <div class="mb-3 d-none" id="field-placement">
   <label for="recurrence_placement" class="form-label">Funded from</label>
   <select id="recurrence_placement" name="recurrence_placement" class="form-select">
-    {% set seen_placements = [] %}
-    {% for opt in picker.options if opt.placement_id not in seen_placements %}
-    {% set _ = seen_placements.append(opt.placement_id) %}
+    {% for opt in picker.placements %}
     <option value="{{ opt.placement_id }}" {{ 'selected' if sel_placement == opt.placement_id else '' }}>
       {{ opt.placement_label }}
     </option>
@@ -134,11 +129,12 @@
 {% endmacro %}
 
 
-{# The pattern-dependent fields inside #recurrence-fields: interval, the
-   day / due-day / month row, and the end date.  recurrence_form.js toggles
-   each on by id for the selected pattern.  Does NOT include the pay-period
-   selector or the preview (each form places those). #}
-{# The remaining pattern-dependent fields.  The interval moved OUT at plan step
+{# The remaining cadence-dependent fields inside #recurrence-fields: the
+   day / due-day / month row and the end date.  recurrence_form.js toggles each
+   on by id from the facts the chosen offer carries.  Does NOT include the
+   pay-period selector or the preview (each form places those).
+
+   The interval moved OUT at plan step
    R7b-2: it is one of the three cadence axes now, so it lives beside the unit
    it counts in recurrence_cadence_controls rather than as a detail toggled on
    for one pattern.  That also retired its pattern-scoped prefill, which
@@ -186,9 +182,12 @@
 {# The live occurrence preview.  recurrence_form.js fetches ``preview_url``
    (the kind-agnostic templates.preview_recurrence endpoint, which reads
    only the rule params + the user's periods) and swaps the result in. #}
+{# The copy matches recurrence_form.js's own no-cadence line verbatim, so the
+   pre-script render and the first script pass do not say two different things
+   about the same state.  The form no longer has a "pattern" to select. #}
 {% macro recurrence_preview(preview_url) %}
 <div id="recurrence-preview" class="mt-2 mb-1" data-preview-url="{{ preview_url }}">
-  <small class="text-muted">Select a pattern to see upcoming dates</small>
+  <small class="text-muted">Choose how often this repeats to see upcoming dates</small>
 </div>
 {% endmacro %}
 

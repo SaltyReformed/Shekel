@@ -179,9 +179,18 @@ def edit_form_cadence(template: Any) -> SelectedCadence | None:
     absent from its options silently submits a DIFFERENT one -- on both forms
     the first entry, "Does not repeat", which deletes the rule and sweeps its
     future rows.  The two-axis controls carry no pattern id to preserve, so
-    there is nothing to append and nothing to silently fall back to: they
-    render UNSET, the warning says to choose a cadence, and saving without one
-    is refused by the same validator that refuses any missing cadence.
+    there is nothing to append: they render UNSET, and the warning says to
+    choose a cadence.
+
+    **Rendering unset does NOT make the empty submission safe, and an
+    adversarial review of this step caught the gap.**  Unset means the unit
+    ``<select>``'s first entry is the selected one, so saving the form
+    unchanged posts exactly the "Does not repeat" that deletes the rule -- the
+    same destruction the trailing option existed to prevent, reached a
+    different way.  What keeps ``UNAVAILABLE_PATTERN_MESSAGE``'s promise is the
+    server-side refusal in :func:`resolve_recurrence_rule_for_update` (see
+    :data:`UNREPAIRED_CADENCE_CANNOT_BE_CLEARED`), which is the only layer
+    holding both facts the disposition needs.
 
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate`` being
@@ -220,12 +229,17 @@ def build_recurrence_rule_from_form(
     This helper's own job is what only a ROUTE can do: read the form and
     owner-check the submitted start period.
 
-    **It does NOT validate the cadence.**  That the submitted axes name a cadence the
-    application MODELS -- narrower than "names a ``ref`` row", and the
+    **It does NOT validate the cadence.**  That the submitted axes name values
+    the application MODELS -- narrower than "name ``ref`` rows", and the
     difference is a 500 -- is a property of the SUBMISSION, so it belongs to
     the submission's validator:
-    :class:`~app.schemas.validation._helpers.RecurrencePatternField` refuses it
-    before any route code runs (plan step R2e-2, developer ruling 2026-08-07).
+    :class:`~app.schemas.validation._helpers.RecurrenceUnitField` and
+    :class:`~app.schemas.validation._helpers.PeriodPlacementField` refuse it
+    before any route code runs (plan step R2e-2 on the pattern field those two
+    replaced, developer ruling 2026-08-07).  That the whole
+    ``(interval, unit, placement)`` TRIPLE can be stored is a property of no
+    single field, so it is
+    :func:`~app.schemas.validation._helpers.validate_authorable_cadence`'s.
     The check used to live here AND in
     :func:`update_recurrence_rule_from_form` -- one rule written twice, which
     a third caller would have had neither copy of.
@@ -390,12 +404,15 @@ def update_recurrence_rule_from_form(
             helpers share one context object.
 
     Returns:
-        ``None``.  **It cannot fail**, which is what plan step R2e-2 changed:
-        the one failure it used to have -- an unmodelled cadence
-        -- is refused by
-        :class:`~app.schemas.validation._helpers.RecurrencePatternField` before
-        the route reads the payload, so there is no redirect left to return and
-        the signature says so.
+        ``None``.  **It cannot fail on user input**, which is what plan step
+        R2e-2 changed: the one failure it used to have -- an unmodelled cadence
+        -- is refused by the schema's axis fields and by
+        :func:`~app.schemas.validation._helpers.validate_authorable_cadence`
+        before the route reads the payload, so there is no redirect left to
+        return and the signature says so.  It still RAISES
+        ``RecurrenceResolutionError`` for a triple no closed-set pattern
+        stores, which after those two validators is a broken invariant rather
+        than a submission.
     """
     unit = data.pop("recurrence_unit")
     placement = data.pop("recurrence_placement")
@@ -486,6 +503,32 @@ LOAN_PAYMENT_CANNOT_BE_ONE_TIME: str = (
     "archive it to stop paying."
 )
 """Refusal shown when an edit tries to clear a loan payment's recurrence."""
+
+
+UNREPAIRED_CADENCE_CANNOT_BE_CLEARED: str = (
+    "This recurring definition uses a repeat pattern that is no longer "
+    "available, so the form could not show you how often it repeats -- and an "
+    "empty choice here would delete the schedule. Nothing was saved. Choose "
+    "how often it repeats, then save."
+)
+"""Refusal shown when an edit would clear a rule the form could not display.
+
+**The half of :data:`~app.services.recurrence.UNAVAILABLE_PATTERN_MESSAGE`'s
+promise that has to live on the SERVER.**  That message tells the user "saving
+it unchanged will be refused", and before plan step R7b-2 the picker kept that
+promise by keeping the stored pattern as a trailing selected ``<option>``: the
+save then carried an id the write door refused.  The two-axis controls carry no
+pattern id, so they render UNSET -- which means the unit ``<select>``'s FIRST
+entry is selected, and that entry is the empty "Does not repeat" one whose save
+DELETES the rule and sweeps its future rows.
+
+An unrepaired edit and a deliberate clear are therefore the same bytes on the
+wire, and no hidden field can separate them -- a client may drop one.  The
+server can, from two facts it already holds: the stored rule names a pattern
+this application does not model, and the submission names no cadence.  A form
+that could not offer this rule's cadence cannot have collected the user's
+intent to remove it, so the empty submission is refused rather than acted on.
+"""
 
 
 def _is_loan_payment(template: Any) -> bool:
@@ -603,8 +646,11 @@ def resolve_recurrence_rule_for_update(
       ``template.recurrence_rule_id``;
     * pattern SUBMITTED AS EMPTY -> the user chose "Does not repeat", so any
       existing rule is cleared through :func:`_clear_recurrence_rule` --
-      unless the template is a LOAN PAYMENT, which is refused (see
-      :data:`LOAN_PAYMENT_CANNOT_BE_ONE_TIME`).
+      unless the template is a LOAN PAYMENT (see
+      :data:`LOAN_PAYMENT_CANNOT_BE_ONE_TIME`) or its stored rule names a
+      pattern this application no longer models (see
+      :data:`UNREPAIRED_CADENCE_CANNOT_BE_CLEARED`), either of which is
+      refused.
 
     **A submitted-empty pattern and an absent one are different requests**, and
     keeping them apart is what stops the third branch from breaking the
@@ -684,6 +730,11 @@ def resolve_recurrence_rule_for_update(
     if clearing and _is_loan_payment(template):
         flash(LOAN_PAYMENT_CANNOT_BE_ONE_TIME, "danger")
         return ctx.redirect.to_response()
+    if clearing and modelled_pattern(
+        template.recurrence_rule.pattern_id,
+    ) is None:
+        flash(UNREPAIRED_CADENCE_CANNOT_BE_CLEARED, "danger")
+        return ctx.redirect.to_response()
 
     if data.get("recurrence_unit") is not None and template.recurrence_rule:
         # Re-points the rule in place and cannot fail, so this branch has no
@@ -758,6 +809,7 @@ def handle_stale_form_conflict(
 
 __all__ = [
     "LOAN_PAYMENT_CANNOT_BE_ONE_TIME",
+    "UNREPAIRED_CADENCE_CANNOT_BE_CLEARED",
     "STALE_EDITING_MESSAGE",
     "STALE_ACTION_MESSAGE",
     "RecurrenceFormContext",

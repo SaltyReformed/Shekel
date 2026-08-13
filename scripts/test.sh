@@ -125,7 +125,9 @@ elif ! docker inspect "$DB_CONTAINER" >/dev/null 2>&1; then
     echo "[test.sh] container $DB_CONTAINER does not exist -- skipping restart" >&2
 elif _live_test_backends="$(docker exec "$DB_CONTAINER" \
     psql -U shekel_user -d postgres -tAc \
-    "SELECT count(*) FROM pg_stat_activity WHERE datname LIKE '%test%'" \
+    "SELECT count(*) FROM pg_stat_activity
+     WHERE datname IS NOT NULL
+       AND datname NOT IN ('postgres', 'template0', 'template1')" \
     2>/dev/null)" && [ "${_live_test_backends:-0}" -gt 0 ]; then
     # ANOTHER run is using this container.  The restart below terminates every
     # backend, so performing it would kill that run mid-test with "server
@@ -136,6 +138,21 @@ elif _live_test_backends="$(docker exec "$DB_CONTAINER" \
     # few seconds of drift and nothing else.  TEST_DB_PREFIX keeps the two
     # runs' databases apart; this keeps them from killing each other's
     # connections.
+    #
+    # **The probe asks which databases have BACKENDS, not which are named
+    # "test", and plan step R7b-2 measured why.**  It matched
+    # ``datname LIKE '%test%'`` -- but the per-worker databases are named from
+    # TEST_DB_PREFIX, and the live prefixes are values like ``r7a2`` and
+    # ``xf2c3`` (the checkout, not the word "test").  So the guard was blind to
+    # exactly the runs it exists to protect: three consecutive full-suite runs
+    # in one checkout were voided by another checkout's restart, each surfacing
+    # as 138-462 setup errors that read like a code regression.  This container
+    # is dedicated to the suite, so any database on it other than the admin and
+    # template ones IS a test run's; counting backends there sees every naming
+    # scheme, including ones no one has invented yet.  A leaked idle connection
+    # would now disable the hygiene restart until it is closed, which is the
+    # safe direction to fail: the header explains the restart buys wall-clock,
+    # not correctness.
     echo "[test.sh] $DB_CONTAINER has live test connections (another run) --" \
         "skipping restart so it is not killed" >&2
 else

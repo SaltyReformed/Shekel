@@ -47,7 +47,6 @@ from app.enums import (
     EmployerContributionTypeEnum,
     GoalModeEnum,
     IncomeUnitEnum,
-    RecurrencePatternEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -96,23 +95,19 @@ _REF_ID_GLOBALS: tuple[tuple[Callable[[Enum], int], dict[str, Enum]], ...] = (
         "ACCT_TYPE_BROKERAGE": AcctTypeEnum.BROKERAGE,
         "ACCT_TYPE_529": AcctTypeEnum.PLAN_529,
     }),
-    # The recurrence patterns the recurrence FORM still branches on, and only
-    # those.  ``REC_EVERY_PERIOD`` and ``REC_MONTHLY_FIRST`` left at plan step
-    # R7a with the ``recurrence_cell`` macro's per-pattern branches: those two
-    # had no other reader, and a registered global no template references is a
-    # constant defending nothing.  The five below drive
-    # ``_recurrence_fields.html``'s show / hide data attributes and its
-    # interval prefill, and they go when plan step R7b rewrites that form onto
-    # the two-axis vocabulary.  ``tests/test_jinja_globals.py`` pins this set
-    # against the templates themselves, so neither a dropped global nor a dead
-    # one can pass unnoticed.
-    (ref_cache.recurrence_pattern_id, {
-        "REC_EVERY_N_PERIODS": RecurrencePatternEnum.EVERY_N_PERIODS,
-        "REC_MONTHLY": RecurrencePatternEnum.MONTHLY,
-        "REC_QUARTERLY": RecurrencePatternEnum.QUARTERLY,
-        "REC_SEMI_ANNUAL": RecurrencePatternEnum.SEMI_ANNUAL,
-        "REC_ANNUAL": RecurrencePatternEnum.ANNUAL,
-    }),
+    # No ``REC_*`` group: plan step R7b-2 took the last five with the pattern
+    # ``<select>`` whose ``data-*`` attributes read them.  The form authors
+    # ``(interval_n, unit, placement)`` now and the closed pattern set is a
+    # storage encoding the write door chooses, so no template names a pattern
+    # id at all -- and a registered global no template references is a constant
+    # defending nothing (the reason ``REC_EVERY_PERIOD`` and
+    # ``REC_MONTHLY_FIRST`` left at plan step R7a).  The picker's ids reach
+    # ``_recurrence_fields.html`` on the
+    # :class:`~app.services.recurrence.PickerModel` the route resolves, which
+    # is per-request data rather than a process-wide constant.
+    # ``tests/test_jinja_globals.py`` pins the registered set against the
+    # templates themselves, so neither a dropped global nor a dead one can pass
+    # unnoticed -- it is what caught these five.
     (ref_cache.acct_category_id, {
         "ACCT_CAT_ASSET": AcctCategoryEnum.ASSET,
         "ACCT_CAT_LIABILITY": AcctCategoryEnum.LIABILITY,

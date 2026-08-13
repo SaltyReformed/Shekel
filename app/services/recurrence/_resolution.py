@@ -14,12 +14,15 @@ survives only as the STORAGE encoding, crossed by two functions in
 and ``decode_pattern`` at the read door.  Plan step R7c deletes both and this
 module does not change.
 
-**``decode_pattern`` also has three callers OUTSIDE the package** until plan
-step R7b-2 rebuilds the form -- the two form doors and the preview, each
-translating a posted ``pattern_id`` -- and ``cadence_of`` has two more that
-read the column directly.  Saying "the decode is in one place" would be false
-while those exist; what IS true is that they all reach the same function, so
-there is one mapping rather than several.
+**Plan step R7b-2 removed ``decode_pattern``'s callers outside the package.**
+The two form doors and the preview each translated a posted ``pattern_id``
+until the form started authoring the axes directly; nothing above the package
+posts or decodes a pattern id now.  ``cadence_of`` still has two outside
+callers that read the COLUMN -- ``obligations_aggregator`` and
+``calendar_infrequency`` -- so "the decode is in one place" remains false in
+that one direction; what IS true is that they reach the same function, so
+there is one mapping rather than several.  Plan step R7c retires both with the
+columns.
 
 **What is still DERIVED, and therefore still not stored** (developer ruling,
 2026-08-07; plan step R2d): the first occurrence, and the phase the ``PERIOD``
@@ -142,7 +145,11 @@ from app.enums import (
 )
 from app.services.pay_calendar import DerivedPeriod, PayCalendar
 from app.services.recurrence._frequency import (
+    FAMILY_CALENDAR,
+    FAMILY_FIRST_OF_MONTH,
+    FAMILY_PERIOD,
     RecurrenceResolutionError,
+    anchor_family,
     require_positive_interval,
 )
 from app.services.recurrence._months import (
@@ -307,88 +314,6 @@ _MONTH_OF_YEAR_MAX = 12
 #: cycle later), so anything beyond this is a broken derivation, not a slow
 #: one -- it raises instead of spinning.
 _MAX_MONTH_PROBES = 4
-
-#: Families of anchor derivation.  Three, because the first occurrence is
-#: measured in three different spaces -- the paycheck rhythm, the calendar, and
-#: "each month's first paycheck".
-#:
-#: They were keyed on the closed pattern set until plan step R7b, which is what
-#: made them a fourth column of a table this package is deleting.  The family is
-#: a property of ``(unit, placement)``, and :func:`_anchor_family` derives it.
-_FAMILY_PERIOD = "period"
-_FAMILY_CALENDAR = "calendar"
-_FAMILY_FIRST_OF_MONTH = "first_of_month"
-
-
-def _anchor_family(
-    unit: RecurrenceUnitEnum, placement: PeriodPlacementEnum,
-) -> str:
-    """Return which anchor derivation a ``(unit, placement)`` cadence uses.
-
-    **Total over the readings this resolver has a first occurrence for, and it
-    REFUSES the rest rather than defaulting.**  Two are genuinely undefined
-    today and each says which step defines it:
-
-    * the ``WEEK`` unit anchors on an authored date this vocabulary does not
-      yet collect -- plan step R8 is its first writer;
-    * a cadence measured in YEARS but funded from a month's FIRST paycheck has
-      no cycle month left to name.  :func:`_first_of_month_anchor` answers "the
-      1st of the first qualifying month", which for a yearly rule would fire in
-      whichever month the schedule happened to open in.  Plan step R8 owns the
-      placement axis (plan ledger row D20).
-
-    Neither is reachable from a form: the picker's options are derived from the
-    pattern table, which is a SUBSET of what this function accepts, so an
-    unhandled reading here is a broken invariant rather than user input.
-
-    Args:
-        unit: The cadence unit.
-        placement: Which pay period funds an occurrence.
-
-    Returns:
-        One of the ``_FAMILY_*`` constants.
-
-    Raises:
-        RecurrenceResolutionError: When the pair has no anchor derivation.
-    """
-    if unit is RecurrenceUnitEnum.PERIOD:
-        # The placement is inert for the ANCHOR (see :class:`RecurrenceSpec`),
-        # so it is deliberately not part of the condition: branching on a
-        # distinction that makes no difference is how a second answer starts.
-        #
-        # **It is not inert for STORAGE**, and an adversarial review of plan
-        # step R7b-1 caught this reading as too broad: the closed pattern set
-        # has no name for a pay-period cadence funded from a LATER paycheck, so
-        # ``_frequency.encode_cadence`` refuses the pair that this function
-        # accepts.  Nothing authors it -- no writer passes a placement with the
-        # PERIOD unit -- and the two answers are about different questions, so
-        # they are not in conflict; plan step R7c gives the pair a column and
-        # the asymmetry goes with the closed set.
-        return _FAMILY_PERIOD
-    if unit in _DAY_OF_MONTH_UNITS:
-        if placement is PeriodPlacementEnum.CONTAINING_DATE:
-            return _FAMILY_CALENDAR
-        # **Both conditions are NAMED, and an adversarial review of plan step
-        # R7b-1 is why.**  This read ``if unit is MONTH`` alone, which is an
-        # implicit ``else`` over the placement axis: plan step R8 adds a third
-        # member (fund in ADVANCE, plan ledger row D20), and a MONTH rule
-        # carrying it would have fallen in here and been anchored on the 1st of
-        # a qualifying month -- silently, with no refusal, placing money in the
-        # wrong paycheck.  ``_describe._placement_note`` refuses an unworded
-        # placement for exactly this reason one module over; a derivation that
-        # decides where money moves may not be laxer than the label.
-        if (
-            placement is PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER
-            and unit is RecurrenceUnitEnum.MONTH
-        ):
-            return _FAMILY_FIRST_OF_MONTH
-    raise RecurrenceResolutionError(
-        f"a recurrence of unit {unit!r} funded {placement!r} has no first "
-        f"occurrence this resolver can derive.  The WEEK unit and a "
-        f"year-scale cadence deferred onto a month's first paycheck are both "
-        f"plan step R8's; refusing here rather than defaulting is what stops "
-        f"a rule firing on a month the cadence never names."
-    )
 
 
 @dataclass(frozen=True)
@@ -671,7 +596,7 @@ def _resolve_anchor(
 
     Args:
         spec: The authored recurrence.
-        family: Its anchor derivation, from :func:`_anchor_family`.
+        family: Its anchor derivation, from :func:`anchor_family`.
         calendar: The owner's pay-period schedule.
         effective: The rule's opening bound.
         offset_periods: The resolved phase -- read only by the ``PERIOD``
@@ -684,25 +609,25 @@ def _resolve_anchor(
 
     Raises:
         RecurrenceResolutionError: When *family* is one this function has no
-            derivation for.  **Total over the ``_FAMILY_*`` constants rather
+            derivation for.  **Total over the ``FAMILY_*`` constants rather
             than falling through to the calendar branch**, which an adversarial
             review of plan step R7b-1 required: the calendar branch was the
-            implicit ``else``, so a family added to :func:`_anchor_family` and
+            implicit ``else``, so a family added to :func:`anchor_family` and
             forgotten here -- plan step R8 adds one for the WEEK unit -- would
             have taken it and anchored a weekly rule on a month cycle.
     """
-    if family == _FAMILY_PERIOD:
+    if family == FAMILY_PERIOD:
         if spec.interval_n > 1:
             return _phased_period_anchor(
                 calendar, effective, spec.interval_n, offset_periods,
             ), None
         return effective, None
-    if family == _FAMILY_FIRST_OF_MONTH:
+    if family == FAMILY_FIRST_OF_MONTH:
         return _first_of_month_anchor(calendar, effective), None
-    if family != _FAMILY_CALENDAR:
+    if family != FAMILY_CALENDAR:
         raise RecurrenceResolutionError(
             f"anchor family {family!r} has no derivation.  Every family "
-            f"_anchor_family can return must have one here: taking the "
+            f"anchor_family can return must have one here: taking the "
             f"calendar branch by default would anchor a cadence on a month "
             f"cycle it does not run on."
         )
@@ -945,7 +870,7 @@ def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
         spec.interval_n,
         f"a {spec.unit!r} recurrence (user {spec.user_id})",
     )
-    family = _anchor_family(spec.unit, spec.placement)
+    family = anchor_family(spec.unit, spec.placement)
     _require_authored_calendar_fields(spec)
 
     start_period = calendar.period_by_id(spec.start_period_id)

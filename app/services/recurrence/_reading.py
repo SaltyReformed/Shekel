@@ -185,14 +185,17 @@ def recurrence_spec_with_cadence(
     one implementation rather than two that agree.
 
     **Its existence is a defect the two-axis swap would otherwise have
-    introduced, measured against ``origin/dev``.**  The edit form offers a
-    stored pattern the application no longer models as a trailing option and
-    tells the user to pick a new one before saving (``pattern_choices_for``,
-    ``UNAVAILABLE_PATTERN_MESSAGE``) -- so picking a new one IS the documented
-    repair.  Routing that repair through :func:`recurrence_spec` made it read
-    the broken cadence on the way to replacing it, and the read raised: the one
-    action the surface tells the user to take became a 500.  Reading no cadence
-    is what makes the repair structural rather than excepted.
+    introduced, measured against ``origin/dev``.**  An edit form meeting a
+    stored pattern the application no longer models tells the user to choose a
+    cadence before saving (``UNAVAILABLE_PATTERN_MESSAGE``) -- so choosing one
+    IS the documented repair.  Routing that repair through
+    :func:`recurrence_spec` made it read the broken cadence on the way to
+    replacing it, and the read raised: the one action the surface tells the
+    user to take became a 500.  Reading no cadence is what makes the repair
+    structural rather than excepted.  (Plan step R7b-2 changed HOW the form
+    meets that state -- the controls render unset rather than keeping the
+    stored pattern as a trailing option -- and left this function's job
+    unchanged.)
 
     Args:
         rule: The rule to read.  Its ``pattern_id`` and ``interval_n`` are NOT

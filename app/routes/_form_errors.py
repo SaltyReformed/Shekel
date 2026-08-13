@@ -30,14 +30,30 @@ from app.routes._redirect_target import RedirectTarget
 #:
 #: * ``is_envelope`` -- ``validate_envelope_only_on_expense``, a cross-field
 #:   rule ("Purchase tracking is only available for expense templates.").
-#: * ``recurrence_pattern`` -- ``RecurrencePatternField``, which refuses a
-#:   well-formed row id that names no cadence the application models.  Field
-#:   errors on these keys from the stock validators are rare in practice (an
-#:   HTML ``<select>`` submits only what it rendered) and remain acceptable
-#:   feedback when they do appear.
+#: * ``recurrence_unit`` -- ``RecurrenceUnitField``, which refuses a
+#:   well-formed row id naming no cadence unit the application models, AND
+#:   ``validate_authorable_cadence``, the cross-field rule that refuses a
+#:   triple the closed pattern set cannot store ("That repeat schedule cannot
+#:   be saved yet...").
+#: * ``recurrence_placement`` -- ``PeriodPlacementField``, plus the same
+#:   cross-field rule's refusal of a unit named with no placement.
+#:
+#: Field errors on these keys from the stock validators are rare in practice
+#: (an HTML ``<select>`` submits only what it rendered) and remain acceptable
+#: feedback when they do appear.
+#:
+#: **The two recurrence keys replaced ``recurrence_pattern`` at plan step
+#: R7b-2, and an adversarial review is why they are here at all**: the step
+#: split one field into two, authored three new refusal messages, and left the
+#: allowlist naming a field no schema declares -- so every one of those
+#: messages was dead copy, and a user whose cadence was refused got the generic
+#: prompt after a redirect that highlights nothing.
+#: ``tests/test_routes/test_form_errors.py`` pins the tuple against the schema
+#: package, so a renamed field cannot silence its own message again.
 ACTIONABLE_FLASH_FIELDS: tuple[str, ...] = (
     "is_envelope",
-    "recurrence_pattern",
+    "recurrence_unit",
+    "recurrence_placement",
 )
 
 GENERIC_VALIDATION_FLASH: str = (
