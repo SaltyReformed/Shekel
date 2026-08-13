@@ -391,10 +391,25 @@ the closed-set columns, so the schema does not move until R7c.
 The pattern `<select>` becomes a unit select, an interval control and a placement select, with the
 offered intervals per unit SERVED FROM the encoder's own table -- so a cadence the closed set cannot
 store is never offered and the refusal is unreachable rather than fenced (developer ruling
-2026-08-12). `pattern_choices`, `_PATTERN_LABELS`, `RecurrencePatternField` and the vestigial
-`offset_periods` schema field (D8) go with it. The transfer form's pay-period `<select>` SURVIVES
-under its other job -- which period a one-time transfer lands in -- and stops being relabelled by
-JS.
+2026-08-12).
+
+**Two further rulings taken 2026-08-12, both on the shape of those controls.** The three are LINKED
+rather than independent: the unit repopulates the interval control and the placement select, which
+renders only where a unit offers more than one. And the month interval is a SELECT of 1 / 3 / 6
+rather than a number box, because those are the only month cadences the closed set stores; R7c
+widens it to a free box when the authored columns land. Both follow from the first ruling -- three
+free controls would offer combinations `encode_cadence` refuses, which is the refusal this step
+exists to make unreachable.
+
+**A placement belongs to the `(unit, interval)` PAIR, not to the unit**, and a design keyed on the
+unit alone re-opens exactly what the ruling closes. `MONTHLY_FIRST` is
+`(1, MONTH, PERIOD_STARTING_ON_OR_AFTER)` and the closed set has no quarterly or semi-annual twin,
+so `(3, MONTH, first-paycheck)` is unstorable -- measured, not argued. The offer set therefore
+carries whole triples and every consumer filters them.
+
+`pattern_choices`, `_PATTERN_LABELS`, `RecurrencePatternField` and the vestigial `offset_periods`
+schema field (D8) go with it. The transfer form's pay-period `<select>` SURVIVES under its other job
+-- which period a one-time transfer lands in -- and stops being relabelled by JS.
 
 - [ ] **R7b-3 -- one "ends" control, and the CHECKs the door does not mirror.**
 
