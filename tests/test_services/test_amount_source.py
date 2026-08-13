@@ -72,6 +72,7 @@ from tests._test_helpers import (
     loan_params_for,
     make_salary_profile,
 )
+from app.services.row_valuation import owned_contribution
 
 
 # The definition's price history, and the row dates that select from it.  TWO
@@ -626,7 +627,7 @@ class TestWhatEachRuleAnswers:
             db.session, seed_user, seed_periods[0], "Groceries", "500.00",
             status_enum=StatusEnum.DONE, actual_amount="462.34",
         )
-        assert txn.effective_amount == Decimal("462.34")
+        assert owned_contribution(txn) == Decimal("462.34")
         assert _resolve(seed_user, txn) == Decimal("500.00")
 
     def test_an_excluded_row_answers_its_amount_not_zero(
@@ -642,7 +643,7 @@ class TestWhatEachRuleAnswers:
             db.session, seed_user, seed_periods[0], "Gym", "40.00",
             status_enum=StatusEnum.CANCELLED,
         )
-        assert txn.effective_amount == Decimal("0")
+        assert owned_contribution(txn) == Decimal("0")
         assert _resolve(seed_user, txn) == Decimal("40.00")
 
     def test_a_template_row_answers_the_price_in_effect_on_its_due_date(

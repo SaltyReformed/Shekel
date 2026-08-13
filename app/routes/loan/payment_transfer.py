@@ -397,9 +397,9 @@ def track_payment(account_id):
     # Re-sync the recurrence end date.  **Load-bearing since plan C8d, where it
     # used to be defensive:** the payoff is now a fold over the forward PLAN, and
     # the PLANNED tier folds each projected shadow's cash as
-    # ``live_cash.get(shadow.id, shadow.effective_amount)``.  Flipping
+    # ``live_cash.get(shadow.id, <the shadow's own contribution>)``.  Flipping
     # manual->derive is exactly what moves that value -- a manual payment folds
-    # its typed ``effective_amount``, a derive one the live contractual cash --
+    # its typed figure, a derive one the live contractual cash --
     # so this switch MOVES the projected payoff whenever the two differ, which is
     # the drift C7 flagged to get the user here in the first place.
     loan_recurrence_sync.sync_recurring_payment_bounds(account.id)

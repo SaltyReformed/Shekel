@@ -135,7 +135,7 @@ class DailyView:  # pylint: disable=too-many-instance-attributes
     day-cell end-of-day hero and the flow strip line share one basis and
     reconcile with the grid.  The ``elapsed_*`` / ``remaining_*`` figures are
     the MEASURED / PROJECTED nominal in-out folds (from ``day_totals``, the
-    same ``effective_amount`` basis the day cells show), so they tie to the
+    same contribution basis the day cells show), so they tie to the
     day cells beside them; they COINCIDE with the projected balances in
     ordinary data but deliberately diverge where the projection excludes a
     settled row (already in the anchor), applies an envelope's entry-aware
@@ -923,7 +923,7 @@ def _compute_month_end_balance(
     before the calendar month-end (up to ~13 days stale when the
     period straddled the month boundary) and (b) issued a transaction
     query without ``selectinload(Transaction.entries)``, silently
-    degrading to ``effective_amount`` (the F-009 seam on a second
+    degrading to the unreduced contribution (the F-009 seam on a second
     surface).  Both defects collapse into the single canonical
     "balance as of date D" producer.
 

@@ -38,6 +38,7 @@ from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import override_anchor, settle_instant_on
+from app.services.row_valuation import owned_contribution
 
 
 class TestSalaryToGrid:
@@ -219,7 +220,7 @@ class TestCreditPaybackBalance:
 
             # Original transaction is credit status → effective_amount is 0.
             assert txn.status.name == "Credit"
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
             # Payback exists in next period with matching amount.
             assert payback.pay_period_id == seed_periods[1].id
@@ -702,7 +703,7 @@ class TestCreditWorkflowEdgeCases:
 
             # Original transaction status changed to credit.
             assert txn.status.name == "Credit"
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
             # Payback transaction created in next period.
             assert payback.pay_period_id == seed_periods[1].id
@@ -1009,7 +1010,7 @@ class TestFullBudgetWorkflow:
             assert by_name_p0["Rent"].actual_amount == Decimal("1195.00")
             assert by_name_p0["Dining Out"].status.name == "Credit"
             assert by_name_p0["Dining Out"].estimated_amount == Decimal("75.00")
-            assert by_name_p0["Dining Out"].effective_amount == Decimal("0")
+            assert owned_contribution(by_name_p0["Dining Out"]) == Decimal("0")
 
             # Period 0 has no projected transactions remaining.
             p0_projected = [t for t in period0_txns if t.status.name == "Projected"]

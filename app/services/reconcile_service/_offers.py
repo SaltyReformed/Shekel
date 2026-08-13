@@ -167,7 +167,7 @@ class OutstandingTransaction:
             ``transaction_service.settle_amount`` rather than read off a
             column.  The panel showing a figure the verb would not book is this
             arc's own root cause 1 applied to a screen, and it is why this
-            field is not ``effective_amount``.
+            field is not the row's contribution.
         is_correctable: Whether the panel renders :attr:`amount` as an editable
             input (ruling **R-FB**, sharpened by **R-FF**): true exactly when
             the settle verb takes its MANUAL branch, i.e. the row is not

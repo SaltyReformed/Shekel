@@ -136,10 +136,11 @@ def settled_transfer_effect(account_id: int, scenario_id: int) -> Decimal:
 
     The balance-side expectation the Commit-6 oracle reconciles the ledger
     against: over the account's settled (``status.is_settled``), non-deleted
-    transfer shadows in *scenario_id*, sum ``+effective_amount`` for an income
-    shadow (money in) and ``-effective_amount`` for an expense shadow (money
+    transfer shadows in *scenario_id*, sum ``+COALESCE(actual, estimated)`` for an income
+    shadow (money in) and the negation for an expense shadow (money
     out) -- exactly the debit-positive net :func:`account_posting_total`
-    accumulates.  ``effective_amount`` is ``COALESCE(actual, estimated)``;
+    accumulates.  That SQL expression is what the retired ``effective_amount``
+    property computed in Python;
     settled statuses are non-excluded by construction (``settled_status_ids``
     is disjoint from the balance-excluded set), so no excluded-status guard is
     needed.

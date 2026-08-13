@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 # ledger effect, so a change to any triggers a posting reconcile (Build-Order
 # Step 3, the transaction analog of ``transfer_service._POSTING_RELEVANT_FIELDS``).
 # ``status_id`` flips the settled/unsettled target; ``estimated_amount`` /
-# ``actual_amount`` together set ``effective_amount``
+# ``actual_amount`` together set what the row is WORTH
 # (``COALESCE(actual, estimated)``) -- the magnitude posted; ``category_id``
 # moves which counter (category) ledger account the expense/income leg books
 # into.

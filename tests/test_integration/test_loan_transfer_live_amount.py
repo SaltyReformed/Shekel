@@ -36,6 +36,7 @@ from tests._test_helpers import (
     create_loan_account,
     loan_params_for,
 )
+from app.services.row_valuation import owned_contribution
 
 
 def _build_derived_loan_transfer(seed_user, escrow_annual):
@@ -359,7 +360,7 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
 
         db.session.expire_all()
         settled = db.session.get(Transaction, income_shadow.id)
-        assert settled.effective_amount == Decimal("1699.10")
+        assert owned_contribution(settled) == Decimal("1699.10")
 
         (split,) = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
         assert split.due_date == date(2026, 3, 1)
@@ -371,7 +372,7 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
         assert split.excess == Decimal("0.00")
         assert (
             split.interest + split.escrow + split.principal + split.excess
-            == settled.effective_amount
+            == owned_contribution(settled)
         )
 
 
@@ -414,7 +415,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
         )
         assert income_shadow is not None
         # Pre-settle the shadow shows the stale stored estimate ($1.00).
-        assert income_shadow.effective_amount == Decimal("1.00")
+        assert owned_contribution(income_shadow) == Decimal("1.00")
         income_shadow_id = income_shadow.id
         transfer_id = income_shadow.transfer_id
 
@@ -428,7 +429,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
         assert settled.status.is_settled is True
         # Capture-on-settle froze the LIVE PITI, not the $1.00 estimate.
         assert settled.actual_amount == Decimal("1499.10")
-        assert settled.effective_amount == Decimal("1499.10")
+        assert owned_contribution(settled) == Decimal("1499.10")
         assert settled.estimated_amount == Decimal("1.00")
         # Both legs mirror the captured actual (Transfer Invariant 3).
         expense = (
@@ -514,7 +515,7 @@ def test_settled_loan_payment_freeze_is_one_shot(
         db.session.expire_all()
         replayed = db.session.get(Transaction, income_shadow_id)
         assert replayed.actual_amount == Decimal("1499.10")
-        assert replayed.effective_amount == Decimal("1499.10")
+        assert owned_contribution(replayed) == Decimal("1499.10")
 
 
 def test_loan_standing_extra_reads_the_recurring_payment_setting(
@@ -653,7 +654,7 @@ def test_manual_extra_keys_to_recurring_base_not_a_typed_actual(
         shadow.actual_amount = Decimal("1550.00")
         db.session.commit()
         assert shadow.is_override is False
-        assert shadow.effective_amount == Decimal("1550.00")
+        assert owned_contribution(shadow) == Decimal("1550.00")
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
         overrides = loan_payment_service.live_loan_transfer_amounts(

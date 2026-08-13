@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 # triggers a posting reconcile (Build-Order Step 2; see
 # ``posting_service.sync_transfer_postings``).  ``status_id`` flips the
 # settled/unsettled target; ``amount`` (the estimated amount) and
-# ``actual_amount`` together determine the settled shadow's ``effective_amount``
+# ``actual_amount`` together determine what the settled shadow is WORTH
 # (``COALESCE(actual_amount, estimated_amount)``) -- the magnitude posted;
 # ``pay_period_id`` moves the entry's period, so a settled period move
 # reconciles R2-correctly (the per-(account, period) reconcile reverses the old
@@ -235,7 +235,7 @@ def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object])
       changed (``_POSTING_RELEVANT_FIELDS``).  Placed here -- NOT inside
       ``apply_status_to_all_three`` -- because ``actual_amount`` is applied AFTER
       ``status_id`` and the grid shadow-edit path can settle and set an actual
-      in one call; the reconcile reads the income shadow's ``effective_amount``,
+      in one call; the reconcile reads what the income shadow is worth,
       so it must run once everything is in place or it would post the pre-edit
       estimate.  ``xfer.status_id`` is the post-update status, so its
       ``is_settled`` is the correct target sense.  Idempotent

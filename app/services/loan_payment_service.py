@@ -666,10 +666,11 @@ def _manual_shadow_amount(
     top (spec Sec. 6.1, "extra added in BOTH modes"), and the settle freeze
     captures the same base + extra so the split routes the extra into principal.
 
-    The base is ``estimated_amount`` (the recurring base), NOT ``effective_amount``:
+    The base is ``estimated_amount`` (the recurring base), NOT the row's
+    CONTRIBUTION:
     a projected shadow can carry an operator-typed ``actual_amount`` while still
     ``is_projected`` and NOT ``is_override`` (a grid full-edit does not set the
-    override flag), and ``effective_amount`` would return that actual, stacking
+    override flag), and the contribution would return that actual, stacking
     ``extra`` on a per-instance typed value.  Keying to ``estimated_amount`` (NOT
     NULL, always the generated base) makes manual mode COHERENT with derive mode,
     which likewise recomputes from config and ignores a pre-settle typed actual.

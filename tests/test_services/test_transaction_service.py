@@ -35,6 +35,7 @@ from app.services import posting_service, transaction_service
 # ``test_the_live_figure_is_resolved_BEFORE_the_status_flip`` for why patching
 # the package attribute would grade nothing.
 from app.services.transaction_service import _settle
+from app.services.row_valuation import owned_contribution
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -917,7 +918,7 @@ class TestASettleBooksTheFreshestFigure:
 
             assert txn.estimated_amount == Decimal("4000.00")
             assert txn.actual_amount is None
-            assert txn.effective_amount == Decimal("4000.00")
+            assert owned_contribution(txn) == Decimal("4000.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.RECEIVED)
 
     def test_a_supplied_actual_still_wins_over_the_live_figure(
@@ -949,7 +950,7 @@ class TestASettleBooksTheFreshestFigure:
 
             assert txn.actual_amount == Decimal("3912.44")
             assert txn.estimated_amount == Decimal("4000.00")
-            assert txn.effective_amount == Decimal("3912.44")
+            assert owned_contribution(txn) == Decimal("3912.44")
 
     def test_an_overridden_row_is_not_re_derived(
         self, app, db, seed_user, seed_periods,
@@ -971,7 +972,7 @@ class TestASettleBooksTheFreshestFigure:
             transaction_service.settle_transaction(txn)
 
             assert txn.actual_amount is None
-            assert txn.effective_amount == Decimal("1234.56")
+            assert owned_contribution(txn) == Decimal("1234.56")
 
     def test_an_agreeing_live_figure_leaves_the_column_null(
         self, app, db, seed_user, seed_periods,
@@ -994,7 +995,7 @@ class TestASettleBooksTheFreshestFigure:
             transaction_service.settle_transaction(txn)
 
             assert txn.actual_amount is None
-            assert txn.effective_amount == Decimal("4000.00")
+            assert owned_contribution(txn) == Decimal("4000.00")
 
     def test_a_row_with_no_live_seam_is_untouched(
         self, app, db, seed_user, seed_periods,
@@ -1016,7 +1017,7 @@ class TestASettleBooksTheFreshestFigure:
             transaction_service.settle_transaction(txn)
 
             assert txn.actual_amount is None
-            assert txn.effective_amount == Decimal("500.00")
+            assert owned_contribution(txn) == Decimal("500.00")
 
     def test_an_envelope_with_entries_still_settles_at_its_entries(
         self, app, db, seed_user, seed_periods,
@@ -1100,7 +1101,7 @@ class TestASettleBooksTheFreshestFigure:
             )
 
             assert txn.actual_amount is None
-            assert txn.effective_amount == Decimal("500.00")
+            assert owned_contribution(txn) == Decimal("500.00")
 
     def test_settle_amount_refuses_a_transfer_shadow(
         self, app, db, seed_user, seed_periods,

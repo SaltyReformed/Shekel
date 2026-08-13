@@ -103,7 +103,7 @@ def reject_unsettleable(txn: Transaction) -> None:
     3 and 4).
 
     **A soft-deleted row** must not be resurrected by a status change.  It
-    values at ``Decimal("0")`` through ``effective_amount``, so settling one
+    values at ``Decimal("0")`` through the valuation gate, so settling one
     books nothing while stamping the row Paid and dated: a row that reads
     settled and is worth nothing.  The envelope branch refused this from the
     beginning and the MANUAL branch never did, and the gap was REACHABLE --
@@ -142,7 +142,7 @@ def settle_amount(txn: Transaction) -> Decimal:
 
     **The ONE valuation act 1 of :func:`settle_transaction` uses**, published
     because the reconcile panel must show the figure a tick will book.  A panel
-    that renders ``effective_amount`` beside a verb that books something else is
+    that renders the row's own figure beside a verb that books something else is
     two answers to one money question, one screen apart -- and after plan step
     X-aq the verb genuinely books something else for a salary row.  The verb
     CALLS this rather than re-branching, so there is no shape in which the
@@ -199,13 +199,13 @@ def is_correction(txn: Transaction, submitted: "Decimal | None") -> bool:
     **It is asked BEFORE the settle and that is the only moment it has an
     answer**, because :func:`settle_transaction` mutates the very figures it
     compares.  Asking it there is exact rather than approximate: past
-    :func:`_reconcile_cached_amount`, ``txn.effective_amount`` IS
+    :func:`_reconcile_cached_amount`, the row's contribution IS
     :func:`settle_amount`'s pre-settle answer, in all three shapes -- a row
     carrying its own ``actual_amount`` (the refresh is guarded off and both
     read that figure), a row whose live derivation supersedes its cache (the
     refresh writes exactly what this returned), and a row with nothing fresher
     (neither moves).  The historical defect this is NOT is comparing against
-    the pre-refresh ``effective_amount``, which is a cache the recompute has
+    the pre-refresh contribution, which is a cache the recompute has
     already superseded -- that made the echo rule inert for precisely the rows
     the refresh is about.
 
@@ -376,9 +376,9 @@ def settle_transaction(
         # **Asked BEFORE act 1a, and that is exact rather than approximate.**
         # The comparison it makes -- against :func:`settle_amount`, the same
         # expression the panel prefills from -- equals the post-refresh
-        # ``effective_amount`` in every shape (:func:`is_correction` states the
+        # the row's contribution in every shape (:func:`is_correction` states the
         # three).  What it is NOT is a comparison against the pre-refresh
-        # ``effective_amount``: that is a cache the recompute has already
+        # that contribution: it is a cache the recompute has already
         # superseded, and using it made the rule inert for exactly the rows act
         # 1a is about.
         correction = actual_amount if is_correction(txn, actual_amount) else None

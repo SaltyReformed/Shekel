@@ -38,6 +38,7 @@ from app.utils.log_events import (
     EVT_TRANSFERS_RECONCILED,
 )
 from tests._test_helpers import create_transfer
+from app.services.row_valuation import owned_contribution
 
 
 def _make_entry(transaction, user, amount="50.00", description="Kroger",
@@ -1631,7 +1632,7 @@ class TestWhatATickBooks:
             db.session.expire_all()
             reloaded = db.session.get(Transaction, bill.id)
             assert reloaded.actual_amount is None
-            assert reloaded.effective_amount == Decimal("180.00")
+            assert owned_contribution(reloaded) == Decimal("180.00")
 
     def test_a_bill_ticked_with_a_different_figure_books_it(
         self, app, db, seed_user, seed_periods, seed_entry_template,

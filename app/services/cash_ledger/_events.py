@@ -203,7 +203,7 @@ class CashSourceFact:
 
     The ACTUAL half of the event stream: cash that really moved.  Its delta is
     the SHARED :func:`app.services.cash_ledger.settled_cash_leg` -- the same
-    ``effective_amount - Sigma(credit entries)`` the posting writer books -- so
+    ``owned_contribution - Sigma(credit entries)`` the posting writer books -- so
     for an ORDINARY transaction the walk and the posted ledger value one row
     identically by construction, not by two rules that happen to agree.
 
@@ -239,10 +239,10 @@ class CashSourceFact:
     X-d must either unify the transfer path onto this rule or except it
     explicitly; it is not left implicit.
 
-    **Why it is not simply ``effective_amount``, measured.**  An envelope's
+    **Why it is not simply the row's own figure, measured.**  An envelope's
     CREDIT-card entries never leave checking: each is settled by its own CC
     Payback sibling, so counting them here would debit the money twice.  On
-    production data 2026-07-25, valuing settled rows at ``effective_amount``
+    production data 2026-07-25, valuing settled rows at their own figure
     diverged from the posted ledger on 10 of the real Checking account's 130
     settled rows -- by ``$181.58`` on one grocery envelope, and by the row's WHOLE
     amount on three rows whose entries are all credit (their true checking effect

@@ -5,9 +5,7 @@ Tracks transfers between accounts (checking ↔ savings) within pay periods.
 Supports both template-generated recurring transfers and ad-hoc one-time transfers.
 """
 
-from decimal import Decimal
 
-from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.mixins import (
     OptimisticLockMixin,
@@ -251,38 +249,6 @@ class Transfer(
     pay_period = db.relationship("PayPeriod")
     scenario = db.relationship("Scenario")
     category = db.relationship("Category", lazy="joined")
-
-    @property
-    def effective_amount(self):
-        """Return the amount used in balance calculations.
-
-        Transfers with an excluded status (Cancelled) contribute 0.
-
-        **A transfer that does not OWN its amount is REFUSED rather than
-        answered** (ruling R-FI, plan step X-au-c1).  The transaction twin's
-        docstring (``Transaction.effective_amount``) carries the full reasoning;
-        the short form is that this is a pure in-memory read, a derived figure
-        needs a database and a batch basis, and answering ``None`` would put one
-        into a money path.  Unreachable as of this step -- no row is NULLed --
-        and it is what makes an unrouted reader fail loud when plan step X-au-f
-        empties the column.
-
-        Raises:
-            AmountUnresolvable: When this transfer's amount is derived.  Price it
-                through ``cash_ledger.resolve_transfer_amount`` instead.
-        """
-        if self.status and self.status.excludes_from_balance:
-            return Decimal("0")
-        if self.amount is None:
-            raise AmountUnresolvable(
-                f"Transfer {self.id} does not own its amount -- "
-                f"amount_source_id={self.amount_source_id} says its figure is "
-                "DERIVED -- so effective_amount cannot answer for it. Price it "
-                "through cash_ledger.resolve_transfer_amount, which resolves a "
-                "generated transfer from its definition's price series as of "
-                "the transfer's own due date."
-            )
-        return self.amount
 
     @property
     def settled_on(self):

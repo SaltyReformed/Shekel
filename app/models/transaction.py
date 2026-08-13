@@ -7,11 +7,9 @@ actual amounts plus a status workflow.
 """
 
 from datetime import date, datetime
-from decimal import Decimal
 
 from sqlalchemy.orm import validates
 
-from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app import ref_cache
 from app.enums import TxnTypeEnum
@@ -417,79 +415,6 @@ class Transaction(
         # envelope", which is a budget-clock question.
         order_by="TransactionEntry.purchased_on",
     )
-
-    @property
-    def effective_amount(self):
-        """Return the amount used in balance calculations.
-
-        Priority order:
-          1. is_deleted -> Decimal("0") (soft-deleted transactions contribute nothing)
-          2. excludes_from_balance (Credit, Cancelled) -> Decimal("0")
-          3. actual_amount if populated -> actual_amount
-          4. estimated_amount when the row OWNS one -> estimated_amount
-          5. otherwise -> REFUSE (the row's amount is derived; see below)
-
-        This property is the single source of truth for what amount a
-        transaction contributes to balance projections, grid subtotals,
-        and any other calculation context.  All active statuses (Projected,
-        Paid, Received, etc.) prefer actual_amount when populated, ensuring
-        that balance projections reflect reality as soon as the user enters
-        a known actual on a still-projected transaction.
-
-        **Arm 5 arrived with the amount model (ruling R-FI, plan step X-au-c1)
-        and it REFUSES rather than answering.**  A row whose amount is DERIVED
-        stores none (``estimated_amount IS NULL``, paired with a non-NULL
-        ``amount_source_id`` by ``ck_transactions_amount_ownership``), and this
-        property CANNOT resolve one: it is a pure in-memory read with no session,
-        and the SALARY rule's producer needs the owner's whole pay-period set to
-        answer at all (``income_service.live_projected_net`` runs
-        ``paycheck_calculator.project_salary`` over every period, because the
-        biweekly rounding residue only reconciles against the complete annual
-        figure).  No per-row property can hold that, which is why the resolver
-        takes a batch basis and lives in the service tier.
-
-        Returning ``None`` was the alternative and is worse: it puts a ``None``
-        into a money path, so the failure surfaces in whichever ``sum()`` or
-        subtraction meets it first rather than at the row that cannot be priced.
-        Substituting a zero is worse still -- it removes real money from a
-        balance in silence.
-
-        **It is UNREACHABLE as of this step and that is deliberate.**  No row is
-        NULLed at X-au-c1, so nothing takes arm 5 outside its own controls; the
-        per-kind cutovers (X-au-d through X-au-i) are what empty the column, and
-        this arm is what makes a reader they have not yet routed fail LOUD at
-        that moment instead of publishing a wrong number.  Plan step X-au-c2
-        moves every caller that can see a projected derived row onto
-        ``cash_ledger``'s resolver-backed valuation and retires this property.
-
-        Raises:
-            AmountUnresolvable: When the row's amount is derived, so neither a
-                human's ``actual_amount`` nor an owned ``estimated_amount``
-                answers.  A 500 at the route, which is the disposition ruled for
-                that exception: the request cannot be answered correctly and
-                answering it wrongly is worse.
-        """
-        if self.is_deleted:
-            return Decimal("0")
-        if self.status and self.status.excludes_from_balance:
-            return Decimal("0")
-        # Use `is not None` -- NOT truthiness.  actual_amount=Decimal("0")
-        # is a valid value (e.g., a waived fee) and must return 0, not
-        # fall back to estimated_amount.
-        if self.actual_amount is not None:
-            return self.actual_amount
-        if self.estimated_amount is None:
-            raise AmountUnresolvable(
-                f"Transaction {self.id} does not own its amount -- "
-                f"amount_source_id={self.amount_source_id} says its figure is "
-                "DERIVED -- so effective_amount cannot answer for it. This "
-                "property is a pure in-memory read and the derivation needs a "
-                "database and, for a paycheck, the owner's whole pay-period "
-                "set. Price the row through "
-                "cash_ledger.resolve_transaction_amount with an AmountBasis "
-                "built over the rows being read."
-            )
-        return self.estimated_amount
 
     @property
     def is_income(self):

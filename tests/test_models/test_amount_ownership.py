@@ -49,6 +49,7 @@ app today, and these tests are what prove they behave as designed when plan
 steps X-au-d..X-au-i make them reachable.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -62,6 +63,8 @@ from app.models.ref import AmountSource, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from tests._test_helpers import load_migration_module
+from app.services.cash_ledger import resolve_transfer_amount
+from app.services.row_valuation import owned_contribution
 
 _MIGRATION = load_migration_module("b3f7c2a9d514_amount_ownership.py")
 
@@ -470,15 +473,24 @@ class TestAmountSourceReferentialIntegrity:
             db.session.rollback()
 
 
-class TestEffectiveAmountRefusesADerivedRow:
-    """The model properties refuse a row whose amount they cannot resolve.
+class TestTheCheapAccessorRefusesADerivedRow:
+    """The producer-free accessors refuse a row whose amount they cannot resolve.
 
-    They are pure in-memory reads with no session, and the SALARY rule's producer
-    needs the owner's whole pay-period set to answer at all
+    They read the row and nothing else, and the SALARY rule's producer needs the
+    owner's whole pay-period set to answer at all
     (``income_service.live_projected_net`` runs the paycheck engine over every
-    period), so no per-row property can hold that derivation.  Answering ``None``
-    would put one into a money path; answering zero would remove real money from
-    a balance in silence.
+    period), so no accessor of this shape can hold that derivation.  Answering
+    ``None`` would put one into a money path; answering zero would remove real
+    money from a balance in silence.
+
+    **The subject moved at plan step X-au-c2 and the rule did not.**  These
+    cases graded ``Transaction.effective_amount`` and
+    ``Transfer.effective_amount``, both now deleted; they grade
+    ``row_valuation.owned_contribution`` and
+    ``cash_ledger.resolve_transfer_amount``, which is where the refusal lives.
+    Keeping them is the point: the refusal is what makes the per-kind cutovers
+    (X-au-d..X-au-i) safe to ship one at a time, because a reader they have not
+    routed fails LOUDLY rather than publishing a wrong number.
     """
 
     def test_a_derived_transaction_refuses(
@@ -496,15 +508,26 @@ class TestEffectiveAmountRefusesADerivedRow:
             db.session.add(txn)
             db.session.flush()
 
-            with pytest.raises(AmountUnresolvable, match="does not own its amount"):
-                _ = txn.effective_amount
+            with pytest.raises(
+                AmountUnresolvable, match="owns its amount and carries none",
+            ):
+                _ = owned_contribution(txn)
 
     def test_a_derived_transfer_refuses(self, app, db, seed_full_user_data):
-        """The transfer twin refuses on the same shape."""
+        """The transfer twin refuses on the same shape.
+
+        It carries a ``due_date`` so the refusal is the one this case is about
+        -- its definition states no price for that day -- rather than the
+        no-date arm, which is a different defect (and has its own control in
+        ``test_services/test_amount_source.py``).  Without the date the row
+        refuses for the wrong reason and the test would pass while proving
+        nothing about the missing FIGURE.
+        """
         with app.app_context():
             xfer = _make_transfer(
                 seed_full_user_data,
                 amount=None,
+                due_date=date(2026, 3, 15),
                 amount_source_id=ref_cache.amount_source_id(
                     AmountSourceEnum.TEMPLATE
                 ),
@@ -512,8 +535,10 @@ class TestEffectiveAmountRefusesADerivedRow:
             db.session.add(xfer)
             db.session.flush()
 
-            with pytest.raises(AmountUnresolvable, match="does not own its amount"):
-                _ = xfer.effective_amount
+            with pytest.raises(
+                AmountUnresolvable, match="price series is EMPTY",
+            ):
+                _ = resolve_transfer_amount(xfer)
 
     def test_a_humans_actual_answers_for_a_derived_row(
         self, app, db, seed_user, seed_periods
@@ -539,7 +564,7 @@ class TestEffectiveAmountRefusesADerivedRow:
             db.session.add(txn)
             db.session.flush()
 
-            assert txn.effective_amount == Decimal("412.55")
+            assert owned_contribution(txn) == Decimal("412.55")
 
     def test_an_excluded_status_answers_zero_for_a_derived_row(
         self, app, db, seed_user, seed_periods
@@ -562,7 +587,7 @@ class TestEffectiveAmountRefusesADerivedRow:
             db.session.add(txn)
             db.session.flush()
 
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
     def test_a_soft_deleted_derived_row_answers_zero(
         self, app, db, seed_user, seed_periods
@@ -580,7 +605,7 @@ class TestEffectiveAmountRefusesADerivedRow:
             db.session.add(txn)
             db.session.flush()
 
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
 
 class TestTheDowngradeRefusesToInventAFigure:
