@@ -34,7 +34,7 @@ staleness was invisible because nothing here is a predicate.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-au-c1** -- the amount model's SCHEMA: both amount columns are NULLABLE under `(amount_source_id IS NULL) = (<amount> IS NOT NULL)`, so a row states EITHER a figure it owns or the RELATION that prices it, never both and never neither. **Nothing is declared derived yet and no figure moves**: the X-au-b oracle re-run on the migrated clone reports the same 997 of 997 agreeing, 0 refusals, `$0.00` drift, 801 derived rows invariant under a nudge to the column they replace. **The teeth are on the WRITE side and that is the half the arc could not buy with prose**: every one of the five private repair mechanisms R-FI names writes the amount column ALONE, so each is now an `IntegrityError` rather than a number nobody can date -- six controls shown FIRING on production data, and the legitimate declare-and-empty write accepted. It also made the at-most-one-pricing-link convention structural (0 of 997 rows held two), which broke one suite test that had leaned on its absence (**N-260**). **Ruling R-FK amends R-FI's own enumeration**: the source names the RELATION, not the RULE, because two LIVE routes (`track_payment`, `delete_profile`) change a DEFINITION and would leave every stamped row naming a producer that no longer answers | Section 5 |
+| **just landed** | **X-au-c2a** -- the amount model's READERS: all 17 `effective_amount` reads in `app/` are routed onto the resolver or its cheap accessor, and BOTH model properties are DELETED with the 104 test reads that were their last callers. A property could not survive the model -- it is a pure in-memory read and a paycheck's derivation needs the owner's whole pay-period set -- so the figure now arrives as an ARGUMENT a caller cannot forget. Three shapes, picked per reader by TRACING its loader's SQL rather than assuming: `owned_contribution` where the query filters to settled, `contributions_by_id` where it cannot, `contribution_of` behind the transfer freeze. `investment_projection` is valued at its BOUNDARY on the developer's ruling, retiring four copies of the status screen with the ORM rows they screened. **Byte-identity was MEASURED**: a new `verify_reader_baseline.py` (the balance baseline is blind to readers outside the seam) reports IDENTICAL against HEAD across nine surfaces on the production clone, and its own firing control catches a one-cent mutation -- an earlier draft did NOT, having guessed field names off three producers that return dicts, so it compared `None` to `None` over three surfaces it never captured. An adversarial review found six defects including one real byte-identity violation no baseline could see (`none_linked` flips for an account whose contributions are all Cancelled; the clone has none), all fixed, each now graded by a test that fails against the pre-fix reading. Closed **N-262**; opened **N-266**-**N-272** | Section 5 |
 | **how it was measured** | **The BEFORE and AFTER are one production row, not an estimate.** The reachable set is exact: two Projected envelope-tracked rows carry purchases, so exactly two rows could reach this door -- 2231 *Gas* moves by `$31.02`, and 2281 *Groceries*, whose stored actual already equals its entry sum, does not move at all. The type rule refuses nothing that exists: of 17 production rows carrying an income type in Paid, **all 17 are transfer shadows**, and every one of the 143 non-shadow settled rows agrees with its own type. Ruling **R-FJ** rests on both signatures being present -- 8 entry-less envelopes booked at estimate (`$794.79`) through a door, 1 at `$0.00` through carry-forward. **And the AUDIT LOG refuted the design's own premise**: the one row cited as evidence that a human types into the Actual box (2281, `$533.08` against a `$500.00` budget) was written by `settle_from_entries` in a single statement with `status_id` and `settled_on` (audit_log id 2978), so no envelope row carries a hand-entered actual and the box could be removed outright. Ten controls in a suite named for the door, each shown to FIRE: routing the door back to the seam fails four | Section 5, X-ap |
 | **in flight** | nothing OF THIS ARC. **Neither the live branch state nor what production runs is recorded here, and neither may be** -- read them from `git branch -vv` and `docker inspect shekel-prod-app --format '{{.Image}}'`. This row asserted "no feature branches exist" on 2026-08-08 while block 10's `C1` was being built on `feat/pay-calendar`, and it then stored a prod image digest that a deploy falsified on 2026-08-09 -- twice over, a volatile value beside no reconciler, which is this arc's own root cause worn as a signpost. The migration head is **`b3f7c2a9d514`** (X-au-c1's, after X-au-a's `a9d3c15e7f42`) | -- |
 | **blocked on you** | **ONE, and it is not this arc's**: the SEQUENCING ruling the recurrence arc opened at X-an-a, whose two options are stated in that arc's section 0. `steps.md` has since sequenced `R6` behind `R5`; whether that DISCHARGES the ruling or merely records one of its options is the developer's to say. **N-227 is RULED (R-FG)**: the attribution bound stays, two of that finding's own claims are withdrawn as measured wrong, and the real defect underneath it -- an envelope's close booking a purchase the statement never saw -- is fixed structurally by `_wholly_spent_by`. Everything X-f2-c2 was waiting on is ruled: the bill's amount (**R-FB**), the panel's shape (**R-FC**), income rows (**R-FD**), the settle's amount rule and where it lives (**R-FE**, amended by **R-FH** to write the cache rather than the human's column), and what makes a tick correctable (**R-FF**) | `implementation_plan_recurrence_redesign.md` section 0 |
@@ -451,34 +451,29 @@ hides.
     the RULE (**R-FK**), and two conventions became structural. **What a LATER leaf must obey**:
     nothing is declared derived yet, so each cutover stamps its own relation -- and a writer that
     sets a figure without clearing the source is now an `IntegrityError`. Opened **N-260**-**N-265**.
-  * [ ] **X-au-c2** `refactor(cash): every reader asks what a row is worth` -- the READERS, and the
-    OWN arm moves onto the column (**N-262**): `amount_rule` stops INFERRING ownership from
-    `is_override` and from having left Projected -- states the CHECK cannot see, so a flag written
-    without a figure or a row cancelled before the freeze is one the schema admits and the resolver
-    refuses -- and the status gate moves ABOVE the resolver, because `effective_amount` answers
-    `$0.00` for an excluded row while the resolver would raise for the same one.
-    **`Transaction.effective_amount` and `Transfer.effective_amount` are MODEL PROPERTIES**
-    (`models/transaction.py`, `models/transfer.py`) with no DB access, and neither CAN resolve a
-    derived amount: the SALARY rule's producer needs the owner's whole pay-period set
-    (`income_service.live_projected_net` runs the paycheck engine over every period), so no per-row
-    property can hold it. They are replaced by a valuation that takes the resolved figure as an
-    argument, which a caller cannot forget. **The census is measured, not estimated**: ~25 code reads
-    across 15 modules -- `carry_forward_service/_execute.py:336` and `:350` do arithmetic directly on
-    the column, `routes/entries.py:141` and `entry_service.py:736` compute an envelope's remaining
-    budget from it, `investment_projection.py` sums `effective_amount` over PROJECTED contribution
-    shadows at two sites, `balance_at/_plan.py:204` reads `live_cash.get(id, effective_amount)`, and
-    `cash_ledger/_amounts.py` composes both legs. **Byte-identity is what makes a 15-module refactor
-    gradeable by a baseline diff, and it is EMPIRICAL until N-262's fix makes it structural** --
-    an adversarial review refuted the first draft's "by construction": `amount_rule` never reads
-    `amount_source_id`, so a Projected template-linked row prices from the SERIES, and all 606 of
-    them agree with their stored column only because X-au-b measured `$0.00` drift and
-    `regenerate_for_template` actively rewrites a row when its series moves. Making the OWN arm a
-    column read is what turns that measurement into a construction, so it lands in this leaf and
-    the baseline harness grades the rest. Two callers stay on a cheap accessor whose name asserts the row owns its figure
-    (`loan_ledger/_split.py`, `loan_posting_service/_sync.py` read SETTLED shadows only) rather than
-    building a basis that would run the paycheck engine to read a figure the row already holds.
-    `amount_basis` re-keys from an `account` to a `(user_id, scenario_id)` pair -- it reads only
-    `account.user_id` -- so a cross-account surface builds ONE basis instead of grouping by account.
+  * [x] **X-au-c2a** `d44a4f01` the READERS: all 17 `effective_amount` reads routed and BOTH model
+    properties DELETED, with the 104 test reads that were their last callers.
+    `investment_projection` is valued at its boundary. **What a LATER leaf must obey**:
+    `get_payment_history` can never take the resolver (**N-266**, a cycle), and nothing reachable
+    from `loan_payment_service` may NAME `cash_ledger` (**N-267**) -- which is why the
+    producer-free arms live in `row_valuation.py`. Closed **N-262**; opened **N-266**-**N-272**.
+  * [ ] **X-au-c2b** `refactor(cash): a row's BUDGET is resolved, not read off the column` -- the
+    second reader group, split out when the census came back at two kinds (developer ruling,
+    2026-08-12). These ~15 sites across 8 modules never touched the property: they read
+    `estimated_amount` DIRECTLY as the row's budget -- `compute_remaining(txn.estimated_amount,
+    entries)` in `entry_service`, `dashboard_service` and `routes/entries.py`, the carry-forward
+    leftover arithmetic in `_execute.py:337` and `_preview.py:272`, `_context.py:296`'s TOP_UP base,
+    `credit_workflow.py:356`'s payback amount, and the spending report's settled estimate. Nothing
+    forces them today, which is exactly why they are their own leaf rather than deferred: under the
+    amount model a derived row's column is NULL, so at each per-kind cutover an unrouted one meets
+    `None - Decimal` and 500s on a live screen. **They need the RESOLVED AMOUNT, not the
+    contribution**, so the batch this leaf adds is `amounts_by_id` rather than
+    `contributions_by_id`: E-21 rules an envelope's budget base is `estimated_amount`
+    unconditionally -- never `actual_amount`, never status-dependent -- and `contributed_amount`
+    would answer `$0.00` for a Cancelled envelope where the budget is still its budget.
+    Byte-identity is structural for the same reason it was in X-au-c2a and only while it lasts:
+    every row is OWN, so the resolver answers the stored column through one arm, and that window
+    closes at the first cutover.
   * [ ] **X-au-c3** `fix(cash): a settle freezes what the row is worth` -- the FREEZE and its
     INVERSE, closing **N-241**, **N-242**, **N-245** and **N-259**. At settle the resolved figure is
     written to the row's OWN amount column and the declaration is dropped, so the row owns it from
@@ -609,7 +604,11 @@ hides.
   one reproduced twice independently. The placement is X-ai's, not a patch at each loop. Carries
   **N-135** (wrap both bare fact fields in their own types). Re-lands after X-ai.
 * [ ] **X-aj** `refactor(status): one status seam, and the fence is structural` -- rulings
-  **R-DN**, **R-DO**, **R-DP**; carries **N-145**. Its merge half shipped as X-aj1 above.
+  **R-DN**, **R-DO**, **R-DP**. Its merge half shipped as X-aj1 above, which ANSWERED
+  **N-145** (`transfer_service.py` at 999 of the 1000-line ceiling, blocking X-d): R-DN
+  ruled it and X-aj1 took the module to 987. That row is archived here rather than carried
+  (2026-08-13) -- what survives is **N-152**'s claim that 987 is an answer and not a
+  solution, and the structural remedy is the PACKAGE X-f2-c3 later built.
   * [ ] **X-aj2** the structural write door and the DELETION of W9907 (**R-DP**), carrying
     **N-149**, **N-151**, **N-185** and **N-188**. Its trace decides the three candidates R-DP
     names and must rule what a row may be BORN as: today `create_transfer` runs no legality check,

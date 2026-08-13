@@ -521,7 +521,7 @@ def _resolve_seed_balances(
     Ruling R-AB's seed, read once per AXIS rather than once per batch.  Every
     event inside the window is then the growth engine's to apply and none of
     them is in the seed, which is what let the
-    ``current_period_transfer_contribution`` subtraction this projection used to
+    current-period contribution subtraction this projection used to
     carry DELETE rather than be ported (deep-quality-hunt #14): the compensator
     existed because the seed was read at the current period's END while the
     window opened at that period's START, so a recorded contribution on the

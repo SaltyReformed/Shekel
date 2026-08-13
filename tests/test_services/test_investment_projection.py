@@ -12,7 +12,6 @@ from app.services.growth_engine import ContributionRecord
 from app.services.investment_projection import (
     build_contribution_timeline,
     calculate_investment_inputs,
-    current_period_transfer_contribution,
     InvestmentInputs,
     PricedContribution,
 )
@@ -932,52 +931,3 @@ class TestBuildContributionTimelineAnnualCap:
         assert [r.amount for r in result] == [
             Decimal("700.00"), Decimal("500.00"), Decimal("100.00"),
         ]
-
-
-class TestCurrentPeriodTransferContribution:
-    """deep-hunt #9: the current period's transfer contribution the seed must
-    remove before projecting.
-
-    This is the amount the entries-aware end-of-current balance already
-    contains AND the growth engine re-applies for the current period, so
-    subtracting exactly it (and nothing else) leaves the contribution
-    applied once without dropping any other current-period movement.
-    """
-
-    def test_sums_only_current_period_active_transfers(self):
-        """Sums effective_amount of active shadow contributions in the current period."""
-        current = FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1)
-        txns = [
-            _priced(Decimal("300.00"), 2, is_confirmed=True),    # current period
-            _priced(Decimal("200.00"), 2, is_confirmed=False),  # current period
-            _priced(Decimal("500.00"), 1, is_confirmed=True),    # other period -> excluded
-            _priced(Decimal("999.00"), 3, is_confirmed=False),  # other period -> excluded
-        ]
-        # 300 + 200 fall in period 2; periods 1 and 3 are excluded.
-        assert current_period_transfer_contribution(txns, current) == Decimal("500.00")
-
-    # The Cancelled / Credit exclusion this class used to pin moved to the
-    # boundary with the screen itself (plan step X-au-c2) -- see the note in
-    # :class:`TestBuildContributionTimeline` and
-    # ``test_projection_inputs.TestShadowContributionBoundary``.  The property
-    # that mattered survives and is now STRUCTURAL rather than maintained: this
-    # compensator and ``build_contribution_timeline`` read the very same
-    # records, so the subtraction cannot fail to cancel by the two disagreeing
-    # about which rows count.
-
-    def test_none_current_period_returns_zero(self):
-        """A None current period yields ZERO (no subtraction)."""
-        txns = [_priced(Decimal("400.00"), 2, is_confirmed=True)]
-        assert current_period_transfer_contribution(txns, None) == Decimal("0")
-
-    def test_no_current_period_transfer_returns_zero(self):
-        """No transfer in the current period -> ZERO.
-
-        Deduction-funded or expense-only accounts have nothing to subtract,
-        so the seed stays at the full end-of-current balance and the engine
-        applies the deduction (not a transaction) once for the current
-        period.
-        """
-        current = FakePeriod(id=5, start_date=date(2026, 2, 13), period_index=4)
-        txns = [_priced(Decimal("400.00"), 1, is_confirmed=True)]  # different period
-        assert current_period_transfer_contribution(txns, current) == Decimal("0")

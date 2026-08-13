@@ -590,42 +590,6 @@ def _deduction_contribution_records(deductions, periods, pct_id, today):
     return records
 
 
-def current_period_transfer_contribution(contribution_transactions, current_period):
-    """Sum the effective contribution the current period's transfers add.
-
-    These shadow income contributions are BOTH counted in the entries-aware
-    end-of-current-period balance (``cash_ledger.income_amount``, which values
-    the row the same way) AND re-applied by the growth engine when the
-    projection window includes the current period
-    (:func:`build_contribution_timeline` Path 2, off the same priced
-    records).  Subtracting this sum from the end-of-current
-    seed cancels exactly that double-count (deep-quality-hunt #9 / #14)
-    while preserving every OTHER current-period balance movement -- a
-    withdrawal, a fee, an entries-aware envelope expense -- which the
-    engine never re-creates, so a blunter "re-anchor to the prior period"
-    seed would silently drop them.
-
-    Deductions are intentionally NOT summed here: they are not budget
-    transactions, so they are absent from the balance and must be applied
-    fresh by the engine for the current period (the engine's own walk does
-    that via the timeline's Path 1).
-
-    Args:
-        contribution_transactions: :class:`PricedContribution` records for one
-            account.
-        current_period: The current period object, or None.
-
-    Returns:
-        The priced sum of the contributions whose ``pay_period_id`` is the
-        current period; ZERO when current_period is None.
-    """
-    if current_period is None:
-        return ZERO
-    return _sum_year_contributions(
-        contribution_transactions, {current_period.id},
-    )
-
-
 def build_contribution_timeline(
     deductions,
     contribution_transactions,

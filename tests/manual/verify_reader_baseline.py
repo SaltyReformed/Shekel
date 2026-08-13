@@ -37,6 +37,16 @@ For the HEAD side use ``git worktree add`` -- never ``git checkout``, which
 reverts the working tree and discards the change under test
 (``docs/plans/lessons.md``).
 
+**RUN BOTH SIDES ON THE SAME CIVIL DAY.**  Several of these producers are
+clock-dependent -- the retirement and investment projections seed from the
+current period and accrue forward from today -- so a BEFORE captured yesterday
+and an AFTER captured today differ by the calendar, not by the change.  Measured
+during plan step X-au-c2a: a run that straddled midnight reported 2,277 moved
+lines and a `current_balance` of `$2,422.94` against `$2,290.36`, all of it the
+date.  Re-running the HEAD side the same day made the two IDENTICAL.  If a diff
+surprises you, re-capture the HEAD side before reading a single figure -- the
+harness cannot tell the two causes apart and does not try to.
+
 Every figure is stringified through :func:`_money` so a ``Decimal`` diff is a
 TEXT diff: ``Decimal("1.10")`` and ``Decimal("1.1")`` are equal numerically and
 must not be reported as a move, while ``1.10`` -> ``1.11`` must be.
