@@ -56,6 +56,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services import escrow_calculator, loan_resolver
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
 from app.services.loan_ledger import payment_visible_on
+from app.services.row_valuation import owned_contribution
 from app.services.loan_loaders import (
     _rate_change_records_from,
     load_escrow_lines,
@@ -226,9 +227,32 @@ def get_payment_history(
       - status.excludes_from_balance = False (excludes Cancelled and
         Credit statuses, which do not represent actual payments)
 
-    Uses effective_amount (not manual actual/estimated logic) to
-    respect the 5A.1 fix: actual_amount when populated, else
-    estimated_amount, with correct zero-vs-null handling.
+    Prices each row through
+    :func:`~app.services.cash_ledger.owned_contribution` -- the accessor whose
+    NAME asserts the row owns its figure -- rather than through the amount
+    model's resolver, and that is a CYCLE rather than a preference (plan step
+    X-au-c2).  This query is NOT settled-only: ``query_shadow_income`` filters
+    Credit and Cancelled but ADMITS Projected, and a Projected loan-side income
+    shadow is exactly the kind plan step X-au-g would declare derived.  It
+    cannot be, because the rule that would price it routes back here:
+    ``cash_ledger.resolve_transaction_amount`` -> the LOAN_PAYMENT rule ->
+    ``live_loan_transfer_amounts`` -> ``_resolve_loan_basis`` ->
+    :func:`load_loan_context` -> this function.  Asking the resolver here would
+    ask the loan to price the rows its own price is derived from.
+
+    **So the loan-side INCOME leg must keep owning its figure, and only the
+    checking-side EXPENSE leg can be declared derived** -- which is available
+    precisely because that leg is invisible to ``query_shadow_income`` (it
+    filters to the destination account and the income type).  That bound is
+    X-au-g's to honour; it is the same root cause as finding **N-259**, one step
+    earlier in the chain.  The accessor's refusal is what makes the bound
+    enforced rather than remembered: a cutover that declared this leg derived
+    would fail LOUDLY here instead of feeding a ``None`` into the amortization
+    engine.
+
+    The valuation itself is unchanged: ``actual_amount`` when populated, else
+    the row's own ``estimated_amount``, with correct zero-vs-null handling (the
+    5A.1 fix), and ``0`` for a row that contributes nothing.
 
     Each record carries all three of a loan payment's dates (see
     :class:`~app.services.amortization_engine.PaymentRecord`): ``payment_date``
@@ -299,9 +323,9 @@ def get_payment_history(
 
     payments = []
     for txn in txns:
-        amount = txn.effective_amount
-        # Defensive: ensure Decimal even if effective_amount somehow
-        # returns a non-Decimal from a DB column.
+        amount = owned_contribution(txn)
+        # Defensive: ensure Decimal even if the stored column somehow
+        # yields a non-Decimal.
         if not isinstance(amount, Decimal):
             amount = Decimal(str(amount))
 
@@ -642,10 +666,11 @@ def _manual_shadow_amount(
     top (spec Sec. 6.1, "extra added in BOTH modes"), and the settle freeze
     captures the same base + extra so the split routes the extra into principal.
 
-    The base is ``estimated_amount`` (the recurring base), NOT ``effective_amount``:
+    The base is ``estimated_amount`` (the recurring base), NOT the row's
+    CONTRIBUTION:
     a projected shadow can carry an operator-typed ``actual_amount`` while still
     ``is_projected`` and NOT ``is_override`` (a grid full-edit does not set the
-    override flag), and ``effective_amount`` would return that actual, stacking
+    override flag), and the contribution would return that actual, stacking
     ``extra`` on a per-instance typed value.  Keying to ``estimated_amount`` (NOT
     NULL, always the generated base) makes manual mode COHERENT with derive mode,
     which likewise recomputes from config and ignores a pre-settle typed actual.

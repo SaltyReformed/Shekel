@@ -185,16 +185,19 @@ class TestTheSubtotalsCountEveryAttributedRow:
         # reconciled-through bound.  The $75.00 bill carries no entries, so
         # neither field can move the figure -- which is why the basis is built
         # honestly rather than zeroed to make the call compile.
-        basis = cash_ledger.ProjectedBasis(
-            amount_overrides={},
-            reconciled_through=cash_ledger.reconciled_through(account.id),
-        )
-        _, unpaid_only_expense = cash_ledger.sum_projected([
+        period_rows = [
             row for row in cash_ledger.planned_cash_rows(
                 account.id, scenario.id,
             )
             if row.pay_period_id == seed_periods[2].id
-        ], basis)
+        ]
+        basis = cash_ledger.ProjectedBasis(
+            amounts=cash_ledger.amount_basis(
+                account.user_id, scenario.id, period_rows,
+            ),
+            reconciled_through=cash_ledger.reconciled_through(account.id),
+        )
+        _, unpaid_only_expense = cash_ledger.sum_projected(period_rows, basis)
         assert unpaid_only_expense == Decimal("75.00")
         assert figures.expense - unpaid_only_expense == Decimal("200.00")
 

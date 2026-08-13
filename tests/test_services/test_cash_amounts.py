@@ -63,6 +63,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+from app.services.cash_ledger._amount_source import AmountBasis
 from app.services.cash_ledger._amounts import (
     ProjectedBasis,
     ReconciledThrough,
@@ -85,6 +86,26 @@ _STATEMENT_DAY = date(2026, 1, 22)
 # `ReconciledThrough.covers` -- see that class for what the fifth spelling
 # of this rule cost production.
 _ASSERTED_THROUGH = ReconciledThrough(_STATEMENT_DAY)
+
+
+def _basis(*rows, overrides=None, reconciled_through=_ASSERTED_THROUGH):
+    """The :class:`ProjectedBasis` a producer would hand these rows.
+
+    Built HONESTLY rather than zeroed: ``priced_ids`` covers exactly the rows
+    passed, because the resolver refuses a row its basis was not built over, and
+    a test that reached a refusal by violating that contract would be grading
+    the contract instead of the rule.  ``overrides`` lands in the SALARY map --
+    either producer's map answers :func:`live_override` identically, and which
+    rule prices a row is never decided by which map its id turned up in.
+    """
+    return ProjectedBasis(
+        amounts=AmountBasis(
+            priced_ids=frozenset(row.id for row in rows),
+            salary_net=dict(overrides or {}),
+            loan_cash={},
+        ),
+        reconciled_through=reconciled_through,
+    )
 _POSTED_AFTER_THE_STATEMENT = date(2026, 1, 23)
 
 
@@ -149,7 +170,7 @@ class TestTheEntryAwareReservation:
         with app.app_context():
             txn = _envelope(db.session, seed_user, seed_periods[1], "500.00")
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
 
     def test_debit_under_budget_holds_the_full_reservation(
         self, app, db, seed_user, seed_periods,
@@ -165,7 +186,7 @@ class TestTheEntryAwareReservation:
                 [("200.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
 
     def test_a_credit_entry_reduces_the_reservation(
         self, app, db, seed_user, seed_periods,
@@ -181,7 +202,7 @@ class TestTheEntryAwareReservation:
                 [("300.00", False, None), ("100.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("400.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("400.00")
 
     def test_all_credit_leaves_only_the_uncovered_portion(
         self, app, db, seed_user, seed_periods,
@@ -197,7 +218,7 @@ class TestTheEntryAwareReservation:
                 [("400.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("100.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("100.00")
 
     def test_debit_overspend_raises_the_reservation_to_the_debits(
         self, app, db, seed_user, seed_periods,
@@ -213,7 +234,7 @@ class TestTheEntryAwareReservation:
                 [("530.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("530.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("530.00")
 
     def test_mixed_overspend_takes_the_debit_floor_over_the_reduction(
         self, app, db, seed_user, seed_periods,
@@ -229,7 +250,7 @@ class TestTheEntryAwareReservation:
                 [("400.00", False, None), ("200.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("400.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("400.00")
 
     def test_zero_estimate_with_a_debit_reserves_the_debit(
         self, app, db, seed_user, seed_periods,
@@ -245,7 +266,7 @@ class TestTheEntryAwareReservation:
                 [("50.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("50.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("50.00")
 
     def test_credit_exceeding_the_estimate_floors_at_the_debits(
         self, app, db, seed_user, seed_periods,
@@ -261,7 +282,7 @@ class TestTheEntryAwareReservation:
                 [("100.00", False, None), ("600.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("100.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("100.00")
 
     def test_one_cent_debit_does_not_disturb_the_reservation(
         self, app, db, seed_user, seed_periods,
@@ -277,7 +298,7 @@ class TestTheEntryAwareReservation:
                 [("0.01", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
 
     def test_values_near_the_column_limit_do_not_overflow(
         self, app, db, seed_user, seed_periods,
@@ -295,7 +316,7 @@ class TestTheEntryAwareReservation:
                 [(large, False, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal(large)
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal(large)
 
     def test_a_row_with_no_template_is_worth_its_effective_amount(
         self, app, db, seed_user, seed_periods,
@@ -313,7 +334,7 @@ class TestTheEntryAwareReservation:
             )
             db.session.commit()
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("1200.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("1200.00")
 
 
 class TestTheRecordedPostingDay:
@@ -359,7 +380,7 @@ class TestTheRecordedPostingDay:
                  ("105.77", False, _POSTED_ON)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("37.66")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("37.66")
 
     def test_partial_settled_and_outstanding(
         self, app, db, seed_user, seed_periods,
@@ -375,7 +396,7 @@ class TestTheRecordedPostingDay:
                 [("100.00", False, _POSTED_ON), ("50.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("400.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("400.00")
 
     def test_settled_overspend_floors_at_zero(
         self, app, db, seed_user, seed_periods,
@@ -392,7 +413,7 @@ class TestTheRecordedPostingDay:
                 [("600.00", False, _POSTED_ON)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("0.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("0.00")
 
     def test_all_outstanding_reduces_to_the_legacy_formula(
         self, app, db, seed_user, seed_periods,
@@ -409,7 +430,7 @@ class TestTheRecordedPostingDay:
                 [("200.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
 
     def test_settled_debit_plus_credit_both_reduce(
         self, app, db, seed_user, seed_periods,
@@ -425,7 +446,7 @@ class TestTheRecordedPostingDay:
                 [("200.00", False, _POSTED_ON), ("100.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("200.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("200.00")
 
     def test_a_new_purchase_has_no_posting_day_and_is_outstanding(
         self, app, db, seed_user, seed_periods,
@@ -455,7 +476,7 @@ class TestTheRecordedPostingDay:
             db.session.commit()
 
             assert txn.entries[0].settled_on is None
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
 
     def test_a_purchase_posted_after_the_statement_is_outstanding(
         self, app, db, seed_user, seed_periods,
@@ -484,7 +505,7 @@ class TestTheRecordedPostingDay:
                 [("200.00", False, _POSTED_AFTER_THE_STATEMENT)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
 
     def test_a_purchase_posted_ON_the_statement_day_is_inside_it(
         self, app, db, seed_user, seed_periods,
@@ -508,7 +529,7 @@ class TestTheRecordedPostingDay:
                 [("200.00", False, _STATEMENT_DAY)],
             )
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("300.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("300.00")
 
     def test_an_account_that_has_never_asserted_reconciles_nothing(
         self, app, db, seed_user, seed_periods,
@@ -535,7 +556,7 @@ class TestTheRecordedPostingDay:
             )
 
             assert _entry_aware_amount(
-                txn, ReconciledThrough(None),
+                txn, _basis(txn, reconciled_through=ReconciledThrough(None)),
             ) == Decimal("500.00")
 
 
@@ -572,7 +593,7 @@ class TestTheEntriesRelationshipIsNotASeam:
             db.session.expire(txn)
             assert "entries" not in txn.__dict__
 
-            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("200.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("200.00")
 
     def test_the_silent_degrade_seam_is_absent_from_source(self):
         """C5-8: the ``'entries' not in __dict__`` short-circuit is not in source.
@@ -648,7 +669,16 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
 
     def __init__(self, txn_id=None, effective_amount="77.00"):
         self.id = txn_id
-        self.effective_amount = Decimal(effective_amount)
+        # What the row OWNS, which since plan step X-au-c2 is what the
+        # valuation reads: ``amount_source_id IS NULL`` says the figure is the
+        # row's own, and the four attributes below are every column the OWN arm
+        # and the contribution gate touch.  There is no ``effective_amount``
+        # property any more -- the resolved figure arrives as an argument.
+        self.estimated_amount = Decimal(effective_amount)
+        self.amount_source_id = None
+        self.actual_amount = None
+        self.is_deleted = False
+        self.status = None
 
 
 class TestTheLiveOverride:
@@ -684,10 +714,7 @@ class TestTheLiveOverride:
         anchor $100.00 + override = $2573.38.)
         """
         row = _FakeRow(txn_id=101, effective_amount="2000.00")
-        basis = ProjectedBasis(
-            amount_overrides={101: Decimal("2473.38")},
-            reconciled_through=_ASSERTED_THROUGH,
-        )
+        basis = _basis(row, overrides={101: Decimal("2473.38")})
 
         assert income_amount(row, basis) == Decimal("2473.38")
 
@@ -700,9 +727,7 @@ class TestTheLiveOverride:
         not a state a caller can be in.
         """
         row = _FakeRow(txn_id=101, effective_amount="2000.00")
-        basis = ProjectedBasis(
-            amount_overrides={}, reconciled_through=_ASSERTED_THROUGH,
-        )
+        basis = _basis(row)
 
         assert income_amount(row, basis) == Decimal("2000.00")
 
@@ -712,10 +737,7 @@ class TestTheLiveOverride:
         The map keys id 999; row 101 keeps its stored $2000.00.
         """
         row = _FakeRow(txn_id=101, effective_amount="2000.00")
-        basis = ProjectedBasis(
-            amount_overrides={999: Decimal("5.00")},
-            reconciled_through=_ASSERTED_THROUGH,
-        )
+        basis = _basis(row, overrides={999: Decimal("5.00")})
 
         assert income_amount(row, basis) == Decimal("2000.00")
 
@@ -738,12 +760,9 @@ class TestTheLiveOverride:
                 db.session, seed_user, seed_periods[1], "500.00",
                 [("200.00", False, _POSTED_ON), ("250.00", False, _POSTED_ON)],
             )
-            no_override = ProjectedBasis(
-                amount_overrides={}, reconciled_through=_ASSERTED_THROUGH,
-            )
-            overridden = ProjectedBasis(
-                amount_overrides={txn.id: Decimal("123.45")},
-                reconciled_through=_ASSERTED_THROUGH,
+            no_override = _basis(txn)
+            overridden = _basis(
+                txn, overrides={txn.id: Decimal("123.45")},
             )
 
             assert _expense_amount(txn, no_override) == Decimal("50.00")
@@ -755,13 +774,12 @@ class TestTheLiveOverride:
         ``_entry_aware_amount`` checks ``not entries`` FIRST and that is
         load-bearing rather than stylistic -- ``is_projected`` reads
         ``status_id`` through ``ref_cache``, so a non-ORM row with neither
-        attribute must still return ``effective_amount`` rather than raising.
+        attribute must still be valued rather than raising.
 
         Mutation-verified: swapping the two guards fails this with
         ``AttributeError: '_FakeRow' object has no attribute 'status_id'`` --
         ``is_projected`` reads ``status_id`` BEFORE it consults ``ref_cache``,
         so that attribute, not the cache, is what the ordering protects.
         """
-        assert _entry_aware_amount(_FakeRow(), _ASSERTED_THROUGH) == Decimal(
-            "77.00",
-        )
+        row = _FakeRow(txn_id=1)
+        assert _entry_aware_amount(row, _basis(row)) == Decimal("77.00")

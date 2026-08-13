@@ -45,6 +45,7 @@ from app.services import (
     pay_period_write,
 )
 from app.services.auth_service import hash_password
+from app.services.row_valuation import owned_contribution
 
 
 #: The out-of-band swap that carries the balance acknowledgement into
@@ -3579,7 +3580,7 @@ class TestTheTransferArmThroughItsROUTE:
             )
             for leg in legs:
                 assert leg.actual_amount == Decimal("80.25")
-                assert leg.effective_amount == Decimal("80.25")
+                assert owned_contribution(leg) == Decimal("80.25")
 
     def test_an_ECHOED_prefill_on_a_transfer_records_no_correction(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3616,7 +3617,7 @@ class TestTheTransferArmThroughItsROUTE:
             )
             for leg in legs:
                 assert leg.actual_amount is None
-                assert leg.effective_amount == Decimal("75.00")
+                assert owned_contribution(leg) == Decimal("75.00")
 
 
 class TestTheCashFigureRendersBesideTheBookedOne:

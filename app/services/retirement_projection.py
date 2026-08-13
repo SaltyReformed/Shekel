@@ -31,7 +31,6 @@ from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.services import (
     account_service,
     balance_at,
@@ -40,7 +39,10 @@ from app.services import (
     income_service,
     pension_calculator,
 )
-from app.services.investment_projection import adapt_deductions
+from app.services.investment_projection import (
+    ShadowContributions,
+    adapt_deductions,
+)
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_accounts,
@@ -117,7 +119,7 @@ class _ProjectionBatch:
     Attributes:
         deductions_by_account: Active paycheck deductions keyed by
             account ID.
-        contributions: Shadow-income contribution transactions across all
+        contributions: The priced shadow-income contributions across all
             projected accounts (filtered per account in the loop).
         params_by_account: :class:`InvestmentParams` keyed by account ID
             (accounts with no params row are absent) -- one ``IN`` query
@@ -151,7 +153,7 @@ class _ProjectionBatch:
     """
 
     deductions_by_account: dict[int, list[PaycheckDeduction]]
-    contributions: list[Transaction]
+    contributions: ShadowContributions
     params_by_account: dict[int, InvestmentParams]
     salary_gross_biweekly: Decimal
     balance_map: dict[int, Decimal]
@@ -422,8 +424,13 @@ def load_projection_batch(
     deductions_by_account = load_active_deductions_for_accounts(
         ctx.user_id, account_ids,
     )
+    # Resolved BEFORE the contributions rather than beside the balance read
+    # below, because pricing a contribution needs the scenario its amount
+    # resolves under (plan step X-au-c2).  One baseline scenario for the whole
+    # pass either way -- this only moves where it is asked for.
+    balance_ctx = BalanceContext.build(ctx.user_id)
     contributions = load_shadow_income_contributions_for_accounts(
-        account_ids, period_ids,
+        ctx.user_id, balance_ctx.scenario_id, account_ids, period_ids,
     )
 
     # One IN query for the params rows (P2: replaces the per-account
@@ -450,8 +457,7 @@ def load_projection_batch(
     # dashboard).  The forward projection seeds from the same curve, read a day
     # before its own AXIS opens, which is why the seed is not a field of this
     # bundle -- see :class:`_ProjectionBatch`.  Both read the one baseline
-    # scenario, resolved once here and shared for the whole pass.
-    balance_ctx = BalanceContext.build(ctx.user_id)
+    # scenario, resolved once above and shared for the whole pass.
     balance_map = _resolve_displayed_balances(ctx, balance_ctx)
     return _ProjectionBatch(
         deductions_by_account=deductions_by_account,
@@ -515,7 +521,7 @@ def _resolve_seed_balances(
     Ruling R-AB's seed, read once per AXIS rather than once per batch.  Every
     event inside the window is then the growth engine's to apply and none of
     them is in the seed, which is what let the
-    ``current_period_transfer_contribution`` subtraction this projection used to
+    current-period contribution subtraction this projection used to
     carry DELETE rather than be ported (deep-quality-hunt #14): the compensator
     existed because the seed was read at the current period's END while the
     window opened at that period's START, so a recorded contribution on the
@@ -665,7 +671,7 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
         An :class:`_AccountProjectionResult`.
     """
     acct_contributions = [
-        t for t in batch.contributions if t.account_id == acct.id
+        c for c in batch.contributions.records if c.account_id == acct.id
     ]
     adapted_deductions = adapt_deductions(
         batch.deductions_by_account.get(acct.id, []),
@@ -759,10 +765,15 @@ def _project_one_account(
         else cash_ledger.resolve_anchor(acct).balance
     )
     acct_deductions = batch.deductions_by_account.get(acct.id, [])
-    acct_contributions = [
-        t for t in batch.contributions if t.account_id == acct.id
-    ]
-    none_linked = not acct_deductions and not acct_contributions
+    # PRESENCE, not contribution: an account whose every contribution is
+    # Cancelled still HAS one linked, and telling its owner to link one would
+    # be wrong.  Read off the unscreened set the loader carries for exactly
+    # this reader (:class:`ShadowContributions`); an adversarial review caught
+    # this flipping when the status screen moved to the boundary.
+    none_linked = (
+        not acct_deductions
+        and acct.id not in batch.contributions.linked_account_ids
+    )
 
     if params is not None and projection_periods:
         result = _run_account_projection(

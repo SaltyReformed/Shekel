@@ -48,7 +48,7 @@ def _release_derived_actual(txn: Transaction) -> None:
     Production row 2281 *Groceries* is Projected today carrying
     ``actual_amount = 533.08`` against a `$500.00` budget -- written by
     ``settle_from_entries`` (audit_log id 2978, one statement with ``status_id``
-    and ``settled_on``) and left behind by a later revert.  ``effective_amount``
+    and ``settled_on``) and left behind by a later revert.  The valuation
     is ``COALESCE(actual, estimated)``, so that row projects at its SPEND rather
     than its budget, and a purchase deleted while it is Projected does not move
     the figure: :func:`app.services.entry_service._resync_settled_envelope` is
@@ -150,7 +150,7 @@ def apply_requested_status(
     # both halves of that matter -- the predicate is about the status the row
     # is LEAVING, and a refused transition must leave the row untouched (the
     # ordering ``apply_status_change`` uses for its own three refusals).  It
-    # lands before the reconcile below, which reads ``effective_amount``.
+    # lands before the reconcile below, which reads the row's contribution.
     releases_derived_actual = leaves_settled_band(txn, new_status_id)
     apply_status_change(txn, new_status_id, settled_on=settled_on)
     if releases_derived_actual:

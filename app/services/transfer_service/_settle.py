@@ -37,11 +37,11 @@ adversarial reviews measured it unsafe on today's schema:
   generated base"*.  Writing the freeze there makes the derivation read its own
   output, so a settle / revert / settle cycle COMPOUNDS the standing extra --
   measured ``$1,599.10 -> $1,699.10 -> $1,799.10``;
-* ``effective_amount`` is ``COALESCE(actual, estimated)``, and nothing clears a
-  leftover ``actual_amount`` when a transfer is reverted (finding **N-257**), so
-  a freeze written to ``estimated_amount`` is silently OUTRANKED by it -- the
-  panel offers the frozen figure and the settle books the stale one, ``$99.10``
-  apart on the reviewed measurement.
+* what a row is worth prefers a human's ``actual_amount`` over its own amount,
+  and nothing clears a leftover ``actual_amount`` when a transfer is reverted
+  (finding **N-257**), so a freeze written to ``estimated_amount`` is silently
+  OUTRANKED by it -- the panel offers the frozen figure and the settle books
+  the stale one, ``$99.10`` apart on the reviewed measurement.
 
 Both hazards are the same shape: the write is neither idempotent nor
 authoritative while the schema has no way to say whether a row's amount is its
@@ -72,6 +72,8 @@ from decimal import Decimal
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services import loan_payment_service
+from app.services.cash_ledger import amount_basis, resolve_transaction_amount
+from app.services.row_valuation import fixed_contribution
 from app.services.transfer_service._status import apply_status_to_all_three
 from app.services.transfer_service._validation import TransferRows
 from app.utils.log_events import (
@@ -97,7 +99,7 @@ def _reject_unsettleable(shadow: Transaction) -> None:
     refuses a shadow and names this module as the place a shadow goes.
 
     **A soft-deleted shadow** must not be resurrected by a settle.  It values
-    at ``Decimal("0")`` through ``effective_amount``, so settling one books
+    at ``Decimal("0")`` (the valuation's own gate), so settling one books
     nothing while stamping both legs Paid and dated: a pair that reads settled
     and is worth nothing.  ``_get_transfer_or_raise`` already refuses a deleted
     PARENT, and the reconcile arm's own scope excludes both -- but
@@ -178,7 +180,7 @@ def settle_amount(shadow: Transaction) -> Decimal:
 
     **The transfer twin of ``transaction_service.settle_amount``, and it exists
     for the same reason**: the reconcile panel must show the figure a tick will
-    book, and a panel rendering ``effective_amount`` beside a verb that books
+    book, and a panel rendering the row's own amount beside a verb that books
     the freeze is two answers to one money question, one screen apart.
     :func:`settle` resolves its own figure through the same two functions, so
     the displayed figure and the booked one cannot drift.
@@ -190,17 +192,72 @@ def settle_amount(shadow: Transaction) -> Decimal:
         shadow: The leg being offered, still Projected.
 
     Returns:
-        The frozen live figure when there is one, else the row's stored
-        ``effective_amount``.
+        The frozen live figure when there is one, else what the row
+        CONTRIBUTES (:func:`_unfrozen_amount`).
 
     Raises:
         ValidationError: On a row this module may not settle
             (:func:`_reject_unsettleable`) -- publishing a figure for one would
             be publishing a figure :func:`settle` refuses to book.
+        AmountUnresolvable: From the amount model, for a row whose rule cannot
+            price it.  A refusal is never a fallback.
     """
     _reject_unsettleable(shadow)
     frozen = frozen_amount(shadow)
-    return shadow.effective_amount if frozen is None else frozen
+    return _unfrozen_amount(shadow) if frozen is None else frozen
+
+
+def _unfrozen_amount(shadow: Transaction) -> Decimal:
+    """Return what *shadow* contributes when no freeze answers for it.
+
+    The transfer twin's replacement for ``shadow.effective_amount`` (plan step
+    X-au-c2), and the ONE statement of it, so the figure the panel OFFERS and
+    the figure :func:`settle` BOOKS cannot come to be computed two ways -- which
+    is the drift :func:`settle_amount` exists to prevent, and it would have been
+    reintroduced by inlining this at both sites.
+
+    **The status / entered-actual gate is asked BEFORE the basis is built**,
+    and an adversarial review is why: Python evaluates arguments before the
+    call, so passing ``amount_basis(...)`` into the valuation ran the producers
+    unconditionally -- including for the two shapes that never read the result.
+    A Cancelled or Credit shadow answers ``$0.00`` from the gate, and a shadow
+    carrying a leftover ``actual_amount`` answers that; finding **N-257** is
+    that the second is REACHABLE, because nothing clears an actual when a
+    transfer is reverted, so every re-offered reverted shadow paid a full
+    producer run whose answer was discarded.
+
+    **It is reached only when :func:`frozen_amount` answered ``None``.**  A
+    derive-mode loan payment is priced by the freeze, so this basis is built
+    exactly for the rows the loan resolver had no answer for.  What it still
+    costs on the rows that DO reach the resolver is one repeat of the transfer
+    /template lookup ``frozen_amount`` just made -- recorded rather than fixed,
+    because removing it means threading a resolved config into ``amount_basis``,
+    which is plan step X-au-f's redesign of this door.
+
+    A basis over ONE row is correct here rather than a batch: both public
+    surfaces price a single shadow -- the panel offers row by row and the settle
+    books one transfer -- so there is no row set to amortise a producer call
+    over.
+
+    Args:
+        shadow: The leg being priced.  Its ``scenario_id`` is a column and its
+            ``account`` relationship is ``lazy="joined"``, so neither key costs
+            a query.
+
+    Returns:
+        ``0`` for a row that contributes nothing, the entered ``actual_amount``
+        when there is one, else the row's resolved amount.
+
+    Raises:
+        AmountUnresolvable: When the rule that prices this row cannot answer.
+    """
+    fixed = fixed_contribution(shadow)
+    if fixed is not None:
+        return fixed
+    return resolve_transaction_amount(
+        shadow,
+        amount_basis(shadow.account.user_id, shadow.scenario_id, [shadow]),
+    )
 
 
 def settle(
@@ -301,7 +358,7 @@ def settle(
     # predicate, and by its fallback -- and each asking is a ``Transfer`` query
     # plus, for a derive-mode payment, a loan-basis resolve and an escrow load.
     frozen = frozen_amount(rows.expense)
-    booked = rows.expense.effective_amount if frozen is None else frozen
+    booked = _unfrozen_amount(rows.expense) if frozen is None else frozen
     correction = (
         submitted if submitted is not None and submitted != booked else None
     )

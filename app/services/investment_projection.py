@@ -10,6 +10,17 @@ duplicating contribution/employer/YTD calculation logic.
 Contributions are derived from shadow income transactions (transfer_id IS NOT
 NULL) in the investment/retirement account.  The caller queries these
 transactions and passes them in; this module has no database access.
+
+**They arrive PRICED, as :class:`PricedContribution` records rather than ORM
+rows** (plan step X-au-c2, a developer ruling of 2026-08-12).  Four readers here
+used to ask each row for its ``effective_amount`` and screen it with
+``status_contributes_to_balance`` -- a model property that cannot answer for a
+row whose amount is DERIVED, since such a row stores no figure and resolving one
+needs a database this module deliberately does not have.  Valuing at the
+BOUNDARY instead (``projection_inputs.load_shadow_income_contributions_*``)
+resolves the whole row set ONCE, drops the rows that contribute nothing, and
+retires all four copies of the status screen with them.  What is left here is
+arithmetic over plain data, which is what the paragraph above always claimed.
 """
 
 from collections import namedtuple
@@ -21,9 +32,84 @@ from typing import Optional
 from app import ref_cache
 from app.enums import CalcMethodEnum, EmployerContributionTypeEnum
 from app.services.growth_engine import ContributionRecord
-from app.utils.balance_predicates import status_contributes_to_balance
 from app.utils.deduction_cap import cap_period_amount
 from app.utils.money import ZERO, round_money
+
+
+@dataclass(frozen=True)
+class PricedContribution:
+    """ONE shadow contribution, already valued and already screened.
+
+    The boundary record this module consumes in place of a
+    :class:`~app.models.transaction.Transaction` (plan step X-au-c2).  It
+    carries exactly the four facts the readers here need, so a row's amount is
+    resolved once by the loader that has a session rather than four times by
+    functions that do not.
+
+    **Non-contributing rows are ABSENT rather than zero, and that is load
+    bearing rather than tidy.**  :func:`_average_transfer_contribution` divides
+    by the number of DISTINCT ``pay_period_id`` values it sees, so a Cancelled
+    contribution carried as ``$0.00`` would enlarge that denominator and quietly
+    reduce the average -- where the ``status_contributes_to_balance`` screen it
+    replaces dropped the row before the count.  The loader applies that screen
+    and omits what fails it.
+
+    Attributes:
+        account_id: The investment / retirement account the contribution
+            landed in.  Read by the cross-account consumers, which load one
+            batch and partition it per account.
+        pay_period_id: The pay period the contribution belongs to -- the key
+            every window, average and YTD sum here buckets on.
+        amount: What the row CONTRIBUTES
+            (:func:`app.services.cash_ledger.contributions_by_id`): the entered
+            ``actual_amount`` where a human read one off a statement, else the
+            row's resolved amount.
+        is_confirmed: Whether the contribution actually happened
+            (``status.is_settled``), as opposed to being still projected.  The
+            growth engine's :class:`~app.services.growth_engine.ContributionRecord`
+            takes it verbatim.
+    """
+
+    account_id: int
+    pay_period_id: int
+    amount: Decimal
+    is_confirmed: bool
+
+
+@dataclass(frozen=True)
+class ShadowContributions:
+    """A batch of priced contributions, and WHICH accounts had any at all.
+
+    Two facts that must travel together, because screening the first destroys
+    the second and one consumer needs each (plan step X-au-c2).
+
+    **The second field exists because an adversarial review caught the screen
+    silently answering a different question.**  ``retirement_projection``'s
+    ``none_linked`` is a PRESENCE test -- *is anything linked to fund this
+    account?* -- and it read the loader's list length.  Before the screen moved
+    to the boundary that list carried Cancelled and Credit rows, so an account
+    whose contributions were all cancelled reported ``you $0.00 / employer
+    $0.00``; screening them out at the loader would have flipped it to the
+    "nothing linked yet" call-to-action, telling the owner to link a
+    contribution that already exists.
+
+    Separating them is the correct design rather than a compatibility shim:
+    *what does this account receive* and *is anything wired up to it* are
+    different questions, and conflating them is exactly what let one change
+    answer the second while only meaning to change the first.
+
+    Attributes:
+        records: The contributions that COUNT -- screened by
+            ``status_contributes_to_balance`` and priced through the amount
+            model.  Cancelled and Credit rows are absent (see
+            :class:`PricedContribution` on why absent rather than zero).
+        linked_account_ids: Every account id that had a contribution shadow in
+            the window, WHATEVER its status.  A cancelled contribution is still
+            a link.
+    """
+
+    records: list[PricedContribution]
+    linked_account_ids: frozenset[int]
 
 
 @dataclass
@@ -200,46 +286,36 @@ def deduction_contribution_per_period(deductions, salary_gross_biweekly):
 
 
 def _average_transfer_contribution(all_contributions):
-    """Average per-period contribution from shadow income transactions.
+    """Average per-period contribution from priced shadow contributions.
 
-    ``all_contributions`` are shadow income transactions already filtered
-    to one account by the caller.  Cancelled/credit transactions
-    (status.excludes_from_balance=True) are excluded via the centralized
-    ``status_contributes_to_balance`` helper (D6-09 / MED-02) so the
-    "is this contribution counted" rule shares one definition with the
-    SQL filters in ``year_end_summary_service`` /
-    ``savings_dashboard_service`` and the Python ``is_balance_contributing``
-    predicate.  The status-only variant is required because the caller
-    passes in already-deleted-filtered rows whose duck-typed test fakes
-    (``FakeContribTransaction``) deliberately omit ``is_deleted``.
+    ``all_contributions`` are :class:`PricedContribution` records already
+    filtered to one account by the caller.  Cancelled / Credit rows never reach
+    here: the loader that priced them applied the
+    ``status_contributes_to_balance`` screen and omitted what failed it, so this
+    module holds no copy of that rule (plan step X-au-c2).  The screen still
+    shares ONE definition with the SQL filters in ``year_end_summary_service`` /
+    ``savings_dashboard_service`` -- it just lives at the boundary now.
 
-    Contributions are summed on ``effective_amount`` -- the realized
-    actual when a shadow is settled, else the estimate -- the same
-    accessor the per-period timeline uses, so this average and the
-    YTD/limit accounting cannot disagree with the engine on a settled
-    transfer whose actual differs from its estimate (deep-quality-hunt
-    #11).
+    Contributions are summed on the record's :attr:`~PricedContribution.amount`
+    -- the realized actual when a shadow is settled, else what the row's amount
+    RESOLVES to -- which is the same figure the per-period timeline reads off
+    the same records, so this average and the YTD/limit accounting cannot
+    disagree with the engine on a settled transfer whose actual differs from its
+    estimate (deep-quality-hunt #11).
 
     Args:
-        all_contributions: List of shadow income transactions with
-                           .effective_amount, .pay_period_id, .status.
+        all_contributions: List of :class:`PricedContribution` records.
 
     Returns:
         The per-period average contribution (Decimal), or ZERO when no
-        active contributions exist.
+        contributions exist.
     """
     if not all_contributions:
         return ZERO
 
-    active_contributions = [
-        t for t in all_contributions
-        if status_contributes_to_balance(t)
-    ]
-    total_contrib = sum(
-        Decimal(str(t.effective_amount)) for t in active_contributions
-    )
+    total_contrib = sum(c.amount for c in all_contributions)
     num_periods_with_contrib = len(
-        set(t.pay_period_id for t in active_contributions)
+        set(c.pay_period_id for c in all_contributions)
     )
     if num_periods_with_contrib > 0:
         return round_money(total_contrib / num_periods_with_contrib)
@@ -318,49 +394,45 @@ def _current_year_period_ids(all_periods, current_period, *, inclusive):
 
 
 def _sum_year_contributions(all_contributions, period_ids):
-    """Sum the ``effective_amount`` of active contributions in ``period_ids``.
+    """Sum the priced contributions falling in ``period_ids``.
 
-    Active = passes the centralized ``status_contributes_to_balance``
-    filter (the same rule ``_average_transfer_contribution`` uses).
-    ``effective_amount`` (the realized actual when a shadow is settled,
-    else the estimate) is ``Transaction``'s single source of truth for
-    what a row contributes to a projection, so this YTD-seed/limit
+    Every record here has already passed the boundary's
+    ``status_contributes_to_balance`` screen (see :class:`PricedContribution`),
+    so this sums what it is given.  :attr:`~PricedContribution.amount` -- the
+    realized actual when a shadow is settled, else what its amount resolves to
+    -- is the ONE answer to what a row contributes, so this YTD-seed/limit
     accounting agrees with the per-period timeline
-    (:func:`build_contribution_timeline`, also ``effective_amount``) once
-    a transfer shadow is settled with an actual that differs from its
-    estimate (deep-quality-hunt #11).  Summing ``estimated_amount`` here
-    previously let the cap/limit math read a different dollar than the
-    engine actually applied; the prior "F-027 S18 contract-safe"
-    rationale assumed a shadow's ``actual_amount`` is always ``None``,
-    which is untrue once ``transfer_service._apply_actual_amount`` sets
-    it on settlement (the ``Transfer`` parent has no ``actual_amount``
-    column, so a settled actual lives only on the shadows).
+    (:func:`build_contribution_timeline`, reading the same records) once a
+    transfer shadow is settled with an actual that differs from its estimate
+    (deep-quality-hunt #11).  Summing ``estimated_amount`` here previously let
+    the cap/limit math read a different dollar than the engine actually
+    applied; the prior "F-027 S18 contract-safe" rationale assumed a shadow's
+    ``actual_amount`` is always ``None``, which is untrue once a settle sets it
+    (the ``Transfer`` parent has no ``actual_amount`` column, so a settled
+    actual lives only on the shadows).
 
     Args:
-        all_contributions: Shadow income transactions for one account
-                           (.effective_amount, .pay_period_id, .status).
+        all_contributions: :class:`PricedContribution` records for one account.
         period_ids:        The period_id set to sum over.
 
     Returns:
         The contribution total (Decimal).
     """
-    total = ZERO
-    for t in all_contributions:
-        if t.pay_period_id in period_ids and status_contributes_to_balance(t):
-            total += Decimal(str(t.effective_amount))
-    return total
+    return sum(
+        (c.amount for c in all_contributions if c.pay_period_id in period_ids),
+        ZERO,
+    )
 
 
 def _ytd_contributions(all_contributions, all_periods, current_period):
     """Sum year-to-date contributions THROUGH the current period (``<=``).
 
-    The displayed limit-card YTD value.  Sums ``effective_amount`` for
-    active contributions whose pay period falls in the current calendar
-    year up to and including ``current_period``.
+    The displayed limit-card YTD value.  Sums the priced amount of every
+    contribution whose pay period falls in the current calendar year up to and
+    including ``current_period``.
 
     Args:
-        all_contributions: Shadow income transactions for one account
-                           (.effective_amount, .pay_period_id, .status).
+        all_contributions: :class:`PricedContribution` records for one account.
         all_periods:       Period objects with .id and .start_date.
         current_period:    The current period object, or None.
 
@@ -386,8 +458,7 @@ def _ytd_contributions_seed(all_contributions, all_periods, current_period):
     charge the current period twice (deep-quality-hunt #10).
 
     Args:
-        all_contributions: Shadow income transactions for one account
-                           (.effective_amount, .pay_period_id, .status).
+        all_contributions: :class:`PricedContribution` records for one account.
         all_periods:       Period objects with .id and .start_date.
         current_period:    The current period object, or None.
 
@@ -419,10 +490,9 @@ def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-
         deductions:            List of deduction-like objects with
                                .amount, .calc_method_id, .annual_salary,
                                .pay_periods_per_year.
-        all_contributions:     List of shadow income transactions
-                               (transfer_id IS NOT NULL) in this account.
-                               Each has .effective_amount, .pay_period_id,
-                               .status.
+        all_contributions:     List of :class:`PricedContribution` records
+                               for this account -- shadow-income rows already
+                               valued and screened at the boundary.
         all_periods:           List of period objects with .id,
                                .start_date, .period_index.
         current_period:        The current period object, or None.
@@ -520,50 +590,6 @@ def _deduction_contribution_records(deductions, periods, pct_id, today):
     return records
 
 
-def current_period_transfer_contribution(contribution_transactions, current_period):
-    """Sum the effective contribution the current period's transfers add.
-
-    These shadow income transactions are BOTH counted in the entries-aware
-    end-of-current-period balance (``cash_ledger.income_amount``
-    uses ``effective_amount``) AND re-applied by the growth engine when the
-    projection window includes the current period
-    (:func:`build_contribution_timeline` Path 2, the same
-    ``effective_amount``).  Subtracting this sum from the end-of-current
-    seed cancels exactly that double-count (deep-quality-hunt #9 / #14)
-    while preserving every OTHER current-period balance movement -- a
-    withdrawal, a fee, an entries-aware envelope expense -- which the
-    engine never re-creates, so a blunter "re-anchor to the prior period"
-    seed would silently drop them.
-
-    Deductions are intentionally NOT summed here: they are not budget
-    transactions, so they are absent from the balance and must be applied
-    fresh by the engine for the current period (the engine's own walk does
-    that via the timeline's Path 1).
-
-    Args:
-        contribution_transactions: Shadow income Transaction objects for
-            one account (.effective_amount, .pay_period_id, .status).
-        current_period: The current period object, or None.
-
-    Returns:
-        The effective-amount sum of active
-        (``status_contributes_to_balance``) shadow contributions whose
-        ``pay_period_id`` is the current period; ZERO when current_period
-        is None.
-    """
-    if current_period is None:
-        return ZERO
-    total = ZERO
-    for txn in contribution_transactions:
-        if (txn.pay_period_id == current_period.id
-                and status_contributes_to_balance(txn)):
-            amount = txn.effective_amount
-            if not isinstance(amount, Decimal):
-                amount = Decimal(str(amount))
-            total += amount
-    return total
-
-
 def build_contribution_timeline(
     deductions,
     contribution_transactions,
@@ -580,9 +606,11 @@ def build_contribution_timeline(
     period = confirmed) because there is no per-period transaction record for
     deductions.
 
-    Path 2 -- Transfer-based contributions: Per-transaction amounts from
-    shadow income transactions.  Confirmation is status-based
-    (txn.status.is_settled) -- factual from the transaction workflow.
+    Path 2 -- Transfer-based contributions: Per-record amounts from the priced
+    shadow contributions.  Confirmation is status-based
+    (:attr:`PricedContribution.is_confirmed`, resolved from
+    ``status.is_settled`` at the boundary) -- factual from the transaction
+    workflow.
 
     The growth engine handles same-date aggregation (summing amounts,
     conservative is_confirmed rule) via its lookup dict.
@@ -593,22 +621,16 @@ def build_contribution_timeline(
                                     .annual_salary, .pay_periods_per_year,
                                     and optionally .annual_cap (the
                                     calendar-year ceiling; absent = uncapped).
-        contribution_transactions:  List of shadow income Transaction
-                                    objects (transfer_id IS NOT NULL)
-                                    with .effective_amount, .pay_period_id,
-                                    .status (.is_settled, .excludes_from_balance).
-                                    Status must be eager-loaded by caller.
+        contribution_transactions:  List of :class:`PricedContribution`
+                                    records -- shadow-income rows already
+                                    valued and screened at the boundary.
         periods:                    List of period objects with .id,
                                     .start_date.
 
     Returns:
         list[ContributionRecord] sorted by contribution_date.  Empty
-        list if no deductions and no qualifying transactions exist.
+        list if no deductions and no qualifying contributions exist.
     """
-    # Centralized ``status_contributes_to_balance`` helper
-    # (D6-09 / MED-02); see ``_average_transfer_contribution`` above
-    # for why the status-only variant is the right primitive here.
-
     records = []
     today = date.today()
     pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
@@ -621,26 +643,17 @@ def build_contribution_timeline(
 
     # Path 2: Transfer-based contributions -- per-transaction amounts.
     period_by_id = {p.id: p for p in periods}
-    for txn in contribution_transactions:
-        # Skip cancelled/credit transactions that do not represent
-        # actual contributions (same filter as loan_payment_service).
-        if not status_contributes_to_balance(txn):
-            continue
-        period = period_by_id.get(txn.pay_period_id)
+    for contribution in contribution_transactions:
+        period = period_by_id.get(contribution.pay_period_id)
         if period is None:
-            # Transaction in a period outside the projection range.
+            # Contribution in a period outside the projection range.
             continue
-        amount = txn.effective_amount
-        # Defensive: ensure Decimal even if effective_amount returns
-        # a non-Decimal from a DB column.
-        if not isinstance(amount, Decimal):
-            amount = Decimal(str(amount))
         records.append(ContributionRecord(
             contribution_date=period.start_date,
-            amount=amount,
-            # Transfer-based: determined by the transaction's
-            # settlement status (Paid/Settled=True, Projected=False).
-            is_confirmed=txn.status.is_settled,
+            amount=contribution.amount,
+            # Transfer-based: determined by the row's settlement status
+            # (Paid/Settled=True, Projected=False), resolved at the boundary.
+            is_confirmed=contribution.is_confirmed,
         ))
 
     records.sort(key=lambda r: r.contribution_date)

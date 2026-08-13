@@ -118,6 +118,7 @@ from tests._test_helpers import (
     observed_day_of,
     restamp_opening_assertion,
 )
+from app.services.row_valuation import owned_contribution
 
 
 # The Step-5 data-boundary migration, loaded once so its idempotent raw-SQL
@@ -297,12 +298,12 @@ def _independent_source_effect(txn) -> Decimal:
     never imports ``_signed_cash_leg``); the linked leg for *txn* equals this.
     """
     if txn.transfer_id is not None:
-        return txn.effective_amount if txn.is_income else -txn.effective_amount
+        return owned_contribution(txn) if txn.is_income else -owned_contribution(txn)
     credit_sum = sum(
         (entry.amount for entry in txn.entries if entry.is_credit),
         Decimal("0"),
     )
-    effect = txn.effective_amount - credit_sum
+    effect = owned_contribution(txn) - credit_sum
     return effect if txn.is_income else -effect
 
 

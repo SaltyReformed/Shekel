@@ -16,7 +16,7 @@ Two flavours of test:
   the live test DB.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -31,6 +31,8 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.services.investment_projection import (
     InvestmentInputs,
+    PricedContribution,
+    build_contribution_timeline,
     calculate_investment_inputs,
 )
 from app.services.projection_inputs import (
@@ -38,6 +40,7 @@ from app.services.projection_inputs import (
     load_active_deductions_for_account,
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
+    load_shadow_income_contributions_for_account,
 )
 
 
@@ -51,33 +54,6 @@ class _FakeDeduction:
     calc_method_id: int
     annual_salary: Decimal
     pay_periods_per_year: int
-
-
-@dataclass
-class _FakeStatus:
-    excludes_from_balance: bool = False
-    is_settled: bool = False
-
-
-@dataclass
-class _FakeContribution:
-    """Shadow income contribution; ``effective_amount`` mirrors the real model.
-
-    ``effective_amount`` is the realized ``actual_amount`` when populated,
-    else ``estimated_amount`` -- the accessor the inputs builder reads
-    (deep-quality-hunt #11).
-    """
-    estimated_amount: Decimal
-    pay_period_id: int
-    status: _FakeStatus = field(default_factory=_FakeStatus)
-    actual_amount: Decimal | None = None
-
-    @property
-    def effective_amount(self) -> Decimal:
-        """Realized actual when populated, else the estimate (model parity)."""
-        if self.actual_amount is not None:
-            return self.actual_amount
-        return self.estimated_amount
 
 
 @dataclass
@@ -138,13 +114,13 @@ class TestBuildInvestmentProjectionInputsEquivalence:
             _FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1),
         ]
         contributions = [
-            _FakeContribution(
-                estimated_amount=Decimal("200"), pay_period_id=1,
-                status=_FakeStatus(is_settled=True),
+            PricedContribution(
+                account_id=1, pay_period_id=1,
+                amount=Decimal("200"), is_confirmed=True,
             ),
-            _FakeContribution(
-                estimated_amount=Decimal("200"), pay_period_id=2,
-                status=_FakeStatus(is_settled=True),
+            PricedContribution(
+                account_id=1, pay_period_id=2,
+                amount=Decimal("200"), is_confirmed=True,
             ),
         ]
         return params, deductions, contributions, periods
@@ -521,3 +497,372 @@ class TestLoadInvestmentParamsForAccounts:
         """Empty input returns {} without issuing an IN () query."""
         with app.app_context():
             assert load_investment_params_for_accounts([]) == {}
+
+
+class TestShadowContributionBoundary:
+    """The BOUNDARY where a shadow contribution is valued and screened.
+
+    ``load_shadow_income_contributions_for_account(s)`` became the one place a
+    contribution's dollar is decided at plan step X-au-c2: it prices the whole
+    row set through :func:`app.services.cash_ledger.contributions_by_id` and
+    hands :mod:`app.services.investment_projection` frozen
+    :class:`~app.services.investment_projection.PricedContribution` records.
+
+    **These four cases are deep-quality-hunt #11, moved here whole with their
+    hand-computed figures** from ``test_investment_projection`` .
+    ``TestEstimatedVsEffectiveAlignment``.  A transfer shadow's
+    ``actual_amount`` is normally ``None``, but a settle with a manual amount
+    writes a realized actual onto BOTH shadows (the ``Transfer`` parent has no
+    ``actual_amount`` column).  Once that happens the realized figure diverges
+    from the estimate, and every feed the projection builds -- the averaged
+    periodic contribution, the YTD display, the engine seed, and the per-period
+    timeline -- has to read the realized one, or the cap/limit accounting
+    charges a different dollar than the growth engine actually applies.
+
+    They live at this tier now because it is the only tier that can still fail:
+    the projection module consumes a record carrying one ``amount`` field, so
+    asserting the rule there would assert that $400 averages to $400.  Here the
+    rule is exercised against real rows.
+    """
+
+    @staticmethod
+    def _contribution_shadow(
+        seed_user, db_session, period, estimated, actual=None, *,
+        settled=False, cancelled=False, account=None,
+    ):
+        """Seed a contribution transfer into an investment account.
+
+        Returns ``(account, income_shadow)``.  The shadow is the INCOME leg
+        landing in the investment account, which is exactly what the loader's
+        ``transfer_id IS NOT NULL AND transaction_type_id = Income`` filter
+        selects.
+
+        Pass ``account`` to feed an EXISTING account a second contribution --
+        the multi-period cases need one account across several periods, because
+        the per-account arithmetic they grade (the average's distinct-period
+        denominator, the two YTD windows) is defined over one account's rows.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum
+        from app.models.transaction import Transaction
+        from tests._test_helpers import create_transfer, make_investment_account
+
+        if account is None:
+            account = make_investment_account(
+                seed_user, db_session, period, Decimal("1000.00"),
+                name=f"401k-{period.id}-{estimated}",
+            )
+        transfer = create_transfer(
+            seed_user, db_session, seed_user["account"], account, period,
+            amount=Decimal(str(estimated)),
+        )
+        shadow = (
+            db_session.query(Transaction)
+            .filter(
+                Transaction.transfer_id == transfer.id,
+                Transaction.account_id == account.id,
+            )
+            .one()
+        )
+        # Mutated on BOTH legs and the parent, never on the income shadow
+        # alone: Transfer Invariants 3 and 4 say a transfer's shadows share
+        # their amount, status and settle day, and a fixture that grades
+        # against a pair the app cannot produce is grading against a state no
+        # defect could ever reach (an adversarial review's finding).
+        rows = [shadow] + [
+            other for other in transfer.shadow_transactions
+            if other.id != shadow.id
+        ]
+        if actual is not None:
+            for row in rows:
+                row.actual_amount = Decimal(str(actual))
+        if settled:
+            settled_id = ref_cache.status_id(StatusEnum.RECEIVED)
+            for row in rows:
+                row.status_id = settled_id
+                row.settled_on = period.start_date
+            transfer.status_id = settled_id
+        if cancelled:
+            cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
+            for row in rows:
+                row.status_id = cancelled_id
+            transfer.status_id = cancelled_id
+        db_session.flush()
+        return account, shadow
+
+    @staticmethod
+    def _params(limit=None):
+        return _FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=limit,
+            employer_contribution_type_id=ref_cache
+            .employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
+        )
+
+    def test_settled_shadow_is_priced_at_its_realized_actual(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """estimated $500 / actual $400 -> the record carries $400.
+
+        The rule itself, at the tier that decides it: a figure a human read off
+        a statement is a fact and the row's own amount is an inference, so the
+        actual wins.  Summing ``estimated_amount`` (the pre-#11 bug) would
+        carry $500.
+        """
+        with app.app_context():
+            account, _shadow = self._contribution_shadow(
+                seed_user, db.session, seed_periods[0],
+                estimated="500", actual="400", settled=True,
+            )
+            db.session.commit()
+
+            records = load_shadow_income_contributions_for_account(
+                seed_user["user"].id, seed_user["scenario"].id,
+                account.id, [seed_periods[0].id],
+            ).records
+
+            assert len(records) == 1
+            assert records[0].amount == Decimal("400")
+            assert records[0].is_confirmed is True
+            assert records[0].account_id == account.id
+            assert records[0].pay_period_id == seed_periods[0].id
+
+    def test_periodic_contribution_uses_the_realized_actual(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """One settled $500-estimated / $400-actual shadow -> average $400.
+
+        The averaged periodic contribution over one period is the realized
+        $400, NOT the estimated $500.
+        """
+        with app.app_context():
+            account, _shadow = self._contribution_shadow(
+                seed_user, db.session, seed_periods[0],
+                estimated="500", actual="400", settled=True,
+            )
+            db.session.commit()
+            period = seed_periods[0]
+
+            records = load_shadow_income_contributions_for_account(
+                seed_user["user"].id, seed_user["scenario"].id,
+                account.id, [period.id],
+            ).records
+            result = calculate_investment_inputs(
+                investment_params=self._params(), deductions=[],
+                all_contributions=records, all_periods=[period],
+                current_period=period,
+            )
+
+            # effective $400 / 1 period = $400 (NOT estimated $500).
+            assert result.periodic_contribution == Decimal("400")
+
+    def test_over_contribution_actual_above_estimate_is_honored(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """estimated $400 / actual $500 -> $500, the direction the cap must catch.
+
+        Symmetric to the under-contribution case: a settled shadow that came in
+        HIGHER than planned contributes its realized $500.  Summing
+        ``estimated_amount`` would under-count it at $400 and let the annual
+        limit accounting miss an over-contribution.
+        """
+        with app.app_context():
+            account, _shadow = self._contribution_shadow(
+                seed_user, db.session, seed_periods[0],
+                estimated="400", actual="500", settled=True,
+            )
+            db.session.commit()
+            period = seed_periods[0]
+
+            records = load_shadow_income_contributions_for_account(
+                seed_user["user"].id, seed_user["scenario"].id,
+                account.id, [period.id],
+            ).records
+            result = calculate_investment_inputs(
+                investment_params=self._params(limit=Decimal("23500")),
+                deductions=[], all_contributions=records,
+                all_periods=[period], current_period=period,
+            )
+
+            assert result.periodic_contribution == Decimal("500")
+            # The displayed YTD (<= current) also reflects the realized $500.
+            assert result.ytd_contributions == Decimal("500")
+
+    def test_ytd_and_seed_both_read_the_realized_actual(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Three settled $500-estimated / $400-actual shadows across 3 periods.
+
+        ``ytd_contributions`` (<= current) = 3 x $400 = $1,200;
+        ``ytd_contributions_seed`` (< current) = 2 x $400 = $800.  Summing
+        ``estimated_amount`` would give $1,500 / $1,000.
+        """
+        with app.app_context():
+            periods = seed_periods[:3]
+            account = None
+            for period in periods:
+                account, _shadow = self._contribution_shadow(
+                    seed_user, db.session, period,
+                    estimated="500", actual="400", settled=True,
+                    account=account,
+                )
+            db.session.commit()
+
+            records = load_shadow_income_contributions_for_account(
+                seed_user["user"].id, seed_user["scenario"].id,
+                account.id, [p.id for p in periods],
+            ).records
+            assert len(records) == 3
+
+            result = calculate_investment_inputs(
+                investment_params=self._params(limit=Decimal("23500")),
+                deductions=[], all_contributions=records,
+                all_periods=periods, current_period=periods[2],
+            )
+
+            assert result.ytd_contributions == Decimal("1200")
+            assert result.ytd_contributions_seed == Decimal("800")
+
+    def test_inputs_average_and_timeline_agree(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Both feeds read the SAME record, so they cannot price the row twice.
+
+        The whole point of #11: the timeline applies a figure per period and the
+        periodic-average / YTD-seed feed must apply the same one, or the
+        limit/cap accounting reads a different number than the engine does.
+        Since X-au-c2 both read one ``PricedContribution.amount``, so the
+        agreement is structural -- this pins it end to end anyway, because the
+        two feeds are what a future edit could re-split.
+        """
+        with app.app_context():
+            account, _shadow = self._contribution_shadow(
+                seed_user, db.session, seed_periods[0],
+                estimated="500", actual="400", settled=True,
+            )
+            db.session.commit()
+            period = seed_periods[0]
+
+            records = load_shadow_income_contributions_for_account(
+                seed_user["user"].id, seed_user["scenario"].id,
+                account.id, [period.id],
+            ).records
+            inputs = calculate_investment_inputs(
+                investment_params=self._params(), deductions=[],
+                all_contributions=records, all_periods=[period],
+                current_period=period,
+            )
+            timeline = build_contribution_timeline(
+                deductions=[], contribution_transactions=records,
+                periods=[period],
+            )
+
+            assert inputs.periodic_contribution == Decimal("400")
+            assert len(timeline) == 1
+            assert timeline[0].amount == Decimal("400")
+            assert inputs.periodic_contribution == timeline[0].amount
+
+    def test_excluded_status_rows_are_dropped_not_zeroed(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A Cancelled shadow is ABSENT from the records, not present at $0.00.
+
+        The ``status_contributes_to_balance`` screen the projection module used
+        to apply four times now runs once, here.  Dropping and zeroing are NOT
+        interchangeable and this is the case that proves it:
+        ``_average_transfer_contribution`` divides by the number of DISTINCT
+        pay periods it sees, so a Cancelled contribution carried through at
+        ``$0.00`` in its own period would make the denominator 2 and halve the
+        average -- $400 / 2 periods = $200 against the correct $400.
+        """
+        with app.app_context():
+            account, _shadow = self._contribution_shadow(
+                seed_user, db.session, seed_periods[0],
+                estimated="400", settled=True,
+            )
+            # The SAME account, a later period: the Cancelled row has to be
+            # inside the queried set for its absence to mean anything.
+            self._contribution_shadow(
+                seed_user, db.session, seed_periods[1],
+                estimated="999", cancelled=True, account=account,
+            )
+            db.session.commit()
+
+            records = load_shadow_income_contributions_for_account(
+                seed_user["user"].id, seed_user["scenario"].id,
+                account.id, [seed_periods[0].id, seed_periods[1].id],
+            ).records
+
+            # The Cancelled row is gone entirely -- not present as a zero.
+            assert len(records) == 1
+            assert records[0].amount == Decimal("400")
+            assert records[0].pay_period_id == seed_periods[0].id
+
+            result = calculate_investment_inputs(
+                investment_params=self._params(), deductions=[],
+                all_contributions=records,
+                all_periods=[seed_periods[0], seed_periods[1]],
+                current_period=seed_periods[1],
+            )
+            # ONE period contributed, so the average is the full $400.  A
+            # zero-carrying record would have made this $200.
+            assert result.periodic_contribution == Decimal("400")
+
+    def test_projected_shadow_is_not_confirmed(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A still-Projected shadow is priced but NOT confirmed.
+
+        The ``status.is_settled -> ContributionRecord.is_confirmed`` mapping
+        moved to this boundary at plan step X-au-c2, and an adversarial review
+        found the False half had lost its only grader: converting the old
+        module-level test left it asserting a field the test itself supplied.
+        A loader that wrote ``is_confirmed=True`` unconditionally would pass
+        every other case here, and the growth engine would treat every future
+        contribution as money already in the account.
+        """
+        with app.app_context():
+            account, _shadow = self._contribution_shadow(
+                seed_user, db.session, seed_periods[0], estimated="250",
+            )
+            db.session.commit()
+
+            records = load_shadow_income_contributions_for_account(
+                seed_user["user"].id, seed_user["scenario"].id,
+                account.id, [seed_periods[0].id],
+            ).records
+
+            assert len(records) == 1
+            assert records[0].amount == Decimal("250")
+            assert records[0].is_confirmed is False
+
+    def test_cancelled_contribution_still_counts_as_LINKED(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A screened-out row still reports its account as linked.
+
+        The companion to
+        :meth:`test_excluded_status_rows_are_dropped_not_zeroed`, and the reason
+        the loader returns two facts rather than one.  ``retirement_projection``
+        asks whether ANYTHING funds an account to decide between rendering
+        ``$0.00`` and a "link a contribution" call-to-action; a Cancelled
+        contribution counts nothing but is still a link, so screening it out of
+        the records must not take the account out of that set.  An adversarial
+        review caught this flipping when the screen moved here.
+        """
+        with app.app_context():
+            account, _shadow = self._contribution_shadow(
+                seed_user, db.session, seed_periods[0],
+                estimated="600", cancelled=True,
+            )
+            db.session.commit()
+
+            loaded = load_shadow_income_contributions_for_account(
+                seed_user["user"].id, seed_user["scenario"].id,
+                account.id, [seed_periods[0].id],
+            )
+
+            # Nothing COUNTS ...
+            assert loaded.records == []
+            # ... but something is LINKED.
+            assert account.id in loaded.linked_account_ids

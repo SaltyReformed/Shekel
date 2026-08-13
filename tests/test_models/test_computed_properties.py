@@ -2,8 +2,9 @@
 Shekel Budget App -- Model Computed Property Tests
 
 Tests for computed properties on models:
-  - Transaction: effective_amount, is_income, is_expense
-  - Transfer: effective_amount (projected vs done vs cancelled)
+  - Transaction: what it contributes (the retired ``effective_amount``
+    rules, now ``row_valuation.owned_contribution``), is_income, is_expense
+  - Transfer: what its amount resolves to (``resolve_transfer_amount``)
   - Category: display_name
   - PayPeriod: label
   - PaycheckBreakdown: total_pre_tax, total_post_tax, total_taxes
@@ -30,13 +31,24 @@ from app.services.paycheck_calculator import (
 from app.services import account_service
 from app.utils.dates import display_today
 from app.utils.dates import add_months
+from app.services.cash_ledger import resolve_transfer_amount
+from app.services.row_valuation import owned_contribution
 
 
-# ── Transaction.effective_amount ─────────────────────────────────────
+# ── What a TRANSACTION contributes ───────────────────────────────────
 
 
 class TestTransactionEffectiveAmount:
-    """Tests for Transaction.effective_amount computed property."""
+    """What one transaction contributes, by the rules the property held.
+
+    ``Transaction.effective_amount`` was deleted at plan step X-au-c2 -- a
+    model property cannot resolve a DERIVED amount, being a pure in-memory read
+    with no session -- and its four arms moved to
+    ``row_valuation.owned_contribution`` for a row that owns its figure.  These
+    cases moved with them unchanged, because the RULES did not change: zero for
+    a soft-deleted or excluded row, a human's ``actual_amount`` where there is
+    one (including a real ``$0.00``), else the row's own stored figure.
+    """
 
     def _make_txn(self, seed_user, seed_periods, status_name, estimated, actual=None):
         """Helper: create a transaction with given status and amounts."""
@@ -61,7 +73,7 @@ class TestTransactionEffectiveAmount:
         """Projected transaction returns estimated_amount."""
         with app.app_context():
             txn = self._make_txn(seed_user, seed_periods, "Projected", Decimal("150.00"))
-            assert txn.effective_amount == Decimal("150.00")
+            assert owned_contribution(txn) == Decimal("150.00")
 
     # ── Three cases that arrived at plan step X-c2c2c ────────────────
     #
@@ -87,7 +99,7 @@ class TestTransactionEffectiveAmount:
                 seed_user, seed_periods, "Projected",
                 Decimal("100.00"), actual=Decimal("150.00"),
             )
-            assert txn.effective_amount == Decimal("150.00")
+            assert owned_contribution(txn) == Decimal("150.00")
 
     def test_projected_with_zero_actual_returns_zero(
         self, app, db, seed_user, seed_periods,
@@ -104,7 +116,7 @@ class TestTransactionEffectiveAmount:
                 seed_user, seed_periods, "Projected",
                 Decimal("100.00"), actual=Decimal("0.00"),
             )
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
     def test_a_soft_deleted_row_is_worth_zero_whatever_its_status(
         self, app, db, seed_user, seed_periods,
@@ -123,7 +135,7 @@ class TestTransactionEffectiveAmount:
             txn.is_deleted = True
             db.session.flush()
 
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
     def test_done_with_actual_returns_actual(self, app, db, seed_user, seed_periods):
         """Done transaction with actual_amount returns actual_amount."""
@@ -132,79 +144,79 @@ class TestTransactionEffectiveAmount:
                 seed_user, seed_periods, "Paid",
                 Decimal("150.00"), actual=Decimal("145.00"),
             )
-            assert txn.effective_amount == Decimal("145.00")
+            assert owned_contribution(txn) == Decimal("145.00")
 
     def test_done_without_actual_returns_estimated(self, app, db, seed_user, seed_periods):
         """Done transaction without actual_amount falls back to estimated."""
         with app.app_context():
             txn = self._make_txn(seed_user, seed_periods, "Paid", Decimal("150.00"))
-            assert txn.effective_amount == Decimal("150.00")
+            assert owned_contribution(txn) == Decimal("150.00")
 
     def test_credit_status_returns_zero(self, app, db, seed_user, seed_periods):
-        """Credit-status transaction returns Decimal('0') for effective_amount.
+        """Credit-status transaction contributes Decimal('0').
 
         Credit transactions are excluded from checking balance calculations
         because the charge is on a credit card, not the checking account.
-        Expected: effective_amount == Decimal('0') regardless of estimated_amount.
+        Expected: the contribution == Decimal('0') regardless of estimated_amount.
         """
         with app.app_context():
             txn = self._make_txn(
                 seed_user, seed_periods, "Credit", Decimal("250.00"),
             )
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
     def test_cancelled_status_returns_zero(self, app, db, seed_user, seed_periods):
-        """Cancelled transaction returns Decimal('0') for effective_amount.
+        """Cancelled transaction contributes Decimal('0').
 
         Cancelled transactions should not affect balance projections at all.
-        Expected: effective_amount == Decimal('0').
+        Expected: the contribution == Decimal('0').
         """
         with app.app_context():
             txn = self._make_txn(
                 seed_user, seed_periods, "Cancelled", Decimal("500.00"),
             )
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
     def test_received_uses_estimated_when_no_actual(self, app, db, seed_user, seed_periods):
         """Received transaction without actual_amount falls back to estimated.
 
         The source treats 'received' the same as 'done': actual if set,
         else estimated. When actual_amount is None, estimated is returned.
-        Expected: effective_amount == Decimal('150.00').
+        Expected: the contribution == Decimal('150.00').
         """
         with app.app_context():
             txn = self._make_txn(
                 seed_user, seed_periods, "Received", Decimal("150.00"),
             )
-            assert txn.effective_amount == Decimal("150.00")
+            assert owned_contribution(txn) == Decimal("150.00")
 
     def test_received_uses_actual_when_set(self, app, db, seed_user, seed_periods):
         """Received transaction with actual_amount returns actual.
 
         When both estimated and actual are present, the actual takes
         precedence for done/received statuses.
-        Expected: effective_amount == Decimal('145.00').
+        Expected: the contribution == Decimal('145.00').
         """
         with app.app_context():
             txn = self._make_txn(
                 seed_user, seed_periods, "Received",
                 Decimal("150.00"), actual=Decimal("145.00"),
             )
-            assert txn.effective_amount == Decimal("145.00")
+            assert owned_contribution(txn) == Decimal("145.00")
 
     def test_done_with_zero_actual(self, app, db, seed_user, seed_periods):
         """Done transaction with actual_amount=0 returns zero (e.g., waived fee).
 
         Zero is a valid actual_amount (the bill was waived). The function
         must not fall back to estimated when actual is explicitly 0.
-        Expected: effective_amount == Decimal('0.00').
+        Expected: the contribution == Decimal('0.00').
         """
         with app.app_context():
             txn = self._make_txn(
                 seed_user, seed_periods, "Paid",
                 Decimal("100.00"), actual=Decimal("0.00"),
             )
-            assert txn.effective_amount == Decimal("0.00")
+            assert owned_contribution(txn) == Decimal("0.00")
 
 
 # ── Transaction.is_income / is_expense ───────────────────────────────
@@ -256,11 +268,29 @@ class TestTransactionTypeProperties:
             assert txn.is_income is False
 
 
-# ── Transfer.effective_amount ────────────────────────────────────────
+# ── What a TRANSFER's amount is ──────────────────────────────────────
 
 
-class TestTransferEffectiveAmount:
-    """Tests for Transfer.effective_amount computed property."""
+class TestTransferAmountResolves:
+    """What ``budget.transfers.amount`` resolves to, after the property went.
+
+    ``Transfer.effective_amount`` was deleted at plan step X-au-c2 and these
+    cases were retargeted onto :func:`cash_ledger.resolve_transfer_amount`, the
+    rule that answers the same question under the amount model.  They are NOT
+    equivalent and the difference is the point: the property zeroed a Cancelled
+    transfer, the resolver answers what the row's amount IS and leaves "does
+    this count" to the caller -- the same split the transaction side already
+    has between ``resolve_transaction_amount`` and ``contributed_amount``.
+
+    **The zeroing arm went with the property because it had no consumer.**  An
+    AST census at X-au-c2 found ZERO reads of ``Transfer.effective_amount``
+    anywhere in ``app/`` -- every one of the 24 sites was on ``Transaction`` --
+    so the Cancelled case it graded was a rule nothing asked.  Its
+    ``test_cancelled_returns_zero`` is therefore deleted rather than
+    retargeted; the transfer status gate that DOES have consumers is
+    ``balance_predicates.is_balance_contributing``, tested in
+    ``test_utils/test_balance_predicates.py``.
+    """
 
     def _make_transfer(self, seed_user, seed_periods, status_name, amount):
         """Helper: create a transfer with given status and amount."""
@@ -293,30 +323,44 @@ class TestTransferEffectiveAmount:
         db.session.flush()
         return xfer
 
-    def test_projected_returns_amount(self, app, db, seed_user, seed_periods):
-        """Projected transfer returns its amount."""
+    def test_projected_resolves_to_its_own_amount(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A Projected ad-hoc transfer owns its figure, so it resolves to it."""
         with app.app_context():
-            xfer = self._make_transfer(seed_user, seed_periods, "Projected", Decimal("500.00"))
-            assert xfer.effective_amount == Decimal("500.00")
+            xfer = self._make_transfer(
+                seed_user, seed_periods, "Projected", Decimal("500.00"),
+            )
+            assert resolve_transfer_amount(xfer) == Decimal("500.00")
 
-    def test_done_returns_amount(self, app, db, seed_user, seed_periods):
-        """Done transfer returns its amount."""
+    def test_settled_resolves_to_its_own_amount(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Leaving Projected does not change WHO owns the figure."""
         with app.app_context():
-            xfer = self._make_transfer(seed_user, seed_periods, "Paid", Decimal("500.00"))
-            assert xfer.effective_amount == Decimal("500.00")
+            xfer = self._make_transfer(
+                seed_user, seed_periods, "Paid", Decimal("500.00"),
+            )
+            assert resolve_transfer_amount(xfer) == Decimal("500.00")
 
-    def test_cancelled_returns_zero(self, app, db, seed_user, seed_periods):
-        """Cancelled transfer returns Decimal('0') for effective_amount.
+    def test_cancelled_still_resolves_to_its_amount(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A Cancelled transfer's AMOUNT is unchanged -- the gate is elsewhere.
 
-        Cancelled transfers should not affect account balance calculations.
-        The source checks `self.status.name == 'Cancelled'` and returns 0.
-        Expected: effective_amount == Decimal('0').
+        The deleted property answered ``$0.00`` here.  The resolver answers
+        what the row's amount is and says nothing about whether it counts,
+        which is the separation the amount model is built on: a status is a
+        fact about CONTRIBUTION, not about ownership (see
+        ``_amount_source.amount_rule`` on why soft deletion does not change the
+        rule either).  Pinned so the difference is deliberate and visible
+        rather than discovered.
         """
         with app.app_context():
             xfer = self._make_transfer(
                 seed_user, seed_periods, "Cancelled", Decimal("500.00"),
             )
-            assert xfer.effective_amount == Decimal("0")
+            assert resolve_transfer_amount(xfer) == Decimal("500.00")
 
 
 class TestTransferSettleDay:

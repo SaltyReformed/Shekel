@@ -27,6 +27,7 @@ from decimal import Decimal
 from app.enums import LedgerAccountKindEnum
 from app.services.loan_ledger import walk_loan_ledger
 from app.services.loan_loaders import load_loan_params, loan_payment_due_date
+from app.services.row_valuation import owned_contribution
 from app.utils.money import round_money
 
 from ._reader import (
@@ -51,7 +52,8 @@ class LoanPaymentHistoryRow:
     had moved by ``as_of``), so the table renders a Confirmed badge on each.
 
     ``cash`` is the payment's full cash (the loan-side income shadow's
-    ``effective_amount``); ``principal + interest + escrow`` equals it for an
+    :func:`~app.services.row_valuation.owned_contribution`); ``principal +
+    interest + escrow`` equals it for an
     ordinary payment.  The one case they diverge is a payoff OVERPAYMENT, whose
     surplus is a lender refund (a receivable) rather than principal -- there
     ``cash`` exceeds the split sum by that refund; see
@@ -63,7 +65,8 @@ class LoanPaymentHistoryRow:
             shadow's own stored ``due_date``) -- the same date the amortization
             schedule rows it.  NOT derived from the pay period, so a payment
             settled late still reports the installment it actually paid.
-        cash: The full cash paid (the income shadow's ``effective_amount``),
+        cash: The full cash paid (the income shadow's
+            :func:`~app.services.row_valuation.owned_contribution`),
             cent-quantized.
         principal: The real debt paid down (the payment's net on the loan's
             linked ledger), cent-quantized; may be negative for an underpayment.
@@ -133,7 +136,11 @@ def confirmed_loan_payment_history(
     interest / escrow split read from the posted ledger legs, never the
     schedule's contractual replay.
 
-    ``cash`` is the loan-side income shadow's ``effective_amount``; ``principal``
+    ``cash`` is the loan-side income shadow's
+    :func:`~app.services.row_valuation.owned_contribution` -- the accessor for a
+    reader that can only ever see rows owning their figure, which
+    :func:`~app.services.loan_ledger.confirmed_shadows_through` guarantees by
+    narrowing ``settled_income_shadows`` further still; ``principal``
     is its net on the loan's linked ledger
     (:func:`._reader._principal_net_by_shadow`); ``interest`` and ``escrow`` are
     its net ``loan_interest`` / ``loan_escrow`` legs.  For an ordinary payment
@@ -204,7 +211,7 @@ def confirmed_loan_payment_history(
     return [
         LoanPaymentHistoryRow(
             due_date=loan_payment_due_date(shadow, params.payment_day),
-            cash=round_money(shadow.effective_amount),
+            cash=round_money(owned_contribution(shadow)),
             principal=round_money(
                 principal_by_shadow.get(shadow.id, _ZERO_MONEY)
             ),

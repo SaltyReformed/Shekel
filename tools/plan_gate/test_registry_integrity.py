@@ -277,7 +277,9 @@ class TestEveryFindingNamesALiveOwner:
 
     def test_the_control_fires_on_an_undated_developer_decision(self, stage):
         """A fork with no date cannot be told from a fork nobody has taken."""
-        line = _row("ledger", "| balance | N-25 |")
+        # Re-anchored 2026-08-13 off `balance:N-25`, archived to the loan
+        # arc's as-built; a control that names its subject cannot go quiet.
+        line = _row("ledger", "| balance | N-138 |")
         stage("ledger", line, _with_cell(line, -1, "developer-decision (the fork)"))
         problems = registry.owner_violations()
         assert any("must carry the date" in p for p in problems), problems

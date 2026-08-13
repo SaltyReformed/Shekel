@@ -42,6 +42,7 @@ from tests._test_helpers import (
     posted_loan_balance_at,
     settle_instant_on,
 )
+from app.services.row_valuation import owned_contribution
 
 
 class TestGridView:
@@ -912,7 +913,7 @@ class TestTransactionCRUD:
 
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
     def test_mark_credit_creates_payback(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-credit creates payback in next period."""

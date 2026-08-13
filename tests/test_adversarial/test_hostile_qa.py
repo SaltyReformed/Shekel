@@ -42,6 +42,7 @@ from app.services import (
     pay_period_write,
 )
 from app.services import account_service
+from app.services.row_valuation import owned_contribution
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -181,7 +182,7 @@ class TestStateMachineViolations:
             original_amount = txn.estimated_amount  # Decimal("100.00")
 
             # Verify initial effective_amount.
-            assert txn.effective_amount == original_amount
+            assert owned_contribution(txn) == original_amount
 
             # Step 1: Cancel the transaction.
             resp = auth_client.post(f"/transactions/{txn.id}/cancel")
@@ -189,7 +190,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
             # Step 2: PATCH back to projected.
             projected = db.session.query(Status).filter_by(name="Projected").one()
@@ -204,7 +205,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Projected"
-            assert txn.effective_amount == original_amount
+            assert owned_contribution(txn) == original_amount
 
     def test_done_to_cancelled_transition(
         self, app, auth_client, seed_user, seed_periods,
@@ -224,7 +225,7 @@ class TestStateMachineViolations:
             db.session.commit()
 
             # Verify initial effective_amount uses actual_amount.
-            assert txn.effective_amount == Decimal("85.00")
+            assert owned_contribution(txn) == Decimal("85.00")
 
             # Cancel the transaction -- now refused.
             resp = auth_client.post(f"/transactions/{txn.id}/cancel")
@@ -234,7 +235,7 @@ class TestStateMachineViolations:
             # Row stays Paid; actual_amount preserved.
             assert txn.status.name == "Paid"
             assert txn.actual_amount == Decimal("85.00")
-            assert txn.effective_amount == Decimal("85.00")
+            assert owned_contribution(txn) == Decimal("85.00")
 
     def test_received_to_projected_reversion(
         self, app, auth_client, seed_user, seed_periods,
@@ -256,7 +257,7 @@ class TestStateMachineViolations:
             db.session.commit()
 
             # Verify initial effective_amount uses actual_amount.
-            assert txn.effective_amount == Decimal("2800.00")
+            assert owned_contribution(txn) == Decimal("2800.00")
 
             # PATCH back to projected.
             projected = db.session.query(Status).filter_by(name="Projected").one()
@@ -273,7 +274,7 @@ class TestStateMachineViolations:
             assert txn.status.name == "Projected"
             # After 5A.1: effective_amount prefers actual_amount for all
             # active statuses, so even as Projected it returns 2800.
-            assert txn.effective_amount == Decimal("2800.00")
+            assert owned_contribution(txn) == Decimal("2800.00")
             # actual_amount is NOT cleared by the PATCH.
             assert txn.actual_amount == Decimal("2800.00")
 
@@ -301,7 +302,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Credit"
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
             # Find the payback transaction.
             payback = db.session.query(Transaction).filter_by(
@@ -319,7 +320,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Projected"
-            assert txn.effective_amount == Decimal("100.00")
+            assert owned_contribution(txn) == Decimal("100.00")
 
             # The payback is hard-deleted with the reversion, exactly
             # like unmark_credit.
@@ -404,7 +405,7 @@ class TestStateMachineViolations:
             # The row stays Cancelled -- no partial mutation.
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
     def test_cancel_already_cancelled_transaction(
         self, app, auth_client, seed_user, seed_periods,
@@ -424,7 +425,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
     def test_mark_done_on_cancelled_transaction(
         self, app, auth_client, seed_user, seed_periods,
@@ -453,7 +454,7 @@ class TestStateMachineViolations:
             # No actual_amount recorded -- the rejected request did
             # not commit any partial state.
             assert txn.actual_amount is None
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
     def test_mark_credit_on_done_transaction(
         self, app, auth_client, seed_user, seed_periods,
@@ -476,7 +477,7 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Paid"
-            assert txn.effective_amount == Decimal("100.00")
+            assert owned_contribution(txn) == Decimal("100.00")
 
 
 # ══════════════════════════════════════════════════════════════════════

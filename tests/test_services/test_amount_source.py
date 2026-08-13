@@ -6,15 +6,27 @@ The total dispatch of :mod:`app.services.cash_ledger._amount_source`: ruling
 others rather than rivals, and the refusal each one raises where its producer
 cannot answer.
 
-**Every fixture here gives the row's own stored column a figure NO rule may
-answer**, and that is not decoration.  An adversarial review mutated the
-resolver to ``return txn.estimated_amount`` -- deleting the dispatch, all five
-rules and every refusal -- and the exhaustive production oracle beside this file
-reported *997 rows, 0 mismatches, OK*, because for 946 of those rows the app's
-own answer IS that column.  A fixture whose stored figure equals its derived one
-cannot tell the two implementations apart, so none here does.  The same review
-found three tests that passed under that mutation; each is now built from three
-DISTINCT figures and says which one it means.
+**A DERIVED fixture here carries no stored figure at all, and an OWN fixture
+carries one no rule may answer.**  Neither is decoration.  An adversarial review
+mutated the resolver to ``return txn.estimated_amount`` -- deleting the dispatch,
+all five rules and every refusal -- and the exhaustive production oracle beside
+this file reported *997 rows, 0 mismatches, OK*, because for 946 of those rows
+the app's own answer IS that column.  A fixture whose stored figure equals its
+derived one cannot tell the two implementations apart, so none here does.  Since
+plan step X-au-c2 a derived row cannot even hold a rival figure:
+:func:`_declare_derived` empties the column as it stamps the source, because
+``ck_transactions_amount_ownership`` pairs the two, so the same mutation now
+returns ``None`` where a ``Decimal`` is asserted.  The OWN fixtures still carry
+``_NOT_AN_ANSWER`` -- for them the column IS the answer, and the figure names
+which of three candidates a test means.
+
+**Which rule prices a row is now a question to the COLUMN** (finding **N-262**,
+closed here): ``amount_rule`` reads ``amount_source_id`` and no longer infers
+ownership from ``is_override`` or from having left Projected.  So every derived
+fixture DECLARES its relation, and the three arms that used to be inferences --
+overridden, non-Projected, soft-deleted -- are graded in
+:class:`TestTheDeclarationDecides` as the inversions they became: the flag and
+the status no longer move the rule in either direction.
 
 **The refusals are why most of this file exists.**  Zero rows on the 2026-08-12
 production clone take any refusal arm, so production evidence cannot show that a
@@ -31,9 +43,10 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
+from app.enums import AcctTypeEnum, AmountSourceEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
@@ -45,11 +58,11 @@ from app.services.cash_ledger import (
     AmountRule,
     amount_basis,
     amount_rule,
-    live_amount_overrides,
+    live_amounts,
     resolve_transaction_amount,
     resolve_transfer_amount,
 )
-from app.services.cash_ledger._amount_source import _RULE_ANSWERS
+from app.services.cash_ledger._amount_source import _RELATION_RULES, _RULE_ANSWERS
 from tests._test_helpers import (
     add_escrow_line,
     add_txn,
@@ -59,6 +72,7 @@ from tests._test_helpers import (
     loan_params_for,
     make_salary_profile,
 )
+from app.services.row_valuation import owned_contribution
 
 
 # The definition's price history, and the row dates that select from it.  TWO
@@ -90,8 +104,37 @@ def _basis_for(seed_user, rows):
     adversarial review pointed out.
     """
     return amount_basis(
-        seed_user["account"], seed_user["scenario"].id, list(rows),
+        seed_user["user"].id, seed_user["scenario"].id, list(rows),
     )
+
+
+def _declare_derived(txn, relation=AmountSourceEnum.TEMPLATE):
+    """Declare *txn* priced by *relation*, which EMPTIES its own amount column.
+
+    The two writes are one act because ``ck_transactions_amount_ownership`` makes
+    them one: a row states either a figure it owns or the relation that prices
+    it, never both.  Every derived fixture in this file goes through here, so no
+    test can accidentally grade a row the schema would refuse -- which is the
+    shape plan step X-au-c1's own build met (finding **N-260**).
+    """
+    txn.estimated_amount = None
+    txn.amount_source_id = ref_cache.amount_source_id(relation)
+    db.session.flush()
+    return txn
+
+
+def _declare_transfer_derived(xfer):
+    """The transfer twin of :func:`_declare_derived`.
+
+    Only ``template`` can price a transfer -- a transfer has no parent transfer
+    -- so the relation is not a parameter here.  ``ck_transfers_adhoc_owns_amount``
+    additionally refuses the declaration outright on an ad-hoc transfer, so this
+    is only ever called on a generated one.
+    """
+    xfer.amount = None
+    xfer.amount_source_id = ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE)
+    db.session.flush()
+    return xfer
 
 
 def _resolve(seed_user, txn):
@@ -147,15 +190,23 @@ def _salary_template(seed_user, txn_type=TxnTypeEnum.INCOME):
     return template, profile
 
 
-def _template_row(seed_user, period, template, **kwargs):
-    """A generated row on *template*, due under the OLD price unless told otherwise."""
+def _template_row(seed_user, period, template, *, owns=False, **kwargs):
+    """A generated row on *template*, due under the OLD price unless told otherwise.
+
+    DECLARED as priced by its definition by default, which is the state the
+    template cutover (plan step X-au-e) puts every non-override row in.  Pass
+    ``owns=True`` for the other half of the model -- a row generated by a
+    definition that has since taken its figure back, which is what a hand
+    re-price and the freeze both produce -- where the stored ``_NOT_AN_ANSWER``
+    IS the answer.
+    """
     kwargs.setdefault("due_date", _DUE_UNDER_OLD_PRICE)
     txn = add_txn(
         db.session, seed_user, period, template.name, _NOT_AN_ANSWER, **kwargs,
     )
     txn.template_id = template.id
     db.session.flush()
-    return txn
+    return txn if owns else _declare_derived(txn)
 
 
 def _shadow_of(xfer, *, income=False):
@@ -172,13 +223,20 @@ def _shadow_of(xfer, *, income=False):
 def _generated_transfer(
     seed_user, period, to_account, *, due_date,
     series=_OLD_PRICE, later=_NEW_PRICE, stored=Decimal("111.11"),
+    owns=False,
 ):
     """A transfer carrying a template whose series states TWO prices.
 
-    The parent's own ``amount`` column and both shadows' ``estimated_amount``
-    are set to ``stored`` -- a figure no rule may answer -- so a resolver that
-    reads either column is caught, which the review found neither transfer test
-    doing.
+    DECLARED derived by default, parent and both shadows: the parent names its
+    definition and each shadow names the parent, which is the state plan step
+    X-au-f puts every generated transfer in.  Their amount columns are therefore
+    EMPTY, so a resolver reading any of the three answers ``None`` against an
+    asserted ``Decimal``.
+
+    Pass ``owns=True`` for the pre-cutover shape -- parent and shadows all
+    holding ``stored``, a figure no rule may answer -- which is what an
+    overridden or settled transfer looks like once the freeze has taken its
+    figure back.
     """
     template = TransferTemplate(
         user_id=seed_user["user"].id,
@@ -202,7 +260,11 @@ def _generated_transfer(
     )
     xfer.transfer_template_id = template.id
     db.session.flush()
-    return xfer, template
+    if owns:
+        return xfer, template
+    for shadow in xfer.shadow_transactions:
+        _declare_derived(shadow, AmountSourceEnum.PARENT_TRANSFER)
+    return _declare_transfer_derived(xfer), template
 
 
 def _mortgage(seed_user, escrow_annual=Decimal("3600.00")):
@@ -226,15 +288,21 @@ def _mortgage(seed_user, escrow_annual=Decimal("3600.00")):
 
 def _loan_payment(
     seed_user, period, *, derive, extra=None, to_account=None,
-    series=Decimal("1300.00"), stored=Decimal("1250.00"),
+    series=Decimal("1300.00"), stored=Decimal("1250.00"), owns=False,
 ):
     """A mortgage payment transfer in one of its two modes, and its rows.
 
-    Three DISTINCT figures by default -- the definition states ``$1,300.00``,
-    the parent transfer's column holds ``$1,250.00`` and each shadow's holds
-    ``$1,200.00`` -- so a manual-mode assertion names which of the three it
-    means.  The review found the earlier fixture setting all three to one
-    number, which made the test pass for any of the three implementations.
+    Three DISTINCT figures -- the definition states ``$1,300.00``, the parent
+    transfer's column holds ``$1,250.00`` and each shadow's holds ``$1,200.00``
+    -- so a manual-mode assertion names which of the three it means.  The review
+    found the earlier fixture setting all three to one number, which made the
+    test pass for any of the three implementations.
+
+    The three columns are then EMPTIED by the declaration, which is what makes
+    the shadow reach rule 4 at all.  ``owns=True`` stops before that step and
+    leaves the three figures in place -- production's shape, where nothing is
+    declared and ``budget.loan_payment_settings`` is empty -- and is what the one
+    test that must watch the PRODUCER read the column uses.
 
     Returns ``(shadow, rows)``: the checking-side expense shadow, and both
     shadows, which is what a basis is built over.
@@ -242,7 +310,7 @@ def _loan_payment(
     loan = _mortgage(seed_user) if to_account is None else to_account
     xfer, template = _generated_transfer(
         seed_user, period, loan, due_date=date(2026, 2, 1),
-        series=series, later=None, stored=stored,
+        series=series, later=None, stored=stored, owns=True,
     )
     settings = LoanPaymentSettings(derive_from_loan=derive)
     if extra is not None:
@@ -252,7 +320,34 @@ def _loan_payment(
     for shadow in shadows:
         shadow.estimated_amount = Decimal("1200.00")
     db.session.flush()
+    if not owns:
+        _declare_loan_payment_derived(xfer)
     return _shadow_of(xfer), shadows
+
+
+def _declare_loan_payment_derived(xfer):
+    """Declare a loan payment's parent and its CHECKING-side shadow derived.
+
+    Separate from :func:`_generated_transfer` for two reasons.  One is ordering:
+    a test builds the payment, watches the producer price it off the stored
+    column, and only THEN declares it -- the transition the loan cutover (plan
+    step X-au-g) performs.
+
+    **The other is that the LOAN-side income leg cannot be declared at all
+    today, and that is a finding rather than a fixture convenience.**  The
+    resolver's LOAN_PAYMENT rule asks the loan
+    (``loan_payment_service.live_loan_transfer_amounts``); the loan resolves
+    through ``load_loan_context``, which calls ``get_payment_history``, which
+    reads the amount of every shadow income row ON THE LOAN ACCOUNT.  Emptying
+    that column therefore breaks the producer that prices the row -- a cycle the
+    amount model does not yet cut, recorded against X-au-g.  The checking-side
+    expense leg is invisible to ``query_shadow_income`` (it filters to the
+    destination account and the income type), so declaring it exercises rule 4
+    end to end without entering the cycle, and it is the leg every CASH reader
+    prices.
+    """
+    _declare_derived(_shadow_of(xfer), AmountSourceEnum.PARENT_TRANSFER)
+    return _declare_transfer_derived(xfer)
 
 
 class TestTheDispatchIsTotal:
@@ -267,6 +362,20 @@ class TestTheDispatchIsTotal:
         be last, and this is what says so before a row does.
         """
         assert set(_RULE_ANSWERS) == set(AmountRule)
+
+    def test_every_declarable_relation_has_a_rule(self):
+        """Every relation a row may DECLARE refines into one of the five rules.
+
+        The second half of the same totality claim, and the one plan step
+        X-au-c2 added: :func:`amount_rule` now branches on
+        ``amount_source_id``, so a member added to
+        :class:`~app.enums.AmountSourceEnum` -- ``credit_card:CC4c``'s finance
+        charge is the one already known to need one (finding **N-264**) --
+        must arrive with a rule beside it.  Without this it would raise a
+        ``KeyError`` on the first row that declared it, in production, instead
+        of here.
+        """
+        assert set(_RELATION_RULES) == set(AmountSourceEnum)
 
 
 class TestWhichRulePricesARow:
@@ -343,73 +452,48 @@ class TestWhichRulePricesARow:
         )
         assert amount_rule(_shadow_of(xfer)) is AmountRule.TRANSFER
 
-    def test_an_overridden_row_owns_its_amount(
+    def test_a_row_that_took_its_figure_back_owns_it_again(
         self, app, db, seed_user, seed_periods,
     ):
-        """A re-priced row keeps its figure however it was generated.
+        """A template-generated row that carries a figure owns it, definition or not.
 
-        Worth ``$120.00`` on the production clone: only 3 of its 49 override
-        rows are still Projected, and deleting this arm re-prices two of them
-        (the *Electricity* rows, hand-raised against a series that says
-        ``$300.00``).  The other 46 reach OWN through the status arm anyway.
+        The state a hand re-price leaves and the state the freeze leaves are the
+        same state, and it is the one the CHECK describes: a figure and no
+        source.  ``is_override`` is not consulted -- see
+        :class:`TestTheDeclarationDecides` for the inverse, which is the half
+        finding **N-262** was about.
         """
         template = _priced_template(seed_user)
-        txn = _template_row(seed_user, seed_periods[0], template)
-        txn.is_override = True
-        db.session.flush()
+        txn = _template_row(seed_user, seed_periods[0], template, owns=True)
         assert amount_rule(txn) is AmountRule.OWN
+        assert _resolve(seed_user, txn) == Decimal(_NOT_AN_ANSWER)
 
-    def test_an_overridden_shadow_owns_its_amount(
+    def test_a_shadow_that_took_its_figure_back_owns_it_again(
         self, app, db, seed_user, seed_periods,
     ):
-        """OWN beats TRANSFER too -- 12 such rows exist on the production clone."""
+        """The same on the shadow side -- 12 such rows exist on the production clone."""
         savings = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _ = _generated_transfer(
             seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            owns=True,
         )
         shadow = _shadow_of(xfer)
-        shadow.is_override = True
         shadow.estimated_amount = Decimal("77.77")
         db.session.flush()
         assert amount_rule(shadow) is AmountRule.OWN
         assert _resolve(seed_user, shadow) == Decimal("77.77")
-
-    @pytest.mark.parametrize("status", [
-        StatusEnum.DONE, StatusEnum.RECEIVED, StatusEnum.CREDIT,
-        StatusEnum.CANCELLED, StatusEnum.SETTLED,
-    ])
-    def test_a_row_that_is_no_longer_projected_owns_its_amount(
-        self, app, db, seed_user, seed_periods, status,
-    ):
-        """At settle the figure is FROZEN, and every non-Projected status keeps it.
-
-        Not a stylistic choice: 66 of production's settled and excluded template
-        rows carry a price their definition may since have left, and re-deriving
-        them would rewrite history.  Parameterised over all five non-Projected
-        statuses because the rule is "not Projected", not "settled" -- Credit and
-        Cancelled are neither, and their stored figure is still a fact.  Each
-        case RESOLVES as well as classifies, so the frozen figure is asserted
-        rather than assumed.
-        """
-        template = _priced_template(seed_user)
-        txn = _template_row(
-            seed_user, seed_periods[0], template, status_enum=status,
-        )
-        assert amount_rule(txn) is AmountRule.OWN
-        assert _resolve(seed_user, txn) == Decimal(_NOT_AN_ANSWER)
 
     def test_soft_deleting_a_row_does_not_change_which_rule_prices_it(
         self, app, db, seed_user, seed_periods,
     ):
         """Deletion says whether a row counts, never who owns its figure.
 
-        Making it flip the rule would force plan step X-au-c's ``amount_source``
-        to be rewritten on every delete and restore -- a stored value beside a
-        second writer, which is the shape this arc removes.  102 of production's
-        330 transfer shadows are soft-deleted, so the arm is ordinary rather
-        than theoretical.
+        Making it flip the rule would force ``amount_source_id`` to be rewritten
+        on every delete and restore -- a stored value beside a second writer,
+        which is the shape this arc removes.  102 of production's 330 transfer
+        shadows are soft-deleted, so the arm is ordinary rather than theoretical.
         """
         template = _priced_template(seed_user)
         txn = _template_row(
@@ -417,6 +501,106 @@ class TestWhichRulePricesARow:
         )
         assert amount_rule(txn) is AmountRule.TEMPLATE
         assert _resolve(seed_user, txn) == _OLD_PRICE
+
+
+class TestTheDeclarationDecides:
+    """Finding **N-262**: the COLUMN says who owns a figure, and nothing else does.
+
+    Until plan step X-au-c2 the OWN arm was inferred from ``is_override`` and
+    from having left Projected -- neither of which
+    ``ck_transactions_amount_ownership`` can see -- so four live doors could
+    write a row the schema admits and the resolver refuses.  Each of the four is
+    reached here on a DECLARED row and shown to resolve through its relation
+    rather than falling into OWN and raising.
+    """
+
+    @pytest.mark.parametrize("status", [
+        StatusEnum.DONE, StatusEnum.RECEIVED, StatusEnum.CREDIT,
+        StatusEnum.CANCELLED, StatusEnum.SETTLED,
+    ])
+    def test_leaving_projected_does_not_take_a_declared_row_back(
+        self, app, db, seed_user, seed_periods, status,
+    ):
+        """A declared row keeps its relation in every status the machine admits.
+
+        Credit and Cancelled are the reachable half and they are why this is a
+        parametrize rather than a settled-only case: both leave Projected WITHOUT
+        entering the settled band, so no freeze fires and no figure is written
+        back.  Under the inference such a row took the OWN arm and
+        ``_own_figure`` raised on its empty column -- and production carries 7
+        Cancelled and 2 Credit template-linked rows against a grid route that
+        loads every row in the window with no status predicate
+        (``routes/grid.py:226``), so the first bucket to derive would have taken
+        out the whole screen.
+        """
+        template = _priced_template(seed_user)
+        txn = _template_row(
+            seed_user, seed_periods[0], template, status_enum=status,
+        )
+        assert amount_rule(txn) is AmountRule.TEMPLATE
+        assert _resolve(seed_user, txn) == _OLD_PRICE
+
+    def test_the_override_flag_does_not_take_a_declared_row_back(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The flag carries four facts and pricing is not one of them.
+
+        ``routes/transactions/mutations.py:295`` sets it for a pay-period MOVE
+        with no re-price at all, and finding **N-238** (plan step X-au-h) is the
+        split of the other three.  A row that was moved and not re-priced still
+        has its definition's price, and a rule reading the flag would refuse it.
+        """
+        template = _priced_template(seed_user)
+        txn = _template_row(seed_user, seed_periods[0], template)
+        txn.is_override = True
+        db.session.flush()
+        assert amount_rule(txn) is AmountRule.TEMPLATE
+        assert _resolve(seed_user, txn) == _OLD_PRICE
+
+    def test_a_bulk_flag_update_does_not_take_a_declared_row_back(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The carry-forward shape: the flag set by SQL, past every ORM hook.
+
+        ``carry_forward_service/_execute.py:157`` sets ``is_override`` in a bulk
+        ``query.update``, which no validator and no session event can see.  It is
+        written that way for the partial unique index rather than for pricing
+        (the fourth fact finding **N-238** names), so a row it touched must price
+        exactly as it did before.
+        """
+        template = _priced_template(seed_user)
+        txn = _template_row(seed_user, seed_periods[0], template)
+        (
+            db.session.query(Transaction)
+            .filter(Transaction.id == txn.id)
+            .update({"is_override": True}, synchronize_session="fetch")
+        )
+        db.session.flush()
+        assert amount_rule(txn) is AmountRule.TEMPLATE
+        assert _resolve(seed_user, txn) == _OLD_PRICE
+
+    def test_a_transfer_declaring_a_parent_transfer_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A transfer has no parent transfer, so that relation names nothing.
+
+        The totality of the transfer arm.  ``ref.amount_sources`` holds both
+        members and nothing at the storage tier scopes one of them to the
+        shadow table, so the refusal is the only thing that tells a writer which
+        of the two tables it confused.
+        """
+        savings = create_savings_account(
+            seed_user, db.session, "Money Market", Decimal("5000.00"),
+        )
+        xfer, _ = _generated_transfer(
+            seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+        )
+        xfer.amount_source_id = ref_cache.amount_source_id(
+            AmountSourceEnum.PARENT_TRANSFER,
+        )
+        db.session.flush()
+        with pytest.raises(AmountUnresolvable, match="no parent transfer"):
+            resolve_transfer_amount(xfer)
 
 
 class TestWhatEachRuleAnswers:
@@ -443,7 +627,7 @@ class TestWhatEachRuleAnswers:
             db.session, seed_user, seed_periods[0], "Groceries", "500.00",
             status_enum=StatusEnum.DONE, actual_amount="462.34",
         )
-        assert txn.effective_amount == Decimal("462.34")
+        assert owned_contribution(txn) == Decimal("462.34")
         assert _resolve(seed_user, txn) == Decimal("500.00")
 
     def test_an_excluded_row_answers_its_amount_not_zero(
@@ -459,7 +643,7 @@ class TestWhatEachRuleAnswers:
             db.session, seed_user, seed_periods[0], "Gym", "40.00",
             status_enum=StatusEnum.CANCELLED,
         )
-        assert txn.effective_amount == Decimal("0")
+        assert owned_contribution(txn) == Decimal("0")
         assert _resolve(seed_user, txn) == Decimal("40.00")
 
     def test_a_template_row_answers_the_price_in_effect_on_its_due_date(
@@ -528,12 +712,13 @@ class TestWhatEachRuleAnswers:
     ):
         """Transfer Invariant 3 becomes structural: the shadow reads the parent's rule.
 
-        Three distinct figures, and the assertion names the one that is right:
-        the shadow's column says ``$9.99``, the PARENT's column says ``$111.11``,
-        and the definition states ``$178.00``.  The review found the earlier
-        version of this test setting all three to one number, so it passed for a
-        resolver that read the shadow's own column, one that read the parent's,
-        and one that resolved the parent's rule alike.
+        Neither column can hold a rival figure any more -- the declaration empties
+        both -- so the assertion discriminates between the definition's
+        ``$178.00`` and a ``None`` from either. That is a stronger control than
+        the three distinct figures this test used to plant, and it is the
+        difference plan step X-au-c2 makes: before it, the shadow's own column
+        and its parent's were both populated and only the review's three-figure
+        fixture told a column-reading resolver from a rule-resolving one.
         """
         savings = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("5000.00"),
@@ -542,19 +727,19 @@ class TestWhatEachRuleAnswers:
             seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
         )
         shadow = _shadow_of(xfer)
-        shadow.estimated_amount = Decimal("9.99")
-        db.session.flush()
-        assert xfer.amount == Decimal("111.11")
+        assert shadow.estimated_amount is None
+        assert xfer.amount is None
         assert _resolve(seed_user, shadow) == _OLD_PRICE
 
     def test_both_shadows_of_one_transfer_answer_the_same_figure(
         self, app, db, seed_user, seed_periods,
     ):
-        """Invariant 3 for the PAIR, with the two legs stored at DIFFERENT figures.
+        """Invariant 3 for the PAIR: both legs answer their parent, not themselves.
 
-        Storing them equal -- which they are in production -- would make this
-        pass for a resolver that read each shadow's own column, so the fixture
-        drifts them apart on purpose.
+        The two legs used to be stored at DIFFERENT figures so a resolver reading
+        each shadow's own column would answer two numbers where one is right.
+        The declaration empties both columns instead, so such a resolver now
+        answers ``None`` twice -- the same discrimination, made structural.
         """
         savings = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("5000.00"),
@@ -563,9 +748,6 @@ class TestWhatEachRuleAnswers:
             seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
         )
         expense_leg, income_leg = _shadow_of(xfer), _shadow_of(xfer, income=True)
-        expense_leg.estimated_amount = Decimal("1.00")
-        income_leg.estimated_amount = Decimal("2.00")
-        db.session.flush()
         rows = list(xfer.shadow_transactions)
         basis = _basis_for(seed_user, rows)
         assert resolve_transaction_amount(expense_leg, basis) == _OLD_PRICE
@@ -587,9 +769,10 @@ class TestWhatEachRuleAnswers:
             seed_user, db.session, seed_user["account"], savings,
             seed_periods[0], amount=Decimal("75.00"),
         )
-        shadow = _shadow_of(xfer)
-        shadow.estimated_amount = Decimal("3.33")
-        db.session.flush()
+        shadow = _declare_derived(
+            _shadow_of(xfer), AmountSourceEnum.PARENT_TRANSFER,
+        )
+        assert xfer.amount_source_id is None
         assert _resolve(seed_user, shadow) == Decimal("75.00")
 
 
@@ -612,14 +795,14 @@ class TestTheTransferRule:
     def test_a_generated_transfer_answers_its_definitions_series(
         self, app, db, seed_user, seed_periods,
     ):
-        """The stored column is bypassed: the series is asked on the due date."""
+        """There is no stored column to bypass: the series is asked on the due date."""
         savings = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
         xfer, _ = _generated_transfer(
             seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
         )
-        assert xfer.amount == Decimal("111.11")
+        assert xfer.amount is None
         assert resolve_transfer_amount(xfer) == _OLD_PRICE
 
     def test_a_later_transfer_of_the_same_template_answers_the_later_price(
@@ -644,28 +827,42 @@ class TestTheTransferRule:
         assert seed_periods[0].start_date < _PRICE_FELL_ON < xfer.due_date
         assert resolve_transfer_amount(xfer) == _NEW_PRICE
 
-    def test_an_overridden_transfer_owns_its_amount(
+    def test_a_generated_transfer_that_carries_a_figure_owns_it(
         self, app, db, seed_user, seed_periods,
     ):
-        """A re-priced transfer keeps its figure, exactly as a row does."""
+        """A definition behind it does not make a transfer derived: the column does.
+
+        The transfer twin of
+        :meth:`TestWhichRulePricesARow.test_a_row_that_took_its_figure_back_owns_it_again`,
+        and the shape a re-priced transfer and a frozen one both leave.  Its
+        definition still states ``$178.00`` on this due date, and the transfer
+        answers its own ``$111.11``.
+        """
         savings = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
-        xfer, _ = _generated_transfer(
+        xfer, template = _generated_transfer(
             seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
+            owns=True,
         )
-        xfer.is_override = True
-        db.session.flush()
+        assert template_amount_service.amount_as_of(
+            template, _DUE_UNDER_OLD_PRICE,
+        ) == _OLD_PRICE
         assert resolve_transfer_amount(xfer) == Decimal("111.11")
 
-    def test_a_settled_transfer_owns_its_amount(
-        self, app, db, seed_user, seed_periods,
+    @pytest.mark.parametrize("status", [
+        StatusEnum.DONE, StatusEnum.CANCELLED,
+    ])
+    def test_a_transfers_status_does_not_decide_which_rule_prices_it(
+        self, app, db, seed_user, seed_periods, status,
     ):
-        """The freeze applies to the parent too -- and proves the shared predicate.
+        """Leaving Projected does not take a declared transfer's relation back.
 
-        ``balance_predicates.is_projected`` was annotated Transaction-only until
-        this rule asked it of a transfer; this is the case that would fail if it
-        were re-narrowed or hand-copied into a second comparison here.
+        The transfer half of finding **N-262**, and the reason
+        ``resolve_transfer_amount`` stopped consulting
+        ``balance_predicates.is_projected`` at plan step X-au-c2: a Cancelled
+        transfer never enters the settled band, so no freeze writes it a figure,
+        and a status-driven OWN arm would refuse the empty column that is left.
         """
         savings = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("5000.00"),
@@ -673,9 +870,9 @@ class TestTheTransferRule:
         xfer, _ = _generated_transfer(
             seed_user, seed_periods[0], savings, due_date=_DUE_UNDER_OLD_PRICE,
         )
-        xfer.status_id = ref_cache.status_id(StatusEnum.DONE)
+        xfer.status_id = ref_cache.status_id(status)
         db.session.flush()
-        assert resolve_transfer_amount(xfer) == Decimal("111.11")
+        assert resolve_transfer_amount(xfer) == _OLD_PRICE
 
 
 class TestEveryRefusalFires:
@@ -805,6 +1002,7 @@ class TestEveryRefusalFires:
         )
         xfer.transfer_template_id = template.id
         db.session.flush()
+        _declare_transfer_derived(xfer)
         with pytest.raises(AmountUnresolvable, match="series is EMPTY"):
             resolve_transfer_amount(xfer)
 
@@ -813,12 +1011,12 @@ class TestEveryRefusalFires:
     ):
         """The resolver's own totality contract: it answers a Decimal or raises.
 
-        Unreachable through the database today -- both amount columns are NOT
-        NULL -- and reachable from plan step X-au-c, where
-        ``ck_transactions_amount_ownership`` becomes what keeps an OWN row's
-        figure present.  ``no_autoflush`` is what makes the RAISE the failure: a
-        review found the un-flushed ``None`` reaching PostgreSQL first and the
-        test passing on an ``IntegrityError`` instead of on its own assertion.
+        Unreachable through the database: ``ck_transactions_amount_ownership``
+        is what keeps an OWN row's figure present, so the state below is a row
+        written AROUND the CHECK.  ``no_autoflush`` is what makes the RAISE the
+        failure and not the constraint: a review found the un-flushed ``None``
+        reaching PostgreSQL first and the test passing on an ``IntegrityError``
+        instead of on its own assertion.
         """
         txn = add_txn(db.session, seed_user, seed_periods[0], "Haircut", "35.00")
         basis = _basis_for(seed_user, [txn])
@@ -833,7 +1031,7 @@ class TestEveryRefusalFires:
     def test_a_transfer_carrying_no_figure_is_refused(
         self, app, db, seed_user, seed_periods,
     ):
-        """The same totality contract on the second column X-au-c makes nullable."""
+        """The same totality contract on the second column the model covers."""
         savings = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("5000.00"),
         )
@@ -898,12 +1096,25 @@ class TestTheLoanPaymentRule:
         extra and ``$1,300.00`` (the series) without one -- the same payment
         priced from two different bases, one of them the stored column ruling
         R-FI deletes.
+
+        **The payment is built OWNING its figure and declared afterwards**,
+        which is the one place in this file that ordering matters.  The producer
+        must see a populated column to answer ``$1,350.00`` at all -- it reads
+        ``shadow.estimated_amount`` -- so the basis is built first and the
+        declaration follows, planting the producer's rival answer in a basis the
+        resolver then ignores.  That the producer cannot run at all once the
+        column is empty is finding **N-259**, and it is the loan cutover's
+        (plan step X-au-g) precondition rather than this leaf's: nothing is
+        declared on production and ``budget.loan_payment_settings`` is empty
+        there.
         """
         shadow, rows = _loan_payment(
             seed_user, seed_periods[0], derive=False, extra=Decimal("150.00"),
+            owns=True,
         )
         basis = _basis_for(seed_user, rows)
         assert basis.loan_cash[shadow.id] == Decimal("1350.00")
+        _declare_loan_payment_derived(shadow.transfer)
         assert resolve_transaction_amount(shadow, basis) == Decimal("1450.00")
 
     def test_a_derive_mode_payment_whose_loan_will_not_resolve_is_refused(
@@ -945,17 +1156,17 @@ class TestTheBatchTier:
         assert basis.loan_cash[shadow.id] == Decimal("1499.10")
         assert basis.priced_ids == {row.id for row in rows}
 
-    def test_live_amount_overrides_holds_the_union_of_both_maps(
+    def test_live_amounts_holds_the_union_of_both_maps(
         self, app, db, seed_user, seed_periods,
     ):
-        """The legacy merged map still answers for both kinds, produced once.
+        """The merged map answers for both kinds, produced once.
 
-        The regression guard for X-au-b's one wiring change: two call sites in
-        ``app/`` read ``live_amount_overrides`` and neither may move.  Asserted
-        from OUTSIDE -- the expected keys are the salary row and both loan
-        shadows, named explicitly -- rather than by re-expressing the merge,
-        which a review pointed out could only fail if the producer were
-        nondeterministic.
+        The regression guard for the surfaces that want a LOOKUP rather than a
+        per-row question -- the grid publishes it so a cell and the balance row
+        beside it read one object (ruling R-Q).  Asserted from OUTSIDE -- the
+        expected keys are the salary row and both loan shadows, named explicitly
+        -- rather than by re-expressing the merge, which a review pointed out
+        could only fail if the producer were nondeterministic.
         """
         template, _profile = _salary_template(seed_user)
         paycheck = _template_row(
@@ -965,9 +1176,7 @@ class TestTheBatchTier:
             seed_user, seed_periods[0], derive=True,
         )
         rows = [paycheck, *loan_rows]
-        merged = live_amount_overrides(
-            seed_user["account"], seed_user["scenario"].id, rows,
-        )
+        merged = live_amounts(_basis_for(seed_user, rows))
         assert set(merged) == {paycheck.id, *(row.id for row in loan_rows)}
         assert merged[loan_rows[0].id] == Decimal("1499.10")
         assert merged[paycheck.id] != Decimal(_NOT_AN_ANSWER)
@@ -987,14 +1196,38 @@ class TestTheRulesDoNotReadTheColumnTheyReplace:
     def test_a_template_rows_answer_ignores_its_own_column(
         self, app, db, seed_user, seed_periods, nudge,
     ):
-        """Re-pricing the row's column moves nothing: the definition decides."""
+        """Re-pricing the row's column moves nothing: the definition decides.
+
+        The nudge is written in memory and never flushed, because since plan
+        step X-au-c2 it CANNOT be flushed:
+        ``ck_transactions_amount_ownership`` refuses a figure beside a
+        declaration, which is what turns this property from a measurement into a
+        construction.  The in-memory write is still what grades the rule.
+        """
         template = _priced_template(seed_user)
         txn = _template_row(seed_user, seed_periods[0], template)
         basis = _basis_for(seed_user, [txn])
         before = resolve_transaction_amount(txn, basis)
         with db.session.no_autoflush:
-            txn.estimated_amount = txn.estimated_amount + nudge
+            txn.estimated_amount = nudge
             assert resolve_transaction_amount(txn, basis) == before
+            txn.estimated_amount = None
+
+    def test_a_declared_row_cannot_carry_a_rival_figure_at_all(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The invariance above, made structural rather than asserted.
+
+        A derived row whose column holds a figure is the state the whole arc
+        exists to delete, and it is the state the CHECK forbids -- so the
+        rival figure the test above writes in memory cannot survive a flush.
+        """
+        template = _priced_template(seed_user)
+        txn = _template_row(seed_user, seed_periods[0], template)
+        txn.estimated_amount = Decimal("1000.00")
+        with pytest.raises(IntegrityError, match="ck_transactions_amount_ownership"):
+            db.session.flush()
+        db.session.rollback()
 
     def test_a_shadows_answer_ignores_both_its_own_column_and_its_parents(
         self, app, db, seed_user, seed_periods,
@@ -1012,6 +1245,8 @@ class TestTheRulesDoNotReadTheColumnTheyReplace:
             shadow.estimated_amount = Decimal("4242.42")
             xfer.amount = Decimal("2424.24")
             assert resolve_transaction_amount(shadow, basis) == _OLD_PRICE
+            shadow.estimated_amount = None
+            xfer.amount = None
         template_amount_service.set_amount(
             template, Decimal("199.00"), effective_on=_PRICE_ROSE_ON,
         )

@@ -90,10 +90,10 @@ def sum_projected(transactions, basis: ProjectedBasis):
     ``_sum_all`` once both became Projected-only).
 
     Income uses :func:`~app.services.cash_ledger._amounts.income_amount`
-    (effective_amount, or a live override when present).  Expenses use
+    (what the row CONTRIBUTES, or a live override when present).  Expenses use
     :func:`~app.services.cash_ledger._amounts._expense_amount`, which
     applies the entry-checking formula for projected expenses with loaded
-    entries and honors a live override, falling back to effective_amount
+    entries and honors a live override, falling back to the contribution
     otherwise.
 
     **The basis is REQUIRED, and that is the point of bundling it** (plan step

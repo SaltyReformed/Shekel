@@ -42,13 +42,13 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 42 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 43 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**136 steps, 102 open.** The dependency graph holds 106 edges over 66 rows.
+**137 steps, 102 open.** The dependency graph holds 106 edges over 66 rows.
 
 ## The order
 
@@ -57,8 +57,8 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-f3 | -- | THE CUTOVER: the assertion stops resetting the ledger, `balance(T)` becomes opening equity plus the sum of postings, and the reconciliation residual posts to Uncategorized rather than to Equity. **MOVES MONEY, OWN PR, NO BACKLOG.** Closes **N-171**, **N-172**, **N-174**. | #1 | -- | NOW / balance:X-f2-c3 (shipped) / balance:X-f2 (shipped) |
 | balance | X-f4 | -- | Delete what the cutover orphans: `ReconciledThrough` and its 78 references across 14 files, `_anchors.py`, the correction machinery and the R-I seed compensator. Closes **N-176**, **N-161**, **N-170**, **N-218**. | #2 | -- | after #1 / balance:X-f3 |
 | balance | X-f5 | -- | Post one balanced entry moving $1,495.10 out of Checking Anchor Equity so the opening equity account holds only the opening, which makes the four-month income statement honest. | #3 | -- | after #2 / balance:X-f4 |
-| balance | X-au-c2 | -- | Route every reader that can price a still-projected row through X-au-b's resolver, retiring the two `effective_amount` model properties for a valuation that takes the resolved figure as an argument. | #4 | -- | NOW / balance:X-au-c1 (shipped) |
-| balance | X-au-c3 | -- | Turn X-aq's settle refresh into the FREEZE and the revert into its inverse: a settle writes the resolved figure into the row's own amount column and declares it owned, and leaving the settled band hands the declaration back. Closes **N-241**, **N-242**, **N-245**, **N-259**. | #5 | -- | after #4 / balance:X-au-c2 |
+| balance | X-au-c2b | -- | Route the readers that take a row's BUDGET straight off `estimated_amount` -- the envelope remaining, the carry-forward leftover, the payback amount -- through a batch amount resolver, so no reader still reads a column a derived row will not carry. | #4 | -- | NOW / balance:X-au-c2a (shipped) |
+| balance | X-au-c3 | -- | Turn X-aq's settle refresh into the FREEZE and the revert into its inverse: a settle writes the resolved figure into the row's own amount column and declares it owned, and leaving the settled band hands the declaration back. Closes **N-241**, **N-242**, **N-245**, **N-259**. | #5 | -- | NOW / balance:X-au-c2a (shipped) |
 | balance | X-au-d | -- | Cut SALARY rows over: generation stops pricing them, the 51 live rows go NULL, and `income_service.live_projected_net`, `_freshest_amount` and `_reconcile_cached_amount` are deleted. Closes **N-224**, **N-228**. | #6 | -- | after #5 / balance:X-au-c3 |
 | balance | X-au-e | -- | Cut TEMPLATE rows over to their template's amount series: generation stops pricing them, the 511 non-override rows go NULL, and regeneration's amount arm with the conflict chooser's keep-vs-use decision are both deleted. | #7 | -- | after #5 / balance:X-au-c3 / balance:X-au-a (shipped) |
 | balance | X-au-g | -- | Cut LOAN-PAYMENT shadows over, which must first RULE that a shadow's P&I resolves on its own due date as ruling D5 already put its escrow, because a resolver may not read the wall clock. Closes **N-40**. | #8 | -- | after #5 / balance:X-au-c3 |
@@ -175,6 +175,7 @@ The fuller as-built entries are in each arc's archive.
 
 | arc | id | also | what this step does | order | commit | starts |
 |---|---|---|---|---|---|---|
+| balance | X-au-c2a | -- | Every reader of the two `effective_amount` model properties moved onto the amount model -- the cheap accessor where a loader filters to settled, the batch resolver where it cannot -- and both properties were DELETED with their 104 test reads. `investment_projection` is valued at its boundary. Closed **N-262**; opened **N-266**-**N-272**. | SHIPPED | `d44a4f01` | -- |
 | balance | X-au-c1 | -- | Both amount columns became NULLABLE under the CHECK pairing each with an `amount_source_id` that names WHICH RELATION prices the row, and the at-most-one-pricing-link convention became structural. | SHIPPED | `2dbdad1c` | -- |
 | balance | X-f1 | -- | A settle carries the day the money moved; absorbed **S2-b**. Fourteen leaves, condensed into `archive/…2026-08-04.md` 1a. | SHIPPED | `8d812662` | -- |
 | balance | X-an | -- | A loan payment is history from the day its money moved (**R-EK**) -- the DECOMPOSED parent, complete at two leaves, condensed into `archive/…2026-08-04.md` 1b. Closed **N-187**, **N-196**; opened **N-207**-**N-211**. | SHIPPED | `549015c0` | -- |

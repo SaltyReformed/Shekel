@@ -8,7 +8,7 @@ to the Status model.  Verifies that:
   - The cache raises RuntimeError when a database row is missing.
   - The Status boolean columns (is_settled, is_immutable, excludes_from_balance)
     are correct for every status.
-  - Transaction.effective_amount respects the boolean columns.
+  - owned_contribution(Transaction) respects the boolean columns.
   - The grid shows "Paid" instead of "Done" for the mark-done button.
   - GoalMode and IncomeUnit ref_cache accessors return valid IDs.
   - GoalModeEnum and IncomeUnitEnum match their database rows exactly.
@@ -56,6 +56,7 @@ from app.models.ref import (
     TransactionType,
 )
 from app.models.transaction import Transaction
+from app.services.row_valuation import owned_contribution
 
 
 class TestRefCacheStatuses:
@@ -252,7 +253,7 @@ class TestEffectiveAmount:
             db.session.add(txn)
             db.session.flush()
 
-            assert txn.effective_amount == Decimal("0")
+            assert owned_contribution(txn) == Decimal("0")
 
     def test_effective_amount_uses_actual_for_settled_status(
         self, app, db, seed_user, seed_periods
@@ -283,7 +284,7 @@ class TestEffectiveAmount:
             db.session.add(txn)
             db.session.flush()
 
-            assert txn.effective_amount == Decimal("487.00")
+            assert owned_contribution(txn) == Decimal("487.00")
 
     def test_effective_amount_uses_estimated_for_projected(
         self, app, db, seed_user, seed_periods
@@ -309,7 +310,7 @@ class TestEffectiveAmount:
             db.session.add(txn)
             db.session.flush()
 
-            assert txn.effective_amount == Decimal("500.00")
+            assert owned_contribution(txn) == Decimal("500.00")
 
 
 class TestGridShowsPaidNotDone:

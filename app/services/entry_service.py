@@ -98,7 +98,7 @@ def _resync_settled_envelope(txn: Transaction) -> None:
     followed by ``_resync_postings_if_settled`` (gated on the settled BAND), so
     the two halves of one act graded the same row differently: on any settled
     status that is not Paid the actual was NOT recomputed while the postings
-    WERE reconciled -- to the stale ``effective_amount``.  The books moved and
+    WERE reconciled -- to the stale figure.  The books moved and
     the figure they were derived from did not.  Two predicates for one act is
     two answers; the band is the right one, because the act is "this row's money
     has moved and its purchases just changed".
@@ -113,7 +113,7 @@ def _resync_settled_envelope(txn: Transaction) -> None:
          row's cost to ``$0.00``.
       2. the ledger reconcile (Build-Order Step 3), which must read the actual
          act 1 just wrote.  An entry mutation on a settled envelope changes its
-         confirmed cash effect (``effective_amount - Sigma(credit entries)``):
+         confirmed cash effect (``owned_contribution - Sigma(credit entries)``):
          adding a debit purchase grows the checking outflow, flipping an entry
          to or from credit moves the credit-excluded portion, deleting one
          shrinks it.

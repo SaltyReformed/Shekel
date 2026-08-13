@@ -35,6 +35,7 @@ from tests._test_helpers import (
     net_posted_by_day,
     override_anchor,
 )
+from app.services.row_valuation import owned_contribution
 
 
 def _create_savings_account(seed_user):
@@ -1305,7 +1306,7 @@ class TestTransferInstance:
             auth_client.post(f"/transfers/instance/{xfer.id}/cancel")
 
             db.session.refresh(xfer)
-            assert xfer.effective_amount == Decimal("0")
+            assert owned_contribution(xfer) == Decimal("0")
 
     def test_update_other_users_transfer(self, app, auth_client, seed_user):
         """PATCH /transfers/instance/<id> for another user's transfer returns 404.

@@ -37,7 +37,11 @@ from decimal import Decimal
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services import posting_service
-from app.services.cash_ledger import live_amount_overrides
+from app.services.cash_ledger import (
+    amount_basis,
+    contribution_of,
+    live_override,
+)
 from app.services.entry_service import compute_actual_from_entries
 from app.services.status_seam import apply_status_change
 from app.services.transaction_service._status_rules import settled_status_id
@@ -99,7 +103,7 @@ def reject_unsettleable(txn: Transaction) -> None:
     3 and 4).
 
     **A soft-deleted row** must not be resurrected by a status change.  It
-    values at ``Decimal("0")`` through ``effective_amount``, so settling one
+    values at ``Decimal("0")`` through the valuation gate, so settling one
     books nothing while stamping the row Paid and dated: a row that reads
     settled and is worth nothing.  The envelope branch refused this from the
     beginning and the MANUAL branch never did, and the gap was REACHABLE --
@@ -138,7 +142,7 @@ def settle_amount(txn: Transaction) -> Decimal:
 
     **The ONE valuation act 1 of :func:`settle_transaction` uses**, published
     because the reconcile panel must show the figure a tick will book.  A panel
-    that renders ``effective_amount`` beside a verb that books something else is
+    that renders the row's own figure beside a verb that books something else is
     two answers to one money question, one screen apart -- and after plan step
     X-aq the verb genuinely books something else for a salary row.  The verb
     CALLS this rather than re-branching, so there is no shape in which the
@@ -153,7 +157,7 @@ def settle_amount(txn: Transaction) -> Decimal:
     Returns:
         ``sum(entries)`` when :func:`settles_from_entries`, else the freshest
         derivation of the row's own amount -- the projection's live figure when
-        one exists and the stored ``effective_amount`` otherwise.
+        one exists and the row's own contribution otherwise.
 
     Raises:
         ValidationError: On a row no door may settle
@@ -166,8 +170,9 @@ def settle_amount(txn: Transaction) -> Decimal:
     reject_unsettleable(txn)
     if settles_from_entries(txn):
         return compute_actual_from_entries(txn.entries)
-    live = _freshest_amount(txn)
-    return txn.effective_amount if live is None else live
+    basis = amount_basis(txn.account.user_id, txn.scenario_id, [txn])
+    live = _freshest_amount(txn, basis)
+    return contribution_of(txn, basis) if live is None else live
 
 
 def is_correction(txn: Transaction, submitted: "Decimal | None") -> bool:
@@ -194,13 +199,13 @@ def is_correction(txn: Transaction, submitted: "Decimal | None") -> bool:
     **It is asked BEFORE the settle and that is the only moment it has an
     answer**, because :func:`settle_transaction` mutates the very figures it
     compares.  Asking it there is exact rather than approximate: past
-    :func:`_reconcile_cached_amount`, ``txn.effective_amount`` IS
+    :func:`_reconcile_cached_amount`, the row's contribution IS
     :func:`settle_amount`'s pre-settle answer, in all three shapes -- a row
     carrying its own ``actual_amount`` (the refresh is guarded off and both
     read that figure), a row whose live derivation supersedes its cache (the
     refresh writes exactly what this returned), and a row with nothing fresher
     (neither moves).  The historical defect this is NOT is comparing against
-    the pre-refresh ``effective_amount``, which is a cache the recompute has
+    the pre-refresh contribution, which is a cache the recompute has
     already superseded -- that made the echo rule inert for precisely the rows
     the refresh is about.
 
@@ -371,9 +376,9 @@ def settle_transaction(
         # **Asked BEFORE act 1a, and that is exact rather than approximate.**
         # The comparison it makes -- against :func:`settle_amount`, the same
         # expression the panel prefills from -- equals the post-refresh
-        # ``effective_amount`` in every shape (:func:`is_correction` states the
+        # the row's contribution in every shape (:func:`is_correction` states the
         # three).  What it is NOT is a comparison against the pre-refresh
-        # ``effective_amount``: that is a cache the recompute has already
+        # that contribution: it is a cache the recompute has already
         # superseded, and using it made the rule inert for exactly the rows act
         # 1a is about.
         correction = actual_amount if is_correction(txn, actual_amount) else None
@@ -440,12 +445,14 @@ def _reconcile_cached_amount(txn: Transaction) -> None:
             asked BEFORE the status flip: the projection's rule is
             Projected-only, so after it there is never anything fresher.
     """
-    live = _freshest_amount(txn)
+    live = _freshest_amount(
+        txn, amount_basis(txn.account.user_id, txn.scenario_id, [txn]),
+    )
     if live is not None:
         txn.estimated_amount = live
 
 
-def _freshest_amount(txn: Transaction) -> Decimal | None:
+def _freshest_amount(txn: Transaction, basis) -> Decimal | None:
     """Return the amount a settle should book, or ``None`` to leave the column.
 
     **Ruling R-FE's rule, and it exists because the app holds TWO answers to
@@ -458,16 +465,16 @@ def _freshest_amount(txn: Transaction) -> Decimal | None:
     the projected end balance by the difference -- which is exactly the
     invariant ruling R-DH (c) states and plan step X-f3 is ship-gated on.
 
-    So this asks the projection's OWN override map
-    (:func:`app.services.cash_ledger.live_amount_overrides`) rather than
-    restating which rows have a live value.  It is the same expression
+    So this asks the projection's OWN live-override seam
+    (:func:`app.services.cash_ledger.live_override`) rather than restating which
+    rows have a live value.  It is the same expression
     :func:`app.services.cash_ledger.income_amount` evaluates one tier down --
-    "the override when present, else ``effective_amount``" -- asked for one row
-    instead of reduced over a period, and plan step **X-ar** deletes both by
-    making the stored amount authoritative.
+    "the override when present, else the row's own contribution" -- asked for
+    one row instead of reduced over a period, and plan step **X-au-d** deletes
+    both by making the row's amount DERIVED rather than cached.
 
     **It costs nothing on the rows it does not apply to.**  Both halves of the
-    override map filter their candidates in Python first and return an empty
+    basis filter their candidates in Python first and return an empty
     dict with NO query: the loan half wants ``transfer_id IS NOT NULL``, which
     :func:`settle_transaction` has already refused, and the salary half wants a
     Projected, non-overridden, template-linked income row.  An expense, an
@@ -486,14 +493,19 @@ def _freshest_amount(txn: Transaction) -> Decimal | None:
     editing the actual ALONE leaves it False.  An invariant of this module
     cannot rest on a bookkeeping flag another module sets for another reason.
 
-    **It compares against ``estimated_amount``, not ``effective_amount``**, for
-    the same reason: past the guard above they are equal, and naming the column
-    that IS the cache says what the comparison means.
+    **It compares against ``estimated_amount``, not the row's contribution**,
+    for the same reason: past the guard above they are equal, and naming the
+    column that IS the cache says what the comparison means.
 
     Args:
         txn: The row about to settle, still in its pre-settle status.  Read for
-            its account, scenario, and the fields the override map's candidate
-            filters test; not mutated.
+            the fields the live producers' candidate filters test; not mutated.
+        basis: The :class:`~app.services.cash_ledger.AmountBasis` built over
+            this one row.  Taken as an argument rather than built here so the
+            caller that also needs the row's contribution
+            (:func:`settle_amount`) pays for ONE basis rather than two -- the
+            same build-once-and-thread discipline the fold uses over a whole
+            plan.
 
     Returns:
         The live amount when one exists and disagrees with the cache, else
@@ -501,9 +513,7 @@ def _freshest_amount(txn: Transaction) -> Decimal | None:
     """
     if txn.actual_amount is not None:
         return None
-    live = live_amount_overrides(
-        txn.account, txn.scenario_id, [txn],
-    ).get(txn.id)
+    live = live_override(txn, basis)
     if live is None or live == txn.estimated_amount:
         return None
     return live

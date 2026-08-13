@@ -77,7 +77,7 @@ by the census below rather than argued about:
   file and by nothing in this one.
 
 **Where the two sides share a producer.**  For SALARY and LOAN_PAYMENT rows the
-app's answer comes from ``live_amount_overrides``, which since plan step X-au-b
+app's answer comes from ``live_amounts``, which since plan step X-au-b
 is :func:`~app.services.cash_ledger.amount_basis` flattened -- the same function
 the resolver reads.  What is graded for those rows is the DISPATCH: that the
 rule claims exactly the rows the override map holds and no others (the census
@@ -135,7 +135,7 @@ from app.services.cash_ledger import (
     AmountRule,
     amount_basis,
     amount_rule,
-    live_amount_overrides,
+    live_amounts,
     resolve_transaction_amount,
 )
 
@@ -204,11 +204,11 @@ def _grade_group(account, scenario_id, rows):
     """Grade every row of one (account, scenario) group -- both passes.
 
     Builds the basis ONCE for the group (the batching finding N-228 is about)
-    and the app's published override map once beside it.  Those are two calls to
-    the same producer since X-au-b flattened one into the other; the map is
-    fetched through ``live_amount_overrides`` deliberately, because that is the
-    surface the app reads and an oracle that reconstructed it here would be
-    grading its own arithmetic.
+    and reads the app's published override map off it.  The map is fetched
+    through ``live_amounts`` deliberately, because that is the surface the app
+    reads and an oracle that reconstructed the merge here would be grading its
+    own arithmetic.  Since plan step X-au-c2 it is a VIEW of the basis rather
+    than a second producer call, so the oracle pays for one.
 
     Args:
         account: The group's Account.
@@ -218,8 +218,8 @@ def _grade_group(account, scenario_id, rows):
     Returns:
         A list of per-row record dicts.
     """
-    basis = amount_basis(account, scenario_id, rows)
-    overrides = live_amount_overrides(account, scenario_id, rows)
+    basis = amount_basis(account.user_id, scenario_id, rows)
+    overrides = live_amounts(basis)
 
     records = []
     for txn in rows:

@@ -275,7 +275,7 @@ class SoftDeleteOverridableMixin:
       ``is_deleted``  -- True when the row was soft-deleted by the
                          user; remains in the table so historical
                          queries and audit triggers see the full
-                         lifecycle, but ``effective_amount`` and
+                         lifecycle, but the cash valuation and
                          balance-relevant queries treat it as
                          absent.
 
