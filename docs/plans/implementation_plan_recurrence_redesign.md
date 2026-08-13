@@ -382,39 +382,49 @@ and form work is not carried into it.
       statement of which units fire on a day of the month are gone with it. Baseline byte-identical;
       on a production clone all 46 rules read and re-author unmoved.
 
-- [ ] **R7b-2 -- the form authors that vocabulary.**
+- [x] **R7b-2 -- the form authors that vocabulary.** `ecc4d01b`. Three linked controls, their offer
+      set `authorable_cadences` -- the encoder's table INVERTED -- so an unstorable cadence is
+      unofferable rather than fenced. `pattern_choices`, `RecurrencePatternField`, the five `REC_*`
+      globals and the `offset_periods` schema field go with it. **D8 closed**; **D31**, **D32**
+      opened. Six defects were found CLOSING it, four by two adversarial reviews and two by driving
+      the form; the commit enumerates them and `anchor_family` moved to `_frequency` with them.
+
+- [ ] **R7b-3 -- one "ends" control, and the CHECKs the door does not mirror.**
 
 **R7b is FOUR leaves**, split with the developer 2026-08-12: the vocabulary swap, the form, the
 bounds and the opening bound, of which only the last carries a migration. Every leaf authors through
 the closed-set columns, so the schema does not move until R7c.
 
-The pattern `<select>` becomes a unit select, an interval control and a placement select, with the
-offered intervals per unit SERVED FROM the encoder's own table -- so a cadence the closed set cannot
-store is never offered and the refusal is unreachable rather than fenced (developer ruling
-2026-08-12).
-
-**Two further rulings taken 2026-08-12, both on the shape of those controls.** The three are LINKED
-rather than independent: the unit repopulates the interval control and the placement select, which
-renders only where a unit offers more than one. And the month interval is a SELECT of 1 / 3 / 6
-rather than a number box, because those are the only month cadences the closed set stores; R7c
-widens it to a free box when the authored columns land. Both follow from the first ruling -- three
-free controls would offer combinations `encode_cadence` refuses, which is the refusal this step
-exists to make unreachable.
+**Two rulings taken 2026-08-12 on the shape of the three controls, which R7c must obey.** They are
+LINKED rather than independent: the unit repopulates the interval control and the placement select,
+which renders only where a `(unit, interval)` pair offers more than one. And the month interval is a
+SELECT of 1 / 3 / 6 rather than a number box, because those are the only month cadences the closed
+set stores; R7c widens it to a free box when the authored columns land. Three free controls would
+offer combinations `encode_cadence` refuses, which is the refusal this design makes unreachable.
 
 **A placement belongs to the `(unit, interval)` PAIR, not to the unit**, and a design keyed on the
-unit alone re-opens exactly what the ruling closes. `MONTHLY_FIRST` is
+unit alone re-opens exactly what that ruling closes. `MONTHLY_FIRST` is
 `(1, MONTH, PERIOD_STARTING_ON_OR_AFTER)` and the closed set has no quarterly or semi-annual twin,
 so `(3, MONTH, first-paycheck)` is unstorable -- measured, not argued. The offer set therefore
-carries whole triples and every consumer filters them.
+carries whole triples and every consumer filters them. Row **D32** is the cost still owed on it: a
+pair that drops the first-paycheck option rewrites the funding choice with nothing on screen saying
+which paycheck now pays.
 
-`pattern_choices`, `_PATTERN_LABELS`, `RecurrencePatternField` and the vestigial `offset_periods`
-schema field (D8) go with it. The transfer form's pay-period `<select>` SURVIVES under its other job
--- which period a one-time transfer lands in -- and stops being relabelled by JS.
+**Where the anchor-family router lives, ruled 2026-08-13.** `anchor_family` and the `FAMILY_*`
+constants sit in `_frequency`, not `_resolution`: WHICH derivation a `(unit, placement)` cadence
+uses needs no schedule, which is that module's charter, while WHERE the anchor lands needs the whole
+calendar. `fires_on_day_of_month` is its projection, and it is what the form asks rather than
+keeping a second list of which cadences have a day-of-month coordinate.
 
-- [ ] **R7b-3 -- one "ends" control, and the CHECKs the door does not mirror.**
+**Any step that changes these three controls runs `tests/manual/verify_recurrence_form.py`.** Two of
+R7b-2's six defects were invisible to pytest by construction -- a control hidden by a class, an
+option hidden by a script, and a style the browser REFUSED to apply all look identical in rendered
+HTML. The interval `<select>` posted nothing at all for two of the three units, and an inline
+`style=` attribute violated `style-src 'self'` on every render of both forms. Both survived a green
+suite and two adversarial reviews.
 
-`max_occurrences` gains its first writer: never / on a date / after N occurrences, ONE control, so
-`ck_recurrence_rules_single_end_bound` is expressed by the form's shape rather than refused after
+`max_occurrences` gains its first writer here: never / on a date / after N occurrences, ONE control,
+so `ck_recurrence_rules_single_end_bound` is expressed by the form's shape rather than refused after
 it. The door mirrors the four constraints ledger row **D23** names -- `due_dom`, `valid_offset`,
 `positive_max_occurrences`, `single_end_bound` -- which today reach the flush as an `IntegrityError`
 naming neither field nor value.
@@ -432,6 +442,13 @@ and they go with it: `RecurrenceRule.start_period` (**D30**), `PeriodLockReason.
 and `pay_period_admin._rule_ids_with_start_period` / `_repoint_recurrence_rules` -- the last two
 R9's, folded in by developer ruling rather than left as dead code. **D2 dies here.** Destructive, so
 it carries the `Review:` line and a downgrade that re-derives what it nulled.
+
+**The transfer form's pay-period `<select>` SURVIVES under its other job** -- which period a
+one-time transfer lands in -- **and stops being relabelled by JS here.** That sentence sat under
+R7b-2 until an adversarial review of it measured the relabelling still live (`recurrence_form.js`
+swapping "First paycheck" / "Pay period" on every unit change), which is correct: the swap exists
+because ONE control means two things, and only this leaf removes the second meaning. It is R7b-4's
+to delete, not R7b-2's.
 
 - [ ] **R7c -- the cutover.**
 
