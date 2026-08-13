@@ -2,7 +2,7 @@
 Tests for the investment projection helper.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -14,7 +14,31 @@ from app.services.investment_projection import (
     calculate_investment_inputs,
     current_period_transfer_contribution,
     InvestmentInputs,
+    PricedContribution,
 )
+
+
+def _priced(amount, pay_period_id, *, is_confirmed=False, account_id=1):
+    """Build one :class:`PricedContribution`, the module's real input type.
+
+    Since plan step X-au-c2 this module consumes records that were VALUED and
+    SCREENED at the boundary (``projection_inputs.load_shadow_income_
+    contributions_*``), not ORM rows -- so the two hand-rolled transaction
+    fakes that used to mirror ``effective_amount`` and carry a status are gone,
+    and with them the risk of a fake drifting from the model it imitated.
+
+    The rules those fakes exercised did not disappear with them; they MOVED,
+    and their tests moved with them to ``test_projection_inputs.py``, where the
+    boundary is exercised against real rows: a settled shadow whose actual
+    differs from its estimate is priced at the actual, and a Cancelled or
+    Credit row is DROPPED rather than carried at zero.
+    """
+    return PricedContribution(
+        account_id=account_id,
+        pay_period_id=pay_period_id,
+        amount=Decimal(str(amount)),
+        is_confirmed=is_confirmed,
+    )
 
 
 def _flat_id():
@@ -38,39 +62,6 @@ class FakeDeduction:
     pay_periods_per_year: int
     # Calendar-year ceiling (PaycheckDeduction.annual_cap); None = uncapped.
     annual_cap: Decimal | None = None
-
-
-@dataclass
-class FakeStatus:
-    """Minimal ``ref.Status`` stub for contribution filtering and timeline confirmation."""
-    excludes_from_balance: bool = False
-    is_settled: bool = False
-
-
-@dataclass
-class FakeContribution:
-    """Shadow income transaction representing a contribution (transfer into account).
-
-    Mirrors the real ``Transaction`` amount accessors: ``effective_amount``
-    is the realized ``actual_amount`` when populated, else
-    ``estimated_amount`` -- the same rule the model property applies for an
-    active row, which is all this fake represents (the contribution feeds
-    filter cancelled/credit/deleted rows out via
-    ``status_contributes_to_balance`` before reading the amount).  A settled
-    shadow whose actual differs from its estimate is the deep-quality-hunt
-    #11 case the inputs builder must read off ``effective_amount``.
-    """
-    estimated_amount: Decimal
-    pay_period_id: int
-    status: FakeStatus = field(default_factory=FakeStatus)
-    actual_amount: Decimal | None = None
-
-    @property
-    def effective_amount(self) -> Decimal:
-        """Realized actual when populated, else the estimate (model parity)."""
-        if self.actual_amount is not None:
-            return self.actual_amount
-        return self.estimated_amount
 
 
 @dataclass
@@ -210,9 +201,9 @@ class TestCalculateInvestmentInputs:
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         contributions = [
-            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
-            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=2),
-            FakeContribution(estimated_amount=Decimal("300"), pay_period_id=3),
+            _priced(Decimal("200"), 1),
+            _priced(Decimal("200"), 2),
+            _priced(Decimal("300"), 3),
         ]
         periods = [FakePeriod(id=i, start_date=date(2026, 1, 2), period_index=i) for i in range(1, 4)]
         result = calculate_investment_inputs(
@@ -283,11 +274,11 @@ class TestCalculateInvestmentInputs:
             FakePeriod(id=5, start_date=date(2026, 2, 13), period_index=4),
         ]
         contributions = [
-            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=1),
-            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=2),
-            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=3),
-            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=4),
-            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=5),
+            _priced(Decimal("500"), 1),
+            _priced(Decimal("500"), 2),
+            _priced(Decimal("500"), 3),
+            _priced(Decimal("500"), 4),
+            _priced(Decimal("500"), 5),
         ]
         result = calculate_investment_inputs(
             investment_params=params, deductions=[],
@@ -323,7 +314,7 @@ class TestCalculateInvestmentInputs:
             FakePeriod(id=5, start_date=date(2026, 2, 13), period_index=4),
         ]
         contributions = [
-            FakeContribution(estimated_amount=Decimal("500"), pay_period_id=pid)
+            _priced(Decimal("500"), pid)
             for pid in (1, 2, 3, 4, 5)
         ]
         result = calculate_investment_inputs(
@@ -339,7 +330,7 @@ class TestCalculateInvestmentInputs:
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
-        contributions = [FakeContribution(estimated_amount=Decimal("500"), pay_period_id=1)]
+        contributions = [_priced(Decimal("500"), 1)]
         periods = [FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0)]
         result = calculate_investment_inputs(
             investment_params=params, deductions=[],
@@ -356,8 +347,8 @@ class TestCalculateInvestmentInputs:
         deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
                                      annual_salary=Decimal("100000"), pay_periods_per_year=26)]
         contributions = [
-            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
-            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=2),
+            _priced(Decimal("200"), 1),
+            _priced(Decimal("200"), 2),
         ]
         periods = [FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
                     FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1)]
@@ -531,7 +522,7 @@ class TestCalculateInvestmentInputs:
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         contributions = [
-            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
+            _priced(Decimal("200"), 1),
         ]
         periods = [
             FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
@@ -559,8 +550,8 @@ class TestCalculateInvestmentInputs:
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
         contributions = [
-            FakeContribution(estimated_amount=Decimal("200"), pay_period_id=1),
-            FakeContribution(estimated_amount=Decimal("400"), pay_period_id=2),
+            _priced(Decimal("200"), 1),
+            _priced(Decimal("400"), 2),
         ]
         periods = [
             FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
@@ -575,159 +566,24 @@ class TestCalculateInvestmentInputs:
         assert result.ytd_contributions == Decimal("0")
 
 
-class TestEstimatedVsEffectiveAlignment:
-    """deep-quality-hunt #11: the inputs builder reads effective_amount.
-
-    A transfer shadow's ``actual_amount`` is normally ``None`` (so
-    ``effective_amount == estimated_amount``), but
-    ``transfer_service._apply_actual_amount`` sets a realized actual on
-    both shadows when a transfer is settled with a manual amount (the
-    ``Transfer`` parent has no ``actual_amount`` column).  Once that
-    happens, ``effective_amount`` (= actual) diverges from
-    ``estimated_amount``.  The per-period timeline
-    (``build_contribution_timeline``) applies ``effective_amount``, so the
-    averaged periodic contribution and the YTD-seed/limit accounting must
-    read ``effective_amount`` too -- otherwise the cap/limit math reads a
-    different dollar than the growth engine actually applies.  These tests
-    pin that alignment; they were proven to fail when the feeds summed
-    ``estimated_amount``.
-    """
-
-    @staticmethod
-    def _params(limit=None):
-        return FakeInvestmentParams(
-            assumed_annual_return=Decimal("0.07"),
-            annual_contribution_limit=limit,
-            employer_contribution_type_id=_emp_type_id(
-                EmployerContributionTypeEnum.NONE,
-            ),
-        )
-
-    def test_periodic_contribution_uses_effective_not_estimated(self):
-        """A settled shadow's realized actual drives the averaged contribution.
-
-        One settled contribution, estimated $500 but actual $400
-        (effective $400), in one period -> per-period average $400.
-        Summing estimated_amount (the pre-#11 bug) would yield $500.
-        """
-        settled = FakeStatus(is_settled=True)
-        contributions = [
-            FakeContribution(
-                estimated_amount=Decimal("500"), actual_amount=Decimal("400"),
-                pay_period_id=1, status=settled,
-            ),
-        ]
-        current_period = FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0)
-        result = calculate_investment_inputs(
-            investment_params=self._params(), deductions=[],
-            all_contributions=contributions, all_periods=[current_period],
-            current_period=current_period,
-        )
-        # effective $400 / 1 period = $400 (NOT estimated $500).
-        assert result.periodic_contribution == Decimal("400")
-
-    def test_over_contribution_actual_above_estimate_uses_effective(self):
-        """The realized actual is honored when it EXCEEDS the estimate.
-
-        Symmetric to the under-contribution case: a settled shadow
-        estimated $400 but actual $500 (came in higher than planned)
-        contributes its $500 effective amount -- the direction the annual
-        limit/cap accounting must catch.  Summing estimated_amount (the
-        pre-#11 bug) would under-count it at $400.
-        """
-        settled = FakeStatus(is_settled=True)
-        contributions = [
-            FakeContribution(
-                estimated_amount=Decimal("400"), actual_amount=Decimal("500"),
-                pay_period_id=1, status=settled,
-            ),
-        ]
-        current_period = FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0)
-        result = calculate_investment_inputs(
-            investment_params=self._params(limit=Decimal("23500")), deductions=[],
-            all_contributions=contributions, all_periods=[current_period],
-            current_period=current_period,
-        )
-        # effective $500 / 1 period = $500 (NOT estimated $400).
-        assert result.periodic_contribution == Decimal("500")
-        # The displayed YTD (<= current) also reflects the realized $500.
-        assert result.ytd_contributions == Decimal("500")
-
-    def test_ytd_contributions_use_effective_not_estimated(self):
-        """YTD-display and the engine seed both sum effective_amount.
-
-        Three settled 2026 contributions, each estimated $500 but actual
-        $400 (effective $400), current = period 3.  ytd_contributions
-        (<= current) = 3 x $400 = $1,200; ytd_contributions_seed
-        (< current) = 2 x $400 = $800.  Summing estimated_amount (the
-        pre-#11 bug) would give $1,500 / $1,000.
-        """
-        settled = FakeStatus(is_settled=True)
-        periods = [
-            FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
-            FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1),
-            FakePeriod(id=3, start_date=date(2026, 1, 30), period_index=2),
-        ]
-        contributions = [
-            FakeContribution(
-                estimated_amount=Decimal("500"), actual_amount=Decimal("400"),
-                pay_period_id=pid, status=settled,
-            )
-            for pid in (1, 2, 3)
-        ]
-        result = calculate_investment_inputs(
-            investment_params=self._params(limit=Decimal("23500")), deductions=[],
-            all_contributions=contributions, all_periods=periods,
-            current_period=periods[2],
-        )
-        assert result.ytd_contributions == Decimal("1200")       # <= current (effective)
-        assert result.ytd_contributions_seed == Decimal("800")   # < current (effective)
-
-    def test_inputs_average_and_timeline_agree_on_effective(self):
-        """The averaged inputs feed and the per-period timeline read the same dollar.
-
-        The whole point of #11: build_contribution_timeline applies
-        effective per period, so the periodic-average / YTD-seed feed must
-        use effective too, or the limit/cap accounting reads a different
-        number than the engine applies.  The same $500-estimated /
-        $400-actual settled shadow yields $400 from BOTH feeds.
-        """
-        settled = FakeStatus(is_settled=True)
-        contribution = FakeContribution(
-            estimated_amount=Decimal("500"), actual_amount=Decimal("400"),
-            pay_period_id=1, status=settled,
-        )
-        period = FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0)
-        inputs = calculate_investment_inputs(
-            investment_params=self._params(), deductions=[],
-            all_contributions=[contribution], all_periods=[period],
-            current_period=period,
-        )
-        timeline = build_contribution_timeline(
-            deductions=[], contribution_transactions=[contribution], periods=[period],
-        )
-        # Both feeds read effective_amount ($400), so they agree.
-        assert inputs.periodic_contribution == Decimal("400")
-        assert len(timeline) == 1
-        assert timeline[0].amount == Decimal("400")
-        assert inputs.periodic_contribution == timeline[0].amount
+# The ESTIMATED-vs-EFFECTIVE alignment class (deep-quality-hunt #11) lived
+# here and MOVED WHOLE to ``test_projection_inputs.TestShadowContributionBoundary``
+# at plan step X-au-c2, with its four cases and their hand-computed figures
+# intact.  It pinned that a settled shadow whose ``actual_amount`` differs from
+# its ``estimated_amount`` is read at the ACTUAL by the averaged inputs feed,
+# by the YTD/limit accounting, and by the per-period timeline -- all three, so
+# the cap math cannot read a different dollar than the growth engine applies.
+#
+# That rule did not weaken; it moved down a tier.  This module no longer values
+# anything: it consumes :class:`PricedContribution` records that were valued at
+# the boundary, so asserting the rule HERE would only assert that a record
+# carrying $400 averages to $400.  The boundary tests grade it against real
+# rows, which is where it can still fail.  What survives here, structurally, is
+# the AGREEMENT half: every feed in this module reads one ``amount`` field off
+# one record, so two of them pricing a row differently is no longer expressible.
 
 
 # ── Fake Objects for build_contribution_timeline ──────────────
-
-
-@dataclass
-class FakeContribTransaction:
-    """Shadow income transaction with status for timeline tests.
-
-    Carries ``effective_amount`` as a pre-resolved field because the
-    timeline only ever reads the resolved value; unlike
-    :class:`FakeContribution` (the inputs-builder fake) it does NOT derive
-    it from ``estimated_amount`` / ``actual_amount``.
-    """
-    effective_amount: Decimal
-    pay_period_id: int
-    status: FakeStatus
 
 
 # ── Tests: build_contribution_timeline ────────────────────────
@@ -765,10 +621,9 @@ class TestBuildContributionTimeline:
 
     def test_transfer_only(self):
         """Shadow income transactions with no deductions: one record per transaction."""
-        settled = FakeStatus(is_settled=True)
         txns = [
-            FakeContribTransaction(Decimal("200"), 1, settled),
-            FakeContribTransaction(Decimal("300"), 2, settled),
+            _priced(Decimal("200"), 1, is_confirmed=True),
+            _priced(Decimal("300"), 2, is_confirmed=True),
         ]
         periods = [
             FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0),
@@ -791,8 +646,7 @@ class TestBuildContributionTimeline:
             amount=Decimal("500.00"), calc_method_id=_flat_id(),
             annual_salary=Decimal("100000"), pay_periods_per_year=26,
         )]
-        settled = FakeStatus(is_settled=True)
-        txns = [FakeContribTransaction(Decimal("200"), 1, settled)]
+        txns = [_priced(Decimal("200"), 1, is_confirmed=True)]
         periods = [
             FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0),
         ]
@@ -862,8 +716,7 @@ class TestBuildContributionTimeline:
 
     def test_is_confirmed_transfer_settled(self):
         """Settled shadow transaction: is_confirmed=True."""
-        settled = FakeStatus(is_settled=True)
-        txns = [FakeContribTransaction(Decimal("200"), 1, settled)]
+        txns = [_priced(Decimal("200"), 1, is_confirmed=True)]
         periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns, periods=periods,
@@ -872,8 +725,7 @@ class TestBuildContributionTimeline:
 
     def test_is_confirmed_transfer_projected(self):
         """Projected shadow transaction: is_confirmed=False."""
-        projected = FakeStatus(is_settled=False)
-        txns = [FakeContribTransaction(Decimal("200"), 1, projected)]
+        txns = [_priced(Decimal("200"), 1, is_confirmed=False)]
         periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns, periods=periods,
@@ -891,8 +743,7 @@ class TestBuildContributionTimeline:
             amount=Decimal("500"), calc_method_id=_flat_id(),
             annual_salary=Decimal("100000"), pay_periods_per_year=26,
         )]
-        projected = FakeStatus(is_settled=False)
-        txns = [FakeContribTransaction(Decimal("200"), 1, projected)]
+        txns = [_priced(Decimal("200"), 1, is_confirmed=False)]
         # Past date so deduction is confirmed.
         periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
         result = build_contribution_timeline(
@@ -914,10 +765,9 @@ class TestBuildContributionTimeline:
 
     def test_sorted_output(self):
         """Output is sorted by contribution_date regardless of input order."""
-        settled = FakeStatus(is_settled=True)
         txns = [
-            FakeContribTransaction(Decimal("300"), 2, settled),
-            FakeContribTransaction(Decimal("100"), 1, settled),
+            _priced(Decimal("300"), 2, is_confirmed=True),
+            _priced(Decimal("100"), 1, is_confirmed=True),
         ]
         periods = [
             FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0),
@@ -929,11 +779,17 @@ class TestBuildContributionTimeline:
         dates = [r.contribution_date for r in result]
         assert dates == sorted(dates)
 
-    def test_uses_effective_amount(self):
-        """The function uses effective_amount from the transaction object."""
-        settled = FakeStatus(is_settled=True)
+    def test_emits_the_record_amount_untransformed(self):
+        """A record's priced amount reaches its ContributionRecord unchanged.
+
+        Renamed at plan step X-au-c2: it graded ``effective_amount``, an
+        accessor this module no longer touches.  What it can still pin is that
+        the timeline does not round, scale or re-derive the figure the boundary
+        priced -- which is worth one case, because Path 1 beside it DOES
+        transform (the annual cap clamps a deduction).
+        """
         # effective_amount is a pre-computed value (property on real model).
-        txns = [FakeContribTransaction(Decimal("999.99"), 1, settled)]
+        txns = [_priced(Decimal("999.99"), 1, is_confirmed=True)]
         periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns, periods=periods,
@@ -963,28 +819,18 @@ class TestBuildContributionTimeline:
         # $192.31 = $692.31 (per the docstring); hand-computed literal.
         assert result[0].amount == Decimal("692.31")
 
-    def test_excluded_transaction_skipped(self):
-        """Cancelled/credit transactions (excludes_from_balance) are skipped."""
-        cancelled = FakeStatus(is_settled=False, excludes_from_balance=True)
-        settled = FakeStatus(is_settled=True)
-        txns = [
-            FakeContribTransaction(Decimal("200"), 1, cancelled),
-            FakeContribTransaction(Decimal("300"), 2, settled),
-        ]
-        periods = [
-            FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0),
-            FakePeriod(id=2, start_date=date(2020, 1, 16), period_index=1),
-        ]
-        result = build_contribution_timeline(
-            deductions=[], contribution_transactions=txns, periods=periods,
-        )
-        assert len(result) == 1
-        assert result[0].amount == Decimal("300")
+    # The Cancelled / Credit skip that used to be pinned here moved with the
+    # rule (plan step X-au-c2): this module no longer screens by status, the
+    # boundary loader does, and it DROPS such a row rather than pricing it at
+    # zero.  Its replacement is
+    # ``test_projection_inputs.TestShadowContributionBoundary
+    # .test_excluded_status_rows_are_dropped_not_zeroed``, which grades the
+    # same rule against real rows and additionally pins why dropping and
+    # zeroing are not interchangeable here.
 
     def test_transaction_outside_period_range_skipped(self):
         """Transaction with pay_period_id not in periods list is skipped."""
-        settled = FakeStatus(is_settled=True)
-        txns = [FakeContribTransaction(Decimal("200"), 99, settled)]
+        txns = [_priced(Decimal("200"), 99, is_confirmed=True)]
         periods = [FakePeriod(id=1, start_date=date(2020, 1, 2), period_index=0)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns, periods=periods,
@@ -1101,37 +947,27 @@ class TestCurrentPeriodTransferContribution:
     def test_sums_only_current_period_active_transfers(self):
         """Sums effective_amount of active shadow contributions in the current period."""
         current = FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1)
-        settled = FakeStatus(is_settled=True)
-        projected = FakeStatus(is_settled=False)
         txns = [
-            FakeContribTransaction(Decimal("300.00"), 2, settled),    # current period
-            FakeContribTransaction(Decimal("200.00"), 2, projected),  # current period
-            FakeContribTransaction(Decimal("500.00"), 1, settled),    # other period -> excluded
-            FakeContribTransaction(Decimal("999.00"), 3, projected),  # other period -> excluded
+            _priced(Decimal("300.00"), 2, is_confirmed=True),    # current period
+            _priced(Decimal("200.00"), 2, is_confirmed=False),  # current period
+            _priced(Decimal("500.00"), 1, is_confirmed=True),    # other period -> excluded
+            _priced(Decimal("999.00"), 3, is_confirmed=False),  # other period -> excluded
         ]
         # 300 + 200 fall in period 2; periods 1 and 3 are excluded.
         assert current_period_transfer_contribution(txns, current) == Decimal("500.00")
 
-    def test_excludes_cancelled_or_credit(self):
-        """Cancelled / credit transactions (excludes_from_balance) are not summed.
-
-        This matches both what ``balance_calculator`` counts into the
-        balance and what ``build_contribution_timeline`` re-applies, so the
-        subtraction cancels exactly.
-        """
-        current = FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1)
-        cancelled = FakeStatus(is_settled=False, excludes_from_balance=True)
-        projected = FakeStatus(is_settled=False)
-        txns = [
-            FakeContribTransaction(Decimal("400.00"), 2, projected),  # counted
-            FakeContribTransaction(Decimal("999.00"), 2, cancelled),  # excluded
-        ]
-        assert current_period_transfer_contribution(txns, current) == Decimal("400.00")
+    # The Cancelled / Credit exclusion this class used to pin moved to the
+    # boundary with the screen itself (plan step X-au-c2) -- see the note in
+    # :class:`TestBuildContributionTimeline` and
+    # ``test_projection_inputs.TestShadowContributionBoundary``.  The property
+    # that mattered survives and is now STRUCTURAL rather than maintained: this
+    # compensator and ``build_contribution_timeline`` read the very same
+    # records, so the subtraction cannot fail to cancel by the two disagreeing
+    # about which rows count.
 
     def test_none_current_period_returns_zero(self):
         """A None current period yields ZERO (no subtraction)."""
-        settled = FakeStatus(is_settled=True)
-        txns = [FakeContribTransaction(Decimal("400.00"), 2, settled)]
+        txns = [_priced(Decimal("400.00"), 2, is_confirmed=True)]
         assert current_period_transfer_contribution(txns, None) == Decimal("0")
 
     def test_no_current_period_transfer_returns_zero(self):
@@ -1143,6 +979,5 @@ class TestCurrentPeriodTransferContribution:
         period.
         """
         current = FakePeriod(id=5, start_date=date(2026, 2, 13), period_index=4)
-        settled = FakeStatus(is_settled=True)
-        txns = [FakeContribTransaction(Decimal("400.00"), 1, settled)]  # different period
+        txns = [_priced(Decimal("400.00"), 1, is_confirmed=True)]  # different period
         assert current_period_transfer_contribution(txns, current) == Decimal("0")

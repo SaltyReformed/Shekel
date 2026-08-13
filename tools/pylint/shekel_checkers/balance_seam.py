@@ -237,12 +237,52 @@ _KIND_CLASSIFIER_MODULES = frozenset({
     "app.services.account_projection",
 })
 
+# The producer-free half of the cash valuation (plan step X-au-c2).  It was
+# defined inside ``cash_ledger`` and moved DOWN a tier because the loan stack
+# needs ``owned_contribution`` and can never import that package: its
+# ``_amount_source`` reaches UP into ``loan_payment_service`` for amount rule
+# 4's producer, so any loan-stack module naming ``cash_ledger`` closes an import
+# cycle.  ``cash_ledger`` re-exports ``owned_contribution``, the only one of
+# the three that was ever public, so no consumer moved.
+#
+# **It is scoped here the day it is created, and that is the whole N-28
+# lesson applied to its own remedy.**  This module's rationale for keying the
+# cash ledger on a PACKAGE says a fail-closed gate is escaped by adding a
+# sibling -- and a new TOP-LEVEL module is that escape one level further out.
+# Extracting a fenced module's contents into an unfenced neighbour would have
+# silently un-ruled ``owned_contribution``, which is the exact shape (a fence
+# that fails open when the code moves) findings N-28 / N-31 are about.  A flat
+# module rather than a package, so the key is exact rather than prefix-matched;
+# if it ever becomes a package the prefix match already covers the submodules.
+_ROW_VALUATION_MODULES = frozenset({
+    "app.services.row_valuation",
+})
+
 # Per-module rulings: {module: (producer set, non-producer set)}.  Every PUBLIC
 # top-level function defined in one of these modules must appear in one of its
 # two sets.  Adding a name to a non-producer set is a DELIBERATE ruling that it
 # does not answer "what is account A's balance at time T"; if in doubt, it is a
 # producer (a false negative is the dangerous mode for a fence).
 _FENCED_MODULE_RULINGS = {
+    # The producer-free half of the cash valuation
+    # (:data:`_ROW_VALUATION_MODULES`).  The EMPTY producer set is the same D3
+    # invariant its parent package carries, and it is even easier to hold here:
+    # this module imports no producer and cannot -- that is the property that
+    # made it a separate module.
+    "app.services.row_valuation": (frozenset(), frozenset({
+        # The three arms of what one row is worth that need no producer, ruled
+        # on exactly the ground the ``cash_ledger._amounts`` valuation family
+        # below stands on: each answers what ONE ROW is worth, and none folds,
+        # dates, sums, or reads an anchor.  ``fixed_contribution`` is the
+        # status / soft-delete / entered-actual gate every other form shares,
+        # ``own_figure`` is the refusal that keeps the amount model TOTAL (a
+        # row owning its amount must store one), and ``owned_contribution``
+        # composes the two for a reader that can only ever see rows owning
+        # their figure.
+        "fixed_contribution",
+        "own_figure",
+        "owned_contribution",
+    })),
     # The cash LEDGER leaf (plan steps D1a + D1c): the facts a cash balance is
     # folded from, what one row is WORTH, and what a set of rows SUMS TO.
     # Scoped WHOLE for completeness but never call-allowlisted -- see
@@ -291,18 +331,20 @@ _FENCED_MODULE_RULINGS = {
         # ruling -- structure retiring a fence entry, which is Phase D's point.
         #
         # The VALUATION family (plan step X-au-c2) joins them on exactly that
-        # ground, and it is the same four names ``Transaction.effective_amount``
-        # answered for as a model property: ``contributed_amount`` composes a
+        # ground, and it is the same question ``Transaction.effective_amount``
+        # answered as a model property: ``contributed_amount`` composes a
         # resolved amount with the status, the soft delete and an entered
-        # actual; ``owned_contribution`` is that composition for a row whose
-        # amount is its own; ``contribution_of`` and ``contributions_by_id`` are
-        # the one-row and batch forms that resolve first.  Each answers what ONE
+        # actual; ``contribution_of`` and ``contributions_by_id`` are the
+        # one-row and batch forms that resolve first.  Each answers what ONE
         # ROW is worth -- none folds, dates, sums, or reads an anchor, and the
         # batch is a dict keyed by row id rather than anything per account.
+        # ``owned_contribution`` is the fourth of them and is ruled with them,
+        # under :data:`_ROW_VALUATION_MODULES` -- it is DEFINED one module down
+        # and only re-exported here, and this fence keys on where a function is
+        # DEFINED.
         "live_override",
         "live_amounts",
         "contributed_amount",
-        "owned_contribution",
         "contribution_of",
         "contributions_by_id",
         "income_amount",
@@ -716,7 +758,8 @@ class ShekelBalanceSeamChecker(BaseChecker):
             "(findings N-28 / N-31). This check inverts the default for the "
             "PUBLIC balance-ingredient packages the package-privacy gate W9910 "
             "cannot protect (the loan_ledger and loan_posting_service "
-            "packages, the cash_ledger leaf, the pure loan_resolver tier, and "
+            "packages, the cash_ledger leaf and the row_valuation tier below "
+            "it, the pure loan_resolver tier, and "
             "the account_projection classifier): every public top-level "
             "function or public method "
             "there must be explicitly classified as a producer or a "

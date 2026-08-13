@@ -120,6 +120,7 @@ from app import ref_cache
 from app.enums import AmountSourceEnum
 from app.exceptions import AmountUnresolvable
 from app.services import template_amount_service
+from app.services.row_valuation import own_figure
 from app.utils.money import round_money
 
 
@@ -488,7 +489,7 @@ def resolve_transfer_amount(xfer) -> Decimal:
             definition states no price for its due date.
     """
     if xfer.amount_source_id is None:
-        return _own_figure(xfer.amount, "transfer", xfer.id)
+        return own_figure(xfer.amount, "transfer", xfer.id)
     relation = _declared_relation(xfer.amount_source_id)
     if relation is not AmountSourceEnum.TEMPLATE:
         raise AmountUnresolvable(
@@ -525,41 +526,6 @@ def _is_loan_payment(xfer) -> bool:
     if xfer is None or xfer.template is None:
         return False
     return xfer.template.settings is not None
-
-
-def _own_figure(amount, kind: str, row_id: int) -> Decimal:
-    """Return a row's OWN stored figure, refusing a row that carries none.
-
-    The OWN rule's whole body, and the refusal in it is this resolver's TOTALITY
-    contract rather than defensive padding: a resolver that can answer ``None``
-    for a row is not total, and every other rule here raises rather than
-    returning one.  It is unreachable on today's DATA -- no row's amount column
-    is NULL yet -- and what keeps it that way is
-    ``ck_transactions_amount_ownership`` (plan step X-au-c1): a row that owns its
-    amount must store one.  A row that reaches here with no figure has that CHECK broken, and
-    substituting a zero would remove real money from a balance in silence.
-
-    Args:
-        amount: The row's stored amount column.
-        kind: ``"transaction"`` or ``"transfer"``, for the refusal message.
-        row_id: The row's id, named in the refusal.
-
-    Returns:
-        The stored figure.
-
-    Raises:
-        AmountUnresolvable: When the row owns its amount and stores none.
-    """
-    if amount is None:
-        raise AmountUnresolvable(
-            f"{kind.capitalize()} {row_id} owns its amount and carries none. "
-            "A row whose amount is its OWN must store it -- that pairing is "
-            "ck_transactions_amount_ownership -- so this row was written "
-            "around the CHECK. There is deliberately no substitute figure: "
-            "answering zero would take real money out of a balance without "
-            "saying so."
-        )
-    return amount
 
 
 def _stated_amount(template, on_date: date | None, kind: str, row_id: int) -> Decimal:
@@ -662,7 +628,7 @@ def _own_answer(txn, _basis: AmountBasis) -> Decimal:
     Returns:
         The row's stored ``estimated_amount``.
     """
-    return _own_figure(txn.estimated_amount, "transaction", txn.id)
+    return own_figure(txn.estimated_amount, "transaction", txn.id)
 
 
 def _salary_answer(txn, basis: AmountBasis) -> Decimal:

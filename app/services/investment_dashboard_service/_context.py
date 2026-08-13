@@ -374,8 +374,9 @@ def _load_projection_context(
     deductions = load_active_deductions_for_account(user_id, account.id)
     adapted_deductions = adapt_deductions(deductions)
     acct_contributions = load_shadow_income_contributions_for_account(
+        user_id, balance_ctx.scenario_id,
         account.id, [p.id for p in all_periods],
-    )
+    ).records
     # Seed for the forward projection: the account's MODELLED balance on the
     # day before the window opens, which is the history line's own last point
     # (rulings R-AB / R-AE).  Nothing is filtered out of it and nothing is

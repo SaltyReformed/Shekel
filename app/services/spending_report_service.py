@@ -38,7 +38,7 @@ window-over-window.
 The Spending surface is MEASURED: settled-only, scoped to the user's active
 checking account (the audit's target-IA row).  It carries the account
 name / id and the settled-only flag so the template can label the scope on
-screen.
+screen.  Settled-only is why figures price through ``owned_contribution`` (X-au-c2).
 
 Boundary discipline: no Flask import.  The route resolves the window from
 query params and passes a :class:`SpendingWindow`; every figure is a
@@ -57,6 +57,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import spending_analysis
 from app.services.account_resolver import resolve_analytics_account
+from app.services.row_valuation import owned_contribution
 from app.services.pay_period_service import get_overlapping_periods
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.money import ZERO, round_money
@@ -742,7 +743,7 @@ def _totals_by_category(txns: list[Transaction]) -> dict[int, _CategoryTotal]:
     labels are fixed by :func:`spending_analysis.category_names`.
 
     Args:
-        txns: One window's settled expenses.
+        txns: One window's settled expenses -- every row owns its figure.
 
     Returns:
         ``category_id -> _CategoryTotal`` (labels + summed spend).
@@ -751,7 +752,7 @@ def _totals_by_category(txns: list[Transaction]) -> dict[int, _CategoryTotal]:
     labels: dict[int, tuple[str, str]] = {}
     for txn in txns:
         cat_id = txn.category_id if txn.category_id is not None else 0
-        amounts[cat_id] += abs(txn.effective_amount)
+        amounts[cat_id] += abs(owned_contribution(txn))
         if cat_id not in labels:
             labels[cat_id] = spending_analysis.category_names(txn)
     return {
@@ -994,6 +995,6 @@ def _spent_total(txns: list[Transaction]) -> Decimal:
         txns: Settled expense transactions.
 
     Returns:
-        The sum of ``abs(txn.effective_amount)`` over ``txns``.
+        The sum of ``abs(owned_contribution(txn))`` over ``txns``.
     """
-    return sum((abs(txn.effective_amount) for txn in txns), ZERO)
+    return sum((abs(owned_contribution(txn)) for txn in txns), ZERO)

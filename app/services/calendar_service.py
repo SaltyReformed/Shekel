@@ -24,7 +24,7 @@ from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.services import balance_at
+from app.services import balance_at, cash_ledger
 from app.services.account_resolver import resolve_analytics_account
 from app.services.calendar_infrequency import (
     badge_cadence,
@@ -297,7 +297,11 @@ def get_month_detail(  # pylint: disable=too-many-arguments
 
     ctx = _MonthBuildContext(
         year=year, account=account, periods=periods,
-        transactions=transactions, large_threshold=large_threshold,
+        transactions=transactions,
+        contributions=cash_ledger.contributions_by_id(
+            user_id, balance_ctx.scenario_id, transactions,
+        ),
+        large_threshold=large_threshold,
         balance_ctx=balance_ctx, today=today,
         pay_cadence=badge_cadence(user_id, transactions),
     )
@@ -344,7 +348,11 @@ def get_year_overview(
 
     ctx = _MonthBuildContext(
         year=year, account=account, periods=periods,
-        transactions=all_txns, large_threshold=large_threshold,
+        transactions=all_txns,
+        contributions=cash_ledger.contributions_by_id(
+            user_id, balance_ctx.scenario_id, all_txns,
+        ),
+        large_threshold=large_threshold,
         balance_ctx=balance_ctx, today=None,
         pay_cadence=badge_cadence(user_id, all_txns),
     )
@@ -428,6 +436,7 @@ def _query_transactions_for_range(
 
 def _build_day_entry(
     txn: Transaction,
+    amount: Decimal,
     income_type_id: int,
     threshold: Decimal,
     pay_cadence: PayCadence | None,
@@ -436,6 +445,13 @@ def _build_day_entry(
 
     Args:
         txn: The transaction to convert.
+        amount: What the row is WORTH, from the build's one
+            :func:`~app.services.cash_ledger.contributions_by_id` call
+            (:attr:`_MonthBuildContext.contributions`).  It replaced
+            ``txn.effective_amount`` at plan step X-au-c2: that model property
+            could not answer for a row whose amount is DERIVED, because such a
+            row stores no figure and resolving one needs a database -- and, for
+            a paycheck, the owner's whole pay-period set.
         income_type_id: Ref ID for the Income transaction type.
         threshold: Amount at or above which a transaction is large.
         pay_cadence: The owner's pay cadence for the infrequent badge, or
@@ -445,7 +461,6 @@ def _build_day_entry(
     Returns:
         A frozen DayEntry dataclass.
     """
-    amount = txn.effective_amount
     return DayEntry(
         transaction_id=txn.id,
         name=txn.name,
@@ -490,11 +505,8 @@ def _fold_income_expense(
 
 
 def _assign_transactions_to_days(
-    transactions: list[Transaction],
-    year: int,
+    ctx: "_MonthBuildContext",
     month: int,
-    large_threshold: int,
-    pay_cadence: PayCadence | None,
 ) -> tuple[
     dict[int, list[DayEntry]],
     dict[int, tuple[Decimal, Decimal]],
@@ -523,25 +535,46 @@ def _assign_transactions_to_days(
     the day-cell display.  ``is_balance_contributing`` is generated
     from the same ``ref_cache`` accessors as the SQL clause so the
     two predicates cannot disagree.
+
+    **It takes the CONTEXT rather than the five settings it reads off it**
+    (plan step X-au-c2).  Adding ``contributions`` -- what each row is WORTH,
+    resolved once for the whole build -- took the plain-data signature to six
+    arguments, and the project's rule for a PRIVATE helper is to decompose
+    rather than to wrap arguments in an object (``docs/plans/lessons.md``).
+    There is nothing to decompose here: the bundle already exists, this helper
+    has exactly one caller, and every one of those settings is a field of the
+    context that caller is holding.  Taking it directly is what stops the rows
+    and their valuation from arriving as two arguments a caller could mismatch,
+    which is the hazard :class:`~app.services.cash_ledger.ProjectedBasis`
+    states one tier down.
+
+    Args:
+        ctx: The build's :class:`_MonthBuildContext` -- its ``transactions``,
+            their ``contributions``, the ``year``, the ``large_threshold`` and
+            the ``pay_cadence``.  ``contributions`` is indexed with ``[]``: a
+            row missing from it is a build that priced a different set, and a
+            default would be a fabricated figure in a day cell.
+        month: Target calendar month (1-12).
     """
-    threshold = Decimal(str(large_threshold))
+    threshold = Decimal(str(ctx.large_threshold))
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
 
     seen_ids: set[int] = set()
     day_map: dict[int, list[DayEntry]] = defaultdict(list)
 
-    for txn in transactions:
+    for txn in ctx.transactions:
         if txn.id in seen_ids:
             continue
         if not is_balance_contributing(txn):
             continue
-        display_day = _get_display_day(txn, month, year)
+        display_day = _get_display_day(txn, month, ctx.year)
         if display_day is None:
             continue
 
         seen_ids.add(txn.id)
         entry = _build_day_entry(
-            txn, income_type_id, threshold, pay_cadence,
+            txn, ctx.contributions[txn.id], income_type_id, threshold,
+            ctx.pay_cadence,
         )
         day_map[display_day].append(entry)
 
@@ -606,18 +639,31 @@ class _MonthBuildContext:  # pylint: disable=too-many-instance-attributes
     exactly when no row in this build repeats -- see
     :func:`~app.services.calendar_infrequency.badge_cadence`.
 
-    Pylint: ``too-many-instance-attributes`` (8/7) -- these eight ARE one
+    ``contributions`` is what each of those ``transactions`` is WORTH, resolved
+    ONCE for the whole build (plan step X-au-c2).  It travels beside the rows
+    rather than being recomputed per month because the year overview builds
+    twelve summaries from one row set, and the salary producer behind it runs
+    the paycheck engine over the owner's entire pay-period set (finding
+    **N-228**) -- so a per-month valuation would run it twelve times for one
+    answer.  It is a field of this context rather than a second argument for
+    the reason :class:`~app.services.cash_ledger.ProjectedBasis` gives one tier
+    down: the rows and their prices are one fact, and two arguments are two
+    things a caller can mismatch.
+
+    Pylint: ``too-many-instance-attributes`` (9/7) -- these nine ARE one
     calendar build's inputs, read as a flat unit by
     :func:`_build_month_summary` and its helpers, with no cohesive sub-group to
-    nest: the year and account scope the query, the periods and transactions
-    are its result, and the threshold, context, clock and cadence are four
-    independent per-build settings.  Mirrors :class:`DayEntry`'s 10/7 here.
+    nest: the year and account scope the query, the periods, transactions and
+    their contributions are its result, and the threshold, context, clock and
+    cadence are four independent per-build settings.  Mirrors
+    :class:`DayEntry`'s 10/7 here.
     """
 
     year: int
     account: Account
     periods: list[PayPeriod]
     transactions: list[Transaction]
+    contributions: dict[int, Decimal]
     large_threshold: int
     balance_ctx: BalanceContext
     today: date | None
@@ -640,8 +686,7 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
         A MonthSummary for the target month.
     """
     day_entries, day_totals, day_overflow = _assign_transactions_to_days(
-        ctx.transactions, ctx.year, month, ctx.large_threshold,
-        ctx.pay_cadence,
+        ctx, month,
     )
     # Month headline totals are the sum of the per-day folds, so the
     # month and per-day numbers derive from the one _fold_income_expense

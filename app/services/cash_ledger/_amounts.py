@@ -16,8 +16,24 @@ composition in one function and it took over from
 resolve a derived amount -- it is a pure in-memory read, and a paycheck's
 derivation needs the owner's whole pay-period set -- so the figure arrives as an
 ARGUMENT a caller cannot forget.  :func:`contributions_by_id` is the batch a
-reader with a row set uses, and :func:`owned_contribution` is the cheap accessor
+reader with a row set uses, and
+:func:`~app.services.row_valuation.owned_contribution` is the cheap accessor
 for a reader that can only ever see rows owning their figure.
+
+**The arms that need no producer live one module DOWN, in
+:mod:`app.services.row_valuation`** (plan step X-au-c2).  ``fixed_contribution``
+(the status / soft-delete / entered-actual gate), ``own_figure`` (the NULL
+refusal) and ``owned_contribution`` are pure per-row reads.  The loan stack
+needs the last of them and cannot name this package without raising pylint's
+``cyclic-import``, because :mod:`._amount_source` reaches UP into
+``loan_payment_service`` for rule 4's producer; that module's docstring carries
+the measurement.  Of the three, only ``owned_contribution`` is re-exported from
+this package (``__init__``'s ``__all__``) -- ``fixed_contribution`` is imported
+here for the valuations below and ``own_figure`` into :mod:`._amount_source`
+for its OWN arm, both as internal uses rather than public surface.  There is
+still exactly ONE definition of each rule, which is the claim this module
+exists to make.  What is genuinely inverted is that upward reach, and plan step
+X-au-g owns unwinding it.
 
 Three rule families live here, split by the question they answer.
 
@@ -62,11 +78,11 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.transaction import Transaction
+from app.services.row_valuation import fixed_contribution, owned_contribution
 from app.utils.balance_predicates import is_balance_contributing, is_projected
 
 from ._amount_source import (
     AmountBasis,
-    _own_figure,
     amount_basis,
     resolve_transaction_amount,
 )
@@ -314,47 +330,6 @@ def live_amounts(basis: AmountBasis) -> dict[int, Decimal]:
     return {**basis.salary_net, **basis.loan_cash}
 
 
-def _fixed_contribution(txn) -> "Decimal | None":
-    """Return what *txn* is worth WITHOUT resolving its amount, or ``None``.
-
-    The one statement of the two arms that answer before the amount model is
-    consulted at all, so :func:`contributed_amount` and
-    :func:`contributions_by_id` cannot come to disagree about them:
-
-      * a row that does not contribute -- soft-deleted, Credit or Cancelled --
-        is worth ``0``, whatever prices it; and
-      * a row carrying a human's ``actual_amount`` is worth that, because a
-        figure somebody read off a statement is a fact and a derivation is an
-        inference.
-
-    ``None`` means neither applies and the row's own amount decides, which is
-    the resolver's question.  It reads as "the actual, when there is one" by
-    construction rather than by a second test: ``actual_amount`` is ``None``
-    exactly when there is none.
-
-    **The first arm is why the status gate sits ABOVE the resolver** (plan step
-    X-au-c2).  ``Transaction.effective_amount`` answered ``$0.00`` for an
-    excluded row from inside the valuation, where the resolver would REFUSE the
-    same row: both live producers filter to Projected rows
-    (``income_service.live_projected_net``,
-    ``loan_payment_service.live_loan_transfer_amounts``), so a Cancelled salary
-    row is absent from their maps and has no derived answer at all.  Asking what
-    a row is worth before asking what it is priced at is what keeps that from
-    being a 500 on a row nobody is counting.
-
-    Args:
-        txn: The row being valued.  ``is_deleted`` and the ``status``
-            relationship are read (``status`` is ``lazy="joined"``), then
-            ``actual_amount``.
-
-    Returns:
-        The row's worth when it needs no resolution, else ``None``.
-    """
-    if not is_balance_contributing(txn):
-        return Decimal("0")
-    return txn.actual_amount
-
-
 def contributed_amount(txn, resolved: Decimal) -> Decimal:
     """Return what *txn* contributes to a balance, given its RESOLVED amount.
 
@@ -382,42 +357,8 @@ def contributed_amount(txn, resolved: Decimal) -> Decimal:
         ``0`` for a row that contributes nothing, the entered ``actual_amount``
         when there is one, else *resolved*.
     """
-    fixed = _fixed_contribution(txn)
+    fixed = fixed_contribution(txn)
     return resolved if fixed is None else fixed
-
-
-def owned_contribution(txn) -> Decimal:
-    """Return what a row that OWNS its figure contributes.
-
-    The cheap accessor for a reader that can only ever see rows whose amount is
-    their own -- which after the freeze (plan step X-au-c3) means every SETTLED
-    row, and which is what the loan split, the loan posting sync and reconcile,
-    the settled-spend metric and the spending report all read.  Those readers
-    filter to settled statuses in SQL, so building a basis for them would run
-    the paycheck engine to re-derive a figure the row already holds.
-
-    **The name is the assertion, and the refusal is what makes it one.**  A row
-    whose amount is DERIVED carries none, and
-    ``ck_transactions_amount_ownership`` is what pairs the two -- so this raises
-    where ``effective_amount`` used to, rather than answering ``None`` into a
-    money path.  A reader that a later cutover routes derived rows into fails
-    LOUDLY here at that moment instead of publishing a wrong number, which is
-    what makes the per-kind cutovers (X-au-d..X-au-i) safe to ship one at a time.
-
-    Args:
-        txn: The row being valued, whose ``estimated_amount`` is its own.
-
-    Returns:
-        ``0`` for a row that contributes nothing, the entered ``actual_amount``
-        when there is one, else the row's stored ``estimated_amount``.
-
-    Raises:
-        AmountUnresolvable: When the row's amount is derived, so it stores none.
-    """
-    fixed = _fixed_contribution(txn)
-    if fixed is not None:
-        return fixed
-    return _own_figure(txn.estimated_amount, "transaction", txn.id)
 
 
 def contributions_by_id(user_id, scenario_id, rows) -> dict[int, Decimal]:
@@ -429,8 +370,8 @@ def contributions_by_id(user_id, scenario_id, rows) -> dict[int, Decimal]:
     engine runs once per read pass rather than once per row (finding **N-228**)
     and once per read pass rather than once per ACCOUNT, which is what re-keying
     the basis on the owner bought -- and then values each row through
-    :func:`_fixed_contribution`, resolving only the rows that reach the amount
-    model at all.
+    :func:`~app.services.row_valuation.fixed_contribution`, resolving only the
+    rows that reach the amount model at all.
 
     That ordering is the point rather than an optimisation: an excluded row is
     worth ``$0.00`` and its derived amount has no producer to answer it, so a
@@ -474,7 +415,7 @@ def contribution_of(txn, basis: AmountBasis) -> Decimal:
     Returns:
         What the row contributes.
     """
-    fixed = _fixed_contribution(txn)
+    fixed = fixed_contribution(txn)
     if fixed is not None:
         return fixed
     return resolve_transaction_amount(txn, basis)

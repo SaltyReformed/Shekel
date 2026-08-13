@@ -29,11 +29,13 @@ from app.services.savings_dashboard_service._debt_line import (
     loan_payoff_outlook,
 )
 from app.services.pay_calendar import PayCadence
+from app.services.row_valuation import owned_contribution
 from app.services.savings_dashboard_service._types import (
     AccountProjection,
     _DashboardCoreData,
 )
 from app.services.tax_config_service import load_tax_configs_for_year
+from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import round_money
 
 _RATE_PLACES = Decimal("0.00001")
@@ -366,6 +368,15 @@ def _recent_settled_expenses_monthly(
         return Decimal("0.00")
 
     recent_period_ids = [p.id for p in recent_periods]
+    # Both halves of "settled checking EXPENSE" are asked in SQL rather than in
+    # a Python ``if`` beside the valuation (plan step X-au-c2).  They were, and
+    # the row set was every status: the loop's guard was what kept a Projected
+    # row away from the amount read, so the accessor's precondition rested on a
+    # conditional a later edit could reorder rather than on the query.  Asking
+    # here makes it structural -- ``owned_contribution`` below can only ever see
+    # a row that has been through the settle freeze -- and loads only the rows
+    # that are summed.  ``settled_status_ids()`` is exactly the ``is_settled``
+    # set it replaces (``ref_seeds``: Paid, Received, Settled).
     recent_txns = (
         db.session.query(Transaction)
         .filter(
@@ -373,14 +384,17 @@ def _recent_settled_expenses_monthly(
             Transaction.account_id.in_(checking_ids),
             Transaction.scenario_id == scenario_id,
             Transaction.is_deleted.is_(False),
+            Transaction.transaction_type_id == ref_cache.txn_type_id(
+                TxnTypeEnum.EXPENSE,
+            ),
+            Transaction.status_id.in_(settled_status_ids()),
         )
         .all()
     )
 
-    total_expenses = Decimal("0.00")
-    for txn in recent_txns:
-        if txn.is_expense and txn.status and txn.status.is_settled:
-            total_expenses += Decimal(str(txn.effective_amount))
+    total_expenses = sum(
+        (owned_contribution(txn) for txn in recent_txns), Decimal("0.00"),
+    )
 
     per_period = total_expenses / len(recent_periods)
     return pay_cadence.per_paycheck_to_monthly(per_period)

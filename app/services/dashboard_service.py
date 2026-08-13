@@ -25,6 +25,7 @@ Pure aggregation service -- no Flask imports, no database writes.
 """
 
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -241,7 +242,9 @@ def _is_entry_tracked(txn: Transaction) -> bool:
     return txn.tracks_purchases
 
 
-def txn_to_bill_dict(txn: Transaction, today: date) -> dict:
+def txn_to_bill_dict(
+    txn: Transaction, today: date, contribution: Decimal,
+) -> dict:
     """Build a bill dict for the dashboard bills template from a Transaction.
 
     Used by ``dashboard_pulse_service._pulse_due_soon`` to produce one
@@ -257,15 +260,28 @@ def txn_to_bill_dict(txn: Transaction, today: date) -> dict:
     ``entry_over_budget`` (also derived from ``estimated_amount`` in
     :func:`_entry_progress_fields`).  ``amount_base`` carries the
     label the template surfaces to the user ("budget") so the base is
-    disclosed in the UI, not implicit.  Non-entry-tracked rows keep
-    ``effective_amount`` (tier-3 actual when populated, otherwise
-    estimated) because the row has no progress fields to be
-    inconsistent with; ``amount_base`` is None there so the template
+    disclosed in the UI, not implicit.  Non-entry-tracked rows show what
+    the row CONTRIBUTES; ``amount_base`` is None there so the template
     skips the label.
+
+    **That contribution arrives as an ARGUMENT** (plan step X-au-c2).  It
+    read ``txn.effective_amount``, a model property that could not answer
+    for a row whose amount is DERIVED -- such a row stores no figure, and
+    resolving a paycheck needs the owner's whole pay-period set, which no
+    per-row property can hold.  The caller resolves the whole row set
+    ONCE through :func:`app.services.cash_ledger.contributions_by_id` and
+    indexes it here, so the paycheck engine runs once per read pass
+    rather than once per bill (finding **N-228**).
 
     Args:
         txn: The Transaction to convert.
         today: The reference date used to compute days_until_due.
+        contribution: What this row contributes, from the caller's
+            :func:`~app.services.cash_ledger.contributions_by_id` map --
+            ``0`` for a row that contributes nothing, the entered
+            ``actual_amount`` where there is one, else the row's resolved
+            amount.  Read only for a non-entry-tracked row; an envelope
+            answers on its E-21 budget base instead.
 
     Returns:
         Dict matching the bills template contract, including the
@@ -279,7 +295,7 @@ def txn_to_bill_dict(txn: Transaction, today: date) -> dict:
         amount = txn.estimated_amount
         amount_base = "budget"
     else:
-        amount = txn.effective_amount
+        amount = contribution
         amount_base = None
     bill = {
         "id": txn.id,

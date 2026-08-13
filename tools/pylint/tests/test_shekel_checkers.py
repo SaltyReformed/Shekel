@@ -25,6 +25,7 @@ from shekel_checkers import (
     _LEDGER_MODEL_MODULES,
     _KIND_CLASSIFIER_MODULES,
     _LEDGER_MODEL_NAMES,
+    _ROW_VALUATION_MODULES,
     _LOAN_LEDGER_DEFINING_MODULES,
     _LOAN_RESOLVER_ENGINE_MODULES,
     _STATUS_SEAM_MODULES,
@@ -799,6 +800,11 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         * ``_LOAN_LEDGER_DEFINING_MODULES`` (``loan_ledger`` +
           ``loan_posting_service``, the walk and the posting readers)
         * ``_CASH_LEDGER_MODULES`` (``cash_ledger``, D1a then D1c)
+        * ``_ROW_VALUATION_MODULES`` (``row_valuation``, X-au-c2 -- the
+          producer-free valuation arms, extracted BELOW ``cash_ledger`` so the
+          loan stack can reach them without closing an import cycle, and
+          scoped the day they moved so the extraction did not un-rule
+          ``owned_contribution``)
         * ``_KIND_CLASSIFIER_MODULES`` (``account_projection``, D1b)
         * ``_LOAN_RESOLVER_ENGINE_MODULES`` (``loan_resolver``, D3 -- B-12's
           "wholly unfenced tier", closed)
@@ -825,6 +831,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         for module_name in (
             "app.services.account_projection",
             "app.services.cash_ledger",
+            "app.services.row_valuation",
             "app.services.loan_ledger",
             "app.services.loan_posting_service",
             "app.services.loan_payment_service",
@@ -921,6 +928,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             | _SEAM_PRIVATE_CONTEXT_MODULES
             | _CASH_LEDGER_MODULES
             | _KIND_CLASSIFIER_MODULES
+            | _ROW_VALUATION_MODULES
         )
         assert set(_FENCED_MODULE_RULINGS) == expected
 

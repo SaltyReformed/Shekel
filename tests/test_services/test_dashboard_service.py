@@ -26,7 +26,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import balance_at, dashboard_service
+from app.services import balance_at, cash_ledger, dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     add_txn as _add_txn,
@@ -104,6 +104,25 @@ class TestBillRowSingleBase:
         db.session.flush()
         return txn
 
+    @staticmethod
+    def _bill(seed_user, txn, today):
+        """Build ``txn``'s bill dict, pricing it the way the producer does.
+
+        ``txn_to_bill_dict`` takes the row's contribution as an argument since
+        plan step X-au-c2 (``Transaction.effective_amount`` could not answer for
+        a row whose amount is derived).  These tests resolve it through the same
+        :func:`app.services.cash_ledger.contributions_by_id` the pulse producer
+        calls rather than passing a literal, so the non-entry-tracked
+        assertions below still grade what the row is actually worth instead of
+        a number the test handed itself.
+        """
+        contributions = cash_ledger.contributions_by_id(
+            seed_user["user"].id, txn.scenario_id, [txn],
+        )
+        return dashboard_service.txn_to_bill_dict(
+            txn, today, contributions[txn.id],
+        )
+
     def _add_entries(self, db, seed_user, txn, *amounts):
         """Attach debit entries to ``txn`` summing the supplied amounts."""
         # pylint: disable=import-outside-toplevel
@@ -142,7 +161,7 @@ class TestBillRowSingleBase:
             self._add_entries(db, seed_user, txn, "50.00", "30.00")
             db.session.commit()
 
-            bill = dashboard_service.txn_to_bill_dict(txn, date(2026, 1, 1))
+            bill = self._bill(seed_user, txn, date(2026, 1, 1))
 
             # MED-03 / F-028: amount now equals estimated (was
             # effective=actual=$100); the row's three numbers share
@@ -181,12 +200,8 @@ class TestBillRowSingleBase:
             )
             db.session.commit()
 
-            envelope_bill = dashboard_service.txn_to_bill_dict(
-                envelope, date(2026, 1, 1),
-            )
-            plain_bill = dashboard_service.txn_to_bill_dict(
-                plain, date(2026, 1, 1),
-            )
+            envelope_bill = self._bill(seed_user, envelope, date(2026, 1, 1))
+            plain_bill = self._bill(seed_user, plain, date(2026, 1, 1))
 
             assert envelope_bill["amount_base"] == "budget"
             assert plain_bill["amount_base"] is None
@@ -219,12 +234,8 @@ class TestBillRowSingleBase:
             self._add_entries(db, seed_user, under, "40.00")
             db.session.commit()
 
-            over_bill = dashboard_service.txn_to_bill_dict(
-                overspent, date(2026, 1, 1),
-            )
-            under_bill = dashboard_service.txn_to_bill_dict(
-                under, date(2026, 1, 1),
-            )
+            over_bill = self._bill(seed_user, overspent, date(2026, 1, 1))
+            under_bill = self._bill(seed_user, under, date(2026, 1, 1))
 
             assert over_bill["amount"] == Decimal("100.00")
             assert over_bill["entry_total"] == Decimal("130.00")
@@ -266,7 +277,7 @@ class TestBillRowSingleBase:
             )
             db.session.commit()
 
-            bill = dashboard_service.txn_to_bill_dict(txn, date(2026, 1, 1))
+            bill = self._bill(seed_user, txn, date(2026, 1, 1))
 
             assert bill["amount"] == Decimal("120.00")
             assert bill["amount_base"] == "budget"
