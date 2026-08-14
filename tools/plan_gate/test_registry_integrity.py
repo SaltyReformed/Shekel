@@ -274,6 +274,27 @@ class TestTheKeyIsTheArcAndTheId:
         problems = registry.unique_key_violations()
         assert any("duplicate key" in p for p in problems), problems
 
+    def test_two_rows_sharing_an_id_but_not_a_provenance_still_collide(
+        self, stage,
+    ):
+        """Finding **N-254**: the annotation is not part of the id.
+
+        Two sessions appended on successive days and both allocated
+        ``N-244``..``N-247``, so four ids each named two findings and the arm
+        above reported none: ``key`` was the WHOLE cell, and two provenances
+        differ as strings.  A citation then resolved to whichever row the reader
+        found first.  Planted as that shape rather than as a byte-identical
+        duplicate, which was already caught.
+        """
+        line = row_of("ledger", a_live_ledger_row())
+        ident = [c.strip() for c in line.strip().strip("|").split("|")][1]
+        bare = ident.split(" (")[0]
+        twin = with_cell(line, 1, f"{bare} (a second session's trace, one day later)")
+        stage("ledger", line, line + "\n" + twin)
+
+        problems = registry.unique_key_violations()
+        assert any("duplicate key" in p and bare in p for p in problems), problems
+
     def test_the_control_fires_on_an_empty_id_cell(self, stage):
         """A row whose id is blank has no key, and nothing else could see it.
 
