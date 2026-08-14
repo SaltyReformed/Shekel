@@ -20,7 +20,8 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import pay_period_service, posting_service
+from app.services import posting_service
+from app.services.pay_calendar import calendar_for
 from app.services.credit_workflow import (
     create_cc_payback_transaction,
     get_active_payback,
@@ -199,7 +200,9 @@ def _create_payback(
     Raises:
         ValidationError: If no next pay period exists.
     """
-    next_period = pay_period_service.get_next_period(txn.pay_period)
+    next_period = calendar_for(owner_id).period_starting_after(
+        txn.pay_period.start_date,
+    )
     if next_period is None:
         raise ValidationError(
             "No next pay period exists. Generate more periods first."
@@ -223,7 +226,7 @@ def _create_payback(
         user_id=owner_id,
         transaction_id=txn.id,
         payback_id=payback.id,
-        next_period_id=next_period.id,
+        next_period_id=next_period.period_id,
         amount=str(total_credit),
         credit_entry_count=len(credit_entries),
     )

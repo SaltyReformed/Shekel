@@ -21,7 +21,6 @@ from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import balance_at, cash_ledger
@@ -30,8 +29,7 @@ from app.services.calendar_infrequency import (
     badge_cadence,
     is_infrequent,
 )
-from app.services.pay_calendar import PayCadence
-from app.services.pay_period_service import get_overlapping_periods
+from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
 from app.services.balance_at import BalanceContext
 from app.utils.balance_predicates import (
     balance_contributing_clause,
@@ -290,9 +288,15 @@ def get_month_detail(  # pylint: disable=too-many-arguments
     first_day = date(year, month, 1)
     last_day = date(year, month, calendar.monthrange(year, month)[1])
 
-    periods = get_overlapping_periods(user_id, first_day, last_day)
+    # ONE resolution of "which paychecks does this month touch", threaded into
+    # both consumers (plan step C2-f1).  This line and the transaction load
+    # below each issued the same ``get_overlapping_periods(user_id, first_day,
+    # last_day)`` twice per render, so one request held two answers to one
+    # question -- ledger row **P36**'s shape.  The pass's own calendar answers
+    # it once.
+    periods = balance_ctx.calendar().overlapping(first_day, last_day)
     transactions = _query_transactions_for_range(
-        account.id, balance_ctx.scenario_id, user_id, first_day, last_day,
+        account.id, balance_ctx.scenario_id, periods,
     )
 
     ctx = _MonthBuildContext(
@@ -341,9 +345,10 @@ def get_year_overview(
     balance_ctx = BalanceContext.build(user_id)
     first_day = date(year, 1, 1)
     last_day = date(year, 12, 31)
-    periods = get_overlapping_periods(user_id, first_day, last_day)
+    # ONE resolution, threaded -- see ``get_month_detail`` for what C2-f1 collapsed.
+    periods = balance_ctx.calendar().overlapping(first_day, last_day)
     all_txns = _query_transactions_for_range(
-        account.id, balance_ctx.scenario_id, user_id, first_day, last_day,
+        account.id, balance_ctx.scenario_id, periods,
     )
 
     ctx = _MonthBuildContext(
@@ -376,14 +381,19 @@ def get_year_overview(
 def _query_transactions_for_range(
     account_id: int,
     scenario_id: int,
-    user_id: int,
-    first_day: date,
-    last_day: date,
+    periods: PeriodWindow,
 ) -> list[Transaction]:
-    """Load the transactions of every pay period overlapping the range.
+    """Load the transactions filed under every period of *periods*.
+
+    **It TAKES the window rather than resolving one** (plan step C2-f1).  Both
+    callers already hold the answer -- they render it as the period strip --
+    and each recomputed it here from the same three arguments, so a render
+    carried two answers to "which paychecks does this span touch" with nothing
+    holding them equal: ledger row **P36**'s shape inside one module, answered
+    as ruling R-Q and plan step C2-c answered it for the balance seam.
 
     Fetches by PERIOD MEMBERSHIP -- all balance-contributing rows whose
-    ``pay_period_id`` is a period overlapping ``[first_day, last_day]`` --
+    ``pay_period_id`` is one of *periods* --
     NOT by raw ``due_date``.  This is the basis the clamped
     :func:`~app.utils.dates.attribution_date` display rule and the daily
     balance producer both use: a transaction is attributed to a day inside
@@ -410,9 +420,25 @@ def _query_transactions_for_range(
     is "balance-contributing" (Projected + Settled, excludes Credit and
     Cancelled) -- intentionally wider than the grid period subtotal's
     Projected-only predicate.  The two surfaces diverge by design.
+
+    **``user_id`` is gone, so OWNER SCOPING is a precondition on the caller
+    rather than a filter here** -- stated because an unstated one is how a
+    scoping check goes missing.  Both callers take *account* from
+    ``resolve_analytics_account(user_id, ...)`` and *periods* off a
+    ``BalanceContext`` built for that same owner, so both keys are already
+    theirs.
+
+    Args:
+        account_id: The account whose rows to load; the CALLER owns its
+            ownership check.
+        scenario_id: The budget scenario the rows live in.
+        periods: The pay periods the span touches, resolved once by the caller
+            off its own ``BalanceContext``, which is what scopes them.
+
+    Returns:
+        The matching :class:`~app.models.transaction.Transaction` rows.
     """
-    overlapping = get_overlapping_periods(user_id, first_day, last_day)
-    period_ids = [p.id for p in overlapping]
+    period_ids = [p.period_id for p in periods]
 
     return (
         db.session.query(Transaction)
@@ -562,12 +588,19 @@ def _assign_transactions_to_days(
     seen_ids: set[int] = set()
     day_map: dict[int, list[DayEntry]] = defaultdict(list)
 
+    # The spans the rows were SELECTED by, keyed for PLACEMENT (plan step
+    # C2-f1): the fetch was by membership of this very window, so the indexing
+    # below is total by construction rather than by luck.
+    spans = {period.period_id: period for period in ctx.periods}
+
     for txn in ctx.transactions:
         if txn.id in seen_ids:
             continue
         if not is_balance_contributing(txn):
             continue
-        display_day = _get_display_day(txn, month, ctx.year)
+        display_day = _get_display_day(
+            txn, spans[txn.pay_period_id], month, ctx.year,
+        )
         if display_day is None:
             continue
 
@@ -661,7 +694,7 @@ class _MonthBuildContext:  # pylint: disable=too-many-instance-attributes
 
     year: int
     account: Account
-    periods: list[PayPeriod]
+    periods: PeriodWindow
     transactions: list[Transaction]
     contributions: dict[int, Decimal]
     large_threshold: int
@@ -846,6 +879,7 @@ def _fold_split(
 
 def _get_display_day(
     txn: Transaction,
+    period: DerivedPeriod,
     target_month: int,
     target_year: int,
 ) -> int | None:
@@ -860,6 +894,19 @@ def _get_display_day(
     the pay period ``start_date``) clamped into the transaction's own pay
     period span.  The clamp prevents a due_date that strays just outside its
     period from leaking a flow onto a neighboring period's day.
+
+    **The span is the one the row was SELECTED by, passed in for exactly that
+    reason** (plan step C2-f1, caught by adversarial review before it shipped).
+    It read ``txn.pay_period`` -- the STORED ``end_date`` -- while
+    :func:`get_month_detail` moved its SELECTION onto the DERIVED calendar,
+    splitting one function across two clocks.  Where the two disagree (plan
+    finding **P12**: a no-op ``/pay-periods/generate`` post rewrites
+    ``cadence_days`` without writing a row, so the last period's derived end
+    moves and its stored end does not) a row could be CLAMPED into April by the
+    stored span while its period was excluded from April's selection by the
+    derived one -- absent from the day cells, from ``total_expenses`` and from
+    ``net``, silently.  One value answers both now, and the pairing cannot be
+    got wrong: the fetch was BY membership of that window.
 
     **It no longer places a flow on the same day as the balance step for it,
     and that is an open fork rather than a settled rule** (plan step X-c2b2,
@@ -876,8 +923,18 @@ def _get_display_day(
     row; the calendar has no such row yet, and which way it should go -- move
     the chip to the cash clock, add a reconciling figure, or label the
     divergence -- is the developer's to rule.
+
+    Args:
+        txn: The transaction to place.
+        period: Its pay period, as the calendar derived it -- the SAME value
+            the row was selected by.
+        target_month: The month being rendered.
+        target_year: Its year.
+
+    Returns:
+        The day of *target_month* to render the row on, or ``None`` when its
+        attribution date falls in another month.
     """
-    period = txn.pay_period
     landing = attribution_date(
         txn.due_date, period.start_date, period.end_date,
     )
@@ -887,7 +944,7 @@ def _get_display_day(
 
 
 def _detect_third_paycheck_months(
-    periods: list[PayPeriod],
+    periods: PeriodWindow,
     year: int,
 ) -> set[int]:
     """Identify months with 3+ pay period start_dates in the given year.

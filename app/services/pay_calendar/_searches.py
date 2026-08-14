@@ -21,7 +21,7 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no database session, no
 clock.  Every answer is a pure function of the periods a caller supplies.
 """
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from datetime import date
 from operator import attrgetter
 
@@ -83,6 +83,40 @@ def latest_started_period(
     """
     index = bisect_right(periods, day, key=_BY_START_DATE) - 1
     if index < 0:
+        return None
+    return periods[index]
+
+
+def earliest_started_period(
+    periods: "tuple[DerivedPeriod, ...]", day: date,
+) -> "DerivedPeriod | None":
+    """Return the first period of *periods* opening on or after *day*, else ``None``.
+
+    The exact mirror of :func:`latest_started_period`, and it is HERE rather
+    than inline for the reason the module docstring gives: a search over an
+    ordered period tuple is a primitive, and this one had been written into
+    :meth:`~._calendar.PayCalendar.period_starting_on_or_after` as a bare
+    ``bisect_left`` while its backward twin was already shared.  Plan step
+    **C2-f1** needed the same search over the MATERIALISED subset -- the
+    situation that made :func:`latest_started_period` shared in the first place
+    -- and a second bisect written for that would have been the duplication
+    this module exists to remove.
+
+    ``bisect_left`` rather than :func:`latest_started_period`'s
+    ``bisect_right``: this asks for the first index at or after *day*, so a
+    period opening exactly ON *day* must be included rather than stepped past.
+
+    Args:
+        periods: Periods in ``start_date`` ascending order.
+        day: The calendar day to search forward from, inclusive.
+
+    Returns:
+        The first period whose ``start_date`` is on or after *day*, or ``None``
+        when every one of them opens earlier -- "the schedule has not reached
+        there yet" rather than "never".
+    """
+    index = bisect_left(periods, day, key=_BY_START_DATE)
+    if index >= len(periods):
         return None
     return periods[index]
 

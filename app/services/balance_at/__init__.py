@@ -116,8 +116,10 @@ reviewed door a new seam entry ships through.
 
 Dependency direction (SOLID).  Consumers (routes, savings, analytics,
 dashboards) depend on this seam; the seam depends only on the outer engine
-inputs (``account_projection`` / ``projection_inputs`` / ``income_service`` /
-``pay_period_service``) and the ``cash_ledger`` leaf the cash producers fold
+inputs (``account_projection`` / ``projection_inputs`` / ``income_service``),
+the ``pay_calendar`` leaf every "which paycheck" answer comes off -- **this
+SEAM read ``pay_period_service`` until plan step C2-f2a, whose end state is
+that no module here imports it** -- and the ``cash_ledger`` leaf the cash producers fold
 over, the LOAN leaves it composes the loan shapes from (``loan_resolver`` /
 ``loan_ledger`` / ``loan_loaders`` / ``loan_payment_service`` /
 ``amortization_engine``), and the models -- never a consumer package.  **Plan

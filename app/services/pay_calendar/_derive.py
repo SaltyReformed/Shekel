@@ -26,6 +26,21 @@ derivation is a function of two values, so the harness can drive it over
 production's real 61 rows and over a generated sweep without a database, and
 the two runs exercise the same code.  A derivation reachable only through a
 query could not be diffed against the columns it is meant to replace.
+**The only application imports are ``app.exceptions`` and ``app.utils.dates``,
+neither of which imports anything from this application**, so the module still
+loads with no app stack behind it.  *An earlier draft of this sentence said
+``app.utils.dates`` was the ONE non-standard-library import and did not count
+``app.exceptions``, which was already there -- a purity claim that miscounted
+its own imports* (adversarial review, 2026-08-14).
+
+**That import WEAKENED the no-clock property, and the honest form says which
+property survives.**  Before plan step C2-f this module could not reach a clock
+through its import graph at all; ``app.utils.dates`` carries
+:func:`~app.utils.dates.display_today`, so the guarantee is now "nothing here
+CALLS a clock" rather than "no clock is reachable".  It was taken so the period
+LABEL is one rule rather than one per type that answers "which paycheck" (see
+:attr:`DerivedPeriod.label`), and ``app.utils.dates`` is the only leaf this
+package may take on those terms.
 
 **Why the last end is a different KIND of value, and says so.**  Every other
 end is dictated by a fact -- the next payday.  The last one has no next payday,
@@ -46,6 +61,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from app.exceptions import ShekelError
+from app.utils.dates import pay_period_label
 
 #: The cadence bounds, mirroring ``ck_pay_schedule_cadence_range`` on
 #: ``budget.pay_schedule.cadence_days``.  Named here rather than inlined
@@ -149,6 +165,25 @@ class DerivedPeriod:
     start_date: date
     end_date: date
     end_is_projected: bool
+
+    @property
+    def label(self) -> str:
+        """Return this period's human label (``"02/21 - 03/06"``).
+
+        **The same rule the ORM row answers**
+        (:attr:`app.models.pay_period.PayPeriod.label`), because both types
+        reach :func:`app.utils.dates.pay_period_label`: plan step C2-f moved
+        the period-move ``<select>`` onto this value while the conflict
+        chooser still renders the row, and one paycheck labelled two ways on
+        two screens is the denormalization this arc exists to remove.  Plan
+        step **C4** deletes the row's accessor with the column it reads; this
+        one is what survives.
+
+        Returns:
+            The label, carrying the year on both halves only when this period
+            straddles one.
+        """
+        return pay_period_label(self.start_date, self.end_date)
 
 
 def derive_periods(

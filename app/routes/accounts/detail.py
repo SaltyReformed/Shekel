@@ -105,9 +105,12 @@ logger = logging.getLogger(__name__)
 # report out of scope, do not fix), together with the sibling offsets in
 # ``period_projections`` -- both are period-INDEX arithmetic rather than the
 # money constant that step replaced, and converting them means deciding what a
-# fractional period offset means.  Reported to the developer with that step,
-# NOT yet a ledger row: this comment said "RECORDED" before an adversarial
-# review checked ``docs/plans/`` and found nothing there.
+# fractional period offset means.  **It IS a ledger row -- ``recurrence:F-17``,
+# born with its owner ``recurrence:R-F17`` at R7a-2a's design review 2026-08-11
+# -- and this comment claimed the opposite until plan step pay_calendar:C2-f1,
+# whose own adversarial review re-reported the row because the comment said it
+# did not exist.  A sentence about the registry goes stale exactly like a
+# sentence about the code.
 _ONE_YEAR_PERIODS = 26
 
 # Chart.js x-axis label format for the balance-projection trend: month

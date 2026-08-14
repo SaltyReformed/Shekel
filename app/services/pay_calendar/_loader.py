@@ -17,8 +17,11 @@ anchor-correction posting writers reach it through
 brought the recurrence engine** -- its ten ``recurrence.calendar_for`` call
 sites now name this function, and the second calendar type and second loader
 they used were deleted, so ``calendar_for`` is one name under ``app.services``
-again.  Still to come: C2-c / C2-e / C2-f bring the cash view, the projection
-axis and ``pay_period_service``'s readers.
+again.  **C2-c brought the cash view and C2-e the projection axis**; both have
+shipped, and this sentence listed them as "still to come" until plan step
+C2-f2a corrected it.  What remains is ``C2-f``'s own leaves --
+``pay_period_service``'s three surviving readers at every surface outside the
+balance seam, which stopped importing that module at C2-f2a.
 
 **Why it does NOT call ``pay_period_service.get_all_periods``**, which is the
 obvious spelling and is the one this must avoid.  Plan step C2-f points that

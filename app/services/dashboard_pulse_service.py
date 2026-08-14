@@ -37,7 +37,6 @@ from decimal import Decimal
 from itertools import groupby
 from typing import TYPE_CHECKING
 
-from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
@@ -64,6 +63,12 @@ if TYPE_CHECKING:
     # W9910 package-privacy checker asks for -- the type hint the coding
     # standard asks for, at no import cost.
     from app.services.savings_dashboard_service import GoalProgress
+
+    # The pay calendar's own view of a period, carried by the two producers
+    # that took ``pay_period_service.get_next_period``'s answer before plan
+    # step C2-f.  Type-only: the value arrives from ``balance_ctx.calendar()``,
+    # which this module already reaches through ``BalanceContext``.
+    from app.services.pay_calendar import DerivedPeriod
 
 _ZERO = Decimal("0")
 
@@ -136,7 +141,15 @@ def compute_pulse_section(user_id: int) -> dict | None:
 
     settings = _get_user_settings(user_id)
     all_periods = pay_period_service.get_all_periods(user_id)
-    next_period = pay_period_service.get_next_period(current_period)
+    # The pass's own calendar answers "which paycheck comes next" (plan step
+    # C2-f1), and this is the call that FILLS that memo -- ``BalanceContext.build``
+    # resolves only the scenario, so the two queries are paid here and
+    # ``cash_balance_map`` below reads the same value for free.  Net for this
+    # producer: four queries down to two, where the retired ``get_next_period``
+    # and ``_next_paycheck_date`` each issued one BESIDE the map's own load.
+    next_period = balance_ctx.calendar().period_starting_after(
+        current_period.start_date,
+    )
 
     # ONE projection walk over ALL periods through the ``balance_at`` seam's
     # CASH-FLOW view (``cash_balance_map``).  The dashboard account is
@@ -189,7 +202,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # query on the ``balanceChanged`` refresh path.
     period_ids = [current_period.id]
     if next_period is not None:
-        period_ids.append(next_period.id)
+        period_ids.append(next_period.period_id)
     unpaid_rows = _query_unpaid_expense_rows(
         account.id, balance_ctx.scenario_id, period_ids,
     )
@@ -218,7 +231,8 @@ def compute_pulse_section(user_id: int) -> dict | None:
         # own period the projection did not cover, which is the silent-wrong
         # shape this arc exists to end.
         "hero": _pulse_hero(
-            account, end_balances[current_period.id], current_period, settings,
+            account, end_balances[current_period.id], current_period,
+            next_period, settings,
         ),
         "chart": _pulse_chart(forward_periods, end_balances, settings),
         "trough": _pulse_trough(
@@ -240,6 +254,7 @@ def _pulse_hero(
     account: Account,
     balance: Decimal,
     current_period: PayPeriod,
+    next_period: "DerivedPeriod | None",
     settings: UserSettings | None,
 ) -> dict:
     """Build the pulse hero block: the period-END balance and its captions.
@@ -278,6 +293,24 @@ def _pulse_hero(
         balance: The current period's projected end balance, off the same
             ``cash_balance_map`` the chart plots.
         current_period: The period containing today.
+        next_period: The paycheck after it, or ``None`` past the schedule's
+            end.  **TAKEN rather than looked up** (plan step C2-f1): this
+            module held a ``_next_paycheck_date`` query of its own -- "the
+            first period whose ``start_date`` is after ``date.today()``" --
+            for a value the caller had already resolved as "the period after
+            the current one", and the same card renders both (the hero's
+            next-paycheck caption beside the still-due panel's
+            ``next_period_start``).
+            **The two questions are not the same question**, which is what
+            made keeping both a defect rather than a duplication: this one is
+            anchored on *current_period*, which ``get_current_period`` selects
+            by the STORED span, while the deleted query anchored on the clock
+            -- so wherever a stored ``end_date`` disagrees with the derived
+            one (plan finding **P1**, the disagreement nothing reconciles) the
+            period the card calls current need not be the period today falls
+            in, and the two captions name different paydays.  It also read its
+            own ``date.today()``, a second clock in one render.  One value
+            now, from the pass's own calendar, so neither can happen.
         settings: The user's settings, or ``None``.
 
     Returns:
@@ -308,7 +341,9 @@ def _pulse_hero(
         "account_id": account.id,
         "last_updated_date": last_observed_on,
         "is_stale": _anchor_is_stale(last_observed_on, settings),
-        "next_paycheck_date": _next_paycheck_date(account.user_id),
+        "next_paycheck_date": (
+            next_period.start_date if next_period is not None else None
+        ),
     }
 
 
@@ -530,7 +565,7 @@ def _pulse_still_due(
     rows: list[Transaction],
     contributions: dict[int, Decimal],
     current_period: PayPeriod,
-    next_period: PayPeriod | None,
+    next_period: "DerivedPeriod | None",
 ) -> dict:
     """Compute the still-due totals for the current and next periods.
 
@@ -581,7 +616,7 @@ def _pulse_still_due(
         contribution = _row_still_due(txn, contributions[txn.id])
         if txn.pay_period_id == current_period.id:
             current_total += contribution
-        elif next_period is not None and txn.pay_period_id == next_period.id:
+        elif next_period is not None and txn.pay_period_id == next_period.period_id:
             next_total += contribution
 
     return {
@@ -776,32 +811,6 @@ def _pulse_due_soon_stations(due_soon: list[dict]) -> list[dict]:
         )
     return stations
 
-
-
-def _next_paycheck_date(user_id: int) -> date | None:
-    """Return the start date of the first pay period that begins after today.
-
-    The next paycheck lands on the next period's payday (its
-    ``start_date``).  ``None`` when no period starts after today (the
-    schedule does not extend into the future).
-
-    Args:
-        user_id: The user whose pay periods to scan.
-
-    Returns:
-        The next future period's ``start_date``, or ``None``.
-    """
-    today = date.today()
-    next_period = (
-        db.session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == user_id,
-            PayPeriod.start_date > today,
-        )
-        .order_by(PayPeriod.start_date)
-        .first()
-    )
-    return next_period.start_date if next_period is not None else None
 
 
 # ── Tracks producer (savings goals + debt position) ────────────────
