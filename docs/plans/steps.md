@@ -48,7 +48,7 @@ sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**137 steps, 101 open.** The dependency graph holds 105 edges over 65 rows.
+**138 steps, 101 open.** The dependency graph holds 105 edges over 65 rows.
 
 ## The order
 
@@ -195,6 +195,7 @@ The fuller as-built entries are in each arc's archive.
 | recurrence | R7b-1 | -- | The AUTHORED vocabulary became the two axes and the closed pattern set became a storage encoding with one inverted table behind it. | SHIPPED | `e7eb3b1a` | -- |
 | recurrence | R7b-2 | -- | The form AUTHORS the two axes and the offer set is the encoder's own table inverted, so an unstorable cadence is unofferable rather than fenced. Closed **D8**; opened **D31**, **D32**. | SHIPPED | `ecc4d01b` | -- |
 | recurrence | R7b-3 | -- | The closing bound became ONE value with THREE shapes above the columns, so a rule cannot state two; `max_occurrences` gained its first writer as one "Ends" control. Closed **D23**; opened **D33**, **D34**, **D35**, and **N-273** in the balance arc. | SHIPPED | `c8655584` | -- |
+| recurrence | R-D33 | -- | Both closing bounds answer "is this still a commitment" from whether the rule still OWES an occurrence, so a DATE bound stops counting at its last occurrence rather than at its bound date. Closes **D33**. | SHIPPED | `dd2a5a34` | -- |
 | recurrence | R-F1 | -- | The lagging `ref` identity sequences are back in step. Closed **F-1**. | SHIPPED | `44b25ad3` | -- |
 | recurrence | R-F8 | -- | The deploy's safety net stops lying: back up unconditionally, pre-flight the rollback, and refuse the one that cannot work. Closed **F-8**, **F-14**. | SHIPPED | `2e63e4f9` | -- |
 | pay_calendar | C1 | -- | The derivation exists and is proven equal to what is stored. Opened **P15**, **P16**. | SHIPPED | `f9d148fe` | -- |
