@@ -12,14 +12,27 @@ Every anchor the account carries posts one balanced correction (:mod:`._walk`
 computes its ``ledger_before``)::
 
     linked ledger         (anchor_balance - ledger_before)   [opening | trueup]
-    anchor-equity ledger  (ledger_before - anchor_balance)   [opening | trueup]
+    counter ledger        (ledger_before - anchor_balance)   [opening | trueup]
                           -----------------------------------
                           0
 
 The delta is ledger-native sign -- it holds for Asset AND Liability non-loan
 accounts with no class branch, exactly like the engine.  A zero delta books
-nothing (a fresh $0 account mints no entries and no ``anchor_equity`` row,
-staying hard-deletable).
+nothing (a fresh $0 account mints no entries and no counter row, staying
+hard-deletable).
+
+**WHICH counter ledger is a total dispatch over the account's projection kind**
+(ruling **R-FO**, plan step X-f3d), resolved by
+:func:`app.services.ledger_account_service.anchor_correction_counter_kind` and
+materialised once per reconcile by :func:`_counter_ledger_accounts`.  An
+OPENING books to the account's equity row whatever its kind -- capital brought
+onto the books is not something earned -- and a TRUE-UP books to what the
+difference WAS: interest income for an ``INTEREST`` account, a change in
+value for an ``INVESTMENT`` or ``APPRECIATING`` one, and (until plan step X-f3c makes
+that residual a transaction the user accepts, ruling **R-FN**) the equity row
+for a ``PLAIN`` one.  Before it, every kind plugged to equity, which is why
+``$10,653.91`` of return earned over 4.5 months was invisible on the income
+statement (measured on a production clone 2026-08-13).
 
 **Reconciled to target, keyed by (source kind, pay period, entry date).**  An
 anchor correction has no concrete source FK to key on, so the reconcile keys
@@ -119,8 +132,16 @@ into one entry; separating THOSE needs an identity the ledger does not carry
 yet (plan step X-ai-s).
 """
 
+from decimal import Decimal
+
 from app import ref_cache
-from app.enums import PostingKindEnum, PostingSourceEnum
+from app.enums import (
+    LedgerAccountKindEnum,
+    PostingKindEnum,
+    PostingSourceEnum,
+)
+from app.models.account import Account
+from app.models.ledger_account import LedgerAccount
 from app.services import ledger_account_service
 from app.services._posting_reconcile import (
     CorrectionKey,
@@ -130,6 +151,7 @@ from app.services._posting_reconcile import (
     merge_target_legs,
     posted_correction_legs,
 )
+from app.services.account_projection import classify_account
 from app.services.cash_ledger import CashAnchorFact
 from app.services.pay_calendar import PayCalendar
 from app.services.posting_reads import _ledger_account_for
@@ -169,59 +191,154 @@ def _account_correction_kinds(
     return PostingSourceEnum.ACCOUNT_TRUEUP, PostingKindEnum.TRUEUP
 
 
+def _correction_delta(correction: AccountAnchorCorrection) -> Decimal:
+    """Return what one anchor correction books on the account's linked ledger.
+
+    ``anchor_balance - ledger_before``: the jump from what the walked ledger
+    said just before this assertion to what the assertion declares.  Zero means
+    the correction books NOTHING, which is the one predicate two callers share
+    -- :func:`_counter_ledger_accounts` (which mints no chart row for a
+    correction that books nothing) and :func:`_account_anchor_correction_target`
+    (which returns an empty target for it) -- so it is stated once rather than
+    spelled twice and left to drift.
+
+    Args:
+        correction: The anchor correction from :func:`._walk.walk_account_ledger`.
+
+    Returns:
+        The signed linked-ledger delta as a ``Decimal``.
+    """
+    return correction.anchor.anchor_balance - correction.ledger_before
+
+
+def _counter_ledger_accounts(
+    owner_id: int,
+    account: Account,
+    corrections: list[AccountAnchorCorrection],
+) -> list[LedgerAccount | None]:
+    """Resolve each correction's COUNTER chart row, ``None`` where it books nothing.
+
+    Ruling **R-FO** made the counter leg a dispatch over the account's
+    projection kind (:func:`~app.services.ledger_account_service.anchor_correction_counter_kind`),
+    so an account can need up to two counter rows: ``anchor_equity`` for the
+    correction that OPENS its books and, for a modelled account,
+    ``interest_income`` or ``unrealized_change`` for the ones after it.  This
+    walks the corrections once, in order, and returns one entry per correction
+    -- so the caller never has to re-derive which row a correction belongs to.
+
+    **"The opening" is the account's EARLIEST ASSERTION, and keying it on the
+    DELTA series instead was tried and REFUSED.**  The tempting refinement is
+    "the first correction that books a non-zero delta", which answers the case
+    where the create form's ``$0`` pre-fill left the earliest assertion booking
+    nothing.  It breaks a case that matters more: an account whose opening books
+    nothing because THE RECORDS ALREADY EXPLAIN IT -- a Roth opened at
+    ``$1,000.00`` with a ``$1,000.00`` settled transfer already dated before it
+    -- would then have its first real ``$150.00`` market gain treated as capital
+    and booked to equity, which is the defect ruling R-FO exists to close,
+    reintroduced through the back door (adversarial review, 2026-08-14).
+    ``is_opening`` is also a property of the ASSERTION HISTORY where a
+    delta-keyed rule is a property of ONE SCENARIO's posted sources: the same
+    correction could open the books in one scenario and not in another.  The
+    ``$0`` pre-fill was the real defect and it is fixed where it lives -- the
+    create form now ASKS, which is ruling R-EX's own argument about the
+    registration payday applied to the other figure nobody can default.
+
+    **A row is minted only when a correction really books into it.**  A
+    correction whose ``ledger_before`` already equals its anchor balance mints
+    nothing, so a fresh $0 account keeps zero ledger rows and stays
+    hard-deletable -- which the account-delete CASCADE argument rests on -- and
+    a resolved row is reused across corrections rather than re-queried, since
+    the resolver issues a query and Checking carries 102 corrections.
+
+    Args:
+        owner_id: The account owner's user id.
+        account: The non-loan :class:`~app.models.account.Account` being
+            reconciled, with ``account_type`` loaded (the dispatch classifies
+            it).
+        corrections: The account's corrections from
+            :func:`._walk.walk_account_ledger`, chronological.
+
+    Returns:
+        One entry per correction, in the same order: its counter
+        :class:`~app.models.ledger_account.LedgerAccount`, or ``None`` when the
+        correction books nothing.
+
+    Raises:
+        ValueError: If the dispatch has no rule for the account's projection
+            kind, or the resolver rejects the account (not owned by *owner_id*,
+            or an amortizing loan -- both broken invariants at this point, the
+            walk having already classified).
+    """
+    projection_kind = classify_account(account)
+    resolved: dict[LedgerAccountKindEnum, LedgerAccount] = {}
+    counters: list[LedgerAccount | None] = []
+    for correction in corrections:
+        if _correction_delta(correction) == 0:
+            counters.append(None)
+            continue
+        kind = ledger_account_service.anchor_correction_counter_kind(
+            projection_kind, is_opening=correction.anchor.is_opening,
+        )
+        if kind not in resolved:
+            resolved[kind] = (
+                ledger_account_service.get_or_create_account_counter_account(
+                    owner_id, account.id, kind,
+                )
+            )
+        counters.append(resolved[kind])
+    return counters
+
+
 def _account_anchor_correction_target(
-    correction: AccountAnchorCorrection, owner_id: int,
+    correction: AccountAnchorCorrection,
+    linked: LedgerAccount,
+    counter: LedgerAccount | None,
 ) -> LegMap:
     """Build the two-leg target for one anchor correction, or empty when it books nothing.
 
     The linked leg is ``anchor_balance - ledger_before`` (tagged ``opening``
-    or ``trueup``); the anchor-equity leg is its negative, so the two sum to
-    zero and the linked ledger's implied balance moves from ``ledger_before``
-    to the asserted value.  A correction whose ``ledger_before`` already
-    equals the anchor balance books NOTHING -- an empty target, so no zero
-    leg is written and no anchor-equity account is minted for it.
+    or ``trueup``); the COUNTER leg is its negative, so the two sum to zero and
+    the linked ledger's implied balance moves from ``ledger_before`` to the
+    asserted value.  A correction whose ``ledger_before`` already equals the
+    anchor balance books NOTHING -- an empty target, so no zero leg is written.
 
-    The per-account anchor-equity account is resolved lazily (created on
-    first use) only when the correction is non-zero, via
-    :func:`app.services.ledger_account_service.get_or_create_anchor_equity_account`
-    -- whose non-loan guard is also the structural guarantee this package
-    never books onto a loan's chart.
+    **The counter leg NAMES what the difference was** (ruling **R-FO**): the
+    equity opening, interest income, or change in value, decided by
+    :func:`_counter_ledger_accounts` and handed in here.  Only the counter side
+    moves; the linked leg, its amount and its posting kind are exactly what they
+    were before that ruling, which is why the whole change is balance-neutral on
+    every account balance the app reports.
 
     Args:
         correction: The anchor correction from :func:`._walk.walk_account_ledger`.
-        owner_id: The account owner's user id (for the anchor-equity account).
+        linked: The account's LINKED ledger account, resolved once by the
+            reconcile.
+        counter: This correction's counter chart row from
+            :func:`_counter_ledger_accounts`, or ``None`` when that function
+            found the correction books nothing -- the same predicate this
+            function applies, through the same :func:`_correction_delta`, so
+            the two cannot disagree about which corrections have a row.
 
     Returns:
         ``{ledger_account_id: (amount, posting_kind_id)}`` (the two balanced
         legs, or empty when the correction books nothing).
-
-    Raises:
-        PostingError: If the account has no linked ledger account (a broken
-            chart-of-accounts pairing).
-        ValueError: If the anchor-equity resolver rejects the account (not
-            owned by *owner_id*, or an amortizing loan -- both broken
-            invariants at this point, the walk having already classified).
     """
-    fact = correction.anchor
-    delta = fact.anchor_balance - correction.ledger_before
+    delta = _correction_delta(correction)
     if delta == 0:
         return {}
-    _source_enum, posting_kind_enum = _account_correction_kinds(fact)
+    _source_enum, posting_kind_enum = _account_correction_kinds(correction.anchor)
     posting_kind_id = ref_cache.posting_kind_id(posting_kind_enum)
-    linked = _ledger_account_for(fact.account_id)
-    equity = ledger_account_service.get_or_create_anchor_equity_account(
-        owner_id, fact.account_id,
-    )
     return {
         linked.id: (delta, posting_kind_id),
-        equity.id: (-delta, posting_kind_id),
+        counter.id: (-delta, posting_kind_id),
     }
 
 
 def _account_anchor_correction_targets(
     corrections: list[AccountAnchorCorrection],
-    owner_id: int,
     calendar: PayCalendar,
+    linked: LedgerAccount,
+    counters: list[LedgerAccount | None],
 ) -> dict[CorrectionKey, LegMap]:
     """Merge an account's corrections into per-(source, period, date) targets.
 
@@ -247,7 +364,6 @@ def _account_anchor_correction_targets(
     Args:
         corrections: The account's corrections from
             :func:`._walk.walk_account_ledger`, chronological.
-        owner_id: The account owner's user id.
         calendar: The owner's whole pay calendar, from
             :func:`app.services._posting_reconcile.filing_calendar_for`.
             :meth:`~app.services.pay_calendar.PayCalendar.filing_period` is the
@@ -255,13 +371,20 @@ def _account_anchor_correction_targets(
             refused, so this carries no precondition of its own -- an earlier
             draft claimed the loader had already checked, which was a second
             statement of one predicate and the two had drifted.
+        linked: The account's LINKED ledger account, resolved once by the
+            reconcile (which needs it anyway to read the posted side).
+        counters: One counter chart row per correction, in the SAME order, from
+            :func:`_counter_ledger_accounts` -- ``None`` where the correction
+            books nothing.  Positional rather than keyed because which row a
+            correction belongs to is a property of its POSITION in the series
+            (the first booking opens the books), not of anything on the row.
 
     Returns:
         ``{(source_kind_id, pay_period_id, entry_date): {ledger_account_id:
         (amount, kind_id)}}``.
     """
     targets: dict[CorrectionKey, LegMap] = {}
-    for correction in corrections:
+    for correction, counter in zip(corrections, counters, strict=True):
         source_enum, _posting_kind = _account_correction_kinds(
             correction.anchor,
         )
@@ -279,13 +402,13 @@ def _account_anchor_correction_targets(
         )
         merge_target_legs(
             targets.setdefault(key, {}),
-            _account_anchor_correction_target(correction, owner_id),
+            _account_anchor_correction_target(correction, linked, counter),
         )
     return targets
 
 
 def reconcile_account_anchor_corrections(
-    account_id: int,
+    account: Account,
     scenario_id: int,
     corrections: list[AccountAnchorCorrection],
 ) -> None:
@@ -305,13 +428,34 @@ def reconcile_account_anchor_corrections(
     changed), or reversing one a matching balance retired.
 
     Idempotent and self-healing: a re-run at the same state writes nothing
-    (every delta is zero).  Touches ONLY the account's own linked and
-    anchor-equity ledgers.  An empty *corrections* list (a missing or
-    history-less account) or an owner that cannot be resolved is a no-op.
-    Flushes but does not commit (the caller owns the transaction).
+    (every delta is zero).  Touches ONLY the account's own linked ledger and
+    the counter rows its own corrections book into.  An empty *corrections*
+    list (a missing or history-less account) or an owner that cannot be
+    resolved is a no-op.  Flushes but does not commit (the caller owns the
+    transaction).
+
+    **This is also what MIGRATES ruling R-FO's re-pointing, with no backfill.**
+    The posted side is read per correction key across EVERY ledger the key
+    touches, so an account whose true-ups are posted against ``anchor_equity``
+    while the dispatch now names ``unrealized_change`` produces exactly one
+    balanced delta per key -- reversing the equity leg, posting the new one --
+    and the linked leg's delta is zero and is dropped.  The deploy runs this
+    for every non-loan account
+    (``account_posting_service.backfill_all_account_anchor_postings``), so the
+    move lands in the same deploy as the migration that seeds the ref rows.
+
+    **It takes the ACCOUNT, not its id**, since ruling R-FO gave the counter
+    leg a dispatch over the account's projection kind: the caller
+    (:func:`._sync.sync_account_anchor_postings`) has already loaded and
+    classified the row to decide whether to sync at all, so taking the id here
+    would re-query it -- and passing the object rather than an ``(id, object)``
+    pair leaves nothing for a caller to mis-pair, which is the argument
+    :func:`app.services._posting_reconcile.filing_calendar_for` makes for
+    handing back the owner WITH the calendar.
 
     Args:
-        account_id: The non-loan account whose corrections to reconcile.
+        account: The non-loan :class:`~app.models.account.Account` whose
+            corrections to reconcile, with ``account_type`` loaded.
         scenario_id: The budget scenario to reconcile within.
         corrections: The account's corrections from
             :func:`._walk.walk_account_ledger`.
@@ -325,8 +469,9 @@ def reconcile_account_anchor_corrections(
             :meth:`~app.services.pay_calendar.PayCalendar.filing_period`, which
             is the ONE place that question is asked (developer ruling
             2026-08-10).  Finding **N-192** is why it fails loud.
-        ValueError: If the anchor-equity resolver rejects the account (see
-            :func:`_account_anchor_correction_target`).
+        ValueError: If the counter dispatch has no rule for the account's
+            projection kind, or its resolver rejects the account (see
+            :func:`_counter_ledger_accounts`).
     """
     if not corrections:
         return
@@ -338,19 +483,22 @@ def reconcile_account_anchor_corrections(
     # ``filing_period`` below is the one place "is there a period to point at"
     # is asked, and a second copy of that test here had already drifted from it
     # (developer ruling 2026-08-10).
-    resolved = filing_calendar_for(account_id)
+    resolved = filing_calendar_for(account.id)
     if resolved is None:
         return
     owner_id, calendar = resolved
-    linked = _ledger_account_for(account_id)
+    linked = _ledger_account_for(account.id)
     emit_correction_deltas(
         owner_id,
         scenario_id,
         target=_account_anchor_correction_targets(
-            corrections, owner_id, calendar,
+            corrections,
+            calendar,
+            linked,
+            _counter_ledger_accounts(owner_id, account, corrections),
         ),
         posted=posted_correction_legs(
-            linked.id,
+            account.id,
             scenario_id,
             [
                 ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_OPENING),

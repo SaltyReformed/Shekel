@@ -7,8 +7,8 @@ scenario):
 
 * :func:`sync_account_anchor_postings` -- one scenario.
 * :func:`sync_account_anchor_postings_all_scenarios` -- the owner's baseline
-  scenario PLUS every scenario holding an entry that posts on the account's
-  linked ledger.  Anchor history lives on the ACCOUNT, not a scenario, so an
+  scenario PLUS every scenario holding an entry that posts on any of the
+  account's chart rows.  Anchor history lives on the ACCOUNT, not a scenario, so an
   account-global event (create, true-up, direct anchor edit) re-bases the
   corrections in every scenario at once -- the cash analogue of the loan
   rule; R8 owns the residual multi-scenario policy.
@@ -54,8 +54,8 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services._posting_reconcile import account_chart_row_ids
 from app.services.cash_ledger import reconciled_through
-from app.services.posting_reads import _ledger_account_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.user_write_lock import lock_every_user_writes, lock_user_writes
 
@@ -100,7 +100,7 @@ def sync_account_anchor_postings(account_id: int, scenario_id: int) -> None:
     (:func:`._anchors.reconcile_account_anchor_corrections`).
 
     Idempotent and self-healing: a re-run at the same state writes nothing.
-    Touches ONLY the account's own linked and anchor-equity ledgers.  A
+    Touches ONLY the account's own chart rows.  A
     missing account or an amortizing loan is a no-op (see
     :func:`_load_non_amortizing_account`).  Flushes but does not commit
     (the caller owns the transaction).
@@ -127,21 +127,31 @@ def sync_account_anchor_postings(account_id: int, scenario_id: int) -> None:
         return
     lock_user_writes(account.user_id)
     reconcile_account_anchor_corrections(
-        account_id, scenario_id, walk_account_ledger(account_id, scenario_id),
+        account, scenario_id, walk_account_ledger(account_id, scenario_id),
     )
 
 
-def _scenarios_with_account_postings(linked_ledger_id: int) -> set[int]:
-    """Return the scenarios holding an entry that posts on one linked ledger.
+def _scenarios_with_account_postings(account_id: int) -> set[int]:
+    """Return the scenarios holding an entry that posts on one account's rows.
 
     The distinct ``scenario_id`` set over the journal entries with a leg on
-    the given linked ledger -- source entries AND already-posted corrections
-    alike, so an account-global change re-bases (or reverses) corrections in
-    every scenario the account's ledger is live in, and a stale correction
-    in a scenario whose sources have all reverted is still revisited.
+    ANY of the account's own chart rows
+    (:func:`app.services._posting_reconcile.account_chart_row_ids`) -- source
+    entries AND already-posted corrections alike, so an account-global change
+    re-bases (or reverses) corrections in every scenario the account's ledger
+    is live in, and a stale correction in a scenario whose sources have all
+    reverted is still revisited.
+
+    **The account's ROWS, not its linked row**, for the reason plan step X-f3d
+    widened the posted-leg reader: since ruling R-FO a correction's delta can
+    move only the COUNTER side, and such an entry carries no linked leg at all.
+    That cannot strand a scenario today -- a counter-only delta implies an
+    original correction with a linked leg in the same scenario -- but the
+    premise is one this package no longer wants to depend on, and widening it
+    can only ADD a scenario, where the sync is idempotent.
 
     Args:
-        linked_ledger_id: The account's LINKED ledger account id.
+        account_id: The real account whose live scenarios to find.
 
     Returns:
         The distinct scenario ids (unordered; the caller sorts).
@@ -149,7 +159,9 @@ def _scenarios_with_account_postings(linked_ledger_id: int) -> set[int]:
     rows = (
         db.session.query(JournalEntry.scenario_id)
         .join(Posting, Posting.journal_entry_id == JournalEntry.id)
-        .filter(Posting.ledger_account_id == linked_ledger_id)
+        .filter(Posting.ledger_account_id.in_(
+            account_chart_row_ids(account_id),
+        ))
         .distinct()
         .all()
     )
@@ -165,8 +177,8 @@ def sync_account_anchor_postings_all_scenarios(account_id: int) -> None:
     scenario the account's ledger is live in.  Loops
     :func:`sync_account_anchor_postings` over the union of:
 
-    * every scenario holding an entry that posts on the account's linked
-      ledger (:func:`_scenarios_with_account_postings`), and
+    * every scenario holding an entry that posts on any of the account's own
+      chart rows (:func:`_scenarios_with_account_postings`), and
     * the owner's BASELINE scenario -- so a fresh account with no posted
       activity still gets its opening posted.  Corrections are per-scenario
       (postings are scenario-scoped); today only the baseline exists, so
@@ -197,9 +209,7 @@ def sync_account_anchor_postings_all_scenarios(account_id: int) -> None:
     if account is None:
         return
     lock_user_writes(account.user_id)
-    scenario_ids = _scenarios_with_account_postings(
-        _ledger_account_for(account_id).id,
-    )
+    scenario_ids = _scenarios_with_account_postings(account_id)
     baseline = get_baseline_scenario(account.user_id)
     if baseline is not None:
         scenario_ids.add(baseline.id)
@@ -344,12 +354,13 @@ def _has_posted_anchor_correction(account_id: int, scenario_id: int) -> bool:
 
     The second half of :func:`self_heal_anchor_corrections`' skip
     precondition: an EXISTS over the account-correction journal entries
-    (``account_opening`` / ``account_trueup``) touching the account's LINKED
-    ledger in *scenario_id*.  The linked ledger is per-account and every
-    anchor correction carries a linked leg, so that join scopes the question
-    exactly -- the same scoping :func:`posted_correction_legs` uses to read
-    the amounts, asked here as a cheaper existence question because the
-    caller only needs to know whether the scenario has been opened at all.
+    (``account_opening`` / ``account_trueup``) touching ANY of the account's
+    own chart rows in *scenario_id* -- the same scoping
+    :func:`app.services._posting_reconcile.posted_correction_legs` uses to read
+    the amounts, through the same helper, asked here as a cheaper existence
+    question because the caller only needs to know whether the scenario has
+    been opened at all.  Sharing the scope is what keeps a SKIP decision from
+    resting on a narrower view of the ledger than the reconcile it guards.
 
     **A ``$0`` opening legitimately posts NOTHING**, so this reads ``False``
     for such an account forever and its settles each pay a walk that writes
@@ -364,12 +375,9 @@ def _has_posted_anchor_correction(account_id: int, scenario_id: int) -> bool:
 
     Returns:
         ``True`` when at least one anchor correction is posted for the
-        account in that scenario; ``False`` when the account has no linked
-        ledger at all (nothing can be posted yet) or none is posted.
+        account in that scenario; ``False`` when the account has no chart rows
+        at all (nothing can be posted yet) or none is posted.
     """
-    linked = _ledger_account_for(account_id)
-    if linked is None:
-        return False
     correction_sources = [
         ref_cache.posting_source_id(source)
         for source in (
@@ -379,7 +387,9 @@ def _has_posted_anchor_correction(account_id: int, scenario_id: int) -> bool:
     ]
     entry_ids = (
         db.session.query(Posting.journal_entry_id)
-        .filter(Posting.ledger_account_id == linked.id)
+        .filter(Posting.ledger_account_id.in_(
+            account_chart_row_ids(account_id),
+        ))
     )
     return db.session.query(
         db.session.query(JournalEntry.id)
@@ -503,7 +513,7 @@ def backfill_all_account_anchor_postings() -> list[int]:
     account already carrying its go-forward corrections is already at target, so
     nothing is re-posted -- the backfill never double-posts, and a re-run at the
     same state writes nothing.  A $0-anchor account books nothing (no entry, no
-    ``anchor_equity`` row), staying hard-deletable.
+    counter row), staying hard-deletable.
 
     Flushes but does NOT commit -- the caller owns the transaction boundary: the
     deploy hook

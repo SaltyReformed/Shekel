@@ -521,12 +521,21 @@ class CompoundingFrequency(db.Model):
 
 
 class LedgerAccountClass(db.Model):
-    """Ledger account class reference: Asset, Liability, Income, Expense, Equity.
+    """Ledger account class reference: the five accounting classes, plus Unrealized.
 
     The five fundamental accounting classes for the double-entry posting
-    ledger (Build-Order Step 2).  Every ``budget.ledger_accounts`` row
-    carries a ``class_id`` FK to one of these rows; the class fixes how a
+    ledger (Build-Order Step 2), and the OTHER COMPREHENSIVE INCOME class
+    ruling **R-FO** added (plan step X-f3d).  Every ``budget.ledger_accounts``
+    row carries a ``class_id`` FK to one of these rows; the class fixes how a
     reader later interprets that account's accumulated posting balance.
+
+    ``Unrealized`` is a sixth ROW and a sixth reporting class, not a sixth
+    fundamental one: an unrealized change in value is still equity on the balance sheet
+    (folded into one derived accumulated line, as Income and Expense are folded
+    into Retained Earnings), and it is separated from Income only so that
+    ``net_income = income - expense`` cannot count a price movement nobody
+    sold into cash.  New reference values are data, never schema -- a class row
+    is added by a migration's inline seed like any other ref row.
 
     ``is_debit_normal`` captures the natural-balance side as a boolean so
     application code branches on a single column instead of comparing
@@ -535,7 +544,7 @@ class LedgerAccountClass(db.Model):
         is_debit_normal -- TRUE for classes whose balance increases on a
                            debit (Asset, Expense); FALSE for classes whose
                            balance increases on a credit (Liability,
-                           Income, Equity).  A reader presents a
+                           Income, Equity, Unrealized).  A reader presents a
                            credit-normal account's natural balance by
                            negating its accumulated debit-positive posting
                            sum.  No ``server_default``: the value is an
@@ -629,8 +638,11 @@ class LedgerAccountKind(db.Model):
     :class:`app.models.ledger_account.LedgerAccount`) plus the three per-loan
     accounts the loan-payment correction books into (``loan_interest`` and
     ``loan_escrow``, both Expense; ``loan_refund``, an Asset).  Later steps
-    INSERT additional kinds (e.g. an opening-balance Equity kind) via their
-    own migrations -- new values are data, never schema.
+    INSERT additional kinds via their own migrations -- new values are data,
+    never schema: the loan read switch's ``equity_opening``, Step 5's
+    ``anchor_equity``, and ruling **R-FO**'s ``interest_income`` /
+    ``unrealized_change`` (plan step X-f3d), which say what a modelled account's
+    balance-assertion true-up actually WAS.
 
     Application code resolves these via ``ref_cache.ledger_account_kind_id``
     and compares against the integer ID -- never the string ``name`` --

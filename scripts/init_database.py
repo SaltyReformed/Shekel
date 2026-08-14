@@ -303,7 +303,9 @@ def backfill_all_account_anchor_postings_after_migration():
     ledger, not a one-line SQL formula, so it cannot be reproduced in raw SQL
     without duplicating that walk.  So it runs HERE, once the chain has reached
     head and every ref row (the ``account_opening`` / ``account_trueup``
-    sources, the ``anchor_equity`` ledger-account kind) exists: it re-uses the
+    sources, and the ``anchor_equity`` / ``interest_income`` /
+    ``unrealized_change`` ledger-account kinds with the ``Unrealized`` class
+    ruling R-FO's dispatch books into) exists: it re-uses the
     ``ref_cache`` this host initialised for the loan backfill above, then
     delegates to the idempotent
     :func:`app.services.account_posting_service.backfill_all_account_anchor_postings`.

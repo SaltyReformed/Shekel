@@ -13,8 +13,9 @@ balance closes app-wide::
 An anchor assertion is a FACT; modeled growth / appreciation / interest
 between assertions is a derivation and is never posted (Option D's
 fact-versus-derivation line).  A true-up whose delta is $0 means the app
-tracked reality perfectly; a non-zero delta is the checking "deliberate
-cheat" made visible as an explicit equity adjustment.
+tracked reality perfectly; a non-zero delta is made visible as an explicit
+correction whose COUNTER leg names what the difference was -- interest income,
+a change in value, or the equity opening (ruling **R-FO**, plan step X-f3d).
 
 ## Package layout
 
@@ -40,10 +41,13 @@ path and the reconcile primitives in
 with the loan package, so the two correction families can never drift on the
 delta math, the correction-entry shape, or the reconcile loop itself).  Ledger
 rows are minted only via
-:func:`app.services.ledger_account_service.get_or_create_anchor_equity_account`,
+:func:`app.services.ledger_account_service.get_or_create_account_counter_account`,
 whose non-loan guard keeps the loan and account correction families on
-disjoint charts.  Flask-isolated: plain data in, plain values out; flushes
-but never commits (the caller owns the transaction boundary).
+disjoint charts, and WHICH counter row a correction books into is ruling
+**R-FO**'s total dispatch over the account's projection kind
+(:func:`app.services.ledger_account_service.anchor_correction_counter_kind`).
+Flask-isolated: plain data in, plain values out; flushes but never commits
+(the caller owns the transaction boundary).
 
 **Write status.**  WIRED as of C6, at seven lifecycle chokepoints: account
 create (``account_service.create_account``), the anchor true-up

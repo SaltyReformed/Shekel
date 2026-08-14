@@ -108,12 +108,20 @@ class TestMigratedAndSeededState:
             }, present
 
     def test_ledger_account_classes_seeded_with_correct_flags(self, app, db):
-        """The five classes are seeded with the correct is_debit_normal.
+        """Every seeded class carries the correct is_debit_normal.
 
-        Asset and Expense are debit-normal; Liability, Income, and Equity
-        are credit-normal.  Read straight from the migrated table so the
-        migration's inline seed is validated independently of the ORM /
-        ref_cache layer.
+        Asset and Expense are debit-normal; Liability, Income, Equity and
+        Unrealized are credit-normal.  Read straight from the migrated table
+        so each migration's inline seed is validated independently of the ORM
+        / ref_cache layer.
+
+        **The assertion stays an EXACT row set where its posting-kind sibling
+        below uses membership**, and the difference is deliberate: a class
+        decides how EVERY account in it is presented (``is_debit_normal`` is
+        what a reader negates by), and there are six of them, so an
+        unannounced seventh is worth failing on.  ``Unrealized`` joined at plan
+        step X-f3d, migration ``e6b4a2d8c713`` (ruling **R-FO**): other
+        comprehensive income, credit-normal because a gain is a credit.
         """
         with app.app_context():
             rows = dict(db.session.execute(text(
@@ -126,6 +134,7 @@ class TestMigratedAndSeededState:
                 "Income": False,
                 "Expense": True,
                 "Equity": False,
+                "Unrealized": False,
             }, rows
 
     def test_posting_kinds_and_sources_seeded(self, app, db):

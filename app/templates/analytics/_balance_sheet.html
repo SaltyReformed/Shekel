@@ -3,10 +3,11 @@
 {# Balance Sheet -- HTMX partial (Build-Order Step 5; S6 / D8 restructure).
    Rendered by analytics.balance_sheet_tab() into #tab-content.
    The posted ledger's position as of a date: Assets, Liabilities, and
-   Equity (with a derived Retained Earnings line) plus a two-part
-   trial-balance tie-out.  This is the posted ledger's statement -- it
-   excludes modeled growth / appreciation / interest between anchor
-   true-ups (that projection is Net Worth's job).
+   Equity (with its derived Retained Earnings line and, when the owner has
+   one, its derived Accumulated Change in Value line -- ruling R-FO)
+   plus a two-part trial-balance tie-out.  This is the posted ledger's
+   statement -- it excludes modeled growth / appreciation / interest between
+   anchor true-ups (that projection is Net Worth's job).
 
    D8 hierarchy: the sheet's totals lead as the band -- Total Assets is
    the hero, with Liabilities / Equity / trial-balance chips beside it --
@@ -32,11 +33,13 @@
          hx-indicator="#tab-spinner">
 </div>
 
-{# ``has_content`` drops the always-present derived Retained Earnings line
-   (the only line whose ``ledger_account_id`` is None) so a no-baseline user
-   -- whose sole equity line is a $0.00 Retained Earnings -- renders the empty
-   state rather than an all-zero sheet.  ``rejectattr(..., 'none')`` states the
-   intent exactly (drop the id-less derived line), not "drop falsy ids". #}
+{# ``has_content`` drops the DERIVED equity lines (the only lines whose
+   ``ledger_account_id`` is None -- Retained Earnings always, Accumulated
+   Change in Value when non-zero) so a no-baseline user -- whose sole
+   equity line is a $0.00 Retained Earnings -- renders the empty state rather
+   than an all-zero sheet.  ``rejectattr(..., 'none')`` states the intent
+   exactly (drop the id-less derived lines), not "drop falsy ids", which is
+   why ruling R-FO's second derived line needed no edit here. #}
 {% set posted_equity = report.equity.lines | rejectattr('ledger_account_id', 'none') | list %}
 {% set has_content = report.assets.lines or report.liabilities.lines or posted_equity %}
 
@@ -70,7 +73,17 @@
       <div class="pulse-chip">
         <div class="pulse-chip__label">Equity</div>
         <div class="pulse-chip__value font-mono{% if report.equity.total < 0 %} statement-amount--neg{% endif %}">{{ money(report.equity.total) }}</div>
-        <div class="calendar-chip-cap">incl. retained earnings</div>
+        {# Both derived closing lines named, because both are IN this figure
+           and neither is a posted account (ruling R-FO).  The value-change
+           half is only mentioned when the owner has one -- the service
+           drops that line at zero. #}
+        <div class="calendar-chip-cap">
+          {% if report.equity.lines | selectattr('ledger_account_id', 'none') | list | length > 1 %}
+          incl. retained earnings &amp; value change
+          {% else %}
+          incl. retained earnings
+          {% endif %}
+        </div>
       </div>
       {% if report.tie_out.in_balance %}
       <div class="pulse-chip pulse-chip--done">

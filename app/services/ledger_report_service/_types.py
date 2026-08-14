@@ -8,10 +8,11 @@ lives here.
 
 Every monetary field is presented in NATURAL-BALANCE terms (the reader-contract
 C-4 rule): a debit-normal class (Asset, Expense) carries its debit-positive
-posting sum as-is; a credit-normal class (Liability, Income, Equity) carries the
-NEGATED sum, so a revenue line, a liability line, and an equity line all read
-positive when the account holds its natural balance.  The signing is done once,
-in the readers; consumers of these dataclasses read the already-natural value.
+posting sum as-is; a credit-normal class (Liability, Income, Equity,
+Unrealized) carries the NEGATED sum, so a revenue line, a liability line, an
+equity line and an unrealized-change line all read positive when the account
+holds its natural balance.  The signing is done once, in the readers; consumers
+of these dataclasses read the already-natural value.
 """
 
 from dataclasses import dataclass
@@ -139,17 +140,30 @@ class IncomeStatementReport:
     land on linked Asset/Liability accounts, which are not Income or Expense),
     so this is a pure operating statement.
 
+    **``unrealized`` sits BELOW that line and is deliberately not in it**
+    (ruling **R-FO**): a price movement nobody sold into cash is other
+    comprehensive income, so counting it as revenue would let a ``$40,000``
+    house revaluation read as ``$40,000`` earned.  ``comprehensive_income`` is
+    the two figures added -- what the owner's position actually did over the
+    window -- and it is stated rather than left to the reader because the
+    alternative is a statement that shows two numbers and no relationship
+    between them.
+
     Attributes:
         window_label: The human label of the window (e.g. ``"January 2026"``).
         income: The Income section, natural (positive = revenue).
         expense: The Expense section, natural (positive = cost).
         net_income: ``income.total - expense.total``.
+        unrealized: The Unrealized section, natural (positive = gain).
+        comprehensive_income: ``net_income + unrealized.total``.
     """
 
     window_label: str
     income: StatementSection
     expense: StatementSection
     net_income: Decimal
+    unrealized: StatementSection
+    comprehensive_income: Decimal
 
 
 @dataclass(frozen=True)
@@ -169,8 +183,13 @@ class BalanceSheetReport:
         as_of: The evaluation date; nets attributed on or before it are folded.
         assets: The Asset section, natural (positive = held).
         liabilities: The Liability section, natural.
-        equity: The Equity section (including the derived retained-earnings
-            line), natural.
+        equity: The Equity section, natural.  It carries TWO derived closing
+            lines, both computed and never posted: retained earnings (Income +
+            Expense) and accumulated change in value (the Unrealized
+            class, ruling **R-FO**).  The second is what keeps the tie-out
+            closed once a class exists outside the original five -- an
+            change in value is still equity on the balance sheet, however it is
+            reported on the income statement.
         tie_out: The two-part :class:`TrialBalanceTieOut`.
     """
 
