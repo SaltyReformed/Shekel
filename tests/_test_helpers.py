@@ -4359,3 +4359,274 @@ def seed_tax_bracket_set(user_id, tax_year=2026):
     db.session.add_all(brackets)
     db.session.flush()
     return bracket_set
+
+
+# ── Recurrence cadence payloads (plan step R7b-2) ─────────────────
+#
+# The two AXES a recurrence form authors, in one place.  Before R7b-2 a test
+# wrote ``{"recurrence_pattern": str(monthly.id)}`` and every suite carried its
+# own spelling of that; the form now states a unit, an interval and a
+# placement, and plan step R7c changes the wire shape again when the authored
+# columns land.  One producer is one edit then -- and it is also what stops a
+# test authoring a cadence the application cannot store, because it states the
+# axes and lets the encoder choose the pattern, exactly as the form does.
+#
+# TWO shapes, because the cadence crosses two boundaries and looks different at
+# each.  A BROWSER posts ``ref`` ids spelled as strings; the Marshmallow field
+# (``_helpers.RecurrenceUnitField`` / ``PeriodPlacementField``) deserializes
+# each to its enum MEMBER, and that is what the route helpers in
+# ``app.routes._recurrence_form_helpers`` receive.  A test that drives a route
+# through the client wants the first; one that calls a helper directly wants
+# the second, and handing it strings would test a payload no schema produces.
+# :func:`cadence_payload` is built from :func:`validated_cadence` so the key
+# names and the defaults are stated once for both.
+
+
+def validated_cadence(unit=None, interval_n=1, placement=None):
+    """Return one cadence as a SCHEMA hands it to a route helper.
+
+    The post-``load()`` shape: enum members and a real ``int``, which is what
+    :func:`app.routes._recurrence_form_helpers.build_recurrence_rule_from_form`
+    and its siblings read.
+
+    Args:
+        unit: A :class:`~app.enums.RecurrenceUnitEnum` member.  Defaults to
+            ``PERIOD``, the every-paycheck cadence most fixtures want.
+        interval_n: How many units pass between occurrences.
+        placement: A :class:`~app.enums.PeriodPlacementEnum` member.  Defaults
+            to ``CONTAINING_DATE``, the placement every unit offers.
+
+    Returns:
+        A dict of deserialized payload values, ready to splat into the ``data``
+        a helper is called with.
+    """
+    # Imported inside the function rather than at module scope: this helpers
+    # module is imported by tests that run before the Flask app, and therefore
+    # the ref cache, exists.
+    # Pylint: ``import-outside-toplevel`` is the point, not an oversight.
+    from app.enums import (  # pylint: disable=import-outside-toplevel
+        PeriodPlacementEnum,
+        RecurrenceUnitEnum,
+    )
+
+    return {
+        "recurrence_unit": (
+            unit if unit is not None else RecurrenceUnitEnum.PERIOD
+        ),
+        "interval_n": interval_n,
+        "recurrence_placement": (
+            placement if placement is not None
+            else PeriodPlacementEnum.CONTAINING_DATE
+        ),
+    }
+
+
+def end_bound_payload(bound=None):
+    """Return the form keys that state one closing bound, as a BROWSER posts them.
+
+    The bound half of :func:`cadence_payload`, for plan step R7b-3's "Ends"
+    control.  The control is a mode ``<select>`` and two value inputs of which
+    exactly one is ever ENABLED, so a real submission carries the mode plus at
+    most one value -- and that is what this produces.  A helper that always
+    sent both would exercise a payload the form cannot make.
+
+    Args:
+        bound: An :class:`~app.services.recurrence.EndBound`.  Defaults to the
+            unbounded shape, which is what a create form starts on.
+
+    Returns:
+        A dict of form values -- strings, as an HTML form submits them.
+    """
+    # Pylint: ``import-outside-toplevel`` -- see :func:`validated_cadence`.
+    from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
+        NEVER_ENDS,
+    )
+
+    stated = NEVER_ENDS if bound is None else bound
+    payload = {"recurrence_end_mode": stated.token}
+    if stated.end_date is not None:
+        payload["end_date"] = stated.end_date.isoformat()
+    if stated.max_occurrences is not None:
+        payload["max_occurrences"] = str(stated.max_occurrences)
+    return payload
+
+
+def cadence_payload(unit=None, interval_n=1, placement=None):
+    """Return the form keys that author one cadence, as a BROWSER posts them.
+
+    :func:`validated_cadence`'s wire form: each enum member resolved to its
+    ``ref`` row id, every value a string.  Derived from that function rather
+    than written beside it, so the key names and the defaults have one
+    statement and plan step R7c moves both together.
+
+    Args:
+        unit: A :class:`~app.enums.RecurrenceUnitEnum` member.  Defaults to
+            ``PERIOD``.
+        interval_n: How many units pass between occurrences.
+        placement: A :class:`~app.enums.PeriodPlacementEnum` member.  Defaults
+            to ``CONTAINING_DATE``.
+
+    Returns:
+        A dict of form values -- strings, as an HTML form submits them -- ready
+        to splat into a POST payload.
+    """
+    # Pylint: ``import-outside-toplevel`` -- see :func:`validated_cadence`.
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+
+    loaded = validated_cadence(unit, interval_n, placement)
+    return {
+        "recurrence_unit": str(
+            ref_cache.recurrence_unit_id(loaded["recurrence_unit"]),
+        ),
+        "interval_n": str(loaded["interval_n"]),
+        "recurrence_placement": str(
+            ref_cache.period_placement_id(loaded["recurrence_placement"]),
+        ),
+    }
+
+
+def derived_window(paydays, cadence_days):
+    """Return a :class:`PeriodWindow` over *paydays*, derived rather than built.
+
+    The PURE test-side door onto the pay calendar, added at plan step **C2-e**,
+    when ``growth_engine`` stopped accepting a hand-built list of period-shaped
+    objects.  :func:`period_window` above is its database-backed sibling: use
+    that one when the test has real ``budget.pay_periods`` rows, and this one
+    for the unit tests that have no database at all.
+
+    **It derives; it does not assemble.**  The window comes out of a real
+    :class:`~app.services.pay_calendar.PayCalendar`, so its ends are the ones
+    the derivation computes (each period ends the day before the next payday,
+    and the last ends ``payday + cadence_days - 1``), its ordinals run in
+    payday order, and its periods TILE.  A test therefore cannot hand the
+    growth engine a shape production could not produce -- a gap between two
+    periods, an ordinal out of date order, an end below its own start -- which
+    is the whole reason the engine's parameter is a window rather than a list.
+
+    Args:
+        paydays: The paydays opening each period, in any order.  A test that
+            wants a plain biweekly run passes ``[d, d + 14, d + 28, ...]``.
+        cadence_days: Days between paydays, 1..365.  It sets the LAST period's
+            end and nothing else, so a run of evenly spaced paydays should
+            pass its own spacing.
+
+    Returns:
+        The :class:`~app.services.pay_calendar.PeriodWindow` over every derived
+        period, ``start_date`` ascending.
+
+    Raises:
+        PayCalendarError: Anything the derivation refuses -- a duplicate
+            payday, a cadence outside 1..365, a payday that is not a plain
+            ``date``.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PayCalendar,
+        PeriodWindow,
+    )
+
+    calendar = PayCalendar.from_paydays(
+        [
+            (index + 1, payday)
+            for index, payday in enumerate(sorted(paydays))
+        ],
+        cadence_days,
+        user_id=1,
+    )
+    return PeriodWindow(periods=calendar.periods)
+
+
+def biweekly_window(first_payday, count):
+    """Return a :class:`PeriodWindow` of *count* 14-day periods from *first_payday*.
+
+    The shorthand for the commonest shape in the unit tests -- an evenly
+    spaced biweekly run -- over :func:`derived_window`, which it defers every
+    guarantee to.
+
+    Args:
+        first_payday: The payday opening the first period.
+        count: How many periods to derive.
+
+    Returns:
+        The :class:`~app.services.pay_calendar.PeriodWindow`.
+    """
+    from datetime import timedelta  # pylint: disable=import-outside-toplevel
+
+    return derived_window(
+        [first_payday + timedelta(days=14 * step) for step in range(count)],
+        14,
+    )
+
+
+def window_head(window, count):
+    """Return the first *count* periods of *window* as a window of their own.
+
+    The test-side stand-in for slicing, which
+    :meth:`~app.services.pay_calendar.PeriodWindow.__getitem__` REFUSES (plan
+    step C2-e): no consumer in ``app/`` slices a window, and the branch that
+    once allowed it returned ``window[::-1]`` silently re-sorted into payday
+    order rather than reversed.  A leading run of a tiling tiles, so this
+    cannot build a window the type would refuse -- the constructor still
+    checks.
+
+    Args:
+        window: The :class:`~app.services.pay_calendar.PeriodWindow` to take
+            from.
+        count: How many periods to keep, from the window's own start.
+
+    Returns:
+        The leading :class:`~app.services.pay_calendar.PeriodWindow`.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PeriodWindow,
+    )
+
+    return PeriodWindow(periods=window.periods[:count])
+
+
+def period_window(periods):
+    """Return the :class:`PeriodWindow` the seam reports over for *periods*.
+
+    The test-side door onto the pay calendar, added at plan step **C2-c**,
+    when the balance seam stopped taking a list of ORM ``PayPeriod`` rows and
+    started reading its reporting domain off the pay calendar
+    (``app.services.balance_at.BalanceContext.reported_periods``).  A handful
+    of seam producers still take a window explicitly -- the ones that take a
+    ``scenario_id`` and an ``as_of`` rather than a context -- and this is how a
+    test names the SUBSET of an owner's schedule it wants those to report.
+
+    It derives the owner's whole calendar and then selects the requested
+    periods out of it, rather than building period bounds from the ORM rows:
+    a window carries the ends the WHOLE calendar computed, which is the
+    property ledger row **P14** is about, and taking the ends off the stored
+    columns here would let a test pass against bounds production no longer
+    reads.
+
+    Args:
+        periods: The ``PayPeriod`` rows to report, in any order and all
+            belonging to one user.  Must be non-empty -- an empty request has
+            no owner to resolve a calendar for, and the seam entries take
+            ``PeriodWindow(periods=())`` directly for that case.
+
+    Returns:
+        The :class:`~app.services.pay_calendar.PeriodWindow` over exactly those
+        periods.
+
+    Raises:
+        PayCalendarError: The requested periods do not form an unbroken span,
+            which the window type refuses (plan finding **P32**).  That is a
+            real answer, not a helper limitation: a gapped column set renders
+            a balance row that does not add up.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PeriodWindow,
+        calendar_for,
+    )
+
+    wanted = {period.id for period in periods}
+    calendar = calendar_for(next(iter(periods)).user_id)
+    return PeriodWindow(
+        periods=tuple(
+            period for period in calendar.saved()
+            if period.period_id in wanted
+        ),
+    )

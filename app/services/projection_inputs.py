@@ -38,10 +38,14 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.cash_ledger import contributions_by_id
 from app.services.investment_projection import (
     InvestmentInputs,
+    PricedContribution,
+    ShadowContributions,
     calculate_investment_inputs,
 )
+from app.utils.balance_predicates import status_contributes_to_balance
 
 logger = logging.getLogger(__name__)
 
@@ -255,42 +259,73 @@ def load_investment_params_for_accounts(
 
 
 def load_shadow_income_contributions_for_accounts(
+    user_id: int, scenario_id: int,
     account_ids: list[int], period_ids: list[int],
-    *,
-    eager_status: bool = False,
-) -> list[Transaction]:
-    """Return shadow-income contribution transactions across many accounts.
+) -> ShadowContributions:
+    """Return PRICED shadow-income contributions across many accounts.
 
     Batch variant used by services that classify many accounts in one
-    pass.  Returned rows carry their original ``account_id`` so callers
+    pass.  Returned records carry their original ``account_id`` so callers
     can group / partition downstream.  Returns an empty list when
     either ``account_ids`` or ``period_ids`` is empty so callers do
     not issue ``IN ()`` queries against PostgreSQL.
 
+    **This is the BOUNDARY where a contribution is valued** (plan step
+    X-au-c2, a developer ruling of 2026-08-12).  It used to return ORM rows and
+    four readers in :mod:`app.services.investment_projection` each asked them
+    for ``effective_amount`` behind its own copy of the
+    ``status_contributes_to_balance`` screen.  That property cannot answer for
+    a row whose amount is DERIVED -- such a row stores no figure -- and a module
+    whose docstring promises no database access can never resolve one.  So the
+    resolution happens HERE, where the session is: ONE
+    :func:`~app.services.cash_ledger.contributions_by_id` call over the whole
+    cross-account row set, which is also one paycheck-engine run rather than
+    one per account (finding **N-228**, and what re-keying the basis on the
+    OWNER rather than an ``Account`` bought).
+
+    **Rows that contribute nothing are DROPPED rather than priced at zero.**
+    :func:`~app.services.investment_projection._average_transfer_contribution`
+    divides by the number of distinct pay periods it sees, so a Cancelled
+    contribution carried through as ``$0.00`` would enlarge that denominator and
+    silently lower the average.  The screen is applied before the pricing for
+    the same reason the valuation gates before it resolves: an excluded row has
+    no derived answer to give.
+
+    The ``eager_status`` switch is gone with them.  It defaulted to ``False``
+    while every consumer needed the status, so the retirement chain lazy-loaded
+    it per row; the status is now read exactly once here, under a ``joinedload``
+    that is no longer optional.
+
     Args:
+        user_id: The owner of the accounts; scopes the salary producer behind
+            the amount basis.
+        scenario_id: The scenario the amounts resolve under.
         account_ids: Investment / retirement account ids to scope to.
         period_ids: Pay-period ids to scope the contribution window
             against.
-        eager_status: When ``True``, eager-load ``Transaction.status``
-            via ``joinedload`` so per-row settlement / exclusion
-            predicates do not N+1.  Defaults to ``False`` to match
-            the retirement consumer's pre-Commit-18 shape; callers
-            that hand the rows to :func:`calculate_investment_inputs`
-            should pass ``True``.
 
     Returns:
-        A flat list of :class:`Transaction` rows.  Callers partition
-        by ``account_id`` themselves (typical: a list comprehension
-        inside a per-account projection loop).
+        A :class:`~app.services.investment_projection.ShadowContributions` --
+        the priced ``records`` (callers partition by ``account_id``
+        themselves, typically a comprehension inside a per-account loop) and
+        the ``linked_account_ids`` of every account that had a contribution
+        shadow WHATEVER its status.  The second field is not decoration: an
+        adversarial review found that screening the records alone flipped
+        ``retirement_projection``'s ``none_linked`` for an account whose
+        contributions were all Cancelled, telling the owner to link a
+        contribution that already exists.
+
+    Raises:
+        AmountUnresolvable: From the amount model, for a contribution whose
+            rule cannot price it.  A refusal is never a fallback.
     """
     if not account_ids or not period_ids:
-        return []
+        return ShadowContributions(records=[], linked_account_ids=frozenset())
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    query = db.session.query(Transaction)
-    if eager_status:
-        query = query.options(joinedload(Transaction.status))
-    return (
-        query.filter(
+    rows = (
+        db.session.query(Transaction)
+        .options(joinedload(Transaction.status))
+        .filter(
             Transaction.account_id.in_(account_ids),
             Transaction.transfer_id.isnot(None),
             Transaction.transaction_type_id == income_type_id,
@@ -299,12 +334,31 @@ def load_shadow_income_contributions_for_accounts(
         )
         .all()
     )
+    counted = [row for row in rows if status_contributes_to_balance(row)]
+    amounts = contributions_by_id(user_id, scenario_id, counted)
+    return ShadowContributions(
+        records=[
+            PricedContribution(
+                account_id=row.account_id,
+                pay_period_id=row.pay_period_id,
+                amount=amounts[row.id],
+                is_confirmed=row.status.is_settled,
+            )
+            for row in counted
+        ],
+        # Taken from the UNSCREENED rows: a Cancelled contribution counts
+        # nothing but is still a LINK, and the consumer asking whether an
+        # account has one is asking a different question from the consumers
+        # that sum amounts.
+        linked_account_ids=frozenset(row.account_id for row in rows),
+    )
 
 
 def load_shadow_income_contributions_for_account(
+    user_id: int, scenario_id: int,
     account_id: int, period_ids: list[int],
-) -> list[Transaction]:
-    """Return shadow-income contribution transactions into a single account.
+) -> ShadowContributions:
+    """Return PRICED shadow-income contributions into a single account.
 
     Used by the investment-detail dashboard.  Filters to
     transfer-shadow income rows in the supplied period window so
@@ -314,17 +368,18 @@ def load_shadow_income_contributions_for_account(
     not issue an ``IN ()`` query against PostgreSQL.
 
     Args:
+        user_id: The account's owner; scopes the amount basis.
+        scenario_id: The scenario the amounts resolve under.
         account_id: ID of the investment / retirement account.
         period_ids: Pay-period ids to scope the contribution window
             against.
 
     Returns:
-        A list of :class:`Transaction` rows with ``status`` eagerly
-        loaded so the per-transaction settlement check inside
-        :func:`calculate_investment_inputs` does not N+1.
+        A list of :class:`~app.services.investment_projection.PricedContribution`
+        records (see the batch variant for what pricing at this boundary buys).
     """
     return load_shadow_income_contributions_for_accounts(
-        [account_id], period_ids, eager_status=True,
+        user_id, scenario_id, [account_id], period_ids,
     )
 
 
@@ -372,8 +427,9 @@ def build_investment_projection_inputs(  # pylint: disable=too-many-arguments,to
         deductions: List of adapted deduction objects
             (:class:`~app.services.investment_projection.AdaptedDeduction`
             or equivalent), already filtered to this account.
-        contributions: List of shadow-income :class:`Transaction`
-            rows already filtered to this account.
+        contributions: List of
+            :class:`~app.services.investment_projection.PricedContribution`
+            records already filtered to this account.
         all_periods: All pay periods for the user.
         current_period: The current :class:`PayPeriod`, or ``None``.
         salary_gross_biweekly: Raise-aware engine gross per pay period

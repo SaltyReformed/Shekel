@@ -26,6 +26,7 @@ from decimal import Decimal
 
 from app.models.transaction import Transaction
 from app.services.rate_period_engine import RatePeriod, period_for_date
+from app.services.row_valuation import owned_contribution
 from app.utils.money import accrue_monthly_interest
 
 _ZERO_MONEY = Decimal("0.00")
@@ -141,8 +142,9 @@ class LoanPaymentSplit:
     Attributes:
         income_shadow: The settled loan-side income :class:`Transaction` (the
             ``to``-account leg of the payment transfer).  Its
-            ``effective_amount`` is the cash ``principal`` falls out of; its
-            ``transaction_id`` keys the correction.
+            :func:`~app.services.row_valuation.owned_contribution` is the cash
+            ``principal`` falls out of; its ``transaction_id`` keys the
+            correction.
         interest: Accrued interest, ``round_money(balance_before * rate / 12)``
             on the REAL running balance -- an Expense leg (``>= 0``).
         escrow: The configured monthly escrow at payment time, NO inflation (the
@@ -222,7 +224,15 @@ def split_one_payment(
     keys on the settled date (:func:`app.services.loan_ledger.payment_visible_on`).
 
     Args:
-        shadow: The settled loan-side income shadow (supplies ``effective_amount``).
+        shadow: The settled loan-side income shadow.  Its cash is read through
+            :func:`~app.services.row_valuation.owned_contribution` -- the accessor
+            whose NAME asserts the row owns its figure -- rather than a resolver,
+            because the walk that produces it loads
+            :func:`app.services.loan_loaders.settled_income_shadows`, which
+            filters ``status_id.in_(settled_status_ids())``.  Every row here has
+            therefore been through the settle freeze (plan step X-au-c3) and
+            stores its own amount; a derived one would REFUSE rather than being
+            priced from a column it does not carry.
         balance: The outstanding balance before this payment.
         periods: The loan's rate periods (from
             :func:`app.services.loan_resolver.resolve_periods`); the governing
@@ -242,7 +252,7 @@ def split_one_payment(
     """
     period = period_for_date(periods, due_date)
     parts = split_payment_cash(
-        shadow.effective_amount, balance, period.annual_rate, monthly_escrow,
+        owned_contribution(shadow), balance, period.annual_rate, monthly_escrow,
     )
     split = LoanPaymentSplit(
         income_shadow=shadow,

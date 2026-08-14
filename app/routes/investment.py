@@ -20,7 +20,7 @@ from flask import Blueprint, Response, abort, flash, redirect, render_template, 
 from flask_login import current_user, login_required
 
 from app import ref_cache
-from app.enums import EmployerContributionTypeEnum, RecurrencePatternEnum
+from app.enums import EmployerContributionTypeEnum, RecurrenceUnitEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
@@ -260,11 +260,10 @@ def create_contribution_transfer(account_id):
             transfer_amount = _DEFAULT_SUGGESTED_AMOUNT
 
     # Create every-period recurrence rule (one occurrence per paycheck).
-    every_period_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.EVERY_PERIOD,
-    )
     rule = author_rule(
-        RecurrenceSpec(user_id=current_user.id, pattern_id=every_period_id),
+        RecurrenceSpec(
+            user_id=current_user.id, unit=RecurrenceUnitEnum.PERIOD,
+        ),
         calendar,
     )
 

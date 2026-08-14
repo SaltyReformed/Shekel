@@ -7,7 +7,6 @@ actual amounts plus a status workflow.
 """
 
 from datetime import date, datetime
-from decimal import Decimal
 
 from sqlalchemy.orm import validates
 
@@ -210,6 +209,55 @@ class Transaction(
             "actual_amount IS NULL OR actual_amount >= 0",
             name="ck_transactions_actual_amount",
         ),
+        # THE AMOUNT MODEL'S ONE CONSTRAINT (ruling **R-FI**, plan step
+        # X-au-c1): a row's amount is either its OWN or it is DERIVED, and a
+        # derived amount is not stored at all.  ``amount_source_id`` names the
+        # relation that prices a derived row and is NULL when the row owns its
+        # figure, so the two states pair exactly one-to-one with the presence of
+        # a figure -- which makes a stale derived amount UNREPRESENTABLE rather
+        # than merely unlikely.
+        #
+        # **It bites on the WRITE side, and that is the half prose could not
+        # buy.**  Every one of the five private repair mechanisms R-FI names
+        # writes the amount column ALONE -- ``regenerate_for_template``'s amount
+        # arm, ``entry_credit_workflow.sync_entry_payback``'s unconditional
+        # rewrite, ``transfer_service``'s copy and its drift corrector,
+        # ``income_service``'s read-time repair that writes nothing back -- so a
+        # writer that sets a figure on a derived row without saying the row now
+        # owns it is an ``IntegrityError`` at flush instead of a number nobody
+        # can date.  A reader that skips the resolver gets ``None`` rather than a
+        # plausible wrong figure; a writer that skips the model gets refused.
+        #
+        # **Written as two NULL tests rather than against a source VALUE**, so no
+        # ``ref.amount_sources`` id is frozen into the schema: the OWN state is
+        # the ABSENCE of a source (``app.enums.AmountSourceEnum`` states why),
+        # and a constraint cannot join to a ref table to learn which id means
+        # what.  ``ck_transactions_estimated_amount`` (``>= 0``) is UNCHANGED and
+        # still admits the NULL -- a comparison with NULL is UNKNOWN, which a
+        # CHECK passes -- so this constraint is the only thing deciding when the
+        # column may be empty.
+        db.CheckConstraint(
+            "(amount_source_id IS NULL) = (estimated_amount IS NOT NULL)",
+            name="ck_transactions_amount_ownership",
+        ),
+        # A row is priced through AT MOST ONE relation, so the source names an
+        # unambiguous one.  The balance README states this exclusivity as a
+        # CONVENTION with nothing enforcing it ("``template_id`` and
+        # ``transfer_id`` are mutually exclusive across every row -- by
+        # CONVENTION, with no constraint enforcing it"); ``credit_payback_for_id``
+        # is the third link and carries the same convention.  Measured before it
+        # was imposed: 0 of 997 rows on the 2026-08-12 production clone set two
+        # of the three (606 template, 342 transfer, 21 payback, 28 with none).
+        #
+        # It is the amount model's own precondition rather than tidiness: a
+        # derived row's source names a relation, and a row holding two links has
+        # two candidate answers with only dispatch ORDER to separate them.
+        db.CheckConstraint(
+            "(template_id IS NOT NULL)::int "
+            "+ (transfer_id IS NOT NULL)::int "
+            "+ (credit_payback_for_id IS NOT NULL)::int <= 1",
+            name="ck_transactions_one_pricing_link",
+        ),
         db.CheckConstraint(
             "version_id > 0",
             name="ck_transactions_version_id_positive",
@@ -248,8 +296,31 @@ class Transaction(
         db.Integer, db.ForeignKey("ref.transaction_types.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    estimated_amount = db.Column(db.Numeric(12, 2), nullable=False)
+    # The row's OWN amount, and NULLABLE since plan step X-au-c1: a row whose
+    # amount is DERIVED does not store one at all (ruling **R-FI**).  NULL here
+    # means "ask ``cash_ledger.resolve_transaction_amount``", and it is
+    # structurally paired with ``amount_source_id`` by
+    # ``ck_transactions_amount_ownership`` above -- neither column can be set
+    # without the other saying so.  No production row is NULL as of this step;
+    # the per-kind cutovers (plan steps X-au-d through X-au-i) are what empty it.
+    estimated_amount = db.Column(db.Numeric(12, 2))
     actual_amount = db.Column(db.Numeric(12, 2))
+    # WHICH RELATION prices this row, or NULL when the row owns its own figure
+    # (ruling **R-FI**, plan step X-au-c1).  RESTRICT rather than SET NULL: a
+    # ``ref.amount_sources`` row disappearing under a derived transaction would
+    # silently convert it into a row claiming to own an amount it does not have,
+    # which is the state ``ck_transactions_amount_ownership`` exists to forbid --
+    # so the ref DELETE is refused instead.  Resolved through
+    # ``ref_cache.amount_source_id``; the OWN state is a NULL test on this column
+    # and needs no cache read.
+    amount_source_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.amount_sources.id",
+            name="fk_transactions_amount_source_id",
+            ondelete="RESTRICT",
+        ),
+    )
     # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     transfer_id = db.Column(
         db.Integer,
@@ -344,32 +415,6 @@ class Transaction(
         # envelope", which is a budget-clock question.
         order_by="TransactionEntry.purchased_on",
     )
-
-    @property
-    def effective_amount(self):
-        """Return the amount used in balance calculations.
-
-        Priority order:
-          1. is_deleted -> Decimal("0") (soft-deleted transactions contribute nothing)
-          2. excludes_from_balance (Credit, Cancelled) -> Decimal("0")
-          3. actual_amount if populated -> actual_amount
-          4. fallback -> estimated_amount
-
-        This property is the single source of truth for what amount a
-        transaction contributes to balance projections, grid subtotals,
-        and any other calculation context.  All active statuses (Projected,
-        Paid, Received, etc.) prefer actual_amount when populated, ensuring
-        that balance projections reflect reality as soon as the user enters
-        a known actual on a still-projected transaction.
-        """
-        if self.is_deleted:
-            return Decimal("0")
-        if self.status and self.status.excludes_from_balance:
-            return Decimal("0")
-        # Use `is not None` -- NOT truthiness.  actual_amount=Decimal("0")
-        # is a valid value (e.g., a waived fee) and must return 0, not
-        # fall back to estimated_amount.
-        return self.actual_amount if self.actual_amount is not None else self.estimated_amount
 
     @property
     def is_income(self):

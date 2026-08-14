@@ -18,6 +18,7 @@ from app.services.balance_at._asset_contributions import (
     ContributionInputs,
 )
 from tests._test_helpers import (
+    period_window,
     restamp_opening_assertion,
     settle_instant_on,
 )
@@ -114,7 +115,7 @@ class TestAppreciationBalanceMap:
                 Decimal("400000.00"), rate=Decimal("0.03000"),
             )
             balances = net_worth_kernel.build_account_balance_map(
-                acct, BalanceContext.build(seed_user["user"].id), all_periods,
+                acct, BalanceContext.build(seed_user["user"].id),
                 ContributionInputs.absent(),
             )
 
@@ -143,11 +144,11 @@ class TestAppreciationBalanceMap:
             # across the three real investment accounts.  Equality here would
             # be asserting the replay IS the producer it replaced.)
             expected = {
-                pb.period_id: pb.end_balance
+                pb.period.period_id: pb.end_balance
                 for pb in growth_engine.project_balance(
                     current_balance=balances[anchor.id],
                     assumed_annual_return=Decimal("0.03000"),
-                    periods=post,
+                    periods=period_window(post),
                 )
             }
             for period in post:
@@ -166,7 +167,7 @@ class TestAppreciationBalanceMap:
                 Decimal("400000.00"), rate=Decimal("0.00000"),
             )
             balances = net_worth_kernel.build_account_balance_map(
-                acct, BalanceContext.build(seed_user["user"].id), all_periods,
+                acct, BalanceContext.build(seed_user["user"].id),
                 ContributionInputs.absent(),
             )
             # rate 0 -> no growth; every period equals the anchor value.
@@ -188,7 +189,7 @@ class TestAppreciationBalanceMap:
                 Decimal("400000.00"), rate=None,  # no params row
             )
             balances = net_worth_kernel.build_account_balance_map(
-                acct, BalanceContext.build(seed_user["user"].id), all_periods,
+                acct, BalanceContext.build(seed_user["user"].id),
                 ContributionInputs.absent(),
             )
             for period in all_periods:
@@ -236,7 +237,6 @@ class TestSavingsDashboardProjection:
             )
             modeled_map = net_worth_kernel.build_account_balance_map(
                 acct, BalanceContext.build(seed_user["user"].id),
-                seed_periods_today,
                 ContributionInputs.absent(),
             )
             assert entry.current_balance == modeled_map[current_period.id]

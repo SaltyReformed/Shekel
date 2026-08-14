@@ -26,7 +26,6 @@ Run it against a clone, never against production::
 from __future__ import annotations
 
 import sys
-from decimal import Decimal
 
 from app import create_app
 from app.extensions import db
@@ -112,11 +111,9 @@ def _apply(rule, entries, observed_by_account, instant_by_account):
     return changed
 
 
-def _columns(account, user_id, periods):
+def _columns(account, user_id):
     """Return ``{period_id: balance}`` from the grid's own producer."""
-    view = grid_balance_view(
-        account, BalanceContext.build(user_id), periods,
-    )
+    view = grid_balance_view(account, BalanceContext.build(user_id))
     return {pid: col.balance for pid, col in view.columns.items()}
 
 
@@ -162,7 +159,7 @@ def main():
             changed = _apply(
                 rule, entries, observed_by_account, instant_by_account,
             )
-            results[rule] = (_columns(account, user_id, periods), changed)
+            results[rule] = (_columns(account, user_id), changed)
             db.session.rollback()
             # The rollback discards the flag overwrite; re-load the rows so
             # the next rule starts from the stored state again.

@@ -88,6 +88,7 @@ ARC_DOCS = {
     "recurrence": PLANS / "implementation_plan_recurrence_redesign.md",
     "pay_calendar": PLANS / "implementation_plan_pay_calendar.md",
     "credit_card": PLANS / "implementation_plan_credit_card.md",
+    "bank_import": PLANS / "implementation_plan_bank_import.md",
 }
 
 
@@ -891,8 +892,28 @@ def blocked_by_violations() -> list[str]:
 #: Each is a CEILING WITH ROOM TO WORK, not a number fitted to today's file.
 #: When one binds, rule 5 is the answer: archive a completed span.  Raising it
 #: is not.
+#:
+#: **``ledger.md`` was raised 240 -> 241 on 2026-08-13, by developer ruling,
+#: and it is the exception rule 5 names rather than a revision of it.**  It was
+#: raised by ONE line, which is what it took to land the `recurrence:R7b-2`
+#: merge and nothing more, so the forcing function bites again on the very next
+#: row.  Recorded here because the alternative reading -- that the cap drifts
+#: when it binds -- is the thing rule 5 exists to prevent.
+#:
+#: **What made rule 5 unavailable is worth stating, because it is a fact about
+#: the gate and not about that merge.**  Rule 5's remedy is to archive a
+#: COMPLETED span, and ``ledger.md`` had none left: an audit of all 30
+#: ``recurrence`` rows found every one live, and :func:`owner_violations`
+#: already guarantees no row in ANY arc names a shipped step, so completed
+#: spans have by construction already left.  At 198 open rows the headroom arm
+#: is no longer satisfiable by archival -- it is reporting how much work is
+#: OPEN, which is a different signal from the one rule 5 answers.
+#:
+#: The relief that does exist: 10 rows are blocked on nothing but a decision
+#: (``operator`` or ``developer-decision`` owners), and ruling any one of them
+#: closes a row.  Prefer that to a second raise.
 REGISTRY_CAPS = {
-    "ledger.md": 240,
+    "ledger.md": 241,
     "steps.md": 260,
     "conventions.md": 280,
     "verification.md": 120,

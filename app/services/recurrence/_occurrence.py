@@ -85,17 +85,17 @@ the first row's date.
 Bounds are OCCURRENCE bounds (ruling R-R6)
 ------------------------------------------
 
-``end_date`` and ``max_occurrences`` are applied to the occurrence, not to the
-period it lands in.  The reverse matcher bounded PERIODS -- ``end_date`` was
-tested against a period's START -- so it generated rows dated outside the
-window the user stated: measured on the R1 baseline, a monthly-15th rule
-ending 2025-06-05 generated a row due 2025-06-15.  That was plan defect
-**D5**, and it died here: an occurrence past ``end_date`` is simply never
-emitted.
+The closing bound (:class:`~app.services.recurrence.EndBound`) is applied to
+the occurrence, not to the period it lands in.  The reverse matcher bounded
+PERIODS -- the end date was tested against a period's START -- so it generated
+rows dated outside the window the user stated: measured on the R1 baseline, a
+monthly-15th rule ending 2025-06-05 generated a row due 2025-06-15.  That was
+plan defect **D5**, and it died here: an occurrence the bound does not admit is
+simply never emitted.
 
-``max_occurrences`` counts OCCURRENCES the cadence names, including any the
-schedule does not reach and never places.  "Stop after twelve" is a property
-of the rule, not of how many rows the schedule happened to host.
+A COUNT bound counts OCCURRENCES the cadence names, including any the schedule
+does not reach and never places.  "Stop after twelve" is a property of the
+rule, not of how many rows the schedule happened to host.
 
 The window, and the ONE answer ``period=None`` now gives (finding **D7**)
 -------------------------------------------------------------------------
@@ -221,8 +221,8 @@ from app.enums import (
 from app.exceptions import ShekelError
 from app.services.pay_calendar import DerivedPeriod, PayCalendar
 from app.services.recurrence._months import (
-    MONTHS_PER_YEAR,
     month_ordinal,
+    months_per_step,
     walk_months,
 )
 from app.services.recurrence._resolution import ResolvedRecurrence
@@ -310,17 +310,20 @@ def _period_walk(
     ``(p.period_index - offset) % n == 0``), which is what made plan step
     R4a's cutover a no-op for every pay-period-space rule.
 
-    **The phase is read from ``offset_periods`` rather than re-derived from
-    the anchor**, and the difference is measurable.  Deriving it -- "the
-    anchor's own period index, then every N-th after it" -- agrees whenever
-    the anchor names a qualifying period, but ``_phased_period_anchor`` falls
-    back to the raw bound when the schedule reaches NO period in phase (fewer
-    than ``interval_n`` periods remain past the bound).  The derived form
-    would then take the first remaining period, in phase or not, and generate
-    a row the current engine does not.  Plan step R7c drops the
-    ``offset_periods`` column, so the authored anchor has to carry the phase
-    by construction from there; recorded here so that step does not
-    rediscover it.
+    **The phase and the anchor are now ONE fact, so the divergence this note
+    used to record is gone** (plan step R7b-4).  It said: deriving the phase
+    from the anchor -- "the anchor's own period index, then every N-th after
+    it" -- agrees whenever the anchor names a qualifying period, but
+    ``_phased_period_anchor`` fell back to the raw bound when the schedule
+    reached NO period in phase (fewer than ``interval_n`` periods left past
+    the bound), and the derived form would then take the first remaining
+    period, in phase or not.  Both halves were symptoms of one cause: the
+    phase was stored INDEPENDENTLY of the bound, so the anchor had to be
+    dragged to meet it.  ``resolve`` derives the phase FROM the bound now
+    (``_derive_offset_periods``), the paycheck the bound falls in is in phase
+    by construction, and the advancing anchor is deleted.  ``resolved`` still
+    carries ``offset_periods`` because this walk is the ONE reader of it, and
+    plan step R7c drops the column it is written to.
 
     Naturally bounded by the schedule, unlike its two siblings.
 
@@ -388,26 +391,25 @@ def _unbounded(
     # The SAME walk ``_resolution._calendar_anchor`` derives the anchor with
     # (``app.services.recurrence._months``), seeded at the anchor's own month
     # -- so the first date this yields IS the anchor, by construction rather
-    # than by two implementations agreeing.  A YEAR cadence is that walk with
+    # than by two implementations agreeing.  **Including the STRIDE**, which
+    # this function used to compute for itself (``interval_n *
+    # MONTHS_PER_YEAR`` for a YEAR cadence) while the anchor took one off the
+    # pattern table: one fact, two spellings, in the two places whose own
+    # docstrings say they are the same walk.  A YEAR cadence is that walk with
     # a twelve-month stride; there is no separate year arithmetic, so leap-day
     # clamping is the month clamp and cannot diverge from it.
+    #
+    # ``months_per_step`` is partial over the enum and is NOT guarded here,
+    # because reaching this line already proves membership: ``day_of_month``
+    # answers non-``None`` only for ``_resolution._DAY_OF_MONTH_UNITS``, which
+    # IS ``_months.MONTH_SPANNING_UNITS``, which is that function's own key
+    # set.  A guard whose only reachability condition is "two hand-written sets
+    # disagree" is the fence this project removes rather than tests, and an
+    # adversarial review of plan step R7b-1 named it: the sets are one now, so
+    # the state is unconstructible rather than merely unreached.
     start = month_ordinal(resolved.anchor_date)
-    if unit is RecurrenceUnitEnum.MONTH:
-        return walk_months(start, month_day, resolved.interval_n)
-    if unit is RecurrenceUnitEnum.YEAR:
-        return walk_months(
-            start, month_day, resolved.interval_n * MONTHS_PER_YEAR,
-        )
-    # A unit that DOES name a day of the month but has no stride here: the
-    # sibling of the refusal above, reached by adding a member to
-    # ``_resolution._DAY_OF_MONTH_UNITS`` without giving it a walk.  Two
-    # refusals because the two half-finished edits are different, and each
-    # names which one happened.
-    raise RecurrenceGenerationError(
-        f"recurrence unit {unit!r} names a day of the month but has no "
-        f"occurrence walk.  Every member of RecurrenceUnitEnum must have "
-        f"one: returning nothing instead would read as a rule that never "
-        f"fires."
+    return walk_months(
+        start, month_day, months_per_step(unit, resolved.interval_n),
     )
 
 
@@ -417,18 +419,22 @@ def _bounded(
     """Yield from *raw* until the first occurrence past any stopping bound.
 
     The ONE place a bound is applied, so the three walks cannot come to
-    disagree about what ``end_date`` or ``max_occurrences`` means.  Every walk
-    is ascending, so the first occurrence past a date bound is also the last
-    one to check.
+    disagree about what a closing bound means.  Every walk is ascending, so the
+    first occurrence the bound refuses is also the last one to check.
 
-    ``end_date`` and ``max_occurrences`` are mutually exclusive
-    (``ck_recurrence_rules_single_end_bound``); both are tested anyway, because
-    a value built in memory is not the table and an untested second bound
-    would be silently ignored rather than refused.
+    **Two branches until plan step R7b-3, and now none.**  It tested
+    ``end_date`` and ``max_occurrences`` separately and tested BOTH even though
+    ``ck_recurrence_rules_single_end_bound`` refuses the pair, "because a value
+    built in memory is not the table".  The bound is one value with three
+    shapes now (:class:`~app.services.recurrence.EndBound`), so there is no
+    pair to be defensive about and no shape this loop can fail to handle: a
+    bound plan step R8 adds arrives with its own
+    :meth:`~app.services.recurrence.EndBound.admits`, and this function does
+    not change for it.
 
     Args:
         raw: The rule's unbounded occurrence sequence, ascending.
-        resolved: The recurrence's two-axis meaning, carrying the bounds.
+        resolved: The recurrence's two-axis meaning, carrying the bound.
         through: The last day the caller asked about.
 
     Yields:
@@ -438,11 +444,8 @@ def _bounded(
     for occurrence in raw:
         if occurrence > through:
             return
-        if resolved.end_date is not None and occurrence > resolved.end_date:
-            return
-        if (
-            resolved.max_occurrences is not None
-            and emitted >= resolved.max_occurrences
+        if not resolved.end_bound.admits(
+            emitted=emitted, occurrence=occurrence,
         ):
             return
         emitted += 1
@@ -552,9 +555,9 @@ def occurrences(
     occurrence is the payday of the paycheck that bound falls in, which is
     EARLIER than the anchor whenever the bound is mid-period -- deliberately,
     because that is where the cash leaves (plan step C9a).  So ruling R-R6's
-    "occurrence-bounded" holds on the ``end_date`` side for every unit and on
-    the opening side for the calendar units; ledger row D6 is the same
-    asymmetry seen from the schema.
+    "occurrence-bounded" holds on the CLOSING side for every unit and on the
+    opening side for the calendar units; ledger row D6 is the same asymmetry
+    seen from the schema.
 
     **There is no LOWER window argument, and each CALLER that has one applies
     it.**  The production paths that state a lower bound narrow generation to a
@@ -587,8 +590,9 @@ def occurrences(
 
     Returns:
         An ascending iterator of occurrence dates.  Empty when *through*
-        precedes the anchor, when the rule's ``end_date`` does, or -- for the
-        ``PERIOD`` unit -- when the schedule reaches no qualifying paycheck.
+        precedes the anchor, when the rule's closing bound admits none of
+        them, or -- for the ``PERIOD`` unit -- when the schedule reaches no
+        qualifying paycheck.
 
     Raises:
         RecurrenceGenerationError: See :func:`_require_generable`, plus a unit

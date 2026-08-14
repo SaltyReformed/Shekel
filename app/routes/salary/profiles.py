@@ -26,7 +26,7 @@ from app.models.ref import (
     RaiseType,
 )
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, TxnTypeEnum
+from app.enums import RecurrenceUnitEnum, TxnTypeEnum
 from app.services import (
     account_service,
     paycheck_calculator,
@@ -149,9 +149,7 @@ def create_profile():
         rule = author_rule(
             RecurrenceSpec(
                 user_id=current_user.id,
-                pattern_id=ref_cache.recurrence_pattern_id(
-                    RecurrencePatternEnum.EVERY_PERIOD
-                ),
+                unit=RecurrenceUnitEnum.PERIOD,
             ),
             calendar_for(current_user.id),
         )

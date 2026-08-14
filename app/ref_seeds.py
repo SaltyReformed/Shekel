@@ -210,6 +210,18 @@ _REF_TABLE_SEEDS = (
     ("RecurrenceUnit", ["period", "week", "month", "year"]),
     ("PeriodPlacement", ["containing_date", "period_starting_on_or_after"]),
     ("BusinessDayShift", ["none", "prior", "next"]),
+    # The amount model's discriminator (balance arc, plan step X-au-c1; ruling
+    # **R-FI**).  WHICH RELATION states a row's amount when the row does not
+    # state it itself: ``template`` is the recurring definition that generated
+    # it, ``parent_transfer`` is the transfer a shadow belongs to.  A row that
+    # OWNS its amount carries ``amount_source_id IS NULL``, so there is
+    # deliberately no ``own`` row here -- see
+    # :class:`app.enums.AmountSourceEnum` for why the OWN state is an absence.
+    # The migration ``b3f7c2a9d514`` inline-seeds the identical rows so a
+    # freshly upgraded DB resolves the enum before this idempotent reseed runs
+    # -- the same dual-seed pattern the posting and recurrence refs use.  Names
+    # match the enum ``.value`` strings in ``app/enums.py`` exactly.
+    ("AmountSource", ["template", "parent_transfer"]),
 )
 # pylint: enable=line-too-long
 # fmt: on

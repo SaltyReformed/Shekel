@@ -172,7 +172,7 @@ def live_projected_net(
         ``scenario_id``,
 
     appear in the result.  Every other transaction is omitted, so a
-    caller's ``overrides.get(txn.id, txn.effective_amount)`` falls back
+    caller's ``overrides.get(txn.id, <the row's own contribution>)`` falls back
     to the stored value for non-salary income, overridden rows, and
     expenses.
 

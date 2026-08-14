@@ -25,6 +25,7 @@ from shekel_checkers import (
     _LEDGER_MODEL_MODULES,
     _KIND_CLASSIFIER_MODULES,
     _LEDGER_MODEL_NAMES,
+    _ROW_VALUATION_MODULES,
     _LOAN_LEDGER_DEFINING_MODULES,
     _LOAN_RESOLVER_ENGINE_MODULES,
     _STATUS_SEAM_MODULES,
@@ -799,6 +800,11 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         * ``_LOAN_LEDGER_DEFINING_MODULES`` (``loan_ledger`` +
           ``loan_posting_service``, the walk and the posting readers)
         * ``_CASH_LEDGER_MODULES`` (``cash_ledger``, D1a then D1c)
+        * ``_ROW_VALUATION_MODULES`` (``row_valuation``, X-au-c2 -- the
+          producer-free valuation arms, extracted BELOW ``cash_ledger`` so the
+          loan stack can reach them without closing an import cycle, and
+          scoped the day they moved so the extraction did not un-rule
+          ``owned_contribution``)
         * ``_KIND_CLASSIFIER_MODULES`` (``account_projection``, D1b)
         * ``_LOAN_RESOLVER_ENGINE_MODULES`` (``loan_resolver``, D3 -- B-12's
           "wholly unfenced tier", closed)
@@ -825,6 +831,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         for module_name in (
             "app.services.account_projection",
             "app.services.cash_ledger",
+            "app.services.row_valuation",
             "app.services.loan_ledger",
             "app.services.loan_posting_service",
             "app.services.loan_payment_service",
@@ -921,6 +928,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             | _SEAM_PRIVATE_CONTEXT_MODULES
             | _CASH_LEDGER_MODULES
             | _KIND_CLASSIFIER_MODULES
+            | _ROW_VALUATION_MODULES
         )
         assert set(_FENCED_MODULE_RULINGS) == expected
 
@@ -977,8 +985,8 @@ class TestShekelTransactionStatusBypassChecker(CheckerTestCase):
 
     Every non-transfer ``Transaction.status_id`` change must route through
     ``status_seam.apply_status_change``; only that module
-    (``app.services.status_seam``) and ``transfer_service`` (which mirrors status
-    onto a transfer's two shadow rows) may write it.  Four write forms are
+    (``app.services.status_seam``) and ``transfer_service._create`` (which
+    CONSTRUCTS a transfer and its two shadow rows) may write it.  Four write forms are
     fenced (H3/R3 of the 2026-07-02 review closed the last three): direct
     assignment, the literal ``setattr`` form, a ``status_id`` payload in a bulk
     ``.update()`` / ``.values()`` call, and a born-settled ``Transaction`` /
@@ -1035,18 +1043,40 @@ class TestShekelTransactionStatusBypassChecker(CheckerTestCase):
         with self.assertNoMessages():
             self.checker.visit_assignattr(node)
 
-    def test_allows_status_id_assignment_in_transfer_service(self) -> None:
-        """transfer_service mirrors status onto its two shadow rows; not flagged.
+    def test_allows_status_id_assignment_in_transfer_create_leaf(self) -> None:
+        """The transfer CREATE leaf may assign status_id; not flagged.
 
         A name-based checker cannot distinguish a shadow ``Transaction``'s
-        ``status_id`` from a real transaction's, so transfer_service is
-        allowlisted alongside the seam (2.8b MEDIUM).
+        ``status_id`` from a real transaction's, so the leaf that constructs the
+        pair is allowlisted alongside the seam (2.8b MEDIUM).
         """
         node = self._status_assign(
             "expense_shadow.status_id = new_status_id",
-            "app.services.transfer_service",
+            "app.services.transfer_service._create",
         )
         with self.assertNoMessages():
+            self.checker.visit_assignattr(node)
+
+    def test_flags_status_id_assignment_in_a_sibling_transfer_leaf(self) -> None:
+        """A transfer-service leaf that is NOT ``_create`` is still fenced.
+
+        The regression guard for plan step X-f2-c3's package move.  The
+        allowlist matches a package PREFIX, so an entry naming
+        ``app.services.transfer_service`` would have exempted all eight leaves
+        of the new package the moment it stopped being one module -- a fence
+        widened by a refactor rather than by a decision.  Narrowing the entry to
+        the ``_create`` leaf is what this asserts, from the failing direction:
+        the status applier reaches the column through the seam and must have no
+        exemption of its own.
+        """
+        node = self._status_assign(
+            "expense_shadow.status_id = new_status_id",
+            "app.services.transfer_service._status",
+        )
+        with self.assertAddsMessages(
+            MessageTest("shekel-transaction-status-bypass", node=node),
+            ignore_position=True,
+        ):
             self.checker.visit_assignattr(node)
 
     def test_allows_every_seam_module(self) -> None:
@@ -1303,7 +1333,7 @@ class TestShekelTransactionStatusBypassChecker(CheckerTestCase):
         """
         node = self._status_call(
             "shadow = Transaction(status_id=spec.status_id)",
-            "app.services.transfer_service",
+            "app.services.transfer_service._create",
         )
         with self.assertNoMessages():
             self.checker.visit_call(node)

@@ -26,6 +26,7 @@ directly.  No database, no clock, no schedule -- the phrase is a function of
 the resolved value alone, which is exactly why it could move out of a template.
 """
 
+import dataclasses
 from datetime import date
 
 import pytest
@@ -36,6 +37,12 @@ from app.enums import (
     RecurrenceUnitEnum,
 )
 from app.services.recurrence import (
+    END_BOUND_KINDS,
+    NEVER_ENDS,
+    EndBound,
+    EndBoundColumns,
+    EndsOnDate,
+    NeverEnds,
     RecurrenceDescription,
     RecurrenceDescriptionError,
     ResolvedRecurrence,
@@ -44,6 +51,10 @@ from app.services.recurrence import (
 # Imported as a MODULE so a control can add a hypothetical enum member to
 # the wording tables -- the half-finished edit the raises exist for.
 from app.services.recurrence import _describe
+from app.services.recurrence import EndsAfterOccurrences
+# The shape-set sample table, shared so the totality sweep here covers the
+# same closed set the bounds suite does.
+from tests.test_services.test_recurrence_bounds import sample_bound
 from tests.test_services.test_recurrence_occurrence import resolved_value
 
 _DEFER = PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER
@@ -269,51 +280,50 @@ class TestThePlacementNote:
 
 
 class TestTheBounds:
-    """Both closing bounds reach the value; neither is dropped."""
+    """Every shape of the closing bound reaches the value; none is dropped."""
 
     def test_a_date_bound_is_carried_as_a_date(self):
-        """``until`` is a ``date``, so the surface formats it like any other."""
+        """The cell reads a ``date``, so it formats it like any other."""
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
             anchor_date=date(2026, 4, 22),
-            end_date=date(2029, 1, 22),
+            end_bound=EndsOnDate(on=date(2029, 1, 22)),
         )
 
         description = describe(resolved)
 
-        assert description.until == date(2029, 1, 22)
-        assert description.after_occurrences is None
-        # The bound is NOT folded into the phrase: the cell styles it as a
-        # separate muted line, and a phrase carrying it could not be.
+        # A LITERAL, not a re-derivation: asserting against ``f"{d:%b}"``
+        # would check the locale-safe producer against the ``strftime`` it
+        # exists to avoid, and could not fail for the reason it was written.
+        assert description.stops == "until Jan 22, 2029"
+        # The bound is NOT folded into the cadence phrase: the cell styles it
+        # as a separate muted line, and one phrase carrying both could not be.
         assert description.cadence == "Monthly (day 22)"
 
     def test_a_count_bound_is_carried_too(self):
-        """Plan step R8 is its first author, and the cell must not omit it.
+        """A rule that stops after twelve occurrences must not read forever.
 
-        A rule that stops after twelve occurrences and a cell that says it
-        repeats forever is the surface lying about a commitment.  Only a
-        hand-built value can reach this today, which is why it is asserted
-        before the author exists rather than after.
+        A cell saying a commitment repeats indefinitely when the rule says it
+        stops is the surface lying about money still to be spent.
         """
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
             anchor_date=date(2026, 4, 22),
-            max_occurrences=12,
+            end_bound=EndsAfterOccurrences(count=12),
         )
 
         description = describe(resolved)
 
-        assert description.after_occurrences == 12
-        assert description.until is None
+        assert description.stops == "for 12 occurrences"
 
     def test_an_unbounded_rule_carries_neither(self):
-        """The ordinary case: indefinite, both fields absent."""
+        """The ordinary case: indefinite, so both column reads are absent."""
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.PERIOD, anchor_date=date(2026, 3, 26),
         )
 
         assert describe(resolved) == RecurrenceDescription(
-            cadence="Every paycheck", until=None, after_occurrences=None,
+            cadence="Every paycheck", stops=None,
         )
 
 
@@ -334,8 +344,7 @@ class TestItRefusesWhatItCannotWord:
             anchor_date=date(2026, 4, 22),
             placement=_CONTAIN,
             shift=BusinessDayShiftEnum.NONE,
-            end_date=None,
-            max_occurrences=None,
+            end_bound=NEVER_ENDS,
             nominal_day=None,
         )
 
@@ -365,8 +374,7 @@ class TestItRefusesWhatItCannotWord:
             anchor_date=date(2026, 4, 22),
             placement=_CONTAIN,
             shift=BusinessDayShiftEnum.NONE,
-            end_date=None,
-            max_occurrences=None,
+            end_bound=NEVER_ENDS,
             nominal_day=None,
         )
 
@@ -389,8 +397,7 @@ class TestItRefusesWhatItCannotWord:
             anchor_date=date(2026, 4, 22),
             placement="the paycheck before",
             shift=BusinessDayShiftEnum.NONE,
-            end_date=None,
-            max_occurrences=None,
+            end_bound=NEVER_ENDS,
             nominal_day=None,
         )
 
@@ -454,34 +461,116 @@ class TestTheDayOfMonthAccessor:
         assert resolved.day_of_month == 31
 
 
-class TestTheDescriptionRefusesTwoStopDates:
-    """``ck_recurrence_rules_single_end_bound``, enforced on the VALUE too."""
+class TestTheStopLineIsTotalOverTheShapes:
+    """One stop line per commitment, and a shape it cannot word RAISES.
 
-    def test_both_bounds_at_once_is_unconstructible(self):
-        """A commitment gets one stop date, or the cell states two.
+    This class asserted a ``__post_init__`` guard until plan step R7b-3: the
+    description carried ``until`` and ``after_occurrences`` as two independent
+    fields and refused the pair, because
+    ``ck_recurrence_rules_single_end_bound`` protects rows read from the TABLE
+    and not a value built in memory.
 
-        The database CHECK protects rows read from the table; it does not
-        protect a value built in memory, which is the same reasoning
-        ``_occurrence._bounded`` records for testing both bounds it can never
-        see together.  Plan step R8 is the count bound's first author, so this
-        costs nothing today and is what stands between R8 and a cell reading
-        "until Mar 01, 2027" beside "for 12 occurrences".
+    Two things replaced it, and a removed refusal has to be shown unreachable
+    rather than merely gone.  The description carries ONE worded phrase, so
+    there is no pair to police -- and the producer is TOTAL over the closed
+    set, which is the half the two-field version never had: an adversarial
+    review of this step measured that a fourth shape would have rendered NO
+    stop line at all, and a cell showing none reads as a commitment that never
+    ends.
+    """
+
+    def test_a_description_has_ONE_field_for_when_it_stops(self):
+        """There is no pair of fields for a guard to police.
+
+        The strongest form of "these two cannot both be set": there are not
+        two, and the one that remains is a finished phrase rather than a
+        value a surface re-projects into a pair.
         """
-        with pytest.raises(RecurrenceDescriptionError, match="two closing"):
-            RecurrenceDescription(
-                cadence="Monthly (day 22)",
-                until=date(2027, 3, 1),
-                after_occurrences=12,
-            )
+        fields = {field.name for field in dataclasses.fields(
+            RecurrenceDescription,
+        )}
 
-    def test_either_bound_alone_constructs(self):
-        """The control: the refusal is on the PAIR, not on each field."""
-        assert RecurrenceDescription(
-            cadence="x", until=date(2027, 3, 1), after_occurrences=None,
-        ).until == date(2027, 3, 1)
-        assert RecurrenceDescription(
-            cadence="x", until=None, after_occurrences=12,
-        ).after_occurrences == 12
+        assert fields == {"cadence", "stops"}
+
+    @pytest.mark.parametrize("kind", END_BOUND_KINDS)
+    def test_every_shape_is_worded(self, kind):
+        """Over the CLOSED SET, not over three shapes someone listed.
+
+        A shape plan step R8 adds without copy fails here rather than
+        rendering a blank line -- the same contract ``_stem`` and
+        ``_placement_note`` hold for their own closed sets.
+        """
+        bound = sample_bound(kind)
+
+        phrase = _describe._stops_phrase(bound)  # pylint: disable=protected-access
+
+        if isinstance(bound, NeverEnds):
+            assert phrase is None
+        else:
+            assert phrase, f"{kind.__name__} rendered no stop line"
+
+    def test_an_unworded_shape_raises_rather_than_reading_as_indefinite(self):
+        """The half-finished edit plan step R8 will make, caught loudly.
+
+        A shape with no entry in the phrase table must not fall through to
+        "no stop line": that is the surface saying a bill is charged forever
+        when the rule says it stops.  Reached by declaring a hypothetical
+        fourth shape, which is exactly the edit R8 makes.
+        """
+        class _StopsWhenTheLoanClears(EndBound):
+            """A stand-in for a bound a later step adds."""
+
+            token = "loan_cleared"
+
+            def columns(self):
+                """Return no columns -- it is not storable in these two.
+
+                Returns:
+                    Both column values as ``None``.
+                """
+                return EndBoundColumns(end_date=None, max_occurrences=None)
+
+            def admits(self, *, emitted, occurrence):
+                """Admit everything.
+
+                Args:
+                    emitted: Unread.
+                    occurrence: Unread.
+
+                Returns:
+                    Always ``True``.
+                """
+                return True
+
+            def has_closed(self, *, on, occurrences_before):
+                """Never close.
+
+                Args:
+                    on: Unread.
+                    occurrences_before: Unread.
+
+                Returns:
+                    Always ``False``.
+                """
+                return False
+
+            @classmethod
+            def from_payload(cls, *, end_date, max_occurrences):
+                """Build it from nothing.
+
+                Args:
+                    end_date: Unread.
+                    max_occurrences: Unread.
+
+                Returns:
+                    The shape.
+                """
+                return cls()
+
+        with pytest.raises(RecurrenceDescriptionError, match="no wording"):
+            _describe._stops_phrase(  # pylint: disable=protected-access
+                _StopsWhenTheLoanClears(),
+            )
 
 
 class TestTheDeferredCollapseNamesItsPlacement:
@@ -508,8 +597,7 @@ class TestTheDeferredCollapseNamesItsPlacement:
             anchor_date=date(2026, 3, 1),
             placement=advance,
             shift=BusinessDayShiftEnum.NONE,
-            end_date=None,
-            max_occurrences=None,
+            end_bound=NEVER_ENDS,
             nominal_day=None,
         )
 

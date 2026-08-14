@@ -250,7 +250,7 @@ class TestSubtotals:
         )
         assert view.expenses.subtotal.monthly == Decimal("716.67")
         assert view.expenses.subtotal.monthly == committed_monthly(
-            [e1, e2], as_of, _BIWEEKLY,
+            [e1, e2], as_of, _calendar(seed_periods_today),
         )
 
     def test_subtotal_per_paycheck_derives_from_monthly(
@@ -615,11 +615,24 @@ class TestTheRecurrenceDescription:
 
         assert view.expenses.rows[0].recurrence is None
 
-    def test_the_end_date_reaches_the_row_as_a_date(
+    def test_the_closing_bound_reaches_the_row_as_its_own_line(
         self, seed_user, seed_periods_today,
     ):
-        """The closing bound is carried, unformatted, for the cell's own line."""
-        end = date.today() + timedelta(days=400)
+        """The closing bound is carried as the cell's own second line.
+
+        A worded phrase since plan step R7b-3 rather than a bare date, so the
+        surface renders one string and the wording of a stop is decided in the
+        producer beside the wording of a cadence.
+
+        Both dates are LITERALS and so is the expectation.  Deriving the
+        expected string with ``f"{end:%b}"`` would assert the locale-safe
+        producer against the ``strftime`` it replaced, and could not fail for
+        the reason it was written; a date built from ``today()`` would make
+        the case's subject move with the calendar.  A bound in 2029 is past
+        every fixture's horizon, which is what this asserts about -- the cell
+        carries the stop whether or not the schedule reaches it.
+        """
+        end = date(2029, 9, 15)
         rule = _create_rule(
             seed_user, RecurrencePatternEnum.MONTHLY,
             day_of_month=22, end_date=end,
@@ -630,7 +643,7 @@ class TestTheRecurrenceDescription:
             [], [tmpl], [], _calendar(seed_periods_today), date.today(),
         )
 
-        assert view.expenses.rows[0].recurrence.until == end
+        assert view.expenses.rows[0].recurrence.stops == "until Sep 15, 2029"
 
     def test_a_transfer_row_carries_one_too(
         self, seed_user, seed_periods_today,
@@ -671,7 +684,11 @@ class TestTheRecurrenceDescription:
         real_resolve = _reading.resolve
 
         def counting_resolve(spec, calendar):
-            calls.append(spec.pattern_id)
+            # The CADENCE identifies the call since plan step R7b, which is
+            # what a spec carries now; the two definitions above are a monthly
+            # bill and an every-paycheck income, so the two entries also say
+            # the right rules were read.
+            calls.append((spec.interval_n, spec.unit))
             return real_resolve(spec, calendar)
 
         monkeypatch.setattr(_reading, "resolve", counting_resolve)

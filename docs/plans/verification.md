@@ -20,7 +20,7 @@ do you know the number is RIGHT.
    producers that share code proving each other. **Never a producer as its own oracle.** The fold is
    the reference.
 
-3. **Ask of every harness: can it SEE the code under test?** Three exist because each is blind where
+3. **Ask of every harness: can it SEE the code under test?** Five exist because each is blind where
    the next one looks, and a harness blind to a step reports byte-identical -- a free pass that
    reads as proof.
 
@@ -29,8 +29,15 @@ do you know the number is RIGHT.
    | `tests/manual/verify_balance_baseline.py` | Every figure the seam can answer about every account in a database. Run before and after, `diff` the blobs. DETERMINISTIC, and a REGRESSION check rather than a proof: two identical figures can both be wrong. Every figure is read at the seam's default `as_of`, so a step scoped to a pinned historical `as_of` moves nothing in it |
    | `tests/manual/verify_savings_producers.py` | Above the seam, where the first is blind: a producer package, a serializer or a template |
    | `tests/manual/verify_anchor_surfaces.py` | The anchor surfaces both others miss: the grid header's figure and "as of" caption, the reconcile panel, the dashboard balance section, the pulse hero, the savings dashboard including the ARCHIVED drawer, Property market value / home equity, and the retirement seeds. A producer that raises is RECORDED rather than fatal -- a probe that dies on account 3 has silently stopped covering 4 through 9 |
+   | `tests/manual/verify_render_surfaces.py` | 108 authenticated routes, status + body size (plan step C2-c). It cannot see a FIGURE; what it catches is a surface that stopped rendering at all, which the three above are blind to because they call producers rather than routes |
+   | `tests/manual/verify_projection_axis.py` | Every figure the forward PROJECTION axis decides (plan step C2-e): the /retirement gap, readiness and both lever solvers, the /savings Horizon's bands and milestones, the /investment growth chart at three slider positions, and the Property equity chart. The first three harnesses are all BELOW or BESIDE these producers. It states its own gate rather than assuming byte-identity: the axis is anchored on the owner's paydays, so it diffs clean only when their cadence is 14 AND the read day opens a period, and it prints both facts in its header so a legitimate move is not read as a regression |
 
    **Use `git worktree` for the HEAD side, never `git checkout`.**
+
+   **A harness that a step's own change makes uncompilable on the HEAD side is not a harness.**
+   Write it against what BOTH sides can answer -- `dict.get` for a key the step adds, positional
+   keys where the step changes an identity -- or the diff reports every line moved and grades
+   nothing.
 
 4. **Every guard gets a negative control that is SHOWN to fire.** A guard whose control does not
    fire is not a guard.

@@ -45,8 +45,12 @@ every assertion.  An unsaved instance costs no session and no flush, and a
 column the model does not have raises ``TypeError`` here instead of passing.
 
 It does NOT carry SQLAlchemy's ``default=`` values (those apply at INSERT), so
-``interval_n`` and ``offset_periods`` are always passed explicitly -- the same
-trap that module documents.
+``interval_n`` is always passed explicitly -- the same trap that module
+documents.  ``offset_periods`` was passed for the same reason until plan step
+R7b-4, which made the phase a DERIVATION of the opening bound rather than a
+value a caller states; no code reads that column now, so the shapes state a
+``start_date`` instead and the frozen blob is unmoved (see
+:func:`_add_period_space_shapes`).
 
 **The clock.**  Every date in this module is a literal.  Nothing reads
 ``date.today()`` or ``display_today()``, so the blob is identical under
@@ -75,7 +79,11 @@ from app.enums import RecurrencePatternEnum
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import PayCalendar
-from app.services.recurrence import RecurrenceSpec
+from app.services.recurrence import (
+    RecurrenceSpec,
+    decode_pattern,
+    end_bound_from_columns,
+)
 # Both imported as MODULES, not as names, and the recurrence producer is
 # imported from its DEFINITION site (``_reading``) rather than through the
 # package's re-export.  ``from ... import rule_occurrences`` would bind the
@@ -145,12 +153,17 @@ class RuleShape:
             snapshot can reconstruct the rule without consulting this file.
         pattern: The pattern enum member, resolved to an integer id at capture.
         interval_n: ``EVERY_N_PERIODS`` interval; 1 elsewhere.
-        offset_periods: ``EVERY_N_PERIODS`` phase; 0 elsewhere.
         day_of_month: Scheduling day for the calendar patterns.
         due_day_of_month: Real bill due day when it differs from the
             scheduling day.
         month_of_year: Cycle-start month for quarterly / semi-annual / annual.
-        start_date: The rule's opening validity bound (unbypassable).
+        start_date: The rule's opening validity bound (unbypassable), and
+            since plan step R7b-4 the whole of what a rule says about when it
+            begins -- including the ``EVERY_N_PERIODS`` phase, which is the
+            ordinal of the paycheck this date falls in.  An ``offset_periods``
+            field sat beside it until then; see
+            :func:`_add_period_space_shapes` for why removing it moved no
+            captured line.
         end_date: The rule's closing validity bound.
         long_cadence: Capture this shape against the 90-day schedule instead
             of the biweekly one (the D3 shapes).
@@ -159,7 +172,6 @@ class RuleShape:
     label: str
     pattern: RecurrencePatternEnum
     interval_n: int = 1
-    offset_periods: int = 0
     day_of_month: int | None = None
     due_day_of_month: int | None = None
     month_of_year: int | None = None
@@ -225,10 +237,13 @@ def build_shape_rule(shape: RuleShape) -> RecurrenceRule:
     :func:`app.ref_cache.recurrence_pattern_id`, the same lookup production
     uses, so a shape can never name a pattern the database does not carry.
 
-    ``interval_n`` and ``offset_periods`` are passed explicitly because
-    SQLAlchemy applies ``default=`` at INSERT and this row is never inserted --
-    an unflushed rule would otherwise carry ``None`` where production has 1 and
-    0, and the matcher would be exercised on a shape production never sees.
+    ``interval_n`` is passed explicitly because SQLAlchemy applies
+    ``default=`` at INSERT and this row is never inserted -- an unflushed rule
+    would otherwise carry ``None`` where production has 1, and the resolver
+    would be exercised on a shape production never sees.  ``offset_periods``
+    was passed for the same reason until plan step R7b-4 and no longer is:
+    nothing reads that column, so a transient rule carrying ``None`` there
+    differs from a production row in a field neither of them is read for.
 
     Args:
         shape: The configuration to build.
@@ -245,7 +260,6 @@ def build_shape_rule(shape: RuleShape) -> RecurrenceRule:
         user_id=SHAPE_USER_ID,
         pattern_id=ref_cache.recurrence_pattern_id(shape.pattern),
         interval_n=shape.interval_n,
-        offset_periods=shape.offset_periods,
         day_of_month=shape.day_of_month,
         due_day_of_month=shape.due_day_of_month,
         month_of_year=shape.month_of_year,
@@ -278,11 +292,20 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
     Both are built from the SAME shape, which is the whole point: a parallel
     run that fed the two engines differently would prove nothing.
 
-    ``start_period_id`` is deliberately left unset.  The baseline captures with
-    no lower window bound (``capture_shape``), and ``resolve`` reaches the
-    schedule's opening through ``PayCalendar.opening_bound()`` -- so a start
-    period here would add a bound the captured answers were never measured
-    under.
+    **A ``start_period_id`` was deliberately left unset here** until plan
+    step R7b-4 deleted the field: the baseline captures with no lower window
+    bound (``capture_shape``) and ``resolve`` reaches the schedule's opening
+    through ``PayCalendar.opening_bound()``, so a start period would have added
+    a bound the captured answers were never measured under.  ``start_date``
+    IS set, for the shapes that state one, and it is the same reasoning read
+    forward: it is now the rule's own bound rather than a window laid over it.
+
+    **The shape's PATTERN is decoded rather than passed** (plan step R7b): the
+    spec speaks the two-axis vocabulary now, and a shape is a set of stored
+    COLUMN values.  Decoding here is what keeps the two builders on this page
+    two views of one shape -- ``build_shape_rule`` writes the columns and this
+    reads them back through the same seam the read door uses, so a shape cannot
+    mean one thing to the engine and another to the resolver.
 
     Requires an app context: ``pattern_id`` resolves through
     :func:`app.ref_cache.recurrence_pattern_id`.
@@ -293,16 +316,24 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
     Returns:
         The :class:`~app.services.recurrence.RecurrenceSpec`.
     """
+    reading = decode_pattern(
+        ref_cache.recurrence_pattern_id(shape.pattern), shape.interval_n,
+    )
     return RecurrenceSpec(
         user_id=SHAPE_USER_ID,
-        pattern_id=ref_cache.recurrence_pattern_id(shape.pattern),
-        interval_n=shape.interval_n,
-        offset_periods=shape.offset_periods,
+        unit=reading.cadence.unit,
+        interval_n=reading.cadence.interval_n,
+        placement=reading.placement,
         day_of_month=shape.day_of_month,
         due_day_of_month=shape.due_day_of_month,
         month_of_year=shape.month_of_year,
         start_date=shape.start_date,
-        end_date=shape.end_date,
+        # Read through the same column-to-bound seam the READ DOOR uses
+        # (plan step R7b-3), for the reason the pattern is decoded rather than
+        # passed: a shape is a set of stored COLUMN values, so building the
+        # spec's bound any other way would let a shape mean one thing to the
+        # engine and another to the resolver.
+        end_bound=end_bound_from_columns(shape.end_date, None),
     )
 
 
@@ -407,10 +438,28 @@ def _add_period_space_shapes(acc: _ShapeAccumulator) -> None:
     """Every shape of the two pay-period-space patterns.
 
     ``EVERY_PERIOD`` has no parameters.  ``EVERY_N_PERIODS`` is swept over
-    every interval 1..8 crossed with every legal phase for that interval
-    (``offset_periods`` is only meaningful modulo ``interval_n``, so
-    ``0..n-1`` is the complete space, not a sample).  ``MONTHLY_FIRST``
-    takes no parameters either.
+    every interval 1..8 crossed with every legal phase for that interval (a
+    phase is only meaningful modulo ``interval_n``, so ``0..n-1`` is the
+    complete space, not a sample).  ``MONTHLY_FIRST`` takes no parameters
+    either.
+
+    **The phase is REACHED through the opening bound, since plan step
+    R7b-4**, and the captured blob does not move.  It was authored directly
+    (``offset_periods=offset``) while the phase was a column a caller could
+    state; it is derived from the paycheck the rule STARTS in now, so a shape
+    phased at ``k`` is one whose ``start_date`` is period index ``k``'s own
+    payday.  The two reach the identical residue class, which is why every
+    line of the frozen snapshot survives the change unedited:
+
+      * BEFORE -- the bound was the schedule opening (index 0) and the anchor
+        advanced to the first period at or after it satisfying the stored
+        phase, i.e. index ``k``;
+      * AFTER -- the bound IS index ``k``'s payday, its own ordinal derives
+        ``k % interval == k``, and the anchor is that bound.
+
+    Both then walk ``k, k+n, k+2n, ...``.  Sweeping the bound rather than the
+    phase is also the stronger sweep, because it exercises the DERIVATION over
+    the whole space instead of assuming it.
     """
     acc.add(RuleShape("every_period", RecurrencePatternEnum.EVERY_PERIOD))
     acc.add(RuleShape("monthly_first", RecurrencePatternEnum.MONTHLY_FIRST))
@@ -420,7 +469,9 @@ def _add_period_space_shapes(acc: _ShapeAccumulator) -> None:
                 f"every_n_periods.n{interval:02d}.off{offset:02d}",
                 RecurrencePatternEnum.EVERY_N_PERIODS,
                 interval_n=interval,
-                offset_periods=offset,
+                start_date=SCHEDULE_START + timedelta(
+                    days=SCHEDULE_CADENCE_DAYS * offset,
+                ),
             ))
 
 

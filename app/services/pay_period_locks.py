@@ -27,7 +27,6 @@ from datetime import date
 
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import settled_status_ids
 
@@ -38,8 +37,8 @@ class PeriodLockReason(enum.Enum):
     """Why a pay period may not be deleted or rebuilt.
 
     A non-``None`` reason is a HARD lock: the period either is historical
-    or holds irreplaceable state (settled money, posted ledger entries, a
-    recurrence rule's origin), and no operation may delete or rebuild it --
+    or holds irreplaceable state (settled money, posted ledger entries), and
+    no operation may delete or rebuild it --
     not even with ``confirm_discard``.  **An account's balance ASSERTION is no
     longer among them, and it did not become deletable**: ruling R-EO moved the
     assertion off the pay period entirely, so a schedule operation cannot reach
@@ -50,21 +49,18 @@ class PeriodLockReason(enum.Enum):
 
     The members are ordered by precedence.  The classifier returns the
     FIRST applicable reason, so a historical period that also holds a
-    settled transaction reports ``HISTORICAL``, and a future settled
-    period that is also an anchor reports ``SETTLED_TXN``.
+    settled transaction reports ``HISTORICAL``.
     """
 
     HISTORICAL = "historical"
     SETTLED_TXN = "settled"
     LEDGER_POSTINGS = "ledger_postings"
-    RECURRENCE_ANCHOR = "recurrence_anchor"
 
 
 def _resolve_lock(
     *, is_historical: bool, has_settled: bool, has_unbalanced_ledger: bool,
-    is_recurrence_anchor: bool,
 ) -> PeriodLockReason | None:
-    """Apply the lock-reason precedence to four already-computed booleans.
+    """Apply the lock-reason precedence to three already-computed booleans.
 
     The single source of truth for the ordering, shared by the
     single-period and bulk classifiers so the two query strategies
@@ -82,6 +78,15 @@ def _resolve_lock(
     unbalanced ledger account, so the deleted reason was refusing nothing that
     survives without it.
 
+    **``RECURRENCE_ANCHOR`` left the same way at plan step R7b-4.**  It
+    refused a period some recurrence rule's ``start_period_id`` pointed at,
+    and the hazard was real while it stood: that FK is ``ON DELETE SET NULL``,
+    so deleting the period silently erased the rule's opening bound.  R7b-4
+    folded the FK into ``recurrence_rules.start_date`` -- a DATE, which no
+    schedule operation can cascade -- so a rule's opening bound now survives
+    the deletion of any period.  The lock was protecting a bound that can no
+    longer be lost, which makes it unreachable rather than relaxed.
+
     Args:
         is_historical: The period has already ended (``end_date`` is
             before the reference date).
@@ -90,8 +95,6 @@ def _resolve_lock(
             zero per ledger account -- posted financial state a CASCADE
             delete would mis-state (see
             :func:`_period_ids_with_unbalanced_ledger`).
-        is_recurrence_anchor: A recurrence rule's ``start_period_id``
-            points at the period.
 
     Returns:
         The first applicable :class:`PeriodLockReason`, or ``None`` when
@@ -103,8 +106,6 @@ def _resolve_lock(
         return PeriodLockReason.SETTLED_TXN
     if has_unbalanced_ledger:
         return PeriodLockReason.LEDGER_POSTINGS
-    if is_recurrence_anchor:
-        return PeriodLockReason.RECURRENCE_ANCHOR
     return None
 
 
@@ -136,7 +137,7 @@ def classify_periods_bulk(
     """Classify many periods with set queries instead of N x 3 scalar ones.
 
     Returns ``{period.id: PeriodLockReason | None}`` identical to calling
-    :func:`classify_period_lock` on each period, but with four set
+    :func:`classify_period_lock` on each period, but with two set
     queries total plus the in-memory date check -- the no-N+1 path the
     truncate operation runs over its to-delete window.
 
@@ -156,14 +157,12 @@ def classify_periods_bulk(
 
     settled = _period_ids_with_settled_transaction(period_ids)
     unbalanced = _period_ids_with_unbalanced_ledger(period_ids)
-    rule_anchors = _period_ids_that_are_recurrence_anchors(period_ids)
 
     return {
         period.id: _resolve_lock(
             is_historical=period.end_date < as_of,
             has_settled=period.id in settled,
             has_unbalanced_ledger=period.id in unbalanced,
-            is_recurrence_anchor=period.id in rule_anchors,
         )
         for period in periods
     }
@@ -212,12 +211,4 @@ def _period_ids_with_unbalanced_ledger(period_ids: list[int]) -> set[int]:
         .having(db.func.sum(Posting.amount) != 0)
         .all()
     )
-    return {row[0] for row in rows}
-
-
-def _period_ids_that_are_recurrence_anchors(period_ids: list[int]) -> set[int]:
-    """Return the subset of ``period_ids`` that are a rule's start period."""
-    rows = db.session.query(RecurrenceRule.start_period_id).filter(
-        RecurrenceRule.start_period_id.in_(period_ids),
-    ).distinct().all()
     return {row[0] for row in rows}

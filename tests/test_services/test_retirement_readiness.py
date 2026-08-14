@@ -7,7 +7,7 @@ flag, the downsampled flight-path chart series, the countdown facts, and
 the per-account contribution facts.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -28,8 +28,11 @@ from app.services.retirement_readiness import (
     _downsample_indices,
     funded_ratio_state,
 )
+from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 from app.utils.dates import add_months
+
+from tests._test_helpers import derived_window
 
 
 def _gap_analysis(*, required, after_tax_projected):
@@ -110,24 +113,33 @@ class TestBuildCountdown:
 
     def test_no_horizon(self):
         """No retirement date -> zeroed countdown, no date."""
-        assert _build_countdown(None, []) == {
+        assert _build_countdown(
+            None, PeriodWindow(periods=()), date.today(),
+        ) == {
             "periods_remaining": 0,
             "years_remaining": Decimal("0.0"),
             "retirement_date": None,
         }
 
     def test_years_and_periods(self):
-        """periods_remaining is the synthetic count; years is days/365.25.
+        """periods_remaining is the AXIS length; years is days/365.25.
 
         A retirement date 365 days out gives 365 / 365.25 = 0.9993... ->
-        1.0 (one decimal, round-half-up); the synthetic-period count passes
+        1.0 (one decimal, round-half-up); the axis's period count passes
         straight through.
+
+        **The count is the owner's own cadence** since plan step C2-e -- the
+        axis is derived from their paydays, where it used to be a hardcoded
+        14-day rhythm (ledger row **P20**).  Seven weekly periods here, which
+        the old producer could not have expressed at all.
         """
-        planned = add_months(date.today(), 12)
-        days = (planned - date.today()).days
-        # Fabricate a synthetic-period list only for the count.
-        fake_periods = [object()] * 7
-        result = _build_countdown(planned, fake_periods)
+        as_of = date.today()
+        planned = add_months(as_of, 12)
+        days = (planned - as_of).days
+        axis = derived_window(
+            [as_of + timedelta(days=7 * step) for step in range(7)], 7,
+        )
+        result = _build_countdown(planned, axis, as_of)
         assert result["periods_remaining"] == 7
         assert result["retirement_date"] == planned
         expected_years = (
@@ -285,6 +297,54 @@ class TestComputeReadinessData:
             fact = data["account_contributions"][0]
             assert fact["account"].id == acct.id
             assert fact["none_linked"] is True
+
+    def test_all_cancelled_contributions_still_read_as_LINKED(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An account funded only by CANCELLED transfers is not "none linked".
+
+        The regression an adversarial review caught at plan step X-au-c2.
+        ``none_linked`` is a PRESENCE question -- *is anything wired up to fund
+        this account?* -- and it used to read the length of the contribution
+        list the loader returned.  Moving the ``status_contributes_to_balance``
+        screen to that loader emptied the list for an account whose every
+        contribution is Cancelled, which would flip this row from
+        ``you $0.00 / employer $0.00`` to a "link a contribution" call-to-action
+        against an account that HAS one.
+
+        Nothing graded it: the case above covers an account with no
+        contribution at all, where both readings agree.  This one is the case
+        where they disagree, so it is the one that pins the fix.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum
+        from tests._test_helpers import create_transfer
+
+        with app.app_context():
+            acct = _build_scenario(db, seed_user)
+            period = seed_periods_today[0]
+            transfer = create_transfer(
+                seed_user, db.session, seed_user["account"], acct, period,
+                amount=Decimal("400.00"),
+            )
+            cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
+            transfer.status_id = cancelled_id
+            for shadow in transfer.shadow_transactions:
+                shadow.status_id = cancelled_id
+            db.session.commit()
+
+            data = retirement_readiness.compute_readiness_data(
+                seed_user["user"].id,
+            )
+
+            fact = next(
+                f for f in data["account_contributions"]
+                if f["account"].id == acct.id
+            )
+            # It contributes NOTHING ...
+            assert fact["employee_per_period"] == Decimal("0")
+            # ... but something is linked, so the prompt stays off.
+            assert fact["none_linked"] is False
 
     def test_tax_rate_applied_reduces_pension_and_traditional(
         self, app, db, seed_user, seed_periods_today,

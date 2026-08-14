@@ -183,7 +183,7 @@ class TestClearingATransactionTemplatesRecurrence:
         assert _period_indices(rows, seed_periods) == list(range(10))
 
         resp = auth_client.post(f"/templates/{template.id}", data={
-            "recurrence_pattern": "",
+            "recurrence_unit": "",
             "effective_from": seed_periods[4].start_date.isoformat(),
             "version_id": str(template.version_id),
         }, follow_redirects=True)
@@ -224,7 +224,7 @@ class TestClearingATransactionTemplatesRecurrence:
         db.session.commit()
 
         resp = auth_client.post(f"/templates/{template.id}", data={
-            "recurrence_pattern": "",
+            "recurrence_unit": "",
             "effective_from": seed_periods[4].start_date.isoformat(),
             "version_id": str(template.version_id),
         }, follow_redirects=True)
@@ -269,7 +269,7 @@ class TestClearingATransactionTemplatesRecurrence:
         db.session.commit()
 
         resp = auth_client.post(f"/templates/{template.id}", data={
-            "recurrence_pattern": "",
+            "recurrence_unit": "",
             "effective_from": seed_periods[4].start_date.isoformat(),
             "version_id": str(template.version_id),
         }, follow_redirects=True)
@@ -313,7 +313,7 @@ class TestClearingATransactionTemplatesRecurrence:
         db.session.commit()
 
         resp = auth_client.post(f"/templates/{template.id}", data={
-            "recurrence_pattern": "",
+            "recurrence_unit": "",
             "default_amount": "99.99",
             "effective_from": seed_periods[4].start_date.isoformat(),
             "version_id": str(template.version_id),
@@ -345,7 +345,7 @@ class TestClearingATransactionTemplatesRecurrence:
         template = _recurring_txn_template(seed_user, rule)
 
         resp = second_auth_client.post(f"/templates/{template.id}", data={
-            "recurrence_pattern": "",
+            "recurrence_unit": "",
             "version_id": str(template.version_id),
         })
         assert resp.status_code == 404
@@ -463,7 +463,7 @@ class TestClearingATransferTemplatesRecurrence:
         assert _period_indices(rows, seed_periods) == list(range(10))
 
         resp = auth_client.post(f"/transfers/{template.id}", data={
-            "recurrence_pattern": "",
+            "recurrence_unit": "",
             "effective_from": seed_periods[4].start_date.isoformat(),
             "version_id": str(template.version_id),
         }, follow_redirects=True)
@@ -534,7 +534,7 @@ class TestClearingATransferTemplatesRecurrence:
         assert extra_before == Decimal("250.00")
 
         resp = auth_client.post(f"/transfers/{template.id}", data={
-            "recurrence_pattern": "",
+            "recurrence_unit": "",
             "effective_from": seed_periods[0].start_date.isoformat(),
             "version_id": str(template.version_id),
         }, follow_redirects=True)

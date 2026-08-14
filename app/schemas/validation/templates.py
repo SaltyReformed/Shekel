@@ -12,14 +12,14 @@ from app.schemas.validation._helpers import (
     EFFECTIVE_DATE_MAX,
     EFFECTIVE_DATE_MIN,
     BaseSchema,
-    RecurrencePatternField,
+    RecurrenceFormFieldsMixin,
     RowId,
     _normalize_empty_inputs,
     _reject_envelope_on_income,
 )
 
 
-class TemplateCreateSchema(BaseSchema):
+class TemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     """Validates POST data for creating a transaction template.
 
     Includes a cross-field rule (``validate_envelope_only_on_expense``)
@@ -57,39 +57,14 @@ class TemplateCreateSchema(BaseSchema):
     is_envelope = fields.Boolean(load_default=False)
     companion_visible = fields.Boolean(load_default=False)
 
-    # Recurrence rule fields.
-    # The value is the integer primary key of a ref.recurrence_patterns row,
-    # submitted as a string via HTML form data.  ``RecurrencePatternField``
-    # rather than a bare ``RowId``: it also refuses an id no
-    # ``RecurrencePatternEnum`` member names -- what the application MODELS is
-    # narrower than what the table HOLDS, and the gap is a 500 (plan step
-    # R2e-2).  Carrying the rule in the FIELD is what stops a third schema
-    # declaring a pattern without it; ``validate.Range(min=1)`` went with the
-    # move because ``RowId`` already floors at ``MIN_ROW_ID``.
-    #
-    # ``RowId`` underneath rather than ``Integer`` because it IS a row id
-    # despite the name (plan step X-ae): an adversarial review found
-    # ``Integer`` reading '١', ' 2 ', '+3', '007' and '1_0' as pattern ids,
-    # and the completeness gate could not see it while that gate matched on a
-    # ``_id`` SUFFIX.
-    #
-    # ``allow_none`` so the form's "Does not repeat" option survives
-    # the pre_load hook as an explicit ``None`` rather than a dropped key
-    # (plan step R2e-1).  The two are different requests and the update route
-    # acts on them differently -- a present ``None`` CLEARS the recurrence, an
-    # absent key leaves it alone -- so collapsing them would make an amount-only
-    # PATCH silently delete a template's cadence.  This is the same reason
-    # ``due_day_of_month`` and ``end_date`` below are nullable.
-    recurrence_pattern = RecurrencePatternField(allow_none=True)
-    interval_n = fields.Integer(validate=validate.Range(min=1))
-    offset_periods = fields.Integer(validate=validate.Range(min=0))
-    day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
+    # The recurrence controls both template forms share are on
+    # :class:`~app.schemas.validation._helpers.RecurrenceFormFieldsMixin`.
+    # This one field is NOT shared: only a transaction template carries a
+    # separate bill due-day, and declaring it on the mixin would silently set
+    # a column from a key the transfer schemas never validate.
     due_day_of_month = fields.Integer(
         validate=validate.Range(min=1, max=31), allow_none=True,
     )
-    month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
-    start_period_id = RowId()
-    end_date = fields.Date(allow_none=True)
 
     @validates_schema
     def validate_envelope_only_on_expense(self, data, **kwargs):

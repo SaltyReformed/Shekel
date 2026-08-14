@@ -105,9 +105,8 @@ def _projected_end_balance(account, user_id, period):
     than at an intermediate the route does not render.  The context is rebuilt
     per call because a true-up between two reads must be visible to the second.
     """
-    periods = pay_period_service.get_all_periods(user_id)
     view = balance_at.grid_balance_view(
-        account, BalanceContext.build(user_id), periods,
+        account, BalanceContext.build(user_id),
     )
     return view.columns[period.id].balance
 

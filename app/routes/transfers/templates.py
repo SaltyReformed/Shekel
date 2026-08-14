@@ -25,6 +25,7 @@ from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
 from app.extensions import db
 from app.models.category import Category
+from app.models.pay_period import PayPeriod
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.account import Account
@@ -38,7 +39,6 @@ from app.services import (
     transfer_recurrence,
     transfer_service,
 )
-from app.services.recurrence import pattern_choices
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     StaleConflictContext,
@@ -58,13 +58,14 @@ from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
     RecurrenceFormContext,
-    build_recurrence_rule_from_form,
-    edit_form_pattern_choices,
+    build_recurrence_rule_for_create,
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
-from app.routes._form_errors import validate_form_or_redirect
+from app.routes._recurrence_form_render import recurrence_form_state
+from app.routes._form_errors import load_form_or_redirect
 from app.routes._redirect_target import RedirectTarget
+from app.schemas.validation import RECURRENCE_END_BOUND_KEY
 from app.routes._transfer_creation_helpers import (
     flush_template_or_namedup_redirect,
     generate_transfers_for_all_periods,
@@ -141,7 +142,11 @@ def new_transfer_template():
         template=None,
         accounts=accounts,
         categories=categories,
-        pattern_choices=pattern_choices(),
+        # One value for every recurrence control (see the transaction-template
+        # twin).  A transfer template only becomes a loan payment through the
+        # loan flow, never through this form, so a CREATE never locks its
+        # bounds.
+        recurrence=recurrence_form_state(None),
         periods=periods,
         current_period=current_period,
         prefill_from=prefill_from,
@@ -164,12 +169,12 @@ def create_transfer_template():
     2026-04-15 security remediation plan): every user-scoped FK
     accepted from the form -- ``from_account_id``, ``to_account_id``,
     ``category_id`` -- is verified against ``current_user.id`` before
-    the row is persisted.  ``start_period_id`` is verified by the F-24
-    builder (:func:`build_recurrence_rule_from_form`), which owner-checks
-    any submitted start period for EVERY recurrence pattern -- not just
-    ``EVERY_N_PERIODS`` -- before it is persisted on the rule and before
-    ``recurrence_engine`` dereferences its ``start_date`` as the
-    generation boundary; the follow-up non-repeating-transfer branch
+    the row is persisted.  ``start_period_id`` is verified HERE since plan
+    step R7b-4 -- it used to be the F-24 builder's, because the same
+    ``<select>`` was also the recurrence's opening bound and a foreign period
+    would have shifted this owner's generation timing.  The recurrence takes a
+    DATE now, so the field has one job (which period a NON-REPEATING transfer
+    lands in) and it is checked where that job lives.  The follow-up branch
     (:func:`_materialize_one_time_transfer`) re-fetches the period and
     verifies ownership a second time, so a malicious ``start_period_id``
     cannot leak into the transfer service.  The flash + redirect UX matches the
@@ -178,13 +183,12 @@ def create_transfer_template():
     by re-rendering the same form page rather than confirming
     whether the FK exists for someone else.
     """
-    invalid_payload = validate_form_or_redirect(
+    payload = load_form_or_redirect(
         _create_schema, RedirectTarget("transfers.new_transfer_template"),
     )
-    if invalid_payload is not None:
-        return invalid_payload
-
-    data = _create_schema.load(request.form)
+    if isinstance(payload, Response):
+        return payload
+    data = payload
 
     # --- Route-boundary FK ownership ---
     # Single-return loop so adding a future FK does not push the
@@ -199,13 +203,30 @@ def create_transfer_template():
             flash(f"Invalid {label}.", "danger")
             return redirect(url_for("transfers.new_transfer_template"))
 
+    # The pay period a NON-REPEATING transfer lands in.  Owner-checked HERE
+    # since plan step R7b-4, and the move is what that step's fold makes
+    # correct: the check used to live inside
+    # :func:`build_recurrence_rule_from_form`, because the same ``<select>``
+    # was ALSO the recurrence's "First paycheck" and a cross-user period would
+    # have shifted this owner's generation timing.  The recurrence takes a
+    # DATE now, so the field has one job and one owner -- this route -- and a
+    # kind-agnostic helper no longer checks a field only one kind submits.
+    #
+    # Guarded on presence rather than folded into the loop above, because it
+    # is OPTIONAL: a repeating transfer submits no period at all, and
+    # ``_user_owns`` reads ``None`` as "no row" and would refuse it.  Checked
+    # unconditionally when present, so a crafted POST pairing a foreign period
+    # with a repeating cadence is refused rather than ignored.
+    # ``_materialize_one_time_transfer`` re-checks as defence in depth.
     start_period_id = data.pop("start_period_id", None)
-    end_date = data.pop("end_date", None)
+    if start_period_id is not None and not _user_owns(PayPeriod, start_period_id):
+        flash("Invalid start period.", "danger")
+        return redirect(url_for("transfers.new_transfer_template"))
 
-    # Create the recurrence rule via the F-24 helper, or NO rule when the form
-    # says "Does not repeat".  ``rule is None`` is the one-time transfer since
-    # plan step R2e-3 -- the same shape a one-time transaction template has
-    # always had -- and it is the create form's DEFAULT selection.
+    # Create the recurrence rule via the F-24 preamble, or NO rule when the
+    # form says "Does not repeat".  ``rule is None`` is the one-time transfer
+    # since plan step R2e-3 -- the same shape a one-time transaction template
+    # has always had -- and it is the create form's DEFAULT selection.
     #
     # This dereferenced ``rule.id`` unguarded until R2e-3, on a comment
     # claiming ``recurrence_pattern`` was ``required`` on
@@ -213,19 +234,12 @@ def create_transfer_template():
     # ``allow_none``, so any POST omitting or emptying it reached
     # ``AttributeError: 'NoneType' object has no attribute 'id'`` -- a 500
     # (defect **D13**), measured on both the absent and the empty spelling.
-    rule_or_redirect = build_recurrence_rule_from_form(
+    rule = build_recurrence_rule_for_create(
         data,
         user_id=current_user.id,
-        start_period_id=start_period_id,
-        ctx=RecurrenceFormContext(
-            end_date_value=end_date,
-            redirect=RedirectTarget("transfers.new_transfer_template"),
-            include_due_day_of_month=False,
-        ),
+        redirect=RedirectTarget("transfers.new_transfer_template"),
+        include_due_day_of_month=False,
     )
-    if isinstance(rule_or_redirect, Response):
-        return rule_or_redirect
-    rule = rule_or_redirect
 
     template = TransferTemplate(
         user_id=current_user.id,
@@ -281,12 +295,16 @@ def edit_transfer_template(template_id):
         template=template,
         accounts=accounts,
         categories=categories,
-        # The EDIT picker: see ``templates.edit_template``.  Since plan step
-        # R2e-3 this form offers the same empty "Does not repeat" option the
-        # transaction form does, and it is FIRST -- so an unmodelled stored
-        # pattern left unselected would default to the DESTRUCTIVE clear, not
-        # to a wrong cadence.  ``edit_form_pattern_choices`` keeps it selected.
-        pattern_choices=edit_form_pattern_choices(template),
+        # The EDIT controls' starting state: see ``templates.edit_template``.
+        # Since plan step R2e-3 this form offers the same empty "Does not
+        # repeat" option the transaction form does, and it is FIRST -- so a
+        # cadence left unselected would default to the DESTRUCTIVE clear, not
+        # to a wrong cadence.  ``edit_form_cadence`` is what selects it.
+        recurrence=recurrence_form_state(template),
+        # A LOAN PAYMENT's stop is the loan's projected payoff, rewritten by
+        # ``loan_recurrence_sync`` on every payoff-affecting edit -- so the
+        # control renders disabled and states where the value comes from,
+        # rather than accepting one the next loan edit discards.
         periods=[],
         current_period=None,
         # The amount's dated history (plan step X-au-a), precomputed into
@@ -334,16 +352,15 @@ def update_transfer_template(template_id):
     if template is None:
         abort(404)
 
-    invalid_payload = validate_form_or_redirect(
+    payload = load_form_or_redirect(
         _update_schema,
         RedirectTarget(
             "transfers.edit_transfer_template", {"template_id": template_id},
         ),
     )
-    if invalid_payload is not None:
-        return invalid_payload
-
-    data = _update_schema.load(request.form)
+    if isinstance(payload, Response):
+        return payload
+    data = payload
 
     # Stale-form check (commit C-18 / F-010).  Routed through the
     # F-26 helper so the pre-flush optimistic-locking guard shares a
@@ -369,8 +386,17 @@ def update_transfer_template(template_id):
         )
 
     effective_from = data.pop("effective_from", display_today())
+    # Dropped, not read: an EDIT never re-materialises the one-time Transfer
+    # this field places, so the only thing a submitted value could do here is
+    # reach the field-update loop as a stray kwarg.  It is still on THIS
+    # schema (plan step R7b-4 moved it there from the shared recurrence
+    # mixin), so a submission can still carry it and the pop is still needed.
     data.pop("start_period_id", None)
-    end_date = data.pop("end_date", None)
+    # The closing bound, composed by the schema's ``@post_load`` into ONE
+    # value under the mode key.  ABSENT when the form stated no bound --
+    # a disabled control, or a partial update -- which the helpers read as
+    # "leave the stored one alone" (plan step R7b-3).
+    end_bound = data.pop(RECURRENCE_END_BOUND_KEY, None)
 
     # The template's before-image, captured BEFORE anything overwrites it
     # (plan step R2e-1).  ``had_recurrence_rule`` is what lets the
@@ -395,7 +421,7 @@ def update_transfer_template(template_id):
         template,
         data,
         ctx=RecurrenceFormContext(
-            end_date_value=end_date,
+            end_bound=end_bound,
             redirect=RedirectTarget(
                 "transfers.edit_transfer_template",
                 {"template_id": template_id},

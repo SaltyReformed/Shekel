@@ -2,24 +2,23 @@
 
 ## Where this stands
 
-**C1** (`f9d148fe`), **C2-a** (`3cb3082f`), **C2-b1** (`90f2fbb7`), **C2-d** (`3e6cd4ec`), **C3**
-(both leaves, `7e3fb33b`) and **C2-b** (both leaves, `fe365de1`, which also ticked **C5a** and the
-recurrence arc's **R-F10**) are built. What reached `main` and production is a MEASUREMENT
-(`git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`), and what is ready now is
-`steps.md`'s order table; do not re-derive either here.
+**Built:** **C1** (`f9d148fe`), **C2-a** (`3cb3082f`), **C2-b1** (`90f2fbb7`), **C2-b** (both
+leaves, `fe365de1`, which also ticked **C5a** and the recurrence arc's **R-F10**), **C2-c**
+(`b8a72f6c`), **C2-d** (`3e6cd4ec`), **C2-e** (`8143c6fe`) and **C3** (both leaves, `7e3fb33b`).
+What reached `main` and production is a MEASUREMENT (`git log --oneline origin/main..dev`,
+`docker inspect shekel-prod-app`); what is ready now is `steps.md`'s order table.
+
+**Both engines and every forward PROJECTION read the DERIVED calendar now** -- the recurrence engine
+since C2-b2, the balance seam since C2-c, the projections since C2-e. One leaf still asks
+`pay_period_service`: `C2-f`, its six `get_*` readers over 66 call sites. Where a stored column
+disagrees with the derivation both engines believe the derivation; the shapes that can disagree are
+named in `recurrence/_occurrence.py` and section 3, all owned by **C4**.
 
 **The writer is ONE module** -- `pay_period_write`, the only code in `app/` that constructs or
-deletes a pay period -- so C4 changes one file plus the readers section 3 names.
+deletes a pay period -- so C4 changes one file plus those readers.
 **R-PC1's coverage half was DELETED 2026-08-11** (developer), leaving the floor as this arc's only
-write refusal, `integrity_check` **BA-06** asking what it refused, and **P32** / **P33** open.
-
-The arc opened 2026-08-08 out of the recurrence arc's **F-10**, a missing NORMALIZATION rather than
-a missing check; `balance:N-128` / `X-l` are the same defect from a third side. `C2` ticks as ONE
-step under three names -- `C2` == `balance:X-l` == `recurrence:R-F12`.
-**The recurrence engine reads the DERIVED calendar since C2-b2**, so where a stored column disagrees
-with the payday derivation the engine believes the derivation: three shapes, all legacy, stated in
-`recurrence/_occurrence.py` and owned by **C4**. **A cold session starts at section 4.** The shared
-registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
+write refusal and **P33** open. **A cold session starts at section 4**; the shared registries are
+`ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 
 ## Rulings
 
@@ -35,6 +34,11 @@ registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 | **Past the last stored payday** | **The calendar ANSWERS, projecting forward at the OWNER's cadence with `period_id = None`. Ruled 2026-08-10 (developer)**, which is what makes it the TOTAL function `balance:X-l` asks for. `growth_engine.generate_projection_periods` and `SyntheticPeriod` retire into it (rows **P17**, **P20**). Containment over SAVED periods stays its own named method, because the recurrence engine needs to tell a schedule HOLE from "the schedule has not reached there yet" |
 | **The forward-only rule (R-PC1)** | **REPLACE `_reject_overlapping_batch`, do not delete it. Ruled 2026-08-10 (developer), SPLIT IN TWO, corrected twice by C3-b's neutral reviews, then HALVED 2026-08-11 (developer).** The rule the plan stated -- "the last paycheck must hold no row dated on or after the new payday" -- was measured wrong in both directions. What survives is a forward-only FLOOR of one full cadence after the latest payday, whose only job is keeping C6 closed and which C6 deletes. **The COVERAGE half is DELETED**: it refused a write taking a day out of every paycheck while a SETTLED row's `settled_on` fell on it, on the claim that stranding such a day reproduces `balance:N-128` -- and the claim was false. `_cash_periods` values each column at its OWN `end_date`, so a day off the top of the window is absent from both sides of R-K and reports as `period_timing`. See C3-b |
 | **When the gap machinery dies** | **With `C2-b2`, the leaf that makes its subject unreachable -- not with `C4`. Ruled 2026-08-11 (developer).** `C5a` was gated on C4 and the gate had no code behind it: `PlacementOutcome.SCHEDULE_GAP`, `GenerationPlan.gaps` and `report_schedule_gaps` read no stored column, so all three went dead when the recurrence engine took the derived calendar, and shipping a branch that cannot fire is what rule 1 forbids. The visibility it took is replaced by `integrity_check` **BA-07**, which asks the stored question as a query and dies with the column at C4. Rejected: leaving it dead with a docstring note (ledger row **P25**'s original disposition), which ships code that lies about a state the app cannot hold |
+| **How the seam learns WHICH periods to report** | **It READS them; the argument is DELETED. Ruled 2026-08-13 (developer).** All eight callers filled it with one value -- the owner's whole saved set -- so the only thing it could express was a mistake, which is the shape ruling R-Q already removed the override map for. `BalanceContext` carries the calendar, taking the first of `balance:X-i1`'s five inputs early. Rejected: callers slicing the calendar themselves (eight extra loads, and it pushes calendar-loading into routes ahead of `C2-f`), and threading a `PayCalendar` beside the context (a second per-request bundle, which is what the context exists to end) |
+| **A window's two invariants** | **ORDER is DERIVED and CONTIGUITY is CHECKED. Ruled 2026-08-13 (developer).** A window's identity is its period SET, so `__post_init__` sorts and a caller cannot state an order wrongly; contiguity is a property of the input no constructor can compute its way out of, so it is refused. That refusal is P32's first disposition, taken because the second ("`containing` stops answering `None` inside its own span") is what a tiling gives for free and so decides nothing |
+| **`PayCalendarError` reaching a balance page** | **RECORD it, do not build the handler. Ruled 2026-08-13 (developer).** `C2-c` widens the raise from the recurrence and savings surfaces to `/grid` and `/accounts/<id>`, where `app/error_handlers.py` leaves it on the bare 500. The raise is right (a defaulted cadence misreports every horizon); what is missing is a recovery page, which is a ruling of `BaselineMissingError`'s size. Row **P35** carries it and `C4` deletes the fallback that causes it |
+| **The axis below the first payday** | **REFUSE, and clamp in ONE named companion. Ruled 2026-08-14 (developer)**, ledger row **P23**. `axis()` answered a range opening below `opening_bound` with the part above it -- silently, and a short axis is indistinguishable from a complete one, which is the argument `overlapping()` already makes for refusing a CROSSED range. Nothing is projected backwards (the 2026-08-10 ruling), so covering such a range was never an option and refusing is the only answer that is not a half-truth. The owner whose first payday has not happened yet is an ordinary state -- the Generate form asks for "your next (or first) payday" -- so `projection_axis()` sits beside `axis()` as the TOTAL companion every projecting surface calls, exactly as `filing_period` sits beside `period_starting_on_or_before`. Rejected: stating the truncation in the `Returns` block (a value that answers a different question than it was asked, however honestly documented), and projecting backwards (it would attribute money to paychecks that never happened) |
+| **What the projection axis HEAD is** | **Each surface keeps its own, and the SEED follows it. Ruled 2026-08-14 (developer)**, ledger row **P22**. The axis covers the range it is given, so a caller passing the read pass's clock gets the period CONTAINING it -- opening up to a cadence in the past. That is correct wherever the seed is read at `axis[0].start_date - 1`, which `retirement_projection._resolve_seed_balances` already did and which `investment_dashboard_service` was corrected to do. The one surface whose seed CANNOT follow -- the Horizon's asset band, seeded from the figure the net-worth hero shows -- left the axis instead: it carries no contributions, so an axis was only chopping the horizon into pieces the compound formula is indifferent to. Rejected: clipping the axis head to the requested day (a partial period is not a period, and the window type exists to say so), and re-seeding the asset band at the axis head (one balance-seam read per account, and index 0 would stop equalling the hero) |
 | **C2's shape** | **DECOMPOSED into `C2-a`..`C2-f`, the value first with nothing calling it. Ruled 2026-08-10 (developer).** A single commit over 66 call sites cannot be proven against production BEFORE its consumers depend on it, which is exactly the technique that made C1 safe, cannot be reviewed in focus, and cannot be reverted precisely -- and two of the cutovers move money |
 
 ---
@@ -195,15 +199,16 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       RULED on three forks 2026-08-10. Ticks with the last of its leaves, and that tick is also
       `balance:X-l` and `recurrence:R-F12`: one step under three names, one commit each.
       **The CENSUS row P6 counts, and it is not final.** Seven implementations of "which pay period
-      contains this date" were found, one has gone: `recurrence/_calendar.py:287` (bisect, `None`
-      outside; 1 call site), `balance_at/_cash_periods.py:320` (bisect, `None` outside; 3 sites, all
-      in-module, scoped to the reported WINDOW), `investment_dashboard_service/_chart.py:200`
-      (linear scan over SYNTHETIC periods), `pay_period_service.get_current_period` (`:226`, SQL,
-      `.first()` with NO `ORDER BY` -- row **P19**), `get_overlapping_periods` (`:364`, SQL range),
-      and `savings_dashboard_service/_horizon.py:246-271` `_period_id_at` (linear containment scan
-      with a FORWARD clamp). `loan_ledger/_visible.py:150` was DELETED at C2-d (`3e6cd4ec`) with
-      `resolve_anchor_pay_period` and `owner_pay_periods`. `entry_service.py:816` is EXCLUDED: it
-      asks MEMBERSHIP, the primitive the searches are built on, not a search.
+      contains this date" were found and THREE have gone: `recurrence/_calendar.py:287` at `C2-b2`,
+      `balance_at/_cash_periods.py:320` (a bisect over the STORED spans, 3 in-module sites) at
+      `C2-c`, and `loan_ledger/_visible.py:150` at `C2-d` (`3e6cd4ec`, with
+      `resolve_anchor_pay_period` and `owner_pay_periods`). What survives:
+      `investment_dashboard_service/_chart.py:200` (linear scan over SYNTHETIC periods),
+      `pay_period_service.get_current_period` (`:226`, SQL, `.first()` with NO `ORDER BY` -- row
+      **P19**), `get_overlapping_periods` (`:364`, SQL range), and
+      `savings_dashboard_service/_horizon.py:246-271` `_period_id_at` (linear containment scan with
+      a FORWARD clamp) -- FOUR, all owned by `C2-e` and `C2-f`. `entry_service.py:816` is EXCLUDED:
+      it asks MEMBERSHIP, the primitive the searches are built on, not a search.
       **The lesson, and why the count may still be low:** an AST census keyed on the containment
       PREDICATE could not see `_period_id_at` -- it was found by reading the consumers of the
       producer C2-e retires, and its own docstring says why it exists (its synthetic periods "carry
@@ -225,17 +230,21 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       430-shape baseline. **P26**, **P27** and **P28** re-pointed to **C4**: each owed a STATEMENT
       here and now owes only the column.
 
-- [ ] **C2-c -- the cash-view cutover.** `_cash_periods._PeriodSpans` retires. Its three call sites
-  keep answering `None` outside the reported window, a VIEW question and not the calendar's --
-  the identity R-K rests on reads a period's own span.
+- [x] **C2-c -- the cash-view cutover.** `b8a72f6c`. `_PeriodSpans` is DELETED and the balance
+      seam's THIRTEEN per-period entries stopped taking a period list: the domain is
+      `BalanceContext.reported_periods()`. Closed **P14**, **P24**, **P32** and `balance:N-128`;
+      opened **P36**-**P39**. Proof: `_window.py`'s docstring, and the corrupted-column pin in
+      `test_cash_period_view.py` with its firing control.
 
 - [x] **C2-d -- the filing cutover.** `3e6cd4ec`. Closed **N-169**. Proof: `filing_period`'s
       docstring and `tests/manual/verify_filing_cutover.py` (1,654 days, 0 disagreements).
 
-- [ ] **C2-e -- the projection axis.** `growth_engine.generate_projection_periods` and
-  `SyntheticPeriod` DELETE; their six call sites take `axis()`. Closes **P7**, **P17**, **P20**,
-  **P21**, **P22**, **P23** -- read all six before starting; three were found AFTER this leaf
-  was written and they change what it owes.
+- [x] **C2-e -- the projection axis.** `8143c6fe`. All six call sites run on
+      `PayCalendar.projection_axis`; `generate_projection_periods` and `SyntheticPeriod` are
+      DELETED. Closed **P17**, **P20**, **P21**, **P22**, **P23**; opened **P40**-**P44**.
+      **P7 is RE-POINTED to C2-f, not ticked** (developer 2026-08-14): its projection half shipped
+      here, the tier its `+$5,427.07` was measured on did not. Proof: `projection_axis`'s docstring
+      and `tests/manual/verify_projection_axis.py` against a production clone.
 
 - [ ] **C2-f -- the readers answer from the calendar.** `pay_period_service`'s six `get_*` (`:213`,
   `:237`, `:260`, `:277`, `:317`, `:336`) resolve against the one value across their 66 call

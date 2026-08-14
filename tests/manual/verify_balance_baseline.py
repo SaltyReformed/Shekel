@@ -142,7 +142,7 @@ def _money(value):
     return f"{Decimal(value):.2f}"
 
 
-def _grid_columns(account, ctx, periods):
+def _grid_columns(account, ctx):
     """Return the whole grid view for *account*, as JSON-ready primitives.
 
     **The remainder is captured as THREE keys since plan step S1-c** (ruling
@@ -161,7 +161,7 @@ def _grid_columns(account, ctx, periods):
     comparison needs it.  A shim with no stated end is how the deleted name
     survives its own deletion.
     """
-    view = balance_at.grid_balance_view(account, ctx, periods)
+    view = balance_at.grid_balance_view(account, ctx)
     return {
         "columns": {
             str(period_id): {
@@ -260,7 +260,7 @@ def _account_blob(account, ctx, periods):
         "kind_correct_map": {
             str(period_id): _money(balance)
             for period_id, balance in balance_at.balance_map(
-                account, ctx, periods,
+                account, ctx,
             ).items()
         },
     }
@@ -268,7 +268,7 @@ def _account_blob(account, ctx, periods):
     # cash view about one is not a baseline -- it is the defect plan step X-a1
     # closed.  Its kind-correct figures above ARE the loan regression gate.
     if kind is not AccountProjectionKind.AMORTIZING:
-        blob.update(_grid_columns(account, ctx, periods))
+        blob.update(_grid_columns(account, ctx))
         blob.update(_cash_figures(account, ctx, periods))
         blob.update(_modelled_figures(account, ctx))
     return blob

@@ -48,8 +48,8 @@ where a hole exists, and production has none (61 paydays, 0 index mismatches, 0
 end mismatches, 0 gaps -- re-measured 2026-08-10, and re-driven through all
 three door shapes on a clone by ``tests/manual/verify_pay_period_writer.py``).
 SQLAlchemy emits no ``UPDATE`` at all for a reassignment that changes nothing
-(measured on the pinned 2.0.49; see
-``pay_period_admin._repoint_recurrence_rules``), so the recompute costs one
+(measured on the pinned 2.0.49 while plan step C3-b was written, against the
+schedule-rebuild re-pointer plan step R7b-4 has since deleted), so the recompute costs one
 derivation and no statements.  Where it DOES move a value it is repairing a
 hole and says so at WARNING; where the disagreement runs the OTHER way -- an
 overlap, which no writer here can produce -- it refuses instead of guessing
@@ -380,8 +380,10 @@ def retire_paydays(
 
     One bulk ``DELETE`` so PostgreSQL performs the whole cascade in one pass:
     transactions and transfers (and both shadows, preserving the transfer
-    invariant) go, with ``recurrence_rules.start_period_id`` set NULL, and
-    DB-level audit triggers still fire.  Per-object ``session.delete()`` would
+    invariant) go and DB-level audit triggers still fire.  **RECURRENCE RULES
+    are no longer in that cascade** (plan step R7b-4): a rule's opening bound
+    is a DATE rather than a pay-period FK, so retiring a payday cannot reach
+    it.  Per-object ``session.delete()`` would
     instead trip SQLAlchemy's nullify-on-disassociate against the NOT NULL
     ``transactions.pay_period_id`` and raise before the DB cascade fires.
     Balance ASSERTIONS do NOT go -- ruling R-EO deleted

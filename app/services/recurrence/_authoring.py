@@ -5,13 +5,15 @@ Every recurrence rule in the application is written here.  Before this module
 there were nine places that could write one: six that constructed a rule and
 three that mutated one in place (the edit form's update path,
 ``loan_recurrence_sync._sync_loan_cadence``, and
-``pay_period_admin._repoint_recurrence_rules``), each setting the columns it
+``pay_period_admin``'s schedule-rebuild re-pointer, itself deleted at plan
+step R7b-4), each setting the columns it
 happened to care about.
 
 The shape that leaves nothing for a writer to get half-right:
 
 * a caller states what it AUTHORS
-  (:class:`~app.services.recurrence.RecurrenceSpec`), never a column;
+  (:class:`~app.services.recurrence.RecurrenceSpec` -- a cadence since plan
+  step R7b, never a ``ref.recurrence_patterns`` id, and never a column);
 * :func:`_author` writes that whole spec, and it is the only function in the
   application that assigns a column of ``budget.recurrence_rules``;
 * the ONE value derived on write, ``offset_periods``, is taken from the same
@@ -30,9 +32,11 @@ Flask-isolated (plain values in, no ``request`` / ``session`` reads) and it
 never commits: writes flush into the caller's transaction, which owns the
 boundary.
 """
+from app import ref_cache
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import PayCalendar
+from app.services.recurrence._frequency import encode_cadence
 from app.services.recurrence._resolution import RecurrenceSpec, resolve
 
 
@@ -52,12 +56,37 @@ def _author(
     **Resolved BEFORE the write, and the same call does both jobs.**  A
     recurrence that cannot be resolved must not reach the table, and
     ``resolve`` is where every such refusal already lives -- an owner
-    mismatch, an unmodelled pattern, a non-positive interval, an empty
-    schedule.  Re-checking those four here would be a second copy of one
-    judgement.  Taking the phase from that same result rather than deriving
+    mismatch, a non-positive interval, a ``(unit, placement)`` pair with no
+    anchor derivation, a day or month outside its column's domain, an empty
+    schedule.  Re-checking those here would be a second copy of one judgement.
+    The refusal that is NOT ``resolve``'s is the encode below: a cadence the
+    closed pattern set cannot name resolves perfectly well and simply has
+    nowhere to be written.  Taking the phase from that same result rather than deriving
     it again is the other half: two calls could not disagree today, but they
     would be two producers of one value, which is the shape this step exists
     to remove.
+
+    **The ENCODE step is here and nowhere else** (plan step R7b).  A caller
+    authors a cadence -- an interval, a unit and a placement -- and the table
+    still names its cadence with a closed pattern set, so
+    :func:`~app.services.recurrence._frequency.encode_cadence` turns the first
+    into ``pattern_id`` plus the ``interval_n`` COLUMN.  Its inverse is the read
+    door's ``decode_pattern``, and both read one table, so the round trip
+    cannot half-drift.  Plan step R7c deletes this line together with the
+    columns.
+
+    **The encode runs FIRST, and an adversarial review of plan step R7b-2
+    measured why.**  It is a pure table lookup that asks "has this cadence
+    anywhere to be written at all", while ``resolve`` walks the cadence against
+    a real calendar -- so resolving first meant doing arbitrary month
+    arithmetic on a cadence that was about to be refused anyway.  Measured:
+    ``(10000, YEAR)`` reached ``_months.clamped_day``, which builds a ``date``
+    from a month ordinal, and raised ``ValueError: year must be in 1..9999``
+    -- OUTSIDE this package's error hierarchy, so the recurrence preview's
+    ``RecurrenceResolutionError`` handler did not catch it and a signed-in GET
+    was an unhandled 500.  Refusing the unstorable before walking it makes that
+    unreachable for every caller rather than for the ones with a schema in
+    front of them.
 
     Args:
         rule: The rule to write, new or existing.
@@ -65,22 +94,37 @@ def _author(
         calendar: The owner's pay-period schedule.
 
     Raises:
-        RecurrenceResolutionError: When *spec* cannot be resolved against
-            *calendar* -- see :func:`~app.services.recurrence.resolve`.
+        RecurrenceResolutionError: When *spec* names a cadence the closed
+            pattern set cannot store (see ``encode_cadence``), or cannot be
+            resolved against *calendar* (see
+            :func:`~app.services.recurrence.resolve`).
     """
+    encoded = encode_cadence(spec.interval_n, spec.unit, spec.placement)
     resolved = resolve(spec, calendar)
 
     rule.user_id = spec.user_id
-    rule.pattern_id = spec.pattern_id
-    rule.interval_n = spec.interval_n
+    rule.pattern_id = ref_cache.recurrence_pattern_id(encoded.pattern)
+    rule.interval_n = encoded.interval_n
     rule.offset_periods = resolved.offset_periods
     rule.day_of_month = spec.day_of_month
     rule.due_day_of_month = spec.due_day_of_month
     rule.month_of_year = spec.month_of_year
-    rule.start_period_id = spec.start_period_id
+    # ``start_period_id`` is NOT assigned, and its absence is the point (plan
+    # step R7b-4).  The column was the form's "First paycheck"; that step's
+    # migration folded every value into ``start_date`` and left the column
+    # NULL on all 46 live rules, so this door has nothing to write there and
+    # no other writer exists.  Nulling it here anyway would be a fence over a
+    # state nothing can reach.  Plan step R7c drops the column.
     rule.start_date = spec.start_date
-    rule.end_date = spec.end_date
-    rule.max_occurrences = spec.max_occurrences
+    # The closing bound is ONE authored value and TWO columns under an
+    # exclusive arc (``ck_recurrence_rules_single_end_bound``), so it is split
+    # here and rejoined at the read door -- the only two places the pair is
+    # ever seen apart.  Assigning them from one ``columns()`` call rather than
+    # from two accessors is what makes "never both" a property of this line
+    # rather than of the value's two readers agreeing (plan step R7b-3).
+    end_columns = spec.end_bound.columns()
+    rule.end_date = end_columns.end_date
+    rule.max_occurrences = end_columns.max_occurrences
 
 
 def build_transient_rule(

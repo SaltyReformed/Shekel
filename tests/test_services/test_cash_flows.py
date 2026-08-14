@@ -45,6 +45,7 @@ from decimal import Decimal
 
 from app.enums import StatusEnum
 from app.models.transaction import Transaction
+from app.services.cash_ledger._amount_source import AmountBasis
 from app.services.cash_ledger import (
     ProjectedBasis,
     ReconciledThrough,
@@ -68,9 +69,22 @@ _ZERO = Decimal("0.00")
 # otherwise.  Stating the day rather than leaving it ``None`` keeps this file's
 # subject -- which rows are counted, and on which leg -- separate from
 # ``test_cash_amounts.py``'s -- what one row is worth.
-_UNRECONCILED = ProjectedBasis(
-    amount_overrides={}, reconciled_through=ReconciledThrough(date(2026, 1, 1)),
-)
+def _unreconciled(*rows):
+    """The reduction's basis over *rows*, with no live producer and no override.
+
+    A function rather than the module constant it replaced, because since plan
+    step X-au-c2 a basis records the row SET it was built over: the resolver
+    refuses a row outside it, so one shared object would either have to be built
+    over every row in the file or would grade the contract rather than the rule.
+    """
+    return ProjectedBasis(
+        amounts=AmountBasis(
+            priced_ids=frozenset(row.id for row in rows),
+            salary_net={},
+            loan_cash={},
+        ),
+        reconciled_through=ReconciledThrough(date(2026, 1, 1)),
+    )
 
 
 def _set_status(txn, status_enum):
@@ -160,7 +174,7 @@ class TestOnlyProjectedRowsContribute:
             txn.actual_amount = Decimal("450.00")
             db.session.commit()
 
-            assert sum_projected([txn], _UNRECONCILED) == (_ZERO, _ZERO)
+            assert sum_projected([txn], _unreconciled(txn)) == (_ZERO, _ZERO)
 
     def test_a_cancelled_row_contributes_nothing(
         self, app, db, seed_user, seed_periods,
@@ -177,7 +191,7 @@ class TestOnlyProjectedRowsContribute:
             _set_status(txn, StatusEnum.CANCELLED)
             db.session.commit()
 
-            assert sum_projected([txn], _UNRECONCILED) == (_ZERO, _ZERO)
+            assert sum_projected([txn], _unreconciled(txn)) == (_ZERO, _ZERO)
 
     def test_a_credit_status_row_contributes_nothing(
         self, app, db, seed_user, seed_periods,
@@ -196,7 +210,7 @@ class TestOnlyProjectedRowsContribute:
             _set_status(txn, StatusEnum.CREDIT)
             db.session.commit()
 
-            assert sum_projected([txn], _UNRECONCILED) == (_ZERO, _ZERO)
+            assert sum_projected([txn], _unreconciled(txn)) == (_ZERO, _ZERO)
 
 
 class TestTheTwoLegs:
@@ -238,7 +252,7 @@ class TestTheTwoLegs:
             )
             db.session.commit()
 
-            assert sum_projected([txn], _UNRECONCILED) == (Decimal("2000.00"), _ZERO)
+            assert sum_projected([txn], _unreconciled(txn)) == (Decimal("2000.00"), _ZERO)
 
     def test_every_loaded_entry_counts(self, app, db, seed_user, seed_periods):
         """The reduction sees every loaded entry, whatever date each carries.
@@ -257,7 +271,7 @@ class TestTheTwoLegs:
 
         This is the one test in the file with its own basis, and it is the one
         that needs a reconciled-through day covering both purchases; the shared
-        ``_UNRECONCILED`` would leave both on the floor and answer 500.00.  The
+        ``_unreconciled`` would leave both on the floor and answer 500.00.  The
         day is stated here rather than widened globally so every other test's
         bucket stays fixed.
         """
@@ -273,7 +287,11 @@ class TestTheTwoLegs:
                 )
             db.session.commit()
             basis = ProjectedBasis(
-                amount_overrides={},
+                amounts=AmountBasis(
+                    priced_ids=frozenset({txn.id}),
+                    salary_net={},
+                    loan_cash={},
+                ),
                 reconciled_through=ReconciledThrough(date(2026, 1, 31)),
             )
 
@@ -312,7 +330,7 @@ class TestTheReductionIsAdditiveOverRows:
             )
             db.session.commit()
 
-            assert sum_projected([groceries, gas], _UNRECONCILED) == (
+            assert sum_projected([groceries, gas], _unreconciled(groceries, gas)) == (
                 _ZERO, Decimal("480.00"),
             )
 
@@ -343,7 +361,7 @@ class TestTheReductionIsAdditiveOverRows:
             )
             db.session.commit()
 
-            assert sum_projected([groceries, rent, paycheck], _UNRECONCILED) == (
+            assert sum_projected([groceries, rent, paycheck], _unreconciled(groceries, rent, paycheck)) == (
                 Decimal("2000.00"), Decimal("1600.00"),
             )
 
@@ -387,6 +405,6 @@ class TestTheReductionIsAdditiveOverRows:
                 .one()
             )
 
-            assert sum_projected([groceries, shadow], _UNRECONCILED) == (
+            assert sum_projected([groceries, shadow], _unreconciled(groceries, shadow)) == (
                 _ZERO, Decimal("700.00"),
             )

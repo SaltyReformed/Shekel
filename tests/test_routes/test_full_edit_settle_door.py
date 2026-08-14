@@ -41,6 +41,7 @@ from app.services import transaction_service
 from app.services.state_machine import allowed_transitions
 from app.utils.dates import display_today
 from tests._test_helpers import add_entry, create_envelope_txn
+from app.services.row_valuation import owned_contribution
 
 
 def _gas_envelope(seed_user, period):
@@ -142,7 +143,7 @@ class TestTheDropdownBooksWhatTheRowCost:
             assert reloaded.actual_amount == Decimal("48.98")
             assert reloaded.estimated_amount == Decimal("80.00")
             # effective_amount = COALESCE(actual, estimated) = 48.98
-            assert reloaded.effective_amount == Decimal("48.98")
+            assert owned_contribution(reloaded) == Decimal("48.98")
             assert reloaded.settled_on == display_today()
             # The ledger books what the row cost, not what it budgeted.
             assert _cash_leg(txn_id, seed_user["account"].id) == Decimal(
@@ -176,7 +177,7 @@ class TestTheDropdownBooksWhatTheRowCost:
             db.session.expire_all()
             dropdown_row = db.session.get(Transaction, dropdown_id)
             button_row = db.session.get(Transaction, button_id)
-            assert dropdown_row.effective_amount == button_row.effective_amount
+            assert owned_contribution(dropdown_row) == owned_contribution(button_row)
             assert dropdown_row.actual_amount == button_row.actual_amount
             assert dropdown_row.status_id == button_row.status_id
             assert _cash_leg(
@@ -209,7 +210,7 @@ class TestTheDropdownBooksWhatTheRowCost:
 
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
-            assert reloaded.effective_amount == Decimal("100.00")
+            assert owned_contribution(reloaded) == Decimal("100.00")
             assert _cash_leg(txn_id, seed_user["account"].id) == Decimal(
                 "-100.00",
             )
@@ -378,7 +379,7 @@ class TestARevertTakesBackWhatTheSettleDerived:
             reverted = db.session.get(Transaction, txn_id)
             assert reverted.actual_amount is None
             assert reverted.settled_on is None
-            assert reverted.effective_amount == Decimal("80.00")
+            assert owned_contribution(reverted) == Decimal("80.00")
             # The settle's postings reverse with it: nothing is left booked.
             assert _cash_leg(txn_id, seed_user["account"].id) == Decimal("0.00")
 

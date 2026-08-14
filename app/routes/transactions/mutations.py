@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 # ledger effect, so a change to any triggers a posting reconcile (Build-Order
 # Step 3, the transaction analog of ``transfer_service._POSTING_RELEVANT_FIELDS``).
 # ``status_id`` flips the settled/unsettled target; ``estimated_amount`` /
-# ``actual_amount`` together set ``effective_amount``
+# ``actual_amount`` together set what the row is WORTH
 # (``COALESCE(actual, estimated)``) -- the magnitude posted; ``category_id``
 # moves which counter (category) ledger account the expense/income leg books
 # into.
@@ -350,7 +350,7 @@ def _apply_regular_update(txn, txn_id, data):
     # the same statement.  The status is the SUBMITTED one when the PATCH
     # carried one, else the row's own -- a day-only edit is an identity
     # transition, exactly as the transfer side's
-    # :func:`_transfer_status.apply_settle_day_to_pair` does it.
+    # :func:`transfer_service._status.apply_settle_day_to_pair` does it.
     # ``settle_day_for_status`` drops a day submitted alongside a revert out of
     # the settled band (ruling **R-EG**), so the documented unlock path (set
     # Status to Projected to edit the amounts) is not broken by the form

@@ -127,6 +127,7 @@ from tests._test_helpers import (
     linked_ledger_account,
 )
 from app.services import cash_ledger
+from app.services.row_valuation import owned_contribution
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +345,7 @@ def _signed_cash_effect(txn: Transaction) -> Decimal:
         (entry.amount for entry in txn.entries if entry.is_credit),
         Decimal("0"),
     )
-    effect = txn.effective_amount - credit_sum
+    effect = owned_contribution(txn) - credit_sum
     return effect if txn.is_income else -effect
 
 

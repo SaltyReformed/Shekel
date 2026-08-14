@@ -24,10 +24,13 @@ import pytest
 from app.services import loan_recurrence_sync
 from app.services.loan_recurrence_sync import recurrence_end_date
 from app.services.loan_loaders import load_loan_params
+from app.models.transfer_template import TransferTemplate
 from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
     freeze_today,
+    make_every_period_rule,
+    make_expense_template,
     make_transfer_template,
 )
 
@@ -120,6 +123,78 @@ class TestSyncRecurringPaymentBounds:
             assert rule.end_date == date(2028, 7, 1)
             assert isinstance(rule.end_date, date)
 
+    def test_a_count_bound_is_REPLACED_by_the_derived_payoff(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The crash plan step R7b-3's bound type exists to make impossible.
+
+        A loan payment's stop is DERIVED, and this module states its change as
+        ``replace(spec, end_bound=...)``.  While the bound was two independent
+        columns the same call wrote a date beside a count the rule already
+        carried, and ``ck_recurrence_rules_single_end_bound`` refused the pair
+        at the flush -- a 500 on an ordinary loan edit.
+
+        A count can only reach a loan payment's rule around the form door,
+        which refuses one; this drives the sync directly against such a row, so
+        the TYPE's half of the guarantee is pinned rather than resting on the
+        door's.
+        """
+        with app.app_context():
+            loan = self._current_loan(seed_user, db.session)
+            tpl = make_transfer_template(db.session, seed_user, loan)
+            rule = tpl.recurrence_rule
+            rule.max_occurrences = 12
+            db.session.commit()
+
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            db.session.commit()
+            db.session.refresh(rule)
+
+            assert rule.end_date == date(2028, 7, 1)
+            assert rule.max_occurrences is None
+
+    def test_a_count_bound_is_cleared_even_when_the_loan_never_pays_off(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The case the COLUMN comparison could not see.
+
+        The idempotence guard used to read ``rule.end_date``; a count-bounded
+        rule has ``end_date IS NULL``, so against a loan whose derived payoff is
+        ``None`` it compared ``None == None`` and returned early -- leaving a
+        count bound on a payment whose stop this module owns.  Comparing BOUNDS
+        is what closes it.
+
+        Reached with a template that names no loan the seam can value: the
+        no-configured-loan path returns before any write, so the case is built
+        instead on a loan that DOES resolve and a bound that is already
+        correct -- the count must still go.
+        """
+        with app.app_context():
+            loan = self._current_loan(seed_user, db.session)
+            tpl = make_transfer_template(db.session, seed_user, loan)
+            rule = tpl.recurrence_rule
+            db.session.commit()
+
+            # First sync writes the derived payoff.
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            db.session.commit()
+            db.session.refresh(rule)
+            payoff = rule.end_date
+            assert payoff is not None
+
+            # Now put the rule in the state only a row written around the form
+            # door can reach: a COUNT bound where the derived answer is a date.
+            rule.end_date = None
+            rule.max_occurrences = 6
+            db.session.commit()
+
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            db.session.commit()
+            db.session.refresh(rule)
+
+            assert rule.end_date == payoff
+            assert rule.max_occurrences is None
+
     def test_unpaid_overdue_installments_push_the_bound_out(
         self, app, db, seed_user, seed_periods,
     ):
@@ -210,7 +285,7 @@ class TestSyncRecurringPaymentBounds:
         The not-a-loan guard's own shape, and it is reachable: an account whose
         TYPE is amortizing but whose loan details were never filled in still
         classifies as amortizing, so a transfer settling into it reaches this
-        sync (``_transfer_loan_posting`` gates on the account TYPE, not on the
+        sync (``transfer_service._loan_posting`` gates on the account TYPE, not on the
         params row).  The seam's ``loan_figures`` answers ``None`` for it, which
         is what this must return on -- without the guard the payoff read would
         raise on ``None``, from a WRITE path, mid-mutation.
@@ -228,3 +303,132 @@ class TestSyncRecurringPaymentBounds:
 
             loan_recurrence_sync.sync_recurring_payment_bounds(acct.id)
             db.session.commit()
+
+
+class TestOwnsValidityWindow:
+    """WHICH definitions this module writes bounds for -- asked once.
+
+    Plan step R7b-4 made this the ONE predicate the recurrence form's two bound
+    controls lock on and the two crafted-POST refusals fire on, because the
+    form was asking a DIFFERENT question and the two disagreed on live data:
+    ``_recurrence_form_helpers.is_loan_payment`` reads
+    ``settings is not None``, and neither of the developer's real loan payments
+    carries a ``loan_payment_settings`` row -- so the R7b-3 "Ends" lock never
+    fired on either loan and a typed end date would have been silently
+    overwritten by the next payoff-affecting edit.
+
+    Every arm is exercised, and the THREE False ones are the point: a predicate
+    that only ever returns True where it is asked is indistinguishable from no
+    predicate.  Each mirrors one early return in
+    :func:`~app.services.loan_recurrence_sync.sync_recurring_payment_bounds`.
+    """
+
+    def test_a_loans_active_recurring_payment_owns_its_window(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The True arm: exactly the template the sync writes for."""
+        with app.app_context():
+            loan = create_loan_account(seed_user, db.session)
+            template = make_transfer_template(db.session, seed_user, loan)
+            db.session.flush()
+
+            assert loan_recurrence_sync.owns_validity_window(template) is True
+
+    def test_a_transfer_into_a_NON_loan_owns_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The destination must be a CONFIGURED loan (``LoanParams``).
+
+        Mirrors the sync's ``load_loan_params(...) is None`` return: a savings
+        contribution has no contractual installment and no payoff, so nothing
+        derives its bounds and its form must let the user set them.
+        """
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", name="Rainy Day",
+            )
+            template = make_transfer_template(db.session, seed_user, savings)
+            db.session.flush()
+
+            assert loan_recurrence_sync.owns_validity_window(template) is False
+
+    def test_a_SECOND_recurring_payment_into_one_loan_owns_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Only the template the lookup RETURNS is the one written for.
+
+        ``active_recurring_transfer_template`` answers ONE active recurring
+        transfer into the account, so a second is never synced -- and its form
+        must therefore not claim its bounds come from the loan. This is the arm
+        the older predicate got wrong in the other direction: both templates
+        carry settings if both were created through the loan flow, so
+        ``settings is not None`` would lock BOTH, and the user would be told
+        two different rules were derived from one payoff.
+
+        **Asserted as "exactly one", not "the first one", and the difference is
+        a real property of the lookup**: it is ``.first()`` with no
+        ``ORDER BY``, so which row PostgreSQL returns is unspecified. That is
+        pre-existing and deliberate -- its own docstring calls two recurring
+        transfers into one account "a user misconfiguration, not a modeled
+        case" -- and pinning a particular winner here would assert something
+        the query does not promise. What matters for the lock is that the two
+        templates never both claim it.
+        """
+        with app.app_context():
+            loan = create_loan_account(seed_user, db.session)
+            first = make_transfer_template(db.session, seed_user, loan)
+            # Built directly: the shared helper hardcodes one name and
+            # ``uq_transfer_templates_user_name`` refuses a second.
+            second = TransferTemplate(
+                user_id=seed_user["user"].id,
+                from_account_id=seed_user["account"].id,
+                to_account_id=loan.id,
+                recurrence_rule_id=make_every_period_rule(
+                    db.session, seed_user["user"].id,
+                ).id,
+                name="Second Payment Into One Loan",
+                default_amount=Decimal("50.00"),
+            )
+            db.session.add(second)
+            db.session.flush()
+
+            owned = [
+                loan_recurrence_sync.owns_validity_window(first),
+                loan_recurrence_sync.owns_validity_window(second),
+            ]
+            assert owned.count(True) == 1, (
+                f"exactly one of two recurring payments into one loan may own "
+                f"its validity window, got {owned}"
+            )
+
+    def test_a_definition_that_does_not_repeat_owns_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """No rule means no bounds to derive.
+
+        Mirrors the sync's ``template.recurrence_rule is None`` return, and it
+        is what stops a one-time transfer into a loan rendering locked
+        controls for a rule that does not exist.
+        """
+        with app.app_context():
+            loan = create_loan_account(seed_user, db.session)
+            template = make_transfer_template(db.session, seed_user, loan)
+            template.recurrence_rule_id = None
+            db.session.flush()
+
+            assert loan_recurrence_sync.owns_validity_window(template) is False
+
+    def test_a_transaction_template_owns_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A kind with no destination account at all answers False, not raises.
+
+        The two form helpers are deliberately kind-agnostic -- they render
+        transaction templates through the same call -- so the predicate has to
+        answer for a row that carries no ``to_account_id``.
+        """
+        with app.app_context():
+            template = make_expense_template(db.session, seed_user)
+            db.session.flush()
+
+            assert loan_recurrence_sync.owns_validity_window(template) is False

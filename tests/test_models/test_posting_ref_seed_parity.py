@@ -79,6 +79,7 @@ import re
 from enum import Enum
 
 from app.enums import (
+    AmountSourceEnum,
     BusinessDayShiftEnum,
     LedgerAccountClassEnum,
     LedgerAccountKindEnum,
@@ -109,6 +110,7 @@ _INLINE_SEEDED_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (RecurrenceUnitEnum, "ref.recurrence_units"),
     (PeriodPlacementEnum, "ref.period_placements"),
     (BusinessDayShiftEnum, "ref.business_day_shifts"),
+    (AmountSourceEnum, "ref.amount_sources"),
 )
 
 
@@ -124,6 +126,7 @@ _SEED_LIST_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (RecurrenceUnitEnum, "RecurrenceUnit"),
     (PeriodPlacementEnum, "PeriodPlacement"),
     (BusinessDayShiftEnum, "BusinessDayShift"),
+    (AmountSourceEnum, "AmountSource"),
 )
 
 

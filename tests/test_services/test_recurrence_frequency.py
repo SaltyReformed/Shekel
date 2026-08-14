@@ -21,14 +21,24 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, RecurrenceUnitEnum
+from app.enums import (
+    PeriodPlacementEnum,
+    RecurrencePatternEnum,
+    RecurrenceUnitEnum,
+)
 from app.services.pay_calendar import PayCadence
 from app.services.recurrence import (
     Cadence,
     RecurrenceFrequencyError,
     RecurrenceResolutionError,
     cadence_of,
+    decode_pattern,
 )
+# The ENCODER is package-private -- ``__init__`` re-exports its inverse and not
+# it, because the write door is its only production caller.  Naming its
+# definition site is what lets the round-trip below test the mapping itself
+# rather than one direction of it.
+from app.services.recurrence._frequency import encode_cadence
 
 #: 14 days between paydays, 26 a year.
 _BIWEEKLY = PayCadence(cadence_days=14)
@@ -211,48 +221,144 @@ class TestCadenceOfReadsAPatternWithNoSchedule:
                 )
 
 
-class TestTheTwoReadingsCannotDisagree:
-    """One table, read by ``resolve`` and by ``cadence_of``.
 
-    **This cannot fail against the current code and that is stated rather than
-    dressed up**, which an adversarial review of plan step R7a-2b required: both
-    sides read the same ``PATTERN_DERIVATIONS`` entry through the same
-    ``resolved_interval``, so the assertion is ``f(x) == f(x)`` today.  It is a
-    CHANGE DETECTOR, not a control -- the day someone gives ``_resolution`` its
-    own copy of the table, or lets R7c's stored columns drift from the derived
-    reading, this is what fails.  Kept for that day, and labelled so nobody
-    counts it as evidence the split is safe.
+class TestTheStorageEncodingRoundTrips:
+    """``encode_cadence`` and ``decode_pattern`` are inverses (plan step R7b).
+
+    **This replaced a tautology, and the replacement is the point.**  The class
+    here before asserted that ``resolve`` and ``cadence_of`` read one pattern
+    the same way -- true by construction, since both consulted the same table
+    through the same helper, and labelled at the time as a change detector
+    rather than a control.  The vocabularies are genuinely two now: a caller
+    AUTHORS ``(interval, unit, placement)`` and the table stores a pattern id,
+    so there is a real mapping with a real direction, and a real way for one
+    side to drift.
+
+    A round trip is what catches that drift, and it catches it in the direction
+    a hand-written inverse fails in -- an entry changed on one side only.  The
+    inverse is COMPUTED from the forward table, so that class of defect is
+    structurally gone; this is what says so rather than assuming it.
     """
 
-    def test_a_resolved_recurrence_carries_the_same_cadence(
-        self, app, seed_user, seed_periods,
-    ):
-        """``resolve``'s (interval, unit) equals ``cadence_of``'s, per pattern.
+    @pytest.mark.parametrize("submitted", [1, 2, 3, 4, 6, 12])
+    def test_every_stored_reading_re_encodes_to_itself(self, app, submitted):
+        """Decode, encode, decode again: the cadence never moves.
 
-        ``resolve`` derives an anchor against the owner's schedule and
-        ``cadence_of`` does not, but the two-axis half must be identical.
+        Swept over every pattern the application models AND over intervals
+        that are and are not a pattern's own, because the column is read for
+        exactly one cadence and ignored for the rest -- so a decoder that
+        stopped ignoring it would move only the calendar readings.
         """
-        from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
-            calendar_for,
-        )
-        from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
-            RecurrenceSpec,
-            resolve,
-        )
-
         with app.app_context():
-            user_id = seed_user["user"].id
-            calendar = calendar_for(user_id)
             for member in RecurrencePatternEnum:
                 pattern_id = ref_cache.recurrence_pattern_id(member)
-                spec = RecurrenceSpec(
-                    user_id=user_id,
-                    pattern_id=pattern_id,
-                    interval_n=2,
-                    day_of_month=15,
-                    month_of_year=3,
+                reading = decode_pattern(pattern_id, submitted)
+
+                encoded = encode_cadence(
+                    reading.cadence.interval_n,
+                    reading.cadence.unit,
+                    reading.placement,
                 )
-                resolved = resolve(spec, calendar)
-                assert Cadence(
-                    interval_n=resolved.interval_n, unit=resolved.unit,
-                ) == cadence_of(pattern_id, 2), member
+                again = decode_pattern(
+                    ref_cache.recurrence_pattern_id(encoded.pattern),
+                    encoded.interval_n,
+                )
+
+                assert again == reading, member
+                # The COLUMN too, and an adversarial review required it: the
+                # decode ignores that column for every pattern but one, so an
+                # encoder that wrote a MONTH count into a column spelled "every
+                # N pay periods" would round-trip green here.
+                assert encoded.interval_n == (
+                    reading.cadence.interval_n
+                    if reading.cadence.unit is RecurrenceUnitEnum.PERIOD
+                    and reading.cadence.interval_n > 1
+                    else 1
+                ), member
+
+    def test_the_pattern_itself_round_trips_where_it_names_one_cadence(
+        self, app,
+    ):
+        """A stored pattern re-encodes to itself, with ONE stated exception.
+
+        ``Every N Periods`` with ``N = 1`` and ``Every Period`` are the SAME
+        cadence -- every paycheck -- and the encoder canonicalises onto the
+        named one.  That is deliberate and it is what plan step R7c\'s
+        downgrade needs: two names for one reading make the reverse mapping
+        ambiguous, so the encoder picks and this pins which.
+
+        Every other member is its own round trip, which is what says the
+        inverse table is complete rather than merely non-empty.
+        """
+        with app.app_context():
+            for member in RecurrencePatternEnum:
+                reading = decode_pattern(
+                    ref_cache.recurrence_pattern_id(member), 1,
+                )
+                encoded = encode_cadence(
+                    reading.cadence.interval_n,
+                    reading.cadence.unit,
+                    reading.placement,
+                )
+
+                expected = (
+                    RecurrencePatternEnum.EVERY_PERIOD
+                    if member is RecurrencePatternEnum.EVERY_N_PERIODS
+                    else member
+                )
+                assert encoded.pattern is expected, member
+
+    def test_the_inverse_covers_every_modelled_pattern(self, app):
+        """No member of the enum is unreachable through the encoder.
+
+        A member the inverse table missed would be decodable and NOT
+        encodable: a rule already stored could be read but never re-authored,
+        so the read-modify-re-author idiom every in-place writer uses would
+        raise on it.
+        """
+        with app.app_context():
+            reachable = set()
+            for member in RecurrencePatternEnum:
+                reading = decode_pattern(
+                    ref_cache.recurrence_pattern_id(member), 2,
+                )
+                reachable.add(
+                    encode_cadence(
+                        reading.cadence.interval_n,
+                        reading.cadence.unit,
+                        reading.placement,
+                    ).pattern
+                )
+
+            # Swept at interval 2 rather than 1 precisely so ``Every N
+            # Periods`` is reachable.  At 1 it canonicalises onto ``Every
+            # Period`` (the case above pins that), so a sweep at 1 would report
+            # it missing -- and a genuinely absent entry would then be hidden
+            # behind the same symptom.
+            assert reachable == set(RecurrencePatternEnum)
+
+    @pytest.mark.parametrize(
+        "interval_n,unit",
+        [
+            (2, RecurrenceUnitEnum.MONTH),
+            (2, RecurrenceUnitEnum.YEAR),
+            (1, RecurrenceUnitEnum.WEEK),
+            (4, RecurrenceUnitEnum.MONTH),
+        ],
+    )
+    def test_a_cadence_with_no_pattern_to_name_it_is_refused(
+        self, app, interval_n, unit,
+    ):
+        """The gap plan step R7c closes, stated once at the encoder.
+
+        Each of these resolves and walks correctly -- the two-axis model has no
+        trouble with "every 2 months" -- and none of them can be STORED, because
+        the table names its cadence with a closed pattern set.  Refusing is what
+        stops such a rule being written as a DIFFERENT cadence that happens to
+        have a name.
+        """
+        with app.app_context():
+            with pytest.raises(RecurrenceResolutionError, match="no recurrence"):
+                encode_cadence(
+                    interval_n, unit, PeriodPlacementEnum.CONTAINING_DATE,
+                )

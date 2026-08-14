@@ -29,11 +29,13 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
+    cadence_payload,
     create_loan_account,
     field_is_disabled,
     net_posted_by_day,
     override_anchor,
 )
+from app.services.row_valuation import owned_contribution
 
 
 def _create_savings_account(seed_user):
@@ -285,16 +287,12 @@ class TestTemplateCreate:
         """POST /transfers creates a template with recurrence and generates transfers."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-
             response = auth_client.post("/transfers", data={
                 "name": "Weekly Savings",
                 "default_amount": "150.00",
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
-                "recurrence_pattern": str(every_period.id),
+                **cadence_payload(),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
 
@@ -356,16 +354,12 @@ class TestTemplateCreate:
                 origination_date=date(2025, 1, 1), term=360,
             )
             db.session.commit()
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-
             response = auth_client.post("/transfers", data={
                 "name": "Drain The Mortgage",
                 "default_amount": "100.00",
                 "from_account_id": str(loan.id),        # loan as SOURCE
                 "to_account_id": str(seed_user["account"].id),
-                "recurrence_pattern": str(every_period.id),
+                **cadence_payload(),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
 
@@ -385,15 +379,12 @@ class TestTemplateCreate:
         one template in the database."""
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
             form_data = {
                 "name": "Duplicate Transfer",
                 "default_amount": "100.00",
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
-                "recurrence_pattern": str(every_period.id),
+                **cadence_payload(),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }
 
@@ -494,16 +485,12 @@ class TestTemplateUpdate:
         with app.app_context():
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-
             response = auth_client.post(f"/transfers/{template.id}", data={
                 "name": "Updated Savings",
                 "default_amount": "300.00",
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
-                "recurrence_pattern": str(every_period.id),
+                **cadence_payload(),
             }, follow_redirects=True)
 
             assert response.status_code == 200
@@ -543,16 +530,12 @@ class TestTemplateUpdate:
             )
             db.session.commit()
             tid = template.id
-            ep_id = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period",
-            ).one().id
-
             resp = auth_client.post(f"/transfers/{tid}", data={
                 "name": "Monthly Savings",
                 "default_amount": "250.00",
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
-                "recurrence_pattern": str(ep_id),
+                **cadence_payload(),
             })
             assert resp.status_code == 200
             assert b"hand-edited" in resp.data
@@ -593,16 +576,12 @@ class TestTemplateUpdate:
             )
             db.session.commit()
             tid, xfer_id = template.id, xfer.id
-            ep_id = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period",
-            ).one().id
-
             resp = auth_client.post(f"/transfers/{tid}", data={
                 "name": "Monthly Savings",
                 "default_amount": "250.00",
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
-                "recurrence_pattern": str(ep_id),
+                **cadence_payload(),
                 "conflict_apply": "1",
                 f"conflict_decision_{xfer_id}": "use",
             }, follow_redirects=True)
@@ -1327,7 +1306,7 @@ class TestTransferInstance:
             auth_client.post(f"/transfers/instance/{xfer.id}/cancel")
 
             db.session.refresh(xfer)
-            assert xfer.effective_amount == Decimal("0")
+            assert owned_contribution(xfer) == Decimal("0")
 
     def test_update_other_users_transfer(self, app, auth_client, seed_user):
         """PATCH /transfers/instance/<id> for another user's transfer returns 404.
@@ -2687,10 +2666,14 @@ class TestOneTimeTransfer:
 
     **Every case here 500'd before R2e-3** (defect **D13**): the route
     dereferenced ``rule.id`` with no null branch, on a comment claiming the
-    schema made ``recurrence_pattern`` required.  It does not -- the field is
+    schema made the recurrence field required.  It does not -- the field is
     ``allow_none`` -- so both the empty and the absent spelling raised
-    ``AttributeError``.  ``test_absent_pattern_is_the_same_path`` covers the
+    ``AttributeError``.  ``test_absent_cadence_is_the_same_path`` covers the
     second spelling, which no form emits but a client may.
+
+    The field is ``recurrence_unit`` since plan step R7b-2, which renamed what
+    "does not repeat" is spelled as without changing what it MEANS: an empty
+    unit, kept as a present ``None`` by ``_normalize_empty_inputs``.
     """
 
     def test_non_repeating_creates_one_transfer_and_two_shadows(
@@ -2707,7 +2690,7 @@ class TestOneTimeTransfer:
                 "default_amount": "500.00",
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
-                "recurrence_pattern": "",
+                "recurrence_unit": "",
                 "start_period_id": str(seed_periods_today[1].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
@@ -2767,7 +2750,7 @@ class TestOneTimeTransfer:
                 "default_amount": "300.00",
                 "from_account_id": str(checking_id),
                 "to_account_id": str(savings.id),
-                "recurrence_pattern": "",
+                "recurrence_unit": "",
                 "start_period_id": str(seed_periods_today[0].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
@@ -2821,7 +2804,7 @@ class TestOneTimeTransfer:
                 "default_amount": "250.00",
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
-                "recurrence_pattern": "",
+                "recurrence_unit": "",
                 "start_period_id": str(seed_periods_today[1].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
@@ -2846,7 +2829,7 @@ class TestOneTimeTransfer:
                 as_of=seed_periods_today[0].start_date,
             )
             checking_balances = balance_at.cash_balance_map(
-                seed_user["account"], ctx, seed_periods_today[:3],
+                seed_user["account"], ctx,
             )
             # Checking decreased by 250 in period 2.
             assert checking_balances[seed_periods_today[1].id] == Decimal("750.00")
@@ -2863,7 +2846,7 @@ class TestOneTimeTransfer:
             )
             assert savings_shadows
             savings_balances = balance_at.cash_balance_map(
-                savings, ctx, seed_periods_today[:3],
+                savings, ctx,
             )
             # Savings increased by 250 in period 2.
             assert savings_balances[seed_periods_today[1].id] == Decimal("250.00")
@@ -2893,7 +2876,7 @@ class TestOneTimeTransfer:
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
-                "recurrence_pattern": "",
+                "recurrence_unit": "",
                 # Use second user's period.
                 "start_period_id": str(seed_second_periods[0].id),
             }, follow_redirects=True)
@@ -2913,10 +2896,10 @@ class TestOneTimeTransfer:
                 .count()
             ) == 0
 
-    def test_absent_pattern_is_the_same_path(
+    def test_absent_cadence_is_the_same_path(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A POST that OMITS ``recurrence_pattern`` behaves identically.
+        """A POST that OMITS ``recurrence_unit`` behaves identically.
 
         The form always submits the key (empty for "Does not repeat"), but a
         client need not.  Both spellings reached the same unguarded
@@ -2970,7 +2953,7 @@ class TestOneTimeTransfer:
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
-                "recurrence_pattern": "",
+                "recurrence_unit": "",
             }, follow_redirects=True)
 
             assert response.status_code == 200
@@ -2995,7 +2978,7 @@ class TestOneTimeTransfer:
             "default_amount": amount,
             "from_account_id": str(seed_user["account"].id),
             "to_account_id": str(savings.id),
-            "recurrence_pattern": "",
+            "recurrence_unit": "",
             "start_period_id": str(period.id),
             "category_id": str(seed_user["categories"]["Rent"].id),
         }, follow_redirects=True)
@@ -3040,7 +3023,7 @@ class TestOneTimeTransfer:
                 "default_amount": "500.00",
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(other.id),
-                "recurrence_pattern": "",
+                "recurrence_unit": "",
                 "category_id": str(seed_user["categories"]["Rent"].id),
                 "version_id": str(tmpl.version_id),
             }, follow_redirects=True)
@@ -3092,7 +3075,7 @@ class TestOneTimeTransfer:
                 "default_amount": "500.00",
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(other.id),
-                "recurrence_pattern": "",
+                "recurrence_unit": "",
                 "category_id": str(seed_user["categories"]["Rent"].id),
                 "version_id": str(tmpl.version_id),
             }, follow_redirects=True)
@@ -3136,7 +3119,7 @@ class TestOneTimeTransfer:
                 "default_amount": "900.00",
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
-                "recurrence_pattern": "",
+                "recurrence_unit": "",
                 "category_id": str(seed_user["categories"]["Rent"].id),
                 "version_id": str(tmpl.version_id),
             }, follow_redirects=True)
@@ -3177,7 +3160,7 @@ class TestOneTimeTransfer:
                 "default_amount": "900.00",
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
-                "recurrence_pattern": "",
+                "recurrence_unit": "",
                 "category_id": str(seed_user["categories"]["Rent"].id),
                 "version_id": str(tmpl.version_id),
             }, follow_redirects=True)
@@ -3217,7 +3200,7 @@ class TestOneTimeTransfer:
                 "default_amount": "500.00",
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
-                "recurrence_pattern": "",
+                "recurrence_unit": "",
                 "start_period_id": str(future[0].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
@@ -3240,7 +3223,7 @@ class TestOneTimeTransfer:
                 "default_amount": "650.00",
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
-                "recurrence_pattern": "",
+                "recurrence_unit": "",
                 "category_id": str(seed_user["categories"]["Rent"].id),
                 "version_id": str(tmpl.version_id),
             }, follow_redirects=True)
@@ -3278,27 +3261,32 @@ class TestOneTimeTransfer:
         recurring pattern (here "Every Period") persisted a foreign
         ``start_period_id`` unchecked -- and ``recurrence_engine`` then
         read that victim period's ``start_date`` as the generation
-        boundary.  The sibling IDOR route test covers only the ONCE
-        pattern (which had a separate re-check), so this pins the persist
-        path closed end-to-end for a recurring pattern: the F-24 builder
-        probe rejects before any row is written.  A regression that
-        re-narrowed the probe to EVERY_N_PERIODS would reopen the IDOR on
-        this recurring persist path -- which the prior ONCE-only route
-        coverage (guarded by a separate re-check) did not exercise.
+        boundary.
+
+        **The probe MOVED at plan step R7b-4 and this test is now its
+        primary coverage.**  It sat in the kind-agnostic F-24 builder
+        (``build_recurrence_rule_from_form``) because that ``<select>`` was
+        also the recurrence's "First paycheck"; the recurrence takes a DATE
+        now, so the field has one job -- which period a NON-repeating transfer
+        lands in -- and ``create_transfer_template`` owner-checks it before
+        anything is written.  The transaction-template twin of this case is
+        gone with the surface: that schema no longer declares the field at all
+        (``test_templates.py::test_create_recurring_template_ignores_a_foreign_start_period``).
+
+        This POST names a RECURRING cadence, which is the shape that matters:
+        the recurrence has no use for the period, so the check must still run
+        rather than being skipped as irrelevant.  A regression that only
+        checked the non-repeating branch would reopen the IDOR here.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-
             response = auth_client.post("/transfers", data={
                 "name": "Recurring IDOR Attempt",
                 "default_amount": "100.00",
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
-                "recurrence_pattern": str(every_period.id),
+                **cadence_payload(),
                 # Second user's period on a recurring (non-EVERY_N) pattern.
                 "start_period_id": str(seed_second_periods[0].id),
             }, follow_redirects=True)

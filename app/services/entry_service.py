@@ -34,6 +34,7 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import posting_service
+from app.services.cash_ledger import ReconciledThrough, reconciled_through
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.utils.balance_predicates import is_archived, is_cancelled
 # ``is_credit`` from balance_predicates collides with the
@@ -98,7 +99,7 @@ def _resync_settled_envelope(txn: Transaction) -> None:
     followed by ``_resync_postings_if_settled`` (gated on the settled BAND), so
     the two halves of one act graded the same row differently: on any settled
     status that is not Paid the actual was NOT recomputed while the postings
-    WERE reconciled -- to the stale ``effective_amount``.  The books moved and
+    WERE reconciled -- to the stale figure.  The books moved and
     the figure they were derived from did not.  Two predicates for one act is
     two answers; the band is the right one, because the act is "this row's money
     has moved and its purchases just changed".
@@ -113,7 +114,7 @@ def _resync_settled_envelope(txn: Transaction) -> None:
          row's cost to ``$0.00``.
       2. the ledger reconcile (Build-Order Step 3), which must read the actual
          act 1 just wrote.  An entry mutation on a settled envelope changes its
-         confirmed cash effect (``effective_amount - Sigma(credit entries)``):
+         confirmed cash effect (``owned_contribution - Sigma(credit entries)``):
          adding a debit purchase grows the checking outflow, flipping an entry
          to or from credit moves the credit-excluded portion, deleting one
          shrinks it.
@@ -691,47 +692,116 @@ def build_entry_lists_dict(
     whether to render the inline entries section.  Non-tracking
     transactions are silently skipped.
 
-    Pure function -- expects ``entries`` and ``template`` to be eager-
-    loaded on the Transaction objects.  Mirrors
-    ``build_entry_sums_dict``'s pure-function contract above.
+    Expects ``entries`` and ``template`` eager-loaded on the
+    Transaction objects.  **It stopped being a PURE function on
+    2026-08-13**: the reconciled indicator needs each account's
+    coverage boundary, which is a read.  One indexed ``MAX`` per
+    distinct account is the cost, and the alternative -- taking the
+    boundaries as an argument -- is the defect this change fixes,
+    one tier up (an argument a caller can get wrong is a defect,
+    not a contract).
 
     Args:
         transactions: List of Transaction objects with ``entries`` and
             ``template`` accessible.
 
     Returns:
-        dict mapping envelope transaction ID to a dict with three
-        keys consumed by ``grid/_transaction_entries.html``:
-
-          - ``entries`` (list[TransactionEntry]): the entries ordered
-            by ``purchased_on``, matching the order the entries
-            relationship already enforces on the Transaction model.
-          - ``remaining`` (Decimal): estimated_amount minus the sum of
-            all entries (debit + credit), via :func:`compute_remaining`.
-          - ``out_of_period_ids`` (set[int]): entry IDs whose
-            ``purchased_on`` falls outside the parent pay period's date
-            range, surfacing the OP-4 date-awareness warning that
-            ``_render_entry_list`` would emit.
+        dict mapping envelope transaction ID to one
+        :func:`entry_list_view` -- the WHOLE context
+        ``grid/_transaction_entries.html`` renders an envelope from.
 
         Empty dict when no transaction in the input has an envelope
         template.
     """
     result: dict[int, dict] = {}
+    # One boundary per distinct ACCOUNT, not per transaction: a grid render
+    # passes every visible envelope of every account, and
+    # ``reconciled_through`` is one indexed ``MAX`` per account rather than a
+    # row load.  Memoising here keeps the count at the number of accounts on
+    # screen (six on the developer's grid) instead of the number of envelopes
+    # (~sixty), which is the fan-out this function exists to remove.
+    boundaries: dict[int, ReconciledThrough] = {}
     for txn in transactions:
         if not txn.tracks_purchases:
             continue
-        entries = list(txn.entries)
-        remaining = compute_remaining(txn.estimated_amount, entries)
-        out_of_period_ids = {
+        if txn.account_id not in boundaries:
+            boundaries[txn.account_id] = reconciled_through(txn.account_id)
+        result[txn.id] = entry_list_view(
+            txn, list(txn.entries), boundaries[txn.account_id],
+        )
+    return result
+
+
+def entry_list_view(
+    txn: Transaction,
+    entries: list[TransactionEntry],
+    boundary: ReconciledThrough,
+) -> dict:
+    """Return the WHOLE derived context one envelope's entry list renders from.
+
+    **The ONE producer of that context, and it exists because a caller-built
+    one was measured wrong.**  ``grid/_transaction_entries.html`` was assembled
+    independently by the HTMX refresh (``routes/entries.py``) and by the grid
+    macro (via :func:`build_entry_lists_dict`), and only the refresh supplied
+    ``reconciled_ids`` -- so on every INITIAL render of the grid, the mobile
+    card, the companion view and the full-edit popover, ``entry.id in
+    reconciled_ids`` asked a Jinja ``Undefined``, which answers ``False``
+    silently.  Every reconciled purchase read *"Not yet seen on a statement, so
+    the budget is still held back"* while the projection had already released
+    its reservation: the screen contradicted the number beside it, on 9 of 9
+    such purchases on the 2026-08-13 production clone (`$640.70`).
+
+    Two callers assembling one template's context is the shape; a forgotten key
+    was the instance.  Returning the whole context from one place makes the
+    omission unrepresentable at the service tier -- the route splats this
+    mapping rather than naming its keys.
+
+    Args:
+        txn: The envelope transaction being rendered.  Its
+            ``estimated_amount`` sets the remaining figure and its pay period
+            bounds the out-of-period warning.
+        entries: The transaction's entries, already loaded and ordered by
+            ``purchased_on``.  Taken as an argument rather than read off *txn*
+            because the two callers load them differently -- the route through
+            the owner-scoped :func:`get_entries_for_transaction`, the grid off
+            an eager-loaded relationship -- and neither may lose its scoping to
+            share this derivation.
+        boundary: The account's coverage boundary
+            (:func:`app.services.cash_ledger.reconciled_through`).  An
+            ARGUMENT so a caller rendering many envelopes resolves it once per
+            account; :func:`build_entry_lists_dict` memoises it.
+
+    Returns:
+        The five keys the template consumes:
+
+          - ``entries``: the list as given.
+          - ``remaining`` (Decimal): estimated_amount minus the sum of all
+            entries (debit + credit), via :func:`compute_remaining`.
+          - ``out_of_period_ids`` (set[int]): entry IDs whose ``purchased_on``
+            falls outside the parent pay period, surfacing the OP-4
+            date-awareness warning.
+          - ``reconciled_ids`` (set[int]): entry IDs the account's latest
+            asserted balance already contains, derived from the SHARED
+            predicate (ruling **R-DH (d)**) rather than from a stored flag, so
+            what the row shows and what the projection held back cannot
+            disagree.
+          - ``reconciled_through`` (date | None): the civil day that boundary
+            names, for the tooltip that renders it.  Which entries it
+            reconciles is decided HERE, in Python; the template renders the
+            answer and never re-derives it.
+    """
+    return {
+        "entries": entries,
+        "remaining": compute_remaining(txn.estimated_amount, entries),
+        "out_of_period_ids": {
             e.id for e in entries
             if not check_purchase_date_in_period(e.purchased_on, txn)
-        }
-        result[txn.id] = {
-            "entries": entries,
-            "remaining": remaining,
-            "out_of_period_ids": out_of_period_ids,
-        }
-    return result
+        },
+        "reconciled_ids": {
+            e.id for e in entries if boundary.covers(e.settled_on)
+        },
+        "reconciled_through": boundary.observed_day,
+    }
 
 
 def compute_remaining(

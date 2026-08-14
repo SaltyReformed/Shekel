@@ -1,5 +1,5 @@
 """
-Shekel Budget App -- The recurrence vocabulary (plan step R2e-2)
+Shekel Budget App -- The recurrence vocabulary (plan steps R2e-2, R7b-2)
 
 ``ref.recurrence_patterns`` is a table; ``RecurrencePatternEnum`` is what the
 application can actually resolve.  Every recurrence surface used to read the
@@ -7,26 +7,39 @@ TABLE -- the picker offered its rows, both write doors accepted them, and the
 preview previewed them -- while ``resolve`` raises for any id no enum member
 names and no route catches that.  The gap between the two sets is a 500 waiting
 for them to diverge, and plan step R2e-3 is where they diverge on purpose: the
-``Once`` enum member goes while its ``ref`` row survives to R9, because
-deleting the row in the same release would leave the auto-rollback image unable
-to boot (ruling R-R11).
+``Once`` enum member goes while its ``ref`` row survives to R9, because deleting
+the row in the same release would leave the auto-rollback image unable to boot
+(ruling R-R11).
 
-These tests pin the module that closes the gap.  The load-bearing one is
-:meth:`TestAnUnmodelledRowIsInvisible.test_a_ref_row_the_enum_does_not_name_is_not_offered`
--- it manufactures exactly the post-R2e-3 state (a row with no enum member) and
-asserts the vocabulary does not see it.  Every other test in this file would
-still pass if the producer were driven off the table.
+**Plan step R7b-2 moved where that gap can be reached.**  A form no longer posts
+a pattern id at all: it authors ``(interval_n, unit, placement)`` and the write
+door encodes it, so the membership question the doors ask is now asked on the
+two AUTHORED axes -- ``modelled_unit`` and ``modelled_placement`` -- while
+``modelled_pattern`` is left with the one caller that still reads a STORED
+pattern, the edit form deciding whether it can preselect anything.
+
+The load-bearing tests are the two in
+:class:`TestAnUnmodelledRowIsInvisible` that ask whether the offer set is
+driven by a ``ref`` TABLE -- a surplus ``recurrence_units`` row, and the
+``WEEK`` member that really exists and has no pattern to be stored as.  An
+adversarial review of plan step R7b-2 is why they are asked on the UNIT table:
+the version asked on the PATTERN table could not fail, because since R7b-2
+``_picker`` does not read that table or import its model at all.
 """
 from app import ref_cache
-from app.enums import RecurrencePatternEnum
+from app.enums import (
+    PeriodPlacementEnum,
+    RecurrencePatternEnum,
+    RecurrenceUnitEnum,
+)
 from app.extensions import db
-from app.models.ref import RecurrencePattern
+from app.models.ref import RecurrencePattern, RecurrenceUnit
 from app.services.recurrence import (
-    UNAVAILABLE_PATTERN_LABEL,
-    PatternChoice,
+    UNAVAILABLE_PATTERN_MESSAGE,
+    cadence_options,
     modelled_pattern,
-    pattern_choices,
-    pattern_choices_for,
+    modelled_placement,
+    modelled_unit,
 )
 
 
@@ -49,87 +62,8 @@ def _insert_unmodelled_pattern(name="Every Blue Moon"):
     return row.id
 
 
-class TestPatternChoices:
-    """The picker's options come from the enum, in a fixed order."""
-
-    def test_one_choice_per_modelled_pattern_in_declaration_order(self, app):
-        """Every enum member appears exactly once, in declaration order.
-
-        The order is what the user sees, so it is asserted as a sequence
-        rather than as a set: an unordered ``SELECT`` (what this replaced)
-        can reorder a dropdown between two deploys with no code change.
-        """
-        with app.app_context():
-            choices = pattern_choices()
-
-            assert [c.pattern_id for c in choices] == [
-                ref_cache.recurrence_pattern_id(member)
-                for member in RecurrencePatternEnum
-            ]
-
-    def test_every_choice_is_a_pattern_choice_with_a_non_empty_label(self, app):
-        """Each option carries a renderable label, so no option renders blank.
-
-        The template no longer has a fallback expression -- it prints
-        ``choice.label`` verbatim -- so a missing label would ship an empty
-        ``<option>`` rather than degrade to the pattern's raw name.
-        """
-        with app.app_context():
-            choices = pattern_choices()
-
-            assert len(choices) == len(list(RecurrencePatternEnum))
-            for choice in choices:
-                assert isinstance(choice, PatternChoice)
-                assert choice.label.strip()
-
-    def test_the_labels_are_the_copy_the_picker_has_always_shown(self, app):
-        """The seven labels are pinned verbatim (no silent copy change).
-
-        R2e-2 moved this table out of the ``inject_recurrence_labels`` context
-        processor; the move must not have edited a word of it.  R2e-3 removed
-        the eighth entry, "One-time", with the ``Once`` member -- "does not
-        repeat" is the form's own empty option, not a pattern -- and must not
-        have edited the remaining seven either.
-        """
-        with app.app_context():
-            by_id = {c.pattern_id: c.label for c in pattern_choices()}
-
-            expected = {
-                RecurrencePatternEnum.EVERY_PERIOD: "Every paycheck",
-                RecurrencePatternEnum.EVERY_N_PERIODS: "Every N paychecks",
-                RecurrencePatternEnum.MONTHLY: "Monthly (specific day)",
-                RecurrencePatternEnum.MONTHLY_FIRST: (
-                    "Monthly (first paycheck of month)"
-                ),
-                RecurrencePatternEnum.QUARTERLY: "Quarterly",
-                RecurrencePatternEnum.SEMI_ANNUAL: "Every 6 months",
-                RecurrencePatternEnum.ANNUAL: "Yearly",
-            }
-            assert len(by_id) == len(expected)
-            for member, label in expected.items():
-                assert by_id[ref_cache.recurrence_pattern_id(member)] == label
-
-    def test_the_ids_are_the_ref_rows_the_names_belong_to(self, app):
-        """Each choice's id is the ``ref`` row whose name is the enum value.
-
-        Proves the enum-driven producer did not merely invent a stable
-        ordering: the ids it emits are the same rows the form posts back and
-        ``budget.recurrence_rules.pattern_id`` stores.
-        """
-        with app.app_context():
-            names_by_id = {
-                row.id: row.name
-                for row in db.session.query(RecurrencePattern).all()
-            }
-            emitted = [c.pattern_id for c in pattern_choices()]
-
-            assert [names_by_id[pid] for pid in emitted] == [
-                member.value for member in RecurrencePatternEnum
-            ]
-
-
 class TestModelledPattern:
-    """The membership answer every recurrence door asks."""
+    """The membership answer the edit form asks of a STORED pattern."""
 
     def test_every_member_round_trips_through_its_id(self, app):
         """``id -> member`` inverts ``ref_cache.recurrence_pattern_id``."""
@@ -141,11 +75,50 @@ class TestModelledPattern:
     def test_an_id_that_is_no_row_at_all_is_none(self, app):
         """A fabricated id answers ``None`` rather than raising.
 
-        The doors that ask are reading user input; an unknown id is a flash,
-        not a 500.
+        The door that asks is reading a row it is about to let the user
+        repair; an unknown id is a warning and a blank control, not a 500.
         """
         with app.app_context():
             assert modelled_pattern(99_999_999) is None
+
+
+class TestModelledUnit:
+    """The membership answer for the first AUTHORED axis (plan step R7b-2)."""
+
+    def test_every_member_round_trips_through_its_id(self, app):
+        """``id -> member`` inverts ``ref_cache.recurrence_unit_id``."""
+        with app.app_context():
+            for member in RecurrenceUnitEnum:
+                assert modelled_unit(
+                    ref_cache.recurrence_unit_id(member),
+                ) is member
+
+    def test_an_id_that_is_no_row_at_all_is_none(self, app):
+        """A fabricated id answers ``None``.
+
+        This one IS submission-facing -- it is what the schema field asks of a
+        posted ``recurrence_unit`` -- so the answer has to be refusable as a
+        field error rather than raised.
+        """
+        with app.app_context():
+            assert modelled_unit(99_999_999) is None
+
+
+class TestModelledPlacement:
+    """The membership answer for the second authored axis."""
+
+    def test_every_member_round_trips_through_its_id(self, app):
+        """``id -> member`` inverts ``ref_cache.period_placement_id``."""
+        with app.app_context():
+            for member in PeriodPlacementEnum:
+                assert modelled_placement(
+                    ref_cache.period_placement_id(member),
+                ) is member
+
+    def test_an_id_that_is_no_row_at_all_is_none(self, app):
+        """A fabricated id answers ``None``."""
+        with app.app_context():
+            assert modelled_placement(99_999_999) is None
 
 
 class TestAnUnmodelledRowIsInvisible:
@@ -156,26 +129,58 @@ class TestAnUnmodelledRowIsInvisible:
     costs nothing: the row is unreachable, not merely unoffered.
     """
 
-    def test_a_ref_row_the_enum_does_not_name_is_not_offered(self, app):
-        """The picker skips a row with no enum member.
+    def test_a_surplus_UNIT_row_does_not_move_the_offer_set(self, app):
+        """The picker's options are unchanged by a new ``ref.recurrence_units`` row.
 
-        Manufactures the post-R2e-3 state directly.  Before R2e-2 the picker
-        was ``db.session.query(RecurrencePattern).all()``, so this row would
-        have been rendered as a selectable option.
+        **This test used to insert a surplus PATTERN row, and an adversarial
+        review of plan step R7b-2 showed that could not fail.**  Before plan
+        step R2e-2 the picker was
+        ``db.session.query(RecurrencePattern).all()``, so a surplus pattern row
+        would have been offered and the assertion was load-bearing.  Since
+        R7b-2 the options are derived from ``PATTERN_DERIVATIONS``, an
+        ENUM-keyed table, and ``_picker`` does not import the pattern model at
+        all -- so inserting into that table could not move the answer whatever
+        the producer did.
+
+        The UNIT table is where the same mistake is now available: a picker
+        that offered ``db.session.query(RecurrenceUnit).all()`` would offer
+        ``WEEK`` -- which the closed set cannot store -- and this row besides.
+        Comparing the whole tuple rather than a count is what catches a row
+        that changes only a LABEL.
         """
         with app.app_context():
-            unmodelled_id = _insert_unmodelled_pattern()
+            before = cadence_options()
 
-            offered = {c.pattern_id for c in pattern_choices()}
+            surplus = RecurrenceUnit(name="Fortnight")
+            db.session.add(surplus)
+            db.session.flush()
 
-            assert unmodelled_id not in offered
-            assert len(offered) == len(list(RecurrencePatternEnum))
+            assert db.session.get(RecurrenceUnit, surplus.id) is not None
+            assert cadence_options() == before
+
+    def test_the_offer_set_omits_a_unit_the_closed_set_cannot_store(self, app):
+        """``WEEK`` is a modelled unit with no pattern, so it is not offered.
+
+        The property the surplus-row test above stands in for, asked of a
+        member that really exists: ``RecurrenceUnitEnum.WEEK`` has a ``ref``
+        row and an enum member, and no closed-set pattern stores it until plan
+        step R8.  A table-driven offer set would offer it and
+        ``encode_cadence`` would refuse the save.
+        """
+        with app.app_context():
+            week_id = ref_cache.recurrence_unit_id(RecurrenceUnitEnum.WEEK)
+
+            assert modelled_unit(week_id) is RecurrenceUnitEnum.WEEK
+            assert week_id not in {
+                option.unit_id for option in cadence_options()
+            }
 
     def test_a_ref_row_the_enum_does_not_name_is_not_modelled(self, app):
         """The membership answer for such a row is ``None``.
 
-        Which is what makes the doors refuse it: the row EXISTS, so the
-        ``db.session.get`` probe it replaced would have said yes.
+        Which is what makes the edit form refuse to preselect it: the row
+        EXISTS, so the ``db.session.get`` probe this replaced would have said
+        yes.
         """
         with app.app_context():
             unmodelled_id = _insert_unmodelled_pattern()
@@ -183,73 +188,43 @@ class TestAnUnmodelledRowIsInvisible:
             assert db.session.get(RecurrencePattern, unmodelled_id) is not None
             assert modelled_pattern(unmodelled_id) is None
 
-    def test_it_is_not_offered_by_the_picker_either(self, app):
-        """The picker's options omit the unmodelled row.
+    def test_every_id_an_option_carries_resolves_on_its_own_axis(self, app):
+        """Each offered id names a value on the axis its field claims.
 
-        Driven by the ENUM rather than by the table, so a ``ref`` row the
-        application does not model can be neither offered nor labelled.  This
-        was asserted against a second, name-keyed projection of the same table
-        until plan step R7a deleted it -- the only consumer was the
-        ``recurrence_cell`` macro's fallback branch, and the display label is
-        now a function of what a recurrence MEANS
-        (:func:`app.services.recurrence.describe`), not of a ``ref`` name.
+        **There is deliberately no "and none of them is a pattern id" arm.**
+        The three ``ref`` tables are separate sequences that all start at 1, so
+        comparing an option's ``unit_id`` against the pattern ids is either
+        vacuously true or a false FAILURE depending on how far each sequence
+        has run -- it measures seeding order, not the property.  What the two
+        tests above establish behaviourally is the real statement: the offer
+        set is not driven by any ``ref`` table, so there is no pattern id in it
+        to find.
         """
         with app.app_context():
-            unmodelled_id = _insert_unmodelled_pattern(name="Every Blue Moon")
+            options = cadence_options()
 
-            labels = {choice.label for choice in pattern_choices()}
-            ids = {choice.pattern_id for choice in pattern_choices()}
+            assert options, "the offer set is empty"
+            for option in options:
+                assert modelled_unit(option.unit_id) is not None, option
+                assert modelled_placement(option.placement_id) is not None, (
+                    option
+                )
 
-            assert "Every Blue Moon" not in labels
-            assert unmodelled_id not in ids
 
+class TestTheUnavailablePatternMessage:
+    """What an edit form TELLS the user about a rule it cannot preselect."""
 
-class TestPatternChoicesFor:
-    """An edit form's options carry the stored pattern even when unmodelled."""
+    def test_it_names_the_state_and_the_repair(self, app):
+        """The copy has to do the whole job, because no control shows the state.
 
-    def test_a_modelled_stored_pattern_adds_nothing(self, app):
-        """The common case is exactly :func:`pattern_choices`.
-
-        Without this, a producer that appended an "Unavailable" entry to every
-        edit form would satisfy the two tests below.
+        Before plan step R7b-2 the message sat above a ``<select>`` that still
+        carried the stored pattern as a trailing option, so the option itself
+        said which rule was affected.  The two-axis controls render UNSET, so
+        the sentence is the only thing the user has: it must say that the
+        pattern is gone, that a cadence must be chosen, and that saving
+        unchanged will be refused -- the last being what keeps the warning
+        honest rather than advisory.
         """
-        with app.app_context():
-            for member in RecurrencePatternEnum:
-                pattern_id = ref_cache.recurrence_pattern_id(member)
-                assert pattern_choices_for(pattern_id) == pattern_choices()
-
-    def test_no_stored_pattern_adds_nothing(self, app):
-        """A create form, or a template naming no rule, gets the plain set."""
-        with app.app_context():
-            assert pattern_choices_for(None) == pattern_choices()
-
-    def test_an_unmodelled_stored_pattern_is_appended_last(self, app):
-        """The stored id becomes one trailing, clearly-labelled option.
-
-        Appended rather than merged into the ordered set: it is a read-out of
-        this rule's own value, not a cadence the picker proposes, and the
-        modelled options must keep their order and their position.
-        """
-        with app.app_context():
-            unmodelled_id = _insert_unmodelled_pattern()
-
-            choices = pattern_choices_for(unmodelled_id)
-
-            assert choices[:-1] == pattern_choices()
-            assert choices[-1] == PatternChoice(
-                pattern_id=unmodelled_id, label=UNAVAILABLE_PATTERN_LABEL,
-            )
-
-    def test_the_label_is_not_the_ref_rows_own_name(self, app):
-        """The extra option does not put a second display path on the table.
-
-        Reading ``pattern.name`` would show the user an internal seed string
-        AND re-introduce the table-driven label lookup this step removed.
-        """
-        with app.app_context():
-            unmodelled_id = _insert_unmodelled_pattern(name="Every Blue Moon")
-
-            choices = pattern_choices_for(unmodelled_id)
-
-            assert choices[-1].label == UNAVAILABLE_PATTERN_LABEL
-            assert "Every Blue Moon" not in {c.label for c in choices}
+        assert "no longer" in UNAVAILABLE_PATTERN_MESSAGE
+        assert "Choose how often it repeats" in UNAVAILABLE_PATTERN_MESSAGE
+        assert "refused" in UNAVAILABLE_PATTERN_MESSAGE

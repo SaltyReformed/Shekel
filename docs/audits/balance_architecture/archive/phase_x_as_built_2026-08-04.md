@@ -99,8 +99,11 @@ and **X-f1c4** (the statement day and the duplicate rule -- c4a, c4b, c4c, one S
 ### 1b. The X-an cluster (added 2026-08-09)
 
 **COMPLETE at two leaves, merged to `dev` and NOT yet PR'd to `main`**, so CI has graded neither.
-The parent **X-an** stays ticked in `../README.md` because live sentences cite it by id; the two
+The parent **X-an** stayed ticked in `../README.md` because live sentences cite it by id; the two
 leaves left the index with their specifications, the X-f1 precedent one cluster over.
+**AMENDED 2026-08-13**: the parent left the index too, and its own line is in
+`x_f2_reconciliation_as_built_2026-08-12.md`'s extension -- an id citation resolves through the
+archive (conventions rule 10), which is what the condition above was really protecting.
 
 | step | commit | what it did | findings |
 |---|---|---|---|

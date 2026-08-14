@@ -31,7 +31,7 @@ from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.services import growth_engine, pay_period_service
-from app.services.cash_ledger import ReconciledThrough
+from app.services.cash_ledger import ReconciledThrough, contributions_by_id
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -124,8 +124,8 @@ class _ContributionPlan:
             or ``None`` when the account has none.
         annual_limit: The account's annual employee-contribution ceiling, or
             ``None`` for an account with no IRS limit.
-        recorded_by_period: pay_period_id -> the ``effective_amount`` sum of the
-            transfer-linked contributions actually recorded in that period.
+        recorded_by_period: pay_period_id -> the summed CONTRIBUTION of the
+            transfer-linked rows actually recorded in that period.
     """
 
     per_period: Decimal
@@ -135,7 +135,7 @@ class _ContributionPlan:
 
 
 def _recorded_contributions(
-    account_id: int, scenario_id: int,
+    user_id: int, account_id: int, scenario_id: int,
 ) -> dict[int, Decimal]:
     """Return the transfer-linked contributions recorded per pay period.
 
@@ -157,20 +157,30 @@ def _recorded_contributions(
     starts in.  It is windowed by account and scenario, which is the whole
     domain.
 
+    **Every row is priced through the amount model** (plan step X-au-c2), which
+    is what makes this feed survive the transfer cutover: a contribution shadow
+    is a transfer shadow, so plan step X-au-f declares it derived and its own
+    amount column goes empty.  The basis is built over the whole feed at once --
+    neither live producer has a candidate among these rows (the salary half
+    wants a template link, the loan half a loan-payment settings row), so it
+    costs two list comprehensions and no query.
+
     Args:
+        user_id: The owner; scopes the amount basis.
         account_id: The account receiving the contributions.
         scenario_id: The budget scenario the rows live in.
 
     Returns:
-        ``{pay_period_id: total}`` over the rows' ``effective_amount`` -- the
-        realized actual for a settled shadow, else its estimate.  ``{}`` for an
-        account with none.
+        ``{pay_period_id: total}`` over what each row CONTRIBUTES -- the
+        realized actual for a settled shadow, else its resolved amount.  ``{}``
+        for an account with none.
     """
+    rows = query_shadow_income(account_id, scenario_id).all()
+    contributions = contributions_by_id(user_id, scenario_id, rows)
     totals: dict[int, Decimal] = {}
-    for txn in query_shadow_income(account_id, scenario_id).all():
-        amount = Decimal(str(txn.effective_amount))
+    for txn in rows:
         totals[txn.pay_period_id] = (
-            totals.get(txn.pay_period_id, _ZERO) + amount
+            totals.get(txn.pay_period_id, _ZERO) + contributions[txn.id]
         )
     return totals
 
@@ -209,7 +219,9 @@ def _plan_for(
         per_period=per_period,
         employer_params=employer_params,
         annual_limit=inputs.investment_params.annual_contribution_limit,
-        recorded_by_period=_recorded_contributions(account.id, scenario_id),
+        recorded_by_period=_recorded_contributions(
+            account.user_id, account.id, scenario_id,
+        ),
     )
 
 
@@ -250,9 +262,21 @@ def contribution_events(
     plan = _plan_for(account, scenario_id, inputs)
     if plan is None:
         return []
+    # Ordered by the PAYDAY, explicitly, rather than by whatever
+    # ``get_all_periods`` happens to order by (the stored ``period_index``).
+    # :func:`_dated_events` accumulates a calendar year's contributions in
+    # iteration order and resets on a year change, so the order decides which
+    # periods the annual limit caps -- and index order and date order are two
+    # different things this arc exists because nothing reconciles
+    # (``PayCalendar.filing_period`` measures them parting company on 800 of
+    # 872 probed days).  Stating the order here makes the consumer's
+    # precondition true instead of inherited.
     return _dated_events(
         plan,
-        pay_period_service.get_all_periods(account.user_id),
+        sorted(
+            pay_period_service.get_all_periods(account.user_id),
+            key=lambda period: period.start_date,
+        ),
         reconciled_through,
     )
 
@@ -304,10 +328,15 @@ def _dated_events(
 
     Args:
         plan: The account's :class:`_ContributionPlan`.
-        periods: The user's pay periods, CHRONOLOGICAL (ordered by
-            ``period_index``), and the whole calendar rather than a caller's
-            window -- the year-boundary reset and the limit accounting are
-            wrong over a slice.
+        periods: The user's pay periods, CHRONOLOGICAL -- ordered by
+            ``start_date``, the PAYDAY, which is the only fact in the row.
+            **This read "ordered by ``period_index``" until plan step C2-c**,
+            an equation nothing in the schema enforces and which
+            ``PayCalendar.filing_period`` measures parting company with date
+            order on 800 of 872 probed days; the caller sorts explicitly now.
+            The whole calendar rather than a caller's window, too -- the
+            year-boundary reset and the limit accounting are wrong over a
+            slice.
         reconciled_through: The account's coverage boundary -- the latest
             assertion, as the rule that decides what it already contains.
 

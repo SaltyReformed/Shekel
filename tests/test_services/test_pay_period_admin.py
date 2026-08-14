@@ -18,17 +18,17 @@ from datetime import date
 
 import pytest
 
-from app.enums import StatusEnum
+from app.enums import RecurrenceUnitEnum, StatusEnum
 from app.models.pay_period import PayPeriod
-from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern
 from app.services import (
     pay_period_admin,
     pay_period_locks,
     pay_period_service,
     pay_period_write,
 )
+from app.services.pay_calendar import calendar_for
 from app.services.pay_period_locks import PeriodLockReason
+from app.services.recurrence import RecurrenceSpec, author_rule
 from tests._test_helpers import (
     add_txn,
     assert_pay_period_invariants,
@@ -56,22 +56,6 @@ def _make_future_periods(db_session, seed_user, count=5):
     )
     db_session.commit()
     return periods
-
-
-def _add_rule_anchor(db_session, seed_user, period):
-    """Create a recurrence rule whose start period is ``period``."""
-    pattern = (
-        db_session.query(RecurrencePattern)
-        .filter_by(name="Every Period").one()
-    )
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=pattern.id,
-        start_period_id=period.id,
-    )
-    db_session.add(rule)
-    db_session.flush()
-    return rule
 
 
 # ``test_account_anchor_locks`` was DELETED at plan step X-f1c3c (ruling
@@ -163,14 +147,37 @@ class TestClassifyPeriodLock:
                 bootstrap, as_of=_BOOTSTRAP_AS_OF,
             ) == PeriodLockReason.LEDGER_POSTINGS
 
-    def test_recurrence_anchor_locks(self, app, db, seed_user):
-        """A future period that is a rule's start period -> RECURRENCE_ANCHOR."""
+    def test_a_recurrence_rules_start_no_longer_locks_a_period(
+        self, app, db, seed_user,
+    ):
+        """``RECURRENCE_ANCHOR`` was DELETED at plan step R7b-4.
+
+        It refused to delete a period some rule's ``start_period_id`` pointed
+        at, and the hazard was real: that FK is ``ON DELETE SET NULL``, so
+        deleting the period silently ERASED the rule's opening bound.  R7b-4
+        folded the FK into ``recurrence_rules.start_date`` -- a DATE, which no
+        schedule operation can cascade -- so the bound now survives the
+        deletion of any period and the lock guarded a loss that cannot happen.
+
+        Asserted rather than merely deleted, because "this period is now
+        mutable" is a change to what a DESTRUCTIVE operation is allowed to
+        touch: a rule whose stated start falls inside a period says nothing
+        about whether that period may be rebuilt.
+        """
         with app.app_context():
             periods = _make_future_periods(db.session, seed_user)
-            _add_rule_anchor(db.session, seed_user, periods[3])
-            assert pay_period_locks.classify_period_lock(
-                periods[3],
-            ) == PeriodLockReason.RECURRENCE_ANCHOR
+            rule = author_rule(
+                RecurrenceSpec(
+                    user_id=seed_user["user"].id,
+                    unit=RecurrenceUnitEnum.PERIOD,
+                    start_date=periods[3].start_date,
+                ),
+                calendar_for(seed_user["user"].id),
+            )
+            db.session.flush()
+
+            assert rule.start_date == periods[3].start_date
+            assert pay_period_locks.classify_period_lock(periods[3]) is None
 
     def test_historical_precedes_settled(self, app, db, seed_user):
         """A historical period with a settled txn still reports HISTORICAL."""
@@ -210,9 +217,11 @@ class TestClassifyPeriodsBulk:
     def test_bulk_matches_single_across_a_mix(self, app, db, seed_user):
         """Bulk classification equals per-period classification on a mix.
 
-        The user's full set spans HISTORICAL, SETTLED_TXN,
-        RECURRENCE_ANCHOR, and mutable (None) periods, so a single fixed
-        ``as_of`` exercises every branch through both paths.
+        The user's full set spans HISTORICAL, SETTLED_TXN and mutable
+        (``None``) periods, so a single fixed ``as_of`` exercises every branch
+        through both paths.  It covered a fourth, ``RECURRENCE_ANCHOR``, until
+        plan step R7b-4 deleted that reason -- see
+        :meth:`TestClassifyPeriodLock.test_a_recurrence_rules_start_no_longer_locks_a_period`.
 
         **The ``as_of`` moved forward at plan step C3-b, and the reason is the
         fixture rather than the classifier.**  It was 2026-06-13, where the
@@ -230,7 +239,6 @@ class TestClassifyPeriodsBulk:
                 db.session, seed_user, futures[1], "Rent", "1200.00",
                 status_enum=StatusEnum.DONE,
             )
-            _add_rule_anchor(db.session, seed_user, futures[2])
             db.session.commit()
 
             all_periods = pay_period_service.get_all_periods(
@@ -245,7 +253,6 @@ class TestClassifyPeriodsBulk:
             # Sanity: the mix actually covers more than one reason.
             assert PeriodLockReason.HISTORICAL in bulk.values()
             assert PeriodLockReason.SETTLED_TXN in bulk.values()
-            assert PeriodLockReason.RECURRENCE_ANCHOR in bulk.values()
             assert None in bulk.values()
 
 

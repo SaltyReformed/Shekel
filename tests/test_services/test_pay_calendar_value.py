@@ -47,6 +47,7 @@ from app.services.pay_calendar import (
     PayCalendar,
     PayCalendarError,
     PeriodWindow,
+    containing_period,
     latest_started_period,
 )
 
@@ -77,6 +78,18 @@ OFF_CADENCE = [
 WITH_UNSAVED = [
     (None, date(2026, 1, 2)),
     (11, date(2026, 1, 16)),
+]
+
+#: The same shape with the candidate INSIDE the saved set rather than at its
+#: head, which is the axis ``WITH_UNSAVED`` does not vary and the only one on
+#: which :meth:`PayCalendar.saved` behaves differently: filtering the candidate
+#: out leaves a hole where slicing never can.  ``pay_period_write`` cannot
+#: build it today (its floor keeps candidates after the last saved payday) and
+#: plan step **C6** builds it by design.
+WITH_INTERIOR_UNSAVED = [
+    (10, date(2026, 1, 2)),
+    (None, date(2026, 1, 16)),
+    (12, date(2026, 1, 30)),
 ]
 
 #: The shapes whose paydays are all SAVED.  The filing-rule equivalence is
@@ -662,6 +675,178 @@ class TestAWindowIsAViewAndKeepsTheRealEnds:
             calendar().overlapping(date(2026, 2, 1), date(2026, 1, 1))
 
 
+class TestTheWindowTypeEnforcesItsOwnTwoInvariants:
+    """Ledger rows **P24** and **P32**, made properties of the type (C2-c).
+
+    The window was a plain frozen tuple until plan step C2-c gave it a
+    consumer: the balance seam's per-period entries, whose columns ARE these
+    periods.  Two things had to stop being conventions at that point, and they
+    are enforced differently ON PURPOSE.
+
+    ORDER is DERIVED -- the constructor sorts, so a caller cannot state it and
+    therefore cannot state it wrongly.  CONTIGUITY is CHECKED, because it is a
+    property of the input that no constructor can compute its way out of.
+    """
+
+    def test_the_periods_are_sorted_at_construction(self):
+        """P24: order is not a precondition the caller has to satisfy."""
+        cal = calendar()
+        backwards = PeriodWindow(periods=tuple(reversed(cal.periods)))
+        assert backwards.periods == cal.periods
+
+    def test_the_control_shows_what_an_unsorted_window_would_answer(self):
+        """The firing control: containment BISECTS, so disorder is silent.
+
+        Given the periods newest-first, an unsorted bisect misses the day the
+        FIRST one covers and answers correctly for a later one by accident --
+        a wrong column with no error anywhere.  ``containing_period`` is the
+        primitive the window delegates to, driven here on a raw tuple so the
+        control is the search rather than the type that now sorts for it.
+        """
+        cal = calendar()
+        unsorted_periods = tuple(reversed(cal.periods))
+        assert containing_period(unsorted_periods, date(2026, 1, 2)) is None
+        assert PeriodWindow(periods=unsorted_periods).containing(
+            date(2026, 1, 2),
+        ) is cal.periods[0]
+
+    def test_a_gapped_window_is_refused_with_the_hole_named(self):
+        """P32: a column set with a hole renders a balance that does not add up.
+
+        Built by hand, because no calendar VIEW can produce one -- derived
+        periods tile, so ``window``, ``overlapping``, ``axis`` and ``saved``
+        all return contiguous runs.  That is why the refusal is the negative
+        control for a fifth view producer rather than a fence over a live
+        state.
+        """
+        cal = calendar()
+        with pytest.raises(PayCalendarError) as excinfo:
+            PeriodWindow(periods=(cal.periods[0], cal.periods[2]))
+        assert "unbroken span" in str(excinfo.value)
+        assert "14 day(s) in no column" in str(excinfo.value)
+
+    def test_an_overlapping_window_is_refused_too(self):
+        """The other way two periods can fail to meet, and it double-counts.
+
+        Unconstructible from a calendar for the same reason a hole is, and
+        refused by the same rule: adjacency is ``next.start == prev.end + 1``,
+        which fails in both directions rather than only upward.
+        """
+        overlapping = (
+            DerivedPeriod(
+                period_id=1, period_index=0, start_date=date(2026, 1, 2),
+                end_date=date(2026, 1, 20), end_is_projected=False,
+            ),
+            DerivedPeriod(
+                period_id=2, period_index=1, start_date=date(2026, 1, 16),
+                end_date=date(2026, 1, 29), end_is_projected=True,
+            ),
+        )
+        with pytest.raises(PayCalendarError, match="unbroken span"):
+            PeriodWindow(periods=overlapping)
+
+    def test_the_empty_and_single_period_windows_are_legal(self):
+        """Vacuously contiguous, and both are real answers."""
+        assert len(PeriodWindow(periods=())) == 0
+        assert len(PeriodWindow(periods=(calendar().periods[0],))) == 1
+
+    def test_every_view_that_SLICES_the_calendar_is_contiguous(self):
+        """A slice of a tiling tiles, over every shape the model can express.
+
+        The claim three of the four view producers rest on.  It is asserted
+        with a COUNTER, because the interesting body is inside a
+        ``zip(periods, periods[1:])`` that a one-period window never enters --
+        which is exactly how the first draft of this test passed while
+        checking nothing on the axis that matters (an adversarial review of
+        C2-c found it).
+        """
+        pairs = 0
+        for name, paydays, cadence in SHAPES:
+            cal = calendar(paydays, cadence)
+            first = cal.opening_bound()
+            last = cal.horizon()
+            views = [cal.window(0, len(cal.periods)), cal.window(1, 2)]
+            if first is not None:
+                views.append(cal.overlapping(first, last))
+                views.append(cal.axis(first, last + timedelta(days=90)))
+            for view in views:
+                periods = list(view)
+                for earlier, later in zip(periods, periods[1:]):
+                    pairs += 1
+                    assert later.start_date == (
+                        earlier.end_date + timedelta(days=1)
+                    ), name
+        # The loop is not vacuous: every shape contributed adjacency pairs.
+        assert pairs > 50
+
+    def test_saved_FILTERS_and_so_can_leave_a_hole_a_slice_cannot(self):
+        """The fourth producer, and the one the refusal is a live guard on.
+
+        ``saved()`` drops the periods no foreign key can point at, and dropping
+        an INTERIOR one leaves the days it covered in no column -- a filter
+        does not preserve a tiling the way a slice does.  The refusal fires
+        rather than the seam reporting over the hole, which is the whole point:
+        a balance column with a 14-day gap in it does not add up.
+
+        Unreachable through ``calendar_for`` (it reads saved rows only) and
+        through ``pay_period_write`` (its forward-only floor keeps candidates
+        after the last saved payday); plan step **C6** makes it reachable.
+        """
+        cal = calendar(WITH_INTERIOR_UNSAVED)
+        assert [period.period_id for period in cal.periods] == [10, None, 12]
+
+        with pytest.raises(PayCalendarError) as excinfo:
+            cal.saved()
+
+        assert "unbroken span" in str(excinfo.value)
+        assert "14 day(s) in no column" in str(excinfo.value)
+
+    def test_a_candidate_at_the_HEAD_or_TAIL_leaves_no_hole(self):
+        """The control: it is the candidate's POSITION that decides, not its
+        existence.
+
+        Filtering the first or last period off a tiling leaves a shorter
+        tiling, so ``saved()`` answers normally -- which is why the shape at
+        the head (``WITH_UNSAVED``) could never have caught the case above.
+        """
+        assert [
+            period.period_id for period in calendar(WITH_UNSAVED).saved()
+        ] == [11]
+        tail_candidate = [
+            (10, date(2026, 1, 2)), (11, date(2026, 1, 16)),
+            (None, date(2026, 1, 30)),
+        ]
+        assert [
+            period.period_id for period in calendar(tail_candidate).saved()
+        ] == [10, 11]
+
+
+class TestTheSavedWindowIsTheBalanceSeamsDomain:
+    """``PayCalendar.saved`` -- what every per-period seam entry reports over."""
+
+    def test_it_holds_every_saved_period_in_payday_order(self):
+        """The whole schedule, which is what all eight callers used to pass."""
+        assert [period.period_id for period in calendar().saved()] == [
+            10, 11, 12, 13,
+        ]
+
+    def test_an_unsaved_candidate_is_left_out(self):
+        """The seam's maps are keyed by ``pay_periods.id``.
+
+        A period with no id would key every one of them under ``None`` and
+        collapse them onto each other, which is ledger row **P21**'s shape.
+        ``derive_periods`` accepts an unsaved candidate by design and
+        ``pay_period_write`` builds a calendar out of them on every write, so
+        the filter is what keeps that calendar out of a balance map.
+        """
+        window = calendar(WITH_UNSAVED).saved()
+        assert [period.period_id for period in window] == [11]
+
+    def test_an_empty_calendar_answers_an_empty_window(self):
+        """A brand-new owner has no columns, which is an answer not an error."""
+        assert len(PayCalendar.from_paydays([], None, 1).saved()) == 0
+
+
 class TestTheAxisReplacesTheSyntheticProjection:
     """Ledger rows P17 and P20."""
 
@@ -709,6 +894,177 @@ class TestTheAxisReplacesTheSyntheticProjection:
         """Nothing to project FROM, so nothing is invented."""
         empty = PayCalendar.from_paydays([], 14, user_id=2)
         assert len(empty.axis(date(2026, 1, 1), date(2027, 1, 1))) == 0
+
+
+class TestTheAxisRefusesARangeItCanOnlyHalfCover:
+    """Ledger row **P23**, ruled 2026-08-14 (developer) at plan step C2-e.
+
+    ``axis`` used to answer a range opening below the owner's first payday by
+    returning the part above it -- silently, with a summary line ("the spans
+    covering ``[first_day, last_day]``") that was false whenever it happened
+    and a ``Returns`` block that covered only the wholly-before case.  A
+    truncated axis and a complete one are indistinguishable in the result, so
+    the refusal is the same argument :meth:`PayCalendar.overlapping` already
+    makes for a CROSSED range, applied to the other end.
+
+    Nothing is projected backwards (ruled 2026-08-10: before an owner's first
+    payday there is no paycheck), so covering the range was never an option --
+    which leaves refusing as the only answer that is not a half-truth.
+    """
+
+    def test_a_range_opening_below_the_first_payday_is_refused(self):
+        """The state P23 measured: 13 days that would be covered by nothing."""
+        cal = calendar()
+        with pytest.raises(PayCalendarError, match="opens before user"):
+            cal.axis(date(2025, 12, 20), date(2026, 3, 1))
+
+    def test_the_refusal_names_the_bound_and_the_days_it_would_drop(self):
+        """The message has to be actionable: which day, and how far short."""
+        cal = calendar()
+        with pytest.raises(PayCalendarError) as raised:
+            cal.axis(date(2025, 12, 20), date(2026, 3, 1))
+        assert "2025-12-20" in str(raised.value)
+        assert "2026-01-02" in str(raised.value)
+        assert "13 day(s)" in str(raised.value)
+
+    def test_opening_exactly_ON_the_first_payday_is_accepted(self):
+        """The firing control: the bound is inclusive, so this is not refused.
+
+        Without it the test above passes against a refusal that fires one day
+        too early and truncates nothing.
+        """
+        cal = calendar()
+        axis = cal.axis(date(2026, 1, 2), date(2026, 3, 1))
+        assert axis[0].start_date == date(2026, 1, 2)
+
+    def test_an_empty_calendar_still_answers_rather_than_refusing(self):
+        """No first payday means no PARTIAL coverage to hide.
+
+        An owner with no paydays at all gets an empty window, which is what
+        :meth:`PayCalendar.saved` answers them too.  The refusal is about a
+        range half-covered, not about a calendar that covers nothing.
+        """
+        empty = PayCalendar.from_paydays([], 14, user_id=2)
+        assert len(empty.axis(date(2020, 1, 1), date(2027, 1, 1))) == 0
+
+    def test_a_crossed_range_is_still_refused_first(self):
+        """The two refusals do not shadow each other."""
+        cal = calendar()
+        with pytest.raises(PayCalendarError, match="ends before it starts"):
+            cal.axis(date(2026, 3, 1), date(2026, 2, 1))
+
+
+class TestTheWindowIsASequence:
+    """``PeriodWindow`` indexes and slices, added at plan step C2-e.
+
+    Its consumers -- the seed read at the axis's opening day, the readiness
+    chart's downsampled points, the growth engine's own tests -- need the i-th
+    period.  Reaching through to :attr:`PeriodWindow.periods` for it is the one
+    move that lets a run of periods escape the type guaranteeing their order
+    and their tiling, so the type does it.
+    """
+
+    def test_an_integer_index_returns_that_period(self):
+        cal = calendar()
+        window = cal.saved()
+        assert window[0] is window.periods[0]
+        assert window[-1] is window.periods[-1]
+
+    def test_the_index_is_the_WINDOWS_ordinal_not_the_calendars(self):
+        """A window is a VIEW: ``[0]`` is where it starts, not the schedule."""
+        window = calendar().window(first_index=2, count=2)
+        assert window[0].period_index == 2
+
+    def test_an_index_past_the_end_raises(self):
+        with pytest.raises(IndexError):
+            calendar().saved()[99]  # pylint: disable=expression-not-assigned
+
+    def test_SLICING_is_refused_outright(self):
+        """No consumer in ``app/`` slices a window, and one slice lied.
+
+        A first cut returned a :class:`PeriodWindow` for a slice and let
+        ``__post_init__`` refuse the stepped ones.  Two adversarial reviews of
+        plan step C2-e landed on it: ``[::2]`` was refused as intended, but
+        ``[::-1]`` TILES, so it passed the contiguity check and came back
+        silently re-sorted into payday order -- a wrong answer to "walk this
+        backwards", given without a word.
+        """
+        window = calendar().saved()
+        for attempt in (slice(None, 2), slice(None, None, 2), slice(None, None, -1)):
+            with pytest.raises(TypeError, match="cannot be sliced"):
+                window[attempt]  # pylint: disable=expression-not-assigned
+
+    def test_reversed_walks_it_backwards(self):
+        """What a caller wanting the whole window in reverse writes instead.
+
+        Free from :meth:`__getitem__` plus :meth:`__len__`, and the reason the
+        slice branch has nothing left to serve.
+        """
+        window = calendar().saved()
+        assert [period.period_id for period in reversed(window)] == [
+            13, 12, 11, 10,
+        ]
+
+
+class TestTheClampedProjectionAxis:
+    """``projection_axis``: ``axis`` with ONE clamp, ruled 2026-08-14.
+
+    The pairing :meth:`PayCalendar.filing_period` already makes against
+    :meth:`PayCalendar.period_starting_on_or_before` -- the strict search
+    refuses or answers, and the TOTAL companion beside it states its clamp in
+    the open.  Every projecting surface calls the companion, which is what lets
+    the strict one refuse at all (ledger row **P23**).
+    """
+
+    def test_a_range_opening_below_the_first_payday_is_RAISED_not_refused(self):
+        """The owner whose first payday has not happened yet.
+
+        An ordinary state: the Generate form asks for "your next (or first)
+        payday", so a read pass whose clock precedes the whole schedule is what
+        a new owner looks like on the day they set it up.
+        """
+        cal = calendar()
+        axis = cal.projection_axis(date(2025, 12, 20), date(2026, 3, 1))
+        assert axis[0].start_date == date(2026, 1, 2)
+        # The firing control: the strict sibling refuses that same range, so
+        # this cannot pass by the clamp having been dropped.
+        with pytest.raises(PayCalendarError, match="opens before user"):
+            cal.axis(date(2025, 12, 20), date(2026, 3, 1))
+
+    def test_a_range_already_inside_the_schedule_is_untouched(self):
+        """The clamp raises nothing it does not have to."""
+        cal = calendar()
+        assert list(cal.projection_axis(date(2026, 1, 16), date(2026, 3, 1))) == (
+            list(cal.axis(date(2026, 1, 16), date(2026, 3, 1)))
+        )
+
+    def test_a_CROSSED_range_is_refused_rather_than_emptied(self):
+        """A caller with its bounds the wrong way round is a defect.
+
+        The distinction the clamp must not swallow: a range the CLAMP empties
+        is a real answer (the /retirement lever page's ``past_horizon``), while
+        a crossed one is a bug.  Folding them together is the hole
+        :meth:`PayCalendar.overlapping` refuses to leave open one level down,
+        and an adversarial code review of this step caught a first cut doing
+        exactly that.
+        """
+        cal = calendar()
+        with pytest.raises(PayCalendarError, match="ends before it starts"):
+            cal.projection_axis(date(2026, 3, 1), date(2026, 2, 1))
+
+    def test_a_last_day_behind_the_first_payday_is_EMPTY(self):
+        """The clamped-empty case, which is an answer and not a refusal."""
+        cal = calendar()
+        assert len(cal.projection_axis(
+            date(2025, 11, 1), date(2025, 12, 1),
+        )) == 0
+
+    def test_an_empty_calendar_yields_an_empty_axis(self):
+        """Nothing to project FROM, so nothing is invented -- and no refusal."""
+        empty = PayCalendar.from_paydays([], 14, user_id=2)
+        assert len(empty.projection_axis(
+            date(2026, 1, 1), date(2027, 1, 1),
+        )) == 0
 
 
 class TestTheRemainingLookupsMovedIntact:

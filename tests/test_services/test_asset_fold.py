@@ -43,6 +43,7 @@ import pytest
 
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
+from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app import ref_cache
 from app.enums import (
@@ -50,7 +51,7 @@ from app.enums import (
     CompoundingFrequencyEnum,
     DeductionTimingEnum,
 )
-from app.services import growth_engine
+from app.services import growth_engine, pay_period_service
 from app.services.balance_at import (
     _asset_contributions,
     _asset_fold,
@@ -73,6 +74,7 @@ from tests._test_helpers import (
     make_appreciating_account,
     make_investment_account,
     make_salary_profile,
+    period_window,
     restamp_opening_assertion,
     settle_instant_on,
 )
@@ -116,7 +118,7 @@ def _fold(account, ctx, dates, *, params=None, deductions=(), gross=_ZERO):
 def _view(account, ctx, periods, *, params=None, deductions=(), gross=_ZERO):
     """Return *account*'s modelled per-period columns."""
     return _asset_fold.asset_period_view(
-        account, ctx, periods, _inputs(params, deductions, gross),
+        account, ctx, _inputs(params, deductions, gross),
     )
 
 
@@ -945,20 +947,33 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
 
 
     Driven directly against :func:`_asset_contributions._dated_events` over
-    synthetic periods, because the rule that needs grading -- the reset at a
+    UNSAVED periods, because the rule that needs grading -- the reset at a
     calendar-year boundary -- needs periods spanning New Year, and the seeded
     fixture calendar covers five months.  The walk is pure, so nothing is
-    faked: the periods are the same duck type
-    :func:`~app.services.growth_engine.generate_projection_periods` already
-    produces for the long-horizon charts.
+    faked: these are real :class:`~app.models.pay_period.PayPeriod` instances,
+    just never added to a session.
+
+    **They used to be ``growth_engine.generate_projection_periods`` output**,
+    deleted at plan step C2-e.  A real model row is what this feed takes: it
+    keys its recorded contributions on ``period.id``, which is
+    ``budget.pay_periods.id`` and which the derived calendar deliberately does
+    not carry under that name.  Moving this reader onto the calendar is plan
+    step C2-f's (ledger row **P37**), and when it lands these become windows.
     """
 
     @staticmethod
     def _periods(start, count):
-        """Return *count* biweekly synthetic periods from *start*."""
-        return growth_engine.generate_projection_periods(
-            start, start + timedelta(days=14 * count - 1),
-        )
+        """Return *count* consecutive unsaved 14-day ``PayPeriod`` rows."""
+        return [
+            PayPeriod(
+                id=index + 1,
+                user_id=1,
+                period_index=index,
+                start_date=start + timedelta(days=14 * index),
+                end_date=start + timedelta(days=14 * index + 13),
+            )
+            for index in range(count)
+        ]
 
     def test_the_modelled_amount_is_capped_at_the_remaining_limit(self):
         """A $500 deduction against a $1,200 limit pays 500, 500, 200, 0.
@@ -979,6 +994,99 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         assert [amount for _day, amount in events] == [
             Decimal("500.00"), Decimal("500.00"), Decimal("200.00"),
         ]
+
+    def test_the_walk_is_ORDER_SENSITIVE_and_that_is_why_the_door_sorts(self):
+        """The firing control for the sort at :func:`contribution_events`.
+
+        The same four periods and the same plan, walked NEWEST-FIRST: the
+        annual limit is consumed by whichever periods the walk reaches first,
+        so the ``$200.00`` partial lands on the EARLIEST payday instead of the
+        third one and two periods swap what they are credited.  The walk has
+        to be order-sensitive -- a calendar-year limit is an accumulation --
+        which is precisely why the order may not be inherited from a loader
+        that sorts by the stored ``period_index``.
+
+        Hand-computed: chronological pays 500 / 500 / 200 / 0 (the test
+        above); reversed pays the same three amounts against the LAST three
+        paydays, so period 3 gets 500, period 2 gets 500 and period 1 gets
+        200.
+        """
+        periods = self._periods(date(2026, 1, 2), 4)
+        plan = _asset_contributions._ContributionPlan(
+            per_period=Decimal("500.00"),
+            employer_params=None,
+            annual_limit=Decimal("1200.00"),
+            recorded_by_period={},
+        )
+        chronological = _asset_contributions._dated_events(
+            plan, periods, ReconciledThrough(date(2026, 1, 1)),
+        )
+        reversed_walk = _asset_contributions._dated_events(
+            plan, list(reversed(periods)), ReconciledThrough(date(2026, 1, 1)),
+        )
+
+        assert dict(chronological) == {
+            periods[0].start_date: Decimal("500.00"),
+            periods[1].start_date: Decimal("500.00"),
+            periods[2].start_date: Decimal("200.00"),
+        }
+        assert dict(reversed_walk) == {
+            periods[3].start_date: Decimal("500.00"),
+            periods[2].start_date: Decimal("500.00"),
+            periods[1].start_date: Decimal("200.00"),
+        }
+        assert dict(chronological) != dict(reversed_walk)
+
+    def test_the_door_walks_the_PAYDAY_whatever_the_stored_ordinal_says(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """``contribution_events`` sorts, so a scrambled ordinal moves nothing.
+
+        The stored ``period_index`` is REVERSED underneath the loader with a
+        direct UPDATE -- a state ``pay_period_write`` rematerialises away and
+        ``uq_pay_periods_user_index`` still permits -- so
+        ``pay_period_service.get_all_periods`` hands back the owner's periods
+        newest-first.  The events must be unchanged, because a contribution
+        belongs to the payday it lands on and to nothing else.
+
+        Without the sort at the door this fails: the test above measures the
+        walk answering differently for the same plan in a different order.
+        """
+        account = _401k(
+            seed_user, seed_periods[0], Decimal("20000.00"),
+            opened_on=seed_periods[0].start_date,
+        )
+        _salaried_deduction(seed_user, account, Decimal("500.00"))
+        db.session.commit()
+        inputs = _inputs(
+            _params_for(account), _deductions_for(seed_user, account),
+            Decimal("3631.74"),
+        )
+        boundary = ReconciledThrough(seed_periods[0].start_date)
+        before = _asset_contributions.contribution_events(
+            account, seed_user["scenario"].id, inputs, boundary,
+        )
+
+        for offset, period in enumerate(reversed(seed_periods)):
+            db.session.query(PayPeriod).filter_by(id=period.id).update(
+                {"period_index": 1000 + offset},
+            )
+        db.session.commit()
+        scrambled = pay_period_service.get_all_periods(seed_user["user"].id)
+        # The control: the loader really does hand them back in a new order.
+        assert [period.id for period in scrambled] == [
+            period.id for period in reversed(seed_periods)
+        ]
+
+        after = _asset_contributions.contribution_events(
+            account, seed_user["scenario"].id, inputs, boundary,
+        )
+
+        assert after == before
+        assert [day for day, _amount in after] == sorted(
+            day for day, _amount in after
+        )
+        assert after  # not vacuous: the account does contribute
 
     def test_a_recorded_contribution_consumes_the_same_limit(self):
         """$900 recorded in period 0 leaves $300 of that year's $1,200 limit.
@@ -1053,7 +1161,8 @@ class TestAnAccountThatModelsNothingIsItsCashFold:
             for column in _view(account, ctx, seed_periods).values()
         ] == list(
             _cash_fold.cash_period_balances(
-                account, ctx.scenario.id, ctx.as_of, seed_periods,
+                account, ctx.scenario.id, ctx.as_of,
+                period_window(seed_periods),
             ).values()
         )
 
@@ -1118,7 +1227,7 @@ class TestThePerPeriodIdentity:
             gross=Decimal("3631.74"),
         )
         cash = _cash_periods.cash_period_view(
-            account, ctx.scenario.id, ctx.as_of, seed_periods,
+            account, ctx.scenario.id, ctx.as_of, period_window(seed_periods),
         )
         openings = _fold(
             account, ctx,

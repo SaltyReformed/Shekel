@@ -236,20 +236,30 @@ _NON_INTEGER_FIELD_SPELLINGS = frozenset({
 #: The scan reads an AST, so it sees a TOKEN, not a class: a field declared as
 #: a ``RowId`` SUBCLASS is exactly as strict as ``RowId`` and was invisible to
 #: a gate that matched the one name.  ``RecurrencePatternField`` (plan step
-#: R2e-2) is the first such subclass -- it layers "and the id must name a
-#: cadence this application MODELS" on top of ``RowId``'s parsing rules.
+#: R2e-2) was the first such subclass; plan step R7b-2 replaced it with the TWO
+#: below, because the form stopped posting a closed-set pattern id and started
+#: authoring the two axes that pattern encoded.  Each layers "and the id must
+#: name a value this application MODELS" on ``RowId``'s parsing rules, through
+#: the shared ``_RefEnumField`` base.
+#:
+#: **The base itself is deliberately absent.**  No schema declares a field as
+#: ``_RefEnumField`` -- it has no ``_member_for`` -- so listing it would
+#: pre-authorise a name nothing writes, which is the same defect
+#: :data:`_NON_INTEGER_FIELD_SPELLINGS` refuses one comment up.
 #:
 #: This set is an allowlist, so ``TestNoIdFieldWasMissed
 #: ::test_every_strict_spelling_really_derives_from_row_id`` resolves each name
 #: and asserts it IS a ``RowId`` subclass -- otherwise widening this set would
 #: be a way to smuggle a lax field past the gate below.
-_STRICT_ROW_ID_SPELLINGS = frozenset({"RowId", "RecurrencePatternField"})
+_STRICT_ROW_ID_SPELLINGS = frozenset({
+    "RowId", "RecurrenceUnitField", "PeriodPlacementField",
+})
 
 #: Every ``fields.Integer`` in the validation package that is NOT a row id,
 #: as an explicit allowlist.  **The gate below is an allowlist rather than a
 #: name pattern, and an adversarial review is why.**  Its first version asked
 #: whether the attribute name ended in ``_id``, which cannot see a row id
-#: named anything else -- and ``recurrence_pattern`` (the primary key of a
+#: named anything else -- and ``recurrence_pattern`` (then the primary key of a
 #: ``ref.recurrence_patterns`` row, in two schemas) was exactly that, lax and
 #: invisible to the gate written to catch it.  Inverting the question makes
 #: the failure mode safe: a new NON-id integer must be named here
@@ -280,13 +290,24 @@ _NON_ROW_ID_INTEGERS = frozenset({
     # that named a row while being spelled as a position.
     "large_transaction_threshold",
     "low_balance_threshold",
+    # ``max_occurrences`` is a COUNT of occurrences, not a row: plan step
+    # R7b-3's "Ends" control posts it beside a mode naming which shape of
+    # closing bound the user chose.  ``>= 1`` here, refused again by
+    # ``EndsAfterOccurrences.__post_init__``, and again by
+    # ``ck_recurrence_rules_positive_max_occurrences``.
+    "max_occurrences",
     "max_term_months",
     "merit_raise_horizon_years",
     "month_of_year",
     "months",
     "new_term_months",
     "num_periods",
-    "offset_periods",
+    # ``offset_periods`` LEFT this set at plan step R7b-2 with the schema field
+    # itself (defect D8): no form ever rendered an input for it, so every
+    # submission carried the schema default and the update path wrote it over
+    # the rule's real phase.  A stale entry here would pre-authorise a future
+    # field of the same name to be lax, which is what this set's own
+    # stale-entry arm refuses.
     "other_dependents",
     "pay_periods_per_year",
     "payment_day",
@@ -574,6 +595,13 @@ class TestNoIdFieldWasMissed:
         found = self._id_fields_by_class()
         row_ids = [f for f in found if f[3] in _STRICT_ROW_ID_SPELLINGS]
         integers = [f for f in found if f[3] in _LAX_DECLARATIONS]
+        # 74 since plan step R7b-3, down from 77 and for a reason the floor
+        # has to record rather than absorb: the three recurrence declarations
+        # both template schemas carried VERBATIM -- ``recurrence_unit``,
+        # ``recurrence_placement``, ``start_period_id`` -- moved onto
+        # ``RecurrenceFormFieldsMixin`` and are declared once.  Three fewer
+        # DECLARATIONS, the same fields, and none relaxed: the mixin's are
+        # still the strict spellings, which is what the arms below check.
         assert len(row_ids) >= 74, (
             f"the scan found only {len(row_ids)} strict row-id declarations; "
             "it is not reading the schema package"

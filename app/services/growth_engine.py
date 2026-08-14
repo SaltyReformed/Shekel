@@ -9,14 +9,14 @@ All functions are pure (no DB access) -- data is passed in as arguments.
 """
 
 import logging
-from collections import namedtuple
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
 from app.enums import EmployerContributionTypeEnum
+from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
@@ -38,8 +38,25 @@ class ProjectedBalance:  # pylint: disable=too-many-instance-attributes
     row's running limit/YTD columns.  Every field is an irreducible
     column of the row; splitting it would fragment one domain concept and
     break every consumer for no design gain.
+
+    **The row carries its PERIOD, not a copy of part of its key** (plan step
+    C2-e, ledger row **P21**).  This field was ``period_id: int``, read off the
+    axis period's ``.id``, and that partial copy is what made the collapse
+    possible: every PROJECTED period past the owner's horizon carries
+    ``period_id = None`` by design, so over a 20-year axis of 523 periods the
+    471 projected ones all keyed one map entry and a chart's month captions
+    every read as the last projected month.  Holding the period itself removes
+    the question -- a consumer that wants the ordinal reads
+    ``row.period.period_index`` (unique across a mixed saved/projected window,
+    because the projection continues the sequence) and one that wants the
+    caption reads ``row.period.start_date``, so neither has to rebuild a map
+    of the axis it already passed in.
+
+    Attributes:
+        period: The :class:`~app.services.pay_calendar.DerivedPeriod` this row
+            projects.  Every other field is a figure AT that period.
     """
-    period_id: int
+    period: DerivedPeriod
     start_balance: Decimal
     growth: Decimal
     contribution: Decimal
@@ -249,51 +266,107 @@ def _build_contribution_lookup(contributions):
     return lookup
 
 
-def period_return_rate(assumed_annual_return: Decimal, period) -> Decimal:
-    """Compound return rate for a single pay period from the annual rate.
+def growth_rate_for_days(
+    assumed_annual_return: Decimal, days: int,
+) -> Decimal:
+    """Scale an annual return down to a whole number of calendar days.
 
-    Scales the annual return to the period's actual calendar-day span,
-    counted INCLUSIVELY.  Pay periods carry an inclusive ``end_date``: a
-    standard 14-calendar-day period runs ``start`` .. ``start + 13`` and
-    the next period starts the following day
-    (:func:`generate_projection_periods` builds
-    ``end_date = start_date + (cadence_days - 1)``, and since plan step C3-b
-    :func:`app.services.pay_period_write.record_paydays` stores that shape for
-    the last period and ``next payday - 1`` for every other, which on a
-    schedule generated at one cadence is the same span).  The span is therefore
-    ``(end_date - start_date).days + 1`` -- 14 for a standard biweekly
-    period, not 13.  Counting exclusively (the old ``end - start`` without
-    the ``+ 1``) dropped one calendar day per period; because consecutive
-    periods tile the calendar with no gaps, that lost 1 day in 14 (~26 days
-    a year, ~7.1%) of compounding, so a configured 10.5% annual return
-    behaved as only ~9.69% effective.
+    **The one compound-growth formula in the app**, and the only place
+    ``(1 + annual) ** (days / 365) - 1`` is written.  Everything that grows
+    money over time reaches it: the forward projection
+    (:func:`project_balance`), the reverse one
+    (:func:`reverse_project_balance`), the retirement contribution solver's
+    annuity factor (:mod:`app.services.retirement_levers`), the balance seam's
+    per-day compound accrual (``balance_at._asset_fold``), the property equity
+    chart and the /savings Horizon's asset bands.
 
-    A same-day period (``start == end``) is one day of growth
-    (``(0).days + 1 == 1``).  A degenerate inverted period (``end <
-    start``, giving a non-positive span) falls back to the 14-day biweekly
-    cadence.  Shared by the forward (:func:`project_balance`) and reverse
-    (:func:`reverse_project_balance`) projections and by the retirement
-    contribution solver's annuity factor
-    (:mod:`app.services.retirement_levers`, P2a) -- public so every
-    consumer reads the one growth formula and none can drift on the
-    inclusive day count.
+    It takes a DAY COUNT rather than a period, and plan step **C2-e** is why.
+    The parameter used to be a duck-typed "period object" read only for its two
+    dates, and because anything with those two attributes satisfied it, three
+    separate impostor types grew to be passed here -- ``SyntheticPeriod``
+    (deleted at C2-e, ledger row **P17**), ``_asset_fold._ONE_DAY_SPAN`` and
+    ``property_equity_chart._AppreciationSpan``, none of them a pay period and
+    all of them existing only to reach this function.  A caller holding two
+    real dates uses :func:`span_return_rate`; a caller that knows only the
+    length of the span -- the seam's per-day rate is the same on every day of
+    every year -- calls this directly and invents no date at all.
 
     Args:
         assumed_annual_return: Decimal annual return rate (e.g. 0.07 for 7%).
-        period: A period object with ``.start_date`` and ``.end_date`` (the
-            latter the period's inclusive last day).
+        days: The number of calendar days to scale to.  Must be at least 1.
 
     Returns:
-        Decimal per-period compound rate ``(1 + annual) ** (days / 365) - 1``
-        where ``days`` is the inclusive calendar-day span.
+        Decimal compound rate ``(1 + annual) ** (days / 365) - 1``.
+
+    Raises:
+        ValueError: *days* is below 1.  There is no such thing as growth over a
+            zero-day or negative span, and the honest failure is louder than any
+            number this could return: the branch this REPLACES silently
+            substituted the 14-day biweekly rate, so a caller with its dates
+            crossed was handed a plausible figure instead of an error.  Like
+            :func:`span_return_rate`'s, it is a boundary guard rather than a
+            live branch -- ``_asset_fold`` passes the literal 1, and the
+            /savings Horizon's asset band selects strictly forward dates before
+            calling.
     """
-    period_days = (period.end_date - period.start_date).days + 1
-    if period_days <= 0:
-        period_days = 14  # fallback for degenerate (inverted) periods
+    if days < 1:
+        raise ValueError(
+            f"growth cannot be scaled to {days} day(s): a compound rate is "
+            f"defined over at least one calendar day.  This used to fall back "
+            f"to the 14-day biweekly rate, which turned a caller's crossed "
+            f"dates into a believable return rather than a failure."
+        )
     return (
         (1 + assumed_annual_return)
-        ** (Decimal(str(period_days)) / Decimal("365"))
+        ** (Decimal(str(days)) / Decimal("365"))
         - 1
+    )
+
+
+def span_return_rate(
+    assumed_annual_return: Decimal, first_day: date, last_day: date,
+) -> Decimal:
+    """Compound return rate over ``[first_day, last_day]``, counted INCLUSIVELY.
+
+    The date door onto :func:`growth_rate_for_days`, and it exists so the
+    ``+ 1`` is written once.  Pay periods carry an inclusive last day: a
+    standard 14-calendar-day period runs ``start`` .. ``start + 13`` and the
+    next one starts the following day (since plan step C3-b
+    :func:`app.services.pay_period_write.record_paydays` stores ``next payday
+    - 1`` for every period but the last, and ``start + cadence_days - 1`` for
+    that one).  The span is therefore ``(last_day - first_day).days + 1`` --
+    14 for a standard biweekly period, not 13.  Counting exclusively (the old
+    ``end - start`` without the ``+ 1``) dropped one calendar day per period;
+    because consecutive periods tile the calendar with no gaps, that lost 1 day
+    in 14 (~26 days a year, ~7.1%) of compounding, so a configured 10.5%
+    annual return behaved as only ~9.69% effective.  Five call sites hold two
+    dates; five open-coded inclusive counts would be five chances to
+    reintroduce exactly that.
+
+    A same-day span is one day of growth (``(0).days + 1 == 1``).
+
+    Args:
+        assumed_annual_return: Decimal annual return rate (e.g. 0.07 for 7%).
+        first_day: Inclusive first day of the span.
+        last_day: Inclusive last day of the span.
+
+    Returns:
+        Decimal compound rate over the inclusive span.
+
+    Raises:
+        ValueError: *last_day* precedes *first_day*.  **No call path in
+        ``app/`` can produce one** since plan step C2-e -- every period reaching
+        here is a
+        :class:`~app.services.pay_calendar.DerivedPeriod`, whose end is either
+        the next payday minus a day or ``start + cadence_days - 1`` and so is
+        never below its own start, and its one date-pair caller
+        (``property_equity_chart``) selects strictly forward dates.  It is a
+        boundary guard on a public function, not a live branch -- the same
+        standing :meth:`~app.services.pay_calendar.PayCalendar.overlapping`'s
+        crossed-range refusal has.
+    """
+    return growth_rate_for_days(
+        assumed_annual_return, (last_day - first_day).days + 1,
     )
 
 
@@ -355,7 +428,7 @@ class _ProjectionState:
 
 def _project_one_period(
     state: _ProjectionState,
-    period,
+    period: DerivedPeriod,
     inputs: _PeriodInputs,
     contribution_lookup: dict[date, tuple[Decimal, bool]] | None,
 ) -> ProjectedBalance:
@@ -369,7 +442,8 @@ def _project_one_period(
 
     Args:
         state: The mutable carry-forward state; advanced in place.
-        period: A period object with ``.id``, ``.start_date``, ``.end_date``.
+        period: The :class:`~app.services.pay_calendar.DerivedPeriod` to
+            project.
         inputs: The per-projection constants.
         contribution_lookup: Optional ``start_date -> (amount, is_confirmed)``
             map from :func:`_build_contribution_lookup`; ``None`` uses the
@@ -391,7 +465,9 @@ def _project_one_period(
 
     # Step 1: Growth on the existing balance, before this period's contribution.
     growth = round_money(
-        start_balance * period_return_rate(inputs.assumed_annual_return, period)
+        start_balance * span_return_rate(
+            inputs.assumed_annual_return, period.start_date, period.end_date,
+        )
     )
 
     # Determine this period's contribution and confirmed status.  A dated
@@ -444,7 +520,7 @@ def _project_one_period(
         state.remaining_limit = max(state.remaining_limit, ZERO)
 
     return ProjectedBalance(
-        period_id=period.id,
+        period=period,
         start_balance=start_balance,
         growth=growth,
         contribution=contribution,
@@ -459,7 +535,7 @@ def _project_one_period(
 def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     current_balance,
     assumed_annual_return,
-    periods,
+    periods: PeriodWindow,
     periodic_contribution=ZERO,
     employer_params=None,
     annual_contribution_limit=None,
@@ -473,10 +549,26 @@ def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-a
     is added, modeling that existing investments grow while new money
     is contributed.
 
+    **The axis is the owner's OWN pay calendar** since plan step C2-e.  It used
+    to be a list of anything carrying two dates and an id, which is how a
+    fabricated 14-day axis came to price a monthly-paid owner's contributions
+    at ``365/14`` a year -- ``$1,300,344.92`` shown against a true
+    ``$711,385.70`` over 20 years (ledger row **P20**).  What ended that is the
+    DELETION of the producer that fabricated the axis, not the annotation below:
+    Python does not check it, so a caller can still pass any sequence and this
+    would run.  The annotation states the contract; there is no longer a
+    producer in the tree that can supply anything else.
+
     Args:
-        current_balance:          Decimal starting balance.
+        current_balance:          Decimal starting balance, valued the day
+                                  BEFORE the first period opens -- the window
+                                  and the seed's past are disjoint, so no
+                                  contribution or day of growth is counted
+                                  twice (rulings R-AB / R-AE / R-AF).
         assumed_annual_return:    Decimal annual return rate (e.g. 0.07 for 7%).
-        periods:                  List of period objects with .id, .start_date, .end_date.
+        periods:                  The :class:`~app.services.pay_calendar.PeriodWindow`
+                                  to project over, ordered and contiguous by
+                                  construction.
         periodic_contribution:    Decimal employee contribution per period.  Used as the
                                   fallback when contributions is None or a period has no
                                   matching ContributionRecord.
@@ -502,8 +594,8 @@ def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-a
         List of ProjectedBalance, one per period.
 
     Pylint: ``too-many-arguments`` (9/5) / ``too-many-positional-arguments``
-    (9/5) -- suppressed because ``growth_engine`` is a pure stdlib leaf
-    whose design is "all data passed in as arguments."  These nine are
+    (9/5) -- suppressed because this module's design is "all data passed in as
+    arguments": it holds no session and reads no clock.  These nine are
     genuinely distinct projection inputs that callers vary independently
     -- the what-if overlay overrides ``periodic_contribution`` and nulls
     ``contributions``; the year-end full-year path forces
@@ -550,7 +642,7 @@ def project_balance(  # pylint: disable=too-many-arguments,too-many-positional-a
 def reverse_project_balance(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     anchor_balance,
     assumed_annual_return,
-    periods,
+    periods: PeriodWindow,
     periodic_contribution=ZERO,
     employer_params=None,
     annual_contribution_limit=None,
@@ -589,9 +681,10 @@ def reverse_project_balance(  # pylint: disable=too-many-arguments,too-many-posi
     Args:
         anchor_balance:       Decimal balance at the end of the last period.
         assumed_annual_return: Decimal annual return rate (e.g. 0.105 for 10.5%).
-        periods:              List of period objects in forward chronological
-                              order.  The anchor_balance corresponds to the
-                              end of the final period.
+        periods:              The :class:`~app.services.pay_calendar.PeriodWindow`
+                              to walk back through, forward-ordered by
+                              construction.  The anchor_balance corresponds to
+                              the end of its final period.
         periodic_contribution: Decimal employee contribution per period (the
                               forward periodic fallback, capped per period).
         employer_params:      dict for employer contribution calculation.
@@ -641,19 +734,25 @@ def reverse_project_balance(  # pylint: disable=too-many-arguments,too-many-posi
     # Work backward: end_balance of each period is the start_balance of the
     # next.  For the last period, end_balance = anchor.  Each step subtracts
     # the replayed per-period contribution / employer (not a single constant).
+    # Each replayed row CARRIES the period it priced (plan step C2-e), so the
+    # walk reads its span off the row rather than zipping a second reversed
+    # sequence beside it -- the row and the period it inverts cannot come apart.
     reversed_results = []
     end_balance = anchor_balance
-    for period, forward_row in zip(reversed(periods), reversed(schedule)):
+    for forward_row in reversed(schedule):
+        period = forward_row.period
         # Inverse of: end = start * (1 + rate) + contribution + employer
         start_balance = round_money(
             (end_balance - forward_row.contribution
              - forward_row.employer_contribution)
-            / (1 + period_return_rate(assumed_annual_return, period))
+            / (1 + span_return_rate(
+                assumed_annual_return, period.start_date, period.end_date,
+            ))
         )
         start_balance = max(start_balance, ZERO)
 
         reversed_results.append(ProjectedBalance(
-            period_id=period.id,
+            period=period,
             start_balance=start_balance,
             # Derive growth from: end = start + growth + contribution + employer
             growth=(
@@ -674,35 +773,3 @@ def reverse_project_balance(  # pylint: disable=too-many-arguments,too-many-posi
     # Return in forward chronological order.
     reversed_results.reverse()
     return reversed_results
-
-
-SyntheticPeriod = namedtuple("SyntheticPeriod", ["id", "start_date", "end_date"])
-
-
-def generate_projection_periods(start_date, end_date, cadence_days=14):
-    """Generate synthetic biweekly periods for long-term projections.
-
-    Creates lightweight period objects compatible with project_balance().
-    No database interaction -- pure function.
-
-    Args:
-        start_date:    date -- first period start.
-        end_date:      date -- generate periods until start_date would exceed this.
-        cadence_days:  int -- days per period (default 14 for biweekly).
-
-    Returns:
-        List of SyntheticPeriod namedtuples with .id, .start_date, .end_date.
-    """
-    periods = []
-    current = start_date
-    period_id = 1
-    while current <= end_date:
-        period_end = current + timedelta(days=cadence_days - 1)
-        periods.append(SyntheticPeriod(
-            id=period_id,
-            start_date=current,
-            end_date=period_end,
-        ))
-        current += timedelta(days=cadence_days)
-        period_id += 1
-    return periods

@@ -267,7 +267,12 @@ gate that does not exist: pylint's stock `import-private-name` is fail-OPEN for
 import hiding a real runtime cycle that `cyclic-import` structurally could not report
 (**N-25**). So Phase D gained **D0** (the arrow points one way) and **D-gate** (the custom
 package-privacy checker). **D0a** (`8285fcad`, the plan memo takes its builder; the cycle is gone,
-proven in both directions; the two injected memos land on one mechanism) shipped. **D0b was then
+proven in both directions; the two injected memos land on one mechanism) shipped.
+**N-25 was archived out of the live ledger here on 2026-08-13**: its INSTANCE closed at that
+commit and the developer ruled the CLASS an upstream limitation with no shared root in this
+codebase, so nothing was owed. Recorded because the gate's cycle model and the runtime's
+differ in BOTH directions -- N-25 is pylint blind to a real cycle, and balance:N-266 (b) is
+pylint reporting one the runtime does not have. **D0b was then
 CANCELLED and Phase D redesigned** (developer ruling 2026-07-19: "use structure, not fences") --
 scoping D0b showed it would ADD four fence entries, which was the design saying the arrow was
 backwards: a balance producer moves deeper INTO the seam, never out to a public leaf. Phase D is now

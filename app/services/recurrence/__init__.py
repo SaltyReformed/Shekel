@@ -9,11 +9,13 @@ a package whose private modules are fenced by ``shekel-private-module-import``
 Two vocabularies, one of which is computed
 ------------------------------------------
 
-``budget.recurrence_rules`` stores what a user AUTHORS: the closed
-``pattern_id`` set and its parameters.  The redesign's two-axis reading of the
-same cadence -- an interval, a unit, a first occurrence, a placement, a shift
--- is a DERIVATION over those columns plus the owner's pay-period schedule,
-and it is **not stored** (developer ruling 2026-08-07, plan step R2d).
+``budget.recurrence_rules`` STORES the closed ``pattern_id`` set and its
+parameters.  Since plan step R7b that is an ENCODING rather than the authored
+vocabulary: a caller states ``(interval_n, unit, placement)`` and the seam
+encodes it on the way in and decodes it on the way out.  What remains a
+DERIVATION over those columns plus the owner's pay-period schedule -- the first
+occurrence, and the phase the ``PERIOD`` unit fires on -- is **not stored**
+(developer ruling 2026-08-07, plan step R2d).
 
 Storing it beside its own inputs would make it a cache, and a cache drifts the
 moment one writer moves one side alone.  The mechanisms proposed to stop that
@@ -61,16 +63,25 @@ What this package offers
 What lives where
 ----------------
 
-* ``_frequency`` -- what a pattern means with NO schedule: :class:`Cadence`,
-  the pattern table both readings share, and the yearly counts every monthly
-  equivalent rests on.  Split out at plan step R7a-2b because
-  ``obligations_aggregator`` and the calendar's infrequent badge ask "how
-  often" and hold no calendar, so they could not use the two-axis vocabulary
-  at all while it was fused to the anchor derivation.  ``_resolution`` reads
-  this table rather than holding its own, so the two cannot disagree.
+* ``_frequency`` -- what a cadence means with NO schedule: :class:`Cadence`,
+  the pattern table both readings share, the yearly counts every monthly
+  equivalent rests on, and (since plan step R7b-2) the anchor-family router
+  that says WHICH derivation a ``(unit, placement)`` uses.  Split out at plan
+  step R7a-2b because ``obligations_aggregator`` and the calendar's infrequent
+  badge ask "how often" and hold no calendar, so they could not use the
+  two-axis vocabulary at all while it was fused to the anchor derivation.
+  ``_resolution`` reads this module's tables rather than holding its own, so
+  the two cannot disagree.
+* ``_bounds`` -- WHEN a recurrence stops: :class:`EndBound` and its three
+  shapes.  Its own module rather than a pair of fields on ``_resolution``'s two
+  values because "at most one closing bound" is then a property of the TYPE
+  rather than a CHECK three layers have to restate -- and because the shape set
+  is what the form offers, the schema accepts and the walk asks, so one closed
+  table serves all three (plan step R7b-3).
 * ``_resolution`` -- :class:`RecurrenceSpec`, :class:`ResolvedRecurrence` and
   :func:`resolve`, the pure derivation of what a recurrence means AGAINST a
-  schedule.
+  schedule.  It holds WHERE each family puts the anchor; the family router
+  itself is one module down, because that answer needs no schedule.
 * ``_authoring`` -- the WRITE door: refuse the unresolvable, write the
   authored spec.  The only module here that holds a session.  The SCHEDULE it
   resolves against is :class:`~app.services.pay_calendar.PayCalendar`, loaded
@@ -84,10 +95,16 @@ What lives where
   ``_authoring`` carries the session while nothing here needs one -- and
   rather than a line in ``_occurrence`` because that module is pure by
   contract and this one takes an ORM row.
-* ``_vocabulary`` -- which patterns the application MODELS, and what the
-  PICKER calls them: the set every form surface offers and every door
-  validates against, so a ``ref`` row the enum does not name can be neither
-  offered nor accepted (plan step R2e-2).
+* ``_vocabulary`` -- which patterns the application MODELS, so a ``ref`` row
+  the enum does not name can be neither read nor accepted (plan step R2e-2).
+  It held the PICKER too until plan step R7b-2 moved that out.
+* ``_picker`` -- what the recurrence form OFFERS and what each option is
+  called.  Its own module rather than a line in ``_vocabulary`` because the two
+  answer different questions from different tables: membership is per closed-set
+  pattern and is asked of STORED rows, while the offer set is derived from the
+  ENCODER's table and asked of a blank form.  Serving the options from the
+  encoder is what makes a cadence the closed set cannot store unofferable
+  rather than merely unoffered (plan step R7b-2).
 * ``_describe`` -- what a RESOLVED recurrence is called on a display surface.
   Its own module rather than a line in ``_vocabulary`` because the two are
   keyed on different things: the picker's labels are per closed-set pattern
@@ -98,20 +115,38 @@ Plan step R3 built the forward occurrence engine here, step R4a pointed the
 old ``match_periods`` adapter at it (gated by
 ``tests/oracles/recurrence_baseline.txt``), and step R4b-2 deleted that adapter
 and moved generation itself onto the ``(occurrence, period)`` pairs.
-When step R7c moves the form onto the two-axis vocabulary,
-:class:`RecurrenceSpec`'s fields change and :func:`resolve` shrinks to almost
-nothing -- nothing above the door does.
+:class:`RecurrenceSpec`'s fields changed at step R7b-1 and :func:`resolve`
+shrank with them.  Step R7c drops the encode / decode pair and the columns
+under it; what changes above the door then is the two surfaces that still read
+``rule.pattern_id`` for a cadence (``calendar_infrequency``,
+``obligations_aggregator``, both through :func:`cadence_of`).
 """
 from app.services.recurrence._authoring import (
     author_rule,
     build_transient_rule,
     reauthor_rule,
 )
+from app.services.recurrence._bounds import (
+    END_BOUND_KINDS,
+    NEVER_ENDS,
+    BoundReading,
+    EndBound,
+    EndBoundColumns,
+    EndBoundInputError,
+    EndsAfterOccurrences,
+    EndsOnDate,
+    NeverEnds,
+    end_bound_from_columns,
+    end_bound_from_token,
+)
 from app.services.recurrence._frequency import (
     Cadence,
+    PatternReading,
     RecurrenceFrequencyError,
     RecurrenceResolutionError,
     cadence_of,
+    decode_pattern,
+    is_authorable,
 )
 from app.services.recurrence._describe import (
     RecurrenceDescription,
@@ -127,9 +162,11 @@ from app.services.recurrence._occurrence import (
 )
 from app.services.recurrence._reading import (
     RuleReading,
+    has_ended,
     placed_periods,
     read_rule,
     recurrence_spec,
+    recurrence_spec_with_cadence,
     resolved_recurrence,
     rule_occurrences,
 )
@@ -138,21 +175,40 @@ from app.services.recurrence._resolution import (
     ResolvedRecurrence,
     resolve,
 )
+from app.services.recurrence._picker import (
+    CadenceOption,
+    EndBoundOption,
+    PickerModel,
+    SelectedCadence,
+    cadence_options,
+    end_bound_options,
+    picker_model,
+    selected_cadence,
+)
 from app.services.recurrence._vocabulary import (
-    UNAVAILABLE_PATTERN_LABEL,
     UNAVAILABLE_PATTERN_MESSAGE,
-    PatternChoice,
     modelled_pattern,
-    pattern_choices,
-    pattern_choices_for,
+    modelled_placement,
+    modelled_unit,
 )
 
 __all__ = [
-    "UNAVAILABLE_PATTERN_LABEL",
+    "END_BOUND_KINDS",
+    "NEVER_ENDS",
     "UNAVAILABLE_PATTERN_MESSAGE",
+    "BoundReading",
     "Cadence",
+    "CadenceOption",
+    "EndBound",
+    "EndBoundColumns",
+    "EndBoundInputError",
+    "EndBoundOption",
+    "EndsAfterOccurrences",
+    "EndsOnDate",
+    "NeverEnds",
     "OccurrencePlacement",
-    "PatternChoice",
+    "PatternReading",
+    "PickerModel",
     "RecurrenceDescription",
     "RecurrenceDescriptionError",
     "RecurrenceFrequencyError",
@@ -161,21 +217,32 @@ __all__ = [
     "RecurrenceSpec",
     "ResolvedRecurrence",
     "RuleReading",
+    "SelectedCadence",
     "author_rule",
     "build_transient_rule",
     "cadence_of",
+    "cadence_options",
+    "decode_pattern",
     "describe",
+    "end_bound_from_columns",
+    "end_bound_from_token",
+    "end_bound_options",
+    "has_ended",
+    "is_authorable",
     "modelled_pattern",
+    "modelled_placement",
+    "modelled_unit",
     "occurrence_placements",
     "occurrences",
-    "pattern_choices",
-    "pattern_choices_for",
+    "picker_model",
     "place",
     "placed_periods",
     "read_rule",
     "reauthor_rule",
     "recurrence_spec",
+    "recurrence_spec_with_cadence",
     "resolve",
     "resolved_recurrence",
     "rule_occurrences",
+    "selected_cadence",
 ]

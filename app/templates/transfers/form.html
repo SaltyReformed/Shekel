@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
 {% from "_amount_macros.html" import amount_field, amount_history with context %}
-{% from "_recurrence_fields.html" import recurrence_pattern_select, recurrence_detail_fields, recurrence_preview, start_period_field with context %}
+{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_detail_fields, recurrence_end_bound, recurrence_preview, recurrence_start_date, start_period_field with context %}
 {% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if template else 'New' }} Transfer -- Shekel{% endblock title %}
 
@@ -77,17 +77,33 @@
       {# --- Recurrence (accent emphasis section) --- #}
       <div class="form-section--accent">
         <h6 class="form-section__title">Recurrence</h6>
-        {{ recurrence_pattern_select(pattern_choices, template) }}
+        {{ recurrence_cadence_controls(recurrence.picker, recurrence.selected_cadence) }}
         <div id="recurrence-fields" class="d-none">
+          {# Both validity bounds lock together on ONE predicate (plan step
+             R7b-4): a recurring loan payment runs from the loan's first
+             contractual installment to its projected payoff, and
+             loan_recurrence_sync owns both. #}
+          {{ recurrence_start_date(recurrence.selected_start_date,
+                                       recurrence.start_date_min,
+                                       recurrence.start_date_max,
+                                       locked=recurrence.bounds_are_derived) }}
           {{ recurrence_detail_fields(template, include_due_day=false) }}
+          {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end_bound,
+                                     locked=recurrence.bounds_are_derived) }}
           {{ recurrence_preview(url_for('templates.preview_recurrence')) }}
         </div>
-        {# The pay-period selector sits OUTSIDE #recurrence-fields so it stays
-           visible for a NON-REPEATING transfer, which has no recurring cadence
-           but still needs a period to land in -- unlike a non-repeating
-           transaction, one Transfer IS materialised, and the route refuses the
-           create without a period.  recurrence_form.js swaps the label between
-           "Pay period" and "First paycheck". #}
+        {# The pay-period selector sits OUTSIDE #recurrence-fields because it
+           belongs to the NON-REPEATING case: a transfer that does not repeat
+           still moves money once, and the route refuses the create without a
+           period to move it in.  Unlike a non-repeating transaction, which
+           materialises nothing.
+
+           It means ONE thing since plan step R7b-4.  It used to be relabelled
+           "First paycheck" by recurrence_form.js whenever a cadence was
+           chosen, because the same control was also the recurrence's opening
+           bound; that bound is the "Starts on" date above now, so the script
+           shows this only while "Does not repeat" is selected and DISABLES it
+           otherwise -- a hidden control still submits. #}
         {% if not template %}{{ start_period_field(periods, current_period) }}{% endif %}
       </div>
 

@@ -1,14 +1,19 @@
 """Investment dashboard -- the growth CHART.
 
 Everything ``investment/_growth_chart.html`` draws: the forward projection over
-a synthetic horizon, the modeled-history series behind it, the Today and
+the owner's own paychecks to the horizon, the modeled-history series behind
+it, the Today and
 retirement markers between them, and the optional what-if overlay.  Split from
 the cards at this package's module-size ceiling on plan step D1c's cohesion
 line -- that half answers "what does this account look like right now", this one
 answers "what does it look like from here on".
 
-The initial dashboard chart and the HTMX fragment share ONE synthetic-period
-basis at the slider default horizon, so they cannot disagree.
+The initial dashboard chart and the HTMX fragment share ONE pay-period basis
+at the slider default horizon, so they cannot disagree.  **That basis stopped
+being SYNTHETIC at pay-calendar plan step C2-e**: it was a fabricated 14-day
+axis whatever the owner's real cadence (ledger row P20), and it is now
+:meth:`~app.services.pay_calendar.PayCalendar.projection_axis` over their own
+paydays.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, all money is
 :class:`~decimal.Decimal`; ``float`` appears only at the Chart.js
@@ -20,11 +25,11 @@ from decimal import Decimal, InvalidOperation
 
 from app.models.account import Account
 from app.services import balance_at, growth_engine, pay_period_service
+from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
 from ._context import (
     _ProjectionContext,
-    _PeriodList,
     _load_investment_params,
     _load_planned_retirement_date,
     _load_projection_context,
@@ -32,15 +37,13 @@ from ._context import (
 
 
 def _run_growth_projection(
-    ctx: _ProjectionContext, periods: _PeriodList,
+    ctx: _ProjectionContext, periods: PeriodWindow,
 ) -> list[growth_engine.ProjectedBalance]:
     """Project balances across *periods* from the shared growth context.
 
     The single home for the ``growth_engine.project_balance`` splat the
-    dashboard and the growth-chart fragment both issue with identical
-    arguments -- only the period list differs (the dashboard's future
-    real periods vs. the chart's synthetic horizon periods).  Callers
-    must guard ``ctx.params is not None`` before calling.
+    committed series and the what-if overlay both issue with identical
+    arguments.  Callers must guard ``ctx.params is not None`` before calling.
 
     Seeds from ``ctx.projection_seed`` -- the modelled balance on the day
     BEFORE ``ctx.projection_start``, which is the day after the history line's
@@ -70,31 +73,33 @@ def _run_growth_projection(
 
 def _build_chart_series(
     projection: list[growth_engine.ProjectedBalance],
-    periods: _PeriodList,
     seed_balance: Decimal,
 ) -> tuple[list[str], list[str], list[str]]:
     """Build the chart's ``(labels, balances, contributions)`` string lists.
 
     The single home for the cumulative-contribution chart loop the
     dashboard and the growth-chart fragment both ran inline with
-    different variable names (so R0801 never clustered them).  Labels
-    resolve against *periods*; because :func:`growth_engine.project_balance`
-    emits exactly one row per input period, every ``pb.period_id`` is
-    present in the map and the three lists stay equal length.  The
+    different variable names (so R0801 never clustered them).  The
     contribution series is the running ``seed_balance + cumulative
     employee + employer`` total per period, where ``seed_balance`` is the
     projection's start-of-first-period seed (deep-quality-hunt #9) so the
     invested-principal line and the with-growth line share one origin.
+
+    **Each row carries the period it priced**, so this no longer takes the
+    axis and builds an id-keyed map of it to find each row's caption (plan
+    step C2-e).  That map is where ledger row **P21**'s collapse would have
+    landed: every period past the owner's saved horizon is a projection with
+    no id, so 471 of a 20-year axis's 523 rows would have resolved to one
+    entry and every projected month would have carried the same caption.  The
+    three lists stay equal length because there is one row per axis period and
+    every row now supplies its own label.
     """
-    period_map = {p.id: p for p in periods}
     labels: list[str] = []
     balances: list[str] = []
     contributions: list[str] = []
     cumulative_contrib = Decimal("0")
     for pb in projection:
-        period = period_map.get(pb.period_id)
-        if period:
-            labels.append(period.start_date.strftime("%b %Y"))
+        labels.append(pb.period.start_date.strftime("%b %Y"))
         balances.append(str(round_money(pb.end_balance)))
         cumulative_contrib += pb.contribution + pb.employer_contribution
         contributions.append(
@@ -122,25 +127,48 @@ def _assemble_chart_context(
     """Build the full chart context: projection + history + markers (C2).
 
     The single code path the dashboard first paint and the HTMX fragment both
-    use (synthetic periods across ``horizon_years`` for the committed +
+    use (the owner's paychecks across ``horizon_years`` for the committed +
     optional what-if series, plus modeled history and Today/retirement
     markers), so they cannot disagree on basis.  Empty when the horizon yields
     no periods; callers guard ``ctx.params is not None``.
 
     **The axis opens at ``ctx.projection_start``, not at today** (ruling R-AF):
-    the day after the history line's last valued point, which is the same day
+    the day after the history line's last valued point, which is the day BEFORE
     ``ctx.projection_seed`` is read on.  Taking the window and the seed from ONE
     derivation is what makes the two lines MEET -- deriving the window here and
     the seed in the loader is exactly how they came to be 10-13 days apart, with
     a step at the Today marker that nobody had chosen.
+
+    **The axis's first period OPENS on ``projection_start``, and that identity
+    is now structural** (plan step C2-e).  It used to hold by arithmetic --
+    the deleted producer built its first period AT the date it was handed -- and
+    the pay calendar's does not: it answers the period COVERING a day, which
+    opened on a payday.  So :func:`._context._projection_start` derives that day
+    from the calendar itself, as the day after the span covering the clock ends,
+    and the two cannot come apart.  The assert below states it rather than
+    trusting it: an adversarial code review of this step measured **$57.24** of
+    growth counted twice at the head of a $102,686.18 balance on the branch
+    where they HAD come apart -- an owner whose generated schedule has lapsed,
+    where the old fallback opened the window at today while the axis opened it
+    on the last payday.
     """
     horizon_years = max(1, min(horizon_years, 40))
     end_date = ctx.projection_start + timedelta(days=horizon_years * 365)
-    periods = growth_engine.generate_projection_periods(
-        start_date=ctx.projection_start, end_date=end_date,
+    # The owner's OWN paychecks from the window's opening day, projected past
+    # their saved schedule at the cadence they recorded (plan step C2-e).  The
+    # axis was fabricated and hardcoded to 14 days until then, so a monthly-paid
+    # owner's chart applied 26 paycheck contributions a year (ledger row P20).
+    periods = ctx.balance_ctx.calendar().projection_axis(
+        ctx.projection_start, end_date,
     )
     if not periods:
         return _empty_chart_context()
+    assert periods[0].start_date == ctx.projection_start, (
+        f"the projection window opens {ctx.projection_start.isoformat()} and "
+        f"its first period opens {periods[0].start_date.isoformat()}: the seed "
+        f"is valued the day before the former, so the engine would re-grow "
+        f"every day between them"
+    )
     projection = _run_growth_projection(ctx, periods)
     chart_context = _growth_chart_context(ctx, periods, projection, what_if_raw)
     history = _build_history_series(account, ctx)
@@ -166,7 +194,7 @@ def _build_history_series(account: Account, ctx: _ProjectionContext) -> dict:
     bctx = ctx.balance_ctx
     if ctx.current_period is None:
         return {"history_labels": [], "history_balances": []}
-    balances = balance_at.balance_map(account, bctx, ctx.all_periods)
+    balances = balance_at.balance_map(account, bctx)
     labels: list[str] = []
     values: list[str] = []
     for period in ctx.all_periods:
@@ -181,7 +209,7 @@ def _build_history_series(account: Account, ctx: _ProjectionContext) -> dict:
 
 
 def _build_chart_markers(
-    user_id: int, history_len: int, projection_periods: _PeriodList,
+    user_id: int, history_len: int, projection_periods: PeriodWindow,
 ) -> dict:
     """Return the Today-boundary and retirement-year chart markers (C2).
 
@@ -209,7 +237,7 @@ def _build_chart_markers(
 
 def _growth_chart_context(
     ctx: _ProjectionContext,
-    periods: _PeriodList,
+    periods: PeriodWindow,
     projection: list[growth_engine.ProjectedBalance],
     what_if_raw: str | None,
 ) -> dict:
@@ -221,7 +249,7 @@ def _growth_chart_context(
     load-project-render sequence.
     """
     chart_labels, chart_balances, chart_contributions = _build_chart_series(
-        projection, periods, ctx.projection_seed,
+        projection, ctx.projection_seed,
     )
 
     what_if_amount = _parse_what_if(what_if_raw)
@@ -265,7 +293,7 @@ def _parse_what_if(what_if_raw: str | None) -> Decimal | None:
 def _compute_what_if_overlay(
     what_if_amount: Decimal | None,
     ctx: _ProjectionContext,
-    periods: _PeriodList,
+    periods: PeriodWindow,
     projection: list[growth_engine.ProjectedBalance],
 ) -> tuple[list[str], dict | None]:
     """Run the what-if projection (when an amount is supplied) plus comparison.
@@ -323,7 +351,7 @@ def compute_growth_chart_data(
     """Build the context for the ``investment/_growth_chart.html`` fragment.
 
     Routes through the SAME :func:`_assemble_chart_context` the dashboard's
-    first paint uses (C2), so both agree on the synthetic-period basis and
+    first paint uses (C2), so both agree on the pay-period basis and
     carry the history series + markers.  Empty-chart shape when no params row
     exists or the horizon yields no periods.
 

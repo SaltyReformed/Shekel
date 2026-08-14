@@ -30,6 +30,12 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services import posting_service, transaction_service
+# The leaf, imported for ONE control that spies on a private name the package
+# does not re-export -- see
+# ``test_the_live_figure_is_resolved_BEFORE_the_status_flip`` for why patching
+# the package attribute would grade nothing.
+from app.services.transaction_service import _settle
+from app.services.row_valuation import owned_contribution
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -912,7 +918,7 @@ class TestASettleBooksTheFreshestFigure:
 
             assert txn.estimated_amount == Decimal("4000.00")
             assert txn.actual_amount is None
-            assert txn.effective_amount == Decimal("4000.00")
+            assert owned_contribution(txn) == Decimal("4000.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.RECEIVED)
 
     def test_a_supplied_actual_still_wins_over_the_live_figure(
@@ -944,7 +950,7 @@ class TestASettleBooksTheFreshestFigure:
 
             assert txn.actual_amount == Decimal("3912.44")
             assert txn.estimated_amount == Decimal("4000.00")
-            assert txn.effective_amount == Decimal("3912.44")
+            assert owned_contribution(txn) == Decimal("3912.44")
 
     def test_an_overridden_row_is_not_re_derived(
         self, app, db, seed_user, seed_periods,
@@ -966,7 +972,7 @@ class TestASettleBooksTheFreshestFigure:
             transaction_service.settle_transaction(txn)
 
             assert txn.actual_amount is None
-            assert txn.effective_amount == Decimal("1234.56")
+            assert owned_contribution(txn) == Decimal("1234.56")
 
     def test_an_agreeing_live_figure_leaves_the_column_null(
         self, app, db, seed_user, seed_periods,
@@ -989,7 +995,7 @@ class TestASettleBooksTheFreshestFigure:
             transaction_service.settle_transaction(txn)
 
             assert txn.actual_amount is None
-            assert txn.effective_amount == Decimal("4000.00")
+            assert owned_contribution(txn) == Decimal("4000.00")
 
     def test_a_row_with_no_live_seam_is_untouched(
         self, app, db, seed_user, seed_periods,
@@ -1011,7 +1017,7 @@ class TestASettleBooksTheFreshestFigure:
             transaction_service.settle_transaction(txn)
 
             assert txn.actual_amount is None
-            assert txn.effective_amount == Decimal("500.00")
+            assert owned_contribution(txn) == Decimal("500.00")
 
     def test_an_envelope_with_entries_still_settles_at_its_entries(
         self, app, db, seed_user, seed_periods,
@@ -1095,7 +1101,7 @@ class TestASettleBooksTheFreshestFigure:
             )
 
             assert txn.actual_amount is None
-            assert txn.effective_amount == Decimal("500.00")
+            assert owned_contribution(txn) == Decimal("500.00")
 
     def test_settle_amount_refuses_a_transfer_shadow(
         self, app, db, seed_user, seed_periods,
@@ -1133,23 +1139,31 @@ class TestASettleBooksTheFreshestFigure:
 
         Shown to FIRE: moving the :func:`_reconcile_cached_amount` call below
         ``apply_status_change`` books ``$1.00``.
+
+        **The spy is installed on the LEAF that owns the name**, not on the
+        package that re-exports the verb, and the difference is not cosmetic:
+        ``_reconcile_cached_amount`` resolves ``_freshest_amount`` as a global
+        of its own module, so patching a package attribute would intercept
+        nothing and this control would pass while grading nothing.  It moved
+        with the code at plan step X-f2-c3, which made ``transaction_service``
+        a package; the assertion is unchanged.
         """
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
             db.session.commit()
 
             seen_status = []
-            real = transaction_service._freshest_amount  # noqa: SLF001
+            real = _settle._freshest_amount  # noqa: SLF001
 
-            def _spy(row):
+            def _spy(row, basis):
                 seen_status.append(row.status_id)
-                return real(row)
+                return real(row, basis)
 
-            transaction_service._freshest_amount = _spy  # noqa: SLF001
+            _settle._freshest_amount = _spy  # noqa: SLF001
             try:
                 transaction_service.settle_transaction(txn)
             finally:
-                transaction_service._freshest_amount = real  # noqa: SLF001
+                _settle._freshest_amount = real  # noqa: SLF001
 
             assert seen_status == [
                 ref_cache.status_id(StatusEnum.PROJECTED),

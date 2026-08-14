@@ -292,6 +292,17 @@ EVT_TRANSFER_UPDATED = _register(
     "transfer_updated", BUSINESS,
     "Transfer service updated a transfer and propagated to shadows.",
 )
+EVT_TRANSFER_AMOUNT_FROZEN = _register(
+    "transfer_amount_frozen", BUSINESS,
+    "A settle FROZE an auto-derived loan payment's live payment-date figure "
+    "(P&I + escrow-as-of + extra) rather than booking the creation-time "
+    "estimate its transfer was generated with.  Its own event because it is "
+    "the one money write here that no operator asked for -- the figure "
+    "differs from the one they saw when the transfer was generated, and "
+    "without this nothing records that it moved or to what.  Emitted only "
+    "where the derivation actually decided the figure: a settle carrying a "
+    "human's correction books that instead and is not a freeze.",
+)
 EVT_TRANSFER_SOFT_DELETED = _register(
     "transfer_soft_deleted", BUSINESS,
     "Transfer service flagged a transfer (and its shadows) is_deleted=True.",
@@ -367,6 +378,16 @@ EVT_TRANSACTIONS_RECONCILED = _register(
     "User confirmed which outstanding transactions their bank statement "
     "shows; each settled through the transaction service on the day the "
     "balance was observed, some carrying a corrected amount.",
+)
+EVT_TRANSFERS_RECONCILED = _register(
+    "transfers_reconciled", BUSINESS,
+    "User confirmed which outstanding TRANSFERS their bank statement shows; "
+    "each settled through the transfer service on the day the balance was "
+    "observed, moving both legs and the parent together, some carrying a "
+    "corrected amount.  Its own event rather than a count folded into the "
+    "transaction one, because settling a transfer touches a SECOND account: "
+    "an analyst asking why that account's balance moved has to be able to "
+    "find this without knowing to look under transactions.",
 )
 
 # ── Business events: pay periods ───────────────────────────────────

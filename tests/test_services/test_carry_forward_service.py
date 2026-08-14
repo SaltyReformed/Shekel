@@ -45,6 +45,7 @@ from app.services import (
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.row_valuation import owned_contribution
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
@@ -1025,7 +1026,6 @@ class TestCarryForwardOverrideSibling:
                 BalanceContext.build(
                     seed_user["user"].id, as_of=seed_periods[0].start_date,
                 ),
-                seed_periods,
             )
 
             # Two $250 expenses pull the period balance down by $500
@@ -2472,7 +2472,6 @@ class TestCarryForwardEnvelopeBalanceInvariant:
                 BalanceContext.build(
                     seed_user["user"].id, as_of=seed_periods[0].start_date,
                 ),
-                seed_periods,
             )
 
             # Anchor balance from seed_user is $1000; settled source
@@ -2495,7 +2494,7 @@ class TestCarryForwardEnvelopeBalanceInvariant:
             ]
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             subtotal = sum(
-                (t.effective_amount for t in period_1_txns
+                (owned_contribution(t) for t in period_1_txns
                  if t.status_id == projected_id),
                 Decimal("0"),
             )

@@ -1,7 +1,7 @@
 """The pure recurrence resolver (plan steps R2c-1 and R2d).
 
-``app.services.recurrence.resolve`` is the one place the closed ``pattern_id``
-vocabulary becomes the two-axis one, and it is pure: a spec and a
+``app.services.recurrence.resolve`` turns an AUTHORED cadence into what it
+means against one schedule, and it is pure: a spec and a
 :class:`~app.services.pay_calendar.PayCalendar` in, a
 :class:`~app.services.recurrence.ResolvedRecurrence` out.  So every case below
 is exercised at EXACT dates against a hand-built schedule -- no database, no
@@ -53,6 +53,8 @@ from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
     RecurrenceResolutionError,
     RecurrenceSpec,
+    build_transient_rule,
+    decode_pattern,
     occurrence_placements,
     resolve,
 )
@@ -113,19 +115,42 @@ def build_calendar(
 
 
 def spec_for(pattern: RecurrencePatternEnum, **overrides) -> RecurrenceSpec:
-    """Return a spec naming *pattern*, with *overrides* applied.
+    """Return a spec for the cadence *pattern* names, with *overrides* applied.
+
+    **Keyed on the closed-set member even though the spec no longer carries
+    one** (plan step R7b), and deliberately: every case in this file was
+    written against a named pattern and hand-checked at exact dates, so
+    re-keying them onto ``(interval, unit, placement)`` by hand would be 200
+    silent opportunities to change what a case measures.  The translation goes
+    through :func:`~app.services.recurrence.decode_pattern`, the same seam the
+    read door uses, so a case still means what its name says.
+
+    A case ABOUT the two-axis vocabulary states the axes directly instead --
+    see the last three of :class:`TestRefusals`.
 
     Args:
-        pattern: The pattern member to resolve the id of.
+        pattern: The pattern member whose cadence to build.
         **overrides: Any :class:`~app.services.recurrence.RecurrenceSpec`
             field to set.
 
     Returns:
         The spec.
     """
+    # Decoded at TWO, not one, and an adversarial review of plan step R7b-1
+    # is why: a pattern that names its own interval ignores this number, and
+    # ``Every N Periods`` -- the one that does not -- would otherwise collapse
+    # onto ``Every Period``'s reading, silently dropping a member from every
+    # sweep in this file that claims to cover the whole enum.
+    interval_override = overrides.pop("interval_n", None)
+    reading = decode_pattern(ref_cache.recurrence_pattern_id(pattern), 2)
     return RecurrenceSpec(
         user_id=_USER_ID,
-        pattern_id=ref_cache.recurrence_pattern_id(pattern),
+        unit=reading.cadence.unit,
+        interval_n=(
+            reading.cadence.interval_n if interval_override is None
+            else interval_override
+        ),
+        placement=reading.placement,
         **overrides,
     )
 
@@ -152,14 +177,24 @@ class TestPayPeriodSpaceFamily:
         assert resolved.shift is BusinessDayShiftEnum.NONE
         assert resolved.nominal_day is None
 
-    def test_a_start_period_moves_the_anchor_to_its_start(self):
-        """The chosen first paycheck becomes the opening bound.
+    def test_a_start_date_on_a_payday_anchors_there(self):
+        """A stated opening bound dominates the schedule opening.
 
-        Period index 3 opens 2026-03-26 + 3 x 14 days = 2026-05-07, which
-        dominates the schedule opening in the effective-start maximum.
+        Period index 3 opens 2026-03-26 + 3 x 14 days = 2026-05-07, so a rule
+        starting that day anchors there rather than at the schedule's own
+        first payday.
+
+        **This case named a start PERIOD until plan step R7b-4** (period id 4,
+        the same paycheck) and asserted the same date.  The affordance was a
+        pay-period FK; it is a date now, and the assertion is unchanged
+        because the fold was measured equal -- which is what makes this a
+        re-expression of the case rather than a new one.
         """
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.EVERY_PERIOD, start_period_id=4),
+            spec_for(
+                RecurrencePatternEnum.EVERY_PERIOD,
+                start_date=date(2026, 5, 7),
+            ),
             build_calendar(),
         )
 
@@ -184,16 +219,22 @@ class TestPayPeriodSpaceFamily:
 
         assert resolved.anchor_date == date(2026, 4, 22)
 
-    def test_every_n_periods_phases_on_the_chosen_start_period(self):
-        """``offset_periods`` is DERIVED from the start period, every write.
+    def test_every_n_periods_phases_on_the_paycheck_its_start_date_falls_in(self):
+        """``offset_periods`` is DERIVED from the opening bound, every write.
 
-        Period index 5 with an interval of 3 phases the rule at
-        ``5 % 3 == 2``, and the interval the form submitted is kept because
-        this is the one pattern whose interval is authored rather than named.
+        Period index 5 opens 2026-03-26 + 5 x 14 days = 2026-06-04, so a rule
+        starting that day at an interval of 3 phases at ``5 % 3 == 2``.  The
+        interval the form submitted is kept because this is the one pattern
+        whose interval is authored rather than named by its pattern.
+
+        **The bound named a start PERIOD until plan step R7b-4** -- period id
+        6, the same paycheck -- and both assertions are unchanged, because the
+        phase came from that period's ordinal then and comes from the ordinal
+        of the period containing this date now.
         """
         spec = spec_for(
             RecurrencePatternEnum.EVERY_N_PERIODS,
-            interval_n=3, start_period_id=6,
+            interval_n=3, start_date=date(2026, 6, 4),
         )
         calendar = build_calendar()
 
@@ -203,37 +244,69 @@ class TestPayPeriodSpaceFamily:
         assert resolved.offset_periods == 2
         assert resolved.anchor_date == date(2026, 6, 4)
 
-    def test_every_n_periods_without_a_start_period_keeps_the_authored_phase(self):
-        """With no start period there is nothing to derive the phase from.
+    def test_a_mid_period_start_date_phases_on_the_paycheck_it_falls_in(self):
+        """The bound need not be a payday for the phase to be exact.
 
-        The authored value is then the only statement of phase available, so
-        it rides through -- which is also what lets the R1 characterization
-        oracle sweep every phase of every interval.  The ANCHOR moves with it
-        (see :class:`TestTheTwoVocabulariesAgree`); a phase the anchor did not
-        carry would be a rule whose two halves state different cadences.
+        2026-06-10 falls INSIDE period index 5 (2026-06-04..2026-06-17), so
+        an interval-3 rule starting then phases at ``5 % 3 == 2`` -- the same
+        answer the payday itself gives.  It is the PAYCHECK the money comes
+        out of that the cadence counts, not the calendar day, which is why
+        this is a containment question rather than an equality one.
+
+        The anchor stays the bound itself (ruling R-R8), so it is the mid-period
+        date and not the paycheck's opening.
         """
         spec = spec_for(
             RecurrencePatternEnum.EVERY_N_PERIODS,
-            interval_n=4, offset_periods=3,
+            interval_n=3, start_date=date(2026, 6, 10),
+        )
+
+        resolved = resolve(spec, build_calendar())
+
+        assert resolved.offset_periods == 2
+        assert resolved.anchor_date == date(2026, 6, 10)
+
+    def test_every_n_periods_with_no_start_date_phases_on_the_opening(self):
+        """With no stated bound the schedule's own opening is the bound.
+
+        That paycheck is index 0, so every interval phases at ``0 % n == 0``
+        and the anchor is the opening payday.
+
+        **This case authored a phase directly until plan step R7b-4**
+        (``offset_periods=3``), which the spec no longer carries: a phase is
+        not a fact anyone states, it is the ordinal of the paycheck the rule
+        starts in.  The sweep in :class:`TestTheTwoVocabulariesAgree` covers
+        every non-zero phase by moving the START DATE instead, which reaches
+        the identical residue classes through the fact a user can state.
+        """
+        spec = spec_for(
+            RecurrencePatternEnum.EVERY_N_PERIODS, interval_n=4,
         )
         calendar = build_calendar()
 
         resolved = resolve(spec, calendar)
 
         assert resolved.interval_n == 4
-        assert resolved.offset_periods == 3
-        # Period index 3 opens 2026-03-26 + 3 x 14 days.
-        assert resolved.anchor_date == date(2026, 5, 7)
+        assert resolved.offset_periods == 0
+        assert resolved.anchor_date == date(2026, 3, 26)
 
     def test_a_non_every_n_pattern_never_carries_a_phase(self):
         """Only ``Every N Periods`` reads ``offset_periods``, so only it sets one.
 
-        A submitted phase on any other pattern is discarded rather than
-        stored, which is what makes the column meaningless-by-construction
-        for them instead of meaningless-by-convention.
+        A MONTHLY rule whose bound falls in period index 5 still resolves to
+        phase 0: the derivation is scoped to the PERIOD unit, so a cadence
+        measured in months never acquires one.  That is what makes the column
+        meaningless-by-construction for the other cadences rather than
+        meaningless-by-convention.
+
+        The case stated ``offset_periods=3`` on the spec until plan step
+        R7b-4 removed the field; a bound landing in a non-zero-index paycheck
+        is what exercises the same branch now, and it is the reachable shape
+        rather than a value no door could submit.
         """
         spec = spec_for(
-            RecurrencePatternEnum.MONTHLY, offset_periods=3, day_of_month=15,
+            RecurrencePatternEnum.MONTHLY,
+            start_date=date(2026, 6, 4), day_of_month=15,
         )
 
         assert resolve(spec, build_calendar()).offset_periods == 0
@@ -416,16 +489,27 @@ class TestFirstOfMonthFamily:
         name says it should not use (ruling R-R6).
         """
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.MONTHLY_FIRST, start_period_id=3),
+            spec_for(
+                RecurrencePatternEnum.MONTHLY_FIRST,
+                start_date=date(2026, 4, 23),
+            ),
             build_calendar(),
         )
 
         assert resolved.anchor_date == date(2026, 5, 1)
 
     def test_it_keeps_the_month_when_the_chosen_paycheck_is_that_months_first(self):
-        """Index 1 IS April's first paycheck, so April qualifies."""
+        """Starting ON April's first payday (04-09) keeps April.
+
+        The mirror of the case above, and the pair is what pins the rule to
+        "the month's own first paycheck is at or after the bound" rather than
+        to any coarser month comparison.
+        """
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.MONTHLY_FIRST, start_period_id=2),
+            spec_for(
+                RecurrencePatternEnum.MONTHLY_FIRST,
+                start_date=date(2026, 4, 9),
+            ),
             build_calendar(),
         )
 
@@ -643,13 +727,20 @@ class TestTheRetiredOncePattern:
     resolver rather than being read as an every-paycheck cadence.
     """
 
-    def test_the_surviving_once_row_is_refused_by_the_resolver(self, app):
-        """A rule naming the retired row raises rather than resolving.
+    def test_the_surviving_once_row_is_refused_by_the_decoder(self, app):
+        """A rule naming the retired row raises rather than decoding.
 
         The id is looked up from the live ``ref`` table rather than
         hard-coded: on a migration-built database ``a3b1c2d4e5f6`` appends two
         rows after the initial seed, so the ids are not in enum order and a
         literal 8 would test the wrong row.
+
+        **The refusal moved from ``resolve`` to ``decode_pattern`` at plan step
+        R7b and it is the same refusal**: the resolver no longer sees a
+        ``pattern_id`` at all, so the last place a stored row becomes a cadence
+        is where an unmodelled one now fails.  A rule naming the survivor
+        cannot be read AT ALL rather than being read as an every-paycheck one,
+        which is the property ruling R-R11 needs.
         """
         with app.app_context():
             once_row = (
@@ -657,12 +748,11 @@ class TestTheRetiredOncePattern:
                 .filter_by(name=_RETIRED_PATTERN_NAME)
                 .one()
             )
-            spec = RecurrenceSpec(user_id=_USER_ID, pattern_id=once_row.id)
 
             with pytest.raises(
                 RecurrenceResolutionError, match=str(once_row.id),
             ):
-                resolve(spec, build_calendar())
+                decode_pattern(once_row.id, 1)
 
     def test_no_enum_member_names_the_retired_row(self, app):
         """The row exists AND no member names it -- both halves, together.
@@ -820,7 +910,7 @@ class TestTotality:
         """No pattern in the closed set can fail to produce a complete tuple.
 
         The property plan step R7c's NOT NULL columns will rest on, asserted
-        over the whole set rather than sampled: whatever the eight patterns
+        over the whole set rather than sampled: whatever the seven patterns
         are, each resolves to a COMPLETE two-axis value.  A pattern that
         resolved to a partial one would become an un-migratable row at R7c.
         """
@@ -892,34 +982,52 @@ class TestTheTwoVocabulariesAgree:
             f"(offset={offset_periods}, interval={resolved.interval_n})"
         )
 
-    def test_a_submitted_phase_with_no_start_period_moves_the_anchor(self):
+    def test_the_phase_follows_the_start_date_into_its_paycheck(self):
         """A phase the anchor did not carry made the halves state 3 vs 3.
 
-        Measured: an every-3-paychecks rule phased at 2 stored
-        ``offset_periods = 2`` -- the old engine fires period indices 2, 5, 8
-        -- beside an anchor in period index 0, whose two-axis reading fires 0,
-        3, 6.  Plan step R4 would have picked the second silently.  Period
-        index 2 opens 2026-03-26 + 2 x 14 days.
+        Measured before plan step R7b-4: an every-3-paychecks rule storing
+        ``offset_periods = 2`` fired period indices 2, 5, 8, beside an anchor
+        in period index 0, whose two-axis reading fires 0, 3, 6.  Plan step R4
+        would have picked the second silently, and what made the two able to
+        disagree was that the phase was stored INDEPENDENTLY of the bound.
+
+        Stating the bound is now the whole of it: index 2 opens
+        2026-03-26 + 2 x 14 = 2026-04-23, so a rule starting there phases at
+        ``2 % 3 == 2`` and fires 2, 5, 8 -- the same set, reached from the one
+        fact instead of two that had to agree.
         """
         calendar = build_calendar()
         spec = spec_for(
             RecurrencePatternEnum.EVERY_N_PERIODS,
-            interval_n=3, offset_periods=2,
+            interval_n=3, start_date=date(2026, 4, 23),
         )
 
-        assert resolve(spec, calendar).anchor_date == date(2026, 4, 23)
+        resolved = resolve(spec, calendar)
+
+        assert resolved.offset_periods == 2
+        assert resolved.anchor_date == date(2026, 4, 23)
         self.assert_anchor_is_in_phase(spec, calendar)
 
-    def test_a_start_date_past_the_start_period_keeps_the_phase(self):
-        """The second measured shape: a bound that outruns the start period.
+    def test_a_loans_start_date_phases_the_rule_on_its_own_paycheck(self):
+        """The shape that CHANGED at plan step R7b-4, stated with its numbers.
 
         ``loan_recurrence_sync._sync_loan_cadence`` stamps ``start_date`` onto
-        ANY rule, so "every 5 paychecks into my mortgage" reaches this.  With
-        a bound of 2026-09-15 the old engine fires the first period index that
-        is both at or after the bound AND a multiple of 5 -- index 15, opening
-        2026-03-26 + 15 x 14 days = 2026-10-22.  Anchoring on the bound put it
-        in index 12 instead: six weeks of cash-timing divergence, chosen at
-        R4's cutover with nothing in the row to detect it.
+        ANY rule, so "every 5 paychecks into my mortgage" reaches this.  A
+        bound of 2026-09-15 falls in period index 12
+        (2026-03-26 + 12 x 14 = 2026-09-10, spanning to 2026-09-23).
+
+        **Before**: nothing derived a phase without a start PERIOD, so the
+        rule kept the column's 0 and the anchor advanced to the first index
+        at or after the bound that was a multiple of 5 -- index 15, opening
+        2026-10-22.  That aligned the loan to the SCHEDULE's origin, a fact
+        the loan has nothing to do with.
+
+        **After** (developer ruling, 2026-08-14): the phase is the ordinal of
+        the paycheck the bound falls in, ``12 % 5 == 2``, and the rule fires
+        12, 17, 22 -- starting from the paycheck the first installment is
+        actually due out of.  Six weeks earlier than the old answer, and
+        ``$0.00`` on live data: all 46 production rules carry
+        ``interval_n = 1``.
         """
         calendar = build_calendar()
         spec = spec_for(
@@ -927,8 +1035,10 @@ class TestTheTwoVocabulariesAgree:
             interval_n=5, start_date=date(2026, 9, 15),
         )
 
-        assert resolve(spec, calendar).offset_periods == 0
-        assert resolve(spec, calendar).anchor_date == date(2026, 10, 22)
+        resolved = resolve(spec, calendar)
+
+        assert resolved.offset_periods == 2
+        assert resolved.anchor_date == date(2026, 9, 15)
         self.assert_anchor_is_in_phase(spec, calendar)
 
     @pytest.mark.parametrize(
@@ -948,14 +1058,24 @@ class TestTheTwoVocabulariesAgree:
         :data:`_LEGAL_PHASES`); it used to cross 8 x 8 and ``pytest.skip`` the
         28 impossible ones at runtime, which reported as 28 skips a reader
         could not tell apart from tests someone had disabled.
+
+        **The phase is REACHED rather than authored, since plan step R7b-4**,
+        and the sweep is the same set either way.  A rule phased at ``k`` is
+        one starting in period index ``k``, so the parameter selects the
+        START DATE and the derivation must answer ``k`` back.  That is a
+        stronger claim than the old sweep made -- it asserts the derivation,
+        not just that a stored phase and its anchor agree -- and it covers the
+        identical 36 residue classes through the one fact a form can state.
         """
-        self.assert_anchor_is_in_phase(
-            spec_for(
-                RecurrencePatternEnum.EVERY_N_PERIODS,
-                interval_n=interval_n, offset_periods=offset_periods,
-            ),
-            build_calendar(),
+        calendar = build_calendar()
+        start_date = calendar.periods[offset_periods].start_date
+        spec = spec_for(
+            RecurrencePatternEnum.EVERY_N_PERIODS,
+            interval_n=interval_n, start_date=start_date,
         )
+
+        assert resolve(spec, calendar).offset_periods == offset_periods
+        self.assert_anchor_is_in_phase(spec, calendar)
 
     def test_every_period_still_anchors_on_the_bound_itself(self):
         """The phase-carrying anchor is scoped to the pattern that needs one.
@@ -994,8 +1114,19 @@ class TestTheTwoVocabulariesAgree:
 
 
 @pytest.mark.usefixtures("app")
-class TestAStatedDayOrMonthMustBeInItsColumnsDomain:
+class TestAnAuthoredValueMustBeInItsColumnsDomain:
     """NULL states nothing and defaults; 0 states something impossible.
+
+    **Four of the table's seven CHECKs are mirrored here since plan step
+    R7b-3**, which closed plan ledger row **D23**: ``dom`` and ``moy`` were
+    already here, ``due_dom`` and ``valid_offset`` joined them.  The other
+    three did not, for two reasons.  ``positive_interval`` is
+    ``_frequency.require_positive_interval``'s, beside the encode it guards.
+    ``single_end_bound`` and ``positive_max_occurrences`` became properties of
+    :class:`~app.services.recurrence.EndBound` that no value in the
+    application can break, so no door refuses them at all -- what remains is
+    ``end_bound_from_columns``, which PARSES untyped storage and is a read
+    rather than a rule the writers restate.
 
     **Plan step R4a changed this, and the change is a behaviour decision.**
     Plan step R2c-1 mirrored the reverse matcher's ``rule.day_of_month or 1``
@@ -1066,16 +1197,205 @@ class TestAStatedDayOrMonthMustBeInItsColumnsDomain:
                 build_calendar(),
             )
 
+    @pytest.mark.parametrize("day", [0, -1, 32, 99])
+    def test_a_stated_due_day_outside_1_31_is_refused(self, day):
+        """``ck_recurrence_rules_due_dom``, mirrored at plan step R7b-3.
+
+        The third of the table's four day/month domains and the last to reach
+        the door.  ``_author`` writes ``spec.due_day_of_month`` verbatim like
+        the other two, so an out-of-domain value was an ``IntegrityError`` at
+        the flush naming neither the field nor the value -- plan ledger row
+        **D23**.
+        """
+        with pytest.raises(
+            RecurrenceResolutionError, match="due_day_of_month",
+        ):
+            resolve(
+                spec_for(
+                    RecurrencePatternEnum.MONTHLY,
+                    day_of_month=15,
+                    due_day_of_month=day,
+                ),
+                build_calendar(),
+            )
+
+    def test_a_null_due_day_states_nothing_and_passes(self):
+        """The control: the refusal is on a STATED value, not on absence.
+
+        All 46 live production rules carry NULL here (measured 2026-08-13), so
+        a refusal that caught absence would refuse every rule there is.
+        """
+        resolved = resolve(
+            spec_for(
+                RecurrencePatternEnum.MONTHLY,
+                day_of_month=15,
+                due_day_of_month=None,
+            ),
+            build_calendar(),
+        )
+
+        assert resolved.anchor_date == date(2026, 4, 15)
+
+    def test_a_due_day_is_refused_for_a_cadence_that_never_reads_it(self):
+        """It is the COLUMN's domain, not the walk's.
+
+        ``_author`` writes the value whatever the cadence, so a paycheck-space
+        rule carrying ``due_day_of_month = 32`` reaches the same CHECK even
+        though nothing would ever read the field -- the same reasoning the
+        day-of-month refusal above records.
+        """
+        with pytest.raises(
+            RecurrenceResolutionError, match="due_day_of_month",
+        ):
+            resolve(
+                spec_for(
+                    RecurrencePatternEnum.EVERY_PERIOD, due_day_of_month=32,
+                ),
+                build_calendar(),
+            )
+
+    @pytest.mark.parametrize("interval_n", list(range(1, 9)))
+    def test_no_start_date_can_derive_a_phase_outside_its_own_domain(
+        self, interval_n,
+    ):
+        """What replaced ``ck_recurrence_rules_valid_offset``'s MIRROR.
+
+        A refusal stood here until plan step R7b-4 -- the fourth and last of
+        plan ledger row **D23**'s CHECKs, mirrored at R7b-3 because the phase
+        was AUTHORED and a negative one selects a DIFFERENT set of paychecks
+        from the one the rule names.  Nobody authors a phase now:
+        :func:`~app.services.recurrence._resolution._derive_offset_periods`
+        answers ``0`` or ``period_index % interval_n``, a remainder by a
+        positive divisor over a schedule ordinal.  So the refusal was deleted
+        rather than kept passing, and THIS is the claim that replaces it --
+        the property the CHECK was defending, asserted directly over the whole
+        input space that can reach it.
+
+        Swept over every payday the schedule holds, not sampled: the bound is
+        the only input, so covering it IS covering the derivation.  The
+        constraint stays on the table for a restore or a hand edit, which no
+        application value can reach.
+        """
+        calendar = build_calendar()
+
+        for period in calendar.periods:
+            resolved = resolve(
+                spec_for(
+                    RecurrencePatternEnum.EVERY_N_PERIODS,
+                    interval_n=interval_n,
+                    start_date=period.start_date,
+                ),
+                calendar,
+            )
+            assert 0 <= resolved.offset_periods < interval_n, (
+                f"a bound of {period.start_date} at interval {interval_n} "
+                f"derived phase {resolved.offset_periods}, outside "
+                f"ck_recurrence_rules_valid_offset's domain"
+            )
+
+    def test_a_start_date_past_the_walkable_range_is_refused(self):
+        """The opening bound's own domain, added with its form control.
+
+        Plan step R7b-4 gave ``start_date`` a "Starts on" input, and an
+        ``<input type="date">`` accepts a five-digit year.  The anchor walk
+        probes MONTHS above the bound, so ``date(20026, ...)`` builds a value
+        outside the range Python's ``date`` holds and raises ``ValueError``
+        from outside this package's hierarchy -- an unhandled 500 on the
+        recurrence preview, whose handler catches
+        ``RecurrenceResolutionError`` only.  Same defect class as the
+        ``(10000, YEAR)`` cadence an adversarial review of plan step R7b-2
+        found, refused at the same seam so both form doors and the preview
+        inherit it.
+        """
+        with pytest.raises(
+            RecurrenceResolutionError, match="start_date",
+        ):
+            resolve(
+                spec_for(
+                    RecurrencePatternEnum.MONTHLY,
+                    day_of_month=15,
+                    start_date=date(9999, 12, 31),
+                ),
+                build_calendar(),
+            )
+
+    def test_a_far_future_start_date_inside_the_range_still_resolves(self):
+        """The control: the refusal is on the WALK's headroom, not on distance.
+
+        A bound decades past the horizon is an ordinary rule -- a mortgage
+        payoff, a child's college fund -- and must resolve rather than raise.
+        Only the last few years of the ``date`` type are refused.
+        """
+        resolved = resolve(
+            spec_for(
+                RecurrencePatternEnum.MONTHLY,
+                day_of_month=15,
+                start_date=date(2090, 1, 1),
+            ),
+            build_calendar(),
+        )
+
+        assert resolved.anchor_date == date(2090, 1, 15)
+
 
 @pytest.mark.usefixtures("app")
 class TestRefusals:
     """Four broken invariants, refused loudly rather than papered over."""
 
-    def test_an_unknown_pattern_id_is_refused(self):
-        """A pattern this application does not model has no derivable cadence."""
-        spec = RecurrenceSpec(user_id=_USER_ID, pattern_id=999_999)
+    def test_an_unknown_pattern_id_is_refused_by_the_decoder(self):
+        """A pattern this application does not model has no derivable cadence.
 
+        Asserted against ``decode_pattern`` because that is where a stored id
+        becomes a cadence since plan step R7b; ``resolve`` is handed the
+        cadence and never the id.  The refusal did not weaken -- it moved one
+        function EARLIER, so a rule naming an unmodelled pattern cannot even be
+        read back as a spec.
+        """
         with pytest.raises(RecurrenceResolutionError, match="999999"):
+            decode_pattern(999_999, 1)
+
+    def test_a_cadence_the_closed_set_cannot_store_is_refused(self):
+        """A well-defined cadence with no pattern to name it is REFUSED.
+
+        ``(2, MONTH)`` resolves and walks correctly -- the two-axis model has
+        no trouble with it -- but ``budget.recurrence_rules`` names its cadence
+        with a closed pattern set until plan step R7c, so there is nowhere to
+        write it.  The refusal is the gap stated once, at the encode step, and
+        it disappears with the table.
+
+        Its counterpart is the assertion that nothing OFFERS such a cadence:
+        the picker's options are derived from the same table, so this is a
+        broken invariant rather than a state a user can reach.
+
+        Driven through the WRITE DOOR rather than through the encoder
+        directly, because the property is "such a rule is never written" and
+        the door is what has to hold it.  ``build_transient_rule`` is the one
+        door that needs no session.
+        """
+        spec = spec_for(RecurrencePatternEnum.MONTHLY, interval_n=2)
+
+        with pytest.raises(RecurrenceResolutionError, match="every 2"):
+            build_transient_rule(spec, build_calendar())
+
+    def test_a_unit_and_placement_with_no_anchor_derivation_is_refused(self):
+        """A YEAR cadence deferred onto a month's first paycheck has no anchor.
+
+        ``_first_of_month_anchor`` answers "the 1st of the first qualifying
+        month", which for a yearly rule would fire in whichever month the
+        schedule happened to open in -- a plausible date the cadence never
+        names.  Refused rather than defaulted; plan step R8 owns the placement
+        axis (plan ledger row D20).
+        """
+        spec = RecurrenceSpec(
+            user_id=_USER_ID,
+            unit=RecurrenceUnitEnum.YEAR,
+            placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            day_of_month=15,
+        )
+
+        with pytest.raises(
+            RecurrenceResolutionError, match="no first occurrence",
+        ):
             resolve(spec, build_calendar())
 
     def test_another_users_schedule_is_refused(self):
@@ -1187,16 +1507,28 @@ class TestScheduleShapes:
 
         assert resolved.anchor_date == date(2026, 4, 15)
 
-    def test_a_period_id_naming_no_period_is_treated_as_absent(self):
-        """A stale start-period id cannot shift the anchor.
+    def test_a_start_date_below_the_opening_payday_cannot_move_the_anchor(self):
+        """A bound the schedule has not reached is dominated, not honoured.
 
-        ``start_period_id`` is ``ON DELETE SET NULL``, but an id held in
-        memory can outlive its row -- and a cross-user id reaches the resolver
-        through the preview endpoint's args.  Neither is in this owner's
-        calendar, so neither contributes to the bound.
+        The opening bound is ``max(first payday, start_date)``, so a rule
+        stating a date before the owner's schedule begins anchors on the
+        schedule -- there is no paycheck before the first one to fund an
+        occurrence out of.  Live shape, not hypothetical: production rule 40
+        ("Mortgage") carries ``start_date`` 2019-01-01 against a schedule
+        opening 2026-03-26.
+
+        **This case named a dangling start-period ID until plan step R7b-4**
+        -- the state where the FK outlived its row, or came from another
+        user through the preview endpoint's args.  Neither is expressible
+        now: the bound is a date, so there is no id to dangle and no owner to
+        confuse.  What survives is the question underneath it, which is
+        whether a bound outside this owner's schedule can shift the anchor.
         """
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.EVERY_PERIOD, start_period_id=99_999),
+            spec_for(
+                RecurrencePatternEnum.EVERY_PERIOD,
+                start_date=date(2019, 1, 1),
+            ),
             build_calendar(),
         )
 

@@ -39,8 +39,16 @@ extend-exclude = [
 # reads as "data", and the next one will read as something else.  Matching the
 # 7-40 hex-character shape inside backticks exempts the citation form the
 # documents actually use, and nothing wider.
+# A RULING ID is never a typo either, and this is the same STRUCTURAL rule one
+# vocabulary over.  The arc documents name rulings `R-` plus one to three
+# uppercase letters (conventions.md rule 9), the corpus gains them
+# continuously, and any of them may spell a dictionary word -- `R-FO` reads as
+# "of", `R-BU` as "but", and the next one will read as something else.  An
+# allowlist of the ids that have happened to collide would need an entry every
+# time a ruling is made, which is the rot rule 9's own append-only id space
+# guarantees.  Matching the SHAPE exempts the citation form and nothing wider.
 [default]
-extend-ignore-re = ["`[0-9a-f]{7,40}`"]
+extend-ignore-re = ["`[0-9a-f]{7,40}`", "\\bR-[A-Z]{1,3}\\b"]
 
 [default.extend-words]
 # Domain vocabulary and library names -- correct as written, not typos.

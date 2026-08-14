@@ -3,8 +3,9 @@ Tests for investment/retirement account routes.
 """
 
 import json
+import pathlib
 import re
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -32,6 +33,8 @@ from app.services.investment_dashboard_service import (
     _context as investment_context,
 )
 from app.services.investment_dashboard_service._context import (
+    _load_investment_params,
+    _load_projection_context,
     _projection_ytd,
 )
 from app.services.investment_projection import InvestmentInputs
@@ -121,7 +124,6 @@ class TestInvestmentDashboard:
         _create_investment_params(db.session, acct.id)
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-            seed_periods_today,
         )[pay_period_service.get_current_period(seed_user["user"].id).id]
         assert headline > Decimal("50000.00")
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
@@ -159,7 +161,6 @@ class TestInvestmentDashboard:
         )
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-            seed_periods_today,
         )[pay_period_service.get_current_period(seed_user["user"].id).id]
         assert headline > Decimal("25000.00")  # ruling R-Y: the anchor accrues
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
@@ -1966,7 +1967,7 @@ class TestInvestmentEntryAwareRouting:
             # basis under test is genuinely the one the tile is built on.
             bctx = BalanceContext.build(user.id)
             basis = balance_at.cash_balance_map(
-                acct, bctx, seed_periods_today,
+                acct, bctx,
             )
             assert basis[current_period.id] == Decimal("49545.71")
 
@@ -1976,7 +1977,7 @@ class TestInvestmentEntryAwareRouting:
             # the load-bearing half: it is what the accrual is computed ON, so
             # the pre-fix seed would still land the rendered figure ~$45 low.
             displayed = balance_at.balance_map(
-                acct, bctx, seed_periods_today,
+                acct, bctx,
             )[current_period.id]
             assert displayed > Decimal("49545.71")
             assert displayed - Decimal("49545.71") < Decimal("200.00")
@@ -2060,9 +2061,18 @@ class TestInvestmentEntryAwareRouting:
             # employer match there is nothing else in the row.
             bctx = BalanceContext.build(user.id)
             seed = balance_at.balance_at(acct, bctx, current_period.end_date)
+            # The span is the axis's OWN first period -- the owner's next
+            # paycheck, read off the same door the chart resolves its axis
+            # through (plan step C2-e).  It used to be the CURRENT period's
+            # span, which matched only because the fabricated axis it replaced
+            # was hardcoded to the same 14 days.
             # 7.0% is ``_create_investment_params``' default assumed return.
-            rate = growth_engine.period_return_rate(
-                Decimal("0.07000"), current_period,
+            axis_head = bctx.calendar().projection_axis(
+                current_period.end_date + timedelta(days=1),
+                current_period.end_date + timedelta(days=365),
+            )[0]
+            rate = growth_engine.span_return_rate(
+                Decimal("0.07000"), axis_head.start_date, axis_head.end_date,
             )
             first_point = Decimal(balances[0])
             assert first_point == seed + round_money(seed * rate), (
@@ -2423,53 +2433,59 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
             gross_biweekly=Decimal("3846.15"),
         )
 
-    def test_a_window_after_the_current_period_seeds_the_through_total(self):
-        """The chart's window: the current period is outside it, so it counts.
+    def test_the_chart_always_seeds_the_through_current_total(self):
+        """The current period is outside this surface's window, so it counts.
 
         $14,000 strictly before the current period and $15,000 through it.  The
-        window opens the day AFTER the period ends, so the engine will never
-        apply that period's $1,000 -- the seed must, or the year has $1,000 of
-        room that is already spent.
+        window opens the day AFTER the period covering the clock ends, so the
+        engine will never apply that period's $1,000 -- the seed must, or the
+        year has $1,000 of room that is already spent.
+
+        **This took a window date and a current period until plan step C2-e**,
+        and branched on whether the window contained that period.  Both
+        arguments are gone: :func:`._context._projection_start` derives the
+        window's opening day from the CALENDAR as the day after the span
+        covering the clock ends, so the answer is structurally the same one on
+        every input.  The two tests that graded the other arm are below,
+        re-pointed at the surfaces that still have one.
         """
-        current = SimpleNamespace(
-            start_date=date(2026, 7, 16), end_date=date(2026, 7, 29),
-        )
         assert _projection_ytd(
             self._inputs("14000.00", "15000.00"),
-            date(2026, 7, 30), current,
         ) == Decimal("15000.00")
 
-    def test_a_window_inside_the_current_period_seeds_the_strictly_before_total(
-        self,
-    ):
-        """The retirement axes: the engine applies the current period itself.
+    def test_the_two_surfaces_take_DIFFERENT_ytd_fields_by_construction(self):
+        """What replaced the branch: two call sites, one field each.
 
-        Both of ``retirement_projection``'s axes open at or inside the current
-        period, so the engine walks that period and charges its contribution
+        ``retirement_projection``'s axis opens at or INSIDE the period covering
+        the clock, so its engine walks that period and charges its contribution
         against the limit as it applies it -- seeding the through-current total
-        there would charge it twice (deep-quality-hunt #10).  The boundary is
-        inclusive of the period's own end day, which is the last day a window
-        can open on and still contain it.
+        there would charge it twice (deep-quality-hunt #10).  The chart's window
+        opens after it, so it must.  The distinction is now WHICH FIELD each
+        call site reads, which is a property of the source rather than of a
+        date comparison that can be got wrong.
         """
-        current = SimpleNamespace(
-            start_date=date(2026, 7, 16), end_date=date(2026, 7, 29),
+        source = pathlib.Path(
+            "app/services/retirement_projection.py",
+        ).read_text(encoding="utf-8")
+        assert "ytd_contributions_start=inputs.ytd_contributions_seed" in source
+        assert "ytd_contributions_start=inputs.ytd_contributions," not in source
+
+    def test_the_two_ytd_totals_COINCIDE_with_no_current_period(self):
+        """Why the branch's other arm was a no-op, and could be deleted.
+
+        The deleted branch answered ``ytd_contributions_seed`` when there was no
+        current period.  ``investment_projection`` returns ZERO for BOTH totals
+        in that state, so both arms returned the same figure -- a branch that
+        cannot change the answer, which CLAUDE.md rule 1 forbids shipping.  This
+        pins the fact the deletion rests on, in the module that owns it.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.investment_projection import (
+            _ytd_contributions,
+            _ytd_contributions_seed,
         )
-        for opens_on in (date(2026, 7, 16), date(2026, 7, 27),
-                         date(2026, 7, 29)):
-            assert _projection_ytd(
-                self._inputs("14000.00", "15000.00"), opens_on, current,
-            ) == Decimal("14000.00"), f"window opening {opens_on}"
-
-    def test_no_current_period_seeds_the_strictly_before_total(self):
-        """With no current period there is nothing to be inside or outside of.
-
-        It falls back to the seed the engine has always taken, which is what the
-        surrounding context does with every other current-period-dependent
-        value.
-        """
-        assert _projection_ytd(
-            self._inputs("14000.00", "15000.00"), date(2026, 7, 30), None,
-        ) == Decimal("14000.00")
+        assert _ytd_contributions([], [], None) == Decimal("0")
+        assert _ytd_contributions_seed([], [], None) == Decimal("0")
 
     def test_the_chart_reads_the_resolved_ytd(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -2501,6 +2517,104 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
         assert ctx.projection_ytd == Decimal("1000.00")
         # ...because the window opens past the current period (ruling R-AF).
         assert ctx.projection_start > current.end_date
+
+
+class TestTheProjectionMeetsItsSeedOnALapsedSchedule:
+    """Plan step **C2-e**: the window opens where the seed stops, ALWAYS.
+
+    Ruling R-AF put the /investment chart's axis on the day after the history
+    line's last valued point, and the seed on that same last day, so the two
+    lines meet.  That held by arithmetic while the axis was FABRICATED -- the
+    deleted producer built its first period AT the date it was handed.  A pay
+    calendar does not: it answers the period COVERING a day, which opened on a
+    payday.
+
+    **So the state this grades is an owner whose generated schedule has run
+    out**, which nothing forces them to fix and which the balance arc's X-ad-b
+    and X-x steps exist because of.  ``get_current_period`` answers ``None``
+    there, the old window opened at today, and the axis would have opened on the
+    last payday up to a cadence earlier -- the engine re-growing days
+    ``balance_at`` had already grown.  An adversarial code review of this step
+    measured it at **$57.24** on a $102,686.18 balance, compounded over the
+    whole slider horizon.
+    """
+
+    def test_the_window_opens_on_the_axis_head_when_no_period_covers_today(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The schedule ended months ago; the chart still meets its seed.
+
+        ``seed_periods`` opens 2026-01-02 and runs ten biweekly periods, so it
+        closes 2026-05-21 -- behind the suite's clock.  There is no current
+        period, and every axis period is a PROJECTION at the owner's cadence.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            assert pay_period_service.get_current_period(user_id) is None, (
+                "this test needs a LAPSED schedule; the fixture changed"
+            )
+            acct = _create_investment_account(
+                seed_user, db.session, name="Lapsed 401k", balance="100000.00",
+            )
+            _create_investment_params(db.session, acct.id)
+            db.session.commit()
+
+            ctx = _load_projection_context(
+                user_id, acct, _load_investment_params(acct.id),
+                pay_period_service.get_all_periods(user_id),
+                None,
+            )
+            axis = ctx.balance_ctx.calendar().projection_axis(
+                ctx.projection_start, ctx.projection_start + timedelta(days=365),
+            )
+            # The property the whole class exists for: the seed is valued the
+            # day BEFORE the window opens, so no day is grown twice and none is
+            # skipped.
+            assert axis[0].start_date == ctx.projection_start
+            assert ctx.projection_seed == balance_at.balance_at(
+                acct, ctx.balance_ctx,
+                axis[0].start_date - timedelta(days=1),
+            )
+            # ... and the axis head is a PROJECTION, which is what makes this
+            # the branch the fabricated producer used to cover by accident.
+            assert axis[0].period_id is None
+
+    def test_the_first_plotted_point_is_the_seed_grown_one_axis_period(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The money form of the same property, hand-checked against the span.
+
+        With no contributions configured the first chart point is exactly the
+        seed compounded over the head period's own inclusive span -- nothing
+        else is in the row.  Under the defect it was the seed compounded over a
+        span that started before the seed's own date.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            acct = _create_investment_account(
+                seed_user, db.session, name="Lapsed Roth", balance="100000.00",
+            )
+            _create_investment_params(db.session, acct.id)
+            db.session.commit()
+
+            chart = investment_dashboard_service.compute_growth_chart_data(
+                user_id, acct, 1, None,
+            )
+            ctx = _load_projection_context(
+                user_id, acct, _load_investment_params(acct.id),
+                pay_period_service.get_all_periods(user_id),
+                None,
+            )
+            head = ctx.balance_ctx.calendar().projection_axis(
+                ctx.projection_start, ctx.projection_start + timedelta(days=365),
+            )[0]
+            # 7.0% is ``_create_investment_params``' default assumed return.
+            rate = growth_engine.span_return_rate(
+                Decimal("0.07000"), head.start_date, head.end_date,
+            )
+            assert Decimal(chart["chart_balances"][0]) == (
+                ctx.projection_seed + round_money(ctx.projection_seed * rate)
+            )
 
 
 class TestTheProjectionContinuesTheHistory:
@@ -2563,10 +2677,15 @@ class TestTheProjectionContinuesTheHistory:
         # The seed IS the history line's last point (ruling R-AE) ...
         assert Decimal(history[-1]) == seed
         # ... and the first projected point is that seed compounded over ONE
-        # period of the axis that opens the next day (ruling R-AF).  7.0% is
-        # ``_create_investment_params``' default assumed return.
-        rate = growth_engine.period_return_rate(
-            Decimal("0.07000"), current,
+        # period of the axis that opens the next day (ruling R-AF), read off
+        # the same door the chart resolves its axis through (plan step C2-e).
+        # 7.0% is ``_create_investment_params``' default assumed return.
+        axis_head = bctx.calendar().projection_axis(
+            current.end_date + timedelta(days=1),
+            current.end_date + timedelta(days=365),
+        )[0]
+        rate = growth_engine.span_return_rate(
+            Decimal("0.07000"), axis_head.start_date, axis_head.end_date,
         )
         assert Decimal(data["chart_balances"][0]) == seed + round_money(
             seed * rate,
@@ -2613,7 +2732,6 @@ class TestInvestmentBalanceHeroTrueUp:
         # the anchor period's own accrual (ruling R-Y).
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-            seed_periods_today,
         )[pay_period_service.get_current_period(seed_user["user"].id).id]
         assert headline > Decimal("50000.00")
         assert f"{headline:,.2f}" in html

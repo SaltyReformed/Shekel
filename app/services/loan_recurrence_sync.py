@@ -50,7 +50,13 @@ from app.extensions import db
 from app.models.account import Account
 from app.services import balance_at, loan_loaders, rate_period_engine
 from app.services.pay_calendar import calendar_for
-from app.services.recurrence import reauthor_rule, recurrence_spec
+from app.services.recurrence import (
+    NEVER_ENDS,
+    EndsOnDate,
+    end_bound_from_columns,
+    reauthor_rule,
+    recurrence_spec,
+)
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )
@@ -173,7 +179,8 @@ def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> None:
         return
     old_start, old_day = rule.start_date, rule.day_of_month
     # RE-AUTHORED, not assigned: a rule is written whole through one door, so
-    # ``offset_periods`` is re-derived from the rule's own start period rather
+    # ``offset_periods`` is re-derived from the rule's own opening bound --
+    # the ``start_date`` this very call is moving (plan step R7b-4) -- rather
     # than left holding the phase a previous cadence implied.  Both values
     # here also feed the rule's first occurrence, which is DERIVED on read
     # (plan step R2d) and so cannot lag the contract this edit states.  The
@@ -224,6 +231,69 @@ def bind_rule_to_loan(rule: "RecurrenceRule", account_id: int) -> None:
     _sync_loan_cadence(rule, params)
 
 
+def owns_validity_window(template: "object") -> bool:
+    """Return whether THIS module writes *template*'s recurrence bounds.
+
+    **The one predicate, so the form's LOCK and this module's own guard cannot
+    disagree** (plan step R7b-4).  A recurring loan payment's opening and
+    closing bounds are DERIVED -- the loan's first contractual installment and
+    its projected payoff -- so both forms render those controls read-only and
+    both refuse a crafted submission that states one.  What decides that has
+    to be the condition :func:`sync_recurring_payment_bounds` returns early on,
+    or the form locks a control for a value nothing writes.
+
+    **It is that function's OPENING-bound precondition exactly, and its
+    closing-bound one only approximately** -- an adversarial review of plan
+    step R7b-4 measured the gap and it is stated rather than papered over. The
+    start half is scenario-independent by design (ruling C8e: a loan's contract
+    terms are not scenario-scoped), so this predicate is complete for it. The
+    END half additionally returns early when the owner has no baseline
+    scenario, which this does not ask -- so an owner in that state sees a
+    locked "Ends" control for a payoff nothing currently writes. That is the
+    same defect SHAPE this predicate was built to close, one condition
+    narrower, and it is far less reachable: registration creates a baseline,
+    so the state is a broken invariant rather than a configuration. Splitting
+    the predicate per bound is the remedy if it is ever measured live.
+
+    **It was NOT the same condition, and an adversarial review of plan step
+    R7b-3 measured the gap.**  The lock asked
+    ``_recurrence_form_helpers.is_loan_payment`` -- "does this template carry a
+    :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row" --
+    which is BROADER than what the sync writes for: the destination must also
+    be a CONFIGURED loan (``LoanParams``), and the template must be the one
+    that lookup returns, since a second recurring payment into one loan leaves
+    the newer rule unbounded.  A settings-carrying template outside that set
+    rendered its "Ends" control locked, saying the value came from the loan's
+    projected payoff, for a payoff nothing wrote.  None is measured on the
+    developer's data -- every live loan payment satisfies both -- but plan step
+    R7b-4 locks the OPENING bound on the same question, so deciding it once
+    here is what stops the second lock inheriting the first's error.
+
+    **Not the same question as "is this a loan payment".**
+    :func:`~app.routes._recurrence_form_helpers.is_loan_payment` keeps the
+    settings-row reading, and correctly: what it decides is whether clearing
+    the recurrence would strand a standing ``extra_principal``, which is a
+    property of that row rather than of this module's write set.
+
+    Args:
+        template: The ``TransactionTemplate`` or ``TransferTemplate`` a form is
+            rendering.  A transaction template can never be a loan payment, and
+            ``getattr`` is what keeps this kind-agnostic for the two form
+            helpers that call it.
+
+    Returns:
+        ``True`` when this module writes the template's ``start_date`` and
+        ``end_date``, so its form must render both read-only.
+    """
+    account_id = getattr(template, "to_account_id", None)
+    if account_id is None or template.recurrence_rule_id is None:
+        return False
+    if loan_loaders.load_loan_params(account_id) is None:
+        return False
+    active = active_recurring_transfer_template(account_id, template.user_id)
+    return active is not None and active.id == template.id
+
+
 def sync_recurring_payment_bounds(account_id: int) -> None:
     """Sync a loan's recurring-payment validity window to the loan's own facts.
 
@@ -256,7 +326,7 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
     Called from every chokepoint that can move the projected payoff: loan-params
     create / update, the ARM / origination-rate change, the balance true-up, the
     recurring-transfer creation, and the transfer settle / revert / edit / delete
-    / restore paths (via :mod:`app.services._transfer_loan_posting`).
+    / restore paths (via :mod:`app.services.transfer_service._loan_posting`).
 
     Args:
         account_id: The loan account whose recurring-payment validity window
@@ -296,10 +366,26 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
     new_end_date = recurrence_end_date(
         figures.payoff_date, figures.is_retired, ctx.as_of,
     )
-    if rule.end_date == new_end_date:
+    new_bound = (
+        NEVER_ENDS if new_end_date is None else EndsOnDate(on=new_end_date)
+    )
+    # The idempotence guard compares BOUNDS, not the date column (plan step
+    # R7b-3).  Reading ``rule.end_date`` alone is the two-independent-fields
+    # shape this step removed, and it is wrong in a way that matters: a rule
+    # carrying a COUNT bound has ``end_date IS NULL``, so against a loan that
+    # never pays off (``new_end_date is None``) the column test would compare
+    # ``None == None`` and return -- leaving a count bound on a loan payment
+    # whose stop this module owns.  Frozen dataclasses, so ``==`` is the whole
+    # comparison.
+    old_bound = end_bound_from_columns(rule.end_date, rule.max_occurrences)
+    if old_bound == new_bound:
         return
 
-    old_end_date = rule.end_date
+    # The whole OLD BOUND, not its date half: when this fires because the old
+    # bound was a COUNT -- the case the comparison above exists for -- reading
+    # ``rule.end_date`` logs ``None`` and loses the fact a count bound was
+    # discarded.  Repr'd rather than str'd so the shape is named.
+    old_end_date = repr(old_bound)
     # Re-authored like the cadence above, and for the same reason: a rule is
     # written whole through one door, so there is no field-at-a-time write to
     # leave some other column holding a value this edit invalidated.
@@ -307,9 +393,23 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
     # re-author is ordinarily a no-op on every column but the one named --
     # which is the point of a uniform rule rather than one applied only where
     # it happens to matter.
+    #
+    # **The whole BOUND is replaced, not the date half of one** (plan step
+    # R7b-3), and that is what keeps this line correct now that a rule can
+    # also stop after a COUNT of occurrences.  While the bound was two
+    # independent columns, ``replace(spec, end_date=payoff)`` wrote a date
+    # beside a count the rule already carried and the pair reached the flush
+    # as a ``CheckViolation`` on ``ck_recurrence_rules_single_end_bound`` --
+    # an ordinary loan edit, 500ing.  An
+    # :class:`~app.services.recurrence.EndBound` has three shapes and holds
+    # one, so naming the new one discards whatever it replaces and there is no
+    # second field for this writer to remember to clear.
     reauthor_rule(
         rule,
-        replace(recurrence_spec(rule), end_date=new_end_date),
+        replace(
+            recurrence_spec(rule),
+            end_bound=new_bound,
+        ),
         calendar_for(account.user_id),
     )
     log_event(
@@ -318,6 +418,6 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
         "Updated recurrence rule end date to projected payoff",
         account_id=account_id,
         template_id=template.id,
-        old_end_date=str(old_end_date),
+        old_end_date=old_end_date,
         new_end_date=str(new_end_date),
     )

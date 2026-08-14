@@ -29,6 +29,8 @@ from app.services.auth_service import hash_password
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services import account_service
+from app.services.cash_ledger import resolve_transfer_amount
+from app.services.row_valuation import owned_contribution
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -149,8 +151,8 @@ class TestEffectiveAmountDecimal:
         db.session.add(txn)
         db.session.flush()
 
-        assert isinstance(txn.effective_amount, Decimal)
-        assert txn.effective_amount == Decimal("0")
+        assert isinstance(owned_contribution(txn), Decimal)
+        assert owned_contribution(txn) == Decimal("0")
 
     def test_transaction_cancelled_returns_decimal(self, app, db, seed_user, seed_periods):
         """Cancelled Transaction.effective_amount must be Decimal."""
@@ -170,11 +172,19 @@ class TestEffectiveAmountDecimal:
         db.session.add(txn)
         db.session.flush()
 
-        assert isinstance(txn.effective_amount, Decimal)
-        assert txn.effective_amount == Decimal("0")
+        assert isinstance(owned_contribution(txn), Decimal)
+        assert owned_contribution(txn) == Decimal("0")
 
     def test_transfer_cancelled_returns_decimal(self, app, db, seed_user, seed_periods):
-        """Cancelled Transfer.effective_amount must be Decimal."""
+        """A Cancelled transfer's RESOLVED amount is still a Decimal.
+
+        Retargeted at plan step X-au-c2: ``Transfer.effective_amount`` is
+        deleted, and the rule that answers what a transfer's amount is now is
+        ``cash_ledger.resolve_transfer_amount``.  It does NOT zero a Cancelled
+        row -- the status gate is a question about contribution, asked by
+        ``balance_predicates`` -- so what this case pins is the TYPE, which is
+        what its name always claimed.
+        """
         cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
         savings_acct = _create_savings_account(seed_user["user"].id)
 
@@ -191,11 +201,11 @@ class TestEffectiveAmountDecimal:
         db.session.add(xfer)
         db.session.flush()
 
-        assert isinstance(xfer.effective_amount, Decimal)
-        assert xfer.effective_amount == Decimal("0")
+        assert isinstance(resolve_transfer_amount(xfer), Decimal)
+        assert resolve_transfer_amount(xfer) == Decimal("200.00")
 
     def test_transfer_active_returns_decimal(self, app, db, seed_user, seed_periods):
-        """Active Transfer.effective_amount returns the amount as Decimal."""
+        """An active transfer resolves to its own amount, as a Decimal."""
         projected = db.session.query(Status).filter_by(name="Projected").one()
         savings_acct = _create_savings_account(seed_user["user"].id)
 
@@ -212,8 +222,8 @@ class TestEffectiveAmountDecimal:
         db.session.add(xfer)
         db.session.flush()
 
-        assert isinstance(xfer.effective_amount, Decimal)
-        assert xfer.effective_amount == Decimal("200.00")
+        assert isinstance(resolve_transfer_amount(xfer), Decimal)
+        assert resolve_transfer_amount(xfer) == Decimal("200.00")
 
 
 # ── Section 2: IDOR -- Transfer Account Ownership ────────────────────
@@ -522,7 +532,6 @@ class TestBalanceWithTransfers:
             BalanceContext.build(
                 seed_user["user"].id, as_of=seed_periods[0].start_date,
             ),
-            seed_periods,
         )
 
         # Period 0 (anchor): 1000
@@ -572,7 +581,6 @@ class TestBalanceWithTransfers:
             BalanceContext.build(
                 seed_user["user"].id, as_of=seed_periods[0].start_date,
             ),
-            seed_periods,
         )
 
         assert balances[seed_periods[1].id] == Decimal("1300.00")
@@ -624,7 +632,6 @@ class TestBalanceWithTransfers:
             BalanceContext.build(
                 seed_user["user"].id, as_of=seed_periods[0].start_date,
             ),
-            seed_periods,
         )
 
         # Cancelled transfer shadows should not reduce balance.

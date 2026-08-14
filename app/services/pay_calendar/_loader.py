@@ -54,8 +54,8 @@ def calendar_for(user_id: int) -> PayCalendar:
 
     A separate call rather than a lookup hidden inside each consumer, so a
     caller answering many questions loads the schedule ONCE and threads it --
-    ``pay_period_admin._repoint_recurrence_rules`` re-authors a batch of
-    recurrence rules together, and a per-rule load there would be the same two
+    ``period_population.populate_periods_from_active_templates`` generates a
+    batch of rules together, and a per-rule load there would be the same two
     queries repeated N times for one answer.
 
     Always the owner's COMPLETE payday set, which is

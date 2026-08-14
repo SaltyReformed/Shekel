@@ -10,14 +10,22 @@ Tests for transaction template CRUD and recurrence preview:
   - Recurrence preview HTMX endpoint
 """
 
+import re
 from datetime import date
 from decimal import Decimal
 
 import pytest
 
+from app import ref_cache
+from app.enums import (
+    PeriodPlacementEnum,
+    RecurrencePatternEnum,
+    RecurrenceUnitEnum,
+)
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
+from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
     AccountType, RecurrencePattern, Status, TransactionType,
@@ -25,11 +33,25 @@ from app.models.ref import (
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
+from app.routes._form_errors import GENERIC_VALIDATION_FLASH
 from app.services.auth_service import hash_password
-from app.services import account_service
+from app.services import account_service, pay_period_service
 from app.services.generation_schedule import GenerationSchedule
-from tests._test_helpers import create_loan_account
+from app.services.recurrence import (
+    END_BOUND_KINDS,
+    EndsAfterOccurrences,
+    EndsOnDate,
+    NeverEnds,
+)
+from tests._test_helpers import (
+    cadence_payload,
+    create_account_of_type,
+    create_loan_account,
+    end_bound_payload,
+    make_transfer_template,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -76,11 +98,6 @@ def _create_template(seed_user, name="Rent", amount="1200.00",
     db.session.add(template)
     db.session.commit()
     return template
-
-
-def _pattern_id(name="Every Period"):
-    """Return a recurrence pattern's id by name (display lookup, test-only)."""
-    return db.session.query(RecurrencePattern).filter_by(name=name).one().id
 
 
 def _future_override_txn(seed_user, template, amount="1500.00"):
@@ -221,7 +238,108 @@ class TestTemplateCreate:
             assert b"New Recurring Transaction" in resp.data
             assert b'name="name"' in resp.data
             assert b'name="default_amount"' in resp.data
-            assert b'name="recurrence_pattern"' in resp.data
+            # The three cadence controls plan step R7b-2 put in place of the
+            # single pattern <select>.  Both interval inputs carry the same
+            # name, which is why only one of them is ever enabled.
+            assert b'name="recurrence_unit"' in resp.data
+            assert b'name="interval_n"' in resp.data
+            assert b'name="recurrence_placement"' in resp.data
+
+    def test_create_no_recurrence_with_the_payload_a_browser_posts(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """"Does not repeat" saves when every rendered control submits.
+
+        **The regression for a 500 the whole suite was green across**, found
+        by the browser drive (``tests/manual/verify_recurrence_form.py``) at
+        plan step R7b-4 and fixed in the same commit.  The "Starts on" box
+        lives inside ``#recurrence-fields``, which is HIDDEN when the form
+        says "does not repeat" -- and a hidden input still submits, so a real
+        save posted ``start_date=""``.  The F-24 helper's no-cadence branch
+        did not pop it, and the key reached ``TransactionTemplate(**data)``,
+        whose constructor has no such keyword.
+
+        Every hand-written payload in this suite omitted the key, because a
+        person writing one includes the fields they are thinking about.  This
+        one is written the other way round: it carries every control the page
+        renders, empty where the user touched nothing, which is what the wire
+        actually holds.
+
+        The script now DISABLES the box when the definition does not repeat,
+        so the key no longer arrives -- and this test keeps the server half
+        honest anyway.  Disabling is the affordance; popping is the rule.
+        """
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            category = seed_user["categories"]["Rent"]
+
+            resp = auth_client.post("/templates", data={
+                "name": "Browser Shaped No Recurrence",
+                "default_amount": "24.99",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                # "Does not repeat" -- an empty unit, with every other
+                # recurrence control posting the value it renders with.
+                "recurrence_unit": "",
+                "recurrence_placement": "",
+                "interval_n": "1",
+                "day_of_month": "",
+                "due_day_of_month": "",
+                "month_of_year": "",
+                "start_date": "",
+                "recurrence_end_mode": "never",
+                "end_date": "",
+                "max_occurrences": "",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            template = (
+                db.session.query(TransactionTemplate)
+                .filter_by(name="Browser Shaped No Recurrence")
+                .one()
+            )
+            assert template.recurrence_rule_id is None
+
+    def test_create_with_a_starts_on_date_bounds_the_rule(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The positive twin: a stated "Starts on" reaches the rule.
+
+        Without this the case above would pass against a route that dropped
+        the key on EVERY branch rather than only the no-cadence one -- which
+        would silently discard the opening bound the user typed.
+        """
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            category = seed_user["categories"]["Rent"]
+            starts_on = seed_periods_today[1].start_date
+
+            resp = auth_client.post("/templates", data={
+                "name": "Browser Shaped With Start",
+                "default_amount": "24.99",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                **cadence_payload(),
+                "start_date": starts_on.isoformat(),
+                "recurrence_end_mode": "never",
+                "end_date": "",
+                "max_occurrences": "",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            template = (
+                db.session.query(TransactionTemplate)
+                .filter_by(name="Browser Shaped With Start")
+                .one()
+            )
+            assert template.recurrence_rule is not None
+            assert template.recurrence_rule.start_date == starts_on
 
     def test_create_template_no_recurrence(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates creates a template without recurrence."""
@@ -251,9 +369,6 @@ class TestTemplateCreate:
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
 
             resp = auth_client.post("/templates", data={
                 "name": "Rent Payment",
@@ -261,7 +376,7 @@ class TestTemplateCreate:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(every_period.id),
+                **cadence_payload(),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -484,7 +599,7 @@ class TestTemplateUpdate:
 
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "recurrence_pattern": str(_pattern_id()),
+                **cadence_payload(),
             })
             assert resp.status_code == 200
             assert b"hand-edited" in resp.data
@@ -510,7 +625,7 @@ class TestTemplateUpdate:
 
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "recurrence_pattern": str(_pattern_id()),
+                **cadence_payload(),
                 "conflict_apply": "1",
                 f"conflict_decision_{txn_id}": "use",
             }, follow_redirects=True)
@@ -537,7 +652,7 @@ class TestTemplateUpdate:
 
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "recurrence_pattern": str(_pattern_id()),
+                **cadence_payload(),
                 "conflict_apply": "1",
                 f"conflict_decision_{txn_id}": "keep",
             }, follow_redirects=True)
@@ -567,7 +682,7 @@ class TestTemplateUpdate:
             resp = auth_client.post(f"/templates/{tid}", data={
                 "name": "Apartment Rent",
                 "default_amount": "1200.00",
-                "recurrence_pattern": str(_pattern_id()),
+                **cadence_payload(),
             }, follow_redirects=True)
             assert resp.status_code == 200
             assert b"hand-edited" not in resp.data
@@ -632,7 +747,7 @@ class TestTemplateUpdate:
             resp = auth_client.post(f"/templates/{tid}", data={
                 "name": "Apartment Rent",
                 "default_amount": "1400.00",
-                "recurrence_pattern": str(_pattern_id()),
+                **cadence_payload(),
                 "conflict_apply": "1",
                 f"conflict_decision_{txn_id}": "use",
             }, follow_redirects=True)
@@ -1016,76 +1131,120 @@ class TestPreviewRecurrence:
     """Tests for GET /templates/preview-recurrence."""
 
     def test_preview_monthly(self, app, auth_client, seed_user, seed_periods_today):
-        """Preview for monthly pattern returns occurrence list."""
+        """Preview for a monthly cadence returns an occurrence list."""
         with app.app_context():
-            monthly = db.session.query(RecurrencePattern).filter_by(
-                name="Monthly"
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence"
-                f"?recurrence_pattern={monthly.id}&day_of_month=15"
+                "/templates/preview-recurrence",
+                query_string={
+                    **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
+                    "day_of_month": "15",
+                },
             )
             assert resp.status_code == 200
             assert b"occurrences" in resp.data or b"No matching" in resp.data
 
-    def test_preview_the_retired_once_row(
+    def test_preview_an_unmodelled_unit_is_unknown_not_blank(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The surviving ``Once`` ``ref`` row previews as UNKNOWN, not blank.
+        """A ``recurrence_units`` id the app does not model previews as UNKNOWN.
 
-        It used to have its own "No preview for this pattern" branch beside
-        the empty-submission one, because it was a modelled pattern that did
-        not recur.  Plan step R2e-3 retired the enum member and kept the row
-        (ruling R-R11), so the row is now simply a pattern the application
-        does not model -- the same answer as any other unmodelled id, and the
-        honest one: it reached the preview at all only through hand-crafted
-        input, and saying "no preview" would read as "this is fine".
+        The successor to the ``Once``-``ref``-row case: since plan step R7b-2
+        the preview takes the two AXES rather than a closed-set pattern id, so
+        the unmodelled input it can be handed is a unit or a placement.  The
+        honest answer is "unknown", not "no preview" -- it is reachable only
+        through hand-crafted input, and "no preview" would read as "this is
+        fine".  ONE message covers both axes because they share a disposition
+        and a reachability; the ABSENT unit below keeps its own, because that
+        one is what "Does not repeat" posts and users read it.
         """
         with app.app_context():
-            once = db.session.query(RecurrencePattern).filter_by(
-                name="Once"
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence?recurrence_pattern={once.id}"
+                "/templates/preview-recurrence",
+                query_string={
+                    **cadence_payload(),
+                    "recurrence_unit": "999999",
+                },
             )
             assert resp.status_code == 200
-            assert b"Unknown pattern" in resp.data
+            assert b"Unknown cadence" in resp.data
 
-    def test_preview_unknown_pattern(self, app, auth_client, seed_user, seed_periods_today):
-        """Preview for unknown pattern ID returns unknown message."""
+    def test_preview_an_unmodelled_placement_is_unknown(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The second axis takes the same answer as the first."""
         with app.app_context():
             resp = auth_client.get(
-                "/templates/preview-recurrence?recurrence_pattern=999999"
+                "/templates/preview-recurrence",
+                query_string={
+                    **cadence_payload(),
+                    "recurrence_placement": "999999",
+                },
             )
             assert resp.status_code == 200
-            assert b"Unknown pattern" in resp.data
+            assert b"Unknown cadence" in resp.data
+
+    def test_preview_a_named_unit_with_no_placement_is_unknown(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A placement is REQUIRED once a unit is named, not an optional refinement.
+
+        Defaulting it would let the preview show a schedule the save would not
+        produce: ``(1, MONTH)`` funded from the covering paycheck and the same
+        cadence funded from the month's first paycheck are different rules.
+        """
+        with app.app_context():
+            payload = cadence_payload(unit=RecurrenceUnitEnum.MONTH)
+            del payload["recurrence_placement"]
+            resp = auth_client.get(
+                "/templates/preview-recurrence",
+                query_string={**payload, "day_of_month": "15"},
+            )
+            assert resp.status_code == 200
+            assert b"Unknown cadence" in resp.data
 
     def test_preview_no_pattern(self, app, auth_client, seed_user, seed_periods_today):
-        """Preview with no pattern parameter returns no-preview message."""
+        """Preview with no cadence parameter returns the no-preview message."""
         with app.app_context():
             resp = auth_client.get("/templates/preview-recurrence")
             assert resp.status_code == 200
             assert b"No preview" in resp.data
 
     @pytest.mark.parametrize(
-        ("pattern_name", "query"),
+        ("cadence_name", "unit", "interval_n", "query"),
         [
             # Live 500s before plan step R4a: the first two raised
             # ``ValueError`` out of the matcher it deleted, the third out of
             # the authoring seam.
-            ("Annual", "month_of_year=13&day_of_month=15"),
-            ("Monthly", "day_of_month=-5"),
-            ("Every N Periods", "interval_n=0"),
+            (
+                "Annual", RecurrenceUnitEnum.YEAR, 1,
+                {"month_of_year": "13", "day_of_month": "15"},
+            ),
+            (
+                "Monthly", RecurrenceUnitEnum.MONTH, 1,
+                {"day_of_month": "-5"},
+            ),
+            (
+                "Every N Periods", RecurrenceUnitEnum.PERIOD, 0, {},
+            ),
             # Worse than a crash: 200 with a silently clamped or modulo-wrapped
             # date the user never named.
-            ("Quarterly", "month_of_year=99&day_of_month=15"),
-            ("Monthly", "day_of_month=32"),
-            ("Monthly", "day_of_month=0"),
+            (
+                "Quarterly", RecurrenceUnitEnum.MONTH, 3,
+                {"month_of_year": "99", "day_of_month": "15"},
+            ),
+            (
+                "Monthly", RecurrenceUnitEnum.MONTH, 1,
+                {"day_of_month": "32"},
+            ),
+            (
+                "Monthly", RecurrenceUnitEnum.MONTH, 1,
+                {"day_of_month": "0"},
+            ),
         ],
     )
     def test_preview_refuses_out_of_domain_arguments_without_a_500(
         self, app, auth_client, seed_user, seed_periods_today,
-        pattern_name, query,
+        cadence_name, unit, interval_n, query,
     ):
         """Unbounded query args answer a muted line, never a stack trace.
 
@@ -1101,18 +1260,101 @@ class TestPreviewRecurrence:
         columns' own domains.
         """
         with app.app_context():
-            pattern = db.session.query(RecurrencePattern).filter_by(
-                name=pattern_name
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence"
-                f"?recurrence_pattern={pattern.id}&{query}"
+                "/templates/preview-recurrence",
+                query_string={
+                    **cadence_payload(unit=unit, interval_n=interval_n),
+                    **query,
+                },
             )
 
             assert resp.status_code == 200, (
-                f"{pattern_name} with {query} answered {resp.status_code}"
+                f"{cadence_name} with {query} answered {resp.status_code}"
             )
-            assert b"No preview for this pattern" in resp.data
+            assert b"No preview for this cadence" in resp.data
+
+    @pytest.mark.parametrize(
+        ("label", "unit", "interval_n"),
+        [
+            # 10000 YEARS is 120000 months; the walk's ordinal divides back out
+            # to a year past 9999 and ``date()`` raises ValueError.
+            ("years past the calendar", RecurrenceUnitEnum.YEAR, 10_000),
+            ("months past the calendar", RecurrenceUnitEnum.MONTH, 120_000),
+        ],
+    )
+    def test_preview_refuses_an_interval_that_walks_off_the_calendar(
+        self, app, auth_client, seed_user, seed_periods_today,
+        label, unit, interval_n,
+    ):
+        """A huge interval answers the muted line, not a stack trace.
+
+        **Opened by plan step R7b-2 and found by an adversarial review of it.**
+        Before the step the preview posted a pattern id and ``decode_pattern``
+        DISCARDED the submitted interval for every calendar pattern, so only
+        the pay-period walk -- which cannot overflow -- ever saw it.  The form
+        now posts the interval as the cadence itself, so the raw query arg
+        reaches ``months_per_step`` and then ``date()``, whose ``ValueError``
+        is not the ``RecurrenceResolutionError`` this endpoint catches.
+
+        The remedy is not a third bound on this endpoint: it is that the
+        preview refuses what the SAVE would refuse, which is the same
+        ``is_authorable`` question the schema asks.  No calendar unit has a
+        storable interval above 6.
+        """
+        assert seed_periods_today
+        resp = auth_client.get(
+            "/templates/preview-recurrence",
+            query_string=cadence_payload(unit=unit, interval_n=interval_n),
+        )
+
+        assert resp.status_code == 200, label
+        assert b"No preview" in resp.data, label
+
+    def test_preview_refuses_a_cadence_the_save_would_refuse(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The preview must not show a schedule that cannot be saved.
+
+        ``(2, MONTH)`` walks correctly and has no closed-set pattern to be
+        stored as, so previewing five real dates for it advertises a schedule
+        the save then refuses with a field error.  Not reachable by clicking --
+        the script offers 1 / 3 / 6 for months -- so this is the crafted-args
+        door, pinned because the endpoint's own reasoning about the absent
+        placement stops one case short of it.
+        """
+        assert seed_periods_today
+        resp = auth_client.get(
+            "/templates/preview-recurrence",
+            query_string={
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH, interval_n=2),
+                "day_of_month": "15",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert b"No preview" in resp.data
+        assert b"occurrences" not in resp.data
+
+    def test_preview_refuses_a_placement_the_pair_cannot_take(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The same, on the placement axis.
+
+        ``(PERIOD, first paycheck)`` resolves -- the pay-period anchor does not
+        read the placement at all -- so it previewed five dates for a cadence
+        ``encode_cadence`` has no name for.
+        """
+        assert seed_periods_today
+        resp = auth_client.get(
+            "/templates/preview-recurrence",
+            query_string=cadence_payload(
+                placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            ),
+        )
+
+        assert resp.status_code == 200
+        assert b"No preview" in resp.data
+        assert b"occurrences" not in resp.data
 
     def test_preview_ignores_an_unparseable_end_date(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1124,29 +1366,30 @@ class TestPreviewRecurrence:
         never reaches ``RecurrenceResolutionError``.  A neutral review of plan
         step R4a found it after the route's docstring had already claimed the
         whole class was closed.  An unparseable bound is dropped rather than
-        refused -- see ``_recurrence_preview._submitted_end_date``.
+        refused -- see ``_recurrence_preview._submitted_iso_date``, which
+        parses BOTH date bounds since plan step R7b-4 gave the opening one a
+        control (two copies of "parse it or drop it" is the shape that leaves
+        one of them missing a fix the other got).
         """
         with app.app_context():
-            pattern = db.session.query(RecurrencePattern).filter_by(
-                name="Monthly"
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence"
-                f"?recurrence_pattern={pattern.id}&day_of_month=15"
-                f"&end_date=garbage"
+                "/templates/preview-recurrence",
+                query_string={
+                    **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
+                    "day_of_month": "15",
+                    "end_date": "garbage",
+                },
             )
 
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
 
     def test_preview_every_period(self, app, auth_client, seed_user, seed_periods_today):
-        """Preview for every_period pattern returns occurrence list."""
+        """Preview for the every-paycheck cadence returns an occurrence list."""
         with app.app_context():
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence?recurrence_pattern={every_period.id}"
+                "/templates/preview-recurrence",
+                query_string=cadence_payload(),
             )
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
@@ -1164,171 +1407,133 @@ class TestPreviewRecurrence:
         seam fixed it incidentally, because resolution always emits an int.
         """
         with app.app_context():
-            every_n = db.session.query(RecurrencePattern).filter_by(
-                name="Every N Periods"
-            ).one()
             resp = auth_client.get(
-                f"/templates/preview-recurrence"
-                f"?recurrence_pattern={every_n.id}&interval_n=2"
+                "/templates/preview-recurrence",
+                query_string=cadence_payload(interval_n=2),
             )
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
 
-    def test_preview_tolerates_a_zero_day_of_month(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """``?day_of_month=0`` answers 200, as it did before the seam.
-
-        ``<input type="number" min="1">`` does not stop a user typing 0, and
-        the endpoint reads the value straight from ``request.args``.  The
-        engine coerces a 0 day with ``or 1``; resolution mirrors that exactly,
-        so this stays a preview rather than becoming a 500 on
-        ``date(y, m, 0)``.
-        """
-        with app.app_context():
-            monthly = db.session.query(RecurrencePattern).filter_by(
-                name="Monthly"
-            ).one()
-            resp = auth_client.get(
-                f"/templates/preview-recurrence"
-                f"?recurrence_pattern={monthly.id}&day_of_month=0"
-            )
-            assert resp.status_code == 200
-
-    def test_preview_rejects_other_users_start_period(
+    def test_preview_ignores_a_start_period_id_entirely(
         self, app, auth_client, seed_user, seed_periods_today,
         seed_second_user, seed_second_periods,
     ):
-        """Passing another user's start_period_id falls through to own data.
+        """The endpoint has no start-period argument left to attack.
 
-        The endpoint returns 200 (graceful fallback), not an error.
-        The response must match what the user would see with no
-        start_period_id (i.e. the ownership check caused the foreign
-        period to be ignored).  This prevents pay period structure
-        disclosure (H3).
+        **Audit finding H3 -- pay-period structure disclosure -- was closed by
+        REMOVING the surface at plan step R7b-4, not by guarding it.** The
+        preview owner-checked a submitted ``start_period_id`` and fell through
+        to the user's own data when it was not theirs. The recurrence's opening
+        bound is a DATE now, so the endpoint reads no period id at all: a
+        foreign one, a nonexistent one and a garbage one are the same
+        unrecognised query argument.
+
+        Both shapes are asserted in ONE case because they now have ONE answer,
+        and this replaces two tests that compared the response to a baseline
+        with the argument dropped -- a comparison that became a tautology for
+        ANY ignored argument, while their docstrings went on describing an
+        ownership check no code performs.
         """
         with app.app_context():
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-
-            # Baseline: request with no start_period_id.
-            baseline_resp = auth_client.get(
+            baseline = auth_client.get(
                 "/templates/preview-recurrence",
-                query_string={"recurrence_pattern": every_period.id},
+                query_string=cadence_payload(),
             )
+            assert baseline.status_code == 200
+            assert b"occurrences" in baseline.data
 
-            # Request with User B's period ID -- should fall through
-            # to the same result as no start_period_id.
+            for label, period_id in (
+                ("another user's", seed_second_periods[0].id),
+                ("nonexistent", 999999),
+            ):
+                resp = auth_client.get(
+                    "/templates/preview-recurrence",
+                    query_string={
+                        **cadence_payload(),
+                        "start_period_id": period_id,
+                    },
+                )
+                assert resp.status_code == 200, label
+                assert resp.data == baseline.data, label
+
+    def test_preview_honours_a_submitted_starts_on(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """What REPLACED the period argument, and it must actually bind.
+
+        The case above only says the retired argument is ignored, which any
+        unrecognised key satisfies. This says the new one is READ: a preview
+        bounded to a later paycheck must not list dates before it. Without
+        this pair the endpoint could be ignoring both.
+        """
+        with app.app_context():
+            later = seed_periods_today[-1]
+
             resp = auth_client.get(
                 "/templates/preview-recurrence",
                 query_string={
-                    "recurrence_pattern": every_period.id,
-                    "start_period_id": seed_second_periods[0].id,
+                    **cadence_payload(),
+                    "start_date": later.start_date.isoformat(),
                 },
             )
-            assert resp.status_code == 200
-            assert b"occurrences" in resp.data
-            # The foreign period was ignored -- same output as baseline.
-            assert resp.data == baseline_resp.data
 
-    def test_create_recurring_template_rejects_other_users_start_period(
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert later.start_date.strftime("%b %d, %Y") in body
+            for earlier in seed_periods_today[:-1]:
+                assert earlier.start_date.strftime("%b %d, %Y") not in body
+
+    def test_create_recurring_template_ignores_a_foreign_start_period(
         self, app, auth_client, seed_user, seed_periods_today,
         seed_second_user, seed_second_periods,
     ):
-        """POST /templates rejects a foreign start_period on a recurring pattern.
+        """POST /templates cannot be attacked through a start period at all.
 
-        deep-quality-hunt #21/#24: the create-path counterpart to the
-        preview IDOR test above.  The read-only preview route owner-gated
-        the start period for every pattern, but the PERSIST path's probe
-        used to run only for EVERY_N_PERIODS -- so a recurring template
-        (here "Every Period") wrote a foreign ``start_period_id`` onto its
-        RecurrenceRule unchecked, and ``recurrence_engine`` then read that
-        victim period's ``start_date`` as the generation boundary.  The
-        shared F-24 builder probe now rejects before any row is written;
-        this pins the persist path closed end-to-end (the sibling preview
-        test only proves the read path ignores the foreign period).
+        deep-quality-hunt #21/#24 was a real IDOR: the persist path's owner
+        probe ran only for EVERY_N_PERIODS, so a recurring template wrote a
+        foreign ``start_period_id`` onto its RecurrenceRule unchecked and the
+        generation boundary came from the victim's pay period.  It was closed
+        by making the probe universal.
+
+        **Plan step R7b-4 removed the surface instead of guarding it.**  A
+        transaction template's recurrence takes a DATE (``start_date``), and
+        ``TemplateCreateSchema`` no longer declares ``start_period_id`` at all
+        -- the field went to the TRANSFER schema, where its remaining job
+        lives (placing a one-time transfer).  Marshmallow's ``EXCLUDE`` drops
+        the key, so a crafted POST cannot express the attack: there is nothing
+        to reject because there is nothing to accept.
+
+        Asserted as an IGNORE rather than a refusal, and both halves matter --
+        the template IS created (the foreign key changed nothing about a valid
+        submission) and its rule carries no start period.  A test that only
+        checked for a flash would pass against a route that had silently
+        started storing the value again.
         """
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(
                 name="Expense"
             ).one()
             category = seed_user["categories"]["Rent"]
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-
             resp = auth_client.post("/templates", data={
                 "name": "Recurring IDOR Template",
                 "default_amount": "1500.00",
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(every_period.id),
-                # Second user's period on a recurring (non-EVERY_N) pattern.
+                **cadence_payload(),
+                # Second user's period, on a field this schema does not have.
                 "start_period_id": str(seed_second_periods[0].id),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Invalid start period" in resp.data
-
-            # No template was persisted.
-            assert (
+            template = (
                 db.session.query(TransactionTemplate)
                 .filter_by(name="Recurring IDOR Template")
-                .first()
-            ) is None
-
-    def test_preview_with_own_start_period(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """Passing own start_period_id works normally (positive regression)."""
-        with app.app_context():
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-            resp = auth_client.get(
-                "/templates/preview-recurrence",
-                query_string={
-                    "recurrence_pattern": every_period.id,
-                    "start_period_id": seed_periods_today[0].id,
-                },
+                .one()
             )
-            assert resp.status_code == 200
-            assert b"occurrences" in resp.data
-
-    def test_preview_nonexistent_start_period_falls_back(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """Nonexistent start_period_id falls back to own periods (no 500).
-
-        The endpoint must handle a start_period_id that does not exist
-        in the database at all.  The ownership check naturally rejects it
-        (db.session.get returns None), and the endpoint falls through to
-        the user's own period list.
-        """
-        with app.app_context():
-            every_period = db.session.query(RecurrencePattern).filter_by(
-                name="Every Period"
-            ).one()
-
-            # Baseline: no start_period_id.
-            baseline_resp = auth_client.get(
-                "/templates/preview-recurrence",
-                query_string={"recurrence_pattern": every_period.id},
-            )
-
-            resp = auth_client.get(
-                "/templates/preview-recurrence",
-                query_string={
-                    "recurrence_pattern": every_period.id,
-                    "start_period_id": 999999,
-                },
-            )
-            assert resp.status_code == 200
-            assert b"occurrences" in resp.data
-            # Nonexistent period ignored -- same output as baseline.
-            assert resp.data == baseline_resp.data
+            assert template.recurrence_rule is not None
+            assert template.recurrence_rule.start_period_id is None
+            assert template.recurrence_rule.start_date is None
 
 
 # ── Negative Path Tests ─────────────────────────────────────────────
@@ -1961,7 +2166,6 @@ class TestDueDayOfMonth:
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
-            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
 
             resp = auth_client.post("/templates", data={
                 "name": "Rent w/ Due Day",
@@ -1969,7 +2173,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "22",
                 "due_day_of_month": "1",
             }, follow_redirects=True)
@@ -1985,7 +2189,6 @@ class TestDueDayOfMonth:
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
-            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
 
             auth_client.post("/templates", data={
                 "name": "Rent No Due",
@@ -1993,7 +2196,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "15",
             }, follow_redirects=True)
 
@@ -2007,7 +2210,6 @@ class TestDueDayOfMonth:
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
-            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
 
             # Create without due_day first.
             auth_client.post("/templates", data={
@@ -2016,7 +2218,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "10",
             }, follow_redirects=True)
 
@@ -2032,7 +2234,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "10",
                 "due_day_of_month": "15",
             }, follow_redirects=True)
@@ -2045,7 +2247,6 @@ class TestDueDayOfMonth:
         with app.app_context():
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             category = seed_user["categories"]["Rent"]
-            monthly = db.session.query(RecurrencePattern).filter_by(name="Monthly").one()
 
             # Create with due_day.
             auth_client.post("/templates", data={
@@ -2054,7 +2255,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "10",
                 "due_day_of_month": "15",
             }, follow_redirects=True)
@@ -2071,7 +2272,7 @@ class TestDueDayOfMonth:
                 "category_id": category.id,
                 "transaction_type_id": txn_type.id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(monthly.id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": "10",
             }, follow_redirects=True)
 
@@ -2347,3 +2548,1237 @@ class TestRecurrenceCellLock:
                 "reads nothing from the context since plan step R7a, and the "
                 "clause would hide a re-introduced context dependency."
             )
+
+
+class TestTheEndsControlIsTheFirstWriterOfMaxOccurrences:
+    """Plan step R7b-3: a rule can stop after a COUNT, and the form says so.
+
+    ``budget.recurrence_rules.max_occurrences`` had been read by the
+    occurrence walk since plan step R3 and written by NOTHING -- 0 of the 46
+    live production rules carried one (measured 2026-08-13).  The "Ends"
+    control is its first author, and it is ONE control for a bound with three
+    shapes, so ``ck_recurrence_rules_single_end_bound`` is expressed by the
+    form's shape rather than refused after it.
+    """
+
+    def _create(self, auth_client, seed_user, name, **extra):
+        """POST a recurring expense template and return the response.
+
+        Args:
+            auth_client: The signed-in client.
+            seed_user: The seeded owner fixture.
+            name: The template's name.
+            **extra: Additional form keys, typically an end-bound payload.
+
+        Returns:
+            The Flask test response.
+        """
+        txn_type = db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one()
+        return auth_client.post("/templates", data={
+            "name": name,
+            "default_amount": "100.00",
+            "category_id": seed_user["categories"]["Rent"].id,
+            "transaction_type_id": txn_type.id,
+            "account_id": seed_user["account"].id,
+            **cadence_payload(),
+            **extra,
+        }, follow_redirects=True)
+
+    def test_a_count_bound_reaches_the_column_and_stops_generation(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """"Ends after 3" writes the count AND generates exactly three rows.
+
+        The column write alone would prove only that a value landed; what
+        makes the control mean anything is that the occurrence walk stops --
+        ``seed_periods_today`` builds ten biweekly periods, so an unbounded
+        every-paycheck rule generates ten.
+        """
+        with app.app_context():
+            resp = self._create(
+                auth_client, seed_user, "Three Payments",
+                **end_bound_payload(EndsAfterOccurrences(count=3)),
+            )
+            assert resp.status_code == 200
+
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Three Payments",
+            ).one()
+            rule = template.recurrence_rule
+            assert rule.max_occurrences == 3
+            assert rule.end_date is None
+
+            txns = db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).all()
+            assert len(txns) == 3
+
+    def test_a_date_bound_still_reaches_its_own_column(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The shape that already existed is unmoved by gaining a sibling."""
+        with app.app_context():
+            stop = seed_periods_today[2].start_date
+            self._create(
+                auth_client, seed_user, "Until Then",
+                **end_bound_payload(EndsOnDate(on=stop)),
+            )
+
+            rule = db.session.query(TransactionTemplate).filter_by(
+                name="Until Then",
+            ).one().recurrence_rule
+            assert rule.end_date == stop
+            assert rule.max_occurrences is None
+
+    def test_the_unbounded_shape_writes_neither_column(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """"Never" is a positive statement, and it stores as both NULL."""
+        with app.app_context():
+            self._create(
+                auth_client, seed_user, "Forever", **end_bound_payload(),
+            )
+
+            rule = db.session.query(TransactionTemplate).filter_by(
+                name="Forever",
+            ).one().recurrence_rule
+            assert rule.end_date is None
+            assert rule.max_occurrences is None
+
+    def test_choosing_a_date_and_leaving_it_blank_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Refused rather than read as "never", which would leave a bill running.
+
+        A user who picked "on a date" meant to STOP the recurrence; taking the
+        blank box as indefinite would silently do the opposite of what they
+        asked for.
+        """
+        with app.app_context():
+            self._create(
+                auth_client, seed_user, "Blank Date",
+                recurrence_end_mode="on_date",
+                end_date="",
+            )
+
+            assert db.session.query(TransactionTemplate).filter_by(
+                name="Blank Date",
+            ).one_or_none() is None
+
+    def test_choosing_a_count_and_leaving_it_blank_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The count shape's own half of the refusal above."""
+        with app.app_context():
+            self._create(
+                auth_client, seed_user, "Blank Count",
+                recurrence_end_mode="after_occurrences",
+                max_occurrences="",
+            )
+
+            assert db.session.query(TransactionTemplate).filter_by(
+                name="Blank Count",
+            ).one_or_none() is None
+
+    def test_a_zero_count_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """``ck_recurrence_rules_positive_max_occurrences``, at the door.
+
+        A count of zero names no occurrence at all.  The number box carries
+        ``min="1"``, and a browser that honours it is not a validator.
+        """
+        with app.app_context():
+            self._create(
+                auth_client, seed_user, "Zero Count",
+                recurrence_end_mode="after_occurrences",
+                max_occurrences="0",
+            )
+
+            assert db.session.query(TransactionTemplate).filter_by(
+                name="Zero Count",
+            ).one_or_none() is None
+
+    def test_an_unknown_mode_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A hand-assembled POST naming no shape has nothing to save.
+
+        The dispatch over the closed set IS the validation; there is no
+        second statement of which shapes exist for it to disagree with.
+        """
+        with app.app_context():
+            self._create(
+                auth_client, seed_user, "Bogus Mode",
+                recurrence_end_mode="whenever",
+            )
+
+            assert db.session.query(TransactionTemplate).filter_by(
+                name="Bogus Mode",
+            ).one_or_none() is None
+
+    def test_an_edit_can_move_a_rule_from_one_shape_to_the_other(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Both columns cannot be set, because the bound is ONE value.
+
+        Editing count -> date does not merge the two: it REPLACES the shape,
+        so the column the old shape wrote is cleared in the same write.  A
+        rule carrying both is what ``ck_recurrence_rules_single_end_bound``
+        refuses, and this is the edit that would have produced it.
+        """
+        with app.app_context():
+            stop = seed_periods_today[3].start_date
+            self._create(
+                auth_client, seed_user, "Switcher",
+                **end_bound_payload(EndsAfterOccurrences(count=2)),
+            )
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Switcher",
+            ).one()
+            assert template.recurrence_rule.max_occurrences == 2
+
+            auth_client.post(f"/templates/{template.id}", data={
+                "name": "Switcher",
+                "default_amount": "100.00",
+                "category_id": seed_user["categories"]["Rent"].id,
+                "transaction_type_id": template.transaction_type_id,
+                "account_id": seed_user["account"].id,
+                "version_id": template.version_id,
+                **cadence_payload(),
+                **end_bound_payload(EndsOnDate(on=stop)),
+            }, follow_redirects=True)
+
+            db.session.expire_all()
+            rule = db.session.get(
+                TransactionTemplate, template.id,
+            ).recurrence_rule
+            assert rule.end_date == stop
+            assert rule.max_occurrences is None
+
+    def test_an_edit_that_states_no_bound_leaves_the_stored_one_alone(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An absent mode is "not mine to state", never "ends never".
+
+        What a loan payment's disabled control posts, and what an amount-only
+        PATCH posts.  Reading it as "never" would clear a stop the user set
+        without ever showing them the control.
+        """
+        with app.app_context():
+            self._create(
+                auth_client, seed_user, "Keeper",
+                **end_bound_payload(EndsAfterOccurrences(count=4)),
+            )
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Keeper",
+            ).one()
+
+            auth_client.post(f"/templates/{template.id}", data={
+                "name": "Keeper renamed",
+                "default_amount": "100.00",
+                "category_id": seed_user["categories"]["Rent"].id,
+                "transaction_type_id": template.transaction_type_id,
+                "account_id": seed_user["account"].id,
+                "version_id": template.version_id,
+                **cadence_payload(),
+            }, follow_redirects=True)
+
+            db.session.expire_all()
+            rule = db.session.get(
+                TransactionTemplate, template.id,
+            ).recurrence_rule
+            assert rule.max_occurrences == 4
+            assert rule.end_date is None
+
+    def test_an_edit_can_state_a_deliberate_never_and_clear_a_stored_bound(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The third case of present-vs-absent, and the one that CLEARS.
+
+        "Never" is a positive statement and must remove a stored stop; an
+        ABSENT mode must not.  Both are asserted, because the whole value of
+        keeping them distinguishable is that they do opposite things, and a
+        test of only one would pass on a design that conflated them.
+        """
+        with app.app_context():
+            self._create(
+                auth_client, seed_user, "Unbounded Again",
+                **end_bound_payload(EndsAfterOccurrences(count=5)),
+            )
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Unbounded Again",
+            ).one()
+            assert template.recurrence_rule.max_occurrences == 5
+
+            auth_client.post(f"/templates/{template.id}", data={
+                "name": "Unbounded Again",
+                "default_amount": "100.00",
+                "category_id": seed_user["categories"]["Rent"].id,
+                "transaction_type_id": template.transaction_type_id,
+                "account_id": seed_user["account"].id,
+                "version_id": template.version_id,
+                **cadence_payload(),
+                **end_bound_payload(),
+            }, follow_redirects=True)
+
+            db.session.expire_all()
+            rule = db.session.get(
+                TransactionTemplate, template.id,
+            ).recurrence_rule
+            assert rule.max_occurrences is None
+            assert rule.end_date is None
+
+    def test_the_transfer_create_form_renders_the_control_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Both kinds share the partial, so both must show the bound.
+
+        The transfer form is the one that also has a LOCKED case, so a
+        regression there would be invisible to the transaction form's tests.
+        """
+        with app.app_context():
+            resp = auth_client.get("/transfers/new")
+
+            assert b'name="recurrence_end_mode"' in resp.data
+            assert b'name="max_occurrences"' in resp.data
+            for kind in END_BOUND_KINDS:
+                assert f'value="{kind.token}"'.encode() in resp.data
+
+    def test_the_form_renders_every_shape_the_dispatch_accepts(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The offer set reaches the page, so every shape is choosable.
+
+        Derived from the same closed tuple ``end_bound_from_token`` dispatches
+        over, so a shape that renders is a shape that saves -- the property
+        plan step R7b-2 gave the cadence controls, applied to the bound.
+        """
+        with app.app_context():
+            resp = auth_client.get("/templates/new")
+
+            assert b'name="recurrence_end_mode"' in resp.data
+            assert b'name="max_occurrences"' in resp.data
+            for kind in END_BOUND_KINDS:
+                assert f'value="{kind.token}"'.encode() in resp.data
+
+
+def _template_with_start_date(seed_user, txn_type, starts_on):
+    """Create a recurring EXPENSE template whose rule states an opening bound.
+
+    A transaction template rather than a transfer, deliberately: nothing
+    derives a transaction template's validity window, so these cases exercise
+    the ordinary authored path rather than the locked one.
+
+    Args:
+        seed_user: The seeded owner fixture.
+        txn_type: The Expense transaction type row.
+        starts_on: The opening bound to store.
+
+    Returns:
+        The flushed :class:`~app.models.transaction_template.TransactionTemplate`.
+    """
+    rule = RecurrenceRule(
+        user_id=seed_user["user"].id,
+        pattern_id=ref_cache.recurrence_pattern_id(
+            RecurrencePatternEnum.EVERY_PERIOD,
+        ),
+        start_date=starts_on,
+    )
+    db.session.add(rule)
+    db.session.flush()
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=seed_user["categories"]["Rent"].id,
+        transaction_type_id=txn_type.id,
+        recurrence_rule_id=rule.id,
+        name="Bounded Expense",
+        default_amount=Decimal("42.00"),
+    )
+    db.session.add(template)
+    db.session.flush()
+    return template
+
+
+def _loan_payment_template(seed_user):
+    """Create and flush a recurring LOAN PAYMENT transfer template.
+
+    A loan payment is a transfer template carrying
+    :class:`~app.models.loan_payment_settings.LoanPaymentSettings` -- decision
+    B, and what ``is_loan_payment`` reads.  Its closing bound is the loan's
+    projected payoff, written by ``loan_recurrence_sync``, which is what makes
+    the "Ends" control on its form DERIVED rather than authored.
+
+    Args:
+        seed_user: The seeded owner fixture.
+
+    Returns:
+        The flushed :class:`~app.models.transfer_template.TransferTemplate`.
+    """
+    loan_account = create_loan_account(seed_user, db.session)
+    rule = RecurrenceRule(
+        user_id=seed_user["user"].id,
+        pattern_id=ref_cache.recurrence_pattern_id(
+            RecurrencePatternEnum.MONTHLY,
+        ),
+        day_of_month=1,
+        end_date=date(2030, 1, 1),
+    )
+    db.session.add(rule)
+    db.session.flush()
+    template = TransferTemplate(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=loan_account.id,
+        recurrence_rule_id=rule.id,
+        name="Loan Payment",
+        default_amount=Decimal("500.00"),
+        is_active=True,
+    )
+    template.settings = LoanPaymentSettings(derive_from_loan=False)
+    db.session.add(template)
+    db.session.commit()
+    return template
+
+
+class TestALoanPaymentsClosingBoundIsDerived:
+    """Plan step R7b-3: the app owns a loan payment's stop, so the form does not.
+
+    ``loan_recurrence_sync.sync_recurring_payment_bounds`` writes that rule's
+    ``end_date`` from the loan's PROJECTED PAYOFF on every payoff-affecting
+    edit.  A bound accepted from this form would therefore be discarded
+    without a word the next time the loan changed -- so the control renders
+    disabled, and a submission that states one anyway is REFUSED rather than
+    silently dropped.
+
+    Both halves are needed and neither is redundant: disabling is the
+    affordance a user sees, and the refusal is the rule a crafted POST meets.
+    """
+
+    def test_the_control_renders_disabled_on_a_loan_payment(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The user is told where the value comes from rather than shown a box.
+
+        A disabled control posts nothing, so the mode key arrives ABSENT --
+        which the update path reads as "this form said nothing about the
+        bound" and leaves the stored one alone.
+        """
+        with app.app_context():
+            template = _loan_payment_template(seed_user)
+
+            resp = auth_client.get(f"/transfers/{template.id}/edit")
+
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            control = body[body.index('id="field-end-bound"'):]
+            control = control[:control.index("</div>", control.index("</select>"))]
+            assert 'id="recurrence_end_mode"' in control
+            assert "disabled" in control
+            assert "projected payoff" in body
+
+    def test_a_crafted_submission_stating_a_bound_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Refused, and the stored bound is untouched.
+
+        The refusal is what keeps the user's stated stop from being thrown
+        away in silence -- and it is the door half of what makes a COUNT
+        bound and the sync's DATE unable to meet on one row.
+        """
+        with app.app_context():
+            template = _loan_payment_template(seed_user)
+            before = template.recurrence_rule.end_date
+
+            resp = auth_client.post(
+                f"/transfers/{template.id}",
+                data={
+                    "name": template.name,
+                    "default_amount": "500.00",
+                    "from_account_id": template.from_account_id,
+                    "to_account_id": template.to_account_id,
+                    "version_id": template.version_id,
+                    **cadence_payload(),
+                    **end_bound_payload(EndsAfterOccurrences(count=6)),
+                },
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"paid off" in resp.data
+            db.session.expire_all()
+            rule = db.session.get(
+                TransferTemplate, template.id,
+            ).recurrence_rule
+            assert rule.max_occurrences is None
+            assert rule.end_date == before
+
+    def test_an_ordinary_edit_that_states_no_bound_still_saves(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The control: the refusal is on a STATED bound, not on loan payments.
+
+        A user renaming their loan payment must not be blocked by a control
+        their form does not show them.
+        """
+        with app.app_context():
+            template = _loan_payment_template(seed_user)
+
+            auth_client.post(
+                f"/transfers/{template.id}",
+                data={
+                    "name": "Renamed Payment",
+                    "default_amount": "500.00",
+                    "from_account_id": template.from_account_id,
+                    "to_account_id": template.to_account_id,
+                    "version_id": template.version_id,
+                    **cadence_payload(),
+                },
+                follow_redirects=True,
+            )
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransferTemplate, template.id,
+            ).name == "Renamed Payment"
+
+
+class TestACreateDoesNotBackfillClosedPayPeriods:
+    """The create form's opening bound DEFAULTS, and the default is money.
+
+    **The regression an adversarial review of plan step R7b-4 found.**  The
+    control this step replaced was a ``<select>`` of pay periods with no empty
+    option, preselecting the CURRENT period -- so every definition ever created
+    carried an opening bound of "the paycheck I am in".  Replacing it with a
+    date box that defaults to EMPTY silently changed that to "unbounded", and
+    the create routes generate over ``GenerationSchedule.for_user`` -- every
+    period the owner has, with no lower window bound -- so a rent template
+    created today wrote projected debits into every pay period that had already
+    closed.
+
+    Asserted on the GENERATED ROWS rather than on the column, which is the
+    whole point: the two create tests written with this step both checked
+    ``start_date`` and would have passed against the regression.  The fixture
+    puts today in period index 4, so four CLOSED periods exist to backfill
+    into -- a suite whose fixture had no history could not see this at all.
+    """
+
+    def test_a_create_with_no_stated_start_generates_nothing_in_the_past(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Rows land from the current paycheck forward, never behind it."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert current is not None, "fixture must cover today"
+            closed = [
+                p for p in seed_periods_today
+                if p.start_date < current.start_date
+            ]
+            assert closed, "fixture must have a closed period to backfill into"
+
+            # POST what the FORM ITSELF renders, read off the page, rather
+            # than a date this test chose.  That is what makes this a
+            # regression guard on the DEFAULT: a hardcoded bound here would
+            # pass against a form that had stopped rendering one, which is
+            # precisely the defect -- measured, it did.
+            form = auth_client.get("/templates/new").data.decode()
+            control = form[form.index('id="field-start-date"'):]
+            control = control[:control.index("</div>", control.index("<input"))]
+            rendered = re.search(r'value="([^"]*)"', control).group(1)
+
+            resp = auth_client.post("/templates", data={
+                "name": "Rent Created Today",
+                "default_amount": "2000.00",
+                "category_id": seed_user["categories"]["Rent"].id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                **cadence_payload(),
+                "start_date": rendered,
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            template = (
+                db.session.query(TransactionTemplate)
+                .filter_by(name="Rent Created Today")
+                .one()
+            )
+            periods = {
+                txn.pay_period_id
+                for txn in db.session.query(Transaction).filter_by(
+                    template_id=template.id,
+                )
+            }
+            assert periods, "the template generated nothing at all"
+            backfilled = {p.id for p in closed} & periods
+            assert backfilled == set(), (
+                f"created rows in {len(backfilled)} pay period(s) that closed "
+                f"before today"
+            )
+
+    def test_the_create_form_renders_that_default_rather_than_an_empty_box(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The default is what the user SEES, so it is asserted on the page.
+
+        The test above passes the date explicitly, which is what the rendered
+        form posts -- so it is only a regression guard while the form really
+        does render it.  This is the other half.
+        """
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+
+            resp = auth_client.get("/templates/new")
+
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            control = body[body.index('id="field-start-date"'):]
+            control = control[:control.index("</div>", control.index("<input"))]
+            assert f'value="{current.start_date.isoformat()}"' in control
+
+
+class TestALoanPaymentsOpeningBoundIsDerived:
+    """Plan step R7b-4: the app owns a loan payment's START, so the form does not.
+
+    The exact mirror of :class:`TestALoanPaymentsClosingBoundIsDerived`, and it
+    guards the more expensive half.  ``loan_recurrence_sync._sync_loan_cadence``
+    writes that rule's ``start_date`` from the loan's FIRST CONTRACTUAL
+    INSTALLMENT on every payoff-affecting edit, so a bound accepted from this
+    form would be discarded without a word the next time the loan changed --
+    and a bound accepted and KEPT would be worse: generation before origination
+    is erased by the fold while the cash side still debits it, measured at
+    ``$3,220.92`` of phantom payments on a mortgage closing one month out.
+
+    **Which definitions lock is ``owns_validity_window``, not
+    ``is_loan_payment``** (plan step R7b-4), and the difference is not
+    academic: neither of the developer's real loan payments carries a
+    ``loan_payment_settings`` row, so the older predicate answered False for
+    both and the sibling class above was passing on a fixture that is not
+    shaped like production.  These cases use the same fixture -- it satisfies
+    both predicates -- and the three-arm test of the predicate itself is in
+    ``tests/test_services/test_loan_recurrence_sync.py``.
+    """
+
+    def test_the_control_renders_disabled_on_a_loan_payment(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The user is told where the value comes from rather than shown a box.
+
+        A disabled control posts nothing, so the key arrives ABSENT -- which
+        the update path reads as "this form said nothing about the bound" and
+        leaves the stored one alone.
+        """
+        with app.app_context():
+            template = _loan_payment_template(seed_user)
+
+            resp = auth_client.get(f"/transfers/{template.id}/edit")
+
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            control = body[body.index('id="field-start-date"'):]
+            control = control[:control.index("</div>", control.index("<input"))]
+            assert 'id="start_date"' in control
+            assert "disabled" in control
+            assert "loan's first payment" in body
+
+    def test_a_crafted_submission_stating_a_start_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Refused, and the stored opening bound is untouched.
+
+        Reachable only by a crafted POST, because the control is disabled --
+        and checked anyway for the reason the closing bound's twin is:
+        disabling is the affordance, the refusal is the rule.
+        """
+        with app.app_context():
+            template = _loan_payment_template(seed_user)
+            before = template.recurrence_rule.start_date
+
+            resp = auth_client.post(
+                f"/transfers/{template.id}",
+                data={
+                    "name": template.name,
+                    "default_amount": "500.00",
+                    "from_account_id": template.from_account_id,
+                    "to_account_id": template.to_account_id,
+                    "version_id": template.version_id,
+                    **cadence_payload(),
+                    "start_date": "2027-06-01",
+                },
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"first installment" in resp.data
+            db.session.expire_all()
+            rule = db.session.get(
+                TransferTemplate, template.id,
+            ).recurrence_rule
+            assert rule.start_date == before
+
+    def test_an_ordinary_edit_that_states_no_start_still_saves(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The control: the refusal is on a STATED bound, not on loan payments.
+
+        A user renaming their loan payment must not be blocked by a control
+        their form does not show them -- and the stored bound must survive the
+        edit rather than being cleared by the absent key.
+        """
+        with app.app_context():
+            template = _loan_payment_template(seed_user)
+            before = template.recurrence_rule.start_date
+
+            auth_client.post(
+                f"/transfers/{template.id}",
+                data={
+                    "name": "Renamed Loan Payment",
+                    "default_amount": "500.00",
+                    "from_account_id": template.from_account_id,
+                    "to_account_id": template.to_account_id,
+                    "version_id": template.version_id,
+                    **cadence_payload(),
+                },
+                follow_redirects=True,
+            )
+
+            db.session.expire_all()
+            stored = db.session.get(TransferTemplate, template.id)
+            assert stored.name == "Renamed Loan Payment"
+            assert stored.recurrence_rule.start_date == before
+
+
+class TestALoanPaymentCannotBeMadeOneTime:
+    """The refusal covers every loan payment, not only the settings-carrying ones.
+
+    Clearing a loan payment's recurrence nulls ``recurrence_rule_id``, and that
+    is how ``recurring_transfer_query.active_recurring_transfer_template``
+    FINDS a loan's payment -- so the loan goes on amortizing with nothing
+    projecting a payment against it, and its standing ``extra_principal`` (when
+    it has one) stops being threaded into the balance seam.
+
+    **The set this covers was measured wrong until plan step R7b-4.** The
+    refusal asked ``is_loan_payment`` alone -- does this template carry
+    ``LoanPaymentSettings`` -- and on a 2026-08-14 production clone NEITHER of
+    the developer's real loan payments carries that row, so both mortgages were
+    clearable. The guard now asks the UNION with
+    ``loan_recurrence_sync.owns_validity_window``, and the second case below is
+    the one that was live: it is the production shape, and it FAILS against the
+    predicate this step replaced.
+    """
+
+    def test_a_settings_carrying_loan_payment_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The arm that already worked, kept so the union cannot lose it."""
+        with app.app_context():
+            template = _loan_payment_template(seed_user)
+            rule_id = template.recurrence_rule_id
+
+            resp = auth_client.post(
+                f"/transfers/{template.id}",
+                data={
+                    "name": template.name,
+                    "default_amount": "500.00",
+                    "from_account_id": template.from_account_id,
+                    "to_account_id": template.to_account_id,
+                    "version_id": template.version_id,
+                    "recurrence_unit": "",
+                    "recurrence_placement": "",
+                },
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"repeats for the life of the loan" in resp.data
+            db.session.expire_all()
+            assert db.session.get(
+                TransferTemplate, template.id,
+            ).recurrence_rule_id == rule_id
+
+    def test_a_loan_payment_with_NO_settings_row_is_refused_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The production shape, and the one that was accepted before R7b-4.
+
+        Identical to the case above except the template carries no
+        ``LoanPaymentSettings`` -- which is how BOTH of the developer's real
+        loan payments are stored. Its recurrence must survive the clear, or a
+        mortgage silently leaves the forward plan.
+        """
+        with app.app_context():
+            loan = create_loan_account(seed_user, db.session)
+            template = make_transfer_template(db.session, seed_user, loan)
+            db.session.flush()
+            assert template.settings is None, "fixture must have no settings row"
+            rule_id = template.recurrence_rule_id
+
+            resp = auth_client.post(
+                f"/transfers/{template.id}",
+                data={
+                    "name": template.name,
+                    "default_amount": "200.00",
+                    "from_account_id": template.from_account_id,
+                    "to_account_id": template.to_account_id,
+                    "version_id": template.version_id,
+                    "recurrence_unit": "",
+                    "recurrence_placement": "",
+                },
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"repeats for the life of the loan" in resp.data
+            db.session.expire_all()
+            assert db.session.get(
+                TransferTemplate, template.id,
+            ).recurrence_rule_id == rule_id
+
+    def test_an_ordinary_transfer_can_still_be_made_one_time(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The control: the refusal is on LOAN payments, not on transfers.
+
+        Without this the union could be satisfied by a guard that refused
+        every clear, which would take a real affordance away from every
+        savings contribution the user has.
+        """
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", name="Holiday Fund",
+            )
+            template = make_transfer_template(db.session, seed_user, savings)
+            db.session.flush()
+
+            auth_client.post(
+                f"/transfers/{template.id}",
+                data={
+                    "name": template.name,
+                    "default_amount": "200.00",
+                    "from_account_id": template.from_account_id,
+                    "to_account_id": template.to_account_id,
+                    "version_id": template.version_id,
+                    "recurrence_unit": "",
+                    "recurrence_placement": "",
+                },
+                follow_redirects=True,
+            )
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransferTemplate, template.id,
+            ).recurrence_rule_id is None
+
+
+class TestAnEditStatesTheOpeningBoundOrSaysNothing:
+    """PRESENT replaces, ABSENT leaves alone -- and empty is PRESENT.
+
+    ``start_date`` is ``allow_none`` at the schema, so clearing the box arrives
+    as a stated ``None`` that MUST overwrite a stored date, while a form that
+    rendered the control disabled omits the key entirely and must leave the
+    stored date alone.  ``_recurrence_form_helpers`` calls that asymmetry
+    load-bearing, and it is: collapsing the two would make a loan edit erase
+    the origination bound that keeps its payments from generating before the
+    loan exists.
+
+    The closing bound carries the identical pair of cases, which is what says
+    the two bounds are one idea rather than two conventions.
+    """
+
+    def test_an_edit_that_states_no_start_leaves_the_stored_one_alone(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An amount-only save does not touch a bound it never showed."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            template = _template_with_start_date(
+                seed_user, txn_type, date(2026, 5, 7),
+            )
+
+            auth_client.post(
+                f"/templates/{template.id}",
+                data={
+                    "name": template.name,
+                    "default_amount": "42.00",
+                    "category_id": template.category_id,
+                    "transaction_type_id": txn_type.id,
+                    "account_id": template.account_id,
+                    "version_id": template.version_id,
+                    **cadence_payload(),
+                },
+                follow_redirects=True,
+            )
+
+            db.session.expire_all()
+            stored = db.session.get(TransactionTemplate, template.id)
+            assert stored.recurrence_rule.start_date == date(2026, 5, 7)
+
+    def test_an_edit_can_state_a_deliberate_empty_and_clear_the_bound(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Clearing the box is a real request and it must land.
+
+        Without this the case above would be satisfied by a route that ignored
+        the field entirely, and a user could never remove an opening bound
+        they had set by mistake.
+        """
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            template = _template_with_start_date(
+                seed_user, txn_type, date(2026, 5, 7),
+            )
+
+            auth_client.post(
+                f"/templates/{template.id}",
+                data={
+                    "name": template.name,
+                    "default_amount": "42.00",
+                    "category_id": template.category_id,
+                    "transaction_type_id": txn_type.id,
+                    "account_id": template.account_id,
+                    "version_id": template.version_id,
+                    **cadence_payload(),
+                    "start_date": "",
+                },
+                follow_redirects=True,
+            )
+
+            db.session.expire_all()
+            stored = db.session.get(TransactionTemplate, template.id)
+            assert stored.recurrence_rule.start_date is None
+
+
+class TestTheServerRendersTheEndsControlAlreadyCorrect:
+    """The form is right BEFORE any script runs, and disabled means disabled.
+
+    ``recurrence_form.js`` re-links the value inputs on every change, but the
+    first render is the server's -- so a page whose script has not executed
+    yet, or has failed, must still post exactly the shape it displays.  The
+    same contract the two interval controls hold, which
+    ``_recurrence_fields.html`` states for both.
+
+    What this CANNOT see is what the script does afterwards: a control hidden
+    by a class and one disabled by the script look identical in rendered HTML.
+    That is ``tests/manual/verify_recurrence_form.py``'s, and plan step R7b-2
+    shipped two defects of exactly that kind past a green suite.
+    """
+
+    def _selected_mode(self, body):
+        """Return the token of the "Ends" option carrying ``selected``.
+
+        Parsed structurally rather than matched as a substring, and an
+        adversarial review of this step is why: the first version asserted a
+        whitespace-normalised ``value="never" data-needs="" selected`` with an
+        ``or 'value="never"' in control`` fallback -- and the fallback is true
+        of every render, because the option is always emitted.  It could not
+        fail for the selection it was named after, which is exactly the R7b-2
+        defect the surrounding docstrings cite.
+
+        Args:
+            body: The decoded response body.
+
+        Returns:
+            The selected option's ``value``, or ``None`` when none carries
+            ``selected`` -- which is itself a failure a caller should assert
+            on, because a ``<select>`` with no selected option silently
+            submits its FIRST.
+        """
+        start = body.index('id="recurrence_end_mode"')
+        control = body[start:body.index("</select>", start)]
+        for option in re.findall(r"<option\b[^>]*>", control):
+            if re.search(r"\bselected\b", option):
+                return re.search(r'value="([^"]*)"', option).group(1)
+        return None
+
+    def _input(self, body, element_id):
+        """Return one input's tag text from a rendered page.
+
+        Args:
+            body: The decoded response body.
+            element_id: The input's ``id``.
+
+        Returns:
+            The tag's source text.
+        """
+        start = body.index(f'id="{element_id}"')
+        return body[body.rindex("<input", 0, start):body.index(">", start) + 1]
+
+    def test_a_create_form_starts_unbounded_with_both_values_disabled(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """"Never" is selected, so neither value input may submit.
+
+        An enabled box beside a mode that does not read it would post a value
+        the chosen shape ignores -- and the shape a hand-assembled POST then
+        names decides which of them the door believes.
+        """
+        with app.app_context():
+            body = auth_client.get("/templates/new").data.decode()
+
+            assert self._selected_mode(body) == NeverEnds.token
+            assert "disabled" in self._input(body, "end_date")
+            assert "disabled" in self._input(body, "max_occurrences")
+
+    def test_an_edit_form_enables_only_the_stored_shapes_input(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A count-bounded rule prefills the count box and disables the date.
+
+        The prefill comes from ``edit_form_end_bound``, which reads the two
+        columns through the one seam rather than letting the template decide
+        which shape a row holds.
+        """
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            auth_client.post("/templates", data={
+                "name": "Counted",
+                "default_amount": "100.00",
+                "category_id": seed_user["categories"]["Rent"].id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                **cadence_payload(),
+                **end_bound_payload(EndsAfterOccurrences(count=7)),
+            }, follow_redirects=True)
+            template = db.session.query(TransactionTemplate).filter_by(
+                name="Counted",
+            ).one()
+
+            body = auth_client.get(
+                f"/templates/{template.id}/edit",
+            ).data.decode()
+
+            count_input = self._input(body, "max_occurrences")
+            assert 'value="7"' in count_input
+            assert "disabled" not in count_input
+            assert "disabled" in self._input(body, "end_date")
+            assert self._selected_mode(body) == EndsAfterOccurrences.token
+
+
+class TestThePreviewHonoursTheClosingBound:
+    """The preview must show what SAVING would produce, bound included.
+
+    Its module docstring states that contract, and plan step R7b-3 broke it
+    for one review cycle: the endpoint composed the bound through the
+    submission door and defaulted the mode to "never", while the script sent
+    the two VALUE keys and no mode.  So every preview was unbounded, and a
+    user setting "ends on a date" was shown occurrences running past it -- on
+    the one surface whose whole job is to say when a commitment stops.
+
+    Neither the frozen oracle nor the 46-rule round trip could see it: both
+    instruments read a rule, and this defect lived in a query string.
+    """
+
+    def _preview(self, auth_client, seed_user, **extra):
+        """GET the preview fragment for an every-paycheck cadence.
+
+        Args:
+            auth_client: The signed-in client.
+            seed_user: The seeded owner fixture.
+            **extra: Additional query args, typically the bound's controls.
+
+        Returns:
+            The decoded fragment body.
+        """
+        return auth_client.get("/templates/preview-recurrence", query_string={
+            "recurrence_unit": str(
+                ref_cache.recurrence_unit_id(RecurrenceUnitEnum.PERIOD),
+            ),
+            "recurrence_placement": str(
+                ref_cache.period_placement_id(
+                    PeriodPlacementEnum.CONTAINING_DATE,
+                ),
+            ),
+            "interval_n": "1",
+            **extra,
+        }).data.decode()
+
+    def test_an_unbounded_preview_lists_occurrences(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The control: without a bound there are periods to show."""
+        with app.app_context():
+            assert "occurrences" in self._preview(auth_client, seed_user)
+
+    def test_a_date_bound_narrows_the_preview(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A bound BEFORE the schedule opens leaves nothing to show.
+
+        The unbounded case above lists occurrences from the same schedule, so
+        the difference is the bound and nothing else.
+        """
+        with app.app_context():
+            body = self._preview(
+                auth_client, seed_user,
+                recurrence_end_mode="on_date",
+                end_date="2000-01-01",
+            )
+
+            assert "No matching periods found" in body
+
+    def test_a_count_bound_narrows_the_preview(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """"After 1 occurrence" leaves nothing ahead to show.
+
+        The count is applied from the rule's ANCHOR, which is the schedule's
+        opening -- so a one-occurrence rule fired on the first payday and is
+        finished.  The preview lists the next five from TODAY, and there are
+        none.  Read together with the unbounded case above, which lists
+        occurrences from the very same schedule, that difference is the bound
+        and nothing else: before the mode reached this endpoint both answered
+        identically.
+        """
+        with app.app_context():
+            body = self._preview(
+                auth_client, seed_user,
+                recurrence_end_mode="after_occurrences",
+                max_occurrences="1",
+            )
+
+            assert "No matching periods found" in body
+
+    def test_a_query_stating_both_bounds_is_a_muted_line_not_a_500(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A hand-crafted query naming two bounds is refused, not crashed.
+
+        It reaches the SUBMISSION door, so it earns the user-input refusal
+        rather than being reported as a row written around the CHECK -- there
+        is no row.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/templates/preview-recurrence",
+                query_string={
+                    "recurrence_unit": str(
+                        ref_cache.recurrence_unit_id(
+                            RecurrenceUnitEnum.PERIOD,
+                        ),
+                    ),
+                    "recurrence_placement": str(
+                        ref_cache.period_placement_id(
+                            PeriodPlacementEnum.CONTAINING_DATE,
+                        ),
+                    ),
+                    "recurrence_end_mode": "whenever",
+                },
+            )
+
+            assert resp.status_code == 200
+            assert b"No preview for this cadence" in resp.data
+
+
+class TestTheBoundsRefusalsReachTheUser:
+    """A refusal nobody reads is copy, not a refusal.
+
+    Plan step R7b-3 authored three sentences for the "Ends" control and
+    allowlisted none of them, so a user whose bound was refused was redirected
+    to a blank form and told to "correct the highlighted errors" -- on a page
+    that highlights nothing.  It is the R7b-2 defect this project already paid
+    for, and the gate written against it could not see these because they live
+    in a ``@post_load`` hook that ``Schema.validate`` skips.
+    """
+
+    def _post(self, auth_client, seed_user, **extra):
+        """POST a recurring expense template and return the followed response.
+
+        Args:
+            auth_client: The signed-in client.
+            seed_user: The seeded owner fixture.
+            **extra: Additional form keys.
+
+        Returns:
+            The decoded response body.
+        """
+        txn_type = db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one()
+        return auth_client.post("/templates", data={
+            "name": "Refused",
+            "default_amount": "100.00",
+            "category_id": seed_user["categories"]["Rent"].id,
+            "transaction_type_id": txn_type.id,
+            "account_id": seed_user["account"].id,
+            **cadence_payload(),
+            **extra,
+        }, follow_redirects=True).data.decode()
+
+    def test_a_blank_date_says_which_control_to_fill(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Not the generic prompt: the sentence names the box and the way out."""
+        with app.app_context():
+            body = self._post(
+                auth_client, seed_user,
+                recurrence_end_mode="on_date", end_date="",
+            )
+
+            assert "Choose the date this stops repeating" in body
+            assert GENERIC_VALIDATION_FLASH not in body
+
+    def test_a_blank_count_says_which_control_to_fill(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The count shape's half of the same promise."""
+        with app.app_context():
+            body = self._post(
+                auth_client, seed_user,
+                recurrence_end_mode="after_occurrences", max_occurrences="",
+            )
+
+            assert "Enter how many times this repeats" in body
+            assert GENERIC_VALIDATION_FLASH not in body
+
+    def test_a_zero_count_gets_the_SHAPES_own_message(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The type's refusal, not marshmallow's "Must be greater than...".
+
+        The schema carries no lower bound on the count precisely so this
+        reaches ``EndsAfterOccurrences.__post_init__``, whose message names
+        the control and states the offending value.
+        """
+        with app.app_context():
+            body = self._post(
+                auth_client, seed_user,
+                recurrence_end_mode="after_occurrences", max_occurrences="0",
+            )
+
+            assert "at least 1, not 0" in body
+
+    def test_a_count_too_large_for_the_column_is_a_400_not_a_500(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An unstorable count is a designed refusal, not a database error.
+
+        ``max_occurrences`` is a Postgres ``integer``; a larger value dies at
+        the flush with ``NumericValueOutOfRange``, which is the ``MarkDoneSchema``
+        defect one schema over.  The schema's upper bound is what keeps it a
+        refusal the form can report.
+        """
+        with app.app_context():
+            self._post(
+                auth_client, seed_user,
+                recurrence_end_mode="after_occurrences",
+                max_occurrences="2147483648",
+            )
+
+            assert db.session.query(TransactionTemplate).filter_by(
+                name="Refused",
+            ).one_or_none() is None

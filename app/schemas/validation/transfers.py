@@ -13,7 +13,7 @@ from app.schemas.validation._helpers import (
     EFFECTIVE_DATE_MAX,
     EFFECTIVE_DATE_MIN,
     BaseSchema,
-    RecurrencePatternField,
+    RecurrenceFormFieldsMixin,
     RowId,
     _normalize_empty_inputs,
 )
@@ -38,7 +38,7 @@ def _reject_same_account_transfer(data):
             raise ValidationError("From and To accounts must be different.")
 
 
-class TransferTemplateCreateSchema(BaseSchema):
+class TransferTemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     """Validates POST data for creating a transfer template."""
 
     @pre_load
@@ -55,34 +55,22 @@ class TransferTemplateCreateSchema(BaseSchema):
     to_account_id = RowId(required=True)
     category_id = RowId(required=True)
 
-    # Recurrence rule fields.
-    # The value is the integer primary key of a ref.recurrence_patterns row,
-    # submitted as a string via HTML form data.  ``RecurrencePatternField``
-    # rather than a bare ``RowId``: it also refuses an id no
-    # ``RecurrencePatternEnum`` member names -- what the application MODELS is
-    # narrower than what the table HOLDS, and the gap is a 500 (plan step
-    # R2e-2).  Carrying the rule in the FIELD is what stops a third schema
-    # declaring a pattern without it; ``validate.Range(min=1)`` went with the
-    # move because ``RowId`` already floors at ``MIN_ROW_ID``.
-    #
-    # ``RowId`` underneath rather than ``Integer`` because it IS a row id
-    # despite the name (plan step X-ae): an adversarial review found
-    # ``Integer`` reading '١', ' 2 ', '+3', '007' and '1_0' as pattern ids,
-    # and the completeness gate could not see it while that gate matched on a
-    # ``_id`` SUFFIX.
-    #
-    # ``allow_none`` so the form's "Does not repeat" option survives
-    # the pre_load hook as an explicit ``None`` rather than a dropped key
-    # (plan step R2e-1) -- see the identical field on
-    # :class:`~app.schemas.validation.templates.TemplateCreateSchema` for why
-    # a present ``None`` and an absent key must stay distinguishable.
-    recurrence_pattern = RecurrencePatternField(allow_none=True)
-    interval_n = fields.Integer(validate=validate.Range(min=1))
-    offset_periods = fields.Integer(validate=validate.Range(min=0))
-    day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
-    month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
+    # Every recurrence control this form submits is on
+    # :class:`~app.schemas.validation._helpers.RecurrenceFormFieldsMixin`.
+    # ``due_day_of_month`` is the transaction form's alone.
+
+    # The pay period a NON-REPEATING transfer lands in
+    # (``_instances._materialize_one_time_transfer``), and the transfer form's
+    # alone.  It is NOT a recurrence control and has not been one since plan
+    # step R7b-4: it sat on the shared mixin while ONE ``<select>`` meant two
+    # things -- "First paycheck" for a repeating definition and "Pay period"
+    # for a one-time transfer, relabelled by script on every unit change --
+    # and that step gave the first meaning its own DATE control.  What is left
+    # is a question only this kind can ask, so it is declared where that kind
+    # is.  A transaction template that does not repeat generates nothing and
+    # waits for the user; a transfer that does not repeat still moves money
+    # exactly once, and this says when.
     start_period_id = RowId()
-    end_date = fields.Date(allow_none=True)
 
     @validates_schema
     def validate_different_accounts(self, data, **kwargs):
@@ -190,7 +178,7 @@ class TransferUpdateSchema(BaseSchema):
     #
     # Deliberately NOT ``allow_none``: an empty input loads as ABSENT ("leave
     # the day alone"), never as a request to clear it.  Clearing it on a settled
-    # transfer is refused by ``_transfer_status.apply_settle_day_correction`` --
+    # transfer is refused by ``transfer_service._status.apply_settle_day_correction`` --
     # the balance walk REFUSES a settled row with no day -- and the way to
     # remove one is to revert the transfer to Projected.
     settled_on = fields.Date()

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
 {% from "_amount_macros.html" import amount_field, amount_history with context %}
-{% from "_recurrence_fields.html" import recurrence_pattern_select, recurrence_detail_fields, recurrence_preview, start_period_field with context %}
+{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_detail_fields, recurrence_end_bound, recurrence_preview, recurrence_start_date with context %}
 {% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if template else 'New' }} Recurring Transaction -- Shekel{% endblock title %}
 
@@ -91,10 +91,23 @@
       {# --- Recurrence (accent emphasis section) --- #}
       <div class="form-section--accent">
         <h6 class="form-section__title">Recurrence</h6>
-        {{ recurrence_pattern_select(pattern_choices, template) }}
+        {{ recurrence_cadence_controls(recurrence.picker, recurrence.selected_cadence) }}
         <div id="recurrence-fields" class="d-none">
-          {% if not template %}{{ start_period_field(periods, current_period) }}{% endif %}
+          {# Both validity bounds, on BOTH create and edit (plan step R7b-4).
+             The pay-period <select> that used to sit here is gone: it was the
+             recurrence's "First paycheck" and nothing else on this kind, since
+             a transaction template that does not repeat materialises no row
+             and so needs no period to put one in.  ``bounds_are_derived`` is
+             always false here -- nothing derives a transaction template's
+             window -- and is passed rather than hardcoded so the two forms
+             ask one question. #}
+          {{ recurrence_start_date(recurrence.selected_start_date,
+                                       recurrence.start_date_min,
+                                       recurrence.start_date_max,
+                                       locked=recurrence.bounds_are_derived) }}
           {{ recurrence_detail_fields(template, include_due_day=true) }}
+          {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end_bound,
+                                     locked=recurrence.bounds_are_derived) }}
           {{ recurrence_preview(url_for('templates.preview_recurrence')) }}
         </div>
       </div>

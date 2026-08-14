@@ -237,12 +237,52 @@ _KIND_CLASSIFIER_MODULES = frozenset({
     "app.services.account_projection",
 })
 
+# The producer-free half of the cash valuation (plan step X-au-c2).  It was
+# defined inside ``cash_ledger`` and moved DOWN a tier because the loan stack
+# needs ``owned_contribution`` and can never import that package: its
+# ``_amount_source`` reaches UP into ``loan_payment_service`` for amount rule
+# 4's producer, so any loan-stack module naming ``cash_ledger`` closes an import
+# cycle.  ``cash_ledger`` re-exports ``owned_contribution``, the only one of
+# the three that was ever public, so no consumer moved.
+#
+# **It is scoped here the day it is created, and that is the whole N-28
+# lesson applied to its own remedy.**  This module's rationale for keying the
+# cash ledger on a PACKAGE says a fail-closed gate is escaped by adding a
+# sibling -- and a new TOP-LEVEL module is that escape one level further out.
+# Extracting a fenced module's contents into an unfenced neighbour would have
+# silently un-ruled ``owned_contribution``, which is the exact shape (a fence
+# that fails open when the code moves) findings N-28 / N-31 are about.  A flat
+# module rather than a package, so the key is exact rather than prefix-matched;
+# if it ever becomes a package the prefix match already covers the submodules.
+_ROW_VALUATION_MODULES = frozenset({
+    "app.services.row_valuation",
+})
+
 # Per-module rulings: {module: (producer set, non-producer set)}.  Every PUBLIC
 # top-level function defined in one of these modules must appear in one of its
 # two sets.  Adding a name to a non-producer set is a DELIBERATE ruling that it
 # does not answer "what is account A's balance at time T"; if in doubt, it is a
 # producer (a false negative is the dangerous mode for a fence).
 _FENCED_MODULE_RULINGS = {
+    # The producer-free half of the cash valuation
+    # (:data:`_ROW_VALUATION_MODULES`).  The EMPTY producer set is the same D3
+    # invariant its parent package carries, and it is even easier to hold here:
+    # this module imports no producer and cannot -- that is the property that
+    # made it a separate module.
+    "app.services.row_valuation": (frozenset(), frozenset({
+        # The three arms of what one row is worth that need no producer, ruled
+        # on exactly the ground the ``cash_ledger._amounts`` valuation family
+        # below stands on: each answers what ONE ROW is worth, and none folds,
+        # dates, sums, or reads an anchor.  ``fixed_contribution`` is the
+        # status / soft-delete / entered-actual gate every other form shares,
+        # ``own_figure`` is the refusal that keeps the amount model TOTAL (a
+        # row owning its amount must store one), and ``owned_contribution``
+        # composes the two for a reader that can only ever see rows owning
+        # their figure.
+        "fixed_contribution",
+        "own_figure",
+        "owned_contribution",
+    })),
     # The cash LEDGER leaf (plan steps D1a + D1c): the facts a cash balance is
     # folded from, what one row is WORTH, and what a set of rows SUMS TO.
     # Scoped WHOLE for completeness but never call-allowlisted -- see
@@ -281,15 +321,32 @@ _FENCED_MODULE_RULINGS = {
         # all seam-private in ``balance_at._cash_fold``.
         "planned_cash_rows",
         # ``_amounts`` -- what ONE row is worth to checking.  An amount per
-        # TRANSACTION is not a balance per ACCOUNT: the live override map is
+        # TRANSACTION is not a balance per ACCOUNT: the live override lookup is
         # what a row is worth right now when its stored amount is a stale
-        # cache, the income rule reads that map, and the three-bucket
+        # cache, the income rule reads it, and the three-bucket
         # reservation is a decomposition of one row's budget.  The cash analog
         # of ``loan_ledger``'s ``split_*`` rulings below, and carried for the
         # same reason.  The three-bucket reservation formula itself is NOT here:
         # D1c deleted its only external caller, so it went private and needs no
         # ruling -- structure retiring a fence entry, which is Phase D's point.
-        "live_amount_overrides",
+        #
+        # The VALUATION family (plan step X-au-c2) joins them on exactly that
+        # ground, and it is the same question ``Transaction.effective_amount``
+        # answered as a model property: ``contributed_amount`` composes a
+        # resolved amount with the status, the soft delete and an entered
+        # actual; ``contribution_of`` and ``contributions_by_id`` are the
+        # one-row and batch forms that resolve first.  Each answers what ONE
+        # ROW is worth -- none folds, dates, sums, or reads an anchor, and the
+        # batch is a dict keyed by row id rather than anything per account.
+        # ``owned_contribution`` is the fourth of them and is ruled with them,
+        # under :data:`_ROW_VALUATION_MODULES` -- it is DEFINED one module down
+        # and only re-exported here, and this fence keys on where a function is
+        # DEFINED.
+        "live_override",
+        "live_amounts",
+        "contributed_amount",
+        "contribution_of",
+        "contributions_by_id",
         "income_amount",
         # ``_amount_source`` -- WHERE one row's amount comes from (plan step
         # X-au-b, ruling R-FI).  Four names, one ruling, because they are one
@@ -332,6 +389,13 @@ _FENCED_MODULE_RULINGS = {
         # exactly the reason its projected siblings above are: an amount per
         # TRANSACTION is not a balance per ACCOUNT.
         "settled_cash_leg",
+        # One TERM of the rule above -- ``Sigma(credit entry amounts)`` for one
+        # row -- published at plan step X-f2-c3 so the reconcile panel can print
+        # what a STATEMENT shows beside what a tick books (finding **N-226**)
+        # without writing ``entry.is_credit`` a second time.  A non-producer by
+        # the same reasoning one step further along: it is not even an amount
+        # per transaction, it is a component of one.
+        "credit_entry_sum",
         # ``_flows`` -- what a SET of rows sums to: what MOVED, not what is HELD
         # at a date.  A peer reduction over the same rows a balance folds, not a
         # step toward one.  ``sum_projected`` is the shared engine BOTH cash
@@ -533,6 +597,18 @@ _FENCED_MODULE_RULINGS = {
         # D-ctx-b / E1d-a), which is where a public balance producer would have
         # to be born to be reachable, and W9910 owns that.
         "loan_walk",
+        # The read pass's PAY CALENDAR memo, and the reporting window read off
+        # it (plan step C2-c).  Both NON-producers, on the same ground
+        # ``loan_walk`` stands on: a calendar is the owner's paydays with the
+        # two derived columns computed from them -- DATES, with no money
+        # anywhere in the value -- and ``pay_calendar`` is a PUBLIC leaf below
+        # this seam that any consumer may call directly for the identical
+        # answer.  These hand back nothing a caller could not obtain from
+        # ``pay_calendar.calendar_for`` itself; what they add is that the seam
+        # and its caller cannot end up on two different calendars in one
+        # render.
+        "calendar",
+        "reported_periods",
     })),
     # The loan-payment LOADER module (:data:`_LOAN_PAYMENT_SEAM_MODULES`).  It
     # was "the one reader-allowlisted module outside the defining package" until
@@ -694,7 +770,8 @@ class ShekelBalanceSeamChecker(BaseChecker):
             "(findings N-28 / N-31). This check inverts the default for the "
             "PUBLIC balance-ingredient packages the package-privacy gate W9910 "
             "cannot protect (the loan_ledger and loan_posting_service "
-            "packages, the cash_ledger leaf, the pure loan_resolver tier, and "
+            "packages, the cash_ledger leaf and the row_valuation tier below "
+            "it, the pure loan_resolver tier, and "
             "the account_projection classifier): every public top-level "
             "function or public method "
             "there must be explicitly classified as a producer or a "

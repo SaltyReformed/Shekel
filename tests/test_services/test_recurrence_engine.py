@@ -56,8 +56,8 @@ _CADENCE_DAYS = 14
 
 
 def build_rule(pattern_name="Every Period", interval_n=1,
-               offset_periods=0, day_of_month=None, month_of_year=None,
-               start_period_id=None, start_date=None, end_date=None,
+               day_of_month=None, month_of_year=None,
+               start_date=None, end_date=None,
                due_day_of_month=None):
     """Build a REAL, unsaved ``RecurrenceRule`` for the pure matcher tests.
 
@@ -78,22 +78,28 @@ def build_rule(pattern_name="Every Period", interval_n=1,
 
     It does NOT guarantee real DEFAULTS -- SQLAlchemy applies ``default=`` at
     INSERT, so an unflushed ``RecurrenceRule()`` carries ``None`` for
-    ``interval_n`` and ``offset_periods`` despite their ``default=1`` /
-    ``default=0``.  That is why both are passed explicitly below, and any future
-    column with a Python-side default the matcher branches on must be passed
-    here too, or these tests will exercise a rule shape production never sees.
+    ``interval_n`` despite its ``default=1``.  That is why it is passed
+    explicitly below, and any future column with a Python-side default the
+    resolver branches on must be passed here too, or these tests will exercise
+    a rule shape production never sees.
+
+    **``offset_periods`` and ``start_period_id`` LEFT this signature at plan
+    step R7b-4**, and not because they stopped having defaults: nothing reads
+    either column now.  A rule has ONE opening bound, ``start_date``, and the
+    ``Every N Periods`` phase is the ordinal of the paycheck that bound falls
+    in.  Keeping them here would let a case state a phase the resolver
+    ignores, which is a test that agrees with itself.
 
     Args:
         pattern_name: Display name of the recurrence pattern, resolved to
             ``pattern_id`` through ``ref_cache`` (needs an app context, as the
             stub's own constructor did).
         interval_n: ``every_n_periods`` interval.
-        offset_periods: Offset within the interval cycle.
         day_of_month: Scheduling day for monthly / quarterly / annual.
         month_of_year: Month for the annual / semi-annual patterns.
-        start_period_id: The optional "First paycheck" period FK (a WEAK
-            bound -- see the model).
-        start_date: The rule's opening validity bound.
+        start_date: The rule's opening validity bound, and the whole of what
+            it says about when it begins -- including which paycheck an
+            ``Every N Periods`` rule phases on.
         end_date: The rule's closing validity bound.
         due_day_of_month: Real bill due day when it differs from
             ``day_of_month``.
@@ -109,11 +115,9 @@ def build_rule(pattern_name="Every Period", interval_n=1,
             if enum_member else None
         ),
         interval_n=interval_n,
-        offset_periods=offset_periods,
         day_of_month=day_of_month,
         due_day_of_month=due_day_of_month,
         month_of_year=month_of_year,
-        start_period_id=start_period_id,
         start_date=start_date,
         end_date=end_date,
     )
@@ -166,6 +170,9 @@ class TestRecurrenceGeneration:
             offset_periods=rule_kwargs.get("offset_periods", 0),
             day_of_month=rule_kwargs.get("day_of_month"),
             month_of_year=rule_kwargs.get("month_of_year"),
+            # The opening bound, which is also what phases an
+            # ``Every N Periods`` rule since plan step R7b-4.
+            start_date=rule_kwargs.get("start_date"),
             end_date=rule_kwargs.get("end_date"),
         )
         db.session.add(rule)
@@ -212,11 +219,19 @@ class TestRecurrenceGeneration:
             )
 
     def test_every_n_periods_with_offset(self, app, db, seed_user, seed_periods):
-        """every_n_periods with n=2, offset=1 generates every other period."""
+        """every_n_periods starting in period 1 generates every other period.
+
+        The phase is the ordinal of the paycheck the opening bound falls in
+        (plan step R7b-4), so starting on period index 1's own payday phases
+        the rule at ``1 % 2 == 1`` -- indices 1, 3, 5, 7, 9.  It stated
+        ``offset_periods=1`` directly until that step made the phase a
+        derivation; the fired set is the same, reached from the fact a form
+        can state.
+        """
         with app.app_context():
             template = self._make_template_with_rule(
                 seed_user, "Every N Periods",
-                interval_n=2, offset_periods=1,
+                interval_n=2, start_date=seed_periods[1].start_date,
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -704,39 +719,42 @@ class TestMatchPeriodsEdgeCases:
 class TestTheEveryNPeriodsPhase:
     """Which paychecks an ``Every N Periods`` rule fires on, and from what.
 
-    **The one field plan step R4a changed the READ semantics of, and the one
-    field both the R1 baseline and every other test in this file exclude by
-    construction** -- ``tests/oracles/recurrence_baseline.build_shape_spec``
-    leaves ``start_period_id`` unset on purpose, and ``build_rule`` defaults it
-    to ``None``.  A neutral review of R4a found the gap; these tests are what
-    closes it.
+    **ONE input decides it, since plan step R7b-4**: the opening bound.  The
+    phase is the ordinal of the paycheck that bound falls in, so a rule cannot
+    state its cadence twice and there is no second value for the anchor to
+    disagree with.
 
-    The reverse matcher read the STORED ``offset_periods`` column
-    unconditionally.  The adapter resolves instead, and
-    ``_resolution._derive_offset_periods`` takes the phase from the rule's
-    start period whenever the calendar contains it -- because that is the fact
-    the user chose, and deriving it on every write is what closed defect D1.
-    So R4a makes the READ agree with the WRITE.
+    What this class covered before is the history worth keeping, because it is
+    what the single input replaced.  The reverse matcher read the STORED
+    ``offset_periods`` column unconditionally; plan step R4a made the read
+    RESOLVE instead, taking the phase from the rule's start PERIOD when the
+    calendar contained that period and falling back to the column when it did
+    not.  Two facts, two sources, and a fallback between them -- a neutral
+    review of R4a found the gap and these tests were what closed it.  R7b-4
+    removed the second source rather than the disagreement: the start period
+    folded into ``start_date``, and the column became output-only.
 
-    The two can only disagree on a row written before plan step R2c-1 shipped
-    the derivation and never re-authored since.  Measured 2026-08-08 against
-    ``shekel-prod-db``: zero such rows, and all 46 live rules carry
-    ``interval_n = 1``, where the phase is inert.
+    All 46 live rules carry ``interval_n = 1``, where the phase is inert
+    (measured 2026-08-14 against a production clone), so the change cost
+    ``$0.00`` and is about rules authored from here on.
     """
 
-    def test_the_phase_comes_from_the_start_period_when_the_calendar_has_it(
+    def test_the_phase_comes_from_the_paycheck_the_bound_falls_in(
         self, biweekly_periods,
     ):
-        """A rule naming a start period fires from it, every N-th after.
+        """A rule starting in period 4 fires from it, every third after.
 
-        The user chose a paycheck; the rule fires on that one and every third
-        one after it, not on whatever the stored column happens to say.
+        ``4 % 3 == 1``, so the fired set is indices 4, 7, 10, ... -- the
+        paycheck the user named and every third one after it.
+
+        The bound named that paycheck by FK until plan step R7b-4 and names it
+        by date now; the assertion is unchanged, which is what makes this a
+        re-expression rather than a new claim.
         """
         rule = build_rule(
             pattern_name="Every N Periods",
             interval_n=3,
-            offset_periods=0,
-            start_period_id=biweekly_periods[4].id,
+            start_date=biweekly_periods[4].start_date,
         )
 
         matched = _matched_periods(
@@ -745,48 +763,61 @@ class TestTheEveryNPeriodsPhase:
 
         assert [p.period_index for p in matched] == [4, 7, 10, 13, 16, 19, 22, 25]
 
-    def test_the_stored_column_is_used_when_the_calendar_lacks_the_period(
+    def test_a_mid_period_bound_phases_on_the_paycheck_that_contains_it(
         self, biweekly_periods,
     ):
-        """A start period the calendar cannot find falls back to the column.
+        """The bound need not BE a payday for the phase to be exact.
 
-        ``PayCalendar.period_by_id`` answers ``None`` for an id no period in
-        the schedule carries, so the derivation has nothing to derive from and
-        the authored ``offset_periods`` stands -- harmless while the two agree,
-        which every rule written through the door since plan step R2c-1 does by
-        construction.  Plan ledger row D24 carries what happens when they do
-        not.
-
-        **The state is built with a STALE id rather than with a partial
-        calendar, and plan step C2-b2 is why** (plan ledger row **P26**).  This
-        test used to slice the fixture -- ``biweekly_periods[6:]`` -- so the
-        start period fell outside the list the calendar was built from.  A
-        DERIVED calendar cannot express that: ``period_index`` is a period's
-        position in the payday set it is HANDED, so a slice comes back
-        renumbered from zero and this assertion would be reading a different
-        schedule's ordinals.  What remains is the way production actually
-        reaches the branch -- ``recurrence_rules.start_period_id`` is
-        ``ON DELETE SET NULL``, but a rule already read into memory outlives
-        the row its id named -- so the calendar is the owner's WHOLE schedule
-        and the id names no period in it.
+        A date one day after period 4 opens is still inside period 4, so the
+        rule phases at ``4 % 3 == 1`` and fires the identical set.  It is the
+        paycheck the money comes out of that the cadence counts, not the
+        calendar day -- which is why the derivation asks containment rather
+        than equality, and why an opening bound the user typed by hand (a loan
+        origination, a mid-month start) lands where they meant.
         """
-        unknown_period_id = max(period.id for period in biweekly_periods) + 1
         rule = build_rule(
             pattern_name="Every N Periods",
             interval_n=3,
-            offset_periods=1,
-            start_period_id=unknown_period_id,
+            start_date=biweekly_periods[4].start_date + timedelta(days=1),
         )
 
         matched = _matched_periods(
             rule, _calendar(biweekly_periods), biweekly_periods[0].start_date,
         )
 
-        # Phase 1 of 3: indices 1, 4, 7, ... -- the STORED column's cadence,
-        # now read over the whole schedule rather than over a window's tail.
-        assert [p.period_index for p in matched] == [
-            1, 4, 7, 10, 13, 16, 19, 22, 25,
-        ]
+        assert [p.period_index for p in matched] == [4, 7, 10, 13, 16, 19, 22, 25]
+
+    def test_a_bound_past_the_horizon_still_derives_a_phase(
+        self, biweekly_periods,
+    ):
+        """Totality: the derivation answers past the materialised schedule.
+
+        ``PayCalendar.span_containing`` PROJECTS the ordinal forward from the
+        last saved payday at the owner's own cadence, so a bound the schedule
+        has not reached still has an ordinal to take a remainder of.  Nothing
+        fires -- there are no materialised periods out there to fire in -- but
+        the value stays derivable, which is what plan step R7c's NOT NULL
+        columns require.
+
+        **This replaces a case about a DANGLING start-period id.**  That state
+        was reachable -- the FK is ``ON DELETE SET NULL``, but a rule read into
+        memory outlives the row its id named -- and it was the one branch where
+        the phase fell back to the stored column.  Neither the id nor the
+        fallback exists now, so the question that survives is what the
+        derivation answers where the schedule stops.
+        """
+        past_horizon = biweekly_periods[-1].end_date + timedelta(days=365)
+        rule = build_rule(
+            pattern_name="Every N Periods",
+            interval_n=3,
+            start_date=past_horizon,
+        )
+
+        matched = _matched_periods(
+            rule, _calendar(biweekly_periods), biweekly_periods[0].start_date,
+        )
+
+        assert matched == []
 
 
 class TestMatchPeriodsFull:
@@ -857,7 +888,6 @@ class TestMatchPeriodsEdgeCaseSafety:
         rule = build_rule(
             pattern_name="Every N Periods",
             interval_n=0,
-            offset_periods=0,
         )
         with pytest.raises(RecurrenceResolutionError, match="interval_n"):
             _matched_periods(
@@ -878,7 +908,6 @@ class TestMatchPeriodsEdgeCaseSafety:
         rule = build_rule(
             pattern_name="Every N Periods",
             interval_n=None,
-            offset_periods=0,
         )
         with pytest.raises(TypeError):
             _matched_periods(
@@ -3117,7 +3146,7 @@ class TestEndDate:
         # Every 3 periods, end at period 12.
         end = biweekly_periods[11].start_date
         rule = build_rule(pattern_name="Every N Periods", interval_n=3,
-                        offset_periods=0, end_date=end)
+                        end_date=end)
         effective_from = biweekly_periods[0].start_date
 
         matched = _matched_periods(rule, _calendar(biweekly_periods),

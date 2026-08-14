@@ -31,7 +31,6 @@ from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.services import (
     account_service,
     balance_at,
@@ -40,13 +39,17 @@ from app.services import (
     income_service,
     pension_calculator,
 )
-from app.services.investment_projection import adapt_deductions
+from app.services.investment_projection import (
+    ShadowContributions,
+    adapt_deductions,
+)
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_accounts,
     load_shadow_income_contributions_for_accounts,
 )
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
 
@@ -75,9 +78,9 @@ class _RetirementProjectionContext:  # pylint: disable=too-many-instance-attribu
         accounts: The active retirement / investment accounts to project.
         all_periods: Every pay period for the user.
         current_period: The current pay period, or ``None``.
-        planned_retirement_date: The horizon the synthetic projection
-            periods run to, or ``None`` (no horizon -> remaining real
-            periods only).
+        planned_retirement_date: The horizon the projection axis runs to, or
+            ``None`` -- in which case it runs to the last day the owner's saved
+            schedule reaches (:func:`resolve_projection_axis`).
         traditional_type_ids: Account-type IDs that are pre-tax (drives
             each projection's ``is_traditional`` flag).
         return_rate_override: Optional slider-supplied annual return that
@@ -117,7 +120,7 @@ class _ProjectionBatch:
     Attributes:
         deductions_by_account: Active paycheck deductions keyed by
             account ID.
-        contributions: Shadow-income contribution transactions across all
+        contributions: The priced shadow-income contributions across all
             projected accounts (filtered per account in the loop).
         params_by_account: :class:`InvestmentParams` keyed by account ID
             (accounts with no params row are absent) -- one ``IN`` query
@@ -151,7 +154,7 @@ class _ProjectionBatch:
     """
 
     deductions_by_account: dict[int, list[PaycheckDeduction]]
-    contributions: list[Transaction]
+    contributions: ShadowContributions
     params_by_account: dict[int, InvestmentParams]
     salary_gross_biweekly: Decimal
     balance_map: dict[int, Decimal]
@@ -177,8 +180,9 @@ class _AccountProjectionResult:
             account.
         projection_rows: The per-period
             :class:`~app.services.growth_engine.ProjectedBalance` list
-            (aligned 1:1 with the synthetic periods), empty when the
-            account does not project.
+            (aligned 1:1 with the projection axis, and each row CARRIES its
+            own period since plan step C2-e), empty when the account does not
+            project.
         employee_per_period: The capped current-period employee
             contribution fact.
         employer_per_period: The current-period employer contribution fact
@@ -204,9 +208,9 @@ def build_employer_salary_basis(
     annual salary is divided by the primary profile's pay-periods-per-year
     and quantized to cents (house money rules), and the returned resolver
     maps a projection period to its year's gross biweekly.  Periods whose
-    year falls outside the projected range (defensive only -- the synthetic
-    periods run today..retirement, exactly the projected span) clamp to the
-    nearest projected year's gross.
+    year falls outside the projected range (defensive only -- the axis runs
+    from the pass's as_of to retirement, exactly the projected span) clamp to
+    the nearest projected year's gross.
 
     Returns ``None`` when there is no salary profile or no horizon, so
     ``growth_engine.project_balance`` falls back to the constant
@@ -315,9 +319,43 @@ def build_projection_context(  # pylint: disable=too-many-arguments,too-many-pos
     )
 
 
+@dataclass(frozen=True)
+class HorizonProjection:
+    """Every account projected to a context's horizon, and WHAT it ran over.
+
+    **The axis and the clock are published rather than left to be rebuilt**
+    (plan step C2-e).  The readiness page needs the axis for three of its own
+    figures -- the "your path" series aligns its per-account rows against it,
+    the "needed path" reverse-projects over it, and the countdown's
+    "paychecks remaining" is its length -- and it used to rebuild the axis by
+    RE-ISSUING the same producer call, with a comment ("Matches the exact
+    ``generate_projection_periods`` call the account projection used") standing
+    in for a guarantee.  Two producers of one value held equal by a comment is
+    the shape this arc exists to remove: the day either call site changed, the
+    chart's rows would have silently mis-aligned against an axis of a different
+    length.
+
+    Attributes:
+        projections: One dict per account (see :func:`_project_one_account`).
+        axis: The :class:`~app.services.pay_calendar.PeriodWindow` every one of
+            those projections ran over.  Each row in a projection's
+            ``projection_rows`` carries its own period as well, so a consumer
+            that has the rows does not need this; a consumer that must size or
+            reverse-walk the axis when NO account projects does.
+        as_of: The read pass's clock -- the day the axis opens after and the
+            day every seed balance is valued against.  Carried so a page that
+            reports "years remaining" beside this projection measures it from
+            the same day the projection did.
+    """
+
+    projections: list[dict]
+    axis: PeriodWindow
+    as_of: date
+
+
 def project_retirement_accounts(
     ctx: _RetirementProjectionContext,
-) -> list[dict]:
+) -> HorizonProjection:
     """Project each retirement / investment account forward to retirement.
 
     Loads the shared per-request projection inputs once
@@ -330,19 +368,22 @@ def project_retirement_accounts(
             inputs).
 
     Returns:
-        A list of per-account projection dicts (see
-        :func:`_project_one_account` for the keys).
+        The :class:`HorizonProjection` -- the per-account projection dicts
+        together with the axis and the clock they were computed against.
     """
     batch = load_projection_batch(ctx)
-    return project_accounts_with_batch(
-        ctx, batch, _resolve_projection_axis(ctx),
+    axis = resolve_projection_axis(ctx, batch.balance_ctx)
+    return HorizonProjection(
+        projections=project_accounts_with_batch(ctx, batch, axis),
+        axis=axis,
+        as_of=batch.balance_ctx.as_of,
     )
 
 
 def project_accounts_with_batch(
     ctx: _RetirementProjectionContext,
     batch: _ProjectionBatch,
-    projection_periods: list,
+    projection_periods: PeriodWindow,
 ) -> list[dict]:
     """Project every account over an explicit period axis.
 
@@ -356,7 +397,7 @@ def project_accounts_with_batch(
         batch: The date-independent per-request inputs from
             :func:`load_projection_batch`.
         projection_periods: The ordered period axis to project over (an
-            empty list leaves every account non-projecting).
+            empty window leaves every account non-projecting).
 
     Returns:
         A list of per-account projection dicts (see
@@ -369,31 +410,63 @@ def project_accounts_with_batch(
     ]
 
 
-def _resolve_projection_axis(ctx: _RetirementProjectionContext) -> list:
-    """Resolve the default period axis for the context's horizon.
+def resolve_projection_axis(
+    ctx: _RetirementProjectionContext, balance_ctx: BalanceContext,
+) -> PeriodWindow:
+    """Resolve the period axis this context's projection runs over.
 
-    Synthetic biweekly periods from today to the planned retirement date
-    when a horizon is set; otherwise the remaining REAL periods from the
-    current period onward (the pre-P2 fallback), and an empty list when
-    there is neither.
+    The owner's OWN paychecks, from the read pass's ``as_of`` to the planned
+    retirement date -- or, with no retirement date set, to the last day their
+    saved schedule reaches.  Past the saved horizon the calendar projects
+    forward at the cadence the owner recorded.
+
+    **Both arms are the same expression since plan step C2-e**, and collapsing
+    them is the point.  The horizon arm used to build a SYNTHETIC axis at a
+    hardcoded 14-day cadence (``growth_engine.generate_projection_periods``,
+    now deleted), which credited an owner ``365/14`` paycheck contributions a
+    year whatever their real cadence -- ``$1,300,344.92`` shown against a true
+    ``$711,385.70`` for a monthly-paid owner over 20 years (ledger row
+    **P20**) -- while the no-horizon arm walked the REAL pay periods.  Two arms
+    meant two answers to "when is this owner's next paycheck", and only one of
+    them read the schedule.  Now the cadence lives in the calendar, so there is
+    no second value to get wrong and no branch to keep in step.
+
+    **The clock is the read pass's, not the process's.**  It used to be
+    ``date.today()`` called here, while the seed each account projects from is
+    read at this axis's own opening day -- so a pass that crossed midnight
+    between the two reads valued the seed against a window that had moved.
+    ``balance_ctx.as_of`` is the one clock for the whole pass.
 
     Args:
         ctx: The read-only projection context.
+        balance_ctx: The read pass's :class:`BalanceContext` -- its ``as_of``
+            opens the window and its memoized calendar supplies the paydays,
+            so no query is issued here.
 
     Returns:
-        The ordered list of periods to project over (possibly empty).
+        The :class:`~app.services.pay_calendar.PeriodWindow` to project over.
+        **Empty** when the owner has no paydays, and when the horizon is
+        already behind ``as_of`` -- a stored retirement date that has aged into
+        the past, which the lever page reports as its ``past_horizon`` state
+        rather than solving for.
     """
-    if ctx.planned_retirement_date:
-        return growth_engine.generate_projection_periods(
-            start_date=date.today(),
-            end_date=ctx.planned_retirement_date,
-        )
-    if ctx.current_period:
-        return [
-            p for p in ctx.all_periods
-            if p.period_index >= ctx.current_period.period_index
-        ]
-    return []
+    calendar = balance_ctx.calendar()
+    last_day = (
+        ctx.planned_retirement_date
+        if ctx.planned_retirement_date
+        else calendar.horizon()
+    )
+    # A horizon already BEHIND the pass's clock is the /retirement lever page's
+    # ``past_horizon`` state -- a stored plan date that has aged into the past,
+    # which the settings schema refuses to accept anew but cannot un-store.
+    # Tested HERE rather than left to the calendar, because this is where that
+    # state is known: ``projection_axis`` REFUSES a crossed range (an adversarial
+    # code review, 2026-08-14, caught it being folded into the empty answer),
+    # and folding a caller's defect into a legitimate empty answer is the hole
+    # ``overlapping`` refuses to leave open one level down.
+    if last_day is None or last_day < balance_ctx.as_of:
+        return PeriodWindow(periods=())
+    return calendar.projection_axis(balance_ctx.as_of, last_day)
 
 
 def load_projection_batch(
@@ -422,8 +495,13 @@ def load_projection_batch(
     deductions_by_account = load_active_deductions_for_accounts(
         ctx.user_id, account_ids,
     )
+    # Resolved BEFORE the contributions rather than beside the balance read
+    # below, because pricing a contribution needs the scenario its amount
+    # resolves under (plan step X-au-c2).  One baseline scenario for the whole
+    # pass either way -- this only moves where it is asked for.
+    balance_ctx = BalanceContext.build(ctx.user_id)
     contributions = load_shadow_income_contributions_for_accounts(
-        account_ids, period_ids,
+        ctx.user_id, balance_ctx.scenario_id, account_ids, period_ids,
     )
 
     # One IN query for the params rows (P2: replaces the per-account
@@ -450,8 +528,7 @@ def load_projection_batch(
     # dashboard).  The forward projection seeds from the same curve, read a day
     # before its own AXIS opens, which is why the seed is not a field of this
     # bundle -- see :class:`_ProjectionBatch`.  Both read the one baseline
-    # scenario, resolved once here and shared for the whole pass.
-    balance_ctx = BalanceContext.build(ctx.user_id)
+    # scenario, resolved once above and shared for the whole pass.
     balance_map = _resolve_displayed_balances(ctx, balance_ctx)
     return _ProjectionBatch(
         deductions_by_account=deductions_by_account,
@@ -501,21 +578,21 @@ def _resolve_displayed_balances(
     return _pick_current_period_balances(
         ctx,
         balance_ctx,
-        balance_at.build_maps(ctx.accounts, balance_ctx, ctx.all_periods),
+        balance_at.build_maps(ctx.accounts, balance_ctx),
     )
 
 
 def _resolve_seed_balances(
     ctx: _RetirementProjectionContext,
     batch: "_ProjectionBatch",
-    projection_periods: list,
+    projection_periods: PeriodWindow,
 ) -> dict[int, Decimal]:
     """Resolve each account's balance the day BEFORE the window opens.
 
     Ruling R-AB's seed, read once per AXIS rather than once per batch.  Every
     event inside the window is then the growth engine's to apply and none of
     them is in the seed, which is what let the
-    ``current_period_transfer_contribution`` subtraction this projection used to
+    current-period contribution subtraction this projection used to
     carry DELETE rather than be ported (deep-quality-hunt #14): the compensator
     existed because the seed was read at the current period's END while the
     window opened at that period's START, so a recorded contribution on the
@@ -537,7 +614,8 @@ def _resolve_seed_balances(
 
     **Memoized on the batch by (SEED DATE, account set).**  The P2b retire-later probes call
     :func:`project_accounts_with_batch` once per candidate horizon and every one
-    of those axes opens at today, so without the memo each account is re-folded
+    of those axes opens on the same payday -- the one covering the pass's
+    ``as_of`` -- so without the memo each account is re-folded
     once per probe: measured when this was written, the /retirement lever page
     went 377 ms -> 682 ms without it.  The key is the DATE rather than a flag,
     so an axis that genuinely opens somewhere else still gets its own seed.
@@ -632,7 +710,7 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
     ctx: _RetirementProjectionContext,
     batch: _ProjectionBatch,
     params: InvestmentParams,
-    projection_periods: list,
+    projection_periods: PeriodWindow,
     seed: Decimal,
 ) -> _AccountProjectionResult:
     """Run the forward growth projection for one projecting account.
@@ -665,7 +743,7 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
         An :class:`_AccountProjectionResult`.
     """
     acct_contributions = [
-        t for t in batch.contributions if t.account_id == acct.id
+        c for c in batch.contributions.records if c.account_id == acct.id
     ]
     adapted_deductions = adapt_deductions(
         batch.deductions_by_account.get(acct.id, []),
@@ -711,7 +789,7 @@ def _project_one_account(
     acct: Account,
     ctx: _RetirementProjectionContext,
     batch: _ProjectionBatch,
-    projection_periods: list,
+    projection_periods: PeriodWindow,
     seeds: dict[int, Decimal],
 ) -> dict:
     """Project a single account forward over the given period axis.
@@ -729,7 +807,7 @@ def _project_one_account(
         ctx: The read-only projection context.
         batch: The shared per-request projection inputs.
         projection_periods: The ordered period axis to project over (an
-            empty list leaves the account non-projecting).
+            empty window leaves the account non-projecting).
         seeds: Ruling R-AB's ``{account_id: balance}`` the day before the
             window opens (:func:`_resolve_seed_balances`), resolved once for
             this axis.  Total over ``ctx.accounts`` whenever
@@ -759,10 +837,15 @@ def _project_one_account(
         else cash_ledger.resolve_anchor(acct).balance
     )
     acct_deductions = batch.deductions_by_account.get(acct.id, [])
-    acct_contributions = [
-        t for t in batch.contributions if t.account_id == acct.id
-    ]
-    none_linked = not acct_deductions and not acct_contributions
+    # PRESENCE, not contribution: an account whose every contribution is
+    # Cancelled still HAS one linked, and telling its owner to link one would
+    # be wrong.  Read off the unscreened set the loader carries for exactly
+    # this reader (:class:`ShadowContributions`); an adversarial review caught
+    # this flipping when the status screen moved to the boundary.
+    none_linked = (
+        not acct_deductions
+        and acct.id not in batch.contributions.linked_account_ids
+    )
 
     if params is not None and projection_periods:
         result = _run_account_projection(

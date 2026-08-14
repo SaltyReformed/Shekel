@@ -34,6 +34,7 @@ import sqlalchemy.exc
 from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
+    AmountSourceEnum,
     BusinessDayShiftEnum,
     CalcMethodEnum,
     CompoundingFrequencyEnum,
@@ -217,6 +218,7 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(RecurrenceUnitEnum, ref_models.RecurrenceUnit),
         _RefSpec(PeriodPlacementEnum, ref_models.PeriodPlacement),
         _RefSpec(BusinessDayShiftEnum, ref_models.BusinessDayShift),
+        _RefSpec(AmountSourceEnum, ref_models.AmountSource),
     ]
 
 
@@ -884,3 +886,35 @@ def posting_source_id(member):
     """
     _require_init()
     return _cache.enum_ids[PostingSourceEnum][member]
+
+
+def amount_source_id(member):
+    """Return the integer primary key for an AmountSourceEnum member.
+
+    The amount model's discriminator (ruling **R-FI**, plan step X-au-c1): which
+    RELATION states a row's amount, stamped on
+    ``budget.transactions.amount_source_id`` and
+    ``budget.transfers.amount_source_id`` by the writers that stop pricing a row
+    and read by the resolver that prices it -- always via the integer ID, never
+    the string ``name``.  Matches the project-wide IDs-for-logic invariant.
+
+    **There is deliberately no accessor for the OWN state**, because it is not a
+    member: a row that owns its amount carries ``amount_source_id IS NULL``, so
+    the question "does this row own its figure" is a NULL test on the column and
+    needs no cache read at all.  That is what lets the ownership CHECK be a
+    constraint over two NULL-nesses rather than one carrying a frozen id
+    literal.
+
+    Args:
+        member: An ``AmountSourceEnum`` member
+                (e.g. ``AmountSourceEnum.TEMPLATE``).
+
+    Returns:
+        int -- the ``ref.amount_sources.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid AmountSourceEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[AmountSourceEnum][member]

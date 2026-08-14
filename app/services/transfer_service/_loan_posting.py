@@ -9,7 +9,7 @@ settles, reverts, edits, restores, or deletes a loan payment.
 
 Extracted from ``transfer_service`` so that module stays under the 1000-line
 module limit as the loan-posting wiring lands -- the same split that moved the
-ownership loaders into ``_transfer_ownership``.  These helpers are a cohesive,
+ownership loaders into ``_ownership``.  These helpers are a cohesive,
 transfer-service-private cluster (single responsibility: keep the loan's genesis
 ledger in step with a transfer mutation), routing every call through
 :mod:`app.services.loan_posting_service` so ``transfer_service`` itself carries
@@ -38,7 +38,7 @@ from app.services import (
     loan_posting_service,
     loan_recurrence_sync,
 )
-from app.services._transfer_ownership import _get_owned_period
+from app.services.transfer_service._ownership import _get_owned_period
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -182,7 +182,7 @@ def _reject_installment_move_before_loan(
 
     Runs BEFORE any field is applied, so a rejected edit leaves the transfer and
     both shadows untouched -- the same discipline
-    :func:`app.services._transfer_status.apply_status_to_all_three` follows
+    :func:`app.services.transfer_service._status.apply_status_to_all_three` follows
     for an illegal status transition.
 
     Only ``pay_period_id`` / ``due_date`` can move which installment a payment

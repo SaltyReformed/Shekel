@@ -61,19 +61,24 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 
+from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import DerivedPeriod, PayCalendar
+from app.services.recurrence._bounds import BoundReading, end_bound_from_columns
 from app.services.recurrence._occurrence import (
     OccurrencePlacement,
     occurrence_placements,
+    occurrences,
 )
-from app.services.recurrence._frequency import RecurrenceResolutionError
+from app.services.recurrence._frequency import (
+    RecurrenceResolutionError,
+    decode_pattern,
+)
 from app.services.recurrence._resolution import (
     RecurrenceSpec,
     ResolvedRecurrence,
     resolve,
 )
-
 
 @dataclass(frozen=True)
 class RuleReading:
@@ -125,28 +130,115 @@ def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:
     without a partial write: a caller that owns ONE fact about a rule reads
     the spec, replaces that fact, and re-authors the whole value.
 
+    **The DECODE step for a stored ROW is here** (plan step R7b).  The row
+    still names its cadence with a closed pattern set;
+    :func:`~app.services.recurrence._frequency.decode_pattern` turns
+    ``(pattern_id, interval_n)`` back into the ``(interval_n, unit,
+    placement)`` a caller authored.  Its inverse is the write door's
+    ``encode_cadence``, and both read one table, so the round trip is one
+    statement of the mapping rather than two that agree.  Plan step R7c deletes
+    this call together with the columns.
+
+    **It is not the only ``decode_pattern`` call in the application**, and an
+    adversarial review corrected an earlier "here and nowhere else" for saying
+    so: the two form doors and the preview each decode a POSTED id until plan
+    step R7b-2 replaces the picker.  What is single is the MAPPING, not the
+    call site.
+
     Args:
         rule: The rule to read.
 
     Returns:
         The :class:`~app.services.recurrence.RecurrenceSpec` that authored it.
-        Round-trips exactly -- resolution ignores ``interval_n`` for every
-        pattern but ``Every N Periods`` (where the stored value IS the
-        authored one), and re-derives ``offset_periods`` from the start period
-        whenever the rule names one.
+        **Round-trips exactly**, and ``test_recurrence_frequency`` proves it
+        over every authorable cadence rather than by argument: encoding maps a
+        calendar cadence's interval into the pattern's NAME and writes ``1`` to
+        the column, so decoding reads the interval back off the name.
+
+    Raises:
+        RecurrenceResolutionError: When the row names a pattern this
+            application does not model, or carries a non-positive interval --
+            see ``decode_pattern`` -- or carries both closing-bound columns
+            (see :func:`recurrence_spec_with_cadence`).  A caller that is
+            REPLACING the cadence must take
+            :func:`recurrence_spec_with_cadence` instead, which reads no
+            cadence and therefore cannot fail on one.
+    """
+    reading = decode_pattern(rule.pattern_id, rule.interval_n)
+    return recurrence_spec_with_cadence(
+        rule,
+        interval_n=reading.cadence.interval_n,
+        unit=reading.cadence.unit,
+        placement=reading.placement,
+    )
+
+
+def recurrence_spec_with_cadence(
+    rule: RecurrenceRule,
+    *,
+    interval_n: int,
+    unit: RecurrenceUnitEnum,
+    placement: PeriodPlacementEnum,
+) -> RecurrenceSpec:
+    """Read a rule's authored state with a STATED cadence in place of its own.
+
+    The read door for the one caller that OWNS the cadence: the edit form,
+    whose whole job is to state one.  :func:`recurrence_spec` is this function
+    plus a decode, so "everything about a rule except how often it repeats" has
+    one implementation rather than two that agree.
+
+    **Its existence is a defect the two-axis swap would otherwise have
+    introduced, measured against ``origin/dev``.**  An edit form meeting a
+    stored pattern the application no longer models tells the user to choose a
+    cadence before saving (``UNAVAILABLE_PATTERN_MESSAGE``) -- so choosing one
+    IS the documented repair.  Routing that repair through
+    :func:`recurrence_spec` made it read the broken cadence on the way to
+    replacing it, and the read raised: the one action the surface tells the
+    user to take became a 500.  Reading no cadence is what makes the repair
+    structural rather than excepted.  (Plan step R7b-2 changed HOW the form
+    meets that state -- the controls render unset rather than keeping the
+    stored pattern as a trailing option -- and left this function's job
+    unchanged.)
+
+    **``offset_periods`` and ``start_period_id`` stopped being read at plan
+    step R7b-4**, because the spec stopped carrying them.  A recurrence has
+    ONE opening bound and ``start_date`` is it; the cycle phase is derived
+    from that bound rather than read back off the column the write door
+    writes it to.  Reading a derived value back in is what let a rule state
+    its cadence twice.
+
+    Args:
+        rule: The rule to read.  Its ``pattern_id`` and ``interval_n`` are NOT
+            consulted.
+        interval_n: The cadence interval to state.
+        unit: The cadence unit to state.
+        placement: The placement to state.
+
+    Returns:
+        The :class:`~app.services.recurrence.RecurrenceSpec`.
+
+    Raises:
+        RecurrenceResolutionError: The row carries BOTH closing-bound columns,
+            which ``ck_recurrence_rules_single_end_bound`` refuses in the
+            table -- see
+            :func:`~app.services.recurrence.end_bound_from_columns` for why
+            that is refused rather than resolved to one of the two.
     """
     return RecurrenceSpec(
         user_id=rule.user_id,
-        pattern_id=rule.pattern_id,
-        interval_n=rule.interval_n,
-        offset_periods=rule.offset_periods,
+        unit=unit,
+        interval_n=interval_n,
+        placement=placement,
         day_of_month=rule.day_of_month,
         due_day_of_month=rule.due_day_of_month,
         month_of_year=rule.month_of_year,
-        start_period_id=rule.start_period_id,
         start_date=rule.start_date,
-        end_date=rule.end_date,
-        max_occurrences=rule.max_occurrences,
+        # The exclusive arc rejoined into the one value that authored it --
+        # the inverse of ``_authoring._author``'s split, and the only other
+        # place the two columns are seen apart (plan step R7b-3).
+        end_bound=end_bound_from_columns(
+            rule.end_date, rule.max_occurrences,
+        ),
     )
 
 
@@ -297,6 +389,104 @@ def rule_occurrences(
     return read_rule(rule, calendar).placements
 
 
+def has_ended(
+    rule: RecurrenceRule, calendar: PayCalendar, *, on: date,
+) -> bool:
+    """Return whether *rule*'s own closing bound had stopped it before *on*.
+
+    "Is this still a FUTURE obligation" -- the question
+    ``obligations_aggregator`` asks per recurring template to decide whether
+    its monthly equivalent belongs in ``/obligations`` and the ``/savings``
+    emergency-fund baseline.
+
+    **It replaced a direct ``rule.end_date < as_of`` read, which had no answer
+    for a count bound at all** (plan step R7b-3).  That read was correct while
+    a date was the only bound anything wrote; the moment the "Ends" control
+    could author "after N occurrences", a spent count would have gone on
+    inflating both figures forever -- while the SAME row's "Next" column, which
+    walks occurrences, showed blank.  One row disagreeing with itself about
+    whether a commitment is over.
+
+    **It answers the RULE's bound, never the schedule's reach.**  A rule whose
+    remaining occurrences fall past the materialised horizon has not ended; the
+    schedule simply has not been extended to them, and answering "ended" there
+    would silently drop a live commitment out of two money totals.  Each shape
+    states its own test for telling those apart, from the horizon
+    :func:`_bound_reading` carries beside the occurrences.
+
+    **Both BOUNDED shapes answer from whether the rule still owes an
+    occurrence, since plan step R-D33** (developer ruling 2026-08-13, plan
+    ledger row **D33**).  The date shape used to answer the narrower "has the
+    bound date passed", so a yearly bill bounded at year end went on counting
+    for eleven months after its last payment while the same schedule written as
+    a count did not.
+
+    The bound is read from the row's own columns rather than through
+    :func:`recurrence_spec`, so a rule naming a pattern this application no
+    longer models still answers -- and so the UNBOUNDED shape, which is 41 of
+    the 46 live rules, costs no resolution at all.
+
+    Args:
+        rule: The stored recurrence rule.
+        calendar: The OWNER's whole pay-period schedule.  Read by both BOUNDED
+            shapes, whose answers depend on when the occurrences fall.
+        on: The day being asked about, normally today.
+
+    Returns:
+        ``True`` when the rule names no further occurrence on or after *on*
+        by its own bound.
+
+    Raises:
+        RecurrenceResolutionError: The row carries both bound columns, or --
+            for a count bound only -- it cannot be resolved against
+            *calendar*.
+        RecurrenceGenerationError: For a count bound only, when the resolved
+            value names something the occurrence engine cannot walk.  Neither
+            is reachable for the other two shapes, which never resolve; both
+            arrive with the count bound's first writer (plan step R7b-3).
+    """
+    return end_bound_from_columns(
+        rule.end_date, rule.max_occurrences,
+    ).has_closed(
+        on=on,
+        reading=lambda: _bound_reading(rule, calendar),
+    )
+
+
+def _bound_reading(
+    rule: RecurrenceRule, calendar: PayCalendar,
+) -> BoundReading:
+    """Return what *rule*'s closing bound needs to judge it.
+
+    Built only when the bound asks -- see
+    :meth:`~app.services.recurrence.EndBound.has_closed` for why it arrives as
+    a callable.
+
+    **Walked through the HORIZON, not through the bound**, and the difference
+    is what lets a shape tell "this rule is finished" from "the schedule has
+    not been extended to its remaining occurrences".  Walking to the bound
+    would answer the two identically, because a truncated walk and a completed
+    one look the same from the occurrences alone.
+
+    Args:
+        rule: The stored recurrence rule.
+        calendar: The owner's whole pay-period schedule.
+
+    Returns:
+        The :class:`~app.services.recurrence.BoundReading`.  Empty, with a
+        ``None`` horizon, for an owner with no pay periods -- which every shape
+        reads as "still owes" rather than as "names nothing".
+    """
+    horizon = calendar.horizon()
+    resolved = resolved_recurrence(rule, calendar)
+    if resolved is None or horizon is None:
+        return BoundReading(occurrences=(), horizon=horizon)
+    return BoundReading(
+        occurrences=tuple(occurrences(resolved, calendar, through=horizon)),
+        horizon=horizon,
+    )
+
+
 def placed_periods(
     placements: Iterable[OccurrencePlacement],
     *,
@@ -348,9 +538,11 @@ def placed_periods(
 
 __all__ = [
     "RuleReading",
+    "has_ended",
     "placed_periods",
     "read_rule",
     "recurrence_spec",
+    "recurrence_spec_with_cadence",
     "resolved_recurrence",
     "rule_occurrences",
 ]

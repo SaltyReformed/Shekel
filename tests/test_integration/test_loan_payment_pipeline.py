@@ -176,7 +176,6 @@ class TestLoanPaymentPipeline:
                 BalanceContext.build(
                     seed_user["user"].id, as_of=periods[0].start_date,
                 ),
-                periods,
             )
             period_with_transfer = checking_shadows[0].pay_period_id
             assert period_with_transfer in checking_balances

@@ -100,7 +100,7 @@ def _make_template(seed_user, pattern_enum, **rule_kwargs):
         seed_user: The ``seed_user`` fixture dict.
         pattern_enum: The :class:`~app.enums.RecurrencePatternEnum` member.
         **rule_kwargs: Extra columns for the rule (``day_of_month``,
-            ``start_period_id``, ...).
+            ``start_date``, ...).
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`.
@@ -361,7 +361,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             template = _make_template(
                 seed_user,
                 RecurrencePatternEnum.EVERY_PERIOD,
-                start_period_id=seed_periods[5].id,
+                start_date=seed_periods[5].start_date,
             )
             window = seed_periods[2:4]
 
@@ -394,7 +394,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             template = _make_template(
                 seed_user,
                 RecurrencePatternEnum.EVERY_PERIOD,
-                start_period_id=seed_periods[5].id,
+                start_date=seed_periods[5].start_date,
             )
 
             period_population.populate_periods_from_active_templates(
@@ -405,7 +405,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             assert _rows(template, scenario_id) == {}
             assert scenario_id == seed_user["scenario"].id
 
-    def test_the_same_rule_still_generates_from_its_start_period_on(
+    def test_the_same_rule_still_generates_from_its_stated_start_on(
         self, app, db, seed_user, seed_periods,
     ):
         """The bound is honoured, not merely restrictive.
@@ -418,7 +418,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             template = _make_template(
                 seed_user,
                 RecurrencePatternEnum.EVERY_PERIOD,
-                start_period_id=seed_periods[5].id,
+                start_date=seed_periods[5].start_date,
             )
 
             created = recurrence_engine.generate_for_template(

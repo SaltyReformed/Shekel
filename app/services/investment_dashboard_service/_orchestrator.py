@@ -54,7 +54,7 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
         user_id, account, params, all_periods, current_period,
     )
     default_horizon = _compute_default_horizon(user_id, all_periods)
-    # C2: initial chart at the default horizon on the fragment's synthetic basis.
+    # C2: initial chart at the default horizon on the fragment's own basis.
     chart_context = (
         _assemble_chart_context(account, ctx, default_horizon, None)
         if params else _empty_chart_context()
@@ -113,7 +113,6 @@ def compute_balance_hero_cell(user_id: int, account_id: int) -> dict | None:
     balance = _resolve_current_balance(
         account, balance_ctx,
         pay_period_service.get_current_period(user_id),
-        pay_period_service.get_all_periods(user_id),
     )
     return {
         "account": account,

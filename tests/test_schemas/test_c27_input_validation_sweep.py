@@ -110,6 +110,36 @@ class TestMarkDoneSchema:
         result = MarkDoneSchema().load({"actual_amount": "0.00"})
         assert result["actual_amount"] == Decimal("0.00")
 
+    def test_an_actual_amount_the_column_cannot_hold_is_rejected(self):
+        """A figure at or above ``10 ** 10`` is refused at the SCHEMA tier.
+
+        ``budget.transactions.actual_amount`` is ``numeric(12, 2)``, so
+        anything from ``10_000_000_000.00`` up raises
+        ``psycopg2.errors.NumericValueOutOfRange`` at flush.  Nothing
+        catches that, so before plan step X-f2-c3 it was a 500 on both
+        doors this schema serves -- and on the reconcile panel, which
+        commits a whole statement walk at once, it discarded every
+        other tick submitted with it.
+
+        The bound is ``_NON_NEGATIVE_MONETARY``'s ``$10,000,000``,
+        well below the column's ceiling: this is a personal budget,
+        so the tighter bound also catches the extra-digit typo that
+        motivated the shared constant in the first place.
+        """
+        with pytest.raises(ValidationError) as exc:
+            MarkDoneSchema().load({"actual_amount": "10000000000.00"})
+        assert "actual_amount" in exc.value.messages
+
+    def test_the_largest_accepted_actual_amount_still_loads(self):
+        """The control for the bound above: its own maximum is ACCEPTED.
+
+        Without this, tightening the range to something absurd (or to
+        zero) would leave the refusal test green while refusing every
+        real correction.
+        """
+        result = MarkDoneSchema().load({"actual_amount": "10000000.00"})
+        assert result["actual_amount"] == Decimal("10000000.00")
+
     def test_non_numeric_actual_amount_rejected(self):
         """A non-numeric ``actual_amount`` produces Marshmallow's coercion error.
 

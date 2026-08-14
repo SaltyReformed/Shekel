@@ -58,15 +58,8 @@ def _freeze_today_inside_seed_range(monkeypatch):
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.services import account_service, obligations_aggregator
-from app.services.pay_calendar import PayCadence
+from app.services.pay_calendar import calendar_for
 from app.services.auth_service import hash_password
-
-#: The cadence the seed fixtures build and every hand-computed figure in this
-#: file assumes: 14 days between paydays, 26 a year.  An explicit input to the
-#: obligations aggregator since plan step R7a-2a, where it was a hardcoded
-#: ``PAY_PERIODS_PER_YEAR`` that made every monthly equivalent wrong for an
-#: owner who is not paid biweekly.
-_BIWEEKLY = PayCadence(cadence_days=14)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -1527,7 +1520,7 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(), _BIWEEKLY,
+                [tmpl], date.today(), calendar_for(seed_user["user"].id),
             )
             assert result == Decimal("500.00"), (
                 f"Monthly template should contribute exactly $500, got {result}"
@@ -1558,7 +1551,8 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [once_tmpl, recurring_tmpl], date.today(), _BIWEEKLY,
+                [once_tmpl, recurring_tmpl], date.today(),
+                calendar_for(seed_user["user"].id),
             )
             # Only recurring: 100 * 26/12 = 216.67
             expected = (Decimal("100") * Decimal("26") / Decimal("12")).quantize(
@@ -1635,6 +1629,11 @@ class TestEmergencyFundCommittedBaseline:
                     RecurrencePatternEnum.EVERY_PERIOD,
                 ),
                 interval_n=1,
+                # Both closing-bound columns, because the filter reads the
+                # PAIR since plan step R7b-3 -- a stand-in carrying only the
+                # date would not be a stand-in for a rule.
+                end_date=None,
+                max_occurrences=None,
             )
             mock_template = types.SimpleNamespace(
                 default_amount=None,
@@ -1642,7 +1641,8 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             result = obligations_aggregator.committed_monthly(
-                [mock_template], date.today(), _BIWEEKLY,
+                [mock_template], date.today(),
+                calendar_for(seed_user["user"].id),
             )
             assert result == Decimal("0.00"), (
                 f"Expected 0.00 when template has None amount, got {result}"
@@ -1666,7 +1666,7 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(), _BIWEEKLY,
+                [tmpl], date.today(), calendar_for(seed_user["user"].id),
             )
             assert result == Decimal("650.00"), (
                 f"Expected 650.00 for every-2-periods template, got {result}"
@@ -1687,19 +1687,19 @@ class TestEmergencyFundCommittedBaseline:
             db.session.commit()
 
             result = obligations_aggregator.committed_monthly(
-                [tmpl], date.today(), _BIWEEKLY,
+                [tmpl], date.today(), calendar_for(seed_user["user"].id),
             )
             assert result == Decimal("100.00"), (
                 f"Expected 100.00 for annual template, got {result}"
             )
 
     def test_committed_monthly_empty_iterable(
-        self, app,
+        self, app, seed_user,
     ):
         """obligations_aggregator.committed_monthly([], today) returns zero."""
         with app.app_context():
             result = obligations_aggregator.committed_monthly(
-                [], date.today(), _BIWEEKLY,
+                [], date.today(), calendar_for(seed_user["user"].id),
             )
             assert result == Decimal("0.00"), (
                 f"Expected 0.00 for empty iterable, got {result}"

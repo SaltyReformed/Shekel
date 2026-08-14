@@ -35,8 +35,95 @@ import calendar as calendar_module
 from collections.abc import Iterator
 from datetime import date
 
+from app.enums import RecurrenceUnitEnum
+from app.exceptions import ShekelError
+
 #: Months in a year.  The one spelling, for both callers.
 MONTHS_PER_YEAR = 12
+
+#: How many MONTHS one of each calendar unit spans.
+#:
+#: ``PERIOD`` and ``WEEK`` are absent because they are not month-based at all --
+#: :func:`months_per_step` refuses them rather than answering a plausible
+#: number, which is the disposition every other partial function in this
+#: package takes over an enum.
+_MONTHS_PER_UNIT: dict[RecurrenceUnitEnum, int] = {
+    RecurrenceUnitEnum.MONTH: 1,
+    RecurrenceUnitEnum.YEAR: MONTHS_PER_YEAR,
+}
+
+#: The units measured in whole months, and therefore the only ones that fire on
+#: a DAY of the month.
+#:
+#: **The one statement of that class**, and an adversarial review of plan step
+#: R7b-1 is why it is here rather than beside its reader.  ``_resolution``
+#: carried its own ``(MONTH, YEAR)`` tuple; the two were extensionally equal,
+#: nothing made them so, and the ONLY way to reach
+#: :class:`MonthStepError` from either caller was to drive them apart -- which
+#: is what a test had to monkeypatch to exercise the refusal at all.  A guard
+#: whose entire reachability condition is "two hand-written sets disagree" is
+#: the fence this project removes rather than tests.
+#:
+#: Firing on a day of the month is not a second fact about a unit: a cadence
+#: measured in months has a day-of-month coordinate and one measured in
+#: paychecks or weeks does not.
+MONTH_SPANNING_UNITS: tuple[RecurrenceUnitEnum, ...] = tuple(_MONTHS_PER_UNIT)
+
+
+class MonthStepError(ShekelError):
+    """A cadence unit has no reading in months.
+
+    A broken invariant rather than user input: :func:`months_per_step` is asked
+    only for a cadence its caller has already routed to the calendar family, so
+    a unit arriving here without a month span means the router and this table
+    disagree about which units are calendar units.
+
+    **A :class:`~app.exceptions.ShekelError`, and an adversarial review of plan
+    step R7b-1 is why.**  It was a bare ``ValueError``, which put it outside the
+    hierarchy every other refusal in this package raises into
+    (``RecurrenceResolutionError``, ``RecurrenceGenerationError``,
+    ``RecurrenceFrequencyError``) -- so a handler written against that hierarchy
+    would not have caught it.  Both callers also CONVERT it to their own
+    module's error, because each states a different contract about what could
+    not be answered; the base class is what makes a third caller that forgets
+    to convert still fail inside the hierarchy rather than outside it.
+    """
+
+
+def months_per_step(unit: RecurrenceUnitEnum, interval_n: int) -> int:
+    """Return the month stride a ``(interval_n, unit)`` cadence walks in.
+
+    **The ONE producer of that stride, and it had two.**  The anchor derivation
+    (``_resolution._calendar_anchor``) took a ``month_step`` off the pattern
+    table while the occurrence walk (``_occurrence._unbounded``) computed
+    ``interval_n * MONTHS_PER_YEAR`` for the YEAR unit itself -- two spellings
+    of one fact, in the two places whose own docstrings claim to be "the SAME
+    walk seeded differently".  They agreed; nothing made them.
+
+    Both of those callers route to it on a calendar unit and CONVERT the
+    refusal below into their own module's error; see :class:`MonthStepError`.
+
+    Args:
+        unit: The cadence unit.  Must be a calendar unit.
+        interval_n: How many *unit*\\ s pass between occurrences.
+
+    Returns:
+        Months between occurrences -- 3 for a quarterly cadence, 24 for every
+        two years.
+
+    Raises:
+        MonthStepError: When *unit* is not measured in months.
+    """
+    months = _MONTHS_PER_UNIT.get(unit)
+    if months is None:
+        raise MonthStepError(
+            f"recurrence unit {unit!r} has no reading in months, so it has no "
+            f"month stride.  Only the calendar units walk months; a "
+            f"pay-period or weekly cadence reaching this call means the anchor "
+            f"family and the occurrence walk disagree about which units are "
+            f"calendar units."
+        )
+    return months * interval_n
 
 
 def month_ordinal(day: date) -> int:
@@ -103,4 +190,12 @@ def walk_months(
         ordinal += month_step
 
 
-__all__ = ["MONTHS_PER_YEAR", "clamped_day", "month_ordinal", "walk_months"]
+__all__ = [
+    "MONTHS_PER_YEAR",
+    "MONTH_SPANNING_UNITS",
+    "MonthStepError",
+    "clamped_day",
+    "month_ordinal",
+    "months_per_step",
+    "walk_months",
+]

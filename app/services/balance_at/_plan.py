@@ -43,6 +43,7 @@ from decimal import ROUND_CEILING, Decimal
 
 from app.models.account import Account
 from app.services import escrow_calculator, loan_loaders, loan_resolver
+from app.services.cash_ledger import owned_contribution
 from app.services.loan_ledger import (
     confirmed_shadows_through,
     split_payment_cash,
@@ -179,10 +180,22 @@ def _planned_from_shadows(
     """Build the PLANNED tier: one record per projected transfer shadow.
 
     Each projected loan-side income shadow becomes a :class:`PlannedPayment` at
-    its LIVE D3 cash (``live_cash`` override, falling back to the stored
-    ``effective_amount`` for a shadow that needs no override -- a manual payment
-    with no standing extra, or an operator-overridden one, exactly as the checking
-    side reads it).  The rate and escrow are resolved on the installment's DUE
+    its LIVE D3 cash (``live_cash`` override, falling back to the figure the
+    shadow OWNS for a payment that needs no override -- a manual payment with no
+    standing extra, or an operator-overridden one, exactly as the checking side
+    reads it).
+
+    **The fallback is ``owned_contribution`` rather than the amount resolver, and
+    that is a fact about the loan rather than a shortcut** (plan step X-au-c2).
+    A loan-side income shadow's amount resolves THROUGH the loan
+    (``loan_payment_service.live_loan_transfer_amounts``), and the loan resolves
+    through ``load_loan_context`` -> ``get_payment_history``, which reads the
+    amount of every shadow income row on the account -- so asking the resolver
+    here would ask the loan to price the rows its own price is derived from.
+    The accessor asserts what is true today instead, and REFUSES rather than
+    guessing on the day a cutover declares such a row derived.
+
+    The rate and escrow are resolved on the installment's DUE
     date -- the same date the ACTUAL fold and the live-cash derivation key on
     (ruling D5's contract time, finding N-34) -- so the cash a payment carries
     and the escrow its split backs out are the same figure by construction.
@@ -201,7 +214,11 @@ def _planned_from_shadows(
     clamp_floor = fwd.as_of + _ONE_DAY
     for shadow in projected_shadows:
         due = loan_payment_due_date(shadow, fwd.payment_day)
-        cash = live_cash.get(shadow.id, shadow.effective_amount)
+        # ``is None`` and not truthiness: a live cash of ``Decimal("0")`` is a
+        # real answer (a waived payment), and falling through on it would price
+        # the shadow off a column the loan has superseded.
+        live = live_cash.get(shadow.id)
+        cash = owned_contribution(shadow) if live is None else live
         escrow = escrow_calculator.escrow_monthly_as_of(
             fwd.escrow_lines, due,
         )
