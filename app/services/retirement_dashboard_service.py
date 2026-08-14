@@ -305,7 +305,7 @@ def compute_gap_data(
                         retirement_account_projections, settings,
                         salary_profiles, pensions, gap_net_biweekly,
                         pay_cadence, swr, planned_retirement_date,
-                        estimated_tax_rate.
+                        estimated_tax_rate, projection_axis, as_of.
 
         ``pay_cadence`` is published for the same reason ``gap_net_biweekly``
         and ``swr`` are: ``retirement_readiness._net_frame`` re-runs this gap
@@ -337,7 +337,7 @@ def compute_gap_data(
     # falls back to the constant ``employer_params["gross_biweekly"]``).
     # The salary basis is built inline to keep this orchestrator within its
     # local-variable budget.
-    retirement_account_projections = project_retirement_accounts(
+    projected = project_retirement_accounts(
         build_projection_context(
             user_id,
             pay.all_periods,
@@ -349,6 +349,7 @@ def compute_gap_data(
             ),
         )
     )
+    retirement_account_projections = projected.projections
 
     gap_net_biweekly = compute_gap_net_biweekly(
         salary_profiles, planned_retirement_date, pay, pension.salary_by_year,
@@ -398,6 +399,13 @@ def compute_gap_data(
         "swr": swr,
         "planned_retirement_date": planned_retirement_date,
         "estimated_tax_rate": resolve_estimated_tax_rate(inputs.settings),
+        # The AXIS these projections ran over and the CLOCK they ran at, for
+        # the same reason the three keys above are published: the readiness
+        # producer builds two chart series and a countdown off them, and it
+        # used to REBUILD the axis by re-issuing the producer call rather than
+        # being handed the one that was used (plan step C2-e).
+        "projection_axis": projected.axis,
+        "as_of": projected.as_of,
     }
 
 

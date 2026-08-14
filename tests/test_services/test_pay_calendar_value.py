@@ -896,6 +896,177 @@ class TestTheAxisReplacesTheSyntheticProjection:
         assert len(empty.axis(date(2026, 1, 1), date(2027, 1, 1))) == 0
 
 
+class TestTheAxisRefusesARangeItCanOnlyHalfCover:
+    """Ledger row **P23**, ruled 2026-08-14 (developer) at plan step C2-e.
+
+    ``axis`` used to answer a range opening below the owner's first payday by
+    returning the part above it -- silently, with a summary line ("the spans
+    covering ``[first_day, last_day]``") that was false whenever it happened
+    and a ``Returns`` block that covered only the wholly-before case.  A
+    truncated axis and a complete one are indistinguishable in the result, so
+    the refusal is the same argument :meth:`PayCalendar.overlapping` already
+    makes for a CROSSED range, applied to the other end.
+
+    Nothing is projected backwards (ruled 2026-08-10: before an owner's first
+    payday there is no paycheck), so covering the range was never an option --
+    which leaves refusing as the only answer that is not a half-truth.
+    """
+
+    def test_a_range_opening_below_the_first_payday_is_refused(self):
+        """The state P23 measured: 13 days that would be covered by nothing."""
+        cal = calendar()
+        with pytest.raises(PayCalendarError, match="opens before user"):
+            cal.axis(date(2025, 12, 20), date(2026, 3, 1))
+
+    def test_the_refusal_names_the_bound_and_the_days_it_would_drop(self):
+        """The message has to be actionable: which day, and how far short."""
+        cal = calendar()
+        with pytest.raises(PayCalendarError) as raised:
+            cal.axis(date(2025, 12, 20), date(2026, 3, 1))
+        assert "2025-12-20" in str(raised.value)
+        assert "2026-01-02" in str(raised.value)
+        assert "13 day(s)" in str(raised.value)
+
+    def test_opening_exactly_ON_the_first_payday_is_accepted(self):
+        """The firing control: the bound is inclusive, so this is not refused.
+
+        Without it the test above passes against a refusal that fires one day
+        too early and truncates nothing.
+        """
+        cal = calendar()
+        axis = cal.axis(date(2026, 1, 2), date(2026, 3, 1))
+        assert axis[0].start_date == date(2026, 1, 2)
+
+    def test_an_empty_calendar_still_answers_rather_than_refusing(self):
+        """No first payday means no PARTIAL coverage to hide.
+
+        An owner with no paydays at all gets an empty window, which is what
+        :meth:`PayCalendar.saved` answers them too.  The refusal is about a
+        range half-covered, not about a calendar that covers nothing.
+        """
+        empty = PayCalendar.from_paydays([], 14, user_id=2)
+        assert len(empty.axis(date(2020, 1, 1), date(2027, 1, 1))) == 0
+
+    def test_a_crossed_range_is_still_refused_first(self):
+        """The two refusals do not shadow each other."""
+        cal = calendar()
+        with pytest.raises(PayCalendarError, match="ends before it starts"):
+            cal.axis(date(2026, 3, 1), date(2026, 2, 1))
+
+
+class TestTheWindowIsASequence:
+    """``PeriodWindow`` indexes and slices, added at plan step C2-e.
+
+    Its consumers -- the seed read at the axis's opening day, the readiness
+    chart's downsampled points, the growth engine's own tests -- need the i-th
+    period.  Reaching through to :attr:`PeriodWindow.periods` for it is the one
+    move that lets a run of periods escape the type guaranteeing their order
+    and their tiling, so the type does it.
+    """
+
+    def test_an_integer_index_returns_that_period(self):
+        cal = calendar()
+        window = cal.saved()
+        assert window[0] is window.periods[0]
+        assert window[-1] is window.periods[-1]
+
+    def test_the_index_is_the_WINDOWS_ordinal_not_the_calendars(self):
+        """A window is a VIEW: ``[0]`` is where it starts, not the schedule."""
+        window = calendar().window(first_index=2, count=2)
+        assert window[0].period_index == 2
+
+    def test_an_index_past_the_end_raises(self):
+        with pytest.raises(IndexError):
+            calendar().saved()[99]  # pylint: disable=expression-not-assigned
+
+    def test_SLICING_is_refused_outright(self):
+        """No consumer in ``app/`` slices a window, and one slice lied.
+
+        A first cut returned a :class:`PeriodWindow` for a slice and let
+        ``__post_init__`` refuse the stepped ones.  Two adversarial reviews of
+        plan step C2-e landed on it: ``[::2]`` was refused as intended, but
+        ``[::-1]`` TILES, so it passed the contiguity check and came back
+        silently re-sorted into payday order -- a wrong answer to "walk this
+        backwards", given without a word.
+        """
+        window = calendar().saved()
+        for attempt in (slice(None, 2), slice(None, None, 2), slice(None, None, -1)):
+            with pytest.raises(TypeError, match="cannot be sliced"):
+                window[attempt]  # pylint: disable=expression-not-assigned
+
+    def test_reversed_walks_it_backwards(self):
+        """What a caller wanting the whole window in reverse writes instead.
+
+        Free from :meth:`__getitem__` plus :meth:`__len__`, and the reason the
+        slice branch has nothing left to serve.
+        """
+        window = calendar().saved()
+        assert [period.period_id for period in reversed(window)] == [
+            13, 12, 11, 10,
+        ]
+
+
+class TestTheClampedProjectionAxis:
+    """``projection_axis``: ``axis`` with ONE clamp, ruled 2026-08-14.
+
+    The pairing :meth:`PayCalendar.filing_period` already makes against
+    :meth:`PayCalendar.period_starting_on_or_before` -- the strict search
+    refuses or answers, and the TOTAL companion beside it states its clamp in
+    the open.  Every projecting surface calls the companion, which is what lets
+    the strict one refuse at all (ledger row **P23**).
+    """
+
+    def test_a_range_opening_below_the_first_payday_is_RAISED_not_refused(self):
+        """The owner whose first payday has not happened yet.
+
+        An ordinary state: the Generate form asks for "your next (or first)
+        payday", so a read pass whose clock precedes the whole schedule is what
+        a new owner looks like on the day they set it up.
+        """
+        cal = calendar()
+        axis = cal.projection_axis(date(2025, 12, 20), date(2026, 3, 1))
+        assert axis[0].start_date == date(2026, 1, 2)
+        # The firing control: the strict sibling refuses that same range, so
+        # this cannot pass by the clamp having been dropped.
+        with pytest.raises(PayCalendarError, match="opens before user"):
+            cal.axis(date(2025, 12, 20), date(2026, 3, 1))
+
+    def test_a_range_already_inside_the_schedule_is_untouched(self):
+        """The clamp raises nothing it does not have to."""
+        cal = calendar()
+        assert list(cal.projection_axis(date(2026, 1, 16), date(2026, 3, 1))) == (
+            list(cal.axis(date(2026, 1, 16), date(2026, 3, 1)))
+        )
+
+    def test_a_CROSSED_range_is_refused_rather_than_emptied(self):
+        """A caller with its bounds the wrong way round is a defect.
+
+        The distinction the clamp must not swallow: a range the CLAMP empties
+        is a real answer (the /retirement lever page's ``past_horizon``), while
+        a crossed one is a bug.  Folding them together is the hole
+        :meth:`PayCalendar.overlapping` refuses to leave open one level down,
+        and an adversarial code review of this step caught a first cut doing
+        exactly that.
+        """
+        cal = calendar()
+        with pytest.raises(PayCalendarError, match="ends before it starts"):
+            cal.projection_axis(date(2026, 3, 1), date(2026, 2, 1))
+
+    def test_a_last_day_behind_the_first_payday_is_EMPTY(self):
+        """The clamped-empty case, which is an answer and not a refusal."""
+        cal = calendar()
+        assert len(cal.projection_axis(
+            date(2025, 11, 1), date(2025, 12, 1),
+        )) == 0
+
+    def test_an_empty_calendar_yields_an_empty_axis(self):
+        """Nothing to project FROM, so nothing is invented -- and no refusal."""
+        empty = PayCalendar.from_paydays([], 14, user_id=2)
+        assert len(empty.projection_axis(
+            date(2026, 1, 1), date(2027, 1, 1),
+        )) == 0
+
+
 class TestTheRemainingLookupsMovedIntact:
     """What the recurrence arc's calendar already answered, unchanged."""
 

@@ -256,13 +256,10 @@ class TestC24_4ContributionLimitZeroOneMeaning:
         """
         from app.services import growth_engine  # pylint: disable=import-outside-toplevel
         from datetime import date  # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import biweekly_window  # pylint: disable=import-outside-toplevel
 
-        periods = growth_engine.generate_projection_periods(
-            start_date=date(2026, 1, 1),
-            end_date=date(2026, 4, 1),
-        )
-        # Engine returns at least one period so the assertion below
-        # exercises the cap branch.
+        periods = biweekly_window(date(2026, 1, 1), 7)
+        # A non-empty axis, so the assertion below exercises the cap branch.
         assert periods
 
         result = growth_engine.project_balance(

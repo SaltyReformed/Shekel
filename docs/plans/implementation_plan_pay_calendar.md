@@ -4,14 +4,13 @@
 
 **Built:** **C1** (`f9d148fe`), **C2-a** (`3cb3082f`), **C2-b1** (`90f2fbb7`), **C2-b** (both
 leaves, `fe365de1`, which also ticked **C5a** and the recurrence arc's **R-F10**), **C2-c**
-(`b8a72f6c`), **C2-d** (`3e6cd4ec`) and **C3** (both leaves, `7e3fb33b`). What reached `main` and
-production is a MEASUREMENT (`git log --oneline origin/main..dev`,
+(`b8a72f6c`), **C2-d** (`3e6cd4ec`), **C2-e** (`8143c6fe`) and **C3** (both leaves, `7e3fb33b`).
+What reached `main` and production is a MEASUREMENT (`git log --oneline origin/main..dev`,
 `docker inspect shekel-prod-app`); what is ready now is `steps.md`'s order table.
 
-**Both engines read the DERIVED calendar now** -- the recurrence engine since C2-b2, the balance
-seam since C2-c, which DELETED the period-list argument from thirteen entries rather than pointing
-it at a new source. What the remaining leaves move is whatever still asks `pay_period_service`:
-`C2-e` the projection axis, `C2-f` the six `get_*` readers over 66 call sites. Where a stored column
+**Both engines and every forward PROJECTION read the DERIVED calendar now** -- the recurrence engine
+since C2-b2, the balance seam since C2-c, the projections since C2-e. One leaf still asks
+`pay_period_service`: `C2-f`, its six `get_*` readers over 66 call sites. Where a stored column
 disagrees with the derivation both engines believe the derivation; the shapes that can disagree are
 named in `recurrence/_occurrence.py` and section 3, all owned by **C4**.
 
@@ -38,6 +37,8 @@ write refusal and **P33** open. **A cold session starts at section 4**; the shar
 | **How the seam learns WHICH periods to report** | **It READS them; the argument is DELETED. Ruled 2026-08-13 (developer).** All eight callers filled it with one value -- the owner's whole saved set -- so the only thing it could express was a mistake, which is the shape ruling R-Q already removed the override map for. `BalanceContext` carries the calendar, taking the first of `balance:X-i1`'s five inputs early. Rejected: callers slicing the calendar themselves (eight extra loads, and it pushes calendar-loading into routes ahead of `C2-f`), and threading a `PayCalendar` beside the context (a second per-request bundle, which is what the context exists to end) |
 | **A window's two invariants** | **ORDER is DERIVED and CONTIGUITY is CHECKED. Ruled 2026-08-13 (developer).** A window's identity is its period SET, so `__post_init__` sorts and a caller cannot state an order wrongly; contiguity is a property of the input no constructor can compute its way out of, so it is refused. That refusal is P32's first disposition, taken because the second ("`containing` stops answering `None` inside its own span") is what a tiling gives for free and so decides nothing |
 | **`PayCalendarError` reaching a balance page** | **RECORD it, do not build the handler. Ruled 2026-08-13 (developer).** `C2-c` widens the raise from the recurrence and savings surfaces to `/grid` and `/accounts/<id>`, where `app/error_handlers.py` leaves it on the bare 500. The raise is right (a defaulted cadence misreports every horizon); what is missing is a recovery page, which is a ruling of `BaselineMissingError`'s size. Row **P35** carries it and `C4` deletes the fallback that causes it |
+| **The axis below the first payday** | **REFUSE, and clamp in ONE named companion. Ruled 2026-08-14 (developer)**, ledger row **P23**. `axis()` answered a range opening below `opening_bound` with the part above it -- silently, and a short axis is indistinguishable from a complete one, which is the argument `overlapping()` already makes for refusing a CROSSED range. Nothing is projected backwards (the 2026-08-10 ruling), so covering such a range was never an option and refusing is the only answer that is not a half-truth. The owner whose first payday has not happened yet is an ordinary state -- the Generate form asks for "your next (or first) payday" -- so `projection_axis()` sits beside `axis()` as the TOTAL companion every projecting surface calls, exactly as `filing_period` sits beside `period_starting_on_or_before`. Rejected: stating the truncation in the `Returns` block (a value that answers a different question than it was asked, however honestly documented), and projecting backwards (it would attribute money to paychecks that never happened) |
+| **What the projection axis HEAD is** | **Each surface keeps its own, and the SEED follows it. Ruled 2026-08-14 (developer)**, ledger row **P22**. The axis covers the range it is given, so a caller passing the read pass's clock gets the period CONTAINING it -- opening up to a cadence in the past. That is correct wherever the seed is read at `axis[0].start_date - 1`, which `retirement_projection._resolve_seed_balances` already did and which `investment_dashboard_service` was corrected to do. The one surface whose seed CANNOT follow -- the Horizon's asset band, seeded from the figure the net-worth hero shows -- left the axis instead: it carries no contributions, so an axis was only chopping the horizon into pieces the compound formula is indifferent to. Rejected: clipping the axis head to the requested day (a partial period is not a period, and the window type exists to say so), and re-seeding the asset band at the axis head (one balance-seam read per account, and index 0 would stop equalling the hero) |
 | **C2's shape** | **DECOMPOSED into `C2-a`..`C2-f`, the value first with nothing calling it. Ruled 2026-08-10 (developer).** A single commit over 66 call sites cannot be proven against production BEFORE its consumers depend on it, which is exactly the technique that made C1 safe, cannot be reviewed in focus, and cannot be reverted precisely -- and two of the cutovers move money |
 
 ---
@@ -238,10 +239,12 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
 - [x] **C2-d -- the filing cutover.** `3e6cd4ec`. Closed **N-169**. Proof: `filing_period`'s
       docstring and `tests/manual/verify_filing_cutover.py` (1,654 days, 0 disagreements).
 
-- [ ] **C2-e -- the projection axis.** `growth_engine.generate_projection_periods` and
-  `SyntheticPeriod` DELETE; their six call sites take `axis()`. Closes **P7**, **P17**, **P20**,
-  **P21**, **P22**, **P23** -- read all six before starting; three were found AFTER this leaf
-  was written and they change what it owes.
+- [x] **C2-e -- the projection axis.** `8143c6fe`. All six call sites run on
+      `PayCalendar.projection_axis`; `generate_projection_periods` and `SyntheticPeriod` are
+      DELETED. Closed **P17**, **P20**, **P21**, **P22**, **P23**; opened **P40**-**P44**.
+      **P7 is RE-POINTED to C2-f, not ticked** (developer 2026-08-14): its projection half shipped
+      here, the tier its `+$5,427.07` was measured on did not. Proof: `projection_axis`'s docstring
+      and `tests/manual/verify_projection_axis.py` against a production clone.
 
 - [ ] **C2-f -- the readers answer from the calendar.** `pay_period_service`'s six `get_*` (`:213`,
   `:237`, `:260`, `:277`, `:317`, `:336`) resolve against the one value across their 66 call

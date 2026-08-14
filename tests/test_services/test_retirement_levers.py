@@ -22,11 +22,8 @@ from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import account_service, retirement_levers, retirement_readiness
-from app.services.pay_calendar import PayCadence
-from app.services.growth_engine import (
-    generate_projection_periods,
-    project_balance,
-)
+from app.services.pay_calendar import PayCadence, PeriodWindow
+from app.services.growth_engine import project_balance
 from app.services.retirement_levers import (
     _annuity_factor,
     _contribution_outcome,
@@ -38,6 +35,8 @@ from app.services.retirement_levers import (
 )
 from app.utils.dates import add_months
 from app.utils.money import round_money
+
+from tests._test_helpers import biweekly_window
 
 #: 14 days between paydays, 26 a year -- the cadence the seeded scenarios
 #: build and every hand-computed figure here assumes.
@@ -55,13 +54,17 @@ def _fake_baseline(*, required, after_tax_projected):
         funded = (after_tax_projected / required).quantize(Decimal("0.0001"))
         no_needed = False
     return _ProbeResult(
-        month_offset=0,
         retirement_date=date(2046, 6, 1),
         required=required,
         after_tax_projected=after_tax_projected,
         funded_ratio=funded,
         no_savings_needed=no_needed,
         projections=[],
+        # The axis the probe ran over.  These tests grade the outcome MATH
+        # (``_contribution_outcome``), which reads the four money fields and
+        # never the axis; it is supplied because a probe result always carries
+        # one, not because anything here reads it.
+        axis=PeriodWindow(periods=()),
     )
 
 
@@ -85,15 +88,15 @@ class TestAnnuityFactor:
         Every compound factor is (1 + 0)^k = 1, so a $1-per-period stream
         is worth $1 * n at the horizon: AF = n = 5.
         """
-        periods = generate_projection_periods(
-            start_date=date(2030, 1, 1), end_date=date(2030, 3, 11),
-        )
+        periods = biweekly_window(date(2030, 1, 1), 5)
         assert len(periods) == 5
         assert _annuity_factor(periods, Decimal("0")) == Decimal("5")
 
     def test_empty_axis_is_zero(self):
         # No periods -> a contribution stream has nowhere to land: AF = 0.
-        assert _annuity_factor([], Decimal("0.07")) == Decimal("0")
+        assert _annuity_factor(
+            PeriodWindow(periods=()), Decimal("0.07"),
+        ) == Decimal("0")
 
     def test_matches_engine_replay_within_rounding(self):
         """AF * C reproduces an engine run of C per period from a zero start.
@@ -105,9 +108,7 @@ class TestAnnuityFactor:
         half a cent per period), so over n=26 periods the drift is bounded
         by 26 * $0.005 = $0.13.  Assert within double that bound.
         """
-        periods = generate_projection_periods(
-            start_date=date(2030, 1, 2), end_date=date(2030, 12, 31),
-        )
+        periods = biweekly_window(date(2030, 1, 2), 26)
         assert len(periods) == 26
         annual_return = Decimal("0.07")
         contribution = Decimal("100.00")

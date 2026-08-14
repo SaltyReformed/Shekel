@@ -947,20 +947,33 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
 
 
     Driven directly against :func:`_asset_contributions._dated_events` over
-    synthetic periods, because the rule that needs grading -- the reset at a
+    UNSAVED periods, because the rule that needs grading -- the reset at a
     calendar-year boundary -- needs periods spanning New Year, and the seeded
     fixture calendar covers five months.  The walk is pure, so nothing is
-    faked: the periods are the same duck type
-    :func:`~app.services.growth_engine.generate_projection_periods` already
-    produces for the long-horizon charts.
+    faked: these are real :class:`~app.models.pay_period.PayPeriod` instances,
+    just never added to a session.
+
+    **They used to be ``growth_engine.generate_projection_periods`` output**,
+    deleted at plan step C2-e.  A real model row is what this feed takes: it
+    keys its recorded contributions on ``period.id``, which is
+    ``budget.pay_periods.id`` and which the derived calendar deliberately does
+    not carry under that name.  Moving this reader onto the calendar is plan
+    step C2-f's (ledger row **P37**), and when it lands these become windows.
     """
 
     @staticmethod
     def _periods(start, count):
-        """Return *count* biweekly synthetic periods from *start*."""
-        return growth_engine.generate_projection_periods(
-            start, start + timedelta(days=14 * count - 1),
-        )
+        """Return *count* consecutive unsaved 14-day ``PayPeriod`` rows."""
+        return [
+            PayPeriod(
+                id=index + 1,
+                user_id=1,
+                period_index=index,
+                start_date=start + timedelta(days=14 * index),
+                end_date=start + timedelta(days=14 * index + 13),
+            )
+            for index in range(count)
+        ]
 
     def test_the_modelled_amount_is_capped_at_the_remaining_limit(self):
         """A $500 deduction against a $1,200 limit pays 500, 500, 200, 0.

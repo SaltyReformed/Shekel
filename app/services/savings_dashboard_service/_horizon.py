@@ -16,7 +16,7 @@ the P-AC1 ruling fixed on worked real-data examples:
 
 * **Retirement and Investment bands REUSE the /retirement engine** verbatim
   (:func:`app.services.retirement_projection.build_projection_context` plus
-  the ``project_accounts_with_batch`` probe seam over synthetic biweekly
+  the ``project_accounts_with_batch`` probe seam over the OWNER'S OWN pay
   periods to the horizon end), sampled annually -- so the band is the
   engine's own projection (the constant-employer-base path every net-worth
   consumer uses, the ruled oracle), never a parallel model.  See
@@ -25,8 +25,11 @@ the P-AC1 ruling fixed on worked real-data examples:
 * **Asset band** = per-account param growth: a Property compounds at its
   ``annual_appreciation_rate``, an interest account at its ``apy``, and plain
   cash holds flat -- every figure traceable to a parameter the account
-  carries, all through the ONE :func:`app.services.growth_engine.project_balance`
-  compound formula (no parallel math).
+  carries, all through the ONE
+  :func:`app.services.growth_engine.growth_rate_for_days` compound formula (no
+  parallel math).  It compounds straight to each sample date rather than
+  walking the paycheck axis, because it carries no contributions and so has
+  nothing an axis decides -- see :func:`_asset_bands`.
 * **Liability band** = the :mod:`app.services.balance_at` seam's liability view
   (:func:`app.services.balance_at.liability_owed_at_dates`), which owns both
   forward rules -- an amortizing loan follows its resolver schedule, a debt with
@@ -54,6 +57,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.pay_calendar import PeriodWindow
 from app.services.savings_dashboard_service._debt_line import (
     debt_line_loans,
     loan_payoff_outlook,
@@ -68,6 +72,7 @@ from app.services.savings_dashboard_service._net_worth import (
     ZERO,
 )
 from app.services.savings_dashboard_service._types import AccountProjection
+from app.utils.money import round_money
 
 if TYPE_CHECKING:
     from app.services.savings_dashboard_service._types import _DashboardCoreData
@@ -150,16 +155,22 @@ class _HorizonFrame:
         horizon_end: The domain end (a year end); equals ``sample_dates[-1]``.
         sample_dates: The annual sample dates -- ``today`` followed by each
             calendar year end through ``horizon_end`` -- the output columns.
-        axis: The synthetic biweekly period axis
-            (:func:`app.services.growth_engine.generate_projection_periods`)
-            the row-based bands project over and are sampled from; the same
-            axis the /retirement engine generates for this horizon.
+        axis: The OWNER'S OWN paychecks from :attr:`today` to
+            :attr:`horizon_end`, projected past their saved schedule at the
+            cadence they recorded
+            (:meth:`~app.services.balance_at.BalanceContext.projection_axis`).
+            The /retirement engine band projects over it and is sampled from
+            it; the asset bands do not use it at all (see
+            :func:`_asset_bands`).  **It was a SYNTHETIC 14-day axis until
+            plan step C2-e** -- so a monthly-paid owner's retirement band was
+            credited ``365/14`` paycheck contributions a year, ledger row
+            **P20**.
     """
 
     today: date
     horizon_end: date
     sample_dates: list[date]
-    axis: list
+    axis: PeriodWindow
 
 
 def _resolve_horizon_domain(
@@ -243,67 +254,44 @@ def _build_sample_dates(today: date, horizon_end: date) -> list[date]:
     return [today] + [d for d in year_ends if d > today]
 
 
-def _period_id_at(axis: list, target: date) -> int | None:
-    """Return the axis period id whose interval contains *target*.
-
-    The synthetic axis periods tile the calendar without gaps, so the period
-    containing *target* is the last one whose ``start_date`` is on or before
-    it (a *target* past the axis end resolves to the final period).  Kept
-    local because the axis periods are
-    :class:`~app.services.growth_engine.SyntheticPeriod` namedtuples, which
-    carry no ``period_index`` -- **the reason recorded here has always been
-    correct, and only the function it named is gone.**  That was
-    ``loan_ledger.find_period_containing_date``, which dereferenced
-    ``period.period_index`` on both branches and so would have raised
-    ``AttributeError`` on this axis; pay-calendar plan step **C2-d** deleted it.
-
-    This is the SEVENTH implementation of the question ledger row **P6**
-    counts, and plan step **C2-e** retires it together with the synthetic axis
-    it scans, onto
-    :meth:`app.services.pay_calendar.PayCalendar.filing_period` -- which is
-    this rule (the latest period opening on or before the day) with a clamp
-    where this answers ``None``.
-
-    Args:
-        axis: The chronological synthetic period axis.
-        target: The date to locate.
-
-    Returns:
-        The containing period's ``id``, or ``None`` when *target* precedes
-        the first period's start.
-    """
-    chosen = None
-    for period in axis:
-        if period.start_date <= target:
-            chosen = period
-        else:
-            break
-    return chosen.id if chosen is not None else None
-
-
 def _sample_projection(
-    pid_to_balance: dict[int, Decimal],
+    balance_by_index: dict[int, Decimal],
     today_value: Decimal,
     frame: _HorizonFrame,
 ) -> list[Decimal]:
     """Sample a per-axis-period balance map at the annual sample dates.
 
-    The shared sampler for the row-based bands (retirement / investment /
-    asset): the today point is the account's real *today_value* (so the
-    series starts at the hero), and each later point reads the projected
-    end balance of the axis period containing that year end.  An axis period
-    absent from *pid_to_balance* (a non-projecting account, whose engine
-    rows are empty) falls back to *today_value* -- a flat carry.
+    The sampler for the /retirement engine band: the today point is the
+    account's real *today_value* (so the series starts at the hero), and each
+    later point reads the projected end balance of the axis period containing
+    that year end.  An axis period absent from *balance_by_index* (a
+    non-projecting account, whose engine rows are empty) falls back to
+    *today_value* -- a flat carry.
+
+    **Keyed on ``period_index``, and that is not interchangeable with the id**
+    (plan step C2-e, ledger row **P21**).  Every period past the owner's saved
+    horizon is a PROJECTION and carries ``period_id = None`` -- over a 20-year
+    axis that is 471 of 523 periods sharing one key, so an id-keyed map
+    collapses the whole projected tail onto its last entry.  The ordinal is
+    unique across a mixed saved/projected window because the projection
+    continues the sequence.
+
+    **The containment search is the window's own** since the same step.  This
+    module carried a local scan-with-forward-clamp (``_period_id_at``) -- the
+    SEVENTH implementation of "which pay period contains this date" that ledger
+    row **P6** counts, and the one an AST census structurally could not see
+    because it keyed on the containment predicate.  It existed because the
+    synthetic axis periods carried no ordinal to search by; they do now.
 
     These bands are therefore period-granular: a year-end sample reads the
-    biweekly period's END balance (a few days past December 31), where the
-    liability band reads the loan schedule at the exact December 31.  At
+    pay period's END balance (a few days past December 31), where the
+    liability band and the asset bands read the exact December 31.  At
     annual granularity the few-day offset is immaterial to the dollar
     figures, and ``net`` is derived from these SAME sampled band values
     (:func:`_net_series`), so the reconciliation is exact regardless.
 
     Args:
-        pid_to_balance: ``{axis_period_id: Decimal end balance}`` for one
+        balance_by_index: ``{period_index: Decimal end balance}`` for one
             account's projection over ``frame.axis``.
         today_value: The account's real balance today (the index-0 point and
             the flat-carry fallback).
@@ -317,10 +305,10 @@ def _sample_projection(
         if sample_date <= frame.today:
             series.append(today_value)
             continue
-        pid = _period_id_at(frame.axis, sample_date)
+        period = frame.axis.containing(sample_date)
         series.append(
-            pid_to_balance.get(pid, today_value)
-            if pid is not None else today_value
+            today_value if period is None
+            else balance_by_index.get(period.period_index, today_value)
         )
     return series
 
@@ -414,12 +402,12 @@ def _retirement_investment_bands(
             # so this cannot fire; it keeps a mis-typed account out of the
             # asset bands rather than silently mis-banding it.
             continue
-        pid_to_balance = {
-            row.period_id: row.end_balance
+        balance_by_index = {
+            row.period.period_index: row.end_balance
             for row in projection["projection_rows"]
         }
         _add_into(bands[band], _sample_projection(
-            pid_to_balance, projection["current_balance"], frame,
+            balance_by_index, projection["current_balance"], frame,
         ))
     return bands
 
@@ -459,14 +447,32 @@ def _asset_bands(
 
     Every account whose band is in :data:`_PARAM_GROWTH_BANDS` -- the
     asset-side categories the /retirement engine does not own, today ``asset``
-    and the degenerate ``other`` -- is seeded from its
-    real today balance and compounded forward over the horizon axis at its
-    own rate (:func:`_horizon_growth_rate`) through the one
-    :func:`app.services.growth_engine.project_balance` formula: a Property
+    and the degenerate ``other`` -- is seeded from its real today balance and
+    compounded to each sample date at its own rate
+    (:func:`_horizon_growth_rate`) through the codebase's one growth formula
+    (:func:`app.services.growth_engine.growth_rate_for_days`): a Property
     appreciates, an interest account earns its APY, plain cash stays flat.
     Retirement / investment accounts are handled by
     :func:`_retirement_investment_bands`, and loans by
     :func:`_liability_band`, so they are skipped here.
+
+    **This band does not run on the paycheck axis, and plan step C2-e is why.**
+    It compounds a balance over elapsed time and carries NO contributions --
+    it calls the growth engine with ``periodic_contribution`` at its zero
+    default -- so the only thing an axis was supplying was a chopping of the
+    horizon into arbitrary pieces, which the compound formula is indifferent
+    to.  Once the pieces are the owner's REAL paychecks the indifference ends:
+    the period covering today OPENED on their last payday, up to a cadence in
+    the past, while this band's seed is valued TODAY, so every sample would
+    carry growth for days that had already happened.  Seeding a second time at
+    the axis head would cost one balance-seam read per account and would leave
+    index 0 no longer equal to the net-worth hero.  Compounding straight to the
+    sample date removes the question instead of compensating for it, is exact
+    where a per-period walk rounds to the cent ~780 times over a 30-year
+    horizon, and puts this band on the same footing as
+    :func:`_liability_band`, which has always read the exact sample date --
+    including its DAY COUNT, which :func:`_compound_to_samples` takes from the
+    balance seam rather than from the pay-period convention.
 
     Args:
         account_data: The per-account projections (the ``current_balance``
@@ -483,18 +489,65 @@ def _asset_bands(
         band = category_key(ad.category)
         if band not in bands:
             continue
-        today_value = ad.current_balance
         rate = _horizon_growth_rate(account, classify_account(account))
-        rows = growth_engine.project_balance(
-            current_balance=today_value,
-            assumed_annual_return=rate,
-            periods=frame.axis,
-        )
-        pid_to_balance = {row.period_id: row.end_balance for row in rows}
-        _add_into(bands[band], _sample_projection(
-            pid_to_balance, today_value, frame,
+        _add_into(bands[band], _compound_to_samples(
+            ad.current_balance, rate, frame,
         ))
     return bands
+
+
+def _compound_to_samples(
+    today_value: Decimal, annual_rate: Decimal, frame: _HorizonFrame,
+) -> list[Decimal]:
+    """Compound *today_value* from today to each of the frame's sample dates.
+
+    The today point is *today_value* itself (so the series starts at the
+    net-worth hero), and each later point is that balance grown over the days
+    ELAPSED from today to that sample date at *annual_rate*.  A zero rate --
+    plain cash, and an account whose growth parameter row is unset -- holds the
+    balance flat across the whole series, which is what
+    :func:`_horizon_growth_rate` answers ``0`` to mean.
+
+    **The day count is ELAPSED, not INCLUSIVE, and the balance seam is the
+    oracle for that** (adversarial code review, 2026-08-14).  An inclusive count
+    is right for a pay PERIOD, whose seed is valued the day BEFORE it opens; the
+    seed here is valued ON ``frame.today``, so the growth owed from today to
+    ``today + n`` is ``n`` days.  That is exactly what
+    ``balance_at.balance_at(account, ctx, today + n)`` answers -- the modelled
+    fold accrues one :func:`~app.services.growth_engine.growth_rate_for_days`
+    day at a time -- and a first cut of this function used
+    :func:`~app.services.growth_engine.span_return_rate`, whose ``+ 1`` put
+    every plotted point one day of growth ABOVE the figure the seam gives for
+    the same date: ``$43.27`` on a ``$400,000`` Property at 4%, at every sample.
+
+    ``property_equity_chart._value_series`` answers the same question one screen
+    over and still counts INCLUSIVELY.  That divergence is pre-existing -- this
+    step found it rather than caused it -- and is recorded as a finding rather
+    than changed here, which is also why the two are not folded into one
+    producer while they disagree about what they measure.
+
+    Every span is strictly forward (:func:`_build_sample_dates` drops a year end
+    that is not after today), so the ``days >= 1`` refusal below it is a
+    boundary guard rather than a live branch.
+
+    Args:
+        today_value: The account's real balance today.
+        annual_rate: Its annual compound rate as a fraction.
+        frame: The horizon time frame.
+
+    Returns:
+        The account's balance at each of ``frame.sample_dates``.
+    """
+    series: list[Decimal] = []
+    for sample_date in frame.sample_dates:
+        if sample_date <= frame.today:
+            series.append(today_value)
+            continue
+        factor = 1 + growth_engine.growth_rate_for_days(
+            annual_rate, (sample_date - frame.today).days,
+        )
+        series.append(round_money(today_value * factor))
+    return series
 
 
 def _liability_band(
@@ -855,7 +908,10 @@ def build_horizon(
         today=today,
         horizon_end=horizon_end,
         sample_dates=_build_sample_dates(today, horizon_end),
-        axis=growth_engine.generate_projection_periods(today, horizon_end),
+        # The owner's own paychecks, projected past their saved schedule at
+        # the cadence they recorded, read off the pass's memoized calendar so
+        # this render derives it once (plan step C2-e).
+        axis=core.balance_ctx.calendar().projection_axis(today, horizon_end),
     )
 
     composition = _assemble_composition(

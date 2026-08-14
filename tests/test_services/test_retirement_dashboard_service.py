@@ -68,6 +68,13 @@ class TestComputeGapData:
                 # against the SAME cadence rather than resolve a second one.
                 # Its consumer is ``retirement_readiness._net_frame``.
                 "pay_cadence",
+                # Plan step C2-e, and published for the same reason again:
+                # the readiness producer builds two chart series and a
+                # countdown off the axis these projections ran over and the
+                # clock they ran at, and it used to REBUILD the axis by
+                # re-issuing the producer call instead of being handed one.
+                "projection_axis",
+                "as_of",
             }
             assert set(result.keys()) == expected_keys
 
@@ -1175,3 +1182,149 @@ class TestSwrResolverSingleDefinition:
             "E-12):\n"
             + "\n".join(f"  line {n}: {p!r} in {r}" for n, p, r in offending)
         )
+
+
+class TestTheProjectionAxisIsTheOwnersOwnCalendar:
+    """Plan step **C2-e**, ledger rows **P7**, **P17**, **P20**, **P22**.
+
+    ``retirement_projection`` built its axis with
+    ``growth_engine.generate_projection_periods`` -- a fabricated period list
+    with ids numbered from 1 in the same integer namespace as real
+    ``budget.pay_periods.id`` (P17) and a ``cadence_days=14`` default that not
+    one of its six call sites overrode (P20).  The growth engine applies
+    ``periodic_contribution`` -- a per-PAYCHECK figure -- once per axis period,
+    so a monthly-paid owner was credited ``365/14`` contributions a year.
+
+    Measured through the real engine, that is **+83%** over twenty years:
+    ``$1,300,344.92`` shown against a true ``$711,385.70`` on a $50,000 seed at
+    7% with $1,000 a paycheck.  It cost ``$0.00`` on production, whose cadence
+    is 14 -- and ``ck_pay_schedule_cadence_range`` permits 1..365, so a
+    monthly-paid owner is an ordinary user rather than a contrived one.
+    """
+
+    @staticmethod
+    def _axis_for(user_id, horizon):
+        """Return the axis the retirement projection would run over."""
+        # pylint: disable=import-outside-toplevel
+        from app.services import retirement_projection
+        ctx = retirement_projection.build_projection_context(
+            user_id,
+            pay_period_service.get_all_periods(user_id),
+            pay_period_service.get_current_period(user_id),
+            horizon,
+            None,
+            None,
+        )
+        return retirement_projection.resolve_projection_axis(
+            ctx, BalanceContext.build(user_id),
+        )
+
+    def test_a_monthly_owner_gets_monthly_paychecks_not_biweekly_ones(
+        self, app, db, seed_user,
+    ):  # pylint: disable=unused-argument
+        """The P20 count, at the axis rather than in dollars.
+
+        A monthly schedule bracketing today, and a horizon a year out.  Every
+        axis period spans exactly 30 days -- the owner's own cadence, saved and
+        projected alike -- so a year holds 12 paychecks and the engine applies
+        12 contributions.  The deleted producer put 26 periods in the same span
+        whatever the schedule said.
+        """
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from app.services import pay_period_write
+            user_id = seed_user["user"].id
+            as_of = BalanceContext.build(user_id).as_of
+            pay_period_write.record_paydays(
+                user_id=user_id,
+                first_payday=as_of - timedelta(days=150),
+                num_periods=10,
+                cadence_days=30,
+            )
+            db.session.commit()
+
+            axis = self._axis_for(user_id, as_of + timedelta(days=360))
+            assert axis[0].start_date <= as_of <= axis[0].end_date
+            for period in axis:
+                assert (period.end_date - period.start_date).days + 1 == 30, (
+                    "an axis period is not one of this owner's paychecks"
+                )
+            starts = [period.start_date for period in axis]
+            assert all(
+                (later - earlier).days == 30
+                for earlier, later in zip(starts, starts[1:])
+            )
+            # A 360-day horizon at a 30-day cadence: 12 whole paychecks plus
+            # the part-elapsed one the axis opens on.  The firing control is
+            # the count a hardcoded biweekly rhythm would have produced.
+            assert len(axis) == 13
+            assert len(axis) < 26
+
+    def test_the_axis_projects_past_the_saved_schedule_at_that_cadence(
+        self, app, db, seed_user,
+    ):  # pylint: disable=unused-argument
+        """Ledger row **P7**: the calendar ANSWERS past the last payday.
+
+        Past the schedule the periods are projections -- no ``period_id``, so
+        nothing can mistake one for a row a foreign key points at -- and they
+        continue the saved ordinal sequence, which is the key the projection's
+        consumers index on (row **P21**).
+        """
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from app.services import pay_period_write
+            user_id = seed_user["user"].id
+            as_of = BalanceContext.build(user_id).as_of
+            saved = pay_period_write.record_paydays(
+                user_id=user_id,
+                first_payday=as_of - timedelta(days=60),
+                num_periods=4,
+                cadence_days=30,
+            )
+            db.session.commit()
+            last_saved_end = saved[-1].start_date + timedelta(days=29)
+
+            axis = self._axis_for(user_id, last_saved_end + timedelta(days=200))
+            head = [p for p in axis if p.start_date <= last_saved_end]
+            tail = [p for p in axis if p.start_date > last_saved_end]
+
+            assert head and tail
+            assert all(period.period_id is not None for period in head)
+            assert all(period.period_id is None for period in tail)
+            # The ordinals run unbroken ACROSS the boundary, which is what
+            # makes them a usable map key where the id is not.
+            ordinals = [period.period_index for period in axis]
+            assert ordinals == list(range(ordinals[0], ordinals[0] + len(axis)))
+            assert len(set(ordinals)) == len(axis)
+
+    def test_with_no_retirement_date_the_axis_runs_to_the_saved_horizon(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The two arms collapsed into one expression at plan step C2-e.
+
+        The no-horizon arm used to walk the REAL pay periods from the current
+        one while the horizon arm built a synthetic list -- two answers to
+        "when is this owner's next paycheck", only one of which read the
+        schedule.  With no retirement date the axis simply ends at the last day
+        the saved schedule covers, and every period in it is saved.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            axis = self._axis_for(user_id, None)
+            assert axis[-1].end_date == seed_periods[-1].end_date
+            assert all(period.period_id is not None for period in axis)
+
+    def test_a_retirement_date_already_past_gives_an_EMPTY_axis(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The lever page's ``past_horizon`` state, and it must not raise.
+
+        A stored plan date ages; the settings schema refuses a new past date
+        but not an old one that has become past.  No paycheck remains for new
+        money to land in, so the axis is empty and the annuity factor is zero
+        -- which is the state the contribution lever reports rather than
+        solving for.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            assert len(self._axis_for(user_id, date(2020, 1, 1))) == 0

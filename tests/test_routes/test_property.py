@@ -472,7 +472,7 @@ def _series_for(prop, loan, today):
 def _expected_value(market_value, rate, month_date, today):
     """Hand-compute the compounded market value at ``month_date``.
 
-    Mirrors ``growth_engine.period_return_rate`` exactly: the anchor grows by
+    Mirrors ``growth_engine.span_return_rate`` exactly: the anchor grows by
     ``(1 + rate) ** (days / 365)`` where ``days`` is the INCLUSIVE span
     ``(month_date - today).days + 1``, rounded to cents.
     """

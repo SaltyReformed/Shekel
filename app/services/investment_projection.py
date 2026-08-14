@@ -208,7 +208,7 @@ def _annual_cap_averaged(per_period_amount, deduction):
     """Per-period amount evenly throttled to the deduction's annual cap.
 
     The periodic contribution is the growth engine's fallback for periods with
-    no dated ``ContributionRecord`` -- in practice the synthetic long-horizon
+    no dated ``ContributionRecord`` -- in practice the projected long-horizon
     chart, whose generated dates never match a real period.  A capped deduction
     must not contribute more than ``annual_cap`` per calendar year there either,
     so the per-period amount is the cap spread evenly across the year:

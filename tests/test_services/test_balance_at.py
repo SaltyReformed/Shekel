@@ -66,6 +66,7 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
+from app.services.pay_calendar import PayCalendarError
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
@@ -2080,8 +2081,9 @@ class TestOnlyALoanIsNotATransactionSum:
                 # is strictly less than counting it twice.  A dropped row fails
                 # the lower bound and a double count fails the upper.
                 one_period = Decimal("9999.00") * (
-                    1 + growth_engine.period_return_rate(
-                        _configured_annual_rate(acct), periods[5],
+                    1 + growth_engine.span_return_rate(
+                        _configured_annual_rate(acct),
+                        periods[5].start_date, periods[5].end_date,
                     )
                 )
                 landed = after[periods[5].id] - before[acct.id][periods[5].id]
@@ -5681,3 +5683,59 @@ class TestTheReadPassOwnsTheReportingDomain:
             assert balance_at.grid_balance_view(
                 seed_user["account"], ctx,
             ).columns == {}
+
+
+class TestTheReadPassProjectsOverOneCalendar:
+    """Plan step **C2-e**: the FORWARD domain, read off the pass's calendar.
+
+    ``reported_periods`` answers "which periods does the seam REPORT on";
+    :meth:`~app.services.pay_calendar.PayCalendar.projection_axis` answers
+    "which paychecks does a projection RUN over".  Both come off the ONE
+    calendar this pass memoizes, so a render that reports and projects derives
+    the owner's paydays once.
+
+    The clamp and the refusals are the VALUE's, graded purely in
+    ``test_pay_calendar_value.py``.  What needs a database is what these two
+    grade: that a real seeded owner's axis is their real schedule, and that an
+    owner with no paydays gets an empty one rather than a 500.
+    """
+
+    def test_the_axis_is_the_owners_real_schedule_projected_past_it(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Saved where the schedule reaches, projected at the owner's cadence."""
+        with app.app_context():
+            ctx = balance_at.BalanceContext.build(seed_user["user"].id)
+            saved = ctx.reported_periods()
+            axis = ctx.calendar().projection_axis(
+                saved[0].start_date, saved[-1].end_date + timedelta(days=90),
+            )
+            assert list(axis)[:len(saved)] == list(saved)
+            assert all(
+                period.period_id is None for period in list(axis)[len(saved):]
+            )
+            assert axis[-1].end_date >= saved[-1].end_date + timedelta(days=90)
+
+    def test_the_axis_and_the_reported_window_share_one_calendar(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """One derivation per pass, so the two domains cannot disagree."""
+        with app.app_context():
+            ctx = balance_at.BalanceContext.build(seed_user["user"].id)
+            saved = ctx.reported_periods()
+            assert list(ctx.calendar().projection_axis(
+                saved[0].start_date, saved[-1].end_date,
+            )) == list(saved)
+
+    def test_an_owner_with_no_paydays_gets_an_empty_axis(
+        self, app, db, seed_user,
+    ):  # pylint: disable=unused-argument
+        """Nothing to project FROM, so nothing is invented -- and no 500."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
+            db.session.commit()
+            ctx = balance_at.BalanceContext.build(user_id)
+            assert len(ctx.calendar().projection_axis(
+                date(2026, 1, 1), date(2036, 1, 1),
+            )) == 0

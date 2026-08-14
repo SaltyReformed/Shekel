@@ -15,15 +15,22 @@ from app.enums import EmployerContributionTypeEnum
 from app.services.growth_engine import (
     ContributionRecord,
     ProjectedBalance,
-    period_return_rate,
     calculate_employer_contribution,
     cap_contribution_at_limit,
-    generate_projection_periods,
+    growth_rate_for_days,
     project_balance,
     reverse_project_balance,
+    span_return_rate,
     ZERO,
 )
+from app.services.pay_calendar import PayCalendar, PayCalendarError, PeriodWindow
 from app.utils.money import round_money
+
+from tests._test_helpers import (
+    biweekly_window,
+    derived_window,
+    window_head,
+)
 
 
 def _emp_type_id(member):
@@ -38,41 +45,27 @@ def _emp_type_id(member):
     return ref_cache.employer_contribution_type_id(member)
 
 
-# ── Fake Objects ─────────────────────────────────────────────────
-
-
-class FakePeriod:
-    def __init__(self, start_date, end_date, period_id=1):
-        self.id = period_id
-        self.start_date = start_date
-        self.end_date = end_date
-        self.period_index = period_id
-
-
 # ── Fixtures ─────────────────────────────────────────────────────
+#
+# Every axis here is a real ``PeriodWindow`` DERIVED from paydays (plan step
+# C2-e).  These fixtures were hand-built ``FakePeriod`` objects until then --
+# an id, a start and an end, supplied independently -- which is precisely the
+# shape ledger row **P17** records: anything carrying those three attributes
+# satisfied the engine, so a test could hand it a state the pay calendar cannot
+# produce (a gap between two periods, an ordinal out of date order, an end
+# below its own start) and pin behaviour that no owner can ever reach.
 
 
 @pytest.fixture
 def biweekly_periods():
     """10 biweekly periods starting Jan 2, 2026."""
-    start = date(2026, 1, 2)
-    periods = []
-    for i in range(10):
-        s = date.fromordinal(start.toordinal() + i * 14)
-        e = date.fromordinal(s.toordinal() + 13)
-        periods.append(FakePeriod(start_date=s, end_date=e, period_id=i + 1))
-    return periods
+    return biweekly_window(date(2026, 1, 2), 10)
 
 
 @pytest.fixture
 def cross_year_periods():
     """Periods that cross a year boundary (Dec 2026 to Jan 2027)."""
-    return [
-        FakePeriod(date(2026, 12, 5), date(2026, 12, 18), 1),
-        FakePeriod(date(2026, 12, 19), date(2027, 1, 1), 2),
-        FakePeriod(date(2027, 1, 2), date(2027, 1, 15), 3),
-        FakePeriod(date(2027, 1, 16), date(2027, 1, 29), 4),
-    ]
+    return biweekly_window(date(2026, 12, 5), 4)
 
 
 # ── Tests: calculate_employer_contribution ──────────────────────
@@ -187,10 +180,12 @@ class TestSalaryBasisEmployerBase:
         $2000 for 2031, so the 5% flat employer contribution is 50.00 then
         100.00 -- the base tracks the projected salary rather than freezing.
         """
-        periods = [
-            FakePeriod(date(2030, 1, 1), date(2030, 1, 14), 1),
-            FakePeriod(date(2031, 1, 1), date(2031, 1, 14), 2),
-        ]
+        # One period per year at a 365-day cadence, so the two years are
+        # ADJACENT rather than a year apart: a projection axis tiles, and two
+        # periods with a year of nothing between them is a state no calendar
+        # can hold.  Growth is zeroed below, so the span does not enter the
+        # figures under test.
+        periods = derived_window([date(2030, 1, 1), date(2031, 1, 1)], 365)
         gross_by_year = {2030: Decimal("1000.00"), 2031: Decimal("2000.00")}
         result = project_balance(
             current_balance=Decimal("0"),
@@ -209,10 +204,12 @@ class TestSalaryBasisEmployerBase:
         Same two years; the constant $1000 base yields 50.00 both periods
         (1000 * 0.05) -- the behavior every non-retirement consumer keeps.
         """
-        periods = [
-            FakePeriod(date(2030, 1, 1), date(2030, 1, 14), 1),
-            FakePeriod(date(2031, 1, 1), date(2031, 1, 14), 2),
-        ]
+        # One period per year at a 365-day cadence, so the two years are
+        # ADJACENT rather than a year apart: a projection axis tiles, and two
+        # periods with a year of nothing between them is a state no calendar
+        # can hold.  Growth is zeroed below, so the span does not enter the
+        # figures under test.
+        periods = derived_window([date(2030, 1, 1), date(2031, 1, 1)], 365)
         result = project_balance(
             current_balance=Decimal("0"),
             assumed_annual_return=Decimal("0"),
@@ -339,7 +336,7 @@ class TestCapContributionAtLimit:
         chart_projection = project_balance(
             current_balance=Decimal("100000"),
             assumed_annual_return=Decimal("0"),
-            periods=biweekly_periods[:1],
+            periods=window_head(biweekly_periods, 1),
             periodic_contribution=periodic,
             employer_params=employer_params,
             annual_contribution_limit=annual_limit,
@@ -394,7 +391,7 @@ class TestCapContributionAtLimit:
         chart_projection = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0"),
-            periods=biweekly_periods[:1],
+            periods=window_head(biweekly_periods, 1),
             periodic_contribution=Decimal("200"),
             employer_params=employer_params,
             annual_contribution_limit=Decimal("23000"),
@@ -411,11 +408,10 @@ class TestCapContributionAtLimit:
         engine first-period cap must equal the helper's output.
         """
         # remaining = max(7000 - 5000, 0) = 2000; min(1000, 2000) = 1000
-        period = FakePeriod(date(2026, 6, 4), date(2026, 6, 17), 1)
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0"),
-            periods=[period],
+            periods=biweekly_window(date(2026, 6, 4), 1),
             periodic_contribution=Decimal("1000"),
             annual_contribution_limit=Decimal("7000"),
             ytd_contributions_start=Decimal("5000"),
@@ -442,7 +438,7 @@ class TestProjectBalance:
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0.07"),
-            periods=biweekly_periods[:1],
+            periods=window_head(biweekly_periods, 1),
         )
         assert len(result) == 1
         assert result[0].contribution == ZERO
@@ -481,7 +477,7 @@ class TestProjectBalance:
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0.07"),
-            periods=biweekly_periods[:3],
+            periods=window_head(biweekly_periods, 3),
             periodic_contribution=Decimal("500"),
         )
         for pb in result:
@@ -547,7 +543,7 @@ class TestProjectBalance:
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0.07"),
-            periods=biweekly_periods[:1],
+            periods=window_head(biweekly_periods, 1),
             periodic_contribution=Decimal("200"),
             employer_params=employer_params,
         )
@@ -564,7 +560,7 @@ class TestProjectBalance:
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0.07"),
-            periods=biweekly_periods[:1],
+            periods=window_head(biweekly_periods, 1),
             periodic_contribution=Decimal("150"),
             employer_params=employer_params,
         )
@@ -575,7 +571,7 @@ class TestProjectBalance:
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0"),
-            periods=biweekly_periods[:3],
+            periods=window_head(biweekly_periods, 3),
             periodic_contribution=Decimal("500"),
         )
         for pb in result:
@@ -587,7 +583,7 @@ class TestProjectBalance:
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0.07"),
-            periods=biweekly_periods[:3],
+            periods=window_head(biweekly_periods, 3),
             periodic_contribution=ZERO,
         )
         for pb in result:
@@ -626,7 +622,7 @@ class TestProjectBalance:
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("-0.10"),
-            periods=biweekly_periods[:1],
+            periods=window_head(biweekly_periods, 1),
         )
         # (0.90)^(14/365) - 1 ~= -0.0040331; 10000 * -0.0040331 = -40.33
         assert result[0].growth == Decimal("-40.33"), (
@@ -646,7 +642,7 @@ class TestProjectBalance:
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0"),
-            periods=biweekly_periods[:2],
+            periods=window_head(biweekly_periods, 2),
             periodic_contribution=Decimal("3000"),
             employer_params=employer_params,
             annual_contribution_limit=Decimal("5000"),
@@ -675,7 +671,7 @@ class TestProjectBalance:
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0"),
-            periods=biweekly_periods[:3],
+            periods=window_head(biweekly_periods, 3),
             periodic_contribution=Decimal("2500"),
             annual_contribution_limit=Decimal("7000"),
         )
@@ -689,7 +685,7 @@ class TestProjectBalance:
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0"),
-            periods=biweekly_periods[:3],
+            periods=window_head(biweekly_periods, 3),
             periodic_contribution=Decimal("500"),
         )
         assert result[0].ytd_contributions == Decimal("500")
@@ -708,8 +704,8 @@ class TestProjectBalance:
             return = (1.07)^(28/365) - 1; growth = 10000 * return
             quantized HALF_UP -> 52.04
         """
-        short = [FakePeriod(date(2026, 1, 2), date(2026, 1, 8), 1)]
-        long = [FakePeriod(date(2026, 1, 2), date(2026, 1, 29), 1)]
+        short = derived_window([date(2026, 1, 2)], 7)
+        long = derived_window([date(2026, 1, 2)], 28)
 
         short_result = project_balance(
             Decimal("10000"), Decimal("0.07"), short,
@@ -737,8 +733,8 @@ class TestProjectBalance:
           return = (1.07)^(1/365) - 1 ~= 0.00018538; growth = 10000 * return
           quantized HALF_UP -> 1.85
         """
-        same_day = [FakePeriod(date(2026, 1, 2), date(2026, 1, 2), 1)]
-        real_14_day = [FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1)]
+        same_day = derived_window([date(2026, 1, 2)], 1)
+        real_14_day = biweekly_window(date(2026, 1, 2), 1)
 
         same_day_growth = project_balance(
             Decimal("10000"), Decimal("0.07"), same_day,
@@ -757,125 +753,178 @@ class TestProjectBalance:
         # One day of growth is strictly less than a full 14-day period.
         assert same_day_growth < real_growth
 
-    def test_inverted_period_falls_back_to_14_days(self):
-        """An inverted period (end < start) uses the 14-day biweekly fallback.
+    def test_an_inverted_span_is_REFUSED_not_priced_at_14_days(self):
+        """A span that ends before it starts raises instead of returning a rate.
 
-        ``period_return_rate`` sets period_days = (end - start).days + 1 and
-        clamps ``period_days <= 0`` to 14 (a branch shared by both the forward
-        and reverse projections).  Only a genuinely inverted period -- end
-        strictly before start, so period_days <= 0 -- is degenerate now; it
-        must grow exactly as a real 14-day period would.
+        **This test pinned the opposite behaviour until plan step C2-e**, and
+        the change is the developer's (2026-08-14).  The rate function used to
+        clamp a non-positive day count to 14 and hand back the biweekly rate,
+        so a caller whose dates were crossed was given a believable number
+        rather than an error -- and ``$10,000`` at 7% quietly grew ``$25.98``
+        over a span of negative length.  Nothing in ``app/`` can reach it now
+        (every span comes from a ``DerivedPeriod``, whose end is either the next
+        payday minus a day or ``start + cadence - 1``, or from a caller that
+        has already selected strictly forward dates), so the branch was a
+        silent substitution guarding a state that cannot occur.
 
-        Hand calculation for balance 10000 at 7%, 14 days:
-          return = (1.07)^(14/365) - 1; growth = 10000 * return
-          quantized HALF_UP -> 25.98
+        Both doors refuse: the day count directly, and the date pair through
+        it.
         """
-        # end is the day BEFORE start: (end - start).days = -1, so
-        # period_days = -1 + 1 = 0 <= 0 -> fallback to 14.
-        inverted = [FakePeriod(date(2026, 1, 16), date(2026, 1, 15), 1)]
-        real_14_day = [FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1)]
+        with pytest.raises(ValueError, match="at least one calendar day"):
+            span_return_rate(
+                Decimal("0.07"), date(2026, 1, 16), date(2026, 1, 15),
+            )
+        with pytest.raises(ValueError, match="at least one calendar day"):
+            growth_rate_for_days(Decimal("0.07"), 0)
+        with pytest.raises(ValueError, match="at least one calendar day"):
+            growth_rate_for_days(Decimal("0.07"), -1)
 
-        inverted_growth = project_balance(
-            Decimal("10000"), Decimal("0.07"), inverted,
-        )[0].growth
-        real_growth = project_balance(
-            Decimal("10000"), Decimal("0.07"), real_14_day,
-        )[0].growth
+    def test_an_inverted_span_is_unconstructible_as_a_period(self):
+        """The derivation cannot produce the period that used to reach it.
 
-        assert inverted_growth == Decimal("25.98"), (
-            f"Expected 25.98, got {inverted_growth}"
+        The firing control for the test above: a window's periods run
+        ``payday .. next payday - 1`` (and the last ``payday + cadence - 1``),
+        so no payday set derives a period whose end precedes its own start.
+        Two paydays a day apart give the earlier one a ONE-day span, the
+        shortest a calendar can hold, and one day is the smallest the rate
+        function accepts.
+        """
+        window = derived_window([date(2026, 1, 15), date(2026, 1, 16)], 14)
+        assert window[0].start_date == window[0].end_date == date(2026, 1, 15)
+        assert span_return_rate(
+            Decimal("0.07"), window[0].start_date, window[0].end_date,
+        ) == growth_rate_for_days(Decimal("0.07"), 1)
+
+
+class TestTheEngineOverARealAxis:
+    """What the engine does when the axis is the owner's own pay calendar.
+
+    These replace ``TestGenerateProjectionPeriods``, which graded a producer
+    plan step **C2-e** DELETED: ``growth_engine`` fabricated its own periods,
+    numbered from 1 in the same integer namespace as real
+    ``budget.pay_periods.id`` (ledger row **P17**) and hardcoded to a 14-day
+    cadence no call site overrode (row **P20**).  The axis is now
+    ``PayCalendar.axis``, and the properties those tests asserted about the
+    fabricated list -- it tiles, its ordinals run in order, it is empty for a
+    range it cannot cover -- are that value's, graded in
+    ``test_pay_calendar_value.py``.  What belongs HERE is what the ENGINE does
+    with such an axis, which is what these grade.
+    """
+
+    def test_the_engine_emits_one_row_per_axis_period_carrying_that_period(self):
+        """Ledger row **P21**: the row's identity is the period, not a copy of one.
+
+        ``ProjectedBalance`` carried ``period_id: int``, taken off the axis
+        period's ``.id`` -- and every period past an owner's saved horizon is a
+        PROJECTION whose id is ``None``, so a map keyed on it collapsed the
+        whole projected tail onto one entry.  Here every row resolves to a
+        DISTINCT period.
+        """
+        # ONE calendar with two SAVED paydays, asked for an axis that runs
+        # well past its horizon -- the production shape, where the tail is
+        # projected and carries no id.  Here the axis is 25 periods, of which
+        # only the first two are saved.
+        calendar = PayCalendar.from_paydays(
+            [(11, date(2026, 1, 2)), (12, date(2026, 1, 16))], 14, user_id=1,
         )
-        # The fallback maps an inverted period onto the 14-day cadence.
-        assert inverted_growth == real_growth
+        whole = calendar.axis(date(2026, 1, 2), date(2026, 12, 4))
+        result = project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0.07"),
+            periods=whole,
+            periodic_contribution=Decimal("500"),
+        )
+        assert len(result) == len(whole) == 25
+        # 23 of the 25 periods share ``period_id is None``; the ORDINAL is what
+        # stays unique across a mixed saved/projected axis.
+        assert [row.period.period_id for row in result][:3] == [11, 12, None]
+        assert len({row.period.period_id for row in result}) == 3
+        assert len({row.period.period_index for row in result}) == 25
+        assert [row.period for row in result] == list(whole)
 
+    def test_the_projection_replays_against_an_independent_loop(self):
+        """One calendar year of biweekly periods, recomputed outside the engine.
 
-class TestGenerateProjectionPeriods:
-    def test_basic_generation(self):
-        """Generates biweekly periods from start to end."""
-        periods = generate_projection_periods(date(2026, 3, 6), date(2026, 6, 1))
-        assert len(periods) > 0
-        for p in periods:
-            assert hasattr(p, "id")
-            assert hasattr(p, "start_date")
-            assert hasattr(p, "end_date")
-            assert (p.end_date - p.start_date).days == 13  # 14-day period
-
-    def test_period_count_one_year(self):
-        """One year produces ~26-27 biweekly periods."""
-        periods = generate_projection_periods(date(2026, 1, 1), date(2026, 12, 31))
-        # 365 days / 14 = 26.07; last period starts day 365 (Dec 31), so 27
-        assert len(periods) == 27
-
-    def test_period_count_twenty_years(self):
-        """Twenty years produces ~520 biweekly periods."""
-        periods = generate_projection_periods(date(2026, 1, 1), date(2045, 12, 31))
-        assert 519 <= len(periods) <= 523
-
-    def test_sequential_ids(self):
-        """Period IDs are sequential starting from 1."""
-        periods = generate_projection_periods(date(2026, 1, 1), date(2026, 3, 1))
-        for i, p in enumerate(periods):
-            assert p.id == i + 1
-
-    def test_no_gaps_between_periods(self):
-        """Each period starts the day after the previous one ends."""
-        periods = generate_projection_periods(date(2026, 1, 1), date(2026, 6, 1))
-        for i in range(1, len(periods)):
-            expected_start = date.fromordinal(periods[i - 1].end_date.toordinal() + 1)
-            assert periods[i].start_date == expected_start
-
-    def test_end_before_start_returns_empty(self):
-        """End date before start returns empty list."""
-        periods = generate_projection_periods(date(2026, 6, 1), date(2026, 1, 1))
-        assert periods == []
-
-    def test_same_day_returns_one_period(self):
-        """Start equals end still returns one period."""
-        periods = generate_projection_periods(date(2026, 1, 1), date(2026, 1, 1))
-        assert len(periods) == 1
-
-    def test_works_with_project_balance(self):
-        """Synthetic periods integrate with project_balance.
-
-        Independent computation replicates the growth engine formula:
-        For each period (14-day cadence -> 14 INCLUSIVE days per period,
-        period_days = (end - start).days + 1):
+        Independent computation replicating the growth engine formula.
+        For each period (14 INCLUSIVE days,
+        ``period_days = (end - start).days + 1``):
           period_return = (1 + 0.07)^(period_days / 365) - 1
           growth = round_money(balance * period_return)
           balance = balance + growth + 500
-        Starting from balance = 10,000 over 27 periods (one calendar year).
+        Starting from balance = 10,000 over 27 periods.
         """
-        periods = generate_projection_periods(date(2026, 1, 1), date(2026, 12, 31))
+        periods = biweekly_window(date(2026, 1, 1), 27)
         result = project_balance(
             current_balance=Decimal("10000"),
             assumed_annual_return=Decimal("0.07"),
             periods=periods,
             periodic_contribution=Decimal("500"),
         )
-        assert len(result) == len(periods)
+        assert len(result) == len(periods) == 27
 
-        # Independent loop computing the expected final balance.  Mirrors the
-        # engine's inclusive day-count: a 14-day period spans (end-start).days
-        # + 1 = 14 calendar days.
         expected_balance = Decimal("10000")
         for period in periods:
             period_days = (period.end_date - period.start_date).days + 1
-            period_return_rate = (
+            rate = (
                 (1 + Decimal("0.07"))
                 ** (Decimal(str(period_days)) / Decimal("365"))
                 - 1
             )
-            growth = round_money(expected_balance * period_return_rate)
+            growth = round_money(expected_balance * rate)
             expected_balance = expected_balance + growth + Decimal("500")
 
         assert result[-1].end_balance == expected_balance
 
-    def test_year_boundaries_correct_for_limit_reset(self):
-        """Periods crossing year boundary have correct year in start_date."""
-        periods = generate_projection_periods(date(2026, 12, 20), date(2027, 1, 31))
-        years = [p.start_date.year for p in periods]
-        assert 2026 in years
-        assert 2027 in years
+    def test_an_empty_axis_projects_nothing(self):
+        """A window with no periods yields no rows -- an answer, not an error.
+
+        The state a retirement date already in the past produces
+        (``BalanceContext.projection_axis`` returns an empty window for it),
+        and what the lever page's ``past_horizon`` verdict is built on.
+        """
+        assert project_balance(
+            current_balance=Decimal("10000"),
+            assumed_annual_return=Decimal("0.07"),
+            periods=PeriodWindow(periods=()),
+            periodic_contribution=Decimal("500"),
+        ) == []
+
+    def test_the_owners_cadence_decides_how_many_contributions_a_year(self):
+        """Ledger row **P20**, priced at ``$588,959.22`` over twenty years.
+
+        The deleted producer applied ``periodic_contribution`` -- a per-PAYCHECK
+        figure -- once per 14-day period whatever the owner's real cadence, so
+        a monthly-paid owner was credited ``365/14`` contributions a year
+        instead of 12.  With the axis derived from their own paydays the count
+        is theirs: at 0% return the year's contributions are exactly
+        ``periodic * len(axis)``, and the two cadences differ by more than a
+        factor of two.
+        """
+        monthly = derived_window(
+            [date(2026, 1, 1) + timedelta(days=30 * step) for step in range(12)],
+            30,
+        )
+        biweekly = biweekly_window(date(2026, 1, 1), 26)
+        monthly_end = project_balance(
+            current_balance=ZERO,
+            assumed_annual_return=ZERO,
+            periods=monthly,
+            periodic_contribution=Decimal("1000"),
+        )[-1].end_balance
+        biweekly_end = project_balance(
+            current_balance=ZERO,
+            assumed_annual_return=ZERO,
+            periods=biweekly,
+            periodic_contribution=Decimal("1000"),
+        )[-1].end_balance
+        assert monthly_end == Decimal("12000.00")
+        assert biweekly_end == Decimal("26000.00")
+
+    def test_year_boundaries_are_read_off_the_periods_own_start(self):
+        """An axis crossing New Year carries both years, which resets the limit."""
+        periods = biweekly_window(date(2026, 12, 20), 4)
+        years = {period.start_date.year for period in periods}
+        assert years == {2026, 2027}
 
 
 # ── Tests: Contribution-Aware Projection ──────────────────────
@@ -895,7 +944,7 @@ class TestContributionAwareProjection:
         kwargs = {
             "current_balance": Decimal("10000"),
             "assumed_annual_return": Decimal("0.07"),
-            "periods": biweekly_periods[:3],
+            "periods": window_head(biweekly_periods, 3),
             "periodic_contribution": Decimal("500"),
         }
         baseline = project_balance(**kwargs)
@@ -907,7 +956,7 @@ class TestContributionAwareProjection:
         kwargs = {
             "current_balance": Decimal("10000"),
             "assumed_annual_return": Decimal("0.07"),
-            "periods": biweekly_periods[:3],
+            "periods": window_head(biweekly_periods, 3),
             "periodic_contribution": Decimal("500"),
         }
         baseline = project_balance(**kwargs, contributions=None)
@@ -922,7 +971,7 @@ class TestContributionAwareProjection:
         P1: +$500 = $10,800
         P2: +$200 = $11,000
         """
-        periods = biweekly_periods[:3]
+        periods = window_head(biweekly_periods, 3)
         contributions = [
             ContributionRecord(date(2026, 1, 2), Decimal("300"), True),
             ContributionRecord(date(2026, 1, 16), Decimal("500"), True),
@@ -952,7 +1001,7 @@ class TestContributionAwareProjection:
         P3: +$200 (fallback) = $11,100
         P4: +$200 (fallback) = $11,300
         """
-        periods = biweekly_periods[:5]
+        periods = window_head(biweekly_periods, 5)
         contributions = [
             ContributionRecord(date(2026, 1, 2), Decimal("300"), True),
             ContributionRecord(date(2026, 1, 16), Decimal("500"), True),
@@ -980,7 +1029,7 @@ class TestContributionAwareProjection:
         P1: +$0 (explicit zero, NOT fallback) = $10,500
         P2: +$500 (record) = $11,000
         """
-        periods = biweekly_periods[:3]
+        periods = window_head(biweekly_periods, 3)
         contributions = [
             ContributionRecord(date(2026, 1, 2), Decimal("500"), True),
             ContributionRecord(date(2026, 1, 16), Decimal("0"), True),
@@ -1007,7 +1056,7 @@ class TestContributionAwareProjection:
         P3: min($300, $100) = $100, remaining=$0
         Total: $1,000.
         """
-        periods = biweekly_periods[:4]
+        periods = window_head(biweekly_periods, 4)
         contributions = [
             ContributionRecord(p.start_date, Decimal("300"), True)
             for p in periods
@@ -1062,7 +1111,7 @@ class TestContributionAwareProjection:
         Record contribution=$100 -- match=min($100, $150) * 1.0 = $100.
         Static periodic=$150 would give match=$150 -- must NOT be used.
         """
-        periods = biweekly_periods[:1]
+        periods = window_head(biweekly_periods, 1)
         employer_params = {
             "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
             "match_percentage": Decimal("1.0"),
@@ -1092,7 +1141,7 @@ class TestContributionAwareProjection:
         P1: $200 -- match=min($200, $150) = $150
         P2: $50 -- match=$50
         """
-        periods = biweekly_periods[:3]
+        periods = window_head(biweekly_periods, 3)
         employer_params = {
             "type_id": _emp_type_id(EmployerContributionTypeEnum.MATCH),
             "match_percentage": Decimal("1.0"),
@@ -1117,7 +1166,7 @@ class TestContributionAwareProjection:
 
     def test_is_confirmed_propagated(self, biweekly_periods):
         """is_confirmed flag matches input records; fallback periods are False."""
-        periods = biweekly_periods[:3]
+        periods = window_head(biweekly_periods, 3)
         contributions = [
             ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
             ContributionRecord(date(2026, 1, 16), Decimal("200"), False),
@@ -1136,7 +1185,7 @@ class TestContributionAwareProjection:
 
     def test_is_confirmed_all_confirmed_same_date(self, biweekly_periods):
         """Multiple confirmed contributions on same date -- is_confirmed=True."""
-        periods = biweekly_periods[:1]
+        periods = window_head(biweekly_periods, 1)
         contributions = [
             ContributionRecord(date(2026, 1, 2), Decimal("200"), True),
             ContributionRecord(date(2026, 1, 2), Decimal("300"), True),
@@ -1152,7 +1201,7 @@ class TestContributionAwareProjection:
 
     def test_is_confirmed_mixed_same_date(self, biweekly_periods):
         """Confirmed + projected on same date -- is_confirmed=False."""
-        periods = biweekly_periods[:1]
+        periods = window_head(biweekly_periods, 1)
         contributions = [
             ContributionRecord(date(2026, 1, 2), Decimal("200"), True),
             ContributionRecord(date(2026, 1, 2), Decimal("300"), False),
@@ -1172,7 +1221,7 @@ class TestContributionAwareProjection:
         P0: $200 + $300 = $500.
         End: $10,000 + $500 = $10,500.
         """
-        periods = biweekly_periods[:1]
+        periods = window_head(biweekly_periods, 1)
         contributions = [
             ContributionRecord(date(2026, 1, 2), Decimal("200"), True),
             ContributionRecord(date(2026, 1, 2), Decimal("300"), True),
@@ -1188,7 +1237,7 @@ class TestContributionAwareProjection:
 
     def test_unsorted_contributions_handled(self, biweekly_periods):
         """Non-chronological contributions produce the same result as sorted."""
-        periods = biweekly_periods[:3]
+        periods = window_head(biweekly_periods, 3)
         sorted_contribs = [
             ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
             ContributionRecord(date(2026, 1, 16), Decimal("200"), True),
@@ -1228,7 +1277,7 @@ class TestContributionAwareProjection:
         P1: $200 -- ytd=$300
         P2: $300 -- ytd=$600
         """
-        periods = biweekly_periods[:3]
+        periods = window_head(biweekly_periods, 3)
         contributions = [
             ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
             ContributionRecord(date(2026, 1, 16), Decimal("200"), True),
@@ -1253,7 +1302,7 @@ class TestContributionAwareProjection:
         P1: $200 -- remaining=$700
         P2: $300 -- remaining=$400
         """
-        periods = biweekly_periods[:3]
+        periods = window_head(biweekly_periods, 3)
         contributions = [
             ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
             ContributionRecord(date(2026, 1, 16), Decimal("200"), True),
@@ -1278,7 +1327,7 @@ class TestContributionAwareProjection:
         P1: +$200 = $10,300
         P2: +$300 = $10,600
         """
-        periods = biweekly_periods[:3]
+        periods = window_head(biweekly_periods, 3)
         contributions = [
             ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
             ContributionRecord(date(2026, 1, 16), Decimal("200"), True),
@@ -1298,7 +1347,7 @@ class TestContributionAwareProjection:
 
     def test_no_employer_params_with_contributions(self, biweekly_periods):
         """employer_params=None with contributions: no employer match applied."""
-        periods = biweekly_periods[:3]
+        periods = window_head(biweekly_periods, 3)
         contributions = [
             ContributionRecord(date(2026, 1, 2), Decimal("100"), True),
             ContributionRecord(date(2026, 1, 16), Decimal("200"), True),
@@ -1328,13 +1377,7 @@ class TestReverseProjectBalance:
         The reverse of the forward formula should recover the starting
         balance within rounding tolerance ($0.01 per period).
         """
-        periods = [
-            FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1),
-            FakePeriod(date(2026, 1, 16), date(2026, 1, 29), 2),
-            FakePeriod(date(2026, 1, 30), date(2026, 2, 12), 3),
-            FakePeriod(date(2026, 2, 13), date(2026, 2, 26), 4),
-            FakePeriod(date(2026, 2, 27), date(2026, 3, 12), 5),
-        ]
+        periods = biweekly_window(date(2026, 1, 2), 5)
         start_balance = Decimal("10000.00")
         annual_return = Decimal("0.07")
         contribution = Decimal("200.00")
@@ -1371,11 +1414,7 @@ class TestReverseProjectBalance:
         Employer match complicates the formula; verify the inverse
         still works.
         """
-        periods = [
-            FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1),
-            FakePeriod(date(2026, 1, 16), date(2026, 1, 29), 2),
-            FakePeriod(date(2026, 1, 30), date(2026, 2, 12), 3),
-        ]
+        periods = biweekly_window(date(2026, 1, 2), 3)
         start_balance = Decimal("25000.00")
         annual_return = Decimal("0.105")
         contribution = Decimal("300.00")
@@ -1412,10 +1451,7 @@ class TestReverseProjectBalance:
         No growth to reverse -- each period's start is the end minus
         the contribution and employer amounts.
         """
-        periods = [
-            FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1),
-            FakePeriod(date(2026, 1, 16), date(2026, 1, 29), 2),
-        ]
+        periods = biweekly_window(date(2026, 1, 2), 2)
         anchor_balance = Decimal("1000.00")
         contribution = Decimal("200.00")
 
@@ -1439,33 +1475,19 @@ class TestReverseProjectBalance:
 
     def test_returns_forward_chronological_order(self):
         """Result list is in forward chronological order."""
-        periods = [
-            FakePeriod(date(2026, 1, 2), date(2026, 1, 15), 1),
-            FakePeriod(date(2026, 1, 16), date(2026, 1, 29), 2),
-            FakePeriod(date(2026, 1, 30), date(2026, 2, 12), 3),
-        ]
+        periods = biweekly_window(date(2026, 1, 2), 3)
         reversed_proj = reverse_project_balance(
             anchor_balance=Decimal("5000.00"),
             assumed_annual_return=Decimal("0.07"),
             periods=periods,
         )
         assert len(reversed_proj) == 3
-        assert reversed_proj[0].period_id == 1
-        assert reversed_proj[1].period_id == 2
-        assert reversed_proj[2].period_id == 3
+        assert [row.period for row in reversed_proj] == list(periods)
 
     @staticmethod
     def _year_2026_periods(count):
         """Build ``count`` consecutive 14-day periods all starting in 2026."""
-        base = date(2026, 1, 2).toordinal()
-        return [
-            FakePeriod(
-                date.fromordinal(base + i * 14),
-                date.fromordinal(base + i * 14 + 13),
-                i + 1,
-            )
-            for i in range(count)
-        ]
+        return biweekly_window(date(2026, 1, 2), count)
 
     def test_roundtrip_with_binding_annual_limit(self):
         """DH-#28: reverse caps each period like forward, so a maxed-out
@@ -1617,13 +1639,7 @@ class TestReverseProjectBalance:
         Forward end = 20000 + (1500+1500+0+1500+1500) = 26000.00.
         Reverse recovers 20000.00 exactly, proving the reset is replayed.
         """
-        periods = [
-            FakePeriod(date(2026, 12, 1), date(2026, 12, 14), 1),
-            FakePeriod(date(2026, 12, 15), date(2026, 12, 28), 2),
-            FakePeriod(date(2026, 12, 29), date(2027, 1, 11), 3),
-            FakePeriod(date(2027, 1, 12), date(2027, 1, 25), 4),
-            FakePeriod(date(2027, 1, 26), date(2027, 2, 8), 5),
-        ]
+        periods = biweekly_window(date(2026, 12, 1), 5)
         start_balance = Decimal("20000.00")
         limit = Decimal("3000.00")
         periodic = Decimal("1500.00")
@@ -1708,23 +1724,26 @@ class TestInclusiveDayCountRegression:
         """A 14-inclusive-day period compounds (1 + r)^(14/365) - 1 exactly.
 
         period runs Jan 1 .. Jan 14 (start + 13) = 14 inclusive calendar
-        days, so period_return_rate must use 14/365 -- NOT the old 13/365.
+        days, so span_return_rate must use 14/365 -- NOT the old 13/365.
         The rate is a pure (unrounded) Decimal, so this is an exact equality
         with zero tolerance.
         """
         r = Decimal("0.105")
-        period = FakePeriod(date(2027, 1, 1), date(2027, 1, 14), 1)
+        period = biweekly_window(date(2027, 1, 1), 1)[0]
         # 14 inclusive days: (Jan 14 - Jan 1).days + 1 == 13 + 1 == 14.
         assert (period.end_date - period.start_date).days + 1 == 14
 
         expected = (Decimal("1") + r) ** (Decimal("14") / Decimal("365")) - Decimal("1")
-        assert period_return_rate(r, period) == expected
+        actual = span_return_rate(r, period.start_date, period.end_date)
+        assert actual == expected
+        # The date door and the day-count door are the same formula.
+        assert actual == growth_rate_for_days(r, 14)
 
         # The corrected rate is strictly larger than the old 13/365 rate the
         # exclusive count produced, so a revert cannot pass silently.
         old_buggy = (Decimal("1") + r) ** (Decimal("13") / Decimal("365")) - Decimal("1")
-        assert period_return_rate(r, period) != old_buggy
-        assert period_return_rate(r, period) > old_buggy
+        assert actual != old_buggy
+        assert actual > old_buggy
 
     def test_same_day_period_counts_one_day(self):
         """A same-day period (start == end) compounds exactly 1/365.
@@ -1733,9 +1752,11 @@ class TestInclusiveDayCountRegression:
         day of growth (it does not fall back to the 14-day cadence).
         """
         r = Decimal("0.105")
-        same_day = FakePeriod(date(2027, 6, 1), date(2027, 6, 1), 1)
+        same_day = derived_window([date(2027, 6, 1)], 1)[0]
         expected = (Decimal("1") + r) ** (Decimal("1") / Decimal("365")) - Decimal("1")
-        assert period_return_rate(r, same_day) == expected
+        assert span_return_rate(
+            r, same_day.start_date, same_day.end_date,
+        ) == expected
 
     def test_consecutive_periods_over_one_year_compound_to_annual_rate(self):
         """Gap-free periods tiling exactly one year compound to (1 + r).
@@ -1757,14 +1778,12 @@ class TestInclusiveDayCountRegression:
         year_start = date(2027, 1, 1)
         year_end = date(2027, 12, 31)  # 2027 is not a leap year: 365 days.
 
-        periods = []
-        cur = year_start
-        idx = 1
-        while cur <= year_end:
-            end = min(cur + timedelta(days=13), year_end)
-            periods.append(FakePeriod(cur, end, idx))
-            cur = end + timedelta(days=1)
-            idx += 1
+        # Twenty-six paydays every 14 days, then one more on the year's last
+        # day -- so the derivation gives period 26 its 14-day span and the
+        # final period the single day left over, with no gap between them.
+        paydays = [year_start + timedelta(days=14 * step) for step in range(26)]
+        paydays.append(year_end)
+        periods = derived_window(paydays, 1)
 
         # Inclusive spans tile the year with no gap: they sum to 365, and
         # each period starts the day after the previous one ends.
@@ -1772,12 +1791,15 @@ class TestInclusiveDayCountRegression:
             (p.end_date - p.start_date).days + 1 for p in periods
         )
         assert total_days == 365
-        for prev, nxt in zip(periods, periods[1:]):
+        ordered = list(periods)
+        for prev, nxt in zip(ordered, ordered[1:]):
             assert nxt.start_date == prev.end_date + timedelta(days=1)
 
         product = Decimal("1")
         for period in periods:
-            product *= Decimal("1") + period_return_rate(r, period)
+            product *= Decimal("1") + span_return_rate(
+                r, period.start_date, period.end_date,
+            )
 
         quantum = Decimal("1E-12")
         assert product.quantize(quantum) == (Decimal("1") + r).quantize(quantum)
@@ -1785,7 +1807,7 @@ class TestInclusiveDayCountRegression:
     def test_canonical_520_period_reproduction_corrected(self):
         """The documented 520-period reproduction ends at the corrected value.
 
-        generate_projection_periods(2026-07-02, 2046-06-01) yields 520 biweekly
+        A biweekly axis opening 2026-07-02 and running to 2046-06-01 is 520
         periods.  Projecting 27332.33 at 10.5% with no contributions:
 
           corrected: end = 200237.80
@@ -1799,7 +1821,8 @@ class TestInclusiveDayCountRegression:
         cents under the single-shot theoretical 27332.33*(1.105)^(520*14/365)
         = 200237.86 (accumulated per-period rounding over 520 periods).
         """
-        periods = generate_projection_periods(date(2026, 7, 2), date(2046, 6, 1))
+        periods = biweekly_window(date(2026, 7, 2), 520)
+        assert periods[-1].start_date <= date(2046, 6, 1)
         assert len(periods) == 520
 
         result = project_balance(

@@ -40,14 +40,6 @@ from app.services.projection_inputs import (
     load_shadow_income_contributions_for_account,
 )
 
-# A period-like row in a projection: a real ``PayPeriod`` (the dashboard's
-# future periods) or a synthetic horizon period from
-# ``growth_engine.generate_projection_periods`` (the chart fragment).  Both
-# expose ``.id`` / ``.start_date`` / ``.end_date`` -- all the projection
-# primitives read off a period.
-_PeriodList = list[PayPeriod | growth_engine.SyntheticPeriod]
-
-
 @dataclass(frozen=True)
 class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
     """Every per-account input the dashboard + growth-chart both consume.
@@ -208,7 +200,7 @@ def _resolve_current_balance(
     return balance_at.balance_map(account, balance_ctx)[current_period.id]
 
 
-def _projection_start(current_period) -> date:
+def _projection_start(balance_ctx: BalanceContext) -> date:
     """Return the day the projection's window opens (ruling R-AF).
 
     The day AFTER the history line's last valued point.
@@ -227,23 +219,44 @@ def _projection_start(current_period) -> date:
     records over the near horizon instead of falling back to a flat average
     (the near half of finding N-79).
 
+    **It reads the CALENDAR rather than the current period's stored
+    ``end_date``** (plan step C2-e), and that is a correctness fix rather than
+    tidying.  It was ``current_period.end_date + 1``, falling back to
+    ``date.today()`` when no saved period covered today -- and once the axis
+    became the owner's real paychecks, that fallback put the window's first
+    period up to a CADENCE before the day the seed is valued on, so the engine
+    re-grew days ``balance_at`` had already grown.  Measured by an adversarial
+    code review on a lapsed schedule: **$57.24** of phantom growth at the head
+    of a $102,686.18 balance, compounded over the whole slider horizon.
+    :meth:`~app.services.pay_calendar.PayCalendar.span_containing` is TOTAL past
+    the schedule, so the projected period covering the clock answers where the
+    saved set has run out, and the window opens the day after IT ends -- which
+    is where the axis opens, by construction rather than by two derivations
+    agreeing.
+
     Args:
-        current_period: The current :class:`~app.models.pay_period.PayPeriod`,
-            or ``None``.
+        balance_ctx: The read pass's :class:`BalanceContext` -- its ``as_of`` is
+            the clock and its memoized calendar the paydays, so this issues no
+            query.
 
     Returns:
-        The current period's ``end_date`` plus one day, or today when there is
-        no current period -- there is then no history line to continue.
+        The day after the span covering ``as_of`` ends; the owner's first payday
+        when ``as_of`` precedes their whole schedule (nothing is projected
+        backwards, so that is the earliest day a projection can open); and
+        ``as_of`` itself for an owner with no paydays at all, whose axis is
+        empty and whose chart is the empty one.
     """
-    if current_period is None:
-        return date.today()
-    return current_period.end_date + timedelta(days=1)
+    calendar = balance_ctx.calendar()
+    covering = calendar.span_containing(balance_ctx.as_of)
+    if covering is not None:
+        return covering.end_date + timedelta(days=1)
+    opening = calendar.opening_bound()
+    return opening if opening is not None else balance_ctx.as_of
 
 
 def _resolve_seed_balance(
     account: Account,
     balance_ctx: BalanceContext,
-    current_period,
 ) -> Decimal:
     """Return the balance the forward growth projection seeds from.
 
@@ -263,7 +276,6 @@ def _resolve_seed_balance(
     Args:
         account: The investment account.
         balance_ctx: The read pass's ``BalanceContext``.
-        current_period: The current pay period, or ``None``.
 
     Returns:
         The seed balance, always from the seam.  It used to fall back to
@@ -277,12 +289,11 @@ def _resolve_seed_balance(
     """
     return balance_at.balance_at(
         account, balance_ctx,
-        _projection_start(current_period) - timedelta(days=1),
+        _projection_start(balance_ctx) - timedelta(days=1),
     )
 
 
-def _projection_ytd(inputs: InvestmentInputs, projection_start: date,
-                    current_period) -> Decimal:
+def _projection_ytd(inputs: InvestmentInputs) -> Decimal:
     """Return the YTD contribution the growth engine's limit walk starts from.
 
     The annual limit is consumed by contributions the engine does NOT project
@@ -292,7 +303,7 @@ def _projection_ytd(inputs: InvestmentInputs, projection_start: date,
     depends on whether the window contains the current period.
 
     **On this surface it does not** (ruling R-AF), and that is a change.  The
-    axis used to open at ``date.today()``, so its first synthetic period stood
+    axis used to open at ``date.today()``, so its first fabricated period stood
     in for the rest of the current period and the engine applied that period's
     contribution itself -- which is precisely why the seed excluded it
     (deep-quality-hunt #10).  The axis now opens the day AFTER the current
@@ -308,19 +319,25 @@ def _projection_ytd(inputs: InvestmentInputs, projection_start: date,
     ``project_balance`` call: two call sites picking between two YTD fields is
     the argument-a-caller-can-get-wrong shape the balance plan's Section 8 rules
     a defect rather than a contract.  ``retirement_projection`` keeps the
-    strictly-before seed and is right to: both of its axes open at or inside the
-    current period, so its engine does apply that period.
+    strictly-before seed and is right to: its axis opens at or inside the
+    period covering the clock, so its engine does apply that period.
+
+    **The BRANCH went at plan step C2-e, because it could no longer answer
+    anything.**  It read ``projection_start <= current_period.end_date`` -- the
+    STORED column -- to ask whether the window contained the current period,
+    and :func:`_projection_start` now derives the window's opening day from the
+    calendar as the day after the span covering the clock ENDS, so the answer is
+    structurally no.  Its other arm, "there is no current period", was a no-op:
+    ``investment_projection`` returns ``ZERO`` for BOTH totals in that state, so
+    the two branches returned the same figure.  A branch that cannot change the
+    answer is one ``CLAUDE.md`` rule 1 forbids shipping.
 
     Args:
         inputs: The account's :class:`InvestmentInputs`.
-        projection_start: The day the projection's window opens.
-        current_period: The current pay period, or ``None``.
 
     Returns:
         The ``Decimal`` YTD to seed the engine's limit accounting with.
     """
-    if current_period is None or projection_start <= current_period.end_date:
-        return inputs.ytd_contributions_seed
     return inputs.ytd_contributions
 
 
@@ -382,9 +399,7 @@ def _load_projection_context(
     # (rulings R-AB / R-AE).  Nothing is filtered out of it and nothing is
     # subtracted from it -- the window opens strictly after the seed's date, so
     # there is no overlap for a compensator to correct.
-    projection_seed = _resolve_seed_balance(
-        account, balance_ctx, current_period,
-    )
+    projection_seed = _resolve_seed_balance(account, balance_ctx)
     inputs = build_investment_projection_inputs(
         params, adapted_deductions, acct_contributions,
         all_periods, current_period, salary_gross_biweekly,
@@ -397,10 +412,8 @@ def _load_projection_context(
     return _ProjectionContext(
         params=params,
         current_balance=current_balance,
-        projection_start=_projection_start(current_period),
-        projection_ytd=_projection_ytd(
-            inputs, _projection_start(current_period), current_period,
-        ),
+        projection_start=_projection_start(balance_ctx),
+        projection_ytd=_projection_ytd(inputs),
         projection_seed=projection_seed,
         inputs=inputs,
         contributions=contributions,

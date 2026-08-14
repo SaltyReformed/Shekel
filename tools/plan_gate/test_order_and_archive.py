@@ -15,7 +15,7 @@ import pytest
 import _archive as archive
 import _order as order
 import _registry as registry
-from test_registry_integrity import _row, _with_cell
+from _staging import row_of, with_cell
 
 
 class TestTheOrderIsATotalOrderTheGraphAllows:
@@ -48,8 +48,8 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
 
     def test_the_control_fires_when_a_rank_precedes_its_own_blocker(self, stage):
         """The defect this rule exists for: a stated order the graph forbids."""
-        line = _row("steps", "| balance | X-f4 |")
-        stage("steps", line, _with_cell(line, 4, "#1"))
+        line = row_of("steps", "| balance | X-f4 |")
+        stage("steps", line, with_cell(line, 4, "#1"))
         problems = order.rank_violations()
         assert any("balance:X-f4" in p and "forbids" in p for p in problems), problems
 
@@ -70,8 +70,8 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
             key=lambda row: row.rank,
         )
         vacated = subject.rank
-        line = _row("steps", f"| {subject.arc} | {subject.ident} |")
-        stage("steps", line, _with_cell(line, 4, "#999"))
+        line = row_of("steps", f"| {subject.arc} | {subject.ident} |")
+        stage("steps", line, with_cell(line, 4, "#999"))
         problems = order.rank_violations()
         assert any(
             f"has no #{vacated}." in p for p in problems
@@ -79,8 +79,8 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
 
     def test_the_control_fires_on_an_unparseable_order_cell(self, stage):
         """A row a reader cannot place in the sequence."""
-        line = _row("steps", "| balance | X-am |")
-        stage("steps", line, _with_cell(line, 4, "soon"))
+        line = row_of("steps", "| balance | X-am |")
+        stage("steps", line, with_cell(line, 4, "soon"))
         problems = order.rank_violations()
         assert any("balance:X-am" in p and "'soon'" in p for p in problems), problems
 
@@ -101,8 +101,8 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
             if row.rank != subject.rank
             and row.key not in subject.alias_keys()
         )
-        line = _row("steps", f"| {subject.arc} | {subject.ident} |")
-        stage("steps", line, _with_cell(line, 4, f"#{collide_with}"))
+        line = row_of("steps", f"| {subject.arc} | {subject.ident} |")
+        stage("steps", line, with_cell(line, 4, f"#{collide_with}"))
         assert any("not one identity class" in p for p in order.rank_violations())
 
     def test_an_identity_class_sharing_one_rank_is_not_a_violation(self, stage):
@@ -128,8 +128,8 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
         # leaves, which is why this reads one arm's messages and not all.
         free = max(r.rank for r in rows.values() if r.rank is not None) + 2
         for row in (left, right):
-            line = _row("steps", f"| {row.arc} | {row.ident} |")
-            stage("steps", line, _with_cell(line, 4, f"#{free}"))
+            line = row_of("steps", f"| {row.arc} | {row.ident} |")
+            stage("steps", line, with_cell(line, 4, f"#{free}"))
         shared = [p for p in order.rank_violations() if "identity class" in p]
         assert not shared, shared
 
@@ -151,8 +151,8 @@ class TestTheStartsCellIsDerivedAndReconciled:
 
     def test_the_control_fires_on_a_stale_now(self, stage):
         """A stale NOW sends a reader at work they cannot start."""
-        line = _row("steps", "| balance | X-f4 |")
-        stage("steps", line, _with_cell(line, 6, "NOW / balance:X-f3"))
+        line = row_of("steps", "| balance | X-f4 |")
+        stage("steps", line, with_cell(line, 6, "NOW / balance:X-f3"))
         problems = order.starts_violations()
         assert any("balance:X-f4" in p and "stale NOW" in p for p in problems), problems
 
@@ -164,8 +164,8 @@ class TestTheStartsCellIsDerivedAndReconciled:
         and ``#32`` were a stored copy of a value the live table decides, and
         they rotted on the first commit that renumbered it.
         """
-        line = _row("steps", "| credit_card | CC0a |")
-        stage("steps", line, _with_cell(
+        line = row_of("steps", "| credit_card | CC0a |")
+        stage("steps", line, with_cell(
             line, 6, "after #1 / balance:X-f4 / balance:X-am",
         ))
         latest = max(
@@ -202,8 +202,8 @@ class TestTheStartsCellIsDerivedAndReconciled:
                 key in rows and rows[key].shipped for key in row.blocked_keys()
             )
         )
-        line = _row("steps", f"| {subject.arc} | {subject.ident} |")
-        stage("steps", line, _with_cell(
+        line = row_of("steps", f"| {subject.arc} | {subject.ident} |")
+        stage("steps", line, with_cell(
             line, 6, f"after #4 / {' / '.join(subject.blocked_keys())}",
         ))
         problems = order.starts_violations()
@@ -213,8 +213,8 @@ class TestTheStartsCellIsDerivedAndReconciled:
 
     def test_the_control_fires_on_a_container_naming_the_wrong_leaf(self, stage):
         """A container ticks with its LAST leaf, not an earlier one."""
-        line = _row("steps", "| balance | X-i |")
-        stage("steps", line, _with_cell(line, 6, "ticks with #1"))
+        line = row_of("steps", "| balance | X-i |")
+        stage("steps", line, with_cell(line, 6, "ticks with #1"))
         ticks = order.rank_map()["balance:X-i"]
         problems = order.starts_violations()
         assert any("balance:X-i" in p and f"#{ticks}" in p for p in problems), problems
@@ -231,8 +231,8 @@ class TestTheStartsCellIsDerivedAndReconciled:
         one identity class stating TWO tick ranks and every gate stayed green
         over it, which is the equally damning and accurate version.
         """
-        line = _row("steps", "| balance | X-l |")
-        stage("steps", line, _with_cell(line, 6, "ticks with #1"))
+        line = row_of("steps", "| balance | X-l |")
+        stage("steps", line, with_cell(line, 6, "ticks with #1"))
         ticks = order.rank_map()["balance:X-l"]
         problems = order.starts_violations()
         assert any(
@@ -249,8 +249,8 @@ class TestTheStartsCellIsDerivedAndReconciled:
         staged copy 2026-08-11: 1 problem with the class intact, 0 without.
         """
         ticks = order.rank_map()["balance:X-l"]
-        line = _row("steps", "| balance | X-l |")
-        staged = _with_cell(_with_cell(line, 6, f"ticks with #{ticks - 1}"), 2, "--")
+        line = row_of("steps", "| balance | X-l |")
+        staged = with_cell(with_cell(line, 6, f"ticks with #{ticks - 1}"), 2, "--")
         stage("steps", line, staged)
         problems = order.starts_violations()
         assert any(
@@ -289,8 +289,8 @@ class TestTheStartsCellIsDerivedAndReconciled:
 
     def test_the_control_fires_on_an_unparseable_head(self, stage):
         """Every other spelling of readiness used to read as legal."""
-        line = _row("steps", "| balance | X-am |")
-        stage("steps", line, _with_cell(line, 6, "whenever"))
+        line = row_of("steps", "| balance | X-am |")
+        stage("steps", line, with_cell(line, 6, "whenever"))
         problems = order.starts_violations()
         assert any("balance:X-am" in p and "'whenever'" in p for p in problems), problems
 
@@ -314,21 +314,21 @@ class TestEveryStepSaysWhatItIsInOneSentence:
         Reconstructed rather than invented: a synthetic fragment would prove
         the pattern matches something, not that it matches the defect.
         """
-        line = _row("steps", "| balance | X-f3 |")
-        stage("steps", line, _with_cell(line, 3, truncated))
+        line = row_of("steps", "| balance | X-f3 |")
+        stage("steps", line, with_cell(line, 3, truncated))
         problems = order.description_violations()
         assert any("balance:X-f3" in p and "TRUNCATED" in p for p in problems), problems
 
     def test_the_control_fires_on_an_empty_description(self, stage):
         """Every step says what it is."""
-        line = _row("steps", "| balance | X-f3 |")
-        stage("steps", line, _with_cell(line, 3, "--"))
+        line = row_of("steps", "| balance | X-f3 |")
+        stage("steps", line, with_cell(line, 3, "--"))
         assert any("no description" in p for p in order.description_violations())
 
     def test_the_control_fires_over_the_cap(self, stage):
         """A specification that will not fit belongs in the arc document."""
-        line = _row("steps", "| balance | X-f3 |")
-        stage("steps", line, _with_cell(line, 3, "word " * 100 + "end."))
+        line = row_of("steps", "| balance | X-f3 |")
+        stage("steps", line, with_cell(line, 3, "word " * 100 + "end."))
         problems = order.description_violations()
         assert any("against a" in p and "cap" in p for p in problems), problems
 
@@ -404,3 +404,48 @@ class TestAnArchivedDocumentSaysSoOnItsFirstLine:
         (live / "implementation_plan_something.md").write_text("# Live\n")
         monkeypatch.setattr(registry, "REPO", tmp_path)
         assert not archive.archive_banner_violations()
+
+
+# The CAP arms moved here from ``test_registry_integrity`` on 2026-08-14, when
+# that module reached pylint's 1,000-line ceiling and this project's ruling on
+# an over-ceiling module is that it SPLITS (findings N-152 / N-156).  They fit:
+# a cap is rule 4 and the only legal way back under one is rule 5's ARCHIVE,
+# which is what the rest of this module grades.
+
+class TestEveryRegistryIsUnderItsCap:
+    """conventions.md rule 4, on the five documents it did not used to reach."""
+
+    @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
+    def test_the_registry_is_within_its_line_cap(self, name):
+        """The registry is within its line cap."""
+        problems = [p for p in registry.registry_line_cap_violations()
+                    if p.startswith(name)]
+        assert not problems, problems[0]
+
+    @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
+    def test_the_cap_still_has_headroom(self, name):
+        """A cap already binding cannot absorb the next finding."""
+        cap = registry.REGISTRY_CAPS[name]
+        actual = len((registry.PLANS / name).read_text().splitlines())
+        assert actual <= cap - 20, (
+            f"{name} is at {actual} of {cap} -- under 20 lines of headroom. "
+            f"conventions.md rule 5: archive a completed span, do not raise the cap"
+        )
+
+    def test_the_control_fires_when_a_registry_grows_past_its_cap(self, tmp_path,
+                                                                 monkeypatch):
+        """A cap nobody has seen fail is a number, not a gate.
+
+        EVERY registry is staged, not just the one being pushed over: the arm
+        walks all five, so a directory holding one file raises
+        ``FileNotFoundError`` and the control fails for a reason that has
+        nothing to do with the cap.
+        """
+        over = "ledger.md"
+        for name, cap in registry.REGISTRY_CAPS.items():
+            padding = cap + 1 if name == over else 1
+            (tmp_path / name).write_text("filler\n" * padding)
+        monkeypatch.setattr(registry, "PLANS", tmp_path)
+        problems = registry.registry_line_cap_violations()
+        assert len(problems) == 1, problems
+        assert problems[0].startswith(over) and "rule 4" in problems[0]

@@ -439,6 +439,16 @@
           {% set entries = _entry_data.entries %}
           {% set remaining = _entry_data.remaining %}
           {% set out_of_period_ids = _entry_data.out_of_period_ids %}
+          {# The reconciled indicator's two keys.  They were MISSING here until
+             2026-08-13 while the HTMX refresh supplied them, and Jinja answers
+             `entry.id in Undefined` as False SILENTLY -- so on every initial
+             render a reconciled purchase read "Still outstanding" against a
+             projection that had already released its reservation (9 of 9 such
+             purchases on the 2026-08-13 production clone).  Every key
+             `_entry_data` carries must be set here;
+             `entry_service.entry_list_view` is the one producer of that set. #}
+          {% set reconciled_ids = _entry_data.reconciled_ids %}
+          {% set reconciled_through = _entry_data.reconciled_through %}
           {% set editing_id = none %}
           {% set entry_list_host = id_prefix %}
           {% set entry_list_host_id = "entry-list-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}

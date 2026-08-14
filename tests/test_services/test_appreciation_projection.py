@@ -18,6 +18,7 @@ from app.services.balance_at._asset_contributions import (
     ContributionInputs,
 )
 from tests._test_helpers import (
+    period_window,
     restamp_opening_assertion,
     settle_instant_on,
 )
@@ -143,11 +144,11 @@ class TestAppreciationBalanceMap:
             # across the three real investment accounts.  Equality here would
             # be asserting the replay IS the producer it replaced.)
             expected = {
-                pb.period_id: pb.end_balance
+                pb.period.period_id: pb.end_balance
                 for pb in growth_engine.project_balance(
                     current_balance=balances[anchor.id],
                     assumed_annual_return=Decimal("0.03000"),
-                    periods=post,
+                    periods=period_window(post),
                 )
             }
             for period in post:

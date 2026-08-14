@@ -38,7 +38,7 @@ index:
 * the value line holds today's anchor flat for every month ``<= today`` (its past
   is unknown) and compounds at the appreciation rate strictly after, via the ONE
   appreciation primitive in the codebase
-  (:func:`app.services.growth_engine.period_return_rate`);
+  (:func:`app.services.growth_engine.span_return_rate`);
 * the axis spans ``min(origination, today) .. max(payoff, today)`` across the
   outstanding loans, so a mortgage that has not closed yet reads ``$0.00`` from
   today until it originates (never its principal clamped onto today), and a
@@ -68,7 +68,7 @@ from app.services.balance_at import (
     TIER_PROJECTED,
     SecuredLoanSeries,
 )
-from app.services.growth_engine import period_return_rate
+from app.services.growth_engine import span_return_rate
 from app.utils.dates import add_months
 from app.utils.money import round_money
 
@@ -140,22 +140,6 @@ class PropertyEquityChart:
     chart_state: str
 
 
-@dataclass(frozen=True)
-class _AppreciationSpan:
-    """A start / end date pair for :func:`period_return_rate`.
-
-    ``period_return_rate`` scales an annual rate to a period's inclusive
-    calendar-day span via ``(end_date - start_date).days + 1``.  Reusing it for
-    the anchor-to-month appreciation span keeps the codebase's ONE appreciation
-    formula (rather than re-deriving ``(1 + rate) ** (days / 365)`` here); this
-    lightweight span is the object it reads ``start_date`` / ``end_date`` off,
-    since a real pay period is overkill for one span.
-    """
-
-    start_date: date
-    end_date: date
-
-
 def _month_key(day: date) -> tuple[int, int]:
     """Return ``(year, month)`` -- the calendar-month key a row maps to."""
     return (day.year, day.month)
@@ -179,14 +163,20 @@ def _value_series(
     (``index <= today_index`` -- its past is unknown, today's anchor is the only
     honest value), then compounds it at ``appreciation_rate`` for each later
     month via the growth engine's one appreciation primitive
-    (:func:`app.services.growth_engine.period_return_rate`): the factor for a
+    (:func:`app.services.growth_engine.span_return_rate`): the factor for a
     month dated ``d`` is ``(1 + rate) ** (((d - today).days + 1) / 365)``.  A
     zero ``appreciation_rate`` (the unset sentinel) leaves the whole line flat.
     Keying the flat / compounding split on the DATE -- not a confirmed-row count
     -- is what stops a past-dated projected month from compounding to a
-    fabricated value (the H3 fix); a non-positive span additionally short-
-    circuits to no growth, so the degenerate-span clamp inside
-    ``period_return_rate`` can never fabricate appreciation here.
+    fabricated value (the H3 fix); the same test additionally keeps every span
+    reaching the primitive strictly forward, which is what makes its refusal of
+    a crossed span unreachable from here (plan step C2-e).
+
+    **The span used to be a fabricated period.**  This module carried an
+    ``_AppreciationSpan`` dataclass whose only purpose was to expose
+    ``start_date`` / ``end_date`` to a rate function that duck-typed a "period";
+    C2-e gave that function the two dates directly and the impostor had nothing
+    left to impersonate.
 
     Args:
         market_value: Today's anchored market value.
@@ -204,8 +194,9 @@ def _value_series(
         if index <= today_index or (month_date - today).days <= 0:
             values.append(market_value)
         else:
-            span = _AppreciationSpan(start_date=today, end_date=month_date)
-            factor = Decimal("1") + period_return_rate(appreciation_rate, span)
+            factor = Decimal("1") + span_return_rate(
+                appreciation_rate, today, month_date,
+            )
             values.append(round_money(market_value * factor))
     return values
 
