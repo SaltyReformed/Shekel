@@ -28,8 +28,20 @@ Two design points make the scan precise:
 
   * **Statement anchoring.**  A member's value must appear INSIDE an
     ``INSERT INTO <that member's table>`` statement -- scoped from the table
-    name up to the next SQL statement keyword -- not merely somewhere in a
-    file that also happens to insert into the table.  Without this scoping a
+    name to the end of the Python STRING LITERAL carrying it, or to the next
+    SQL statement keyword within that literal, whichever comes first -- not
+    merely somewhere in a file that also happens to insert into the table.
+    The literal is the outer bound because it is where the statement actually
+    ends: a keyword list alone left the LAST ``INSERT`` in a file running to
+    end-of-file, so any quoted literal in the Python BELOW the seed satisfied
+    the scan (plan step R-F2, ledger row F-2; measured honest at the time --
+    none of ``'none'`` / ``'prior'`` / ``'next'`` appeared in the 1,304
+    characters after ``e7a4d95c2b18``'s final seed).  Every one of the 78
+    ``INSERT INTO`` occurrences in the chain sits inside a string constant and
+    2 constants carry more than one statement, which is why both bounds are
+    kept rather than either alone.  DOCSTRINGS are excluded: the scan asks
+    what a migration EXECUTES, and prose describing a seed is not it.
+    Without this scoping a
     multi-table migration (``f5037400dc5e`` seeds all three posting-ledger
     tables in one file) would let any literal in the file satisfy any of its
     tables, and a value named only in a downgrade ``DELETE`` would
@@ -74,9 +86,11 @@ unresolved).  A migration that deletes a previously-seeded value would slip
 past the source scans but be caught by those runtime tests; the layers
 together are exhaustive.
 """
+import ast
 import pathlib
 import re
 from enum import Enum
+from functools import lru_cache
 
 from app.enums import (
     AmountSourceEnum,
@@ -153,13 +167,16 @@ def _seed_value_set(entries: list) -> set[str]:
     }
 
 
-# SQL statement-starting keywords used across the migration chain.  An
-# ``INSERT INTO <table>`` statement body is scoped from the table name to
-# the next such keyword (or end of file), so a value belonging to a
-# following ``DELETE`` or a different table's ``INSERT`` cannot leak into
-# it.  All are upper-case with a trailing space, matching the raw-SQL
-# keyword style, so they never collide with the lower-case quoted value
-# literals the scan searches for.
+# SQL statement-starting keywords used across the migration chain.  Within one
+# string literal, an ``INSERT INTO <table>`` body is scoped from the table name
+# to the next such keyword, so a value belonging to a following ``DELETE`` or a
+# different table's ``INSERT`` in the SAME literal cannot leak into it.  All are
+# upper-case with a trailing space, matching the raw-SQL keyword style, so they
+# never collide with the lower-case quoted value literals the scan searches for.
+#
+# This is the INNER bound only.  The outer one is the literal itself
+# (:func:`_executed_sql_literals`) -- see the module docstring on statement
+# anchoring for why a keyword list alone could not be the whole rule.
 _STATEMENT_BOUNDARY = re.compile(
     r"INSERT INTO |DELETE FROM |UPDATE |DROP |CREATE |ALTER "
 )
@@ -177,13 +194,62 @@ def _migration_sources() -> dict[str, str]:
     }
 
 
+@lru_cache(maxsize=None)
+def _executed_sql_literals(source: str) -> tuple[str, ...]:
+    """Return every non-docstring string constant in a migration module.
+
+    The SQL a migration runs lives inside Python string literals, so a literal
+    is where a statement really ends -- which is what makes it the honest outer
+    bound for :func:`_insert_statement_bodies`.  Adjacent literals concatenated
+    across lines (the house style for these seeds) are ONE constant to
+    :mod:`ast`, so a seed written over five lines is not split.
+
+    Docstrings are excluded because the scan asks what a migration EXECUTES:
+    three migrations describe an ``INSERT INTO`` in prose, and prose about a
+    seed is not a seed.
+
+    Cached on the source text, which is what makes the parse affordable: the
+    inline-seed scan asks about 129 migrations once per enum MEMBER, so an
+    uncached parse ran 5,289 times for 2.04s against 129 files of real work.
+
+    Args:
+        source: Full text of a migration module.
+
+    Returns:
+        The value of every string constant that is not a docstring.
+    """
+    tree = ast.parse(source)
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                   ast.ClassDef),
+        ):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            docstrings.add(id(first.value))
+    return tuple(
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+    )
+
+
 def _insert_statement_bodies(source: str, table: str) -> list[str]:
     """Return each ``INSERT INTO <table> ...`` statement body in *source*.
 
-    Each body runs from the ``INSERT INTO <table>`` token up to the next SQL
-    statement keyword (:data:`_STATEMENT_BOUNDARY`) or end of *source*, so a
-    value belonging to a following ``DELETE`` or a different table's
-    ``INSERT`` -- common in a multi-statement migration -- does not bleed in.
+    Each body runs from the ``INSERT INTO <table>`` token to the end of the
+    string literal carrying it, or to the next SQL statement keyword
+    (:data:`_STATEMENT_BOUNDARY`) inside that literal -- whichever comes first.
+    So a value belonging to a following ``DELETE``, to a different table's
+    ``INSERT``, or to any Python BELOW the seed does not bleed in.
 
     Args:
         source: Full text of a migration module.
@@ -195,14 +261,106 @@ def _insert_statement_bodies(source: str, table: str) -> list[str]:
     """
     insert_token = f"INSERT INTO {table}"
     bodies: list[str] = []
-    start = source.find(insert_token)
-    while start != -1:
-        after = start + len(insert_token)
-        boundary = _STATEMENT_BOUNDARY.search(source, after)
-        end = boundary.start() if boundary is not None else len(source)
-        bodies.append(source[start:end])
-        start = source.find(insert_token, after)
+    for literal in _executed_sql_literals(source):
+        start = literal.find(insert_token)
+        while start != -1:
+            after = start + len(insert_token)
+            boundary = _STATEMENT_BOUNDARY.search(literal, after)
+            end = boundary.start() if boundary is not None else len(literal)
+            bodies.append(literal[start:end])
+            start = literal.find(insert_token, after)
     return bodies
+
+
+class TestTheStatementBoundary:
+    """The scan's own boundary, graded on sources built to break it.
+
+    Plan step R-F2 (ledger row **F-2**).  Every assertion below FAILS against
+    the keyword-only bound this replaced, which is the standard a control has
+    to meet: the first two are the defect itself, the third is the property
+    that kept the keyword list, and the fourth is why a docstring is not a
+    seed.  Without them the change proves nothing -- a scan that has never
+    been shown to reject anything is not a scan.
+    """
+
+    #: A migration whose last seed is followed by ordinary Python holding a
+    #: value literal.  Under the keyword-only bound the ``INSERT`` body ran to
+    #: end-of-file and ``'beta'`` read as seeded.
+    SEED_THEN_PYTHON = (
+        '"""Create and seed ref.widgets."""\n'
+        "_SEED_SQL = (\n"
+        '    "INSERT INTO ref.widgets (name) VALUES "\n'
+        "    \"('alpha') \"\n"
+        '    "ON CONFLICT (name) DO NOTHING"\n'
+        ")\n"
+        "\n"
+        "_AUDIT_NOTE = \"seeded 'beta' by hand on 2026-01-01\"\n"
+        "\n"
+        "\n"
+        "def upgrade():\n"
+        '    """Seed the table."""\n'
+        "    op.execute(_SEED_SQL)\n"
+    )
+
+    def test_a_value_below_the_seed_is_not_seeded(self):
+        """A literal in the Python after the last INSERT does not count."""
+        bodies = _insert_statement_bodies(
+            self.SEED_THEN_PYTHON, "ref.widgets",
+        )
+
+        assert bodies, "the seed statement itself must still be found"
+        assert not any("'beta'" in body for body in bodies), (
+            f"'beta' appears only in Python BELOW the seed, so no INSERT "
+            f"seeds it; bodies were {bodies}"
+        )
+
+    def test_the_seeded_value_is_still_found(self):
+        """The control above passes for the right reason, not by finding none."""
+        bodies = _insert_statement_bodies(
+            self.SEED_THEN_PYTHON, "ref.widgets",
+        )
+
+        assert any("'alpha'" in body for body in bodies), bodies
+
+    def test_two_statements_in_one_literal_stay_separate(self):
+        """The keyword bound still splits statements sharing a literal.
+
+        2 of the chain's constants carry more than one ``INSERT``, so dropping
+        the keyword bound in favour of the literal alone would credit one
+        table's value to another's statement -- the leak the anchoring exists
+        to stop, moved one level in.
+        """
+        source = (
+            "_SEED_SQL = (\n"
+            '    "INSERT INTO ref.widgets (name) VALUES (\'alpha\'); "\n'
+            '    "INSERT INTO ref.gadgets (name) VALUES (\'gamma\')"\n'
+            ")\n"
+        )
+
+        widgets = _insert_statement_bodies(source, "ref.widgets")
+
+        assert any("'alpha'" in body for body in widgets), widgets
+        assert not any("'gamma'" in body for body in widgets), (
+            f"'gamma' belongs to ref.gadgets' statement in the same literal; "
+            f"bodies were {widgets}"
+        )
+
+    def test_an_insert_described_in_a_docstring_is_not_a_seed(self):
+        """Prose about a seed is not a seed."""
+        source = (
+            '"""Drop ref.widgets.\n'
+            "\n"
+            "The rows came from ``INSERT INTO ref.widgets (name) VALUES\n"
+            "('delta')`` in an earlier migration.\n"
+            '"""\n'
+            "\n"
+            "\n"
+            "def upgrade():\n"
+            '    """Drop it."""\n'
+            '    op.execute("DROP TABLE ref.widgets")\n'
+        )
+
+        assert _insert_statement_bodies(source, "ref.widgets") == []
 
 
 class TestRefInlineSeedParity:
