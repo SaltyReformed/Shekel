@@ -166,7 +166,7 @@ def _build_history_series(account: Account, ctx: _ProjectionContext) -> dict:
     bctx = ctx.balance_ctx
     if ctx.current_period is None:
         return {"history_labels": [], "history_balances": []}
-    balances = balance_at.balance_map(account, bctx, ctx.all_periods)
+    balances = balance_at.balance_map(account, bctx)
     labels: list[str] = []
     values: list[str] = []
     for period in ctx.all_periods:

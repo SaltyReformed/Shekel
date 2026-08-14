@@ -337,7 +337,7 @@ class TestNoPaymentGeneratesBeforeTheLoan:
 
         with auth_client.application.app_context():
             bctx = BalanceContext.build(seed_user["user"].id)
-            before = balance_at.balance_map(checking, bctx, seed_periods)
+            before = balance_at.balance_map(checking, bctx)
 
         auth_client.post(
             f"/accounts/{acct.id}/loan/create-transfer",
@@ -346,7 +346,7 @@ class TestNoPaymentGeneratesBeforeTheLoan:
 
         with auth_client.application.app_context():
             bctx = BalanceContext.build(seed_user["user"].id)
-            after = balance_at.balance_map(checking, bctx, seed_periods)
+            after = balance_at.balance_map(checking, bctx)
 
         # Every period whose payments are all pre-origination is untouched; the
         # first real installment (2026-05-01, period 8) is the first debit.

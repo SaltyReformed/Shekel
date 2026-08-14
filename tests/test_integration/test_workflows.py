@@ -183,7 +183,6 @@ class TestTransferToBalance:
                 BalanceContext.build(
                     seed_user["user"].id, as_of=seed_periods[0].start_date,
                 ),
-                seed_periods,
             )
 
             # Shadow expense of $200 reduces balance: 1000 - 200 = 800.
@@ -237,7 +236,6 @@ class TestCreditPaybackBalance:
                 BalanceContext.build(
                     seed_user["user"].id, as_of=seed_periods[0].start_date,
                 ),
-                seed_periods[:3],
             )
             # Period 0: credit txn → $0 effect, balance stays 1000.
             assert balances[seed_periods[0].id] == Decimal("1000.00")
@@ -282,7 +280,7 @@ class TestAnchorTrueUpBalance:
             )
             db.session.commit()
             balances_2k = balance_at.cash_balance_map(
-                seed_user["account"], ctx, seed_periods[:3],
+                seed_user["account"], ctx,
             )
 
             override_anchor(
@@ -293,7 +291,7 @@ class TestAnchorTrueUpBalance:
             )
             db.session.commit()
             balances_3k = balance_at.cash_balance_map(
-                seed_user["account"], ctx, seed_periods[:3],
+                seed_user["account"], ctx,
             )
 
             # Every period's balance should differ by exactly $1000.

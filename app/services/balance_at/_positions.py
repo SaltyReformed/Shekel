@@ -244,7 +244,7 @@ def positions(
 
 
 def positions_period_map(
-    account: Account, ctx: BalanceContext, periods: list,
+    account: Account, ctx: BalanceContext,
 ) -> "OrderedDict[int, Decimal]":
     """Return a loan's per-period balance map, built from :func:`positions`.
 
@@ -305,12 +305,14 @@ def positions_period_map(
             :func:`positions` raises for it.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             -- its ``as_of`` is the resolver's NOW and the begun/future boundary
-            (the SAME ``ctx.as_of`` the kernel map splices on).
-        periods: The pay periods to key the map by, in the desired output order.
+            (the SAME ``ctx.as_of`` the kernel map splices on), and whose
+            ``reported_periods()`` is the map's domain since plan step C2-c --
+            each period's bounds DERIVED from the owner's paydays rather than
+            read off the two stored columns plan step C4 drops.
 
     Returns:
         ``OrderedDict`` period_id -> cent-quantized ``Decimal`` balance, in
-        *periods* order.  ``OrderedDict()`` for an empty *periods*.
+        payday order.  ``OrderedDict()`` for an owner with no pay periods.
 
     Raises:
         BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
@@ -318,6 +320,12 @@ def positions_period_map(
             X-v2, ruling R-BW), so no caller pre-checks.
         ValueError: When *account* is not a configured loan
             (:func:`positions`' own contract).
+        PayCalendarError: The owner's paydays cannot define a calendar, which
+            since plan step C2-c is reachable from every per-period seam entry
+            rather than only from the recurrence pages -- see
+            :meth:`~app.services.balance_at.BalanceContext.calendar`, where the
+            reporting domain is derived, for the one state that produces it and
+            the step that removes it.
     """
     # Fail loud at the entry on a missing baseline, as every public seam entry
     # does -- positions() guards too, but guarding here keeps the contract's
@@ -327,15 +335,17 @@ def positions_period_map(
     # The date to value each period at, reproducing the splice's begun/future
     # boundary (see the docstring).  positions() collapses duplicate dates, so a
     # boundary period landing on ctx.as_of costs nothing extra.
+    window = ctx.reported_periods()
     sample_on: dict[int, date] = {
-        period.id: window_sample_date(
+        period.period_id: window_sample_date(
             period.start_date, period.end_date, ctx.as_of,
         )
-        for period in periods
+        for period in window
     }
     valued = positions(account, ctx, list(sample_on.values()))
     return OrderedDict(
-        (period.id, valued[sample_on[period.id]]) for period in periods
+        (period.period_id, valued[sample_on[period.period_id]])
+        for period in window
     )
 
 

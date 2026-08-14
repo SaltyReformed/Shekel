@@ -79,9 +79,9 @@ def _require_civil_date(entry: str, **dates: object) -> None:
 
 
 def cash_balance_map(
-    account: Account, ctx: BalanceContext, periods: list,
+    account: Account, ctx: BalanceContext,
 ) -> "OrderedDict[int, Decimal]":
-    """Return one account's cash-flow running balance across *periods*.
+    """Return one account's cash-flow running balance per pay period.
 
     The cash-flow view: the account's projected end balance per period as a
     pure transaction running-balance, with NO per-kind dispatch.  This is what
@@ -135,22 +135,31 @@ def cash_balance_map(
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
             Its ``as_of`` is the reader's NOW -- what decides a still-projected
             row cannot already have happened (ruling R-G) -- NOT a valuation
-            date; each period is valued at its own ``end_date``.
-        periods: The pay periods to project over, in display order.  They need
-            not be contiguous and need not start at the account's anchor.
+            date; each period is valued at its own ``end_date``.  **It is also
+            where the periods come from** (plan step C2-c): the domain is
+            :meth:`~app.services.balance_at.BalanceContext.reported_periods`,
+            the owner's whole saved calendar, and it is no longer an argument
+            -- every caller passed exactly that, so the only thing the argument
+            could express was a mistake.
 
     Returns:
-        ``OrderedDict`` period_id -> cent-quantized ``Decimal``, in the order
-        *periods* was given.
+        ``OrderedDict`` period_id -> cent-quantized ``Decimal``, in payday
+        order.  Empty for an owner with no pay periods.
 
     Raises:
         BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
             subclass; ONE application-level handler answers it (plan step
             X-v2, ruling R-BW), so no caller pre-checks.
+        PayCalendarError: The owner's paydays cannot define a calendar, which
+            since plan step C2-c is reachable from every per-period seam entry
+            rather than only from the recurrence pages -- see
+            :meth:`~app.services.balance_at.BalanceContext.calendar`, where the
+            reporting domain is derived, for the one state that produces it and
+            the step that removes it.
     """
     _require_scenario(ctx)
     return _cash_fold.cash_period_balances(
-        account, ctx.scenario_id, ctx.as_of, periods,
+        account, ctx.scenario_id, ctx.as_of, ctx.reported_periods(),
     )
 
 
@@ -162,9 +171,16 @@ def cash_balance_at(
     The scalar cash-flow view -- the date-precise counterpart of
     :func:`cash_balance_map`, and literally the same fold read at one date, so
     ``cash_balance_at(account, ctx, P.end_date)`` equals
-    ``cash_balance_map(account, ctx, [... P ...])[P.id]`` by construction rather
-    than by a test.  Used by the calendar's month-end balance, which must
-    reconcile with the day cells it renders for the same month.
+    ``cash_balance_map(account, ctx)[P.id]`` whenever *P*'s stored
+    ``end_date`` is the one its owner's paydays derive -- which plan step C2-c
+    made the qualifier it is.  It read "by construction" until then, and the
+    map now samples the DERIVED end while a caller reading ``P.end_date`` off
+    an ORM row supplies the stored one; plan step C4 drops that column and
+    makes the sentence unconditional again.  Measured 0 of 62 and 0 of 61
+    disagreements on the two production-shaped databases.
+
+    Used by the calendar's month-end balance, which must reconcile with the day
+    cells it renders for the same month.
 
     Like :func:`cash_balance_map`, this does NOT dispatch by kind: it is
     the cash-flow balance of whatever account the surface points at (the

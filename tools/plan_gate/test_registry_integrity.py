@@ -195,14 +195,14 @@ class TestEveryFindingNamesALiveOwner:
 
     def test_the_control_fires_on_an_empty_owner(self, stage):
         """The control fires on an empty owner."""
-        line = _row("ledger", "| balance | N-128 |")
+        line = _row("ledger", "| balance | N-96 |")
         stage("ledger", line, _with_cell(line, -1, ""))
         problems = registry.owner_violations()
         assert any("empty owner" in p for p in problems), problems
 
     def test_the_control_fires_on_an_owner_naming_no_step(self, stage):
         """The control fires on an owner naming no step."""
-        line = _row("ledger", "| balance | N-128 |")
+        line = _row("ledger", "| balance | N-96 |")
         stage("ledger", line, _with_cell(line, -1, "X-nonexistent"))
         problems = registry.owner_violations()
         assert any("names no step" in p for p in problems), problems
@@ -210,9 +210,9 @@ class TestEveryFindingNamesALiveOwner:
     def test_the_control_fires_on_an_owner_that_has_shipped(self, stage):
         """pay_calendar:C1 is SHIPPED, so a live row may not point at it.
 
-        The staged row was ``pay_calendar:P2`` until that finding CLOSED at
-        ``C2-b2`` and left the ledger, which is the arm working on its own
-        control.  Any live row serves; ``P16`` is one this commit did not move.
+        **Every control here stages a row a shipping step can close, so they
+        get re-anchored**: this one off ``pay_calendar:P2`` at C2-b2, nine off
+        ``balance:N-128`` at C2-c.  Any live row with a BARE id cell serves.
         """
         assert registry.arc_checkboxes("pay_calendar")["C1"], "C1 must be ticked"
         line = _row("ledger", "| pay_calendar | P16 |")
@@ -226,7 +226,7 @@ class TestEveryFindingNamesALiveOwner:
         The grammar arm.  Its control lived against the deleted per-document
         parser; the behaviour lives here, so the control does too.
         """
-        line = _row("ledger", "| balance | N-128 |")
+        line = _row("ledger", "| balance | N-96 |")
         stage("ledger", line, _with_cell(line, -1, "own commit"))
         problems = registry.owner_violations()
         assert any("owner grammar" in p for p in problems), problems
@@ -294,7 +294,7 @@ class TestTheKeyIsTheArcAndTheId:
 
     def test_the_control_fires_on_a_duplicated_key(self, stage):
         """The control fires on a duplicated key."""
-        line = _row("ledger", "| balance | N-128 |")
+        line = _row("ledger", "| balance | N-96 |")
         stage("ledger", line, line + "\n" + line)
         problems = registry.unique_key_violations()
         assert any("duplicate key" in p for p in problems), problems
@@ -310,7 +310,7 @@ class TestTheKeyIsTheArcAndTheId:
         grades a finding that has no name.  Measured before this arm existed:
         138 rows in, 138 rows out, every arm SILENT.
         """
-        line = _row("ledger", "| balance | N-128 |")
+        line = _row("ledger", "| balance | N-96 |")
         stage("ledger", line, _with_cell(line, 1, ""))
         problems = registry.unique_key_violations()
         assert any("empty arc or id" in p for p in problems), problems
@@ -323,7 +323,7 @@ class TestTheKeyIsTheArcAndTheId:
         covers both would delete the wrong one.
         """
         before = len(registry.ledger_rows())
-        line = _row("ledger", "| balance | N-128 |")
+        line = _row("ledger", "| balance | N-96 |")
         stage("ledger", line, _with_cell(line, 0, ""))
         assert len(registry.ledger_rows()) == before - 1, "the row must vanish"
         problem = registry.stated_count_violation()
@@ -448,7 +448,7 @@ class TestTheTwoAlsoRelationsMeanOppositeThings:
         target only has to be a row that still EXISTS and whose id cell is
         BARE, since the `also` grammar takes an unannotated id.
         """
-        line = _row("ledger", "| balance | N-128 |")
+        line = _row("ledger", "| balance | N-96 |")
         stage("ledger", line, _with_cell(line, 2, "= pay_calendar:P16"))
         problems = registry.also_violations()
         assert any("still its own live row" in p for p in problems), problems
@@ -456,10 +456,10 @@ class TestTheTwoAlsoRelationsMeanOppositeThings:
     def test_the_control_fires_on_a_distinct_relation_naming_nothing(self, stage):
         """`~` says the target is a live, DISTINCT finding, so it must exist.
 
-        The live instance this catches: after the 2026-08-09 merges, N-128's
-        cell still named `recurrence:F-10`, a row that no longer existed.
+        The live instance: after the 2026-08-09 merges N-128's cell still
+        named `recurrence:F-10`, a row that no longer existed.
         """
-        line = _row("ledger", "| balance | N-128 |")
+        line = _row("ledger", "| balance | N-96 |")
         stage("ledger", line, _with_cell(line, 2, "~ recurrence:F-10"))
         problems = registry.also_violations()
         assert any("names no live row" in p for p in problems), problems
@@ -841,7 +841,7 @@ class TestTheParserSurvivesTheShapesTheRealFilesUse:
         and a finding nobody sees again.
         """
         before = len(registry.ledger_rows())
-        line = _row("ledger", "| balance | N-128 |")
+        line = _row("ledger", "| balance | N-96 |")
         stage("ledger", line, _with_cell(line, 3, "an unescaped X | Y pipe"))
         assert len(registry.ledger_rows()) == before - 1, "the row must vanish"
         problem = registry.stated_count_violation()

@@ -119,7 +119,6 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.pay_period import PayPeriod
 from app.services import growth_engine
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -127,6 +126,7 @@ from app.services.account_projection import (
 )
 from app.services.cash_ledger import ReconciledThrough
 from app.services.interest_projection import accrued_interest
+from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
 from . import _asset_contributions, _cash_fold
@@ -751,16 +751,15 @@ def fold_asset_balances(
 def asset_period_view(
     account: Account,
     ctx: BalanceContext,
-    periods: "list[PayPeriod]",
     inputs: ContributionInputs,
 ) -> "OrderedDict[int, AssetPeriodFigures]":
-    """Return *account*'s modelled column for each of *periods*.
+    """Return *account*'s modelled column for each of the pass's pay periods.
 
     The per-period map and its accrual and contribution components, sampled off
     ONE resolved step list.  Each period
     is valued over its OWN span -- ``(p.start_date - 1 day, p.end_date]`` -- so
-    the periods need be neither contiguous nor ordered, and the first period is
-    covered without a predecessor to subtract from.
+    the first period is covered without a predecessor to subtract from and a
+    window is a window rather than a re-based projection.
 
     Every component is read through the shared
     :func:`~app.services.balance_at._fold.sample_cumulative`, never as a
@@ -770,30 +769,32 @@ def asset_period_view(
 
     Args:
         account: The account to value.
-        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-        periods: The pay periods to value, in the caller's display order.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`,
+            which is also where the reported periods come from since plan step
+            C2-c (:meth:`~app.services.balance_at.BalanceContext.reported_periods`).
         inputs: The account's
             :class:`~app.services.balance_at._asset_contributions.ContributionInputs`.
 
     Returns:
-        ``OrderedDict`` period id -> :class:`AssetPeriodFigures`, in the order
-        *periods* was given.  EVERY input period is present.  Empty for an empty
-        *periods*.
+        ``OrderedDict`` period id -> :class:`AssetPeriodFigures`, in payday
+        order.  EVERY reported period is present.  Empty for an owner with no
+        pay periods.
     """
-    if not periods:
+    window = ctx.reported_periods()
+    if not window:
         return OrderedDict()
     return period_columns(
         _assemble(
-            account, ctx, max(period.end_date for period in periods), inputs,
+            account, ctx, max(period.end_date for period in window), inputs,
         ),
-        periods,
+        window,
     )
 
 
 def period_columns(
-    folded: ModelledFold, periods: "list[PayPeriod]",
+    folded: ModelledFold, window: PeriodWindow,
 ) -> "OrderedDict[int, AssetPeriodFigures]":
-    """Read *periods*' columns off an ALREADY-resolved modelled fold.
+    """Read a window's columns off an ALREADY-resolved modelled fold.
 
     :func:`asset_period_view`'s body, split from its assembly for the same
     reason :func:`~app.services.balance_at._cash_periods.period_view_of` was (plan
@@ -804,19 +805,21 @@ def period_columns(
     Args:
         folded: The account's :class:`ModelledFold` (:func:`resolve`), resolved
             to a horizon at or past every period's ``end_date``.
-        periods: The pay periods to value, in the caller's display order.
+        window: The pay periods to value, as a slice of the owner's ONE derived
+            calendar
+            (:meth:`~app.services.balance_at.BalanceContext.reported_periods`).
 
     Returns:
-        ``OrderedDict`` period id -> :class:`AssetPeriodFigures`, in the order
-        *periods* was given.  EVERY input period is present.  Empty for an empty
-        *periods*.
+        ``OrderedDict`` period id -> :class:`AssetPeriodFigures`, in payday
+        order.  EVERY period of *window* is present.  Empty for an empty
+        *window*.
     """
-    if not periods:
+    if not window:
         return OrderedDict()
-    ends = [period.end_date for period in periods]
-    boundaries = ends + [period.start_date - _ONE_DAY for period in periods]
+    ends = [period.end_date for period in window]
+    boundaries = ends + [period.start_date - _ONE_DAY for period in window]
     return _assemble_columns(
-        periods,
+        window,
         sample_cumulative(folded.seed, folded.steps, ends),
         sample_cumulative(
             _ZERO_MONEY, sorted(folded.accrual_by_day.items()), boundaries,
@@ -894,7 +897,7 @@ def _cumulative(by_day: "dict[date, Decimal]", as_of: date) -> Decimal:
 
 
 def _assemble_columns(
-    periods: "list[PayPeriod]",
+    window: PeriodWindow,
     balances: dict[date, Decimal],
     accrued: dict[date, Decimal],
     contributed: dict[date, Decimal],
@@ -902,7 +905,7 @@ def _assemble_columns(
     """Read each period's column off the three sampled cumulative series.
 
     Args:
-        periods: The pay periods to report, in display order.
+        window: The pay periods to report.
         balances: The modelled running total sampled at each period's
             ``end_date``.
         accrued: The cumulative ACCRUAL sampled at each period's ``end_date``
@@ -914,9 +917,9 @@ def _assemble_columns(
         ``OrderedDict`` period id -> :class:`AssetPeriodFigures`.
     """
     columns: "OrderedDict[int, AssetPeriodFigures]" = OrderedDict()
-    for period in periods:
+    for period in window:
         opening = period.start_date - _ONE_DAY
-        columns[period.id] = AssetPeriodFigures(
+        columns[period.period_id] = AssetPeriodFigures(
             balance=balances[period.end_date],
             accrual=accrued[period.end_date] - accrued[opening],
             contribution=(

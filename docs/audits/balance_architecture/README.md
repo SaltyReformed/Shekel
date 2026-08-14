@@ -721,8 +721,10 @@ hides.
   read off the CURRENT template row whatever date the pass is pinned at.
   * [ ] **X-i1 THE MEMO** -- additive, byte-identical on both databases. The context gains the input
     tier the loan derivations already have, through the SAME `_memoize_once` mechanism rather than a
-    second one: the calendar, the per-account contribution feed, the override map, the standing
-    extra, the contractual schedule. Every loader keeps the clock it has today, so no figure can
+    second one: the per-account contribution feed, the override map, the standing
+    extra, the contractual schedule. **The CALENDAR left this list on 2026-08-13**, taken early by
+    `pay_calendar:C2-c` (`b8a72f6c`) -- as a method beside `loan_walk`, which owns its derivation,
+    not through `_memoize_once`, which stores what the seam fills from above. Every loader keeps the clock it has today, so no figure can
     move and the harness is the proof. **Its tier is WIDENED by N-115** (ruling **R-BU**, which SEQUENCED the residual double load here
     rather than deferring it): the dashboard tracks
     section pays twice per render for three more loaders, and the expensive one is **two full

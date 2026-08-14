@@ -121,7 +121,6 @@ class TestInvestmentDashboard:
         _create_investment_params(db.session, acct.id)
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-            seed_periods_today,
         )[pay_period_service.get_current_period(seed_user["user"].id).id]
         assert headline > Decimal("50000.00")
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
@@ -159,7 +158,6 @@ class TestInvestmentDashboard:
         )
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-            seed_periods_today,
         )[pay_period_service.get_current_period(seed_user["user"].id).id]
         assert headline > Decimal("25000.00")  # ruling R-Y: the anchor accrues
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
@@ -1966,7 +1964,7 @@ class TestInvestmentEntryAwareRouting:
             # basis under test is genuinely the one the tile is built on.
             bctx = BalanceContext.build(user.id)
             basis = balance_at.cash_balance_map(
-                acct, bctx, seed_periods_today,
+                acct, bctx,
             )
             assert basis[current_period.id] == Decimal("49545.71")
 
@@ -1976,7 +1974,7 @@ class TestInvestmentEntryAwareRouting:
             # the load-bearing half: it is what the accrual is computed ON, so
             # the pre-fix seed would still land the rendered figure ~$45 low.
             displayed = balance_at.balance_map(
-                acct, bctx, seed_periods_today,
+                acct, bctx,
             )[current_period.id]
             assert displayed > Decimal("49545.71")
             assert displayed - Decimal("49545.71") < Decimal("200.00")
@@ -2613,7 +2611,6 @@ class TestInvestmentBalanceHeroTrueUp:
         # the anchor period's own accrual (ruling R-Y).
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-            seed_periods_today,
         )[pay_period_service.get_current_period(seed_user["user"].id).id]
         assert headline > Decimal("50000.00")
         assert f"{headline:,.2f}" in html

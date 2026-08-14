@@ -5563,7 +5563,6 @@ class TestCheckingDetailCanonicalProducer:
             grid_current_balance = balance_at.grid_balance_view(
                 account,
                 BalanceContext.build(seed_user["user"].id),
-                seed_periods_today,
             ).columns[current_period.id].balance
 
             # F-009 / CRIT-01: 614.29 - max(500 - 45.71 - 0, 0)
@@ -6274,7 +6273,7 @@ class TestCashDetailContext:
             # pylint: disable=import-outside-toplevel
             from app.services.balance_at import BalanceContext
             ibp = net_worth_kernel.interest_by_period_for_account(
-                acct, BalanceContext.build(seed_user["user"].id), periods,
+                acct, BalanceContext.build(seed_user["user"].id),
             )
             lo = current.period_index + 1
             hi = current.period_index + 26  # 26 biweekly periods = 1 year.

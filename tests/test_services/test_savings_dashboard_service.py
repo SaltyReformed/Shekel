@@ -2864,7 +2864,6 @@ class TestCanonicalProducerRouting:
             grid_current_balance = balance_at.grid_balance_view(
                 seed_user["account"],
                 BalanceContext.build(seed_user["user"].id),
-                seed_periods_today,
             ).columns[current_period.id].balance
 
             # F-009 / CRIT-01: 614.29 - max(500 - 45.71 - 0, 0)

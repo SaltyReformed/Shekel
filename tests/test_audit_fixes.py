@@ -532,7 +532,6 @@ class TestBalanceWithTransfers:
             BalanceContext.build(
                 seed_user["user"].id, as_of=seed_periods[0].start_date,
             ),
-            seed_periods,
         )
 
         # Period 0 (anchor): 1000
@@ -582,7 +581,6 @@ class TestBalanceWithTransfers:
             BalanceContext.build(
                 seed_user["user"].id, as_of=seed_periods[0].start_date,
             ),
-            seed_periods,
         )
 
         assert balances[seed_periods[1].id] == Decimal("1300.00")
@@ -634,7 +632,6 @@ class TestBalanceWithTransfers:
             BalanceContext.build(
                 seed_user["user"].id, as_of=seed_periods[0].start_date,
             ),
-            seed_periods,
         )
 
         # Cancelled transfer shadows should not reduce balance.

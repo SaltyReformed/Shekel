@@ -262,9 +262,21 @@ def contribution_events(
     plan = _plan_for(account, scenario_id, inputs)
     if plan is None:
         return []
+    # Ordered by the PAYDAY, explicitly, rather than by whatever
+    # ``get_all_periods`` happens to order by (the stored ``period_index``).
+    # :func:`_dated_events` accumulates a calendar year's contributions in
+    # iteration order and resets on a year change, so the order decides which
+    # periods the annual limit caps -- and index order and date order are two
+    # different things this arc exists because nothing reconciles
+    # (``PayCalendar.filing_period`` measures them parting company on 800 of
+    # 872 probed days).  Stating the order here makes the consumer's
+    # precondition true instead of inherited.
     return _dated_events(
         plan,
-        pay_period_service.get_all_periods(account.user_id),
+        sorted(
+            pay_period_service.get_all_periods(account.user_id),
+            key=lambda period: period.start_date,
+        ),
         reconciled_through,
     )
 
@@ -316,10 +328,15 @@ def _dated_events(
 
     Args:
         plan: The account's :class:`_ContributionPlan`.
-        periods: The user's pay periods, CHRONOLOGICAL (ordered by
-            ``period_index``), and the whole calendar rather than a caller's
-            window -- the year-boundary reset and the limit accounting are
-            wrong over a slice.
+        periods: The user's pay periods, CHRONOLOGICAL -- ordered by
+            ``start_date``, the PAYDAY, which is the only fact in the row.
+            **This read "ordered by ``period_index``" until plan step C2-c**,
+            an equation nothing in the schema enforces and which
+            ``PayCalendar.filing_period`` measures parting company with date
+            order on 800 of 872 probed days; the caller sorts explicitly now.
+            The whole calendar rather than a caller's window, too -- the
+            year-boundary reset and the limit accounting are wrong over a
+            slice.
         reconciled_through: The account's coverage boundary -- the latest
             assertion, as the rule that decides what it already contains.
 
