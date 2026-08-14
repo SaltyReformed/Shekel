@@ -397,10 +397,21 @@ and form work is not carried into it.
       refuses; `due_dom` and `valid_offset` are mirrored beside `dom` / `moy`. Takes the
       count-bounded end off **R8**. Four reviews; the commit enumerates what they found.
 
-- [ ] **R7b-4 -- the opening bound becomes a DATE.**
+- [x] **R7b-4 -- the opening bound becomes a DATE.** `67f013c8`. "First paycheck" (a pay-period FK)
+      became "Starts on", folded into `start_date` under a MAXIMUM that writes only the term
+      deciding it. **D2 and D30 close.** The `Every N Periods` PHASE became a derivation of that
+      bound, deleting `_phased_period_anchor`, `RecurrenceSpec.offset_periods` and the negative-
+      offset refusal. 46 rules, 880 placed occurrences, 0 moved; the frozen 430-shape oracle is
+      byte-identical. What R7c inherits is under R7c.
+
+- [ ] **R7c -- the cutover.**
+
+**What plan step R7b-4 left for THIS step**, moved here because a shipped step's entry is a pointer
+rather than an account (`conventions.md` rule 5) and because every ruling below binds the cutover
+rather than the leaf that took it.
 
 **R7b is FOUR leaves**, split with the developer 2026-08-12: the vocabulary swap, the form, the
-bounds and the opening bound, of which only the last carries a migration. **Three have shipped.**
+bounds and the opening bound, of which only the last carried a migration. **All four have shipped.**
 Every leaf authors through the closed-set columns, so the schema does not move until R7c.
 
 **Two rulings taken 2026-08-12 on the shape of the cadence controls, which R7c must obey.** They are
@@ -424,60 +435,106 @@ uses needs no schedule, which is that module's charter, while WHERE the anchor l
 calendar. `fires_on_day_of_month` is its projection, and it is what the form asks rather than
 keeping a second list of which cadences have a day-of-month coordinate.
 
-**Any step that changes the recurrence form's controls runs
-`tests/manual/verify_recurrence_form.py`, and R7b-3 could not.** Two of R7b-2's six defects were
-invisible to pytest by construction -- a control hidden by a class, an option hidden by a script,
-and a style the browser REFUSED to apply all look identical in rendered HTML. R7b-3 EXTENDED the
-script for the "Ends" control (`_drive_end_bound`) and left it unrun: it needs an interactive
-`save_dev_session.py`, and the dev app is one shared container that serves whichever checkout
-started it. **It is owed before R7b-4 changes these controls again**, and R7b-3's own two HIGH
-defects -- a preview that stopped honouring the bound, and three refusals that reached the user as
-the generic prompt -- were both found by adversarial review rather than by either gate, which is the
-standard this mandate exists to hold.
+**THE PHASE IS A DERIVATION OF THE OPENING BOUND** (developer ruling 2026-08-14, option C of three),
+and R7c inherits it. `_derive_offset_periods` answers
+`span_containing(effective).period_index % interval_n` -- the ordinal of the paycheck the bound
+falls in -- so nothing authors a phase and `offset_periods` is written but never read back. The
+alternative was to keep the stored column, which would have opened a new every-N-paychecks rule up
+to N-1 paychecks LATE for its whole life. Three consequences R7c must not undo: the `FAMILY_PERIOD`
+anchor IS the bound (`_phased_period_anchor` existed only to reconcile two independent statements of
+one cadence); `ck_recurrence_rules_valid_offset` is unviolatable rather than mirrored, retiring one
+of **D23**'s two remaining mirrors; and the divergence `_occurrence._period_walk` recorded for R7c
+-- the advance falling back to the raw bound and generating nothing -- is unreachable, because the
+paycheck the bound falls in is in phase by construction. `span_containing` rather than
+`period_containing` is what keeps it TOTAL past the horizon, which R7c's NOT NULL columns need.
 
-"First paycheck" (a pay-period FK) becomes "Starts on" (a date) written to the existing `start_date`
-column, which is the target model's `starts_on` under its current name. Ruled 2026-08-12 on a
-measurement: dropping the affordance outright moves ONE live rule (Claude Max, anchor `2026-08-07`
--> `2026-04-07`, four extra rows into past periods) while folding it into `start_date` with
-`COALESCE` moves NONE of the 46. **A loan payment's bound stays DERIVED** -- `_sync_loan_cadence`
-writes it from the first contractual installment -- so that form renders it read-only and the field
-leaves the payload, which is what stops `replace()` touching it. The fold makes four readers dead
-and they go with it: `RecurrenceRule.start_period` (**D30**), `PeriodLockReason.RECURRENCE_ANCHOR`,
-and `pay_period_admin._rule_ids_with_start_period` / `_repoint_recurrence_rules` -- the last two
-R9's, folded in by developer ruling rather than left as dead code. **D2 dies here.** Destructive, so
-it carries the `Review:` line and a downgrade that re-derives what it nulled.
+**The migration's downgrade restores NOTHING, and that is the ruling rather than a shortcut.** The
+old code read `start_period_id` for two things: the opening maximum, which `start_date` now HOLDS,
+and the phase, which fell back to the `offset_periods` COLUMN -- and the write door always wrote
+that column with the value the FK would have derived. Re-deriving the FK would NOT be neutral: a
+rule that always had a `start_date` and never had a start period (every loan payment) would newly
+acquire one and re-phase. Exercised in both directions on a production clone.
+
+**Any step that changes the recurrence form's controls runs
+`tests/manual/verify_recurrence_form.py`.** Two of R7b-2's six defects were invisible to pytest by
+construction -- a control hidden by a class, an option hidden by a script, and a style the browser
+REFUSED to apply all look identical in rendered HTML.
+
+**R7b-3's unrun debt was PAID at R7b-4**, which ran the script FIRST against the unchanged form
+(green, so R7b-3's control was sound), extended it for its own two controls (`_drive_opening_bound`,
+18 checks), and ran it again.
+**That second run found a 500 the whole 9,293-test suite was green across**: the "Starts on" box is
+hidden when the form says "does not repeat", a hidden input still SUBMITS, and `start_date=""`
+reached `TransactionTemplate(**data)`, which has no such keyword. Every hand-written payload omitted
+the key because a person writing one includes the fields they are thinking about; a browser posts
+every control the page renders. Fixed on both tiers, with a route test written from the wire and
+shown FAILING against the un-fixed helper before it was kept.
 
 **The transfer form's pay-period `<select>` SURVIVES under its other job** -- which period a
-one-time transfer lands in -- **and stops being relabelled by JS here.** That sentence sat under
-R7b-2 until an adversarial review of it measured the relabelling still live (`recurrence_form.js`
-swapping "First paycheck" / "Pay period" on every unit change), which is correct: the swap exists
-because ONE control means two things, and only this leaf removes the second meaning. It is R7b-4's
-to delete, not R7b-2's.
+one-time transfer lands in -- and it means ONE thing now: the JS relabelling is deleted, the control
+shows only while "Does not repeat" is selected, and it is DISABLED otherwise because a hidden
+control still submits. Its owner-check moved with it, from the kind-agnostic F-24 builder to
+`transfers.create_transfer_template`; the transaction schema no longer declares the field at all.
 
-**Two findings this leaf inherits, from R7b-3's adversarial reviews.** They are here rather than in
-`ledger.md` because that registry was at its 20-line headroom when R7b-3 shipped (`conventions.md`
-rule 4: the overflow's destination is the owning step's specification).
+**One finding R7b-3 left was stated BACKWARDS, and the wrong direction was the harmless-reading
+one.** It said `is_loan_payment` (`settings is not None`) is BROADER than the set
+`loan_recurrence_sync` writes bounds for, and that every live loan payment satisfies both. Measured
+2026-08-14: **neither real loan payment carries a `loan_payment_settings` row**, so it is NARROWER
+and R7b-3's "Ends" lock never fired on either loan -- a user could type an end date on their
+mortgage and the next payoff-affecting edit would silently overwrite it. Both bound locks and both
+crafted-POST refusals now ask `loan_recurrence_sync.owns_validity_window`, which is the sync's own
+precondition.
 
-- `_recurrence_form_helpers.is_loan_payment` (`settings is not None`) is BROADER than the predicate
-  `loan_recurrence_sync` actually writes a bound for, which also needs the account's ACTIVE
-  recurring transfer template, `LoanParams` and a baseline scenario. A settings-carrying template
-  outside that set renders its "Ends" control locked, saying the value is "set from the loan's
-  projected payoff", for a payoff nothing writes. None measured -- every live loan payment satisfies
-  both. **This leaf locks the OPENING bound on the same predicate, so both locks are decided
-  together or the second inherits the first's error.**
-- The 58 `Schema.validate(...)` calls across 26 route modules that are each followed by a
-  `Schema.load(...)` of the same payload run every validator TWICE, and `validate` is
-  `_do_load(postprocess=False)` -- so a refusal in a `@post_load` hook is invisible to it and
-  escapes the following `load` as an unhandled 500. R7b-3 measured that on its own bound refusals
-  and moved its four sites to `load_form_or_redirect`; only `investments.py` declares another
-  `@post_load` and it cannot raise, so no other site carries the hazard today.
-  **The sweep is `balance:X-ah`'s** -- the step that already rules every other input-door spelling
-  -- and the pattern to copy is that function.
+**The THIRD caller was fixed in the same commit** (developer ruling 2026-08-14, reversing one taken
+before the measurement existed). `LOAN_PAYMENT_CANNOT_BE_ONE_TIME` had been left on
+`is_loan_payment` on the reasoning that it is about the standing `extra_principal` -- true, and not
+the whole of it: clearing the recurrence nulls `recurrence_rule_id`, which is how
+`active_recurring_transfer_template` FINDS a loan's payment, so both of the developer's real loans
+could be set to "Does not repeat" and left amortizing with nothing projecting a payment. It asks the
+UNION now, which keeps the set the refusal was written for and adds the set the harm is measured on.
+Its firing control uses the PRODUCTION shape -- a loan payment with no settings row -- and was shown
+failing against the predicate it replaced.
 
-Both are R7b-4's to schedule, not to remember: the first is decided with the lock this leaf already
-builds, and the second names the step that owns the sweep.
+**The other inherited finding is unchanged, and it belongs to `balance:X-ah`** -- the step that
+already rules every other input-door spelling. The 58 `Schema.validate(...)` calls each followed by
+a `load()` of the same payload run every validator twice, and `validate` is
+`_do_load(postprocess=False)`, so a `@post_load` refusal escapes as an unhandled 500. The four sites
+in this arc already moved to `load_form_or_redirect`, and that function is the pattern the sweep
+should copy.
 
-- [ ] **R7c -- the cutover.**
+**Three adversarial reviews ran against this leaf before it shipped and every one earned its keep.**
+What they found is in the commit; three things they left are here because a later step must act on
+them, and the ledger is at its 20-line headroom (`conventions.md` rule 4).
+
+- **The create form's DEFAULT was the money finding, and it was mine to introduce.** The control
+  this step replaced was a `<select>` with no empty option preselecting the CURRENT period, so every
+  definition ever created carried an opening bound of "the paycheck I am in". A date box defaulting
+  to empty made that "unbounded", and the create routes generate over `GenerationSchedule.for_user`
+  with no lower window bound -- measured, a `$2,000.00` rent template created today wrote 5
+  backdated rows, `$10,000.00`, into pay periods that had already closed. Fixed in-commit
+  (`create_form_default_start_date`), with a route test that drives the form's OWN rendered default
+  rather than a date the test chose, shown FAILING against the empty default. **Nothing is owed** --
+  it is recorded because the lesson generalises: replacing a control that always submitted with one
+  that may not is a DEFAULT change, and the suite could not see it because no test asserted the
+  generated ROWS of a create.
+- **A create into a configured LOAN still discards a typed "Starts on" silently.**
+  `materialize_initial_transfers` calls `bind_rule_to_loan`, which overwrites `start_date` with the
+  loan's first contractual installment -- the same "accepted then silently discarded" outcome the
+  EDIT path refuses with a message. Financially safe (the loan's bound wins, so nothing generates
+  pre-origination) and PRE-EXISTING for the closing bound, which R7b-3 left in the same shape. It is
+  R7c's to rule with the rest of the create-form controls: lock on a loan destination, or say so in
+  the help text.
+- **`PayCalendar.period_by_id` has no `app/` caller left**, this step having removed the last one.
+  It is the pay-calendar arc's value, so deleting it from the recurrence arc would be the
+  out-of-scope change `RecurrenceRule.start_period` was not; both docstrings now say so rather than
+  naming a consumer that no longer exists.
+
+**One claim about the frozen oracle is weaker than it reads, stated so it is not over-relied on.**
+The 36 `every_n_periods` shapes are re-parameterised onto `start_date`, and every bound they state
+is exactly a payday -- so the byte-identical blob proves the derivation over the payday case and
+says nothing about a bound landing MID-period, which is the input the change actually introduced.
+That case is covered, by two hand-computed cases in `test_recurrence_resolution.py` and one in
+`test_recurrence_engine.py`; the blob is not what covers it.
 
 ONE migration: add `unit_id` / `starts_on` / `nominal_day` / `placement_id` / `shift_id`, backfill,
 tighten `starts_on` to NOT NULL by the documented three-step (`.claude/rules/database.md`), add
