@@ -3261,13 +3261,22 @@ class TestOneTimeTransfer:
         recurring pattern (here "Every Period") persisted a foreign
         ``start_period_id`` unchecked -- and ``recurrence_engine`` then
         read that victim period's ``start_date`` as the generation
-        boundary.  The sibling IDOR route test covers only the ONCE
-        pattern (which had a separate re-check), so this pins the persist
-        path closed end-to-end for a recurring pattern: the F-24 builder
-        probe rejects before any row is written.  A regression that
-        re-narrowed the probe to EVERY_N_PERIODS would reopen the IDOR on
-        this recurring persist path -- which the prior ONCE-only route
-        coverage (guarded by a separate re-check) did not exercise.
+        boundary.
+
+        **The probe MOVED at plan step R7b-4 and this test is now its
+        primary coverage.**  It sat in the kind-agnostic F-24 builder
+        (``build_recurrence_rule_from_form``) because that ``<select>`` was
+        also the recurrence's "First paycheck"; the recurrence takes a DATE
+        now, so the field has one job -- which period a NON-repeating transfer
+        lands in -- and ``create_transfer_template`` owner-checks it before
+        anything is written.  The transaction-template twin of this case is
+        gone with the surface: that schema no longer declares the field at all
+        (``test_templates.py::test_create_recurring_template_ignores_a_foreign_start_period``).
+
+        This POST names a RECURRING cadence, which is the shape that matters:
+        the recurrence has no use for the period, so the check must still run
+        rather than being skipped as irrelevant.  A regression that only
+        checked the non-repeating branch would reopen the IDOR here.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)

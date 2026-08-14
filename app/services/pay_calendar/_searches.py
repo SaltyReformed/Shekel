@@ -114,8 +114,10 @@ def period_by_id(
     **The single identity lookup.**  Shared with the recurrence arc's
     ``PeriodCalendar`` at plan step C2-b1 for the reason every other primitive
     here is shared: two implementations of one question drift, and this one
-    answers a WRITE question -- which stored row a rule's authored start period
-    names -- so a drift places a generated row against the wrong paycheck.
+    answered a WRITE question -- which stored row a rule's authored start
+    period named -- until plan step R7b-4 folded that FK into a date and left
+    this without an ``app/`` caller.  The pay-calendar arc rules on whether it
+    survives; see :meth:`~._calendar.PayCalendar.period_by_id`.
 
     Linear rather than a map built at construction, and deliberately: a
     calendar is built once per request and the lookup runs once per rule, so an

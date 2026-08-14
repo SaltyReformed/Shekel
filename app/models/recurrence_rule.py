@@ -23,11 +23,15 @@ What READS this table today: ``app.services.recurrence.rule_occurrences``,
 which since plan step R4a reads the row WHOLE -- it builds a ``RecurrenceSpec`` from every
 authored column and hands it to ``app.services.recurrence.resolve``.  There is
 no per-pattern dispatch and no branch: ``interval_n`` is read (and refused when
-below 1) for every pattern, ``day_of_month`` / ``due_day_of_month`` /
-``month_of_year`` / ``offset_periods`` are refused outside their CHECK domains
-for all of them, ``start_period_id`` is read HERE now rather than only by
-``resolve_generation_plan``, and ``offset_periods`` is read only when the
-schedule handed in does not contain the start period (plan ledger row D24).
+below 1) for every pattern, and ``day_of_month`` / ``due_day_of_month`` /
+``month_of_year`` are refused outside their CHECK domains for all of them.
+
+``start_period_id`` and ``offset_periods`` are no longer read at all (plan
+step R7b-4).  They were one fact between them -- the paycheck a rule started
+on, and the cycle phase derived from it -- and a rule has ONE opening bound,
+``start_date``.  The phase is now a function of that bound
+(``recurrence._resolution._derive_offset_periods``), written to its column and
+read back by nobody; the FK is NULL on every row.  Plan step R7c drops both.
 
 ``end_date`` and ``max_occurrences`` are ONE authored value above this table
 (``app.services.recurrence.EndBound``, plan step R7b-3): the occurrence walk
@@ -137,39 +141,44 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
             name="ck_recurrence_rules_moy",
         ),
     )
-    # Optional: the pay period where recurrence should begin.  A WEAK bound --
-    # it seeds ``effective_from`` only when the caller passes none
-    # (``recurrence_engine.resolve_generation_plan``), so a caller supplying its
-    # own effective_from (``transfer_recurrence.regenerate_for_template``,
-    # the unarchive path) silently bypasses it.  It is the form's "First
-    # paycheck" affordance, NOT a validity bound; ``start_date`` below is the
-    # bound.
+    # **RETIRED at plan step R7b-4, and NULL on every row.**  It was the
+    # form's "First paycheck" affordance -- a WEAK bound that seeded
+    # ``effective_from`` only when the caller passed none, so a caller
+    # supplying its own silently bypassed it (defect D2).  That step's
+    # migration folded every value into ``start_date`` below, which is the
+    # bound and cannot be bypassed, and NOTHING reads or writes this column
+    # now: not the write door (``recurrence._authoring._author``), not the
+    # resolver, not the lock classifier.  It survives only because dropping a
+    # column belongs with the four others plan step R7c drops in one
+    # transaction.
     start_period_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # Optional start date -- recurrence generates nothing whose period ends
-    # before this date.  NULL means unbounded (no start), which is every rule
-    # the user configures by hand.
+    # The rule's OPENING BOUND, and since plan step R7b-4 the only thing a
+    # rule says about when it begins: recurrence generates nothing whose
+    # occurrence falls before this date.  NULL means unbounded below, and the
+    # owner's first payday is then the floor.
     #
     # The SYMMETRIC partner of ``end_date`` below, and unbypassable the same
     # way: since plan step R4a both bounds bind the OCCURRENCE rather than the
     # candidate period -- this one through the anchor
     # ``app.services.recurrence.resolve`` derives (the GREATEST of the
-    # schedule's opening, this date, and the start period's start), that one
-    # through the occurrence engine's stopping bound.  Neither is expressible
-    # through a caller's ``effective_from``, so -- unlike ``start_period_id``
-    # -- no caller can bypass them.  Together the two columns are the rule's
-    # validity window.
+    # schedule's opening and this date), that one through the occurrence
+    # engine's stopping bound.  Neither is expressible through a caller's
+    # ``effective_from``, so no caller can bypass them.  Together the two
+    # columns are the rule's validity window.
     #
-    # Written only by ``loan_recurrence_sync.sync_recurring_payment_bounds``,
-    # which derives it from the loan's FIRST CONTRACTUAL INSTALLMENT (plan step
-    # C9a): a loan payment cannot precede the loan.  A payment generated before
-    # origination is erased by the fold (it splits against a zero balance and
-    # the origination anchor then resets over it), so it debits cash for a loan
-    # that does not exist yet -- measured at $3,220.92 on a mortgage closing one
-    # month out.
+    # TWO writers.  The recurrence form authors it as "Starts on" (plan step
+    # R7b-4).  For a LOAN PAYMENT the app derives it instead, and the form
+    # renders it read-only:
+    # ``loan_recurrence_sync.sync_recurring_payment_bounds`` writes the loan's
+    # FIRST CONTRACTUAL INSTALLMENT (plan step C9a), because a loan payment
+    # cannot precede the loan.  A payment generated before origination is
+    # erased by the fold (it splits against a zero balance and the origination
+    # anchor then resets over it), so it debits cash for a loan that does not
+    # exist yet -- measured at $3,220.92 on a mortgage closing one month out.
     start_date = db.Column(db.Date, nullable=True)
     # Optional end date -- recurrence stops generating after this date.
     # NULL means indefinite (no end).
@@ -197,7 +206,16 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
     # ``pattern_id`` stays -- it is what a form still authors, until step R7c
     # replaces it with ``unit_id`` / ``interval_n`` -- and is resolved to its
     # enum member through ``ref_cache``, never through a relationship.
-    start_period = db.relationship("PayPeriod", lazy="joined")
+    #
+    # **``start_period`` is GONE TOO** (plan step R7b-4, ledger row D30), and
+    # it was D17's defect one line down: ``lazy="joined"``, so every rule load
+    # eager-joined ``budget.pay_periods`` for ZERO readers.  The only mention
+    # of it anywhere was a comment in ``_recurrence_form_helpers`` claiming
+    # ``recurrence_engine`` dereferenced ``rule.start_period.start_date``,
+    # which was false -- the resolver looked the period up through the
+    # calendar.  It was left out of R7a-1 deliberately (CLAUDE.md rule 6: D17
+    # named the ``pattern`` relationship, not this one) and goes here, with
+    # the affordance that gave it its name.
     # The two 0-or-1 subtypes.  ``uselist=False`` because the UNIQUE
     # constraint on each child's ``recurrence_rule_id`` makes at most one
     # row possible, and ``lazy="select"`` (not ``joined`` like the two

@@ -200,6 +200,13 @@ def recurrence_spec_with_cadence(
     stored pattern as a trailing option -- and left this function's job
     unchanged.)
 
+    **``offset_periods`` and ``start_period_id`` stopped being read at plan
+    step R7b-4**, because the spec stopped carrying them.  A recurrence has
+    ONE opening bound and ``start_date`` is it; the cycle phase is derived
+    from that bound rather than read back off the column the write door
+    writes it to.  Reading a derived value back in is what let a rule state
+    its cadence twice.
+
     Args:
         rule: The rule to read.  Its ``pattern_id`` and ``interval_n`` are NOT
             consulted.
@@ -222,11 +229,9 @@ def recurrence_spec_with_cadence(
         unit=unit,
         interval_n=interval_n,
         placement=placement,
-        offset_periods=rule.offset_periods,
         day_of_month=rule.day_of_month,
         due_day_of_month=rule.due_day_of_month,
         month_of_year=rule.month_of_year,
-        start_period_id=rule.start_period_id,
         start_date=rule.start_date,
         # The exclusive arc rejoined into the one value that authored it --
         # the inverse of ``_authoring._author``'s split, and the only other

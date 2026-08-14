@@ -98,9 +98,6 @@ _PP_LOCK_BADGES = {
     pay_period_locks.PeriodLockReason.LEDGER_POSTINGS: (
         "Posted", "flag-chip flag-chip--warning",
     ),
-    pay_period_locks.PeriodLockReason.RECURRENCE_ANCHOR: (
-        "Rule start", "flag-chip flag-chip--neutral",
-    ),
 }
 _PP_MUTABLE_BADGE = ("Editable", "flag-chip")
 

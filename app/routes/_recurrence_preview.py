@@ -26,8 +26,6 @@ from flask_login import current_user
 from markupsafe import Markup
 
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
-from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.services import pay_period_service
 from app.services.pay_calendar import DerivedPeriod, PayCalendar, calendar_for
@@ -50,60 +48,49 @@ logger = logging.getLogger(__name__)
 PREVIEW_OCCURRENCE_LIMIT = 5
 
 
-def owned_preview_start_period() -> PayPeriod | None:
-    """Return the submitted start period when this user owns it, else ``None``.
-
-    Ownership check: another user's period is rejected rather than used, so
-    the preview cannot disclose someone else's pay-period structure (audit
-    finding H3).  Falling through to ``None`` leaves the preview on this
-    user's own schedule.
-
-    Returns:
-        The owned :class:`~app.models.pay_period.PayPeriod`, or ``None`` when
-        none was submitted or it is not this user's.
-    """
-    start_period_id = request.args.get("start_period_id", type=int)
-    if start_period_id is None:
-        return None
-    start_period = db.session.get(PayPeriod, start_period_id)
-    if start_period is None or start_period.user_id != current_user.id:
-        return None
-    return start_period
-
-
-def _submitted_end_date() -> date | None:
-    """Return the submitted ``end_date``, or ``None`` when it is unusable.
+def _submitted_iso_date(field: str) -> date | None:
+    """Return an ISO date query argument, or ``None`` when it is unusable.
 
     ``date.fromisoformat`` raises ``ValueError`` on anything that is not an
-    ISO date, and this endpoint reads the value straight from
+    ISO date, and this endpoint reads its values straight from
     ``request.args`` -- so ``?end_date=garbage`` was an unhandled 500 for any
     signed-in user.  Found by a neutral review of plan step R4a, which had
     closed the OTHER four unvalidated arguments through
     :class:`~app.services.recurrence.RecurrenceResolutionError` and then
-    claimed the whole class; this one never reaches the resolution seam, so
-    the seam cannot refuse it.
+    claimed the whole class; a value parsed BEFORE the seam cannot be refused
+    by it.
 
     An unparseable bound is treated as ABSENT rather than refused, and the
     asymmetry with the day / month / interval refusals is deliberate: those
     are values the rule would be SAVED with, so a wrong one must not be
     previewed as though it were fine.  A bound that is not a date is not a
-    bound the form can submit either -- ``<input type="date">`` and the
+    bound either form can submit -- ``<input type="date">`` and the
     Marshmallow schema both produce ISO or nothing -- so it is a hand-crafted
-    query string, and the honest preview of "no parseable end date" is the
+    query string, and the honest preview of "no parseable bound" is the
     unbounded rule.
 
+    **Both bounds share this one parser since plan step R7b-4**, which gave
+    the OPENING bound a control: two copies of "parse it or drop it" is the
+    shape that leaves one of them missing a fix the other got.  An
+    out-of-RANGE opening bound is a different question and is NOT answered
+    here -- ``resolve`` refuses it for every caller, and this endpoint's
+    existing handler reports it (see :func:`recurrence_preview_fragment`).
+
+    Args:
+        field: The query-argument name to read.
+
     Returns:
-        The parsed bound, or ``None`` when absent or unparseable.
+        The parsed date, or ``None`` when absent or unparseable.
     """
-    submitted = request.args.get("end_date")
+    submitted = request.args.get(field)
     if not submitted:
         return None
     try:
         return date.fromisoformat(submitted)
     except ValueError:
         logger.info(
-            "Recurrence preview ignored an unparseable end_date for user %s",
-            current_user.id,
+            "Recurrence preview ignored an unparseable %s for user %s",
+            field, current_user.id,
         )
         return None
 
@@ -111,7 +98,7 @@ def _submitted_end_date() -> date | None:
 def build_preview_rule(
     unit: RecurrenceUnitEnum,
     placement: PeriodPlacementEnum,
-    start_period: PayPeriod | None,
+    start_date: date | None,
     calendar: PayCalendar,
 ) -> RecurrenceRule:
     """Build an unsaved, fully resolved rule from the preview request args.
@@ -140,7 +127,8 @@ def build_preview_rule(
         unit: The submitted cadence unit, already checked as modelled by the
             caller.
         placement: The submitted placement, likewise.
-        start_period: The owner-checked start period, or ``None``.
+        start_date: The submitted opening bound, already parsed by the caller,
+            or ``None``.
         calendar: The user's pay-period schedule.
 
     Returns:
@@ -154,7 +142,13 @@ def build_preview_rule(
             placement=placement,
             day_of_month=request.args.get("day_of_month", type=int),
             month_of_year=request.args.get("month_of_year", type=int),
-            start_period_id=start_period.id if start_period else None,
+            # The OPENING bound (plan step R7b-4).  It replaced an
+            # owner-checked ``start_period_id``, and the ownership probe went
+            # with it rather than being relocated: a DATE names nothing of
+            # anyone else's, so the disclosure this endpoint was guarded
+            # against (audit finding H3 -- another user's pay-period
+            # structure) is not expressible in the argument any more.
+            start_date=start_date,
             # Composed through the SUBMISSION door, not the storage one (plan
             # step R7b-3).  These are query args -- a submission -- so a
             # mistake in them is user input, and
@@ -167,7 +161,7 @@ def build_preview_rule(
                 request.args.get(
                     "recurrence_end_mode", default=NEVER_ENDS.token,
                 ),
-                end_date=_submitted_end_date(),
+                end_date=_submitted_iso_date("end_date"),
                 max_occurrences=request.args.get(
                     "max_occurrences", type=int,
                 ),
@@ -239,10 +233,14 @@ def recurrence_preview_fragment() -> str:
     column and its mirror in :func:`app.services.recurrence.resolve` -- rather
     than a third time here.
 
-    ``end_date`` is the exception, and it took a second review to see: it is
-    parsed BEFORE the seam and so cannot be refused by it.
-    :func:`_submitted_end_date` handles it, and the docstring there says why
-    an unparseable bound is dropped rather than refused.
+    The two DATE bounds are the exception, and it took a second review to
+    see the first of them: they are parsed BEFORE the seam and so cannot be
+    refused by it.
+    :func:`_submitted_iso_date` handles it -- BOTH bounds, through one
+    parser since plan step R7b-4 -- and the docstring there says why an
+    unparseable bound is dropped rather than refused.  An out-of-RANGE
+    ``start_date`` is refused by the seam like everything else, so the
+    handler below reports it.
 
     Returns:
         The fragment markup, or a muted one-line explanation when there is
@@ -279,13 +277,22 @@ def recurrence_preview_fragment() -> str:
     if not calendar.periods:
         return "<small class='text-muted'>No pay periods generated yet</small>"
 
-    start_period = owned_preview_start_period()
+    start_date = _submitted_iso_date("start_date")
 
     # ``effective_from`` is a DISPLAY choice -- "show me the next five from
     # here" -- and so the route's, not the rule's: the rule's own opening
     # bound is its anchor.
-    if start_period is not None:
-        effective_from = start_period.start_date
+    #
+    # It follows the submitted "Starts on" when there is one, so the list
+    # opens where the user says the rule does rather than at today's
+    # paycheck.  That is not the same as APPLYING the bound -- the rule's
+    # anchor does that, and it does it whether or not this window agrees --
+    # but showing five occurrences the user cannot see the start of is a
+    # preview that answers a question nobody asked (this is what the retired
+    # "First paycheck" select drove, kept because the reasoning was about the
+    # WINDOW rather than about the control).
+    if start_date is not None:
+        effective_from = start_date
     else:
         current_period = pay_period_service.get_current_period(current_user.id)
         effective_from = (
@@ -295,7 +302,7 @@ def recurrence_preview_fragment() -> str:
 
     try:
         rule = build_preview_rule(
-            unit, placement, start_period, calendar,
+            unit, placement, start_date, calendar,
         )
         # ``effective_from`` is this ROUTE's display choice, made above --
         # "show me the next five from here" -- never the rule's opening bound,
@@ -336,7 +343,6 @@ def recurrence_preview_fragment() -> str:
 __all__ = [
     "PREVIEW_OCCURRENCE_LIMIT",
     "build_preview_rule",
-    "owned_preview_start_period",
     "recurrence_preview_fragment",
     "render_preview_html",
 ]

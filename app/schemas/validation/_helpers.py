@@ -621,13 +621,40 @@ class RecurrenceFormFieldsMixin:
     # ``offset_periods`` is GONE (defect D8).  It was a vestigial field no
     # template ever rendered an input for, so every submission carried the
     # schema default -- which the update path then wrote over the rule's real
-    # phase.  ``resolve`` derives the phase from the rule's own start period.
+    # phase.  ``resolve`` derives the phase from the rule's opening bound.
     recurrence_unit = RecurrenceUnitField(allow_none=True)
     recurrence_placement = PeriodPlacementField(allow_none=True)
     interval_n = fields.Integer(validate=validate.Range(min=1))
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
     month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
-    start_period_id = RowId()
+
+    # The OPENING BOUND, as a date (plan step R7b-4).  It replaced
+    # ``start_period_id``, the form's "First paycheck" -- a pay-period FK that
+    # both forms submitted and that only the transfer form still needs, under
+    # its OTHER job (which period a one-time transfer lands in).  That field
+    # therefore moved to ``TransferTemplateCreateSchema``, where that job
+    # lives, rather than staying here where a transaction template collected
+    # it for a purpose this step deleted.
+    #
+    # ``allow_none`` because clearing the box has to reach the door as a
+    # stated empty rather than a dropped key, the same reason ``end_date``
+    # carries it: the two bounds are symmetric and a rule may state neither.
+    #
+    # Bounded for the reason ``effective_from`` is bounded on both template
+    # schemas: an ``<input type="date">`` accepts a four- or five-digit-year
+    # typo.  The consequence here is worse than a bad version date -- a bound
+    # past the horizon generates NOTHING, silently, and a five-digit year
+    # crashes the anchor walk.  ``resolve`` refuses the crashing half for
+    # every caller (``_MAX_START_DATE_YEAR``, which the preview endpoint
+    # reaches without passing through here); this window is the tighter,
+    # human-meaningful one, and it is what turns a typo into a field error
+    # instead of a flash.
+    start_date = fields.Date(
+        allow_none=True,
+        validate=validate.Range(
+            min=EFFECTIVE_DATE_MIN, max=EFFECTIVE_DATE_MAX,
+        ),
+    )
 
     # The CLOSING BOUND, as three controls that compose into ONE value (plan
     # step R7b-3).  ``recurrence_end_mode`` names which of the bound's three

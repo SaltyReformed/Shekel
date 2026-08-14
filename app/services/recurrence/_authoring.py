@@ -5,7 +5,8 @@ Every recurrence rule in the application is written here.  Before this module
 there were nine places that could write one: six that constructed a rule and
 three that mutated one in place (the edit form's update path,
 ``loan_recurrence_sync._sync_loan_cadence``, and
-``pay_period_admin._repoint_recurrence_rules``), each setting the columns it
+``pay_period_admin``'s schedule-rebuild re-pointer, itself deleted at plan
+step R7b-4), each setting the columns it
 happened to care about.
 
 The shape that leaves nothing for a writer to get half-right:
@@ -108,7 +109,12 @@ def _author(
     rule.day_of_month = spec.day_of_month
     rule.due_day_of_month = spec.due_day_of_month
     rule.month_of_year = spec.month_of_year
-    rule.start_period_id = spec.start_period_id
+    # ``start_period_id`` is NOT assigned, and its absence is the point (plan
+    # step R7b-4).  The column was the form's "First paycheck"; that step's
+    # migration folded every value into ``start_date`` and left the column
+    # NULL on all 46 live rules, so this door has nothing to write there and
+    # no other writer exists.  Nulling it here anyway would be a fence over a
+    # state nothing can reach.  Plan step R7c drops the column.
     rule.start_date = spec.start_date
     # The closing bound is ONE authored value and TWO columns under an
     # exclusive arc (``ck_recurrence_rules_single_end_bound``), so it is split

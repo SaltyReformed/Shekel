@@ -33,7 +33,6 @@ from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import (
     account_service,
     category_service,
-    pay_period_service,
     recurrence_engine,
     template_amount_service,
 )
@@ -42,7 +41,6 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.recurrence import picker_model
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
@@ -63,12 +61,11 @@ from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
     RecurrenceFormContext,
-    build_recurrence_rule_from_form,
-    edit_form_cadence,
-    edit_form_end_bound,
+    build_recurrence_rule_for_create,
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
+from app.routes._recurrence_form_render import recurrence_form_state
 from app.routes._form_errors import load_form_or_redirect
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import RECURRENCE_END_BOUND_KEY
@@ -252,8 +249,6 @@ def new_template():
     categories = category_service.list_active_categories(current_user.id)
     accounts = account_service.list_active_accounts(current_user.id)
     txn_types = db.session.query(TransactionType).all()
-    periods = pay_period_service.get_all_periods(current_user.id)
-    current_period = pay_period_service.get_current_period(current_user.id)
 
     if request.args.get("type") == _NEW_TYPE_INCOME:
         default_txn_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
@@ -265,14 +260,12 @@ def new_template():
         template=None,
         categories=categories,
         accounts=accounts,
-        picker=picker_model(),
-        selected_cadence=None,
-        # A create form starts on the unbounded shape; nothing is derived on
-        # a transaction template, so the control is never locked.
-        selected_end_bound=edit_form_end_bound(None),
+        # Every recurrence control's starting state as ONE value, so this
+        # form and the transfer form cannot come to disagree about what the
+        # same rule means.  A create form passes ``None`` and gets the
+        # unbounded shape at both ends with no cadence selected.
+        recurrence=recurrence_form_state(None),
         txn_types=txn_types,
-        periods=periods,
-        current_period=current_period,
         default_txn_type_id=default_txn_type_id,
         # A template that does not exist yet has no amount history; passed so
         # the shared form never references an undefined value.
@@ -301,47 +294,24 @@ def create_template():
     if invalid is not None:
         return invalid
 
-    # The pop + ``build_recurrence_rule_from_form`` call below is the
-    # shared create-form preamble; ``transfers.create_transfer_template``
-    # runs the byte-identical sequence.  The rule-building logic itself is
-    # already DRY in the F-24 helper; only the call site repeats, and it
-    # cannot be hoisted into a further wrapper because the transfers side
-    # reuses ``start_period_id`` afterward (its one-time-transfer branch)
-    # while this route does not -- a wrapper that popped it internally
-    # would have to thread it back out (coding-standards rule 13).
-    # Pylint: ``duplicate-code`` -- one-sided disable; only this call site
-    # repeats the transfers-side create-form preamble, and it cannot be
-    # hoisted further (see plan.md Phase 2 notes).
-    # pylint: disable=duplicate-code
-    # Extract start_period_id and the closing bound before creating the rule.
-    start_period_id = data.pop("start_period_id", None)
-    # The closing bound, composed by the schema's ``@post_load`` into ONE
-    # value under the mode key.  ABSENT when the form stated no bound --
-    # a disabled control, or a partial update -- which the helpers read as
-    # "leave the stored one alone" (plan step R7b-3).
-    end_bound = data.pop(RECURRENCE_END_BOUND_KEY, None)
-
-    # Create the recurrence rule if a pattern was specified.  The
-    # F-24 helper pops every recurrence-related key from ``data`` so
-    # the TransactionTemplate constructor below does not receive
-    # stray kwargs; it returns a flushed RecurrenceRule, ``None``
-    # when no pattern was selected, or a Flask redirect Response
-    # for the invalid-pattern / invalid-start-period validation
-    # failures (caller returns the redirect verbatim).
-    rule_or_redirect = build_recurrence_rule_from_form(
+    # Create the recurrence rule if a cadence was specified, or NO rule when
+    # the form says "Does not repeat".  The F-24 helper pops every
+    # recurrence-related key from ``data`` so the TransactionTemplate
+    # constructor below does not receive stray kwargs.
+    #
+    # **The ``duplicate-code`` disable this call carried is GONE, and so is
+    # the duplication** (plan step R7b-4).  The suppression's stated reason
+    # was that this preamble could not be hoisted -- the transfers side reused
+    # ``start_period_id`` afterwards and a wrapper popping it internally would
+    # have had to thread it back out.  That field is the transfer form's alone
+    # now, so the preamble hoisted into
+    # :func:`build_recurrence_rule_for_create` and there is one copy of it.
+    rule = build_recurrence_rule_for_create(
         data,
         user_id=current_user.id,
-        start_period_id=start_period_id,
-        ctx=RecurrenceFormContext(
-            end_bound=end_bound,
-            redirect=RedirectTarget("templates.new_template"),
-            include_due_day_of_month=True,
-        ),
+        redirect=RedirectTarget("templates.new_template"),
+        include_due_day_of_month=True,
     )
-    if isinstance(rule_or_redirect, Response):
-        return rule_or_redirect
-    rule = rule_or_redirect
-    # pylint: enable=duplicate-code
 
     # Create the template.
     template = TransactionTemplate(
@@ -400,18 +370,14 @@ def edit_template(template_id):
         template=template,
         categories=categories,
         accounts=accounts,
-        # The options never vary; what an EDIT form adds is where the three
+        # The options never vary; what an EDIT form adds is where the
         # controls START.  A rule whose stored pattern the application no
         # longer models resolves to ``None`` -- the controls render UNSET and
         # ``edit_form_cadence`` flashes why -- rather than to a stale selection
         # the browser would silently replace with the first option, the empty
         # "Does not repeat" entry whose save DELETES the rule (R2e-1).
-        picker=picker_model(),
-        selected_cadence=edit_form_cadence(template),
-        selected_end_bound=edit_form_end_bound(template),
+        recurrence=recurrence_form_state(template),
         txn_types=txn_types,
-        periods=[],
-        current_period=None,
         # Unused when editing (the form reads the template's own type), but
         # passed so the shared template never references an undefined value.
         default_txn_type_id=None,
@@ -511,8 +477,11 @@ def update_template(template_id):
 
     effective_from = data.pop("effective_from", display_today())
 
-    # Remove start_period_id from update data (set once at creation).
-    data.pop("start_period_id", None)
+    # ``start_period_id`` needs no pop here since plan step R7b-4: the
+    # transaction-template schema no longer declares it, so no submission can
+    # carry it into the field-update loop below.  It used to be popped
+    # because the field was on the shared recurrence mixin and this form
+    # collected it only at creation.
     # The closing bound, composed by the schema's ``@post_load`` into ONE
     # value under the mode key.  ABSENT when the form stated no bound --
     # a disabled control, or a partial update -- which the helpers read as

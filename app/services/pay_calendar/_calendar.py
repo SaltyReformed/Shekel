@@ -547,9 +547,18 @@ class PayCalendar:
     def period_by_id(self, period_id: "int | None") -> "DerivedPeriod | None":
         """Return the SAVED period carrying *period_id*, else ``None``.
 
-        The one question here that is not about a DATE: a recurrence rule names
-        its start period by stored id, so resolving it is a lookup rather than
-        a search.  Never answers a projected period, which has no id.
+        The one question here that is not about a DATE.
+
+        **Its last ``app/`` caller went at plan step R7b-4**, which folded
+        ``recurrence_rules.start_period_id`` into a date -- so no rule names a
+        pay period by stored id any more and nothing in the application asks
+        this.  The method is kept rather than deleted because it is the pay
+        calendar's public surface and a stored-id lookup is a reasonable thing
+        for that value to answer; whether it survives is the pay-calendar arc's
+        to rule, not the recurrence arc's to decide by deleting.  Stated here
+        so the next reader does not infer a live consumer from its existence.
+
+        Never answers a projected period, which has no id.
 
         Args:
             period_id: A ``budget.pay_periods.id``, or ``None``.

@@ -52,16 +52,22 @@ The four derivations
 --------------------
 
 1. **The effective start** -- the date the first occurrence is measured from.
-   The GREATEST of the schedule's opening payday, the rule's ``start_date``,
-   and its start period's ``start_date``.  That single maximum reproduces both
-   of the reverse matcher's branches: it applied the ``start_date`` filter
-   itself AND an ``effective_from`` that ``resolve_generation_plan`` used to
-   default -- the start period's start when the rule has one, else the earliest
-   pay period's.
+   The GREATEST of the schedule's opening payday and the rule's ``start_date``.
+   That maximum reproduces both of the reverse matcher's branches: it applied
+   the ``start_date`` filter itself AND an ``effective_from`` that
+   ``resolve_generation_plan`` used to default to the earliest pay period's
+   start.
+
+   **A THIRD term left this maximum at plan step R7b-4**: the rule's start
+   PERIOD, a pay-period FK the form collected as "First paycheck".  That step
+   folded it into ``start_date`` -- provably the same value, because a maximum
+   absorbs its own arguments -- and the form authors the date directly now.
+   Measured on the live clone before the fold shipped: 46 rules, 880 placed
+   occurrences, 0 moved.
 
    **Plan step R4b-1 DELETED both of those defaults**, precisely because this
    maximum already subsumes them: no walk emits an occurrence placed before the
-   anchor, so a lower window bound equal to one of these three values can never
+   anchor, so a lower window bound equal to either value can never
    drop a row the anchor has not already dropped.  ``effective_from`` is now a
    caller's display / regeneration boundary and nothing else, and ``None``
    means it stated none.  The equivalence was measured, not argued: identical
@@ -86,17 +92,22 @@ The four derivations
    date is the one containing it -- which is why all 11 live period-unit rules
    resolve identically either way.
 
-   **An interval above 1 is the exception**, and a neutral review found it: the
-   phase is ``(period_index - offset_periods) % interval_n == 0``, which a
-   bare date cannot express, so anchoring it on the bound made the anchor and
-   the rule's own stored ``offset_periods`` state DIFFERENT cadences
-   (measured: stored phase 2 -- periods 2/5/8 -- against an anchor in period
-   0 -- periods 0/3/6).  ``offset_periods`` is the one derived value that is
-   still a COLUMN, so this is the one place the two can disagree, and it is
-   why the anchor advances to the first period boundary that satisfies the
-   phase.  Past the horizon it falls back to the bound, where no period exists
-   to name and none would generate either.  See :func:`_phased_period_anchor`
-   and :func:`_derive_offset_periods`.
+   **An interval above 1 used to be the exception; plan step R7b-4 removed the
+   exception rather than the rule.**  The phase is
+   ``(period_index - offset_periods) % interval_n == 0``, which a bare date
+   cannot express -- so while ``offset_periods`` was an INDEPENDENT value,
+   anchoring on the bound made the anchor and the stored phase state DIFFERENT
+   cadences (measured: stored phase 2 -- periods 2/5/8 -- against an anchor in
+   period 0 -- periods 0/3/6), and the anchor had to ADVANCE to the first
+   period boundary satisfying the phase.  The phase is no longer independent:
+   :func:`_derive_offset_periods` reads it off the effective start, so the
+   paycheck that bound falls in is in phase BY CONSTRUCTION and the bound does
+   express the cadence.  ``_phased_period_anchor`` went with the disagreement
+   it existed to reconcile, and so did the divergence
+   :func:`app.services.recurrence._occurrence._period_walk` recorded: that
+   advance fell back to the raw bound when the schedule reached no period in
+   phase, and the walk then generated nothing.  A derived phase has no such
+   state.
 
 3. **A calendar rule** (the ``MONTH`` and ``YEAR`` units under
    ``CONTAINING_DATE``) anchors on
@@ -149,7 +160,7 @@ from app.enums import (
     PeriodPlacementEnum,
     RecurrenceUnitEnum,
 )
-from app.services.pay_calendar import DerivedPeriod, PayCalendar
+from app.services.pay_calendar import PayCalendar
 from app.services.recurrence._bounds import NEVER_ENDS, EndBound
 from app.services.recurrence._frequency import (
     FAMILY_CALENDAR,
@@ -218,6 +229,13 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
             derives it in the SAME call that derives the anchor, rather than
             running the derivation twice and hoping the two agree.  Dies with
             the column at plan step R7c.
+
+            **Output only, since plan step R7b-4.**  It was half authored and
+            half derived until then -- taken from the rule's start period when
+            it named one and read back off the column when it did not -- which
+            made a rule able to state its cadence twice.  It is now a function
+            of the effective start alone, so the column it is written to holds
+            a value nothing reads back.
         interval_n: How many *unit*\\ s pass between occurrences.  Always the
             two-axis reading: 3 for Quarterly, 6 for Semi-Annual, the
             authored count for ``Every N Periods``, 1 elsewhere.
@@ -319,23 +337,66 @@ _DAY_OF_MONTH_UNITS = MONTH_SPANNING_UNITS
 _DEFAULT_DAY_OF_MONTH = 1
 _DEFAULT_MONTH_OF_YEAR = 1
 
-#: The domains ``ck_recurrence_rules_dom``, ``ck_recurrence_rules_due_dom``,
-#: ``ck_recurrence_rules_moy`` and ``ck_recurrence_rules_valid_offset`` bound
-#: their columns to.  Named once, so the door and the table state one domain
-#: rather than two that happen to agree.  The two day columns share one pair
-#: because they hold the same KIND of value -- a day of a month -- and giving
-#: them separate constants would invite them to drift apart.
+#: The domains ``ck_recurrence_rules_dom``, ``ck_recurrence_rules_due_dom`` and
+#: ``ck_recurrence_rules_moy`` bound their columns to.  Named once, so the door
+#: and the table state one domain rather than two that happen to agree.  The two
+#: day columns share one pair because they hold the same KIND of value -- a day
+#: of a month -- and giving them separate constants would invite them to drift
+#: apart.
+#:
+#: **``ck_recurrence_rules_valid_offset`` left this list at plan step R7b-4**,
+#: and it left by becoming UNVIOLATABLE rather than by being unmirrored.  Its
+#: column is written from :func:`_derive_offset_periods`, which answers either
+#: ``0`` or ``period_index % interval_n`` -- a remainder by a positive divisor,
+#: and a period index is a schedule ordinal -- so no value the application can
+#: produce is negative.  While the phase was AUTHORED the mirror was real work
+#: (plan step R7b-3 added it for exactly that reason); once the phase is
+#: derived there is no authored value left to refuse.  The CHECK stays on the
+#: table, where it still guards a restore or a hand edit.
 _DAY_OF_MONTH_MIN = 1
 _DAY_OF_MONTH_MAX = 31
 _MONTH_OF_YEAR_MIN = 1
 _MONTH_OF_YEAR_MAX = 12
-_MIN_OFFSET_PERIODS = 0
 
 #: Upper bound on the month-ordinal walk in :func:`_calendar_anchor`.  Two
 #: candidates always suffice (the effective month's own occurrence, then one
 #: cycle later), so anything beyond this is a broken derivation, not a slow
 #: one -- it raises instead of spinning.
 _MAX_MONTH_PROBES = 4
+
+#: The latest year a ``start_date`` may name.  :func:`_calendar_anchor` probes
+#: up to :data:`_MAX_MONTH_PROBES` cycles ABOVE the bound, so a bound too close
+#: to ``date.max`` sends ``walk_months`` past the last date Python can build.
+#:
+#: **The four years of headroom hold because the CLOSED SET caps a cycle at
+#: twelve months, not because a cycle is capped in general** -- an adversarial
+#: review of this step corrected the arithmetic here.
+#: :func:`~._months.months_per_step` returns ``months_per_unit * interval_n`` and
+#: is unbounded above (its own docstring gives 24 for every two years), so four
+#: probes span four years only while ``encode_cadence`` refuses every cadence
+#: the closed pattern set cannot name -- which it does, and it runs BEFORE
+#: ``resolve`` in :func:`~._authoring._author` for exactly this class of reason.
+#: **Plan step R7c frees the interval into an authored column and must
+#: re-derive this bound from ``months_per_step`` rather than inherit it**;
+#: today ``date(9995, 1, 1)`` with a ten-year cycle would still raise, and is
+#: unreachable only because no door can author one.
+#:
+#: **There is no matching FLOOR, and its absence is not an oversight**: the
+#: effective start is ``max(opening_payday, start_date)``, so a bound below the
+#: owner's first payday is dominated rather than walked.  A bound ABOVE the
+#: ceiling has nothing to dominate it.
+#:
+#: Reachable through a form the moment one collects this column, which plan
+#: step R7b-4's "Starts on" control is: an ``<input type="date">`` accepts a
+#: five-digit year, and ``date(20026, 8, 7)`` raises ``ValueError`` -- OUTSIDE
+#: this package's hierarchy, so the recurrence preview's handler would not
+#: catch it and a signed-in GET would be an unhandled 500.  Same defect CLASS
+#: as the ``(10000, YEAR)`` cadence an adversarial review of plan step R7b-2
+#: found -- a value the door writes verbatim that the walk cannot survive --
+#: though that one is refused by ``encode_cadence`` upstream rather than here.
+#: Refused at the seam both form doors and the preview go through, rather than
+#: on each door.
+_MAX_START_DATE_YEAR = date.max.year - _MAX_MONTH_PROBES
 
 
 @dataclass(frozen=True)
@@ -352,11 +413,20 @@ class RecurrenceSpec:  # pylint: disable=too-many-instance-attributes
     ``encode_cadence`` on the way in and ``decode_pattern`` on the way out.
     Plan step R7c deletes both, and nothing above the door moves.
 
-    Pylint: ``too-many-instance-attributes`` (11/7) -- these are the
+    Pylint: ``too-many-instance-attributes`` (9/7) -- these are the
     irreducible inputs of one authoring request, exactly the fields the
     recurrence form collects, read as a flat unit by the single consumer
     (:func:`resolve`).  Mirrors the ``TransferSpec`` precedent.  Frozen so a
     constructed spec is an immutable record of one request.
+
+    **TWO fields left at plan step R7b-4, and they were one fact between
+    them.**  ``start_period_id`` was the form's "First paycheck" -- a
+    pay-period FK -- and ``offset_periods`` was the phase derived from it.  A
+    recurrence has ONE opening bound; the paycheck it falls in, the cycle
+    phase and the anchor are all views of that bound, computed on read.  So
+    ``start_date`` is the whole of it and the other two are gone: the FK
+    folded into the date by that step's migration, and the phase became
+    :func:`_derive_offset_periods`'s output rather than anybody's input.
 
     Attributes:
         user_id: The owning user.
@@ -372,13 +442,6 @@ class RecurrenceSpec:  # pylint: disable=too-many-instance-attributes
             same period (proven in :mod:`._occurrence`) -- so it defaults to
             ``CONTAINING_DATE``, the reading under which the occurrence is
             funded by the paycheck it falls in.
-        offset_periods: Phase within the ``PERIOD`` cycle.  Used only when no
-            start period is given -- when one IS given, the phase is DERIVED
-            from it, because that is the fact the user actually chose.  **A
-            LEGACY column carried through rather than authored**: no form
-            renders an input for it, and plan step R7c drops it once the
-            authored anchor carries the phase by construction (plan ledger rows
-            D21, D24).
         day_of_month: Scheduling day for a cadence measured in months or
             years.  Plan step R7c renames the column to ``nominal_day``.
         due_day_of_month: The real bill due day when it differs from the
@@ -386,11 +449,14 @@ class RecurrenceSpec:  # pylint: disable=too-many-instance-attributes
             it becomes ``transactions.due_on``.
         month_of_year: Cycle-start month for a cadence that skips months.
             Plan step R7c renames the column to ``nominal_month``.
-        start_period_id: The form's "First paycheck" choice.  Retired by plan
-            step R7b's own last leaf, which replaces it with a DATE.
-        start_date: The rule's opening validity bound; written only by
-            ``loan_recurrence_sync`` from the loan's first contractual
-            installment (plan step C9a).
+        start_date: The rule's opening validity bound, and the ONE thing it
+            states about when the recurrence begins (plan step R7b-4).  The
+            form authors it as "Starts on"; ``loan_recurrence_sync`` writes it
+            from the loan's first contractual installment for a loan payment,
+            whose bound the app derives rather than accepts (plan step C9a).
+            ``None`` means unbounded below, and the schedule's opening payday
+            is then the floor.  Plan step R7c renames the column ``starts_on``
+            and makes it NOT NULL.
         end_bound: The rule's closing validity bound -- indefinite, a date, or
             a count of occurrences, as ONE value
             (:class:`~app.services.recurrence.EndBound`).  Replacing it is how
@@ -406,20 +472,14 @@ class RecurrenceSpec:  # pylint: disable=too-many-instance-attributes
     unit: RecurrenceUnitEnum
     interval_n: int = 1
     placement: PeriodPlacementEnum = PeriodPlacementEnum.CONTAINING_DATE
-    offset_periods: int = 0
     day_of_month: int | None = None
     due_day_of_month: int | None = None
     month_of_year: int | None = None
-    start_period_id: int | None = None
     start_date: date | None = None
     end_bound: EndBound = NEVER_ENDS
 
 
-def _effective_start(
-    spec: RecurrenceSpec,
-    calendar: PayCalendar,
-    start_period: DerivedPeriod | None,
-) -> date:
+def _effective_start(spec: RecurrenceSpec, calendar: PayCalendar) -> date:
     """Return the date this rule's first occurrence is measured from.
 
     See derivation 1 in the module docstring for why a single maximum
@@ -428,10 +488,10 @@ def _effective_start(
     Args:
         spec: The authored recurrence.
         calendar: The owner's pay-period schedule.
-        start_period: The spec's start period, already resolved, or ``None``.
 
     Returns:
-        The composite opening bound.
+        The opening bound: the later of the schedule's first payday and the
+        rule's own ``start_date``.
 
     Raises:
         RecurrenceResolutionError: When the owner's schedule is empty, so
@@ -445,15 +505,9 @@ def _effective_start(
             f"(auth_service.register_user), so an empty schedule here is a "
             f"broken invariant rather than a state to paper over."
         )
-    bounds = [opening]
-    bounds.extend(
-        bound for bound in (
-            spec.start_date,
-            start_period.start_date if start_period is not None else None,
-        )
-        if bound is not None
-    )
-    return max(bounds)
+    if spec.start_date is None:
+        return opening
+    return max(opening, spec.start_date)
 
 
 def _calendar_anchor(
@@ -572,62 +626,27 @@ def _first_of_month_anchor(calendar: PayCalendar, effective: date) -> date:
     return _next_month_first(effective)
 
 
-def _phased_period_anchor(
-    calendar: PayCalendar, effective: date, interval_n: int, offset: int,
-) -> date:
-    """Return the first period start at or after *effective* in the phase.
-
-    **The one place a period BOUNDARY belongs in the anchor**, and the reason
-    is that ``Every N Periods`` fires on a subset of paychecks: its phase is
-    ``(period_index - offset_periods) % interval_n == 0``
-    (``_occurrence._period_walk``), which the bound alone cannot express.
-    Anchoring such a rule on the raw bound makes the two vocabularies state
-    DIFFERENT cadences -- measured on the developer's schedule, an
-    every-3-paychecks rule phased at 2 stored ``offset_periods = 2`` (the old
-    engine fires periods 2, 5, 8) beside an anchor in period 0 (the two-axis
-    reading fires 0, 3, 6), and plan step R4a would have picked the second
-    silently.
-
-    Every other pay-period-space rule fires on EVERY paycheck, so its anchor
-    is the bound itself and no boundary is stored (ruling R-R8).
-
-    Args:
-        calendar: The owner's pay-period schedule.
-        effective: The rule's opening bound.
-        interval_n: How many periods apart occurrences fall.
-        offset: The phase within that cycle.
-
-    Returns:
-        The qualifying period's ``start_date``, or *effective* itself when the
-        schedule reaches no qualifying period -- a bound past the materialised
-        horizon, where there is no period to name and no row to generate
-        either.  Keeping the value derivable is what plan step R7c's NOT
-        NULL columns will require.
-    """
-    for period in calendar.periods:
-        if period.end_date < effective:
-            continue
-        if (period.period_index - offset) % interval_n == 0:
-            return period.start_date
-    return effective
-
-
 def _resolve_anchor(
     spec: RecurrenceSpec,
     family: str,
     calendar: PayCalendar,
     effective: date,
-    offset_periods: int,
 ) -> tuple[date, int | None]:
     """Return this rule's first occurrence and the day it nominally means.
+
+    **The ``PERIOD`` family takes no phase argument, since plan step R7b-4.**
+    It used to, and the branch behind it (``_phased_period_anchor``) advanced
+    the anchor to the first period boundary satisfying a SEPARATELY STORED
+    phase -- because an authored ``offset_periods`` could name a cadence the
+    bound did not.  :func:`_derive_offset_periods` now reads that phase off
+    the bound, so the paycheck the bound falls in satisfies it by
+    construction and there is nothing left to advance past.  See derivation 2.
 
     Args:
         spec: The authored recurrence.
         family: Its anchor derivation, from :func:`anchor_family`.
         calendar: The owner's pay-period schedule.
         effective: The rule's opening bound.
-        offset_periods: The resolved phase -- read only by the ``PERIOD``
-            family, where the anchor must carry it.
 
     Returns:
         ``(anchor_date, nominal_day)``.  ``nominal_day`` is ``None`` for
@@ -644,10 +663,6 @@ def _resolve_anchor(
             have taken it and anchored a weekly rule on a month cycle.
     """
     if family == FAMILY_PERIOD:
-        if spec.interval_n > 1:
-            return _phased_period_anchor(
-                calendar, effective, spec.interval_n, offset_periods,
-            ), None
         return effective, None
     if family == FAMILY_FIRST_OF_MONTH:
         return _first_of_month_anchor(calendar, effective), None
@@ -725,10 +740,12 @@ def _require_owner(spec: RecurrenceSpec, calendar: PayCalendar) -> None:
     silently WRONG rather than an error -- and two call sites derive the
     calendar's owner from a different object than the rule's:
     ``loan_recurrence_sync.sync_recurring_payment_bounds`` uses
-    ``account.user_id`` against a spec read from the rule, and
-    ``pay_period_admin._repoint_recurrence_rules`` uses
-    ``first_period.user_id``.  Both are consistent today; neither is
-    enforced.  Checking the pairing here makes the assumption a fact.
+    ``account.user_id`` against a spec read from the rule.  It is consistent
+    today and nothing else enforces it, so checking the pairing here makes the
+    assumption a fact.  A SECOND such site,
+    ``pay_period_admin._repoint_recurrence_rules``, was deleted at plan step
+    R7b-4: a rule's opening bound is a date now, so a schedule rebuild has no
+    rule to re-point and no owner to pair wrongly.
 
     Args:
         spec: The authored recurrence.
@@ -798,23 +815,34 @@ def _require_authored_domains(spec: RecurrenceSpec) -> None:
     closing bound", "a count names at least one occurrence" -- so they went
     into the type and no refusal is written for them anywhere: no value can
     break them.  ``due_dom`` and ``valid_offset`` are DOMAINS over plain
-    integers, which is the same thing ``dom`` and ``moy`` are, so they are
-    mirrored here beside them.  Making those two structural as well means a
+    integers, which is the same thing ``dom`` and ``moy`` are, so they were
+    mirrored here beside them.  Making those structural as well means a
     day-of-month value type, which is plan step **G2**'s work.
 
-    ``offset_periods`` is checked on the AUTHORED value even though the write
-    door writes the RESOLVED one, and the two cannot differ in the direction
-    that matters: :func:`_derive_offset_periods` answers ``0``, the authored
-    value, or ``start_period.period_index % interval_n`` -- and a period index
-    is a schedule ordinal, so only the middle arm can carry a negative.
+    **``valid_offset``'s mirror went at plan step R7b-4, by the phase ceasing
+    to be AUTHORED rather than by the check being dropped.**  This function
+    refuses what a CALLER states, and no caller states a phase any more:
+    :func:`_derive_offset_periods` answers ``0`` or
+    ``period_index % interval_n``, a remainder by a positive divisor over a
+    schedule ordinal.  There is no application value left for the CHECK to
+    refuse, so mirroring it here would be a fence over an unreachable state.
+    The constraint stays on the table, where a restore or a hand edit can
+    still reach it.
+
+    **``start_date`` is bounded here too, since plan step R7b-4 gave it a
+    form.**  It is not a column DOMAIN like the other three -- no CHECK names
+    it, and plan step R7c is where one lands -- but it is the same KIND of
+    refusal: a value the door writes verbatim that the derivation below cannot
+    survive.  See :data:`_MAX_START_DATE_YEAR`.
 
     Args:
         spec: The authored recurrence.
 
     Raises:
         RecurrenceResolutionError: When a STATED day or due day is outside
-            1-31, a stated month is outside 1-12, or the phase is negative.
-            ``None`` states nothing and passes.
+            1-31, a stated month is outside 1-12, or a stated ``start_date``
+            names a year the anchor walk cannot probe above.  ``None`` states
+            nothing and passes.
     """
     for field, day in (
         ("day_of_month", spec.day_of_month),
@@ -832,15 +860,18 @@ def _require_authored_domains(spec: RecurrenceSpec) -> None:
             f"would be CLAMPED to a month's last day, answering a plausible "
             f"date the rule never named."
         )
-    if spec.offset_periods < _MIN_OFFSET_PERIODS:
+    if (
+        spec.start_date is not None
+        and spec.start_date.year > _MAX_START_DATE_YEAR
+    ):
         raise RecurrenceResolutionError(
-            f"recurrence offset_periods must be at least "
-            f"{_MIN_OFFSET_PERIODS}, got {spec.offset_periods} for a "
-            f"{spec.unit!r} recurrence (user {spec.user_id}).  It is written "
-            f"to a NOT NULL column carrying ck_recurrence_rules_valid_offset, "
-            f"and a negative phase also makes "
-            f"``(period_index - offset) % interval_n`` select a different set "
-            f"of paychecks than the one the rule names."
+            f"recurrence start_date must name a year at or below "
+            f"{_MAX_START_DATE_YEAR}, got {spec.start_date} for a "
+            f"{spec.unit!r} recurrence (user {spec.user_id}).  The anchor "
+            f"walk probes months ABOVE the opening bound, so a later year "
+            f"builds a date outside the range Python's date type holds and "
+            f"raises ValueError from outside this package's error hierarchy "
+            f"-- an unhandled 500 rather than a refusal naming the field."
         )
     month = spec.month_of_year
     if (
@@ -858,43 +889,54 @@ def _require_authored_domains(spec: RecurrenceSpec) -> None:
 
 
 def _derive_offset_periods(
-    spec: RecurrenceSpec, start_period: DerivedPeriod | None,
+    spec: RecurrenceSpec, calendar: PayCalendar, effective: date,
 ) -> int:
-    """Return the ``offset_periods`` phase an authored recurrence fires on.
+    """Return the ``offset_periods`` phase a recurrence fires on.
 
-    Takes the already-looked-up start period rather than re-deriving it:
-    :func:`resolve` is the only caller, it has it in hand, and looking it up
-    twice for one authoring request is the redundant producer call the project
-    rules out.
+    **A TOTAL function of the opening bound, since plan step R7b-4**, and that
+    is the whole of the change: an ``Every N Periods`` rule fires on the
+    paycheck its bound falls in and every Nth paycheck after, so the phase is
+    that paycheck's own ordinal modulo the interval.  It is not a fact anyone
+    authors and it never was -- no template under ``app/templates/`` has ever
+    rendered an input for it.  Until R7b-4 it was taken from the rule's start
+    PERIOD when it named one and read back off its own column when it did not,
+    which let one rule state its cadence twice; the column is written from
+    this answer now and read by nothing.
 
-    DERIVED from the start period whenever the rule names one, because that is
-    the fact the user actually chose: the form has no offset input at all (no
-    template under ``app/templates/`` renders one), so a submitted value is
-    always the schema default.  Applying the derivation on every write rather
-    than only on create is what closes defect **D1** -- the update path wrote
-    the default unconditionally, re-phasing every future occurrence of an
+    Applying the derivation on every write rather than only on create is what
+    closes defect **D1** -- the update path wrote the schema default
+    unconditionally, re-phasing every future occurrence of an
     every-N-paychecks rule on an amount-only edit.
 
-    **A cadence of every ONE unit has phase 0 by construction**, whatever the
-    row holds: every paycheck qualifies, so ``index % 1`` is 0 for all of them.
-    Stating that ahead of the derivation is what reproduces the closed-set rule
-    this replaced exactly -- ``Every Period`` returned 0 unconditionally while
+    **A cadence of every ONE unit has phase 0 by construction**: every
+    paycheck qualifies, so ``index % 1`` is 0 for all of them.  Stating that
+    ahead of the derivation reproduces the closed-set rule this replaced
+    exactly -- ``Every Period`` returned 0 unconditionally while
     ``Every N Periods`` with ``N = 1`` derived a 0, and the two-axis reading
     cannot tell those apart because they are the same cadence.
 
+    **``span_containing`` rather than ``period_containing``, so the answer is
+    TOTAL.**  A bound past the materialised horizon has no SAVED paycheck to
+    take an ordinal from, and the alternatives there are a fabricated 0 or a
+    ``None`` this function has no honest shape for.  The calendar projects the
+    ordinal forward from the last saved payday at the owner's own cadence,
+    which is the same answer the schedule will hold once it extends.  It
+    cannot return ``None`` here: it does so only for an empty calendar or a
+    day before the opening payday, and :func:`_effective_start` has already
+    refused the first and returns at least the opening payday for the second.
+
     Args:
         spec: The authored recurrence.
-        start_period: Its start period, already looked up, or ``None``.
+        calendar: The owner's pay-period schedule.
+        effective: The rule's opening bound, from :func:`_effective_start`.
 
     Returns:
-        The phase, always in ``0 .. interval_n - 1`` when derived.
+        The phase, always in ``0 .. interval_n - 1``.
     """
     if spec.unit is not RecurrenceUnitEnum.PERIOD or spec.interval_n == 1:
         # No other cadence reads the column at all; 0 is its default.
         return 0
-    if start_period is None:
-        return spec.offset_periods
-    return start_period.period_index % spec.interval_n
+    return calendar.span_containing(effective).period_index % spec.interval_n
 
 
 def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
@@ -917,8 +959,8 @@ def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
         RecurrenceResolutionError: When *spec* and *calendar* name different
             users, when ``interval_n`` is not positive, when the
             ``(unit, placement)`` pair has no anchor derivation, when
-            ``day_of_month`` / ``due_day_of_month`` / ``month_of_year`` /
-            ``offset_periods`` is outside its column's domain, or when the
+            ``day_of_month`` / ``due_day_of_month`` / ``month_of_year`` is
+            outside its column's domain, or when the
             owner has no pay periods.  All five are broken invariants: a
             recurrence read with a fabricated cadence is worse than a refused
             read.
@@ -931,18 +973,14 @@ def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
     family = anchor_family(spec.unit, spec.placement)
     _require_authored_domains(spec)
 
-    start_period = calendar.period_by_id(spec.start_period_id)
-    effective = _effective_start(spec, calendar, start_period)
-    # The phase is resolved BEFORE the anchor, because an every-N-paychecks
-    # anchor has to carry it: a bare date cannot express
-    # ``(period_index - offset) % interval_n == 0``, so anchoring such a rule
-    # on the raw bound would state a different cadence from the one the row
-    # holds (measured: stored phase 2 -- periods 2/5/8 -- against an anchor in
-    # period 0 -- periods 0/3/6).
-    offset_periods = _derive_offset_periods(spec, start_period)
-    anchor, nominal_day = _resolve_anchor(
-        spec, family, calendar, effective, offset_periods,
-    )
+    # The opening bound first, because BOTH derived values are functions of it
+    # (plan step R7b-4): the anchor is it, for a pay-period-space rule, and
+    # the phase is the ordinal of the paycheck it falls in.  Deriving one from
+    # the bound and the other from a separately stored column is what let a
+    # rule state two cadences -- see derivation 2.
+    effective = _effective_start(spec, calendar)
+    offset_periods = _derive_offset_periods(spec, calendar, effective)
+    anchor, nominal_day = _resolve_anchor(spec, family, calendar, effective)
 
     return ResolvedRecurrence(
         offset_periods=offset_periods,

@@ -143,11 +143,12 @@ def _all_indices(user_id):
 def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
     """Build an EVERY_N_PERIODS expense template phased to ``start_period``.
 
-    Mirrors the production form helper's offset derivation
-    (``offset_periods = start_period.period_index % interval_n``) so the
-    rule fires every ``interval_n`` periods aligned to ``start_period`` --
-    the exact phased state a reset must re-base onto the new schedule.
-    Returns the created template (flushed; the caller commits).
+    States the OPENING BOUND -- ``start_period``'s own payday -- and lets the
+    resolver derive the phase from it (plan step R7b-4), which is the exact
+    phased state a reset must re-base onto the new schedule.  The stale
+    ``offset_periods`` column is written to match, because that is what a
+    pre-reset rule really holds and the point of the case is what happens to
+    it.  Returns the created template (flushed; the caller commits).
     """
     rule = RecurrenceRule(
         user_id=seed_user["user"].id,
@@ -156,7 +157,7 @@ def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
         ),
         interval_n=interval_n,
         offset_periods=start_period.period_index % interval_n,
-        start_period_id=start_period.id,
+        start_date=start_period.start_date,
     )
     db_session.add(rule)
     db_session.flush()
@@ -357,42 +358,53 @@ class TestResetHappyPath:
             assert_pay_period_invariants(db.session, user_id)
             assert all(r.passed for r in check_referential_integrity(db.session))
 
-    def test_recurrence_rule_anchor_repointed(self, app, db, seed_user):
-        """A rule with an explicit start period re-points to the new first.
+    def test_a_rules_stated_start_survives_the_wipe(self, app, db, seed_user):
+        """The reset does not touch the rule, and its bound is still there.
 
-        Before the wipe the rule anchors to an old period; the cascade
-        NULLs it, and reset re-points it to the rebuilt schedule's first
-        period so the rule keeps an explicit start (and that period
-        classifies as a RECURRENCE_ANCHOR).
+        The wipe used to SET NULL every rule's ``start_period_id`` -- the FK
+        is ``ON DELETE SET NULL`` and reset deletes every period -- so the
+        reset had to capture the anchored rules first and re-point them at the
+        rebuilt schedule's first period afterwards, or a rule with an explicit
+        start silently became one with none.
+
+        Plan step R7b-4 made the bound a DATE, which the cascade cannot reach.
+        There is nothing to capture, nothing to re-point, and the stated start
+        is still stated when the reset returns -- so the rule opens where the
+        user said, measured against whatever schedule now exists.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
             template = make_expense_template(db.session, seed_user)
             rule = template.recurrence_rule
-            rule.start_period_id = seed_user["bootstrap_period"].id
+            stated_start = seed_user["bootstrap_period"].start_date
+            rule.start_date = stated_start
             db.session.commit()
 
-            new_periods = pay_period_admin.reset_pay_periods(
+            pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
                 cadence_days=14,
             )
             db.session.commit()
 
             rule = db.session.get(RecurrenceRule, rule.id)
-            assert rule.start_period_id == new_periods[0].id
-            # Re-pointing also re-phases the offset to the new start (0).
-            assert rule.offset_periods == 0
+            assert rule.start_date == stated_start
+            assert rule.start_period_id is None
 
     def test_every_n_rule_rephased_onto_new_schedule(self, app, db, seed_user):
-        """An EVERY_N_PERIODS rule re-phases to the new first period.
+        """An EVERY_N_PERIODS rule re-phases onto the rebuilt schedule.
 
-        The regression for the offset half of the re-point: a rule phased
-        to an OLD odd-index start (offset = 1, n = 2) must, after reset,
-        generate every other period STARTING at the new first period
-        (indices 0, 2, 4) -- not on the stale odd phase (1, 3, 5) the old
-        offset would produce.  Repopulation runs after the re-point, so the
-        rebuilt rows must already carry the corrected phase.
+        The regression the re-point half existed for: a rule phased to an OLD
+        odd index must, after a reset, generate every other period STARTING at
+        the new schedule's opening (indices 0, 2, 4) -- not on the stale odd
+        phase (1, 3, 5).
+
+        **Nothing re-points it now** (plan step R7b-4).  The rule keeps its
+        stated bound, which precedes the rebuilt schedule, so the effective
+        start is ``max(new opening payday, start_date)`` -- the new opening,
+        index 0 -- and the phase is that paycheck's ordinal modulo 2, which is
+        0.  The generated rows are the same ones the re-point produced,
+        without a writer that had to remember to produce them.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -411,9 +423,6 @@ class TestResetHappyPath:
             )
             db.session.commit()
 
-            rule = db.session.get(RecurrenceRule, template.recurrence_rule_id)
-            assert rule.start_period_id == new_periods[0].id
-            assert rule.offset_periods == 0
             # Generated rows land on indices 0, 2, 4 -- phased to the new
             # first period, not the stale 1, 3, 5.
             counts = {
@@ -426,18 +435,21 @@ class TestResetHappyPath:
             assert_pay_period_invariants(db.session, user_id)
 
     def test_rule_without_start_period_stays_unanchored(self, app, db, seed_user):
-        """A rule that had no explicit start period is not blanket-repointed.
+        """A rule that states no opening bound still states none afterwards.
 
-        Only rules that carried a start period before the wipe are
-        re-pointed; a NULL-start rule (the common case) must stay NULL so
-        its semantics ("no explicit start") are preserved.
+        The reset re-pointed only the rules that CARRIED a start period, so a
+        NULL-start rule (the common case) had to stay NULL or its semantics --
+        "no explicit start, open with the schedule" -- would have been
+        replaced by an explicit one.  Nothing re-points anything since plan
+        step R7b-4, so this holds for a stronger reason than it used to: the
+        reset does not write to the table at all.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
             template = make_expense_template(db.session, seed_user)
             rule_id = template.recurrence_rule.id
-            assert template.recurrence_rule.start_period_id is None
+            assert template.recurrence_rule.start_date is None
             db.session.commit()
 
             pay_period_admin.reset_pay_periods(
@@ -447,7 +459,7 @@ class TestResetHappyPath:
             db.session.commit()
 
             rule = db.session.get(RecurrenceRule, rule_id)
-            assert rule.start_period_id is None
+            assert rule.start_date is None
 
     def test_multiple_accounts_all_reanchored(self, app, db, seed_user):
         """Every account re-anchors with its own balance preserved.

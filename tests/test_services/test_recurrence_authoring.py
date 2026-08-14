@@ -71,13 +71,31 @@ from tests._test_helpers import create_loan_account
 #: :class:`TestTheAuthoredSurfaceIsWholeAndClosed`.
 _AUTHORED_COLUMNS = (
     "user_id", "pattern_id", "interval_n", "offset_periods", "day_of_month",
-    "due_day_of_month", "month_of_year", "start_period_id", "start_date",
+    "due_day_of_month", "month_of_year", "start_date",
     "end_date", "max_occurrences",
 )
 
 #: The two columns the DATABASE assigns, which no caller may author: the
 #: surrogate key and the insert timestamp (``CreatedAtMixin``, server default).
 _DB_ASSIGNED_COLUMNS = frozenset({"id", "created_at"})
+
+#: RETIRED columns: on the table, written by nobody, read by nobody, awaiting
+#: the migration that drops them.
+#:
+#: A third category rather than a loosened assertion, and the distinction is
+#: the point.  The census below is the gate that catches a column the write
+#: door FORGOT -- one that would keep its server default forever while every
+#: behavioural test passed, because a value nobody writes also never changes.
+#: ``start_period_id`` is not forgotten: plan step R7b-4 folded it into
+#: ``start_date`` (a MAXIMUM, measured equal on all 46 live rules), NULLed it
+#: in that migration, and deleted its last reader.  Dropping the column
+#: belongs with the four others plan step R7c drops in one transaction.
+#:
+#: Naming it here is what keeps the gate STRICT for everything else: a column
+#: added and forgotten still fails, because it will not be on this list.  The
+#: list must EMPTY at R7c, and a name left on it after its column is dropped
+#: fails :meth:`TestTheAuthoredSurfaceIsWholeAndClosed.test_every_retired_column_still_exists`.
+_RETIRED_COLUMNS = frozenset({"start_period_id"})
 
 
 def authored_columns(rule: RecurrenceRule) -> dict:
@@ -239,13 +257,13 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
     """
 
     def test_the_write_door_assigns_every_column_the_database_does_not(self):
-        """``_author`` writes exactly the table's non-DB-assigned columns."""
+        """``_author`` writes every column but the DB-assigned and RETIRED ones."""
         table_columns = {
             column.key for column in RecurrenceRule.__table__.columns
         }
 
         assert _columns_assigned_by_the_write_door() == (
-            table_columns - _DB_ASSIGNED_COLUMNS
+            table_columns - _DB_ASSIGNED_COLUMNS - _RETIRED_COLUMNS
         ), (
             "budget.recurrence_rules and the write door have diverged.  A "
             "column ``_author`` does not assign cannot be authored at all -- "
@@ -265,18 +283,44 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
             column.key for column in RecurrenceRule.__table__.columns
         }
 
-        assert set(_AUTHORED_COLUMNS) == table_columns - _DB_ASSIGNED_COLUMNS
+        assert set(_AUTHORED_COLUMNS) == (
+            table_columns - _DB_ASSIGNED_COLUMNS - _RETIRED_COLUMNS
+        )
+
+    def test_every_retired_column_still_exists(self):
+        """:data:`_RETIRED_COLUMNS` names columns, not memories.
+
+        The exemption list above is what keeps the write-door census passing
+        for a column nothing writes, so a stale name on it would silently
+        exempt nothing while reading as though it did -- and once plan step
+        R7c drops these columns, this is what says the list must empty with
+        them.
+        """
+        table_columns = {
+            column.key for column in RecurrenceRule.__table__.columns
+        }
+
+        assert _RETIRED_COLUMNS <= table_columns, (
+            f"_RETIRED_COLUMNS names "
+            f"{_RETIRED_COLUMNS - table_columns}, which "
+            f"budget.recurrence_rules does not carry.  A dropped column needs "
+            f"no exemption; remove the name with the migration that drops it."
+        )
 
     def test_every_spec_field_reaches_the_row(self):
         """No field of the spec is silently dropped on the way to the table.
 
         The census above says the door fills every column; this says the door
         READS every field.  Together they close the two directions a write door
-        can be incomplete in.  ``offset_periods`` is the one field ``_author``
-        does not read from the spec, and that is deliberate rather than an
-        omission: it is DERIVED on every write, so the door takes it from the
-        resolver's answer instead -- which is defect **D1**'s fix and is
-        asserted by :class:`TestPhasePreservedAcrossAnEdit`.
+        can be incomplete in.
+
+        **The exception list is EMPTY since plan step R7b-4**, and that is the
+        strongest this assertion has ever been.  ``offset_periods`` sat on it
+        -- a spec field ``_author`` deliberately did not read, taking the
+        resolver's answer instead because the value is DERIVED on every write
+        (defect **D1**'s fix).  A field a caller can state and the door
+        ignores is a field that lies about what it does, so R7b-4 removed it
+        from the spec rather than from this list: nobody authors a phase now.
         """
         source = inspect.getsource(_authoring)
         read_from_spec = {
@@ -288,7 +332,10 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
         }
         spec_fields = {field.name for field in fields(RecurrenceSpec)}
 
-        assert spec_fields - read_from_spec == {"offset_periods"}
+        assert spec_fields - read_from_spec == set(), (
+            "a RecurrenceSpec field the write door never reads is one a "
+            "caller can state and the table will not carry."
+        )
 
 
 class TestSalaryProfileWriter:
@@ -411,30 +458,43 @@ class TestLoanPaymentTransferWriter:
 
 
 class TestScheduleRebuildRepoint:
-    """``pay_period_admin._repoint_recurrence_rules`` after a full reset."""
+    """What a full schedule RESET does to a recurrence rule: nothing.
 
-    def test_a_rebuilt_schedule_re_anchors_every_rule_it_re_points(
+    ``pay_period_admin`` used to capture every rule carrying a start period
+    before the wipe and re-point it at the new schedule's first period
+    afterwards, because the pay-period delete cascade SET-NULLed that FK --
+    which made a rule the cascade nulled indistinguishable from one that
+    legitimately had no explicit start.  Plan step R7b-4 deleted both halves:
+    a rule's opening bound is a DATE, which no cascade can reach, and
+    ``resolve`` measures it against whatever schedule the owner has now.
+
+    So the class name outlives the function it named, and these cases pin what
+    replaced it.
+    """
+
+    def test_a_reset_leaves_a_bounded_rule_untouched(
         self, seed_user, db, seed_periods,
     ):
-        """A reset re-points the FK, and the anchor follows.
+        """The rule is not written at all, and its anchor still follows.
 
-        The old path was a bulk ``query.update()`` writing ``start_period_id``
-        and a hardcoded ``offset_periods = 0``.  Going through the seam
-        derives the phase instead of transcribing it.  Rebuilding from
-        2027-03-05 must both re-point the rule and move its first occurrence
-        there.
+        Rebuilding from 2027-03-05 leaves every authored column byte-identical
+        -- there is no FK to re-point -- while the anchor moves, because it is
+        ``max(new opening payday, start_date)`` and the new opening dominates
+        a bound from the deleted schedule.  Same first occurrence the re-point
+        produced, from a rule nothing rewrote.
         """
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
                 RecurrencePatternEnum.EVERY_PERIOD,
                 user_id=user_id,
-                start_period_id=seed_periods[0].id,
+                start_date=seed_periods[0].start_date,
             ),
             calendar_for(user_id),
         )
         db.session.flush()
         assert resolved_for(rule).anchor_date == date(2026, 1, 2)
+        before = authored_columns(rule)
 
         new_periods = pay_period_admin.reset_pay_periods(
             user_id, date(2027, 3, 5), num_periods=10, cadence_days=14,
@@ -442,9 +502,96 @@ class TestScheduleRebuildRepoint:
         db.session.flush()
 
         assert new_periods[0].start_date == date(2027, 3, 5)
-        assert rule.start_period_id == new_periods[0].id
+        assert authored_columns(rule) == before
         assert resolved_for(rule).anchor_date == date(2027, 3, 5)
         assert_reauthoring_changes_nothing(rule)
+
+    def test_a_reset_keeps_a_bound_that_falls_INSIDE_the_new_schedule(
+        self, seed_user, db, seed_periods,
+    ):
+        """The half the re-point got wrong, and the reason it is gone.
+
+        The re-point moved EVERY captured rule to the new first period,
+        whatever date the user had chosen.  Rebuild a schedule to open on
+        2026-01-02 while a rule states it starts 2026-03-27, and the re-point
+        answered "starts 2026-01-02" -- silently discarding the user's stated
+        start because the FK it had to restore could only name the first
+        period.  A date has nothing to restore: the bound survives, and
+        ``max(2026-01-02, 2026-03-27)`` keeps it.
+
+        Index 5 of a 14-day schedule opening 2026-01-02 is 2026-03-13, so a
+        bound of 2026-03-27 lands inside index 6 and the rule opens there
+        rather than at the schedule's own start.
+        """
+        user_id = seed_user["user"].id
+        stated_start = date(2026, 3, 27)
+        rule = author_rule(
+            spec_for(
+                RecurrencePatternEnum.EVERY_PERIOD,
+                user_id=user_id,
+                start_date=stated_start,
+            ),
+            calendar_for(user_id),
+        )
+        db.session.flush()
+
+        pay_period_admin.reset_pay_periods(
+            user_id, date(2026, 1, 2), num_periods=10, cadence_days=14,
+        )
+        db.session.flush()
+
+        assert rule.start_date == stated_start
+        assert resolved_for(rule).anchor_date == stated_start
+
+    def test_a_reset_re_phases_an_every_n_rule_through_the_new_schedule(
+        self, seed_user, db, seed_periods,
+    ):
+        """The phase follows the bound onto the rebuilt schedule.
+
+        The pre-seam bulk update wrote ``offset_periods = 0`` as a
+        hand-maintained copy of ``first_period.period_index % interval_n``.
+        Nothing transcribes it now and nothing re-points either: the rule
+        keeps its stated bound, the new schedule's opening dominates it, and
+        the phase is the ordinal of the paycheck that maximum falls in --
+        index 0, so 0 for every interval.  Same value the copy asserted, with
+        no writer left to get it wrong.
+
+        The COLUMN is stale until something re-authors the rule, and that is
+        correct rather than overlooked: nothing reads it (plan step R7b-4), so
+        the resolved answer below is what every consumer sees.
+        """
+        user_id = seed_user["user"].id
+        rule = author_rule(
+            spec_for(
+                RecurrencePatternEnum.EVERY_N_PERIODS,
+                user_id=user_id,
+                interval_n=3,
+                start_date=seed_periods[2].start_date,
+            ),
+            calendar_for(user_id),
+        )
+        db.session.flush()
+        assert resolved_for(rule).offset_periods == 2  # index 2 % interval 3
+
+        pay_period_admin.reset_pay_periods(
+            user_id, date(2027, 3, 5), num_periods=10, cadence_days=14,
+        )
+        db.session.flush()
+
+        resolved = resolved_for(rule)
+        assert resolved.offset_periods == 0  # new index 0 % interval 3
+        assert resolved.interval_n == 3
+
+        # The COLUMN still holds the OLD schedule's phase, and re-authoring is
+        # what brings it into line.  Asserted rather than glossed, because it
+        # is the one place a reader could suspect the reset left something
+        # wrong: the column is a stale DERIVATIVE, not a stale fact.  Nothing
+        # reads it (plan step R7b-4), so the resolved answer above is what
+        # every consumer sees, and plan step R7c drops it.
+        assert rule.offset_periods == 2
+        reauthor_rule(rule, recurrence_spec(rule), calendar_for(user_id))
+        db.session.flush()
+        assert rule.offset_periods == 0
 
     def test_a_rule_with_NO_start_period_follows_the_reset_without_a_write(
         self, seed_user, db, seed_periods,
@@ -474,7 +621,7 @@ class TestScheduleRebuildRepoint:
             calendar_for(user_id),
         )
         db.session.flush()
-        assert rule.start_period_id is None
+        assert rule.start_date is None
         assert resolved_for(rule).anchor_date == seed_periods[0].start_date
         before = authored_columns(rule)
 
@@ -491,38 +638,6 @@ class TestScheduleRebuildRepoint:
         assert authored_columns(rule) == before
         # And it still answers for the schedule that exists now.
         assert resolved_for(rule).anchor_date == date(2027, 3, 5)
-
-    def test_the_re_point_re_phases_an_every_n_rule(
-        self, seed_user, db, seed_periods,
-    ):
-        """The phase is DERIVED from the new first period, not hardcoded to 0.
-
-        The pre-seam bulk update wrote ``offset_periods = 0`` as a
-        hand-maintained copy of ``first_period.period_index % interval_n``.
-        Re-authoring computes it, and index 0 gives 0 for every interval -- so
-        the value is the same and the copy is gone.
-        """
-        user_id = seed_user["user"].id
-        rule = author_rule(
-            spec_for(
-                RecurrencePatternEnum.EVERY_N_PERIODS,
-                user_id=user_id,
-                interval_n=3,
-                start_period_id=seed_periods[2].id,
-            ),
-            calendar_for(user_id),
-        )
-        db.session.flush()
-        assert rule.offset_periods == 2  # period_index 2 % interval 3
-
-        pay_period_admin.reset_pay_periods(
-            user_id, date(2027, 3, 5), num_periods=10, cadence_days=14,
-        )
-        db.session.flush()
-
-        assert rule.offset_periods == 0  # new period_index 0 % interval 3
-        assert rule.interval_n == 3
-        assert_reauthoring_changes_nothing(rule)
 
 
 class TestTheClampIsResolvedNeverStored:
@@ -614,9 +729,18 @@ class TestPhasePreservedAcrossAnEdit:
         The pre-seam update path wrote ``offset_periods`` from the payload,
         and no template renders an offset input -- so the value was always the
         schema default 0, and every future occurrence of an every-3-paychecks
-        rule shifted by one pay period on an amount-only edit.  Deriving the
-        phase from the rule's own start period on every write is what makes
-        that unreachable.
+        rule shifted by one pay period on an amount-only edit.
+
+        **The defect became UNCONSTRUCTIBLE at plan step R7b-4**, and this
+        case is what says so.  Plan step R2d made the phase derive from the
+        rule's start period on every write, which fixed the behaviour while
+        leaving a phase field on the spec that a caller could still state and
+        the door still ignored.  R7b-4 deleted the field: an edit re-reads the
+        rule's authored state, replaces the one fact it owns, and re-authors,
+        so there is no longer any value a payload can carry that names a
+        phase at all.  The edit below is the very one that used to re-phase
+        the rule -- everything but the amount left alone -- and the phase is
+        still the paycheck the bound falls in.
         """
         user_id = seed_user["user"].id
         rule = author_rule(
@@ -624,18 +748,17 @@ class TestPhasePreservedAcrossAnEdit:
                 RecurrencePatternEnum.EVERY_N_PERIODS,
                 user_id=user_id,
                 interval_n=3,
-                start_period_id=seed_periods[2].id,
+                start_date=seed_periods[2].start_date,
             ),
             calendar_for(user_id),
         )
         db.session.flush()
-        assert rule.offset_periods == 2
+        assert rule.offset_periods == 2  # index 2 % interval 3
 
-        # An edit carrying the payload's default phase, as the form submits.
+        # An amount-only edit: read the rule whole, change nothing the phase
+        # depends on, write it whole.
         reauthor_rule(
-            rule,
-            replace(recurrence_spec(rule), offset_periods=0),
-            calendar_for(user_id),
+            rule, recurrence_spec(rule), calendar_for(user_id),
         )
         db.session.flush()
 
@@ -813,7 +936,7 @@ class TestTheIntervalSurvivesTheStorageEncoding:
                 RecurrencePatternEnum.EVERY_N_PERIODS,
                 user_id=user_id,
                 interval_n=4,
-                start_period_id=seed_periods[0].id,
+                start_date=seed_periods[0].start_date,
             ),
             calendar_for(user_id),
         )
@@ -839,7 +962,7 @@ class TestTheIntervalSurvivesTheStorageEncoding:
                 RecurrencePatternEnum.EVERY_N_PERIODS,
                 user_id=user_id,
                 interval_n=4,
-                start_period_id=seed_periods[0].id,
+                start_date=seed_periods[0].start_date,
             ),
             calendar_for(user_id),
         )
@@ -888,7 +1011,7 @@ class TestEveryPatternAuthorsAndResolves:
                 pattern,
                 user_id=user_id,
                 day_of_month=15, month_of_year=3,
-                start_period_id=seed_periods[1].id,
+                start_date=seed_periods[1].start_date,
             ),
             calendar_for(user_id),
         )

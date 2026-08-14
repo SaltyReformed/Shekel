@@ -6,16 +6,22 @@ transaction-template (:mod:`app.routes.templates`) and transfer-template
 (:mod:`app.routes.transfers`) CRUD routes.  What happens to the ROWS that rule
 already generated is the sibling module
 :mod:`app.routes._recurrence_conflict_chooser`, split out at plan step R2e-1
-when this one reached the 1,000-line cap.
+when this one reached the 1,000-line cap.  What an EDIT form's controls START
+ON is :mod:`app.routes._recurrence_form_render`, split out at plan step R7b-4
+when it reached that cap a second time -- the seam being SUBMISSION versus
+STORED STATE: everything here reads a posted payload and writes, everything
+there answers a read-only question about a definition already saved.
 
 The helpers:
 
+* :func:`build_recurrence_rule_for_create` -- the whole create-form
+  preamble both kinds run: lift the closing bound out of the payload, build
+  the context, build the rule.  Hoisted at plan step R7b-4, which is when it
+  became hoistable;
 * :func:`build_recurrence_rule_from_form` -- consumes a Marshmallow-
   validated payload, pops the recurrence-related keys, and returns a
-  fresh :class:`RecurrenceRule` (added to the session and flushed),
-  ``None`` when no cadence was selected, or a Flask redirect
-  :class:`Response` when the submitted start period is not this
-  user's.  [F-24]
+  fresh :class:`RecurrenceRule` (added to the session and flushed) or
+  ``None`` when no cadence was selected.  [F-24]
 * :func:`update_recurrence_rule_from_form` -- sibling of the builder
   for the cadence-changed-on-an-existing-rule branch: re-points the
   template's current :class:`RecurrenceRule` in place (preserving its
@@ -62,26 +68,22 @@ from typing import Any
 from flask import Response, flash
 
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.routes._commit_helpers import StaleConflictContext
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import RECURRENCE_END_BOUND_KEY
+from app.services.loan_recurrence_sync import owns_validity_window
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     NEVER_ENDS,
-    UNAVAILABLE_PATTERN_MESSAGE,
     EndBound,
     RecurrenceSpec,
-    SelectedCadence,
     author_rule,
-    end_bound_from_columns,
     modelled_pattern,
     reauthor_rule,
     recurrence_spec_with_cadence,
-    selected_cadence,
 )
 from app.utils.log_events import (
     BUSINESS,
@@ -155,6 +157,14 @@ def _pop_end_bound_keys(data: dict[str, Any]) -> None:
 
 _DUE_DAY_KEY: str = "due_day_of_month"
 
+#: The OPENING bound's one control (plan step R7b-4), named beside the closing
+#: bound's three because the two are the rule's validity window and the
+#: helpers treat them the same way: PRESENT replaces, ABSENT leaves alone.
+#: One key rather than three because one column holds it -- the closing bound
+#: needs a mode to discriminate three shapes over two columns, and "unbounded
+#: or a date" is what a nullable date already says.
+_START_DATE_KEY: str = "start_date"
+
 
 @dataclass(frozen=True)
 class RecurrenceFormContext:
@@ -205,99 +215,69 @@ class RecurrenceFormContext:
     include_due_day_of_month: bool = False
 
 
-def edit_form_cadence(template: Any) -> SelectedCadence | None:
-    """Return what an EDIT form's cadence controls start on, warning if unreadable.
+def build_recurrence_rule_for_create(
+    data: dict[str, Any],
+    *,
+    user_id: int,
+    redirect: RedirectTarget,
+    include_due_day_of_month: bool,
+) -> RecurrenceRule | None:
+    """Run the whole create-form recurrence preamble, for either kind.
 
-    The render-side counterpart of the write door below, and the reason both
-    edit routes call one function rather than each decoding the rule: the
-    stored pattern and the set the application models can disagree, and until
-    plan step R9 drops the table they DO -- the ``Once`` row survives its
-    deleted enum member (ruling R-R11), and a hand-edited or migration-missed
-    rule can name it.
+    The one call ``templates.create_template`` and
+    ``transfers.create_transfer_template`` each make.  It reads the closing
+    bound out of the payload -- the schema's ``@post_load`` composed it into
+    ONE value under the mode key, and the route has to lift it before the
+    builder pops the rest -- assembles the context, and builds the rule.
 
-    **Answering ``None`` is what makes the repair reachable.**  Before plan
-    step R7b-2 the form met that state by keeping the stored pattern as a
-    trailing ``<select>`` option, because a ``<select>`` whose selected value is
-    absent from its options silently submits a DIFFERENT one -- on both forms
-    the first entry, "Does not repeat", which deletes the rule and sweeps its
-    future rows.  The two-axis controls carry no pattern id to preserve, so
-    there is nothing to append: they render UNSET, and the warning says to
-    choose a cadence.
-
-    **Rendering unset does NOT make the empty submission safe, and an
-    adversarial review of this step caught the gap.**  Unset means the unit
-    ``<select>``'s first entry is the selected one, so saving the form
-    unchanged posts exactly the "Does not repeat" that deletes the rule -- the
-    same destruction the trailing option existed to prevent, reached a
-    different way.  What keeps ``UNAVAILABLE_PATTERN_MESSAGE``'s promise is the
-    server-side refusal in :func:`resolve_recurrence_rule_for_update` (see
-    :data:`UNREPAIRED_CADENCE_CANNOT_BE_CLEARED`), which is the only layer
-    holding both facts the disposition needs.
+    **It exists because plan step R7b-4 made hoisting possible, and the
+    ``duplicate-code`` gate is what said so.**  The two routes ran a
+    byte-identical preamble and carried a one-sided suppression whose stated
+    reason was that it could NOT be hoisted: the transfers side reused
+    ``start_period_id`` afterwards, for its one-time-transfer branch, so a
+    wrapper popping it internally would have had to thread it back out.  That
+    field is the transfer form's alone now -- its recurrence meaning became a
+    date -- and it is read ABOVE this call there, which leaves the two
+    preambles identical with nothing left to thread.  The suppression is
+    deleted rather than moved.
 
     Args:
-        template: The ``TransactionTemplate`` or ``TransferTemplate`` being
-            edited.  Read for ``recurrence_rule`` only; not mutated.
+        data: Marshmallow-validated payload; mutated in place.  Every
+            recurrence key is popped, including the closing bound's three.
+        user_id: Owner of the resulting :class:`RecurrenceRule` row.
+        redirect: Where a recoverable failure would send the user.  Carried
+            into the context rather than read: neither this function nor
+            :func:`build_recurrence_rule_from_form` has a failure left, and
+            the field is on the context because
+            :func:`resolve_recurrence_rule_for_update` does.
+        include_due_day_of_month: ``True`` for transaction templates, ``False``
+            for transfer templates.
 
     Returns:
-        The :class:`~app.services.recurrence.SelectedCadence` to preselect, or
-        ``None`` when the template does not repeat OR when its rule names a
-        pattern this application no longer models -- the second case having
-        flashed the explanation.
-
+        The flushed :class:`RecurrenceRule`, or ``None`` when the form said
+        "Does not repeat".
     """
-    rule = template.recurrence_rule
-    if rule is None:
-        return None
-    if modelled_pattern(rule.pattern_id) is None:
-        flash(UNAVAILABLE_PATTERN_MESSAGE, "warning")
-        return None
-    return selected_cadence(rule.pattern_id, rule.interval_n)
-
-
-def edit_form_end_bound(template: Any) -> EndBound:
-    """Return the shape and value an EDIT form's "Ends" control starts on.
-
-    The bound half of :func:`edit_form_cadence`, and the reason both edit
-    routes call a function rather than reading the columns in Jinja: the
-    control's three shapes are discriminated by which column is non-NULL
-    (ruling R-R13's "absence is the discriminator", applied to the bound), and
-    deciding that in a template would be a second statement of the shape set
-    -- keyed on a name string, which this project rules out.
-
-    **It cannot fail on an unreadable rule**, unlike :func:`edit_form_cadence`:
-    it reads the two bound columns and no cadence, so a rule naming a pattern
-    the application no longer models still renders its stop correctly while the
-    cadence controls render unset above the warning.  A form that lost the
-    user's stop date because its cadence was unreadable would be the repair
-    path destroying what it came to fix.
-
-    Args:
-        template: The ``TransactionTemplate`` or ``TransferTemplate`` being
-            edited, or ``None`` on a create form.  Read for
-            ``recurrence_rule`` only; not mutated.
-
-    Returns:
-        The stored :class:`~app.services.recurrence.EndBound`, or
-        :data:`~app.services.recurrence.NEVER_ENDS` when the definition has no
-        rule -- which is what a create form starts on.
-
-    Raises:
-        RecurrenceResolutionError: The row carries both bound columns, which
-            ``ck_recurrence_rules_single_end_bound`` refuses in the table.
-    """
-    rule = None if template is None else template.recurrence_rule
-    if rule is None:
-        return NEVER_ENDS
-    return end_bound_from_columns(rule.end_date, rule.max_occurrences)
+    return build_recurrence_rule_from_form(
+        data,
+        user_id=user_id,
+        ctx=RecurrenceFormContext(
+            # ABSENT when the form stated no bound -- a disabled control, or a
+            # partial update -- which the helpers read as "leave the stored one
+            # alone" (plan step R7b-3).  On a CREATE there is no stored bound,
+            # so the builder reads it as "ends never".
+            end_bound=data.pop(RECURRENCE_END_BOUND_KEY, None),
+            redirect=redirect,
+            include_due_day_of_month=include_due_day_of_month,
+        ),
+    )
 
 
 def build_recurrence_rule_from_form(
     data: dict[str, Any],
     *,
     user_id: int,
-    start_period_id: int | None,
     ctx: RecurrenceFormContext,
-) -> RecurrenceRule | Response | None:
+) -> RecurrenceRule | None:
     """Build a :class:`RecurrenceRule` from a validated form payload.
 
     Pops every recurrence-related key from ``data`` so the caller's
@@ -305,8 +285,17 @@ def build_recurrence_rule_from_form(
     constructor does not receive stray kwargs, then authors the rule
     through :func:`app.services.recurrence.author_rule` -- the one door
     that resolves both of the table's cadence vocabularies together.
-    This helper's own job is what only a ROUTE can do: read the form and
-    owner-check the submitted start period.
+
+    **It cannot fail on user input, since plan step R7b-4**, and the
+    signature says so: it used to owner-check a submitted
+    ``start_period_id`` and return a redirect :class:`Response` when the
+    period was not this user's.  The recurrence no longer has a start
+    PERIOD -- its opening bound is a date -- and the one caller that still
+    submits one does so for its own non-recurring job, so that check moved
+    to the route that owns the field
+    (``transfers.create_transfer_template``).  A kind-agnostic helper
+    checking a field only one kind submits was the coupling; moving it
+    removed the coupling and the failure mode together.
 
     **It does NOT validate the cadence.**  That the submitted axes name values
     the application MODELS -- narrower than "name ``ref`` rows", and the
@@ -326,22 +315,18 @@ def build_recurrence_rule_from_form(
     Args:
         data: Marshmallow-validated payload; mutated in place.  The
             helper pops ``recurrence_unit``, ``recurrence_placement``,
-            ``interval_n``, ``day_of_month``, ``month_of_year``, the closing
+            ``interval_n``, ``day_of_month``, ``month_of_year``,
+            ``start_date``, the closing
             bound's three (:data:`_END_BOUND_KEYS`), and -- when
             ``ctx.include_due_day_of_month`` is ``True`` --
             ``due_day_of_month``.
-        user_id: Owner of the resulting :class:`RecurrenceRule` row, and the
-            owner the submitted start period is checked against.
-        start_period_id: From the form; the rule's "First paycheck", or the
-            period a non-repeating transfer lands in.  Caller pops it before
-            calling the helper because the same value is later persisted on
-            the :class:`RecurrenceRule` (or read by the transfer route's
-            materialization).  Owner-checked whether or not a rule results.
+        user_id: Owner of the resulting :class:`RecurrenceRule` row.
         ctx: The :class:`RecurrenceFormContext` carrying the form's
             ``end_bound`` (written onto the rule, or ``NEVER_ENDS`` when the
-            form stated none), the validation-error ``redirect`` target (an
-            invalid start period), and the ``include_due_day_of_month``
-            transaction-vs-transfer flag.
+            form stated none) and the ``include_due_day_of_month``
+            transaction-vs-transfer flag.  Its ``redirect`` is unused here now
+            that the helper has no failure, and kept only because the three
+            helpers share one context object.
 
     Returns:
         * :class:`RecurrenceRule` -- newly added, flushed, ready to
@@ -349,46 +334,29 @@ def build_recurrence_rule_from_form(
           FK (e.g. ``template.recurrence_rule_id = rule.id``).
         * ``None`` -- no recurrence pattern was selected, so the template does
           not repeat; the helper still popped every recurrence key from
-          ``data`` and still owner-checked the start period.
-        * :class:`Response` -- a Flask redirect to ``ctx.redirect`` when the
-          submitted start period is not this user's; the caller returns it
-          directly so the route's control flow matches the pre-extraction
-          shape.
+          ``data``.
     """
     unit = data.pop("recurrence_unit", None)
-
-    # Verify ownership of any submitted start period BEFORE anything is
-    # persisted -- for every pattern, and for NO pattern.  ``start_period_id``
-    # is written onto the rule unconditionally below
-    # (``rule_kwargs["start_period_id"]``), and ``recurrence_engine`` later
-    # dereferences ``rule.start_period.start_date`` as the generation boundary
-    # -- and ``resolve`` reads it as the rule's opening bound -- so a
-    # cross-user period would both be stored as a foreign FK and shift this
-    # owner's generation timing.  This matches the read-only preview path
-    # (``templates.preview_recurrence``), which already owner-gates the start
-    # period for all patterns; without this probe the persist path was an IDOR
-    # the preview path was not (deep-quality-hunt #21).
-    #
-    # **Ahead of the no-pattern early return, not after it** (plan step
-    # R2e-3).  It used to sit below, so a submission naming no pattern skipped
-    # it entirely.  That was harmless while "does not repeat" meant no rule
-    # AND no instances -- nothing downstream read the period.  R2e-3 makes it
-    # the transfer form's DEFAULT and materialises a Transfer into exactly
-    # that period, so the check has to be unconditional on the SUBMISSION
-    # rather than conditional on a rule coming out of it.
-    # ``_materialize_one_time_transfer`` re-checks as defence in depth.
-    if start_period_id is not None:
-        start_period = db.session.get(PayPeriod, start_period_id)
-        if start_period is None or start_period.user_id != user_id:
-            flash("Invalid start period.", "danger")
-            return ctx.redirect.to_response()
 
     if unit is None:
         # Does not repeat: drop every recurrence-related key so the caller's
         # model constructor does not receive stray kwargs.
+        #
+        # **``start_date`` is popped HERE as well as below, and leaving it out
+        # was a 500** -- caught by the browser drive
+        # (``tests/manual/verify_recurrence_form.py``) with the whole pytest
+        # suite green, which is the case that mandate exists for.  The box is
+        # hidden with ``#recurrence-fields`` when the form says "does not
+        # repeat", and a hidden input still SUBMITS: the payload carried
+        # ``start_date`` through this early return into
+        # ``TransactionTemplate(**data)``, whose constructor has no such
+        # keyword.  No test payload included the key on this branch, because
+        # every one of them was written by hand; a browser posts every control
+        # the page renders.
         for key in _BASE_RECURRENCE_KEYS:
             data.pop(key, None)
         _pop_end_bound_keys(data)
+        data.pop(_START_DATE_KEY, None)
         if ctx.include_due_day_of_month:
             data.pop(_DUE_DAY_KEY, None)
         return None
@@ -403,6 +371,15 @@ def build_recurrence_rule_from_form(
     _pop_end_bound_keys(data)
     day_of_month = data.pop("day_of_month", None)
     month_of_year = data.pop("month_of_year", None)
+    # The OPENING bound (plan step R7b-4).  Popped unconditionally, like every
+    # other recurrence key, so the caller's model constructor never sees it.
+    #
+    # On a CREATE, an absent key and a stated empty are the same request and
+    # only here: there is no stored bound to leave alone, so both author an
+    # unbounded rule.  That is exactly the asymmetry
+    # :attr:`RecurrenceFormContext.end_bound` records for the closing bound,
+    # and for the same reason -- see the ``end_bound`` line below.
+    start_date = data.pop(_START_DATE_KEY, None)
     due_day_of_month = (
         data.pop(_DUE_DAY_KEY, None) if ctx.include_due_day_of_month else None
     )
@@ -422,8 +399,9 @@ def build_recurrence_rule_from_form(
     # reason once the picker could state the cadence itself.
     #
     # ``offset_periods`` is not read from the payload at all -- the schemas no
-    # longer declare it (defect D8) -- so the spec's default stands and
-    # ``resolve`` derives the phase from the rule's own start period.
+    # longer declare it (defect D8) and the spec no longer carries it (plan
+    # step R7b-4) -- so ``resolve`` derives the phase from the opening bound
+    # this call states.
     return author_rule(
         RecurrenceSpec(
             user_id=user_id,
@@ -433,7 +411,7 @@ def build_recurrence_rule_from_form(
             day_of_month=day_of_month,
             due_day_of_month=due_day_of_month,
             month_of_year=month_of_year,
-            start_period_id=start_period_id,
+            start_date=start_date,
             # A create form that stated no bound authors an UNBOUNDED rule:
             # there is no stored bound to leave alone, so absence and "never"
             # are the same request here and only here.
@@ -509,6 +487,17 @@ def update_recurrence_rule_from_form(
     submitted_interval = data.pop("interval_n", 1)
     day_of_month = data.pop("day_of_month", None)
     month_of_year = data.pop("month_of_year", None)
+    # The OPENING bound, on the SAME present-versus-absent rule the closing
+    # one runs on (plan step R7b-4).  PRESENCE is read before the pop, and it
+    # is not the same question as the value: the schema declares the field
+    # ``allow_none``, so clearing the box arrives as a stated ``None`` that
+    # means "unbounded" and MUST overwrite a stored date, while a form that
+    # rendered the control disabled -- a loan payment's, whose bound the app
+    # derives -- omits the key entirely and must leave the stored date alone.
+    # Collapsing the two would make a loan edit erase the origination bound
+    # that keeps its payments from generating before the loan exists.
+    stated_start_date = _START_DATE_KEY in data
+    submitted_start_date = data.pop(_START_DATE_KEY, None)
     # The bound's keys too, on THIS branch as well: the route reads the mode
     # into ``ctx.end_bound`` before calling, and a submission that named none
     # still leaves its two value keys behind (see :data:`_END_BOUND_KEYS`).
@@ -528,11 +517,11 @@ def update_recurrence_rule_from_form(
     # conditional on a column being set.
 
     # The rule's CURRENT authored state, with the form's fields replaced.
-    # Everything the form does not collect -- ``start_period_id`` (fixed at
-    # creation), ``start_date`` (the loan's origination bound) -- rides
-    # through untouched, so this edit cannot reset a field it never showed the
-    # user.  The CLOSING BOUND is collected, so it does not ride: see the
-    # comment on the ``end_bound`` line below.
+    # Anything the form does not collect rides through untouched, so this edit
+    # cannot reset a field it never showed the user.  BOTH validity bounds are
+    # collected now (plan step R7b-4), so neither rides unconditionally: each
+    # replaces the stored value when the form stated it and leaves it alone
+    # when the form did not.  See the two lines below.
     #
     # ``interval_n`` needs no pattern-scoping here, and since plan step R7b-1
     # it cannot reach a column at all for a calendar cadence.  This form's
@@ -582,6 +571,10 @@ def update_recurrence_rule_from_form(
                 else current.due_day_of_month
             ),
             month_of_year=month_of_year,
+            start_date=(
+                submitted_start_date if stated_start_date
+                else current.start_date
+            ),
             # The form states the WHOLE closing bound, never half of one
             # (plan step R7b-3): the "Ends" control's three shapes are one
             # value, so a save replaces it outright and there is no merging a
@@ -634,9 +627,9 @@ intent to remove it, so the empty submission is refused rather than acted on.
 
 
 LOAN_PAYMENT_BOUND_IS_DERIVED: str = (
-    "A loan payment stops when the loan is paid off, so when it ends is not "
-    "something you set. Change the loan's terms to move the payoff, or "
-    "archive the payment to stop it early."
+    "A loan payment runs from the loan's first installment until it is paid "
+    "off, so when it starts and stops is not something you set. Change the "
+    "loan's terms to move either one, or archive the payment to stop it early."
 )
 """Refusal shown when a submission states a bound the app DERIVES.
 
@@ -644,15 +637,28 @@ LOAN_PAYMENT_BOUND_IS_DERIVED: str = (
 halves for the reason ``UNREPAIRED_CADENCE_CANNOT_BE_CLEARED`` does: disabling
 is an affordance, and a client may post whatever it likes.
 
-``loan_recurrence_sync.sync_recurring_payment_bounds`` owns a loan payment's
-closing bound -- it is the loan's projected payoff, rewritten on every
-payoff-affecting edit -- so a bound accepted here would be silently discarded
-by the next such edit, which is worse than refusing it.  Refusing also keeps
-the two shapes of "a rule stops" from ever meeting on one row: a submitted
-COUNT beside the sync's DATE is the pair
+``loan_recurrence_sync.sync_recurring_payment_bounds`` owns BOTH of a loan
+payment's validity bounds -- the opening one is the loan's first contractual
+installment, the closing one its projected payoff, and it rewrites them on
+every payoff-affecting edit -- so a bound accepted here would be silently
+discarded by the next such edit, which is worse than refusing it.  The OPENING
+half is worse still: it is what keeps a payment from generating before the
+loan originates, measured at $3,220.92 of phantom cash debits on a mortgage
+closing one month out.
+
+Refusing also keeps the two shapes of "a rule stops" from ever meeting on one
+row: a submitted COUNT beside the sync's DATE is the pair
 ``ck_recurrence_rules_single_end_bound`` refuses, and while
 :class:`~app.services.recurrence.EndBound` makes that unwritable, this is what
 stops the user's stated bound being thrown away without a word.
+
+**Which definitions it fires for is
+``loan_recurrence_sync.owns_validity_window``, not
+:func:`is_loan_payment`** (plan step R7b-4).  Those are different questions and
+asking the second was a defect an adversarial review of plan step R7b-3 found:
+a template can carry loan-payment SETTINGS without being the template that
+module writes bounds for, and its form then locked a control for a value
+nothing wrote.  See that predicate's docstring.
 """
 
 
@@ -831,9 +837,6 @@ def resolve_recurrence_rule_for_update(
     The owning row's user scope comes from ``template.user_id`` -- the
     caller fetched the template through an owner-scoped ``get_or_404``,
     so this equals the pre-extraction ``current_user.id``.
-    ``start_period_id`` is fixed at create time, so the builder is
-    invoked with ``start_period_id=None`` and never performs the
-    ``EVERY_N_PERIODS`` start-period owner re-check.
 
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate``
@@ -843,7 +846,8 @@ def resolve_recurrence_rule_for_update(
             place.
         data: Marshmallow-validated payload; the recurrence keys are
             popped by the delegated helper.  Read for whether
-            ``recurrence_unit`` is PRESENT before that pop consumes it.
+            ``recurrence_unit`` and ``start_date`` are PRESENT before those
+            pops consume them.
         ctx: The :class:`RecurrenceFormContext` forwarded unchanged to
             the delegated builder / updater (its ``end_bound``,
             ``redirect`` target, and ``include_due_day_of_month`` flag).
@@ -851,8 +855,8 @@ def resolve_recurrence_rule_for_update(
     Returns:
         * ``None`` -- the rule was resolved; the caller continues to
           the field-update loop.
-        * :class:`Response` -- a Flask redirect for an invalid
-          start period; the caller returns it directly.
+        * :class:`Response` -- a Flask redirect for one of the three
+          refusals above; the caller returns it directly.
     """
     # Read BEFORE the delegated helper pops the key.
     recurrence_submitted = "recurrence_unit" in data
@@ -861,16 +865,45 @@ def resolve_recurrence_rule_for_update(
         and data.get("recurrence_unit") is None
         and template.recurrence_rule is not None
     )
-    if clearing and is_loan_payment(template):
+    # A loan payment may not be made one-time, and WHICH definitions that
+    # covers is the UNION of two questions rather than either alone (developer
+    # ruling 2026-08-14, taken on the measurement below).
+    #
+    # ``is_loan_payment`` asks whether the template carries
+    # ``LoanPaymentSettings``, which is the right question for the standing
+    # ``extra_principal`` half of the harm this refusal names.
+    # ``owns_validity_window`` asks whether ``loan_recurrence_sync`` writes
+    # this template's bounds, which is the right question for the rest of it:
+    # clearing the recurrence nulls ``recurrence_rule_id``, and that is how
+    # ``recurring_transfer_query.active_recurring_transfer_template`` FINDS a
+    # loan's payment -- so the loan goes on amortizing with nothing projecting
+    # a payment against it.
+    #
+    # **Measured on a production clone 2026-08-14: neither live loan payment
+    # satisfies the first predicate** (transfer templates 2 "Mortgage" and 9
+    # "Van Payment" carry no settings row), so asking it alone left both of the
+    # developer's real loans clearable.  The plan step R7b-3 finding that first
+    # named this predicate read it as too BROAD; it is too NARROW where it
+    # matters, and the union is what makes the refusal cover the set the harm
+    # is measured on without giving up the set it was written for.
+    if clearing and (
+        is_loan_payment(template) or owns_validity_window(template)
+    ):
         flash(LOAN_PAYMENT_CANNOT_BE_ONE_TIME, "danger")
         return ctx.redirect.to_response()
-    # A loan payment's closing bound is DERIVED (the loan's projected payoff),
-    # so a submission stating one is refused rather than accepted and then
-    # discarded by the next payoff-affecting edit.  Its form renders the
-    # control disabled, which is why this is reachable only by a crafted
+    # A loan payment's validity bounds are DERIVED -- the opening one from the
+    # loan's first contractual installment, the closing one from its projected
+    # payoff -- so a submission stating EITHER is refused rather than accepted
+    # and then discarded by the next payoff-affecting edit.  The form renders
+    # both controls disabled, which is why this is reachable only by a crafted
     # POST -- and why it is checked anyway: disabling is the affordance, the
     # refusal is the rule.  See LOAN_PAYMENT_BOUND_IS_DERIVED.
-    if ctx.end_bound is not None and is_loan_payment(template):
+    #
+    # ONE guard over both bounds because ONE writer owns both, and asking
+    # ``owns_validity_window`` is what keeps this refusal and that writer on
+    # the same set (plan step R7b-4).
+    states_a_bound = ctx.end_bound is not None or _START_DATE_KEY in data
+    if states_a_bound and owns_validity_window(template):
         flash(LOAN_PAYMENT_BOUND_IS_DERIVED, "danger")
         return ctx.redirect.to_response()
     if clearing and modelled_pattern(
@@ -890,16 +923,13 @@ def resolve_recurrence_rule_for_update(
         )
         return None
 
-    rule_or_redirect = build_recurrence_rule_from_form(
+    rule = build_recurrence_rule_from_form(
         data,
         user_id=template.user_id,
-        start_period_id=None,
         ctx=ctx,
     )
-    if isinstance(rule_or_redirect, Response):
-        return rule_or_redirect
-    if rule_or_redirect is not None:
-        template.recurrence_rule_id = rule_or_redirect.id
+    if rule is not None:
+        template.recurrence_rule_id = rule.id
     elif recurrence_submitted:
         _clear_recurrence_rule(template)
     return None
@@ -957,9 +987,8 @@ __all__ = [
     "STALE_EDITING_MESSAGE",
     "STALE_ACTION_MESSAGE",
     "RecurrenceFormContext",
+    "build_recurrence_rule_for_create",
     "build_recurrence_rule_from_form",
-    "edit_form_cadence",
-    "edit_form_end_bound",
     "is_loan_payment",
     "update_recurrence_rule_from_form",
     "resolve_recurrence_rule_for_update",

@@ -179,7 +179,8 @@ def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> None:
         return
     old_start, old_day = rule.start_date, rule.day_of_month
     # RE-AUTHORED, not assigned: a rule is written whole through one door, so
-    # ``offset_periods`` is re-derived from the rule's own start period rather
+    # ``offset_periods`` is re-derived from the rule's own opening bound --
+    # the ``start_date`` this very call is moving (plan step R7b-4) -- rather
     # than left holding the phase a previous cadence implied.  Both values
     # here also feed the rule's first occurrence, which is DERIVED on read
     # (plan step R2d) and so cannot lag the contract this edit states.  The
@@ -228,6 +229,69 @@ def bind_rule_to_loan(rule: "RecurrenceRule", account_id: int) -> None:
     if params is None:
         return
     _sync_loan_cadence(rule, params)
+
+
+def owns_validity_window(template: "object") -> bool:
+    """Return whether THIS module writes *template*'s recurrence bounds.
+
+    **The one predicate, so the form's LOCK and this module's own guard cannot
+    disagree** (plan step R7b-4).  A recurring loan payment's opening and
+    closing bounds are DERIVED -- the loan's first contractual installment and
+    its projected payoff -- so both forms render those controls read-only and
+    both refuse a crafted submission that states one.  What decides that has
+    to be the condition :func:`sync_recurring_payment_bounds` returns early on,
+    or the form locks a control for a value nothing writes.
+
+    **It is that function's OPENING-bound precondition exactly, and its
+    closing-bound one only approximately** -- an adversarial review of plan
+    step R7b-4 measured the gap and it is stated rather than papered over. The
+    start half is scenario-independent by design (ruling C8e: a loan's contract
+    terms are not scenario-scoped), so this predicate is complete for it. The
+    END half additionally returns early when the owner has no baseline
+    scenario, which this does not ask -- so an owner in that state sees a
+    locked "Ends" control for a payoff nothing currently writes. That is the
+    same defect SHAPE this predicate was built to close, one condition
+    narrower, and it is far less reachable: registration creates a baseline,
+    so the state is a broken invariant rather than a configuration. Splitting
+    the predicate per bound is the remedy if it is ever measured live.
+
+    **It was NOT the same condition, and an adversarial review of plan step
+    R7b-3 measured the gap.**  The lock asked
+    ``_recurrence_form_helpers.is_loan_payment`` -- "does this template carry a
+    :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row" --
+    which is BROADER than what the sync writes for: the destination must also
+    be a CONFIGURED loan (``LoanParams``), and the template must be the one
+    that lookup returns, since a second recurring payment into one loan leaves
+    the newer rule unbounded.  A settings-carrying template outside that set
+    rendered its "Ends" control locked, saying the value came from the loan's
+    projected payoff, for a payoff nothing wrote.  None is measured on the
+    developer's data -- every live loan payment satisfies both -- but plan step
+    R7b-4 locks the OPENING bound on the same question, so deciding it once
+    here is what stops the second lock inheriting the first's error.
+
+    **Not the same question as "is this a loan payment".**
+    :func:`~app.routes._recurrence_form_helpers.is_loan_payment` keeps the
+    settings-row reading, and correctly: what it decides is whether clearing
+    the recurrence would strand a standing ``extra_principal``, which is a
+    property of that row rather than of this module's write set.
+
+    Args:
+        template: The ``TransactionTemplate`` or ``TransferTemplate`` a form is
+            rendering.  A transaction template can never be a loan payment, and
+            ``getattr`` is what keeps this kind-agnostic for the two form
+            helpers that call it.
+
+    Returns:
+        ``True`` when this module writes the template's ``start_date`` and
+        ``end_date``, so its form must render both read-only.
+    """
+    account_id = getattr(template, "to_account_id", None)
+    if account_id is None or template.recurrence_rule_id is None:
+        return False
+    if loan_loaders.load_loan_params(account_id) is None:
+        return False
+    active = active_recurring_transfer_template(account_id, template.user_id)
+    return active is not None and active.id == template.id
 
 
 def sync_recurring_payment_bounds(account_id: int) -> None:

@@ -78,12 +78,20 @@ class TestBuildRecurrenceRuleFromForm:
                 "due_day_of_month": 5,
                 "month_of_year": 3,
                 "end_date": None,
+                # The OPENING bound, which a BROWSER posts on this branch even
+                # though no hand-written payload ever did: the box is hidden
+                # with #recurrence-fields and a hidden input still submits.
+                # Leaving it in ``data`` sent it into
+                # ``TransactionTemplate(**data)``, whose constructor has no
+                # such keyword -- a 500 on every "Does not repeat" save, green
+                # across the whole suite, found by the browser drive
+                # (tests/manual/verify_recurrence_form.py).
+                "start_date": None,
                 "name": "Should survive",  # non-recurrence key
             }
             result = build_recurrence_rule_from_form(
                 data,
                 user_id=seed_user["user"].id,
-                start_period_id=None,
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
@@ -107,13 +115,13 @@ class TestBuildRecurrenceRuleFromForm:
                 "recurrence_unit": None,
                 "interval_n": 1,
                 "day_of_month": 15,
+                "start_date": None,
                 "due_day_of_month": 5,  # would never appear in real
                                         # transfer payload
             }
             result = build_recurrence_rule_from_form(
                 data,
                 user_id=seed_user["user"].id,
-                start_period_id=None,
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget("transfers.new_transfer_template"),
@@ -130,11 +138,15 @@ class TestBuildRecurrenceRuleFromForm:
     def test_every_n_periods_auto_offset(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """C2-3: EVERY_N_PERIODS + valid start_period -> offset derived.
+        """C2-3: EVERY_N_PERIODS + a stated "Starts on" -> offset derived.
 
-        Hand-arithmetic: with ``period_index = 1`` (the second
-        seeded period) and ``interval_n = 4``,
-        ``offset_periods = 1 % 4 = 1``.
+        Hand-arithmetic: the bound falls in the period whose
+        ``period_index`` is 1 (the second seeded period), and
+        ``interval_n = 4``, so ``offset_periods = 1 % 4 = 1``.
+
+        The bound named that paycheck through a "First paycheck" ``<select>``
+        until plan step R7b-4 and is the paycheck's own payday now; the
+        arithmetic and the assertion are unchanged.
         """
         with app.test_request_context():
             every_n_id = ref_cache.recurrence_pattern_id(
@@ -158,10 +170,10 @@ class TestBuildRecurrenceRuleFromForm:
                 "due_day_of_month": None,
                 "end_date": None,
             }
+            data["start_date"] = chosen.start_date
             result = build_recurrence_rule_from_form(
                 data,
                 user_id=seed_user["user"].id,
-                start_period_id=chosen.id,
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
@@ -178,92 +190,68 @@ class TestBuildRecurrenceRuleFromForm:
             # Roll back so the test does not pollute the session.
             db.session.rollback()
 
-    def test_every_n_periods_invalid_start_period_returns_redirect(
+    def test_the_builder_has_no_user_input_failure_left(
         self, app, auth_client, seed_user,  # pylint: disable=unused-argument
     ):
-        """C2-4: EVERY_N_PERIODS + bad start_period -> Response + flash.
+        """It returns a rule or ``None``, never a redirect (plan step R7b-4).
 
-        Uses the ``templates.edit_template`` endpoint so the
-        redirect_endpoint_kwargs={"template_id": 42} branch is
-        exercised; the response Location should contain ``/42``.
+        **Two IDOR regressions used to live here and have MOVED, not gone**
+        (C2-4 and C2-7, deep-quality-hunt #21).  This helper owner-checked a
+        submitted ``start_period_id`` for every pattern, because that field was
+        the recurrence's "First paycheck" and a foreign period both persisted
+        as a cross-user FK and shifted this owner's generation timing.  The
+        recurrence takes a DATE now -- which names nothing of anyone else's --
+        so the field belongs to the ONE job it still has, placing a
+        non-repeating transfer, and its ownership probe sits in the route that
+        reads it.  The refusal is asserted there:
+        ``test_transfers.py::TestOneTimeTransfer::test_recurring_transfer_idor_period``.
+
+        What this asserts is the property that makes the move safe rather than
+        merely tidy: a kind-agnostic helper that cannot fail on a submission
+        has no failure a caller can forget to propagate.  A ``Response`` here
+        would mean the coupling came back.
         """
         with app.test_request_context():
-            data = validated_cadence(
-                unit=RecurrenceUnitEnum.PERIOD, interval_n=4,
-            )
-            result = build_recurrence_rule_from_form(
-                data,
-                user_id=seed_user["user"].id,
-                start_period_id=99_999_999,  # nonexistent
-                ctx=RecurrenceFormContext(
-                    end_bound=None,
-                    redirect=RedirectTarget(
-                        "templates.edit_template",
-                        {"template_id": 42},
-                    ),
-                    include_due_day_of_month=True,
-                ),
-            )
-            assert isinstance(result, Response)
-            assert result.status_code == 302
-            assert "/templates/42" in result.headers["Location"]
-            db.session.rollback()
-
-    def test_non_every_n_cross_user_start_period_rejected(
-        self, app, seed_user, seed_second_user, seed_second_periods,  # pylint: disable=unused-argument
-    ):
-        """C2-7: a cross-user start_period is rejected for a recurring
-        (non-EVERY_N) pattern, not only EVERY_N_PERIODS.
-
-        deep-quality-hunt #21: the start_period ownership probe used to
-        run ONLY inside the EVERY_N_PERIODS branch, so a MONTHLY (or any
-        other recurring) pattern persisted a foreign ``start_period_id``
-        unchecked, and ``recurrence_engine`` then read that victim
-        period's ``start_date`` as the generation boundary.  The probe
-        now runs for every pattern: a start_period owned by another user
-        yields a redirect Response + flash, exactly like the EVERY_N
-        case (C2-4), and nothing is persisted.
-        """
-        with app.test_request_context():
-            foreign_period = seed_second_periods[0]
             data = {
                 **validated_cadence(unit=RecurrenceUnitEnum.MONTH),
                 "day_of_month": 15,
                 "month_of_year": None,
                 "due_day_of_month": None,
                 "end_date": None,
+                # A foreign period id cannot be expressed: the transaction
+                # schema no longer declares the field, and the helper takes no
+                # such argument.  A stray key would simply survive in ``data``.
+                "start_date": None,
             }
             result = build_recurrence_rule_from_form(
                 data,
                 user_id=seed_user["user"].id,
-                start_period_id=foreign_period.id,
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
                     include_due_day_of_month=True,
                 ),
             )
-            assert isinstance(result, Response)
-            assert result.status_code == 302
-            assert "/templates/new" in result.headers["Location"]
-            # No rule was persisted referencing the foreign period.
-            assert (
-                db.session.query(RecurrenceRule)
-                .filter_by(start_period_id=foreign_period.id)
-                .first()
-            ) is None
+
+            assert isinstance(result, RecurrenceRule)
+            assert not isinstance(result, Response)
+            assert result.start_date is None
+            assert data == {}
             db.session.rollback()
 
-    def test_non_every_n_own_start_period_persisted(
+    def test_a_stated_start_date_is_persisted_without_phasing_a_month_rule(
         self, app, seed_user, seed_periods_today,
     ):
-        """C2-8: a MONTHLY pattern with the owner's own start_period is
-        accepted and persists it, without auto-deriving offset_periods.
+        """C2-8: a MONTHLY rule keeps its bound and takes no phase.
 
-        Confirms the hoisted probe (C2-7) does not over-reject the
-        legitimate same-user case, and that ``offset_periods`` stays 0 --
-        the ``period_index`` auto-offset is EVERY_N_PERIODS-only even
-        when the chosen period has a non-zero index.
+        The bound is stored whatever the cadence, and ``offset_periods`` stays
+        0 -- the paycheck-ordinal derivation is scoped to the ``PERIOD`` unit,
+        so a month-scale rule never acquires one even when its bound falls in
+        a paycheck with a non-zero index.
+
+        It stated the bound as a start-period FK until plan step R7b-4; the
+        two assertions that survive are the ones about the RULE rather than
+        about the affordance.
         """
         with app.test_request_context():
             monthly_id = ref_cache.recurrence_pattern_id(
@@ -280,11 +268,11 @@ class TestBuildRecurrenceRuleFromForm:
                 "month_of_year": None,
                 "due_day_of_month": None,
                 "end_date": None,
+                "start_date": own_period.start_date,
             }
             result = build_recurrence_rule_from_form(
                 data,
                 user_id=seed_user["user"].id,
-                start_period_id=own_period.id,
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
@@ -292,8 +280,8 @@ class TestBuildRecurrenceRuleFromForm:
                 ),
             )
             assert isinstance(result, RecurrenceRule)
-            assert result.start_period_id == own_period.id
-            # offset is NOT auto-derived for non-EVERY_N patterns.
+            assert result.start_date == own_period.start_date
+            # The phase is PERIOD-unit only, whatever the bound's index.
             assert result.offset_periods == 0
             assert result.pattern_id == monthly_id
             db.session.rollback()
@@ -318,7 +306,6 @@ class TestBuildRecurrenceRuleFromForm:
             result = build_recurrence_rule_from_form(
                 data,
                 user_id=seed_user["user"].id,
-                start_period_id=None,
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
@@ -331,40 +318,39 @@ class TestBuildRecurrenceRuleFromForm:
             db.session.rollback()
 
 
-class TestAnEditCannotRePhaseAPhaselessRule:
-    """Defect **D8**, closed at plan step R7b-2, at the surface it survived on.
+class TestAnEditCannotRePhaseARule:
+    """Defect **D8**, and the surface it survived on until plan step R7b-4.
 
-    **The subject of this class changed with the step, and the change is the
-    point.**  It used to pin that the update path took the SUBMITTED
-    ``offset_periods`` verbatim, which was the honest reading while the schemas
-    declared the field: an edit form never re-collects ``start_period_id``, so
-    for a rule naming no start period the payload was the only statement of
-    phase there was.
+    **The subject of this class has changed TWICE, and both changes are the
+    point.**  It first pinned that the update path took the SUBMITTED
+    ``offset_periods`` verbatim -- the honest reading while the schemas
+    declared the field.  Plan step R7b-2 deleted the field, so there was no
+    submitted value left to take, and the rule's own STORED phase rode through
+    untouched instead.
 
-    It was also the last hole in D1.  No template under ``app/templates/`` ever
-    rendered an offset input, so "the submitted value" was ALWAYS the schema's
-    default of 0 -- an amount-only edit of an every-N-paychecks rule with no
-    start period silently re-phased every future occurrence to 0.  Plan step
-    R7b-2 deleted the schema field rather than guarding it, so there is no
-    submitted value left to take verbatim and the rule's own stored phase rides
-    through :func:`~app.services.recurrence.recurrence_spec_with_cadence`
-    untouched.  These tests pin THAT, on both the direct-update and dispatcher
-    paths.
+    Plan step R7b-4 removed the last of it: a phase has ONE source now, the
+    paycheck the rule's opening bound falls in, so there is no stored value to
+    ride through either.  An edit cannot re-phase a rule because an edit that
+    does not move the bound has not changed the phase's only input -- which is
+    stronger than "the payload is ignored", and it is what these tests pin, on
+    both the direct-update and dispatcher paths.
 
-    The sibling class below covers the 45-of-50 case: a rule that DOES name a
-    start period, where the phase is re-derived from it on every write.
+    A rule carrying a non-zero phase and NO bound was the shape the earlier
+    version of this class built.  The write door cannot produce one: it writes
+    the resolver's answer, and with no bound that answer is 0 for every
+    interval.  So the cases below state a bound, which is what a real row has.
     """
 
-    def test_the_stored_phase_survives_a_cadence_edit(
-        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
+    def test_a_cadence_edit_re_derives_the_phase_from_the_unchanged_bound(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """A rule with no start period keeps its phase across an edit.
+        """Changing the interval does not move which paychecks the rule opens on.
 
-        The rule is phased at 3 within a four-paycheck cycle and names no
-        start period, so nothing can re-derive that 3 -- it is the only
-        statement of the phase the row has.  The edit changes the cadence and
-        must leave it alone; writing the old schema default here moved every
-        future occurrence three paychecks earlier.
+        The rule starts in period index 3, so at an interval of 4 it phases at
+        ``3 % 4 == 3``.  The edit widens the cycle to 6 and the bound does not
+        move, so the phase is ``3 % 6 == 3`` -- the same paycheck it always
+        opened on.  Writing the old schema default here moved every future
+        occurrence three paychecks earlier.
         """
         with app.test_request_context():
             every_n_id = ref_cache.recurrence_pattern_id(
@@ -375,6 +361,7 @@ class TestAnEditCannotRePhaseAPhaselessRule:
                 pattern_id=every_n_id,
                 interval_n=4,
                 offset_periods=3,
+                start_date=seed_periods[3].start_date,
             )
             data = {
                 **validated_cadence(
@@ -383,6 +370,7 @@ class TestAnEditCannotRePhaseAPhaselessRule:
                 "day_of_month": None,
                 "month_of_year": None,
                 "due_day_of_month": None,
+                "start_date": seed_periods[3].start_date,
             }
             update_recurrence_rule_from_form(
                 rule,
@@ -405,7 +393,7 @@ class TestAnEditCannotRePhaseAPhaselessRule:
             assert data == {}
 
     def test_an_offset_in_the_payload_is_not_read_at_all(
-        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
         """A hand-crafted ``offset_periods`` cannot reach the rule.
 
@@ -425,6 +413,7 @@ class TestAnEditCannotRePhaseAPhaselessRule:
                 pattern_id=every_n_id,
                 interval_n=4,
                 offset_periods=3,
+                start_date=seed_periods[3].start_date,
             )
             data = {
                 **validated_cadence(
@@ -434,6 +423,7 @@ class TestAnEditCannotRePhaseAPhaselessRule:
                 "day_of_month": None,
                 "month_of_year": None,
                 "due_day_of_month": None,
+                "start_date": seed_periods[3].start_date,
             }
             update_recurrence_rule_from_form(
                 rule,
@@ -449,8 +439,8 @@ class TestAnEditCannotRePhaseAPhaselessRule:
             assert rule.offset_periods == 3
             assert data == {"offset_periods": 0}
 
-    def test_the_stored_phase_survives_through_the_dispatcher(
-        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
+    def test_the_phase_survives_through_the_dispatcher(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
         """The same, through the door the update routes actually take.
 
@@ -458,6 +448,9 @@ class TestAnEditCannotRePhaseAPhaselessRule:
         branch when the template already owns a rule and a cadence is
         submitted, which is the real path
         ``update_template`` / ``update_transfer_template`` follow.
+
+        The rule starts in period index 2 and the edit widens the interval to
+        7, so the phase is ``2 % 7 == 2``: the same opening paycheck.
         """
         with app.test_request_context():
             every_n_id = ref_cache.recurrence_pattern_id(
@@ -468,6 +461,7 @@ class TestAnEditCannotRePhaseAPhaselessRule:
                 pattern_id=every_n_id,
                 interval_n=4,
                 offset_periods=2,
+                start_date=seed_periods[2].start_date,
             )
             template = SimpleNamespace(
                 recurrence_rule=rule,
@@ -481,6 +475,7 @@ class TestAnEditCannotRePhaseAPhaselessRule:
                 "day_of_month": None,
                 "month_of_year": None,
                 "due_day_of_month": None,
+                "start_date": seed_periods[2].start_date,
             }
             result = resolve_recurrence_rule_for_update(
                 template,
@@ -499,29 +494,33 @@ class TestAnEditCannotRePhaseAPhaselessRule:
             assert rule.pattern_id == every_n_id
 
 
-class TestUpdateKeepsTheStartPeriodsPhase:
+class TestUpdateKeepsTheStatedStartsPhase:
     """Defect **D1**, closed at plan step R2c-1, at its own surface.
 
-    The sibling class above pins the update path's treatment of a rule that
-    names NO start period: the submitted offset is all the phase information
-    there is, so it arrives verbatim.  This class covers the case D1 was
-    MEASURED on and that 45 of the 50 live rules are in -- a rule that DOES
-    name a start period.  There the phase is a derived fact, and the pre-seam
-    update path overwrote it with the payload's default, shifting every future
-    occurrence by one pay period on an edit that changed only the amount.
+    The sibling class above pins that an edit cannot move a phase whose input
+    it did not move.  This class covers the case D1 was MEASURED on and that
+    45 of the 50 live rules were in -- a rule that states an opening bound.
+    The phase is a derived fact there, and the pre-seam update path overwrote
+    it with the payload's default, shifting every future occurrence by one pay
+    period on an edit that changed only the amount.
     """
 
-    def test_an_edit_does_not_re_phase_a_rule_with_a_start_period(
+    def test_an_edit_does_not_re_phase_a_rule_with_a_stated_start(
         self, app, auth_client, seed_user, db, seed_periods,  # pylint: disable=unused-argument
     ):
         """The phase stays ``period_index % interval_n`` across an edit.
 
-        Start period index 2 with an interval of 3 phases the rule at
-        ``2 % 3 == 2``.  Before R2c-1 the edit wrote the payload's offset
-        default of 0 onto the rule and every future occurrence moved a pay
-        period earlier; since plan step R7b-2 there is no such key in the
-        payload at all (defect **D8**), and the phase is re-derived from the
-        start period the rule still names.
+        A bound falling in period index 2 with an interval of 3 phases the
+        rule at ``2 % 3 == 2``.  Before R2c-1 the edit wrote the payload's
+        offset default of 0 onto the rule and every future occurrence moved a
+        pay period earlier; since plan step R7b-2 there is no such key in the
+        payload at all (defect **D8**), and since plan step R7b-4 there is no
+        such FIELD -- the phase is re-derived from the bound the rule states.
+
+        **The edit RE-SUBMITS the bound**, because the form renders it and a
+        rendered control posts.  That is the shape worth pinning: an edit that
+        restates the same start must not move the rule, which is what makes
+        the derivation safe to run on every write.
         """
         with app.test_request_context():
             rule = build_recurrence_rule_from_form(
@@ -532,9 +531,9 @@ class TestUpdateKeepsTheStartPeriodsPhase:
                     "day_of_month": None,
                     "month_of_year": None,
                     "due_day_of_month": None,
+                    "start_date": seed_periods[2].start_date,
                 },
                 user_id=seed_user["user"].id,
-                start_period_id=seed_periods[2].id,
                 ctx=RecurrenceFormContext(
                     end_bound=None,
                     redirect=RedirectTarget(
@@ -554,6 +553,7 @@ class TestUpdateKeepsTheStartPeriodsPhase:
                     "day_of_month": None,
                     "month_of_year": None,
                     "due_day_of_month": None,
+                    "start_date": seed_periods[2].start_date,
                 },
                 ctx=RecurrenceFormContext(
                     end_bound=None,
@@ -565,7 +565,7 @@ class TestUpdateKeepsTheStartPeriodsPhase:
             )
 
             assert rule.offset_periods == 2
-            assert rule.start_period_id == seed_periods[2].id
+            assert rule.start_date == seed_periods[2].start_date
 
 
 class TestHandleStaleConflict:

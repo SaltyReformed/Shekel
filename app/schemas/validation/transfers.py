@@ -57,8 +57,20 @@ class TransferTemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
 
     # Every recurrence control this form submits is on
     # :class:`~app.schemas.validation._helpers.RecurrenceFormFieldsMixin`.
-    # A transfer template declares none of its own: ``due_day_of_month`` is
-    # the transaction form's alone.
+    # ``due_day_of_month`` is the transaction form's alone.
+
+    # The pay period a NON-REPEATING transfer lands in
+    # (``_instances._materialize_one_time_transfer``), and the transfer form's
+    # alone.  It is NOT a recurrence control and has not been one since plan
+    # step R7b-4: it sat on the shared mixin while ONE ``<select>`` meant two
+    # things -- "First paycheck" for a repeating definition and "Pay period"
+    # for a one-time transfer, relabelled by script on every unit change --
+    # and that step gave the first meaning its own DATE control.  What is left
+    # is a question only this kind can ask, so it is declared where that kind
+    # is.  A transaction template that does not repeat generates nothing and
+    # waits for the user; a transfer that does not repeat still moves money
+    # exactly once, and this says when.
+    start_period_id = RowId()
 
     @validates_schema
     def validate_different_accounts(self, data, **kwargs):

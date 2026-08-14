@@ -556,22 +556,41 @@ class TestTruncateHardLocks:
             ).scalar() == Decimal("0")
             assert_pay_period_invariants(db.session, user_id)
 
-    def test_recurrence_anchor_blocks(self, app, db, seed_user):
-        """A rule's start period in the window is hard-locked."""
+    def test_a_rules_stated_start_no_longer_blocks_a_truncate(
+        self, app, db, seed_user,
+    ):
+        """The period a rule starts in is truncatable, and the bound survives.
+
+        ``PeriodLockReason.RECURRENCE_ANCHOR`` hard-locked it until plan step
+        R7b-4, and had to: ``start_period_id`` was ``ON DELETE SET NULL``, so
+        truncating the period the FK named silently ERASED the rule's opening
+        bound.  The bound is a DATE now, which no cascade reaches, so the
+        truncate proceeds and the rule keeps saying what it said.
+
+        Both halves are asserted, because deleting a hard lock is only safe if
+        the thing it protected really does survive: the periods go, and the
+        rule's ``start_date`` is unchanged afterwards.
+        """
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=6)
             user_id = seed_user["user"].id
             rule = make_every_period_rule(db.session, user_id)
-            rule.start_period_id = periods[2].id  # index 3
+            rule.start_date = periods[2].start_date  # index 3
+            stated_start = rule.start_date
+            # Read the id BEFORE the delete: the instance is expired
+            # afterwards and attribute access raises rather than answering.
+            truncated_id = periods[2].id
             db.session.commit()
 
-            with pytest.raises(PayPeriodLocked) as excinfo:
-                pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_period_id=periods[1].id,
-                )
-            assert excinfo.value.blocking.get(periods[2].id) == (
-                PeriodLockReason.RECURRENCE_ANCHOR
+            pay_period_admin.truncate_pay_periods(
+                user_id, keep_through_period_id=periods[1].id,
             )
+            db.session.commit()
+
+            assert db.session.query(PayPeriod).filter_by(
+                id=truncated_id,
+            ).one_or_none() is None
+            assert rule.start_date == stated_start
 
 
 class TestTruncateDiscardGate:

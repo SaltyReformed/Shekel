@@ -34,6 +34,22 @@ LOCKED case (a loan payment, whose bound the app derives) is asserted in
 ``tests/test_routes/test_templates.py`` instead, because it is a property of
 the SERVER's render rather than of the script.
 
+**Plan step R7b-4 replaced the "First paycheck" ``<select>`` with a "Starts on"
+DATE and gave the surviving ``<select>`` one job**
+(:func:`_drive_opening_bound`).  Two new instances of this file's whole defect
+class arrived with it, one on each side of the swap:
+
+* the new date box lives INSIDE ``#recurrence-fields`` and carries no
+  ``d-none`` of its own -- every other row in that container has one, so
+  copying the idiom would have shipped a control that never appears, and a
+  rendered-HTML assertion cannot tell "hidden by a class no script removes"
+  from "shown";
+* the pay-period ``<select>`` now belongs to the NON-repeating case alone, and
+  hiding it is not enough -- a hidden control still SUBMITS, so choosing a
+  cadence after choosing a period would post a period the recurrence has no
+  use for.  It has to be DISABLED, and only a real ``FormData`` says whether
+  it is.
+
 **It writes nothing.**  Every check reads the form's own DOM; the crafted POSTs
 in the refusal pass are all expected to be REFUSED, and the pass asserts that
 no template and no recurrence rule was persisted by any of them.  Run it
@@ -257,6 +273,109 @@ def _posted_bound(page) -> dict[str, list[str]]:
             };
         }"""
     )
+
+
+def _posted_opening(page) -> dict[str, list[str]]:
+    """Return the opening-bound keys the form would actually submit.
+
+    From a real ``FormData``, for the reason :func:`_posted_intervals` reads
+    one: a control hidden by a class still SUBMITS and a disabled one does
+    not, and rendered HTML cannot tell those apart.  Plan step R7b-4 turns on
+    exactly that for the pay-period ``<select>``, which must post its value
+    when the definition does NOT repeat and nothing at all when it does.
+
+    Args:
+        page: The Playwright page.
+
+    Returns:
+        Each opening key mapped to every value posted under it.
+    """
+    return page.evaluate(
+        """() => {
+            const form = document.getElementById('recurrence_unit').form;
+            const data = new FormData(form);
+            return {
+                start_date: data.getAll('start_date'),
+                start_period_id: data.getAll('start_period_id'),
+            };
+        }"""
+    )
+
+
+def _drive_opening_bound(page, kind: str, url: str) -> None:
+    """Check the "Starts on" box and the pay-period select swap correctly.
+
+    The two halves of plan step R7b-4's control swap, both invisible to a
+    rendered-HTML assertion.  See the module docstring for why each is here.
+
+    The transaction form places no pay-period select at all -- a rule-less
+    transaction template materialises nothing, so it needs no period -- and
+    the absence is asserted rather than skipped: a select that reappeared
+    there would submit a field that schema no longer declares.
+
+    Args:
+        page: The Playwright page.
+        kind: "transaction" or "transfer", for the labels.
+        url: The create form's path.
+    """
+    print(f"\n=== {kind} opening bound: {url} ===")
+    page.goto(f"{DEV_BASE_URL}{url}", wait_until="domcontentloaded")
+    page.wait_for_selector("#recurrence_unit")
+    units = _unit_ids(page)
+    has_period_select = page.locator("#field-start-period").count() > 0
+
+    _check(f"{kind} K: the pay-period select is present only on the transfer form",
+           has_period_select == (kind == "transfer"),
+           f"present={has_period_select}")
+
+    # --- does NOT repeat -------------------------------------------------
+    page.locator("#recurrence_unit").select_option("")
+    page.wait_for_timeout(200)
+    _check(f"{kind} K: Starts on is hidden when it does not repeat",
+           not _visible(page, "field-start-date"), "visible")
+    posted = _posted_opening(page)
+    _check(f"{kind} K: no start_date posts when it does not repeat",
+           posted["start_date"] == [], str(posted["start_date"]))
+    if has_period_select:
+        _check(f"{kind} K: the pay-period row IS shown when it does not repeat",
+               _visible(page, "field-start-period"), "hidden")
+        _check(f"{kind} K: the pay period posts exactly once",
+               len(posted["start_period_id"]) == 1,
+               str(posted["start_period_id"]))
+
+    # --- repeats ---------------------------------------------------------
+    page.locator("#recurrence_unit").select_option(units["paychecks"])
+    page.wait_for_timeout(200)
+    _check(f"{kind} L: Starts on is SHOWN for a repeating definition",
+           _visible(page, "field-start-date"), "hidden")
+    if has_period_select:
+        _check(f"{kind} L: the pay-period row is hidden when it repeats",
+               not _visible(page, "field-start-period"), "visible")
+        _check(f"{kind} L: the pay period posts NOTHING when it repeats",
+               _posted_opening(page)["start_period_id"] == [],
+               str(_posted_opening(page)["start_period_id"]))
+
+    # An untouched box posts the form's own DEFAULT -- the current paycheck's
+    # payday -- and that is load-bearing rather than cosmetic: the control this
+    # replaced was a <select> with no empty option preselecting the current
+    # period, so every create was bounded.  Defaulting to EMPTY silently made
+    # "unbounded" the default, and the create routes generate over every period
+    # the owner has: a rent template created today wrote projected debits into
+    # pay periods that had already closed.  Found by an adversarial review of
+    # this step; asserted here because only a real render shows what the box
+    # actually holds.
+    posted_default = _posted_opening(page)["start_date"]
+    _check(f"{kind} L: an untouched Starts on posts the current paycheck",
+           len(posted_default) == 1 and posted_default[0] != "",
+           str(posted_default))
+    page.fill("#start_date", "2026-09-15")
+    page.wait_for_timeout(200)
+    _check(f"{kind} L: a typed Starts on posts that date",
+           _posted_opening(page)["start_date"] == ["2026-09-15"],
+           str(_posted_opening(page)["start_date"]))
+    _check(f"{kind} L: the preview survived the opening bound",
+           "Could not load preview" not in page.inner_text("#recurrence-preview"),
+           page.inner_text("#recurrence-preview"))
 
 
 def _select_end_mode(page, token: str) -> None:
@@ -564,6 +683,7 @@ def main() -> int:
         for kind, url in (("transaction", "/templates/new"),
                           ("transfer", "/transfers/new")):
             _drive_visibility(page, kind, url)
+            _drive_opening_bound(page, kind, url)
             _drive_end_bound(page, kind, url)
         _drive_refusals(context, page)
 

@@ -8,12 +8,13 @@
 
      * include_due_day -- only transaction templates carry a separate bill
        due-day; the transfer schemas do not expose the field.
-     * the pay-period selector's placement -- a transaction's start period
-       only matters for a recurring pattern (it sits INSIDE
-       #recurrence-fields, hidden with the container in the manual case),
-       while a transfer needs it for the one-time case too (it sits OUTSIDE
-       the container).  So start_period_field is a separate macro each form
-       places itself; it is not baked into recurrence_detail_fields.
+     * whether start_period_field is placed at all -- since plan step R7b-4
+       only the TRANSFER form places it, because only a transfer needs a pay
+       period when it does not repeat (it materialises one Transfer there; a
+       rule-less transaction template materialises nothing).  It sits OUTSIDE
+       #recurrence-fields for that reason, and it is a separate macro each
+       form places itself rather than being baked into
+       recurrence_detail_fields.
 
    An include_none_option flag used to be a third: the transfer form had no
    "does not repeat" option, because a one-time transfer carried a ONCE
@@ -274,13 +275,77 @@
 {% endmacro %}
 
 
-{# The pay-period selector.  Starts hidden; recurrence_form.js reveals it
-   and swaps its label / help text ("First paycheck" for a recurring
-   pattern, "Pay period" for a transfer's one-time case).  Each form places
-   this itself (see the module note on placement). #}
+{# The OPENING bound (plan step R7b-4): "Starts on", a DATE.
+
+   It replaced a "First paycheck" <select> of pay periods, and the swap is the
+   point rather than the widget: that control named a pay-period ROW, so it
+   could only ever mean a paycheck the schedule already held, it vanished
+   (ON DELETE SET NULL) when that paycheck was rebuilt, and a caller passing
+   its own window bypassed it (defect D2).  A date is unbypassable, survives
+   any schedule operation, and is the same KIND of value as the "Ends" control
+   below -- which is what makes the two read as one validity window.
+
+   ``locked`` disables it, for the same definition and the same reason
+   recurrence_end_bound is locked: a loan payment's opening bound is the
+   loan's FIRST CONTRACTUAL INSTALLMENT, which loan_recurrence_sync rewrites
+   on every payoff-affecting edit.  Both controls ask ONE predicate
+   (_recurrence_form_render.edit_form_bounds_are_derived), so they cannot lock
+   on different sets.  A disabled control posts nothing, so the key arrives
+   ABSENT -- which the update route reads as "this form said nothing" and
+   leaves the stored bound alone.  The server refuses a crafted submission
+   that sends one anyway (LOAN_PAYMENT_BOUND_IS_DERIVED).
+
+   An EMPTY box is a real answer -- "no opening bound", start with the
+   schedule -- so the field is allow_none at the schema and clearing it is a
+   save that clears the bound.  That is why it is not hidden when unset.
+
+   NO ``d-none`` of its own, unlike every other row in this file.  Those are
+   toggled per cadence by recurrence_form.js -- a day-of-month cell belongs to
+   some cadences and not others -- and EVERY cadence can have an opening
+   bound, so this one shows and hides with the #recurrence-fields container
+   that wraps it.  Carrying a class no script removes is how a control ships
+   permanently invisible; the suite cannot see the difference, which is what
+   tests/manual/verify_recurrence_form.py exists for. #}
+{% macro recurrence_start_date(selected, date_min, date_max, locked=false) %}
+<div class="mb-3" id="field-start-date">
+  <label class="form-label" for="start_date">Starts on</label>
+  {# ``min`` / ``max`` mirror the schema's own window (EFFECTIVE_DATE_MIN /
+     EFFECTIVE_DATE_MAX), so the browser helps the user avoid the four- or
+     five-digit-year typo that window exists to refuse.  The refusal is still
+     the schema's -- this is the affordance, exactly as ``disabled`` is on the
+     locked controls -- and the two are passed in rather than written here so
+     one window is stated once. #}
+  <input type="date" id="start_date" name="start_date" class="form-control"
+         aria-describedby="start-date-help"
+         min="{{ date_min.isoformat() }}" max="{{ date_max.isoformat() }}"
+         value="{{ selected.isoformat() if selected is not none else '' }}"
+         {{ 'disabled' if locked else '' }}>
+  <div id="start-date-help" class="form-text">
+    {%- if locked -%}
+      Set from the loan's first payment, and updated when the loan changes.
+    {%- else -%}
+      Nothing is generated before this. Leave empty to start with your schedule.
+    {%- endif -%}
+  </div>
+</div>
+{% endmacro %}
+
+
+{# The pay-period selector, and since plan step R7b-4 it has ONE job: which
+   pay period a NON-REPEATING transfer lands in.  It used to have two -- the
+   same <select> was the recurrence's "First paycheck", with recurrence_form.js
+   swapping the label and help text on every unit change -- and the swap is
+   gone with the second meaning.  A control that means two things is one an
+   adversarial review has to reason about twice.
+
+   So the transaction form no longer places it at all (a rule-less transaction
+   template generates nothing and needs no period), and on the transfer form
+   the script SHOWS it only while "Does not repeat" is selected and DISABLES
+   it otherwise -- disabled, not merely hidden, because a hidden control still
+   submits. #}
 {% macro start_period_field(periods, current_period) %}
 <div class="mb-3 d-none" id="field-start-period">
-  <label class="form-label" id="start-period-label" for="start_period_id">First paycheck</label>
+  <label class="form-label" for="start_period_id">Pay period</label>
   <select id="start_period_id" name="start_period_id" class="form-select" aria-describedby="start-period-help">
     {% for p in periods %}
     <option value="{{ p.id }}" {{ 'selected' if current_period and p.id == current_period.id else '' }}>
@@ -288,6 +353,6 @@
     </option>
     {% endfor %}
   </select>
-  <div id="start-period-help" class="form-text">When should this first appear on the grid?</div>
+  <div id="start-period-help" class="form-text">Which pay period should this transfer appear in?</div>
 </div>
 {% endmacro %}

@@ -41,7 +41,21 @@
   var dueDom = document.getElementById('field-due-dom');
   var moy = document.getElementById('field-moy');
   var startPeriod = document.getElementById('field-start-period');
+  var startPeriodSelect = document.getElementById('start_period_id');
   var preview = document.getElementById('recurrence-preview');
+
+  // The OPENING bound (plan step R7b-4).  Its ROW shows and hides with the
+  // rest of #recurrence-fields -- every cadence can have one -- but the input
+  // itself is enabled and disabled here, because a hidden input still
+  // submits.
+  var startDate = document.getElementById('start_date');
+
+  // Whether the SERVER rendered it locked -- a loan payment, whose opening
+  // bound the app derives from the loan's first contractual installment.
+  // Read ONCE at load, for the reason endBoundLocked is: the toggling below
+  // turns the same control off and on and must never hand back one the server
+  // disabled.
+  var startDateLocked = startDate !== null && startDate.disabled;
 
   // The "Ends" control (plan step R7b-3): a mode select and the value inputs
   // its shapes need.  This file never states which shapes exist -- each
@@ -59,9 +73,6 @@
     Array.prototype.map.call(endMode.options, function(opt) {
       return document.getElementById(opt.getAttribute('data-needs') || '');
     }).filter(function(el) { return el !== null; });
-
-  var startPeriodLabel = document.getElementById('start-period-label');
-  var startPeriodHelp = document.getElementById('start-period-help');
 
   var options = [];
   try {
@@ -211,6 +222,40 @@
     });
   }
 
+  // The pay-period <select> belongs to the NON-REPEATING case alone since
+  // plan step R7b-4: it says which period the single Transfer a one-time
+  // transfer stands for lands in.  It used to be shown for BOTH cases with
+  // its label swapped -- "First paycheck" when repeating, "Pay period"
+  // otherwise -- because one control meant two things; the repeating meaning
+  // is the "Starts on" date now, so the control has one label (server-rendered)
+  // and one job.
+  //
+  // DISABLED as well as hidden, and that is the load-bearing half: a hidden
+  // control still SUBMITS, so a user who picks a period and then chooses a
+  // cadence would post a period the recurrence has no use for -- straight into
+  // the route's ownership check and, on a crafted payload, into a column this
+  // step is retiring.  It is the defect class plan step R7b-2 shipped twice
+  // and only the browser pass caught (tests/manual/verify_recurrence_form.py).
+  function syncStartPeriod(repeating) {
+    if (!startPeriod) return;
+    startPeriod.classList.toggle('d-none', repeating);
+    if (startPeriodSelect) startPeriodSelect.disabled = repeating;
+  }
+
+  // The "Starts on" box hides with #recurrence-fields rather than on its own
+  // -- every cadence can have an opening bound -- but hiding is not enough:
+  // a hidden input SUBMITS, and the same browser pass that caught the
+  // pay-period select caught this one posting an empty start_date on a
+  // "Does not repeat" save.  The server drops the key either way now, and
+  // this is the affordance half: a control the user cannot see does not
+  // speak.  Never touched when the server rendered it DISABLED (a loan
+  // payment, whose bound the app derives) -- re-enabling it here would hand
+  // back a control the server locked.
+  function syncStartDate(repeating) {
+    if (!startDate || startDateLocked) return;
+    startDate.disabled = !repeating;
+  }
+
   function toggleFields() {
     var id = unitId();
 
@@ -223,11 +268,8 @@
       intervalFixed.disabled = true;
       container.classList.add('d-none');
       syncEndBound(false);
-      if (startPeriod) {
-        startPeriod.classList.remove('d-none');
-        if (startPeriodLabel) startPeriodLabel.textContent = 'Pay period';
-        if (startPeriodHelp) startPeriodHelp.textContent = 'Which pay period should this transfer appear in?';
-      }
+      syncStartPeriod(false);
+      syncStartDate(false);
       fetchPreview();
       return;
     }
@@ -263,11 +305,8 @@
     var spansMonths = showsDay && chosen.months_per_unit * interval > 1;
     moy.classList.toggle('d-none', !spansMonths);
 
-    if (startPeriod) {
-      startPeriod.classList.remove('d-none');
-      if (startPeriodLabel) startPeriodLabel.textContent = 'First paycheck';
-      if (startPeriodHelp) startPeriodHelp.textContent = 'When should this first appear on the grid?';
-    }
+    syncStartPeriod(true);
+    syncStartDate(true);
 
     if (endBoundWrap) {
       endBoundWrap.classList.remove('d-none');
@@ -300,8 +339,13 @@
     var moyEl = document.getElementById('month_of_year');
     if (moyEl && moyEl.value) params.set('month_of_year', moyEl.value);
 
-    var spEl = document.querySelector('[name="start_period_id"]');
-    if (spEl && spEl.value) params.set('start_period_id', spEl.value);
+    // The OPENING bound, sent whenever it is enabled and set.  ``disabled``
+    // is checked for the same reason the two bound inputs below check it: a
+    // loan payment's control is server-disabled, and previewing a bound the
+    // save would refuse is a preview of something that cannot be saved.
+    if (startDate && !startDate.disabled && startDate.value) {
+      params.set('start_date', startDate.value);
+    }
 
     // The closing bound, as the SAME three controls the save posts: the mode
     // that names the shape, and the one value input that shape enables.
@@ -358,8 +402,8 @@
   intervalFree.addEventListener('change', toggleFields);
   intervalFixed.addEventListener('change', toggleFields);
   placementSelect.addEventListener('change', toggleFields);
-  ['day_of_month', 'due_day_of_month', 'month_of_year', 'end_date',
-   'max_occurrences'].forEach(function(id) {
+  ['day_of_month', 'due_day_of_month', 'month_of_year', 'start_date',
+   'end_date', 'max_occurrences'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('change', fetchPreview);
   });
@@ -371,6 +415,7 @@
       fetchPreview();
     });
   }
-  var spEl = document.querySelector('[name="start_period_id"]');
-  if (spEl) spEl.addEventListener('change', fetchPreview);
+  // The pay-period <select> no longer drives the preview: it is shown only
+  // when the definition does NOT repeat, and a non-repeating definition has
+  // no occurrences to list.
 })();

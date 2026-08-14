@@ -310,17 +310,20 @@ def _period_walk(
     ``(p.period_index - offset) % n == 0``), which is what made plan step
     R4a's cutover a no-op for every pay-period-space rule.
 
-    **The phase is read from ``offset_periods`` rather than re-derived from
-    the anchor**, and the difference is measurable.  Deriving it -- "the
-    anchor's own period index, then every N-th after it" -- agrees whenever
-    the anchor names a qualifying period, but ``_phased_period_anchor`` falls
-    back to the raw bound when the schedule reaches NO period in phase (fewer
-    than ``interval_n`` periods remain past the bound).  The derived form
-    would then take the first remaining period, in phase or not, and generate
-    a row the current engine does not.  Plan step R7c drops the
-    ``offset_periods`` column, so the authored anchor has to carry the phase
-    by construction from there; recorded here so that step does not
-    rediscover it.
+    **The phase and the anchor are now ONE fact, so the divergence this note
+    used to record is gone** (plan step R7b-4).  It said: deriving the phase
+    from the anchor -- "the anchor's own period index, then every N-th after
+    it" -- agrees whenever the anchor names a qualifying period, but
+    ``_phased_period_anchor`` fell back to the raw bound when the schedule
+    reached NO period in phase (fewer than ``interval_n`` periods left past
+    the bound), and the derived form would then take the first remaining
+    period, in phase or not.  Both halves were symptoms of one cause: the
+    phase was stored INDEPENDENTLY of the bound, so the anchor had to be
+    dragged to meet it.  ``resolve`` derives the phase FROM the bound now
+    (``_derive_offset_periods``), the paycheck the bound falls in is in phase
+    by construction, and the advancing anchor is deleted.  ``resolved`` still
+    carries ``offset_periods`` because this walk is the ONE reader of it, and
+    plan step R7c drops the column it is written to.
 
     Naturally bounded by the schedule, unlike its two siblings.
 

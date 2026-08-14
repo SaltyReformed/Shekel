@@ -25,7 +25,6 @@ lock badge.
 """
 
 import logging
-from dataclasses import replace
 from datetime import date, timedelta
 from operator import attrgetter
 
@@ -40,7 +39,6 @@ from app.exceptions import (
 )
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
@@ -52,10 +50,8 @@ from app.services import (
     user_write_lock,
 )
 from app.services._recurrence_common import log_resource_access_denied
-from app.services.pay_calendar import calendar_for
 from app.services.pay_period_locks import classify_periods_bulk
 from app.services.period_population import populate_periods_from_active_templates
-from app.services.recurrence import reauthor_rule, recurrence_spec
 from app.utils.balance_predicates import is_projected_clause, settled_status_ids
 from app.utils.log_events import (
     ACCESS,
@@ -156,7 +152,7 @@ def truncate_pay_periods(
 
       1. **Hard locks (not overridable).** If any to-delete period is
          historical, holds a settled transaction, carries an unbalanced
-         ledger account, or is a recurrence anchor, raise
+         ledger account, raise
          :class:`PayPeriodLocked` and delete nothing.
       2. **Discard gate (overridable).** If any to-delete period holds a
          row regeneration cannot reproduce -- hand-entered, override, or
@@ -165,9 +161,11 @@ def truncate_pay_periods(
 
     Deletion is a single bulk ``DELETE`` so PostgreSQL performs the whole
     cascade in one pass: transactions and transfers (and both shadows,
-    preserving the transfer invariant) go, with
-    ``recurrence_rules.start_period_id`` set NULL; DB-level audit triggers
-    still fire.  **Balance ASSERTIONS do NOT go** -- ruling R-EO deleted
+    preserving the transfer invariant) go; DB-level audit triggers
+    still fire.  **RECURRENCE RULES are untouched since plan step R7b-4** --
+    a rule's opening bound is a DATE (``start_date``) rather than a pay-period
+    FK, so there is no longer anything on that table for a period delete to
+    cascade into.  **Balance ASSERTIONS do NOT go** -- ruling R-EO deleted
     ``account_anchor_history.pay_period_id``, so a schedule operation can
     no longer destroy the record of what the bank said.  The statement lives in
     :func:`~app.services.pay_period_write.retire_paydays` since plan step C3-b;
@@ -525,19 +523,14 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
       1. Refuse if any settled transaction exists (delete nothing).
       2. Take the per-user advisory lock (a structural mutation, like
          extend / truncate / regenerate).
-      3. Capture the recurrence rules that carry an explicit start period
-         (the cascade NULLs those).  There is no balance to capture: since
-         ruling R-EO the assertions do not reference a pay period and survive
-         the wipe untouched.
-      4. Bulk-DELETE every pay period.  PostgreSQL cascades it in one
+      3. Bulk-DELETE every pay period.  PostgreSQL cascades it in one
          pass: transactions and transfers (+ both shadows, preserving the
-         transfer invariant) go and the rules' ``start_period_id`` is set
-         NULL; audit triggers still fire.  Anchor history is NOT in that
-         cascade any more (ruling R-EO).
-      5. Generate the fresh schedule from ``new_start_date``.
-      6. Re-point the captured rules to the new first period; repopulate the
-         new periods from the active templates.
-      7. Re-sync each of the user's loans' genesis postings onto the
+         transfer invariant) go; audit triggers still fire.  Anchor history is
+         NOT in that cascade any more (ruling R-EO), and neither are the
+         recurrence rules (plan step R7b-4).
+      4. Generate the fresh schedule from ``new_start_date``.
+      5. Repopulate the new periods from the active templates.
+      6. Re-sync each of the user's loans' genesis postings onto the
          rebuilt schedule (:func:`loan_posting_service.resync_user_loan_postings`).
          A loan's opening / true-up ledger entries carry a ``pay_period_id``
          and so CASCADE-delete with the wiped periods, but they exist
@@ -551,10 +544,22 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
          period, but not the assertions those entries derive from -- so this
          re-derives every one of the user's real assertions onto the rebuilt
          schedule rather than one fabricated opening per account.
-    The new cadence is persisted by step 5's writer rather than by a line of
+    The new cadence is persisted by step 4's writer rather than by a line of
     this function's own (plan step C3-b): ``record_paydays`` applies the one
     rule -- a batch that RECORDED a payday sets the forecast cadence -- so the
     three doors that each held a copy of that call now hold none.
+
+    **A capture-and-re-point step LEFT this list at plan step R7b-4**, and it
+    left because its subject stopped existing.  The wipe used to SET NULL
+    every rule's ``start_period_id``, which made a rule the cascade nulled
+    indistinguishable from one that legitimately had no explicit start -- so
+    the ids had to be captured before the delete and re-pointed at the new
+    first period afterwards.  A rule's opening bound is a DATE now, which no
+    cascade touches, and ``resolve`` measures it against whatever schedule the
+    owner has: ``max(new_opening_payday, start_date)``.  A rule whose stated
+    start precedes the rebuilt schedule opens with the schedule, exactly as
+    the re-point produced; a rule whose stated start falls INSIDE it now keeps
+    that date, where the re-point silently moved it to the new first period.
 
     Args:
         user_id: The owning user's id.
@@ -597,8 +602,6 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     # Serialize against concurrent structural mutations for this user.
     user_write_lock.lock_user_writes(user_id)
 
-    anchored_rule_ids = _rule_ids_with_start_period(user_id)
-
     # Wipe ALL the user's periods (the cascade handles the dependents) and
     # build the new schedule in ONE write, so the writer derives and
     # materialises the end state rather than the period-less moment between
@@ -607,7 +610,6 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     new_periods = pay_period_write.record_paydays(
         user_id, new_start_date, num_periods, cadence_days, retiring=periods,
     )
-    _repoint_recurrence_rules(anchored_rule_ids, new_periods[0])
     populate_periods_from_active_templates(user_id, new_periods)
     # Re-post the loan genesis (opening / true-up) corrections the period
     # CASCADE wiped: their source facts survived, so this re-derives them
@@ -859,105 +861,3 @@ def _settled_transaction_count(user_id: int) -> int:
         )
         .count()
     )
-
-
-def _rule_ids_with_start_period(user_id: int) -> list[int]:
-    """Return ids of the user's rules that carry an explicit start period.
-
-    Captured BEFORE the wipe: the pay-period delete cascade SET-NULLs
-    every rule's ``start_period_id``, so after the wipe a rule the cascade
-    nulled is indistinguishable from one that was legitimately NULL (no
-    explicit start).  Only the rules returned here are re-pointed to the
-    new schedule's first period, so a rule that never had an explicit
-    start keeps none and its generation continues to default to the first
-    candidate period.
-
-    Args:
-        user_id: The owning user's id.
-
-    Returns:
-        The ids of the user's recurrence rules whose ``start_period_id``
-        is currently non-NULL.
-    """
-    rows = db.session.query(RecurrenceRule.id).filter(
-        RecurrenceRule.user_id == user_id,
-        RecurrenceRule.start_period_id.isnot(None),
-    ).all()
-    return [row[0] for row in rows]
-
-
-def _repoint_recurrence_rules(rule_ids: list[int], first_period) -> None:
-    """Re-point the rules that carried a start period onto the new schedule.
-
-    The wipe cascade SET-NULLs every rule's ``start_period_id``, so the rules
-    captured by :func:`_rule_ids_with_start_period` are re-pointed at the new
-    first period: a rule that had an explicit start keeps one, and that period
-    correctly classifies as a ``RECURRENCE_ANCHOR``.
-
-    **Re-authored rather than bulk-updated, and that is what re-phases them.**
-    This used to be one ``query.update()`` writing ``start_period_id`` and a
-    hardcoded ``offset_periods = 0``.  The zero was load-bearing for
-    EVERY_N_PERIODS -- the occurrence engine's PERIOD-unit walk fires where
-    ``(period_index - offset_periods) % interval_n == 0``, so re-pointing the
-    start without re-phasing would fire the rule on the wrong periods -- but it
-    was a hand-maintained copy of a derivation that lives in
-    ``app.services.recurrence``, which computes
-    ``first_period.period_index % interval_n``: the same 0, from the rule the
-    zero was transcribed from.  Going through the seam means the phase is
-    derived rather than transcribed.
-
-    **The rules WITHOUT a start period are deliberately left alone**, and that
-    is a change from the first cut of this function, which re-authored every
-    rule the owner had.  It did so because ``anchor_date`` was a stored value
-    measured partly from the schedule's OPENING PAYDAY, so a reset stranded
-    every start-period-less rule on a first occurrence from the deleted
-    schedule.  Plan step R2d removed the stored anchor: the two-axis view is
-    computed on demand, so a reset cannot strand it.
-
-    Exactly two columns of ``budget.recurrence_rules`` depend on the schedule
-    at all.  ``start_period_id`` is NULL before and after for these rules, and
-    ``offset_periods`` is a function of the start period alone -- so
-    ``resolve`` returns the value already stored whenever there is no start
-    period to derive from.  The wide pass therefore wrote nothing on this set,
-    and the narrow one is the same behaviour stated honestly rather than a
-    saving.  **It is NOT an UPDATE saving**: assigning identical values to an
-    instance loaded in this transaction emits no statement at all, because
-    SQLAlchemy compares each attribute against its committed state before
-    building the UPDATE (measured on the pinned 2.0.49 -- 0 statements for the
-    identical-reassign shape, 1 for the control that changes a value).
-
-    What the narrowing does give up, stated because it is not nothing: the
-    wide pass resolved every rule the owner had, so an unresolvable one would
-    have raised.  That is a worse behaviour rather than a lost safety -- it
-    would abort a schedule reset over a rule the reset does not touch.
-
-    The schedule is loaded ONCE and threaded through every rule rather than
-    re-queried per rule.  Runs before the repopulation pass, so the
-    regenerated rows use the corrected phase.
-
-    Args:
-        rule_ids: The recurrence-rule ids that carried an explicit start
-            period before the wipe.
-        first_period: The new schedule's first
-            :class:`~app.models.pay_period.PayPeriod` (index 0).
-    """
-    if not rule_ids:
-        return
-    rules = db.session.query(RecurrenceRule).filter(
-        RecurrenceRule.id.in_(rule_ids),
-        # Redundant against ``_rule_ids_with_start_period``'s own filter, and
-        # kept: an id list is the kind of argument that acquires a second
-        # caller, and the seam refuses a spec resolved against another user's
-        # calendar anyway.
-        RecurrenceRule.user_id == first_period.user_id,
-    ).all()
-    if not rules:
-        return
-    calendar = calendar_for(first_period.user_id)
-    for rule in rules:
-        reauthor_rule(
-            rule,
-            replace(recurrence_spec(rule), start_period_id=first_period.id),
-            calendar,
-        )
-    db.session.flush()
