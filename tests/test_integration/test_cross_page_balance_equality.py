@@ -294,7 +294,7 @@ def _grid_value(ctx):
     for the cash matrix and both modelled locks below.
     """
     view = balance_at.grid_balance_view(
-        ctx["account"], _bctx(ctx), ctx["all_periods"],
+        ctx["account"], _bctx(ctx),
     )
     return view.columns[ctx["anchor_period"].id].balance
 
@@ -309,7 +309,7 @@ def _grid_current_period_value(ctx):
     ``grid_balance_view`` entry the route calls; only the column differs.
     """
     view = balance_at.grid_balance_view(
-        ctx["account"], _bctx(ctx), ctx["all_periods"],
+        ctx["account"], _bctx(ctx),
     )
     current = pay_period_service.get_current_period(ctx["user_id"])
     return view.columns[current.id].balance
@@ -647,7 +647,7 @@ class TestSubtotalReconciliation:
             )
 
             columns = balance_at.grid_balance_view(
-                ctx["account"], _bctx(ctx), ctx["all_periods"],
+                ctx["account"], _bctx(ctx),
             ).columns
 
             anchor_idx = next(
@@ -1158,7 +1158,7 @@ class TestLoanCrossPageEquality:
             _assert_surfaces_equal(surface_values, expected, "loan kind")
 
             balances = balance_at.balance_map(
-                ctx["account"], _bctx(ctx), ctx["all_periods"],
+                ctx["account"], _bctx(ctx),
             )
 
             # Boundary lock (PR #44 / aba0242): at the anchor period -- the
@@ -1275,7 +1275,7 @@ class TestLoanCrossPageEquality:
             # diverged: the scalar walked confirmed rows, its per-period sibling
             # walked all of them.
             balances = balance_at.balance_map(
-                ctx["account"], bctx, ctx["all_periods"],
+                ctx["account"], bctx,
             )
             assert balances[ctx["anchor_period"].id] == expected
             assert balances[ctx["past_period"].id] == expected
@@ -1387,7 +1387,7 @@ def _modelled_current_balance(ctx) -> Decimal:
     balance_ctx = BalanceContext.build(ctx["user_id"])
     current = pay_period_service.get_current_period(ctx["user_id"])
     return balance_at.balance_map(
-        ctx["account"], balance_ctx, ctx["all_periods"],
+        ctx["account"], balance_ctx,
     )[current.id]
 
 
@@ -1534,7 +1534,7 @@ class TestInvestmentCrossPageEquality:
             # The canonical model-from-anchor value at today, read straight
             # from the seam (the producer the rerouted tile now reads).
             modeled = balance_at.balance_map(
-                ctx["account"], _bctx(ctx), ctx["all_periods"],
+                ctx["account"], _bctx(ctx),
             )[ctx["current_period"].id]
 
             # Non-tautological AND magnitude-bounded: the modeled balance must

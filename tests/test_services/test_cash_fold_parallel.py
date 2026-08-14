@@ -162,7 +162,7 @@ class TestACleanShapeAgreesOnEveryDay:
         as_of = _clean_shape(db.session, seed_user, seed_periods)
         ctx = _context(seed_user, as_of)
 
-        mapped = balance_at.cash_balance_map(account, ctx, seed_periods)
+        mapped = balance_at.cash_balance_map(account, ctx)
         assert len(mapped) == 10  # the loop is not vacuous
         assert len(set(mapped.values())) == 4, "the shape does not move"
 
@@ -229,7 +229,7 @@ class TestEveryFindingIsClosedAtTheSeam:
                 account, ctx, day,
             ) == Decimal("3644.27")
 
-        mapped = balance_at.cash_balance_map(account, ctx, seed_periods)
+        mapped = balance_at.cash_balance_map(account, ctx)
         assert mapped[seed_periods[6].id] == Decimal("3644.27")
         assert folded[seed_periods[6].end_date] == Decimal("3644.27")
 
@@ -315,7 +315,7 @@ class TestEveryFindingIsClosedAtTheSeam:
 
         # The retired map omitted these four periods entirely; every requested
         # period is present now, carrying the balance in force then.
-        mapped = balance_at.cash_balance_map(account, ctx, seed_periods)
+        mapped = balance_at.cash_balance_map(account, ctx)
         for period in seed_periods[:4]:
             assert mapped[period.id] == Decimal("1000.00")
             assert folded[period.end_date] == Decimal("1000.00")

@@ -2829,7 +2829,7 @@ class TestOneTimeTransfer:
                 as_of=seed_periods_today[0].start_date,
             )
             checking_balances = balance_at.cash_balance_map(
-                seed_user["account"], ctx, seed_periods_today[:3],
+                seed_user["account"], ctx,
             )
             # Checking decreased by 250 in period 2.
             assert checking_balances[seed_periods_today[1].id] == Decimal("750.00")
@@ -2846,7 +2846,7 @@ class TestOneTimeTransfer:
             )
             assert savings_shadows
             savings_balances = balance_at.cash_balance_map(
-                savings, ctx, seed_periods_today[:3],
+                savings, ctx,
             )
             # Savings increased by 250 in period 2.
             assert savings_balances[seed_periods_today[1].id] == Decimal("250.00")

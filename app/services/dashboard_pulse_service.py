@@ -175,9 +175,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # the chart / trough / peak missing-key skips below have nothing left to
     # skip.  They stay because the forward slice is the caller's, not the
     # producer's.
-    end_balances = balance_at.cash_balance_map(
-        account, balance_ctx, all_periods,
-    )
+    end_balances = balance_at.cash_balance_map(account, balance_ctx)
     forward_periods = [
         p for p in all_periods
         if p.period_index >= current_period.period_index
@@ -209,11 +207,14 @@ def compute_pulse_section(user_id: int) -> dict | None:
     due_soon = _pulse_due_soon(unpaid_rows, contributions, current_period)
 
     return {
-        # ``current_period`` came from ``get_current_period``, so it is a
-        # member of the ``all_periods`` the map was built over, and the fold is
-        # total over the periods it is given -- the key is present by
-        # construction.  Indexed rather than ``.get``-with-a-default on
-        # purpose: a default here would render SOME number for a hero whose
+        # ``current_period`` came from ``get_current_period``, so it is a row
+        # of ``budget.pay_periods``, and since plan step C2-c the map's domain
+        # is the pass's own ``reported_periods()`` -- every saved period of the
+        # same owner -- so the key is present.  (It read "a member of the
+        # ``all_periods`` the map was built over" until that step took the
+        # period list off the seam's signature; the conclusion survives, the
+        # stated reason did not.)  Indexed rather than ``.get``-with-a-default
+        # on purpose: a default here would render SOME number for a hero whose
         # own period the projection did not cover, which is the silent-wrong
         # shape this arc exists to end.
         "hero": _pulse_hero(

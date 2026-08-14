@@ -215,7 +215,6 @@ def _contribution_inputs_for_account(account: Account) -> ContributionInputs:
 def _account_balance_map(
     account: Account,
     ctx: BalanceContext,
-    periods: list,
     inputs: ContributionInputs,
 ) -> OrderedDict[int, Decimal]:
     """Dispatch ONE account's per-period balance map.
@@ -261,8 +260,10 @@ def _account_balance_map(
 
     Args:
         account: The account to project.
-        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-        periods: The pay periods to project over (the output domain).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`,
+            whose ``reported_periods()`` is the output domain (plan step
+            C2-c: it was an argument, and all eight callers filled it with the
+            same value).
         inputs: The account's
             :class:`~app.services.balance_at._asset_contributions.ContributionInputs`
             (:func:`_contribution_inputs_for_account` for a single read, or the batch
@@ -282,8 +283,8 @@ def _account_balance_map(
     # fail-loud for an unconfigured loan.  Both halves of that rule live in the
     # predicate; see its docstring for why neither implies the other.
     if configured_loan(account, ctx) is not None:
-        return positions_period_map(account, ctx, periods)
-    return _kernel.build_account_balance_map(account, ctx, periods, inputs)
+        return positions_period_map(account, ctx)
+    return _kernel.build_account_balance_map(account, ctx, inputs)
 
 
 # The seam's fail-loud no-baseline guard.  It lives on the context (the object

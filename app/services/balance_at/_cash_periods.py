@@ -29,20 +29,19 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
 """
 
-from bisect import bisect_right
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
     CashLedgerWalk,
     live_amounts,
     sum_projected,
 )
+from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
 from ._cash_fold import (
@@ -142,8 +141,8 @@ class CashPeriodView:
 
     Attributes:
         columns: ``OrderedDict`` period id -> :class:`CashPeriodFigures`, in the
-            order the caller's *periods* were given.  Every input period is
-            present.
+            order the reported window holds them, which is payday order.
+            Every period of the window is present.
         amount_overrides: The live ``{transaction_id: Decimal}`` map the
             still-Projected rows were valued through -- recomputed salary income
             and derived loan debits.  ``{}`` for an account with no plan.
@@ -157,9 +156,9 @@ def cash_period_view(
     account: Account,
     scenario_id: int,
     as_of: date,
-    periods: "list[PayPeriod]",
+    window: PeriodWindow,
 ) -> CashPeriodView:
-    """Return the account's cash column for each of *periods* -- ruling R-K.
+    """Return the account's cash column for each period of *window* -- ruling R-K.
 
     ONE valued row set, grouped on TWO clocks, plus the assertion steps.  The
     same walk and the same plan :func:`~._cash_fold.fold_cash_balances` folds
@@ -212,22 +211,27 @@ def cash_period_view(
         scenario_id: The budget scenario whose rows to group.
         as_of: The reader's NOW (ruling R-G's clamp floor) -- NOT a valuation
             date; each period is valued at its own ``end_date``.
-        periods: The pay periods to report, in the caller's display order.  They
-            need not be contiguous and need not start at the account's anchor:
-            each period's figures are read off its OWN span, so a window is a
-            window rather than a re-based projection.
+        window: The pay periods to report, as a slice of the owner's ONE
+            derived calendar
+            (:meth:`~app.services.balance_at.BalanceContext.reported_periods`).
+            It need not start at the account's anchor -- each period's figures
+            are read off its OWN span, so a window is a window rather than a
+            re-based projection -- but it is contiguous and ordered by
+            construction, which plan step **C2-c** made a property of the type
+            rather than a sentence in this docstring (ledger rows **P14**,
+            **P24**, **P32**).
 
     Returns:
-        The :class:`CashPeriodView`: one :class:`CashPeriodFigures` per input
-        period (a period with no rows and no assertions reports zeros against
-        its folded balance), plus the live override map the projection was
-        computed with.
+        The :class:`CashPeriodView`: one :class:`CashPeriodFigures` per period
+        of *window* (a period with no rows and no assertions reports zeros
+        against its folded balance), plus the live override map the projection
+        was computed with.
     """
-    return period_view_of(assemble(account, scenario_id, as_of), periods)
+    return period_view_of(assemble(account, scenario_id, as_of), window)
 
 
 def period_view_of(
-    folded: AssembledCashFold, periods: "list[PayPeriod]",
+    folded: AssembledCashFold, window: PeriodWindow,
 ) -> CashPeriodView:
     """Regroup an ALREADY-assembled fold into its per-period columns.
 
@@ -248,104 +252,83 @@ def period_view_of(
     Args:
         folded: The account's :class:`~._cash_fold.AssembledCashFold`
             (:func:`~._cash_fold.assemble`).
-        periods: The pay periods to report, in the caller's display order.  See
-            :func:`cash_period_view` for the windowing contract.
+        window: The pay periods to report.  See :func:`cash_period_view` for
+            the windowing contract.
 
     Returns:
         The :class:`CashPeriodView`.
     """
-    spans = _PeriodSpans.of(periods)
     return CashPeriodView(
         columns=_assemble_figures(
-            periods,
-            _period_balances(folded, periods),
-            _budget_legs(folded.walk, folded.plan, spans),
-            _cash_sums(folded.walk, folded.day_nets, spans),
-            _assertion_sums(folded.walk, spans),
+            window,
+            _period_balances(folded, window),
+            _budget_legs(folded.walk, folded.plan, window),
+            _cash_sums(folded.walk, folded.day_nets, window),
+            _assertion_sums(folded.walk, window),
         ),
         amount_overrides=live_amounts(folded.plan.basis.amounts),
     )
 
 
-@dataclass(frozen=True)
-class _PeriodSpans:
-    """The reported periods, indexed for "which column does this day fall in".
+def _column_for(window: PeriodWindow, day: date) -> "int | None":
+    """Return the id of the reported period whose span contains *day*.
 
-    The CASH clock's grouping key.  A day is answered by the period whose
-    ``[start_date, end_date]`` span CONTAINS it, and by nothing otherwise -- no
-    nearest-period fallback, deliberately.  The FILING rule
-    (:meth:`app.services.pay_calendar.PayCalendar.filing_period`) does clamp, to
-    the latest period that OPENED on or before the target, which is right for
-    the question it answers (an anchor correction needs a home period, and
+    **The CASH clock's grouping key**, and since plan step C2-c it is one call
+    into the pay calendar rather than a fourth index over the stored spans.
+    The class it replaced (``_PeriodSpans``) bisected the ``end_date`` COLUMN,
+    which is a stored derivative of the paydays with nothing reconciling it
+    (``docs/plans/implementation_plan_pay_calendar.md`` section 1); a hole
+    between two stored spans therefore dropped a day's money into no column at
+    all, silently, which is ``balance:N-128``'s shape reached through a reader.
+    Derived periods TILE, so the hole is not a state this can be in.
+
+    A day is answered by the period whose span CONTAINS it and by nothing
+    otherwise -- no nearest-period fallback, deliberately.  The FILING rule
+    (:meth:`app.services.pay_calendar.PayCalendar.filing_period`) does clamp,
+    to the latest period that OPENED on or before the target, which is right
+    for the question it answers (an anchor correction needs a home period, and
     ``journal_entries.pay_period_id`` is NOT NULL) and wrong for this one: the
-    identity this index serves reads a period's balance change as the steps
-    inside its own span, so a step in a gap or past the horizon belongs to NO
-    column and must not be pulled into the previous one.  The pay-calendar arc
-    names them as two distinct QUESTIONS on one value for exactly this reason,
-    and plan step C2-c retires this class onto
-    :meth:`~app.services.pay_calendar.PeriodWindow.containing`, which keeps the
-    window scoping this docstring argues for.
+    identity these columns satisfy reads a period's balance change as the steps
+    inside its OWN span, so a step outside every reported span belongs to no
+    column and must not be pulled into the nearest one.  The pay-calendar arc
+    names them as two distinct QUESTIONS on one value for exactly this reason.
 
-    Pay periods do not overlap -- the generator rejects a batch whose earliest
-    start falls on or before the latest existing ``end_date``, because two
-    periods covering one day also make ``get_current_period`` nondeterministic --
-    so the latest period STARTING on or before a day is the only candidate that
-    can contain it, and one bisect answers.
+    Scoped to the WINDOW rather than to the whole calendar, and that is the
+    same distinction one level down: what is being grouped is the reported
+    column set, so a day above or below it has no column here even where the
+    owner's calendar has one for it.
 
-    Attributes:
-        starts: The periods' ``start_date`` values, ascending -- the bisect key.
-        periods: The same periods in that ascending order.
+    Args:
+        window: The reported periods.
+        day: The calendar day to place.
+
+    Returns:
+        The containing period's ``budget.pay_periods.id``, or ``None`` when
+        *day* falls before the first reported period or after the last one's
+        end.
     """
+    period = window.containing(day)
+    return period.period_id if period is not None else None
 
-    starts: "list[date]"
-    periods: "list[PayPeriod]"
 
-    @classmethod
-    def of(cls, periods: "list[PayPeriod]") -> "_PeriodSpans":
-        """Index *periods* by start date (the caller's order is not assumed).
+def _zeroed(window: PeriodWindow) -> "dict[int, Decimal]":
+    """Return a ``{period_id: 0.00}`` accumulator over every reported period.
 
-        Args:
-            periods: The pay periods to report, in any order.
+    Args:
+        window: The reported periods.
 
-        Returns:
-            The :class:`_PeriodSpans` index.
-        """
-        ordered = sorted(periods, key=lambda period: period.start_date)
-        return cls(
-            starts=[period.start_date for period in ordered], periods=ordered,
-        )
-
-    def containing(self, day: date) -> "int | None":
-        """Return the id of the period whose span contains *day*, else ``None``.
-
-        Args:
-            day: The calendar day to place.
-
-        Returns:
-            The containing period's id, or ``None`` when *day* falls in a gap,
-            before the first reported period, or after the last one's end.
-        """
-        index = bisect_right(self.starts, day) - 1
-        if index < 0:
-            return None
-        period = self.periods[index]
-        return period.id if day <= period.end_date else None
-
-    def zeroed(self) -> "dict[int, Decimal]":
-        """Return a ``{period_id: 0.00}`` accumulator over every reported period.
-
-        Returns:
-            One zero per reported period, so a component's dict is TOTAL over
-            the window and a period with nothing in it reads ``0.00`` rather
-            than being missing.
-        """
-        return {period.id: _ZERO_MONEY for period in self.periods}
+    Returns:
+        One zero per reported period, so a component's dict is TOTAL over the
+        window and a period with nothing in it reads ``0.00`` rather than being
+        missing.
+    """
+    return {period.period_id: _ZERO_MONEY for period in window}
 
 
 def _budget_legs(
     walk: CashLedgerWalk,
     plan: _CashPlan,
-    spans: _PeriodSpans,
+    window: PeriodWindow,
 ) -> "dict[int, tuple[Decimal, Decimal]]":
     """Return ``{period_id: (income, expense)}`` on the BUDGET clock.
 
@@ -372,14 +355,14 @@ def _budget_legs(
     Args:
         walk: The account's walk -- its settled facts carry both clocks.
         plan: The account's :class:`~._cash_fold._CashPlan`.
-        spans: The reported periods.
+        window: The reported periods.
 
     Returns:
         ``{period_id: (income, expense)}`` -- both magnitudes, UNROUNDED (the
         caller rounds once at the boundary), and total over the window.
     """
-    income = spans.zeroed()
-    expense = spans.zeroed()
+    income = _zeroed(window)
+    expense = _zeroed(window)
     for fact in walk.source_facts:
         if fact.pay_period_id not in income:
             continue
@@ -406,7 +389,7 @@ def _budget_legs(
 def _cash_sums(
     walk: CashLedgerWalk,
     day_nets: "dict[date, Decimal]",
-    spans: _PeriodSpans,
+    window: PeriodWindow,
 ) -> "dict[int, Decimal]":
     """Return ``{period_id: net}`` on the CASH clock -- what MOVED in the period.
 
@@ -422,25 +405,25 @@ def _cash_sums(
         walk: The account's walk.
         day_nets: The plan's per-day nets
             (:func:`~._cash_fold._planned_day_nets`).
-        spans: The reported periods.
+        window: The reported periods.
 
     Returns:
         ``{period_id: net}`` -- signed, UNROUNDED, total over the window.
     """
-    moved = spans.zeroed()
+    moved = _zeroed(window)
     for fact in walk.source_facts:
-        period_id = spans.containing(fact.settled_on)
+        period_id = _column_for(window, fact.settled_on)
         if period_id is not None:
             moved[period_id] += fact.delta
     for day, net in day_nets.items():
-        period_id = spans.containing(day)
+        period_id = _column_for(window, day)
         if period_id is not None:
             moved[period_id] += net
     return moved
 
 
 def _assertion_sums(
-    walk: CashLedgerWalk, spans: _PeriodSpans,
+    walk: CashLedgerWalk, window: PeriodWindow,
 ) -> "dict[int, Decimal]":
     """Return ``{period_id: correction}`` -- what the user's true-ups booked.
 
@@ -460,21 +443,21 @@ def _assertion_sums(
     Args:
         walk: The account's walk.  Its ``anchor_corrections`` are chronological
             and the FIRST is the opening (the leaf's own contract).
-        spans: The reported periods.
+        window: The reported periods.
 
     Returns:
         ``{period_id: correction}`` -- signed, UNROUNDED, total over the window.
     """
-    asserted = spans.zeroed()
+    asserted = _zeroed(window)
     for correction in walk.anchor_corrections[1:]:
-        period_id = spans.containing(correction.observed_on)
+        period_id = _column_for(window, correction.observed_on)
         if period_id is not None:
             asserted[period_id] += correction.delta
     return asserted
 
 
 def _assemble_figures(
-    periods: "list[PayPeriod]",
+    window: PeriodWindow,
     balances: "OrderedDict[int, Decimal]",
     legs: "dict[int, tuple[Decimal, Decimal]]",
     moved: "dict[int, Decimal]",
@@ -499,7 +482,7 @@ def _assemble_figures(
     the raw ones, now that the row a user reads is two rows.
 
     Args:
-        periods: The pay periods to report, in display order.
+        window: The pay periods to report.
         balances: The fold sampled at every period ``end_date``, keyed by
             period id (:func:`~._cash_fold._period_balances`).
         legs: The budget-clock ``(income, expense)`` per period.
@@ -510,15 +493,15 @@ def _assemble_figures(
         ``OrderedDict`` period id -> :class:`CashPeriodFigures`.
     """
     figures: "OrderedDict[int, CashPeriodFigures]" = OrderedDict()
-    for period in periods:
-        income, expense = legs[period.id]
+    for period in window:
+        income, expense = legs[period.period_id]
         net = income - expense
-        figures[period.id] = CashPeriodFigures(
-            balance=balances[period.id],
+        figures[period.period_id] = CashPeriodFigures(
+            balance=balances[period.period_id],
             income=round_money(income),
             expense=round_money(expense),
             net=round_money(net),
-            period_timing=round_money(moved[period.id] - net),
-            book_vs_bank=round_money(asserted[period.id]),
+            period_timing=round_money(moved[period.period_id] - net),
+            book_vs_bank=round_money(asserted[period.period_id]),
         )
     return figures

@@ -105,12 +105,23 @@ place and belongs there.
 from collections import OrderedDict
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from app.models.account import Account
+from app.services.pay_calendar import PeriodWindow
 
 from ._context import BalanceContext
 from . import _asset_fold, _cash_fold, _cash_periods
 from ._inputs import _contribution_inputs_for_account, _require_scenario
+
+if TYPE_CHECKING:
+    # Type-only: the ORM row is named by :meth:`GridBalanceView.row_flags`'s
+    # signature and by nothing this module executes.  Plan step C4 moves that
+    # last display window onto the calendar and the name goes with it.
+    # It sits BELOW every import rather than between them: a statement in the
+    # middle of an import block is ``wrong-import-position`` on each import
+    # that follows it, three messages a 10.00/10 score still rounds away.
+    from app.models.pay_period import PayPeriod
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -286,11 +297,11 @@ class GridBalanceView:
     two answer it differently by design (ruling R-W).
 
     Attributes:
-        columns: ``OrderedDict`` period_id -> :class:`GridColumn`, in the order
-            the caller's *periods* were given.  EVERY requested period is
-            present, with a real balance beside its real subtotals -- which is
-            why this is one map rather than a balance map that omitted periods
-            and a subtotal map that did not.
+        columns: ``OrderedDict`` period_id -> :class:`GridColumn`, in payday
+            order.  EVERY period of the pass's reported window is present, with
+            a real balance beside its real subtotals -- which is why this is one
+            map rather than a balance map that omitted periods and a subtotal
+            map that did not.
         amount_overrides: The live ``{transaction_id: Decimal}`` map this
             projection was computed with (recomputed salary income and derived
             loan debits).  Carried so the grid's CELLS render from the same map
@@ -301,12 +312,19 @@ class GridBalanceView:
     columns: "OrderedDict[int, GridColumn]"
     amount_overrides: "dict[int, Decimal]"
 
-    def row_flags(self, periods: list) -> GridRowFlags:
+    def row_flags(self, periods: "list[PayPeriod]") -> GridRowFlags:
         """Return which conditional rows *periods* renders (ruling R-O).
 
+        The one place a caller still names periods, and deliberately: this
+        decides which ROWS a given VISIBLE window renders, so the window is the
+        question rather than an input to the projection.  The columns
+        themselves are the pass's own (plan step C2-c).
+
         Args:
-            periods: The visible pay periods, in display order.  Periods absent
-                from :attr:`columns` contribute nothing.
+            periods: The visible pay periods, in display order -- the ORM rows
+                the route already holds for rendering.  Only their ``id`` is
+                read.  Periods absent from :attr:`columns` contribute
+                nothing.
 
         Returns:
             The window's :class:`GridRowFlags`.
@@ -336,20 +354,20 @@ class GridBalanceView:
 
 
 def _assemble_columns(
-    periods: list,
+    window: PeriodWindow,
     figures: "OrderedDict[int, _cash_periods.CashPeriodFigures]",
     modelled: "OrderedDict[int, _asset_fold.AssetPeriodFigures]",
 ) -> "OrderedDict[int, GridColumn]":
     """Combine each period's cash and modelled figures into one :class:`GridColumn`.
 
     Args:
-        periods: The pay periods to report, in display order.
+        window: The pay periods to report.
         figures: The period view's
             :class:`._cash_periods.CashPeriodFigures` per period (the
             budget-clock subtotals and ruling R-K's two remainders).  Total
-            over *periods*.
+            over *window*.
         modelled: The :class:`._asset_fold.AssetPeriodFigures` per period -- the
-            DISPLAYED balance and the two modelled tiers.  Total over *periods*,
+            DISPLAYED balance and the two modelled tiers.  Total over *window*,
             so a missing key is a defect rather than a blank column; it is
             indexed, not ``.get``.
 
@@ -358,10 +376,10 @@ def _assemble_columns(
         period.
     """
     columns: "OrderedDict[int, GridColumn]" = OrderedDict()
-    for period in periods:
-        cash = figures[period.id]
-        tiers = modelled[period.id]
-        columns[period.id] = GridColumn(
+    for period in window:
+        cash = figures[period.period_id]
+        tiers = modelled[period.period_id]
+        columns[period.period_id] = GridColumn(
             balance=tiers.balance,
             income=cash.income,
             expense=cash.expense,
@@ -375,7 +393,7 @@ def _assemble_columns(
 
 
 def grid_balance_view(
-    account: Account, ctx: BalanceContext, periods: list,
+    account: Account, ctx: BalanceContext,
 ) -> GridBalanceView:
     """Return the kind-aware cash-flow-surface view for *account*.
 
@@ -446,10 +464,11 @@ def grid_balance_view(
             replay reads its parameters to decide which modelled tiers it has;
             no branch here consults its kind.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-        periods: The pay periods to project over, ordered by ``period_index``
-            (pass the full set; every one of them is present in the result, and
-            each is valued off its OWN span rather than re-based on the
-            window's left edge).
+            **Its ``reported_periods()`` is the column set** since plan step
+            C2-c -- the owner's whole saved calendar, in payday order, each
+            period valued off its OWN derived span rather than re-based on the
+            window's left edge.  The route used to pass that set in, having
+            read it out of the table with its two derived columns attached.
 
     Returns:
         A :class:`GridBalanceView`.
@@ -458,27 +477,34 @@ def grid_balance_view(
         BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
             subclass; ONE application-level handler answers it (plan step
             X-v2, ruling R-BW), so no caller pre-checks.
+        PayCalendarError: The owner's paydays cannot define a calendar, which
+            since plan step C2-c is reachable from every per-period seam entry
+            rather than only from the recurrence pages -- see
+            :meth:`~app.services.balance_at.BalanceContext.calendar`, where the
+            reporting domain is derived, for the one state that produces it and
+            the step that removes it.
     """
     _require_scenario(ctx)
-    if not periods:
+    window = ctx.reported_periods()
+    if not window:
         # A user with no pay periods has no columns to render and no rows to
         # price, so the override map describes nothing.  Early-out rather than
         # asking the replay below for a horizon it cannot derive from an empty
-        # list -- the same guard :func:`._asset_fold.asset_period_view` and
+        # window -- the same guard :func:`._asset_fold.asset_period_view` and
         # :func:`._asset_fold.period_columns` already carry.
         return empty_grid_view()
     folded = _cash_fold.assemble(account, ctx.scenario_id, ctx.as_of)
-    view = _cash_periods.period_view_of(folded, periods)
+    view = _cash_periods.period_view_of(folded, window)
     modelled = _asset_fold.period_columns(
         _asset_fold.resolve(
             account, folded,
-            max(period.end_date for period in periods),
+            max(period.end_date for period in window),
             _contribution_inputs_for_account(account),
         ),
-        periods,
+        window,
     )
     return GridBalanceView(
-        columns=_assemble_columns(periods, view.columns, modelled),
+        columns=_assemble_columns(window, view.columns, modelled),
         amount_overrides=view.amount_overrides,
     )
 

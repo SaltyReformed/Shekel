@@ -106,7 +106,7 @@ from app import create_app
 from app.extensions import db
 from app.models.user import User
 from app.routes.savings import _serialize_net_worth_chart, _serialize_sparklines
-from app.services import balance_at, dashboard_pulse_service, pay_period_service
+from app.services import balance_at, dashboard_pulse_service
 from app.services import savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from app.services.scenario_resolver import get_baseline_scenario
@@ -462,7 +462,6 @@ def _dump_user(user_id):
     seam_maps = balance_at.build_maps(
         [_get(ad, "account") for ad in account_data],
         BalanceContext.build(user_id),
-        pay_period_service.get_all_periods(user_id),
     )
     # ONE narrow debt build per user, shared by the two keys that read it.
     narrow_summary = savings_dashboard_service.compute_debt_summary(user_id)

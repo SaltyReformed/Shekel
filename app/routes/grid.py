@@ -241,7 +241,7 @@ def _load_grid_transactions(account, balance_ctx, all_periods):
     )
 
 
-def _build_grid_view(account, balance_ctx, all_periods):
+def _build_grid_view(account, balance_ctx):
     """Compute the grid's per-period column set and its latest anchor assertion.
 
     Routes through the balance-at seam's kind-aware grid view
@@ -277,13 +277,15 @@ def _build_grid_view(account, balance_ctx, all_periods):
         account: The grid account, or ``None`` for the user-with-zero-accounts
             edge case.
         balance_ctx: The read pass's
-            :class:`~app.services.balance_at.BalanceContext`.
-        all_periods: Every one of the user's pay periods (the projection
-            domain; each render window is a slice of it).  The fold answers
-            all of them -- there is no anchor-forward restriction to respect
-            since plan step X-c2b2 -- and each is valued off its OWN span, so
-            passing the full set is what makes a window a window rather than a
-            re-based projection.
+            :class:`~app.services.balance_at.BalanceContext`.  It carries the
+            projection domain too since plan step C2-c: the seam reads the
+            owner's whole pay calendar off it
+            (``reported_periods()``) rather than taking a list of ORM rows,
+            whose ``end_date`` and ``period_index`` are the two derived columns
+            plan step C4 drops.  Every period is answered -- there is no
+            anchor-forward restriction to respect since plan step X-c2b2 --
+            and each is valued off its OWN span, so each render window is a
+            slice of the result rather than a re-based projection.
 
     Returns:
         ``(grid_view, anchor)`` -- the
@@ -300,7 +302,7 @@ def _build_grid_view(account, balance_ctx, all_periods):
     if account is None:
         return balance_at.empty_grid_view(), None
     return (
-        balance_at.grid_balance_view(account, balance_ctx, all_periods),
+        balance_at.grid_balance_view(account, balance_ctx),
         cash_ledger.resolve_anchor(account),
     )
 
@@ -579,9 +581,7 @@ def index():
     all_transactions = _load_grid_transactions(
         ctx.account, ctx.balance_ctx, ctx.all_periods,
     )
-    grid_view, anchor = _build_grid_view(
-        ctx.account, ctx.balance_ctx, ctx.all_periods,
-    )
+    grid_view, anchor = _build_grid_view(ctx.account, ctx.balance_ctx)
     # Workstream B: annotate each row with the live display amount, read back
     # off the map the SEAM built for its own projection (ruling R-Q) rather
     # than a second one built here.  The two were "provably identical" by
@@ -844,18 +844,15 @@ def balance_row():
     if window is None:
         return "", 204
 
-    all_periods = pay_period_service.get_all_periods(current_user.id)
-
     # The whole column set via the balance-at seam's kind-aware grid view,
     # which owns the live override map and the per-kind dispatch.  For
     # a modelled grid account this yields the modelled balance and the accrual /
     # contribution rows that explain it; an account that models nothing gets the
-    # folded cash balance with both tiers at zero (plan step X-g3b).  Asking the
-    # seam for the whole period set and reading the window's flags off it is
-    # what keeps this refresh and the full-page render one projection.
-    view, _anchor = _build_grid_view(
-        window.account, window.balance_ctx, all_periods,
-    )
+    # folded cash balance with both tiers at zero (plan step X-g3b).  The seam
+    # answers over the owner's whole calendar and this reads the window's flags
+    # off it, which is what keeps this refresh and the full-page render one
+    # projection.
+    view, _anchor = _build_grid_view(window.account, window.balance_ctx)
 
     return render_template(
         "grid/_balance_row.html",
@@ -926,10 +923,7 @@ def subtotal_rows():
     # total than before (360.2 ms -> 331.0 ms) because the balance row stopped
     # building a second override map.  Finding N-56 records the remaining
     # duplication.
-    view, _anchor = _build_grid_view(
-        window.account, window.balance_ctx,
-        pay_period_service.get_all_periods(current_user.id),
-    )
+    view, _anchor = _build_grid_view(window.account, window.balance_ctx)
 
     return render_template(
         "grid/_subtotal_rows.html",
@@ -984,10 +978,7 @@ def mobile_this_period_summary():
     # kind-correct-grid feature).  Since plan step X-g3b every kind reads the
     # modelled balance; an account that models no return resolves no tier, so
     # its figure IS the cash-flow running balance.
-    view, _anchor = _build_grid_view(
-        base.account, base.balance_ctx,
-        pay_period_service.get_all_periods(user_id),
-    )
+    view, _anchor = _build_grid_view(base.account, base.balance_ctx)
 
     return render_template(
         "grid/_mobile_tp_summary.html",

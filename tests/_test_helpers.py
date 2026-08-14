@@ -4453,3 +4453,52 @@ def cadence_payload(unit=None, interval_n=1, placement=None):
             ref_cache.period_placement_id(loaded["recurrence_placement"]),
         ),
     }
+
+
+def period_window(periods):
+    """Return the :class:`PeriodWindow` the seam reports over for *periods*.
+
+    The test-side door onto the pay calendar, added at plan step **C2-c**,
+    when the balance seam stopped taking a list of ORM ``PayPeriod`` rows and
+    started reading its reporting domain off the pay calendar
+    (``app.services.balance_at.BalanceContext.reported_periods``).  A handful
+    of seam producers still take a window explicitly -- the ones that take a
+    ``scenario_id`` and an ``as_of`` rather than a context -- and this is how a
+    test names the SUBSET of an owner's schedule it wants those to report.
+
+    It derives the owner's whole calendar and then selects the requested
+    periods out of it, rather than building period bounds from the ORM rows:
+    a window carries the ends the WHOLE calendar computed, which is the
+    property ledger row **P14** is about, and taking the ends off the stored
+    columns here would let a test pass against bounds production no longer
+    reads.
+
+    Args:
+        periods: The ``PayPeriod`` rows to report, in any order and all
+            belonging to one user.  Must be non-empty -- an empty request has
+            no owner to resolve a calendar for, and the seam entries take
+            ``PeriodWindow(periods=())`` directly for that case.
+
+    Returns:
+        The :class:`~app.services.pay_calendar.PeriodWindow` over exactly those
+        periods.
+
+    Raises:
+        PayCalendarError: The requested periods do not form an unbroken span,
+            which the window type refuses (plan finding **P32**).  That is a
+            real answer, not a helper limitation: a gapped column set renders
+            a balance row that does not add up.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PeriodWindow,
+        calendar_for,
+    )
+
+    wanted = {period.id for period in periods}
+    calendar = calendar_for(next(iter(periods)).user_id)
+    return PeriodWindow(
+        periods=tuple(
+            period for period in calendar.saved()
+            if period.period_id in wanted
+        ),
+    )

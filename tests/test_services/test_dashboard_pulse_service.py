@@ -1247,8 +1247,8 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
             scenario = seed_user["scenario"]
             bctx = BalanceContext.build(seed_user["user"].id)
             current = seed_periods[_CURRENT_IDX]
-            cash = balance_at.cash_balance_map(hysa, bctx, seed_periods)
-            accrued = balance_at.balance_map(hysa, bctx, seed_periods)
+            cash = balance_at.cash_balance_map(hysa, bctx)
+            accrued = balance_at.balance_map(hysa, bctx)
 
             # The cash truth is hand-computable: anchor carried flat, no rows,
             # no interest -> $50,000.00 at the current period.

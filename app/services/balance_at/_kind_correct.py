@@ -44,9 +44,9 @@ from ._resolution import configured_loan
 
 
 def balance_map(
-    account: Account, ctx: BalanceContext, periods: list,
+    account: Account, ctx: BalanceContext,
 ) -> "OrderedDict[int, Decimal]":
-    """Return one account's period_id -> balance map across *periods*.
+    """Return one account's period_id -> balance map, per pay period.
 
     The single-account per-period producer.  Loads THIS account's
     modelled-contribution feed via the shared
@@ -70,12 +70,13 @@ def balance_map(
             classifier.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the producers; its ``as_of`` is the resolver's
-            now, and it memoizes each loan's resolution for the pass).
-        periods: The pay periods to project over, ordered by
-            ``period_index``.
+            now, and it memoizes each loan's resolution for the pass).  **It
+            is also where the periods come from** since plan step C2-c:
+            ``ctx.reported_periods()``, the owner's whole saved calendar with
+            every bound DERIVED from their paydays.
 
     Returns:
-        The OrderedDict period_id -> Decimal balance.  **Never ``None``**: it
+        The OrderedDict period_id -> Decimal balance, in payday order.  **Never ``None``**: it
         answered ``None`` for an account with ``current_anchor_period_id IS
         NULL``, a state the schema forbade and the column no longer exists to
         express (finding N-73, plan step X-f1c3a).
@@ -83,6 +84,12 @@ def balance_map(
     Raises:
         BaselineMissingError: When ``scenario`` is None (a ``ValueError``
             subclass).
+        PayCalendarError: The owner's paydays cannot define a calendar, which
+            since plan step C2-c is reachable from every per-period seam entry
+            rather than only from the recurrence pages -- see
+            :meth:`~app.services.balance_at.BalanceContext.calendar`, where the
+            reporting domain is derived, for the one state that produces it and
+            the step that removes it.
     """
     # NO caller guards ahead of this any more (plan step X-v2, ruling R-BW).
     # The raise IS the answer: it carries a name the application's one handler
@@ -91,14 +98,13 @@ def balance_map(
     # instead lives with that handler.
     _require_scenario(ctx)
     return _account_balance_map(
-        account, ctx, periods, _contribution_inputs_for_account(account),
+        account, ctx, _contribution_inputs_for_account(account),
     )
 
 
 def build_maps(
     accounts: list[Account],
     ctx: BalanceContext,
-    periods: list,
 ) -> "dict[int, OrderedDict[int, Decimal]]":
     """Return account_id -> period balance map for many accounts (batch).
 
@@ -126,10 +132,11 @@ def build_maps(
 
     Args:
         accounts: The accounts to project (the same user's active set).
-        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-        periods: The pay periods to project over (the dense domain -- pass
-            ALL of the user's periods so the cash / investment paths have
-            their anchor seed).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`,
+            whose ``reported_periods()`` is the dense domain -- the owner's
+            whole saved calendar, which is what the cash / investment paths
+            need for their anchor seed and what every caller used to pass by
+            hand (plan step C2-c).
 
     Returns:
         A dict mapping ``account.id`` to its OrderedDict period_id ->
@@ -139,12 +146,18 @@ def build_maps(
         BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
             subclass; ONE application-level handler answers it (plan step
             X-v2, ruling R-BW), so no caller pre-checks.
+        PayCalendarError: The owner's paydays cannot define a calendar, which
+            since plan step C2-c is reachable from every per-period seam entry
+            rather than only from the recurrence pages -- see
+            :meth:`~app.services.balance_at.BalanceContext.calendar`, where the
+            reporting domain is derived, for the one state that produces it and
+            the step that removes it.
     """
     _require_scenario(ctx)
     feeds = _contribution_inputs_for_accounts(accounts)
     return {
         account.id: _account_balance_map(
-            account, ctx, periods, feeds[account.id],
+            account, ctx, feeds[account.id],
         )
         for account in accounts
     }

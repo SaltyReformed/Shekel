@@ -113,7 +113,6 @@ def compute_balance_hero_cell(user_id: int, account_id: int) -> dict | None:
     balance = _resolve_current_balance(
         account, balance_ctx,
         pay_period_service.get_current_period(user_id),
-        pay_period_service.get_all_periods(user_id),
     )
     return {
         "account": account,

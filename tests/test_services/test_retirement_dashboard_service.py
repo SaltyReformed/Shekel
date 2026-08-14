@@ -538,7 +538,7 @@ class TestRetirementProjectionEntryAware:
             # basis under test is genuinely the one the tile is built on.
             ctx = BalanceContext.build(user.id)
             basis = balance_at.cash_balance_map(
-                acct, ctx, seed_periods_today,
+                acct, ctx,
             )
             # CRIT-01 / F-009 / R-1: 50000 - max(500 - 45.71, 0)
             #                      = 50000 - 454.29 = 49,545.71.
@@ -554,7 +554,7 @@ class TestRetirementProjectionEntryAware:
             # anchor-period accrual over the cash basis above.  Read once from
             # the seam so this cannot drift from the producer it locks, exactly
             # as the per-kind cross-page classes do.
-            modelled = balance_at.balance_map(acct, ctx, seed_periods_today)
+            modelled = balance_at.balance_map(acct, ctx)
             assert target["current_balance"] == modelled[current_period.id]
             # And the accrual is really there: a surface that fell back to the
             # cash producer would land ON the basis, not above it.
@@ -640,7 +640,7 @@ class TestRetirementAnchorInPastModeledHeadlineDatedSeed:
             # rerouted headline now reads), strictly above the flat carry.
             bctx = BalanceContext.build(seed_user["user"].id)
             modeled = balance_at.balance_map(
-                acct, bctx, all_periods,
+                acct, bctx,
             )[current_period.id]
             assert modeled > v0, (
                 f"modeled {modeled!r} did not compound above the flat anchor "

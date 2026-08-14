@@ -121,9 +121,7 @@ def _seam_batches(accounts, ctx):
             loan_results[acct.id] = loan_result
 
     return _SeamBatches(
-        balance_maps=balance_at.build_maps(
-            accounts, ctx.balance_ctx, ctx.all_periods,
-        ),
+        balance_maps=balance_at.build_maps(accounts, ctx.balance_ctx),
         loan_results=loan_results,
     )
 

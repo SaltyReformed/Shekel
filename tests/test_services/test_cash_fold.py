@@ -61,6 +61,7 @@ from tests._test_helpers import (
     freeze_today,
     mark_purchase_settled,
     override_anchor,
+    period_window,
     restamp_opening_assertion,
 )
 
@@ -1239,7 +1240,8 @@ def _drift_oracle(periods):
 def _drift_period_map(seed_user, periods):
     """Return the fold's period-end balance map for the drift shape."""
     return cash_period_balances(
-        seed_user["account"], seed_user["scenario"].id, _DRIFT_AS_OF, periods,
+        seed_user["account"], seed_user["scenario"].id, _DRIFT_AS_OF,
+        period_window(periods),
     )
 
 

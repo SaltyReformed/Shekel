@@ -1641,7 +1641,7 @@ class TestLedgerAgreesWithTheGridOnAssertionPeriods:
                 .order_by(PayPeriod.period_index)
                 .all()
             )
-            grid = balance_at.grid_balance_view(account, ctx, periods)
+            grid = balance_at.grid_balance_view(account, ctx)
 
             compared = 0
             for period in periods:

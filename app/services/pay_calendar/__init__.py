@@ -48,11 +48,16 @@ Boundary discipline (``CLAUDE.md``), stated PER MODULE because plan step C2-b1
 made one of them impure and a claim about "the package" would then be false of
 part of it:
 
-* :mod:`._derive`, :mod:`._calendar` and :mod:`._cadence` -- no Flask symbol,
-  no database session, no clock.  Every answer is a pure function of values a
-  caller supplies, and that is load-bearing rather than tidy: it is what lets
-  C1's harness drive the derivation over production's real 61 paydays and over
-  a generated sweep with no database, so the two runs exercise the same code.
+* :mod:`._derive`, :mod:`._searches`, :mod:`._window`, :mod:`._calendar` and
+  :mod:`._cadence` -- no Flask symbol, no database session, no clock.  Every
+  answer is a pure function of values a caller supplies, and that is
+  load-bearing rather than tidy: it is what lets C1's harness drive the
+  derivation over production's real 61 paydays and over a generated sweep with
+  no database, so the two runs exercise the same code.  The pure half is a
+  one-way chain -- ``_derive`` -> ``_searches`` -> ``_window`` -> ``_calendar``,
+  split that way at plan step C2-c when the calendar module passed the
+  1,000-line ceiling -- so a search, a view over a calendar and the calendar
+  itself cannot answer one question differently.
 * :mod:`._loader` -- holds the session, and ONLY the session.  It reads an
   owner's paydays and cadence and hands them to the pure half; it computes
   nothing.  One module is the whole impure surface, which is what makes the
@@ -74,16 +79,7 @@ second answer.
 """
 
 from ._cadence import DAYS_PER_YEAR, PayCadence
-from ._calendar import (
-    PayCalendar,
-    PeriodWindow,
-    containing_period,
-    earliest_start_in_month,
-    final_covered_day,
-    latest_started_period,
-    opening_payday,
-    period_by_id,
-)
+from ._calendar import PayCalendar
 from ._derive import (
     MAX_CADENCE_DAYS,
     MIN_CADENCE_DAYS,
@@ -92,6 +88,15 @@ from ._derive import (
     derive_periods,
 )
 from ._loader import cadence_for, calendar_for
+from ._searches import (
+    containing_period,
+    earliest_start_in_month,
+    final_covered_day,
+    latest_started_period,
+    opening_payday,
+    period_by_id,
+)
+from ._window import PeriodWindow
 
 __all__ = [
     "DAYS_PER_YEAR",

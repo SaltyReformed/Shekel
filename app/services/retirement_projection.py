@@ -507,7 +507,7 @@ def _resolve_displayed_balances(
     return _pick_current_period_balances(
         ctx,
         balance_ctx,
-        balance_at.build_maps(ctx.accounts, balance_ctx, ctx.all_periods),
+        balance_at.build_maps(ctx.accounts, balance_ctx),
     )
 
 
