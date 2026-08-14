@@ -71,10 +71,9 @@ encoder's own table.
 Pure: no Flask, no ORM, no clock, no database.
 """
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
-from itertools import islice
 from typing import ClassVar
 
 from app.exceptions import ShekelError
@@ -127,6 +126,56 @@ class EndBoundInputError(ShekelError):
         super().__init__(message)
         self.field = field
         self.message = message
+
+
+@dataclass(frozen=True)
+class BoundReading:
+    """What a closing bound needs to know about a rule's occurrences.
+
+    Both bounded shapes answer "does this rule still owe an occurrence" from
+    the same two facts, so they take one value rather than each asking the
+    caller for a differently-shaped walk.  Built lazily -- see
+    :meth:`EndBound.has_closed` -- because the unbounded shape needs neither.
+
+    Attributes:
+        occurrences: Every occurrence the rule names through *horizon*,
+            ascending, already limited by the bound itself.  A count-bounded
+            rule therefore holds at most its own count, and ``len`` is how that
+            shape tells "spent" from "the schedule has not got there".
+        horizon: The last day the owner's schedule reaches, or ``None`` when
+            they have no pay periods.  ``None`` means nothing can be said about
+            what the rule still owes, which every shape reads as "still owes".
+    """
+
+    occurrences: tuple[date, ...]
+    horizon: date | None
+
+    def owes_from(self, day: date) -> bool:
+        """Return whether any occurrence falls on or after *day*.
+
+        Args:
+            day: The day being asked about, inclusive.
+
+        Returns:
+            ``True`` when the rule still names an occurrence then or later.
+        """
+        return any(occurrence >= day for occurrence in self.occurrences)
+
+    def reaches(self, day: date) -> bool:
+        """Return whether the schedule extends far enough to judge *day*.
+
+        A walk that stopped at the horizon proves nothing about what the rule
+        names beyond it: the occurrences are simply unscheduled, and reading
+        their absence as "this commitment ended" is how an owner who has not
+        extended their pay schedule loses a real obligation from two totals.
+
+        Args:
+            day: The last day the bound itself allows.
+
+        Returns:
+            ``True`` when the horizon is on or after *day*.
+        """
+        return self.horizon is not None and self.horizon >= day
 
 
 @dataclass(frozen=True)
@@ -241,12 +290,9 @@ class EndBound(ABC):
 
     @abstractmethod
     def has_closed(
-        self,
-        *,
-        on: date,
-        occurrences_before: Callable[[], Iterator[date]],
+        self, *, on: date, reading: "Callable[[], BoundReading]",
     ) -> bool:
-        """Return whether this bound had already stopped the rule before *on*.
+        """Return whether this bound has stopped the rule by *on*.
 
         The question ``obligations_aggregator`` asks to decide whether a
         recurring commitment is still a FUTURE obligation.  It replaced a
@@ -256,35 +302,34 @@ class EndBound(ABC):
         while the same row's "Next" column, which walks occurrences, showed
         blank.
 
-        **The occurrence walk arrives as a CALLABLE rather than as an
-        iterator, and the reason is cost rather than correctness.**  Two of the
-        three shapes are pure comparisons that never read it, so passing an
-        iterator would make every caller resolve a rule against its owner's
-        schedule for the single shape that needs one --
-        ``obligations_aggregator`` asks this per recurring template, so that is
-        a schedule load per row.  It does NOT change any shape's answer: an
-        earlier draft of this paragraph claimed it would for an owner with no
-        pay periods, and an adversarial review measured that false in both
-        directions -- :meth:`EndsOnDate.has_closed` never reads the argument,
-        and ``rule_occurrences`` answers ``()`` rather than raising for an
-        empty schedule (``_reading.resolved_recurrence``).
+        **Both bounded shapes answer from whether the rule still OWES an
+        occurrence** (developer ruling 2026-08-13, plan ledger row **D33**).
+        The date shape used to answer the narrower "has the bound date passed",
+        which is not the same question: a yearly bill that last fired in
+        January and is bounded 31 December went on counting for eleven months
+        after its last payment, while the same schedule stated as "for 1
+        occurrence" stopped counting in January.  One reading of "is this
+        still a commitment", so two ways of writing one schedule cannot
+        disagree.
+
+        **The reading arrives as a CALLABLE, and the reason is cost.**
+        :class:`NeverEnds` never asks for it -- 41 of the 46 live production
+        rules are unbounded (measured 2026-08-13) -- so an eager argument would
+        resolve a rule against its owner's schedule for every template on a
+        page where most of them need nothing.
 
         Args:
             on: The day being asked about, normally "today".
-            occurrences_before: Called with no arguments to obtain this rule's
-                own occurrences that fall STRICTLY BEFORE *on*, ascending.
-                **Strictly**, which the caller has to arrange: ``occurrences``
-                takes an INCLUSIVE ``through``, so the natural ``through=on``
-                is off by one and would report a bound closed one occurrence
-                early.  ``_reading.has_ended`` is the one caller and passes
-                ``on - 1 day``.  The sequence is already bounded by this same
-                value, so a count-bounded rule yields at most its own count.
+            reading: Called with no arguments for this rule's
+                :class:`BoundReading` -- its occurrences through the schedule's
+                horizon, and that horizon.
 
         Returns:
-            ``True`` when the rule names no further occurrence on or after
-            *on* BY ITS OWN BOUND.  A rule the schedule has simply not been
-            extended far enough to reach answers ``False``: that is a schedule
-            that has not got there yet, not a commitment that ended.
+            ``True`` when the rule owes no occurrence on or after *on*.  A rule
+            the SCHEDULE has simply not been extended far enough to reach
+            answers ``False``: that is a schedule that has not got there yet,
+            not a commitment that ended, and each shape below states its own
+            test for telling the two apart.
         """
 
     @classmethod
@@ -343,17 +388,14 @@ class NeverEnds(EndBound):
         return True
 
     def has_closed(
-        self,
-        *,
-        on: date,
-        occurrences_before: Callable[[], Iterator[date]],
+        self, *, on: date, reading: "Callable[[], BoundReading]",
     ) -> bool:
         """Never close.
 
         Args:
             on: Unread.
-            occurrences_before: Never called -- see
-                :meth:`EndBound.has_closed` for why it is a callable.
+            reading: Never called -- see :meth:`EndBound.has_closed` for why it
+                is a callable, and this shape is the reason.
 
         Returns:
             Always ``False``.
@@ -417,32 +459,46 @@ class EndsOnDate(EndBound):
         return occurrence <= self.on
 
     def has_closed(
-        self,
-        *,
-        on: date,
-        occurrences_before: Callable[[], Iterator[date]],
+        self, *, on: date, reading: "Callable[[], BoundReading]",
     ) -> bool:
-        """Return whether the bound date is already past.
+        """Return whether the rule owes no occurrence on or after *on*.
 
-        **Byte-identical to the ``rule.end_date < as_of`` test this replaced**,
-        which is what makes the aggregator's filter provably unmoved for every
-        rule that exists today: five live rules carry a date bound and none
-        carries a count.
+        **This asked the narrower "has the bound date passed" until plan step
+        R-D33** (developer ruling 2026-08-13, plan ledger row **D33**).  A
+        bound is a validity WINDOW rather than a last occurrence, so the two
+        differ by up to one cadence interval -- eleven months for a yearly bill
+        bounded at year end -- and the same schedule written as a COUNT stopped
+        counting at its last payment while this one did not.
 
-        It is CONSERVATIVE, and deliberately so: a bound is not a last
-        occurrence, so a rule bounded 2026-12-31 that fires each January is
-        still counted as a live obligation through that December.  Narrowing
-        it to "names no further occurrence" would be a different figure on two
-        money surfaces, which is not this step's to change.
+        Measured before the change, on the five live date-bounded production
+        rules: the gap between a rule's last occurrence and its bound was 0
+        days for four of them (their bound IS an installment date) and 12 days
+        for the one hand-set every-paycheck rule, which had already expired.
+        So the ruling moved no figure on live data; what it removes is the
+        disagreement between two ways of saying one thing.
+
+        The date test survives as the CHEAP arm: past the bound there can be
+        no occurrence on or after *on*, so no walk is needed to say so.
 
         Args:
             on: The day being asked about.
-            occurrences_before: Never called.
+            reading: Called only when the bound is still open.
 
         Returns:
-            ``True`` when :attr:`on` is strictly before the day asked about.
+            ``True`` when the bound has passed, or when the rule names no
+            occurrence in ``[on, self.on]`` AND the schedule reaches far enough
+            to say so.
         """
-        return self.on < on
+        if self.on < on:
+            return True
+        walked = reading()
+        if walked.owes_from(on):
+            return False
+        # Nothing left inside the horizon.  For a bound the schedule has not
+        # yet reached, that is the schedule's limit rather than the rule's end
+        # -- answering "closed" there would drop a live commitment out of two
+        # money totals because the owner had not extended their pay schedule.
+        return walked.reaches(self.on)
 
     @classmethod
     def from_payload(
@@ -531,33 +587,33 @@ class EndsAfterOccurrences(EndBound):
         return emitted < self.count
 
     def has_closed(
-        self,
-        *,
-        on: date,
-        occurrences_before: Callable[[], Iterator[date]],
+        self, *, on: date, reading: "Callable[[], BoundReading]",
     ) -> bool:
         """Return whether all :attr:`count` occurrences fell before *on*.
 
-        The one shape that needs the schedule, because when the count is spent
-        depends on when the occurrences fall -- and for a paycheck-space rule
-        those ARE the owner's paydays.
+        When the count is spent depends on when the occurrences fall -- and for
+        a paycheck-space rule those ARE the owner's paydays -- so this shape
+        always reads the schedule.
 
         A schedule that reaches fewer than :attr:`count` occurrences answers
         ``False``: the remaining ones have not happened yet, so the commitment
-        is still live.  That is the same conservatism the date shape shows, and
-        it is what stops an un-extended pay schedule from silently dropping a
-        live obligation out of two money totals.
+        is still live.  That is the same guard :meth:`EndsOnDate.has_closed`
+        states in its own terms, and it is what stops an un-extended pay
+        schedule from silently dropping a live obligation out of two money
+        totals.
 
         Args:
             on: The day being asked about.
-            occurrences_before: Called once for this rule's occurrences
-                strictly before *on*.
+            reading: Called once for this rule's occurrences and horizon.
 
         Returns:
-            ``True`` when the walk yields the full count before *on*.
+            ``True`` when the walk holds the full count and none of it falls on
+            or after *on*.
         """
-        before = islice(occurrences_before(), self.count)
-        return sum(1 for _ in before) >= self.count
+        walked = reading()
+        if walked.owes_from(on):
+            return False
+        return len(walked.occurrences) >= self.count
 
     @classmethod
     def from_payload(
@@ -716,6 +772,7 @@ def end_bound_from_token(
 __all__ = [
     "END_BOUND_KINDS",
     "NEVER_ENDS",
+    "BoundReading",
     "EndBound",
     "EndBoundColumns",
     "EndBoundInputError",

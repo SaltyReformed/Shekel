@@ -10,10 +10,14 @@ with three shapes.  What this file holds to that:
 * the CLOSED SET -- that :data:`~app.services.recurrence.END_BOUND_KINDS` names
   every shape there is, so a shape added for plan step R8 and left off the
   tuple fails here rather than shipping unofferable;
-* the LAZINESS of ``has_closed``'s walk argument, which is not a performance
-  property: two of the three shapes must answer without a pay calendar, or
-  ``obligations_aggregator`` would load a schedule per template and would give
-  a DIFFERENT answer for an owner who has no paydays.
+* the LAZINESS of ``has_closed``'s reading argument, which is a COST property
+  and not a correctness one: the unbounded shape must answer without a pay
+  calendar, or ``obligations_aggregator`` would resolve a rule for every
+  template on the page when 41 of the 46 live rules need nothing;
+* and the HORIZON guard both bounded shapes carry, which is the correctness
+  half: a walk that stopped at the schedule's end proves nothing about what
+  the rule names beyond it, and reading its silence as "finished" would drop a
+  live commitment out of two money totals.
 
 Pure: no database, no clock, no app context.
 """
@@ -25,6 +29,7 @@ import pytest
 from app.services.recurrence import (
     END_BOUND_KINDS,
     NEVER_ENDS,
+    BoundReading,
     EndBound,
     EndBoundColumns,
     EndBoundInputError,
@@ -75,17 +80,36 @@ def sample_bound(kind: type[EndBound]) -> EndBound:
     return sample
 
 
-def _never_called() -> None:
-    """Fail if a shape asks for occurrences it must answer without.
+def _never_called() -> BoundReading:
+    """Fail if a shape asks for a reading it must answer without.
+
+    Returns:
+        Never returns.
 
     Raises:
         AssertionError: Always -- reaching it IS the failure.
     """
     raise AssertionError(
         "this shape resolved a rule against its owner's schedule to answer "
-        "has_closed; two of the three must not, or the obligations filter "
-        "loads a pay calendar per template"
+        "has_closed; the unbounded shape must not, or the obligations filter "
+        "loads a pay calendar for every template on the page"
     )
+
+
+def _reading(*occurrences, horizon=date(2099, 12, 31)):
+    """Return a :class:`BoundReading` stated directly.
+
+    Args:
+        *occurrences: The dates the rule names through *horizon*, ascending.
+        horizon: The last day the schedule reaches.  Defaults far enough out
+            that a case not about truncation does not have to think about it.
+
+    Returns:
+        A callable yielding the reading, which is the shape ``has_closed``
+        takes.
+    """
+    value = BoundReading(occurrences=tuple(occurrences), horizon=horizon)
+    return lambda: value
 
 
 class TestTheShapesAreAClosedSet:
@@ -150,9 +174,14 @@ class TestTheUnboundedShape:
         assert NEVER_ENDS.admits(emitted=10_000, occurrence=date(2099, 12, 31))
 
     def test_it_never_closes_and_never_walks(self):
-        """An indefinite commitment is live forever, and costs no schedule."""
+        """An indefinite commitment is live forever, and costs no schedule.
+
+        The one shape that answers without a reading, which is what keeps the
+        obligations filter from resolving a rule per template: 41 of the 46
+        live production rules are this shape (measured 2026-08-13).
+        """
         assert NEVER_ENDS.has_closed(
-            on=date(2099, 12, 31), occurrences_before=_never_called,
+            on=date(2099, 12, 31), reading=_never_called,
         ) is False
 
     def test_its_instances_are_interchangeable(self):
@@ -192,27 +221,50 @@ class TestTheDateShape:
 
         assert bound.admits(emitted=10_000, occurrence=_DAY) is True
 
-    @pytest.mark.parametrize("asked, closed", [
-        (date(2027, 2, 28), False),
-        (date(2027, 3, 1), False),
-        (date(2027, 3, 2), True),
-    ])
-    def test_it_closes_the_day_after_its_bound(self, asked, closed):
-        """Byte-identical to the ``rule.end_date < as_of`` test it replaced.
+    def test_a_bound_already_past_needs_no_walk(self):
+        """The cheap arm: past the bound nothing can fall on or after *on*.
 
-        That equivalence is what makes the obligations filter provably unmoved
-        for the five live rules that carry a date bound: strictly before, so a
-        rule ending TODAY is still a commitment today.
+        Kept as a short circuit rather than folded into the walk, so the
+        commonest date-bounded case -- an expired rule -- costs no schedule.
         """
         assert EndsOnDate(on=_DAY).has_closed(
-            on=asked, occurrences_before=_never_called,
-        ) is closed
-
-    def test_it_answers_without_walking(self):
-        """A date bound needs no schedule, so it must not ask for one."""
-        assert EndsOnDate(on=_DAY).has_closed(
-            on=date(2099, 1, 1), occurrences_before=_never_called,
+            on=date(2099, 1, 1), reading=_never_called,
         ) is True
+
+    def test_it_is_live_while_it_still_owes_an_occurrence(self):
+        """An occurrence ON the day asked about is still owed."""
+        assert EndsOnDate(on=_DAY).has_closed(
+            on=date(2027, 2, 1), reading=_reading(date(2027, 2, 1)),
+        ) is False
+
+    def test_it_closes_once_its_last_occurrence_has_passed(self):
+        """**The ruled change** (developer 2026-08-13, plan ledger row D33).
+
+        A bound is a validity WINDOW, not a last occurrence, so a yearly bill
+        that last fired in January and is bounded 1 March owes nothing from
+        February onward -- and used to go on counting until March, while the
+        same schedule written as "for 1 occurrence" stopped in January.  One
+        reading of "is this still a commitment", so two ways of writing one
+        schedule cannot disagree.
+        """
+        assert EndsOnDate(on=_DAY).has_closed(
+            on=date(2027, 2, 1), reading=_reading(date(2027, 1, 15)),
+        ) is True
+
+    def test_a_schedule_short_of_the_bound_leaves_it_LIVE(self):
+        """The guard that stops the change dropping a real obligation.
+
+        A walk that stopped at the horizon proves nothing about what the rule
+        names beyond it.  Answering "closed" there would take an owner who has
+        not extended their pay schedule and remove a live commitment from
+        ``/obligations`` and the emergency-fund baseline -- the more dangerous
+        of the two errors, and the reason the exact reading needs a horizon at
+        all.
+        """
+        assert EndsOnDate(on=_DAY).has_closed(
+            on=date(2027, 2, 1),
+            reading=_reading(date(2027, 1, 15), horizon=date(2027, 1, 20)),
+        ) is False
 
     def test_a_blank_date_is_refused_against_its_own_field(self):
         """Choosing "on a date" and leaving it blank is a mistake, not a never.
@@ -275,57 +327,53 @@ class TestTheCountShape:
         assert EndsAfterOccurrences(count=1).max_occurrences == 1
 
     def test_it_closes_once_the_full_count_has_passed(self):
-        """Three occurrences before the day asked about means it is spent."""
-        bound = EndsAfterOccurrences(count=3)
-        walked = [date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 1)]
-
-        assert bound.has_closed(
-            on=date(2026, 4, 1), occurrences_before=lambda: iter(walked),
+        """Three occurrences, all before the day asked about, means spent."""
+        assert EndsAfterOccurrences(count=3).has_closed(
+            on=date(2026, 4, 1),
+            reading=_reading(
+                date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 1),
+            ),
         ) is True
 
     def test_a_partly_spent_count_is_still_live(self):
         """Two of three have happened, so the commitment has one left."""
-        bound = EndsAfterOccurrences(count=3)
-        walked = [date(2026, 1, 1), date(2026, 2, 1)]
+        assert EndsAfterOccurrences(count=3).has_closed(
+            on=date(2026, 3, 1),
+            reading=_reading(
+                date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 1),
+            ),
+        ) is False
 
-        assert bound.has_closed(
-            on=date(2026, 3, 1), occurrences_before=lambda: iter(walked),
+    def test_an_occurrence_ON_the_day_asked_about_is_still_owed(self):
+        """The boundary, and it matches the date shape's exactly.
+
+        The two shapes have to agree here or the same schedule written two
+        ways leaves the obligations total on different days -- which is the
+        disagreement ruling D33 removed.
+        """
+        assert EndsAfterOccurrences(count=2).has_closed(
+            on=date(2026, 2, 1),
+            reading=_reading(date(2026, 1, 1), date(2026, 2, 1)),
+        ) is False
+
+    def test_a_schedule_short_of_the_count_leaves_it_live(self):
+        """An un-extended pay schedule must not drop a live obligation.
+
+        The count's exhaustion depends on when the paychecks fall, so a
+        schedule that has not been extended far enough holds fewer than the
+        count -- and answering "closed" there would silently remove a real
+        commitment from ``/obligations`` and the ``/savings`` baseline.
+        """
+        assert EndsAfterOccurrences(count=3).has_closed(
+            on=date(2026, 4, 1),
+            reading=_reading(date(2026, 1, 1), date(2026, 2, 1)),
         ) is False
 
     def test_a_schedule_that_reaches_nothing_leaves_it_live(self):
-        """An un-extended pay schedule must not drop a live obligation.
-
-        The count's exhaustion date depends on when the paychecks fall, so a
-        schedule that has not been extended far enough yields nothing -- and
-        answering "closed" there would silently remove a real commitment from
-        ``/obligations`` and the ``/savings`` baseline.
-        """
+        """The same guard at its extreme: an owner with no pay periods."""
         assert EndsAfterOccurrences(count=3).has_closed(
-            on=date(2026, 4, 1), occurrences_before=lambda: iter(()),
+            on=date(2026, 4, 1), reading=_reading(horizon=None),
         ) is False
-
-    def test_it_stops_pulling_at_its_own_count(self):
-        """It consumes at most *count* items, so an endless walk terminates.
-
-        The walk handed in is already bounded by this same value, but a bound
-        that trusted that would hang on a caller that passed the raw sequence.
-        """
-        pulled = []
-
-        def endless():
-            """Yield the same day forever, recording each pull.
-
-            Yields:
-                A fixed date, indefinitely.
-            """
-            while True:
-                pulled.append(_DAY)
-                yield _DAY
-
-        assert EndsAfterOccurrences(count=4).has_closed(
-            on=date(2099, 1, 1), occurrences_before=endless,
-        ) is True
-        assert len(pulled) == 4
 
     def test_a_blank_count_is_refused_against_its_own_field(self):
         """Choosing "after N" and leaving N blank is a mistake, not a never."""

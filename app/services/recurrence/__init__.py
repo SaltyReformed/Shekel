@@ -129,6 +129,7 @@ from app.services.recurrence._authoring import (
 from app.services.recurrence._bounds import (
     END_BOUND_KINDS,
     NEVER_ENDS,
+    BoundReading,
     EndBound,
     EndBoundColumns,
     EndBoundInputError,
@@ -195,6 +196,7 @@ __all__ = [
     "END_BOUND_KINDS",
     "NEVER_ENDS",
     "UNAVAILABLE_PATTERN_MESSAGE",
+    "BoundReading",
     "Cadence",
     "CadenceOption",
     "EndBound",

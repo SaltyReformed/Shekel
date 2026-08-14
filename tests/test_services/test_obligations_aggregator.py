@@ -639,34 +639,69 @@ class TestASpentCountLeavesTheObligationsTotal:
                 template, second_payday + timedelta(days=1), calendar,
             ) is None
 
-    def test_the_date_shape_answers_exactly_as_it_always_did(
+    def test_the_date_shape_answers_from_OCCURRENCES_not_from_the_date(
         self, app, seed_user, seed_periods,
     ):
-        """Byte-identical to ``rule.end_date < as_of``, at the boundary.
+        """The ruled change (developer 2026-08-13, plan ledger row **D33**).
 
-        Five of the 46 live production rules carry a date bound and none
-        carries a count (measured 2026-08-13), so this equivalence is what
-        says the filter is unmoved for every rule that exists today.  The
-        bound is STRICTLY before: a rule ending today is still a commitment
-        today.
+        A date bound used to keep a commitment counted until the bound date
+        passed, even where the rule had already fired for the last time.  It
+        answers the same question the count shape does now -- does the rule
+        still OWE an occurrence -- so two ways of writing one schedule cannot
+        leave the total on different days.
+
+        Bounded on a payday, so the rule owes that occurrence ON the bound and
+        nothing after it: live that day, finished the next.  A bound set
+        BETWEEN paydays is the case that moved -- see the sibling below.
         """
         with app.app_context():
-            as_of = date.today()
+            calendar = calendar_for(seed_user["user"].id)
+            payday = calendar.periods[1].start_date
             rule = _create_rule(
                 seed_user, RecurrencePatternEnum.EVERY_PERIOD,
-                end_date=as_of,
+                end_date=payday,
             )
             template = _create_expense(
-                seed_user, rule, Decimal("100.00"), name="Ends Today",
+                seed_user, rule, Decimal("100.00"), name="Ends On A Payday",
             )
             db.session.commit()
-            calendar = calendar_for(seed_user["user"].id)
 
             assert obligations_aggregator.template_monthly_or_none(
-                template, as_of, calendar,
+                template, payday, calendar,
             ) is not None
             assert obligations_aggregator.template_monthly_or_none(
-                template, as_of + timedelta(days=1), calendar,
+                template, payday + timedelta(days=1), calendar,
+            ) is None
+
+    def test_a_bound_between_occurrences_stops_at_the_LAST_one(
+        self, app, seed_user, seed_periods,
+    ):
+        """What ruling D33 moved, stated as the case that moves.
+
+        A rule bounded the day BEFORE its next payday owes nothing from the
+        day after its last one -- so it leaves the total then, rather than
+        lingering until the bound date the old reading waited for.  On a
+        biweekly schedule that is up to 13 days; on a yearly bill bounded at
+        year end it was eleven months.
+        """
+        with app.app_context():
+            calendar = calendar_for(seed_user["user"].id)
+            last_fired = calendar.periods[1].start_date
+            next_payday = calendar.periods[2].start_date
+            rule = _create_rule(
+                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                end_date=next_payday - timedelta(days=1),
+            )
+            template = _create_expense(
+                seed_user, rule, Decimal("100.00"), name="Ends Mid-Cycle",
+            )
+            db.session.commit()
+
+            assert obligations_aggregator.template_monthly_or_none(
+                template, last_fired, calendar,
+            ) is not None
+            assert obligations_aggregator.template_monthly_or_none(
+                template, last_fired + timedelta(days=1), calendar,
             ) is None
 
     def test_the_recurring_surface_agrees_with_itself(
