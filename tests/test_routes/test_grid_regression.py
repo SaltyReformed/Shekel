@@ -516,7 +516,7 @@ class TestPaydayWorkflowRegression:
         R-DH removed is the SAME-DAY claim, which was never a fact about money.
 
         Full trace and measurements:
-        ``docs/audits/balance_architecture/anchor_settle_partition.md``.
+        ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.
         """
         with app.app_context():
             projected = (

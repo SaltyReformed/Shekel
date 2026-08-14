@@ -1,6 +1,6 @@
 """Ruling R-DH's invariants, at the grain the user actually reads.
 
-``docs/audits/balance_architecture/anchor_settle_partition.md``.  R-DH answers
+``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.  R-DH answers
 one question -- *is this settled row already inside the balance the user
 asserted?* -- and the three properties below are the ones the ruling STATES as
 its acceptance criteria.  None of them existed in ``tests/`` when the fix

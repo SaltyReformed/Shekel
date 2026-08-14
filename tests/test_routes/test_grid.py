@@ -3810,7 +3810,7 @@ class TestTransactionNameRows:
             # Finding cash D1 survives for the case that is actually about
             # money: a settle dated a LATER DAY than the assertion still rides
             # on top (pinned in ``test_cash_walk``).  See
-            # ``docs/audits/balance_architecture/anchor_settle_partition.md``.
+            # ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.
             assert b"$4,850" in resp.data
             assert b"$4,550" in resp.data
 

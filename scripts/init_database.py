@@ -192,7 +192,7 @@ def resync_all_cash_postings_after_migration():
     """Re-date every settled cash source's postings after the chain is at head.
 
     Ruling **R-DH (b)** (2026-07-31,
-    ``docs/audits/balance_architecture/anchor_settle_partition.md``).  A journal
+    ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``).  A journal
     entry's ``entry_date`` is derived by
     ``balance_predicates.settled_day``, which moved from the UTC civil day
     to the USER's on that date, together with both folds that read it.  Every

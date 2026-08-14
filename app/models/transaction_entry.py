@@ -27,7 +27,7 @@ class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.
     it as the day the purchase happened (so never in the future), R-DH (e) as
     the day the money hit the account (one to two days later for a debit
     card).  Both are right about their own fact.  See
-    ``docs/audits/balance_architecture/anchor_settle_partition.md``.
+    ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.
 
     Columns:
         transaction_id  -- The parent transaction this entry belongs to.

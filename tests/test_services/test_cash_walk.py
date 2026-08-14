@@ -182,7 +182,7 @@ class TestTheClosingBalancePartition:
     the settle day was ``db.func.now()`` at the click, before plan step X-f1, and
     an ``AccountAnchorHistory`` row has no date column at all -- so it decided
     which of two BUTTONS was pressed first and spent that answer on cash.  See
-    ``docs/audits/balance_architecture/anchor_settle_partition.md``.
+    ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.
     """
 
     def test_a_settle_recorded_after_the_assertion_is_still_absorbed(
