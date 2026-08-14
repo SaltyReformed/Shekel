@@ -500,6 +500,15 @@ def grid_balance_view(
             account, folded,
             max(period.end_date for period in window),
             _contribution_inputs_for_account(account),
+            # The pass's OWN calendar, and ``window`` above is its
+            # ``saved()`` view -- one memoized derivation read twice, not two
+            # readings of one schedule.  Plan step C2-f2a made this an
+            # argument rather than a query the contribution tier issued for
+            # itself (ledger row **P37**), and it is the CALENDAR rather than
+            # the window so that no caller here can hand that tier a slice:
+            # the annual limit is a calendar-year accumulation and a slice
+            # restarts it mid-year.
+            ctx.calendar(),
         ),
         window,
     )

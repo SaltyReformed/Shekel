@@ -61,6 +61,7 @@ from app.services.balance_at import (
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.balance_at._context import BalanceContext
 from app.services.cash_ledger import ReconciledThrough
+from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
@@ -947,30 +948,40 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
 
 
     Driven directly against :func:`_asset_contributions._dated_events` over
-    UNSAVED periods, because the rule that needs grading -- the reset at a
+    periods no owner has, because the rule that needs grading -- the reset at a
     calendar-year boundary -- needs periods spanning New Year, and the seeded
     fixture calendar covers five months.  The walk is pure, so nothing is
-    faked: these are real :class:`~app.models.pay_period.PayPeriod` instances,
-    just never added to a session.
+    faked: these are real
+    :class:`~app.services.pay_calendar.DerivedPeriod` values -- the same values
+    a :class:`~app.services.pay_calendar.PeriodWindow` off
+    :meth:`~app.services.balance_at.BalanceContext.reported_periods` holds.
 
-    **They used to be ``growth_engine.generate_projection_periods`` output**,
-    deleted at plan step C2-e.  A real model row is what this feed takes: it
-    keys its recorded contributions on ``period.id``, which is
-    ``budget.pay_periods.id`` and which the derived calendar deliberately does
-    not carry under that name.  Moving this reader onto the calendar is plan
-    step C2-f's (ledger row **P37**), and when it lands these become windows.
+    **They were ``growth_engine.generate_projection_periods`` output until plan
+    step C2-e and unsaved ``PayPeriod`` ROWS until C2-f2a.**  The row was what
+    the feed took while it keyed its recorded contributions on ``period.id``;
+    it now takes the read pass's own
+    :class:`~app.services.pay_calendar.PeriodWindow` and keys on
+    ``period.period_id``, so these are derived periods (ledger row **P37**).
     """
 
     @staticmethod
     def _periods(start, count):
-        """Return *count* consecutive unsaved 14-day ``PayPeriod`` rows."""
+        """Return *count* consecutive 14-day :class:`DerivedPeriod` values.
+
+        ``period_id`` is 1-based so it is never ``0`` -- a falsy id would let a
+        ``.get(period.period_id)`` defect pass unnoticed on the first period.
+        ``end_is_projected`` is ``True`` on the last one alone, which is what a
+        real calendar carries (exactly one per non-empty calendar); nothing in
+        the walk reads it, and stating it wrongly would make these values
+        unrepresentative of the window the door is actually handed.
+        """
         return [
-            PayPeriod(
-                id=index + 1,
-                user_id=1,
+            DerivedPeriod(
+                period_id=index + 1,
                 period_index=index,
                 start_date=start + timedelta(days=14 * index),
                 end_date=start + timedelta(days=14 * index + 13),
+                end_is_projected=(index == count - 1),
             )
             for index in range(count)
         ]
@@ -995,8 +1006,10 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
             Decimal("500.00"), Decimal("500.00"), Decimal("200.00"),
         ]
 
-    def test_the_walk_is_ORDER_SENSITIVE_and_that_is_why_the_door_sorts(self):
-        """The firing control for the sort at :func:`contribution_events`.
+    def test_the_walk_is_ORDER_SENSITIVE_which_is_what_the_window_settles(
+        self,
+    ):
+        """The firing control for the ORDER guarantee at the door.
 
         The same four periods and the same plan, walked NEWEST-FIRST: the
         annual limit is consumed by whichever periods the walk reaches first,
@@ -1005,6 +1018,16 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         to be order-sensitive -- a calendar-year limit is an accumulation --
         which is precisely why the order may not be inherited from a loader
         that sorts by the stored ``period_index``.
+
+        **What answers that changed at plan step C2-f2a and this control did
+        not.**  :func:`contribution_events` used to SORT its loaded rows; it
+        now takes a :class:`~app.services.pay_calendar.PeriodWindow`, which
+        sorts at construction and is frozen, so the guarantee is a property of
+        the value rather than a step at one door.  This test drives the
+        private walk with a plain reversed LIST because that is the only way
+        the sensitivity is still expressible -- a window cannot HOLD an
+        out-of-order sequence -- and a guarantee whose violation cannot be
+        demonstrated is a guarantee nobody can tell is load-bearing.
 
         Hand-computed: chronological pays 500 / 500 / 200 / 0 (the test
         above); reversed pays the same three amounts against the LAST three
@@ -1037,20 +1060,36 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         }
         assert dict(chronological) != dict(reversed_walk)
 
+        # And the half that makes the sensitivity above harmless at the DOOR:
+        # the type ``resolve`` derives cannot HOLD that reversed order -- it
+        # sorts at construction -- so the wrong answer measured here is not
+        # reachable through ``contribution_events``.
+        assert list(PeriodWindow(periods=tuple(reversed(periods)))) == periods
+
     def test_the_door_walks_the_PAYDAY_whatever_the_stored_ordinal_says(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """``contribution_events`` sorts, so a scrambled ordinal moves nothing.
+        """The stored ordinal cannot reach this feed at all any more.
 
-        The stored ``period_index`` is REVERSED underneath the loader with a
+        The stored ``period_index`` is REVERSED underneath the schedule with a
         direct UPDATE -- a state ``pay_period_write`` rematerialises away and
-        ``uq_pay_periods_user_index`` still permits -- so
-        ``pay_period_service.get_all_periods`` hands back the owner's periods
-        newest-first.  The events must be unchanged, because a contribution
-        belongs to the payday it lands on and to nothing else.
+        ``uq_pay_periods_user_index`` still permits -- and the feed is then
+        read again through a FRESH read pass, so the calendar is re-derived
+        against the mutated rows rather than replayed out of the first pass's
+        memo.  The events must be unchanged, because a contribution belongs to
+        the payday it lands on and to nothing else.
 
-        Without the sort at the door this fails: the test above measures the
-        walk answering differently for the same plan in a different order.
+        **Two controls, because the assertion is worth exactly what they are
+        worth.**  ``pay_period_service.get_all_periods`` really does hand the
+        rows back newest-first after the UPDATE (so the scramble took, and the
+        column this feed used to inherit its order from really is corrupt);
+        and the window the door is handed is in PAYDAY order regardless (so
+        the order is the derivation's, not a leftover sort).  Before plan step
+        C2-f2a the first control was what the door had to defend against with
+        a sort of its own; now the ordinal is not on the path.
+
+        Without the derivation this fails: the test above measures the walk
+        answering differently for the same plan in a different order.
         """
         account = _401k(
             seed_user, seed_periods[0], Decimal("20000.00"),
@@ -1065,6 +1104,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         boundary = ReconciledThrough(seed_periods[0].start_date)
         before = _asset_contributions.contribution_events(
             account, seed_user["scenario"].id, inputs, boundary,
+            _ctx(seed_user).reported_periods(),
         )
 
         for offset, period in enumerate(reversed(seed_periods)):
@@ -1073,13 +1113,21 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
             )
         db.session.commit()
         scrambled = pay_period_service.get_all_periods(seed_user["user"].id)
-        # The control: the loader really does hand them back in a new order.
+        # Control 1: the stored column really is corrupt now -- the reader the
+        # feed used to take its order from hands them back newest-first.
         assert [period.id for period in scrambled] == [
             period.id for period in reversed(seed_periods)
         ]
 
+        window = _ctx(seed_user).reported_periods()
+        # Control 2: the DERIVED window is in payday order anyway, because its
+        # ordinal is the position in payday order rather than the column.
+        assert [period.period_id for period in window] == [
+            period.id for period in seed_periods
+        ]
+
         after = _asset_contributions.contribution_events(
-            account, seed_user["scenario"].id, inputs, boundary,
+            account, seed_user["scenario"].id, inputs, boundary, window,
         )
 
         assert after == before
@@ -1104,7 +1152,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
             per_period=Decimal("500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
-            recorded_by_period={periods[0].id: Decimal("900.00")},
+            recorded_by_period={periods[0].period_id: Decimal("900.00")},
         )
         events = _asset_contributions._dated_events(
             plan, periods, ReconciledThrough(date(2026, 1, 1)),

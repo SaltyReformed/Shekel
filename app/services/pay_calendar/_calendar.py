@@ -17,14 +17,18 @@ recurrence engine resolves, walks and places against this value, and the
 seam's thirteen per-period entries stopped TAKING a period list and now read
 :meth:`PayCalendar.saved` off their read pass, which deleted
 ``_cash_periods._PeriodSpans`` -- a fourth index over the STORED spans.
-**TWO readers of the stored columns survive INSIDE that seam and an earlier
+**TWO readers of the stored columns survived INSIDE that seam and an earlier
 draft of this paragraph claimed none did** (adversarial review, 2026-08-13):
-``balance_at/_cash_fold._cash_plan`` still clamps a projected row against
-``txn.pay_period``'s span, and ``balance_at/_asset_contributions`` still walks
+``balance_at/_cash_fold._cash_plan`` clamps a projected row against
+``txn.pay_period``'s span -- it still does, and it is named in the pay-calendar
+plan's section 3 as ``C4``'s -- and ``balance_at/_asset_contributions`` walked
 ``pay_period_service.get_all_periods``, whose ORDER is the stored ordinal and
-whose order its year-to-date accumulation depends on.  Both are named in the
-pay-calendar plan's section 3 and owned by ``C4``.  ``C2-e`` (the projection
-axis) and ``C2-f`` (``pay_period_service``'s readers) remain.
+whose order its year-to-date accumulation depends on.  **The second went at
+``C2-f2a``** (ledger row **P37**): the contribution tier takes the read pass's
+own calendar, so no module under ``balance_at`` IMPORTS ``pay_period_service``
+and the ordering rule is the derivation rather than a sort at that door.
+``C2-e`` (the projection axis) has since shipped; ``C2-f``'s remaining leaves
+(``pay_period_service``'s readers at every surface outside this seam) have not.
 
 Why the value exists at all: an AST census on 2026-08-10 found **SIX**
 implementations of "which pay period contains this date" in ``app/`` -- ledger
