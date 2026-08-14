@@ -647,31 +647,19 @@ the `Review:` line and a downgrade that refuses with the literal SQL.
       so the repo copy IS the live deploy path; the pre-fix hand-copy is kept at
       `/opt/docker/scripts/shekel-deploy.sh.prefix-2026-08-08.bak`.
 
-- [ ] **R-F2 -- Tighten the ref-seed parity scan's statement boundary** (finding F-2).
+- [x] **R-F2 -- the ref-seed parity scan ends a statement where the SQL does (F-2).** `672c18b1`.
+      Not another keyword: a statement lives inside a Python STRING LITERAL, so the literal is the
+      outer bound and the keyword list stays as the inner one. Census: all 78 `INSERT INTO`
+      occurrences in 38 migrations sit inside a string constant, 2 constants carry more than one.
+      Controls SHOWN to fire against the old reader -- a literal below the seed read as seeded, and
+      a docstring-only INSERT counted as one.
 
-`_insert_statement_bodies` (`tests/test_models/test_posting_ref_seed_parity.py`) bounds a statement
-at the next upper-case SQL keyword, so the LAST `INSERT` in a migration runs to end-of-file and any
-quoted literal below it satisfies the scan. Measured honest today: none of `'none'` / `'prior'` /
-`'next'` appears in the 1,304 characters of Python after `e7a4d95c2b18`'s final seed. Left out of
-R2a deliberately -- tightening the boundary changes the semantics of a scan four other migrations
-already depend on, which does not belong in an additive commit. Add a Python-level boundary (a line
-beginning `def `) and pin the fix with a test that the scan REJECTS a value appearing only after the
-seed statement -- without that negative test the change proves nothing. Its own commit, because it
-changes the semantics of a scan four other migrations' coverage rests on: re-run the whole file and
-show the existing assertions unchanged.
-
-- [ ] **R-F3 -- Resolve the ref-table constraint-naming disagreement** (finding F-3).
-
-**Starts with a ruling, not a keystroke.** `.claude/rules/database.md` says "name all constraints"
-(`uq_<table>_<cols>`), but every `ref` table in the project uses bare
-`sa.PrimaryKeyConstraint("id")` / `sa.UniqueConstraint("name")` and lets PostgreSQL name them
-`<table>_pkey` / `<table>_name_key`. All ~23 of them, including `f5037400dc5e`'s posting tables,
-which are byte-identical in shape -- so this is the house pattern, not an R2a oversight, and R2a
-followed it rather than making its three tables the odd ones out. Recommendation: amend the RULE to
-exempt single-column PK/UNIQUE on `ref` lookup tables, because the names are never referenced (no
-downgrade drops them by name -- the table goes with them) and renaming 23 tables' constraints is a
-large migration that buys nothing. The alternative is a rename migration. Either way the outcome
-must land in `.claude/rules/database.md` so the next reader is not told two different things.
+- [x] **R-F3 -- a `ref` table's generated PK/UNIQUE names ARE the rule (F-3).** `e37b736c`. Ruled
+      2026-08-14 as recommended: the standard exempts the single-column `PRIMARY KEY (id)` and
+      `UNIQUE (name)` on a `ref` lookup table, stated in BOTH places the rule lives. Measured
+      against the live schema rather than the plan's estimate -- **24 of 24** carry `<table>_pkey`
+      and `<table>_name_key`, none a `uq_` name. Rejected: a rename migration across 24 tables, for
+      names nothing references.
 
 - [x] **R-F10 -- delete the gap machinery.** `fe365de1`. The same commit as `pay_calendar:C5a`,
       ticked at that arc's **C2-b2**: a period's end is derived from the next payday, so a hole is
@@ -690,15 +678,12 @@ carries. **DELIVERED by the pay-calendar arc's C2**, now DECOMPOSED into `C2-a`.
 the leaf that retires `PeriodCalendar` and `SchedulePeriod` into it, and the arc's 430-shape
 baseline must stay byte-identical across it. **Tick this box with C2's LAST leaf.**
 
-- [ ] **R-F13 -- Close the three holes in this arc's own gate** (finding F-13).
-
-One commit, three assertions, no behaviour change. Construct an `OccurrencePlacement` with a
-`PLACED` outcome and no period and require the raise. Assert `PlacementOutcome.SCHEDULE_GAP` and
-`BEYOND_THE_SCHEDULE` at the `_occurrence` unit level rather than only through the engine's derived
-`gaps` tuple. Make the baseline gate refuse to skip: assert `SHEKEL_UPDATE_RECURRENCE_BASELINE` is
-unset unless a marker says the run is a regeneration.
-**Each of the three gets a mutation shown to fire**, which is the standard this arc already holds
-its other controls to -- a control that is not shown to fire is the thing being fixed.
+- [x] **R-F13 -- a baseline REGENERATION run can no longer report success (F-13).** `b97ec1c3`. TWO
+      of its three holes no longer existed and were NOT rebuilt: `PlacementOutcome`, the
+      `OccurrencePlacement` invariant and the `SCHEDULE_GAP` / `BEYOND_THE_SCHEDULE` members died at
+      `pay_calendar:C2-b2` (`fe365de1`). The third survived: the 430-shape gate SKIPS while
+      `SHEKEL_UPDATE_RECURRENCE_BASELINE` is set, and a skip reads as a pass. Shown to fire --
+      switch on 1 failed / 7 passed / 1 skipped (was 8 passed, 1 skipped), switch off 9 passed.
 
 - [ ] **R-F16 -- ONE producer for "how often am I paid"** (finding F-16).
 
@@ -745,15 +730,12 @@ money constant that step replaced.
 surfaces, so making them per-owner means deciding whether the LABEL or the OFFSET is the fixed thing
 -- and what a fractional period offset means when neither divides evenly. Small, and no migration.
 
-- [ ] **R-F7 -- Delete two unreachable branches in `_first_of_month_anchor`** (finding D11).
-
-Left by R2c-1, found by a neutral review of R2d, and re-derived independently by a coverage audit
-2026-08-08. Both guards in `app/services/recurrence/_resolution.py` are provably dead and one
-comments a case that cannot execute. **The proof is archived** to
-`historical/recurrence_as_built_2026-08-08.md`: an argument plus a 243,018-pair sweep in which
-neither branch was ever taken, 32,006 of those reaching the fallback. Deleting them is
-behaviour-identical, so the R1 baseline must stay byte-identical and
-`test_recurrence_resolution.py::TestTotality` must stay green unchanged.
+- [x] **R-F7 -- `_first_of_month_anchor` loses two dead guards (D11).** `5ac7ab4d`. Both were
+      re-derived from the code before deleting rather than taken from the archived proof: the scan's
+      `earliest is not None` asks about a period's OWN month, so that period is in the minimand
+      `pay_calendar/_searches.earliest_start_in_month` reduces; the fallback's re-ask could only be
+      taken when the loop had already returned. The R1 baseline stayed byte-identical and
+      `TestTotality` stayed green unchanged.
 
 ## 4a. `PAY_PERIODS_PER_YEAR` (folded into R7a-2)
 

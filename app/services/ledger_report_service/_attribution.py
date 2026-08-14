@@ -83,14 +83,14 @@ _ZERO_MONEY = Decimal("0.00")
 
 @dataclass(frozen=True)
 class StatementClassIds:
-    """The five accounting-class ref ids the statements section and sign by.
+    """The accounting-class ref ids the statements section and sign by.
 
     Resolved once per statement call (:func:`statement_class_ids`) so the
     readers compare a ledger account's ``class_id`` against integer ids -- the
     IDs-for-logic invariant -- rather than reading the string class name.  Used
-    to place each account in its section (Asset / Liability / Income / Expense /
-    Equity) and to derive the Income + Expense set the retained-earnings line
-    closes.
+    to place each account in its section, to derive the Income + Expense set
+    the retained-earnings line closes, and to derive the Unrealized set the
+    accumulated-unrealized line closes.
 
     Attributes:
         asset: The Asset class ref id.
@@ -98,6 +98,11 @@ class StatementClassIds:
         income: The Income class ref id.
         expense: The Expense class ref id.
         equity: The Equity class ref id.
+        unrealized: The Unrealized (other comprehensive income) class ref id
+            (ruling **R-FO**).  Its accounts appear BELOW the net-income line
+            on the income statement and are folded into one derived Equity line
+            on the balance sheet, so a price movement nobody sold into cash is
+            never counted as earnings and the trial balance still closes.
     """
 
     asset: int
@@ -105,10 +110,11 @@ class StatementClassIds:
     income: int
     expense: int
     equity: int
+    unrealized: int
 
 
 def statement_class_ids() -> StatementClassIds:
-    """Return the five accounting-class ref ids as a :class:`StatementClassIds`.
+    """Return the accounting-class ref ids as a :class:`StatementClassIds`.
 
     A one-shot resolve of the cached class ids the statements branch on, so
     each reader resolves them once (not per account) and compares by id.
@@ -129,6 +135,9 @@ def statement_class_ids() -> StatementClassIds:
             LedgerAccountClassEnum.EXPENSE,
         ),
         equity=ref_cache.ledger_account_class_id(LedgerAccountClassEnum.EQUITY),
+        unrealized=ref_cache.ledger_account_class_id(
+            LedgerAccountClassEnum.UNREALIZED,
+        ),
     )
 
 
@@ -137,9 +146,11 @@ def present_natural(class_id: int, debit_net: Decimal) -> Decimal:
 
     The reader-contract C-4 presentation rule: a debit-normal class (Asset,
     Expense) presents its debit-positive net as-is; a credit-normal class
-    (Liability, Income, Equity) presents the NEGATED net, so a revenue,
-    liability, or equity line reads positive when the account holds its natural
-    balance.  The ledger is presented FAITHFULLY -- there is no ``-abs``
+    (Liability, Income, Equity, Unrealized) presents the NEGATED net, so a
+    revenue, liability, equity or unrealized-change line reads positive when the
+    account holds its natural balance -- and an unrealized LOSS therefore reads
+    negative, which is the honest rendering of that account's contra position.
+    The ledger is presented FAITHFULLY -- there is no ``-abs``
     normalization, so an owed-as-negative non-loan liability renders as a
     positive Liabilities line while a positively-anchored one would render
     negative (the stated non-loan liability sign rule).
@@ -196,11 +207,14 @@ def ledger_account_label(ledger_account: LedgerAccount) -> str:
     exists, falling back to its own ``name`` snapshot once the category is
     deleted (``category_id`` SET NULL leaves ``kind_id`` unchanged, so a
     deleted-category row is a category-kind row with no live category); every
-    other kind (fallback, per-loan interest / escrow / refund / opening,
-    anchor-equity) reads its ``name`` snapshot.  The snapshot -- not
-    ``account.name`` -- is used for an anchor-equity row even though it carries
-    an ``account_id``, because the COALESCE display rule is the linked-row rule
-    only.
+    other kind (fallback, per-loan interest / escrow / refund / opening, and
+    the three per-account counter kinds -- anchor-equity, interest-income,
+    unrealized-change) reads its ``name`` snapshot.  The snapshot -- not
+    ``account.name`` -- is used for a per-account counter row even though it
+    carries an ``account_id``, because the COALESCE display rule is the
+    linked-row rule only.  That is why the fall-through is the DEFAULT arm
+    rather than an enumeration: ruling R-FO's two new kinds needed no edit
+    here, and a future counter kind will need none either.
 
     Args:
         ledger_account: The chart row to label (its ``account`` / ``category``

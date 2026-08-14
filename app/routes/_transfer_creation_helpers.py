@@ -45,7 +45,7 @@ from app.models.transfer_template import TransferTemplate
 from app.routes._redirect_target import RedirectTarget
 from app.services import transfer_recurrence
 from app.services.generation_schedule import GenerationSchedule
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.scenario_resolver import require_baseline_scenario
 from app.utils.auth_helpers import get_or_404
 
 logger = logging.getLogger(__name__)
@@ -227,10 +227,17 @@ def generate_transfers_for_all_periods(
     The shared ``resolve baseline scenario -> load the owner's schedule ->
     transfer_recurrence.generate_for_template`` idiom used by the
     investment / loan / transfers create paths (and the unarchive
-    restore path).  A no-op when the user has no baseline scenario yet,
-    matching the pre-extraction guard.  Shadow-transaction atomicity is
-    owned by ``generate_for_template``; this helper only orchestrates
-    its inputs.
+    restore path).  Shadow-transaction atomicity is owned by
+    ``generate_for_template``; this helper only orchestrates its inputs.
+
+    **It REQUIRES the baseline scenario (ruling R-BW), and the silent no-op it
+    replaces was ledger row F-9.**  Every caller is a CREATE that reports
+    success to the user afterwards, so "generate nothing and return normally"
+    told them a recurring transfer existed that did not -- the same outcome the
+    adjacent missing-period branch is written to refuse
+    (``transfers/_instances.ONE_TIME_TRANSFER_NEEDS_PERIOD``).  The raise is
+    answered by the one application-level handler, which rolls the pending
+    create back and renders the repair.
 
     Args:
         template: The flushed :class:`TransferTemplate` whose recurrence
@@ -239,15 +246,20 @@ def generate_transfers_for_all_periods(
             ``generate_for_template``; ``None`` (the default) generates
             across every period, matching the create paths, while the
             unarchive path passes ``date.today()`` to fill only forward.
+
+    Raises:
+        BaselineMissingError: When the owner has no baseline scenario, so
+            there is nothing to generate INTO.  Unreachable through any door
+            today -- registration writes one and nothing deletes one -- which
+            is why this changes no live behaviour.
     """
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario:
-        transfer_recurrence.generate_for_template(
-            template,
-            GenerationSchedule.for_user(current_user.id),
-            scenario.id,
-            effective_from=effective_from,
-        )
+    scenario = require_baseline_scenario(current_user.id)
+    transfer_recurrence.generate_for_template(
+        template,
+        GenerationSchedule.for_user(current_user.id),
+        scenario.id,
+        effective_from=effective_from,
+    )
 
 
 __all__ = [

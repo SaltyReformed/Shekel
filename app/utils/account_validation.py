@@ -179,7 +179,7 @@ def _crosses_posting_boundary(old_type, new_amortization, new_category_id):
     * **The amortizing boundary** (``has_amortization`` flips): an
       amortizing loan books its anchor corrections through the loan
       posting package onto per-loan ledgers; every other account books
-      through the account walk onto its ``anchor_equity`` twin.  Crossing
+      through the account walk onto its per-account COUNTER rows.  Crossing
       with posted corrections would strand one family and double-count
       under the other.
     * **The Asset/Liability class boundary** (the category-derived linked

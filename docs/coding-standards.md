@@ -137,6 +137,15 @@ quality problem in this project.
   FKs.
 - **Name all constraints explicitly.** Pattern: `ck_<table>_<description>` for CHECK,
   `uq_<table>_<columns>` for unique, `ix_<table>_<columns>` for indexes.
+  **EXEMPT: the single-column `PRIMARY KEY (id)` and `UNIQUE (name)` on a `ref` lookup table**
+  (developer ruling 2026-08-14, ledger row `recurrence:F-3`). Those two take PostgreSQL's generated
+  `<table>_pkey` / `<table>_name_key`, and that is the house pattern rather than an oversight:
+  measured on the live schema, **24 of 24 `ref` tables** carry the generated names and none carries
+  a `uq_` one. The names are never referenced -- no downgrade drops one by name, because the table
+  goes with it -- so renaming 24 tables' constraints is a large migration that buys nothing, and a
+  rule every table in a schema violates is a rule that teaches the next reader to ignore it. Every
+  OTHER constraint, on a `ref` table or anywhere else, is named: a multi-column unique, a CHECK, an
+  index and a foreign key all carry meaning a generated name loses.
 - **Add indexes for query patterns.** Every column in a frequent WHERE, JOIN, or ORDER BY should
   have an index. Consider partial indexes for filtered queries.
 

@@ -115,7 +115,7 @@ class ReconciledThrough:
     **It is a TYPE rather than a bare date because the mistake it prevents is
     the one that cost production ``$4,001.42``.**  The question had FOUR
     implementations when
-    ``docs/audits/balance_architecture/anchor_settle_partition.md`` was
+    ``docs/audits/balance_architecture/archive/anchor_settle_partition.md`` was
     written, three of them comparing different things in different units, and
     the plan's answer was a pylint checker that would flag a fifth.  A checker
     cannot see through ``earliest <= latest``, which is the very site finding

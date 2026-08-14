@@ -27,13 +27,14 @@ from decimal import Decimal
 from sqlalchemy import case
 
 from app import ref_cache
-from app.enums import LedgerAccountKindEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.exceptions import ShekelError
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services import ledger_account_service
 from app.utils.balance_predicates import settled_status_ids
 
 
@@ -57,12 +58,18 @@ def _ledger_account_for(account_id: int) -> LedgerAccount:
     Every ``budget.accounts`` row has exactly one linked ledger account (the
     Commit-2 create hook pairs new accounts; the Commit-2 backfill paired
     historical ones; ``uq_ledger_accounts_account_kind`` permits only one per
-    kind).  The ``linked``-kind filter is load-bearing since Step 5: an
-    account may ALSO carry an ``anchor_equity`` twin on the same
-    ``account_id``, and an unfiltered ``one_or_none`` would raise
-    ``MultipleResultsFound`` the moment the twin exists.  A missing pairing
-    is a broken chart-of-accounts invariant, not a benign lookup miss, so
-    this raises rather than returning ``None``.
+    kind).  A missing pairing is a broken chart-of-accounts invariant, not a
+    benign lookup miss, so this raises rather than returning ``None`` -- which
+    is the WHOLE of what this adds over the chart's own lookup
+    (:func:`app.services.ledger_account_service.find_linked_ledger_account`).
+
+    **The query itself lives with the chart, not here** (plan step X-f3d).
+    The ``linked``-kind filter is load-bearing since Step 5 -- an account may
+    ALSO carry per-account counter rows on the same ``account_id``, and an
+    unfiltered ``one_or_none`` would raise ``MultipleResultsFound`` the moment
+    one exists -- and it was spelled out THREE times across two modules, so a
+    reader and a writer could come to disagree about which row is an account's
+    own.  The ``duplicate-code`` gate is what surfaced the third copy.
 
     Args:
         account_id: The real account whose linked ledger account to load.
@@ -73,16 +80,7 @@ def _ledger_account_for(account_id: int) -> LedgerAccount:
     Raises:
         PostingError: If no ledger account is linked to *account_id*.
     """
-    ledger = (
-        db.session.query(LedgerAccount)
-        .filter_by(
-            account_id=account_id,
-            kind_id=ref_cache.ledger_account_kind_id(
-                LedgerAccountKindEnum.LINKED,
-            ),
-        )
-        .one_or_none()
-    )
+    ledger = ledger_account_service.find_linked_ledger_account(account_id)
     if ledger is None:
         raise PostingError(
             f"No ledger account is linked to account {account_id}; the "

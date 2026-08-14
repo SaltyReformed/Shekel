@@ -1,6 +1,6 @@
 """Score the candidate entry-reconciliation rules against the live data.
 
-Read-only measurement for ``docs/audits/balance_architecture/anchor_settle_partition.md``
+Read-only measurement for ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``
 step S1-c: it renders the grid's projected end balance for every pay period under
 each candidate answer to *is this purchase already inside the balance the user
 asserted?*, then rolls back.  Nothing is committed.

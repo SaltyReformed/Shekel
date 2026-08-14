@@ -29,7 +29,7 @@ run, which is a corruption generator rather than a cache (plan step A3,
 ``4e46a0a8``).
 
 **ONE CIVIL DAY per fact, and it is the USER'S day** (ruling R-DH,
-``docs/audits/balance_architecture/anchor_settle_partition.md``).  A settled row
+``docs/audits/balance_architecture/archive/anchor_settle_partition.md``).  A settled row
 carries :attr:`CashSourceFact.settled_on` and an assertion carries
 :attr:`CashAnchorFact.observed_on`; both are resolved ONCE at construction, and
 every consumer -- the partition, the fold's sampling, the period bucketing, the

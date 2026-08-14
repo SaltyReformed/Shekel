@@ -18,7 +18,7 @@ Its transactional core:
   2. Commit.
 
 **Step 3 used to be a bulk-clear of entry flags, and its deletion is ruling
-R-DH (d)** (``docs/audits/balance_architecture/anchor_settle_partition.md``,
+R-DH (d)** (``docs/audits/balance_architecture/archive/anchor_settle_partition.md``,
 plan step S1-c).  A true-up flipped ``is_cleared = TRUE`` on every entry dated
 on or before the SERVER's today, so whether a purchase counted as already
 inside the asserted balance depended on the order two buttons were pressed:

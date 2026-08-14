@@ -12,7 +12,16 @@
    section cards carry the per-account detail below.  The hero caption
    states the window, so the old bare window-label line is gone (P-AN14),
    and the detail reads as a document column rather than a full-bleed
-   table (P-AN15). #}
+   table (P-AN15).
+
+   Ruling R-FO adds a Change in value section BELOW those two, with a
+   Comprehensive income closing total: an investment or property true-up is
+   other comprehensive income, and Net income deliberately excludes it.
+   Both render only when the owner holds such a position.  The section is
+   named for what it MEASURES rather than for a gain: an account credited
+   with contributions the ledger never sees -- a 401(k) -- moves by those
+   too, so "change in value" is true of every account here where "gain"
+   would be true of only some (developer ruling 2026-08-14). #}
 
 {# ── Statements header (shared toggle) ─────────────────────────── #}
 
@@ -95,7 +104,8 @@
   {% endif %}
 </div>
 
-{% if not report.income.lines and not report.expense.lines %}
+{% if not report.income.lines and not report.expense.lines
+      and not report.unrealized.lines %}
 {# ── Empty State: names the window, because the selector cannot always
       represent it (a clamped year outside available_years renders no
       selected option) -- the balance sheet's as-of empty state already
@@ -138,6 +148,34 @@
                        empty_text='No income in this window.') }}
   {{ statement_section('Expenses', report.expense, 'bi-arrow-up-circle', 'expense',
                        empty_text='No expenses in this window.') }}
+
+  {# ── Below the line: other comprehensive income (ruling R-FO).
+        A modelled account's balance true-up is investment return, not
+        earnings, so it is reported here rather than folded into Net income
+        above -- otherwise a house revaluation would read as money earned.
+        Rendered only when the owner HAS such a position: with no lines here,
+        comprehensive income equals net income and both this section and the
+        closing total would state the hero a second time.  The
+        neutral accent tint is deliberate -- the income / expense tints are
+        the operating money-direction pair, and this is neither. #}
+  {% if report.unrealized.lines %}
+  {{ statement_section('Change in value', report.unrealized,
+                       'bi-graph-up-arrow', 'accent') }}
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-baseline">
+        <span class="fw-bold">Comprehensive income</span>
+        <span class="fw-bold font-mono{% if report.comprehensive_income < 0 %} statement-amount--neg{% endif %}">
+          {{ money(report.comprehensive_income) }}
+        </span>
+      </div>
+      <div class="small text-muted mt-1">
+        Net income plus the change in value of what you hold
+      </div>
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 {% endif %}

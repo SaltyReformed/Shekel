@@ -13,9 +13,11 @@ finding) and both agree exactly:
   ``journal_entries.pay_period_id`` is ``NOT NULL``).
 * :func:`summed_posting_legs` -- the grouped "what is already posted" query
   shape every posted-leg reader shares.
+* :func:`account_chart_row_ids` -- the ids of one real account's own chart
+  rows, through either link the table carries.
 * :func:`posted_correction_legs` -- the posted anchor-correction reader,
   keyed by ``(source_kind_id, pay_period_id, entry_date)`` and scoped to
-  entries touching one linked ledger.
+  entries touching any of ONE account's chart rows.
 * :func:`delta_legs` -- turn a ``target`` ledger-leg map and the ``posted``
   ledger-leg map into the balanced DELTA legs that move posted to target.
 * :func:`merge_target_legs` -- sum a correction's legs into a target bucket
@@ -40,6 +42,7 @@ from app.enums import PostingSourceEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
+from app.models.ledger_account import LedgerAccount
 from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.posting_reads import PostingError
 from app.services._posting_write import (
@@ -219,21 +222,61 @@ def summed_posting_legs(extra_columns: list, filters: list):
     )
 
 
+def account_chart_row_ids(account_id: int):
+    """Return the ids of every chart row belonging to ONE real account.
+
+    An account's own rows are the ones reachable from it through either link
+    ``budget.ledger_accounts`` carries: ``account_id`` (its ``linked`` row and,
+    since ruling **R-FO**, its per-account COUNTER rows) and
+    ``loan_account_id`` (a loan's per-loan interest / escrow / refund /
+    opening rows).  A category, fallback or orphan row belongs to no account
+    and is reachable through neither.
+
+    Args:
+        account_id: The real ``budget.accounts`` id whose chart rows to name.
+
+    Returns:
+        A SQLAlchemy ``Query`` yielding ``(ledger_account_id,)``, NOT executed
+        -- callers use it as an ``IN`` subquery.
+    """
+    return (
+        db.session.query(LedgerAccount.id)
+        .filter(db.or_(
+            LedgerAccount.account_id == account_id,
+            LedgerAccount.loan_account_id == account_id,
+        ))
+    )
+
+
 def posted_correction_legs(
-    linked_ledger_id: int, scenario_id: int, source_kind_ids: list[int],
+    account_id: int, scenario_id: int, source_kind_ids: list[int],
 ) -> dict[CorrectionKey, LegMap]:
-    """Return the posted anchor-correction legs on one linked ledger, by key.
+    """Return the posted anchor-correction legs for ONE account, by key.
 
     Sums ``account_postings.amount`` over every journal entry in
     *scenario_id* whose source kind is one of *source_kind_ids* and that
-    touches the given LINKED ledger (which scopes the query to that ledger's
-    one account, the linked ledger being per-account -- and every anchor
-    correction carries a linked leg, so no correction escapes the scope),
-    grouped by ``(source_kind_id, pay_period_id, entry_date,
-    ledger_account_id, posting_kind_id)``.  This is the "already posted" side
-    the anchor reconciles compare their targets against, read straight from
-    the ledger so a reversal negates exactly what was posted, reuses the kind
-    it was posted with, and lands in the PERIOD it was posted in.
+    touches ANY of the account's own chart rows
+    (:func:`account_chart_row_ids`), grouped by ``(source_kind_id,
+    pay_period_id, entry_date, ledger_account_id, posting_kind_id)``.  This is
+    the "already posted" side the anchor reconciles compare their targets
+    against, read straight from the ledger so a reversal negates exactly what
+    was posted, reuses the kind it was posted with, and lands in the PERIOD it
+    was posted in.
+
+    **The scope is the ACCOUNT's rows, not its LINKED row, and that difference
+    is load-bearing since ruling R-FO** (plan step X-f3d).  This read was
+    scoped to entries carrying a leg on the linked ledger, on the stated ground
+    that "every anchor correction carries a linked leg" -- true while an
+    account had exactly ONE counter row, because the target's linked leg and
+    its counter leg are negatives and their deltas vanish together.  R-FO gives
+    an account a SECOND counter row, and re-pointing a correction from one to
+    the other moves no money on the linked ledger at all: the delta entry it
+    emits carries a reversal leg and a fresh leg and NO linked leg.  Scoped to
+    the linked row, that entry is invisible to this reader, so the next
+    reconcile computes the same delta again -- measured on a production clone,
+    a second backfill pass re-emitted all 14 re-point deltas, and every pass
+    after it would have too.  Scoping to the account's own rows sees the whole
+    correction whatever it touches, and the reconcile is idempotent again.
 
     **Grouping by ``pay_period_id`` is the R2 attribution rule made
     structural** (plan step X-ai-r; see the :data:`CorrectionKey` comment for
@@ -245,8 +288,8 @@ def posted_correction_legs(
     balanced entry on its own.
 
     Args:
-        linked_ledger_id: The account's LINKED ledger account id whose
-            corrections to sum.
+        account_id: The real account whose corrections to sum -- the loan for
+            the loan pair, the non-loan account for the account pair.
         scenario_id: The budget scenario to scope to.
         source_kind_ids: The correction source-kind ids to select (the loan
             or account opening / true-up pair).
@@ -257,7 +300,9 @@ def posted_correction_legs(
     """
     entry_ids = (
         db.session.query(Posting.journal_entry_id)
-        .filter(Posting.ledger_account_id == linked_ledger_id)
+        .filter(Posting.ledger_account_id.in_(
+            account_chart_row_ids(account_id),
+        ))
     )
     rows = summed_posting_legs(
         [

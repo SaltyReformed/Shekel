@@ -277,7 +277,7 @@ class TestWalkAccountLedger:
 
     The day is the user's (``America/New_York``) and an assertion is the
     closing balance for it -- EVERY assertion, opening and true-up alike --
-    ruling R-DH, ``docs/audits/balance_architecture/anchor_settle_partition.md``.
+    ruling R-DH, ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.
     It was an INSTANT partition until 2026-07-31, which decided the question by
     which button the user pressed first and cost production $4,001.42; the
     OPENING then carried an exception for one day, until finding N-133 / F1

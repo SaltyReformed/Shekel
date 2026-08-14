@@ -20,7 +20,7 @@ therefore partitions source facts by their settled DAY against each anchor's
 the ledger by every pre-true-up settle in the anchor period (the plan review's
 CRITICAL-1) -- and never by instant, which decided the question by which button
 the user pressed first and cost production ``$4,001.42`` on 2026-07-31 (ruling
-R-DH, ``docs/audits/balance_architecture/anchor_settle_partition.md``).
+R-DH, ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``).
 
 **One boundary for both anchor kinds**, opening and true-up alike (finding
 N-133 / F1).  The OPENING was excepted for one day -- its boundary stepped back

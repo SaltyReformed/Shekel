@@ -23,7 +23,7 @@ signpost.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-au-c2a** (`d44a4f01`) -- the amount model's READERS: all 17 `effective_amount` reads routed onto the resolver or its cheap accessor, both model properties DELETED with the 104 test reads that were their last callers, and byte-identity MEASURED by a new `verify_reader_baseline.py` whose own firing control catches a one-cent mutation. Closed **N-262**; opened **N-266**-**N-271** | Section 5 |
+| **just landed** | **X-f3d** (`98ea657d`) -- a balance assertion's counter leg NAMES what the difference was (**R-FO**): interest income, a change in value in a sixth reporting class, or the equity opening, by a total dispatch over `classify_account`. `$10,623.66` of investment return and `$30.25` of interest left equity for the two statements; the balance baseline is byte-identical. Closed **N-276**; opened **N-277**, **N-278** | Section 5 |
 | **in flight** | **X-f3's decomposition** (2026-08-13), specified below and not yet built. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app` | Section 5 |
 | **what changed the plan** | **X-f3 DECOMPOSED and X-f6 moved AHEAD of the cutover** (developer, 2026-08-13), because two of R-EB's premises were refuted by measurement against the developer's own YTD bank exports: the residual it would classify is dominated by date misplacement rather than by spending (lag-1 autocorrelation `-0.306`; bank-anchored untracked spend `$2,096.37`, not the `$15,413.71` gross), and an assertion is **not** the closing balance for its civil day (17 of 55 equal the bank's closing; only 30% of 110 matched movements carry the day the bank posted them). What X-f3 needed was never the import surface but CLEARING FACTS -- rulings **R-FL**..**R-FO** here and **R-FP** in the import arc. **X-f5 is superseded** by X-f3c | Section 3.3, Section 4 |
 | **blocked on you** | What to do next is `../../plans/steps.md`'s first row, never this section. Six `developer-decision` / `operator` rows carry this arc's open questions (`ledger.md`); the one this change ADDS is **R-FO**, the modelled half of the cutover -- whether a Roth / Traditional / 401(k) / Property true-up books to a per-account `investment_return` account (`$10,623.66` measured) or stays on `anchor_equity` with its own step. Stated as a recommendation, not a decision. Outside this arc, the recurrence arc's X-an-a sequencing ruling is still open | Section 4, R-FO |
@@ -244,7 +244,7 @@ Section 5 entry restates it inline (rule 5).
 | **R-FL** | 2026-08-13 (developer) | **Whether a line is INSIDE a declared balance is a RECORDED FACT, not a comparison of two dates.** A transaction and a purchase each name the `account_anchor_history` row whose statement showed it; `ReconciledThrough.covers` and its date rule are DELETED from the cash side. This REVISITS **R-DH (a)** and **R-DH (d)**, and the developer's own bank exports are why: of 55 Checking assertions only 17 equal the bank's closing balance for their day, 9 more are that day's closing plus a subset of its own postings (a balance read mid-morning), and 29 are neither -- so an assertion is NOT the closing balance for its civil day, and no rule comparing two dates can decide what a statement showed. R-DH (d) deleted a stored `is_cleared` BOOLEAN as "a denormalized copy of a derivable fact", and that premise is what falls: clearing is not derivable. The replacement is not that boolean returning -- it is a LINK, which carries provenance (WHICH statement), has no date of its own to drift from the assertion's, and answers "what did this statement clear" as one indexed read. **The MODELLED side keeps a date rule and that is not an exception**: a payroll contribution (R-Z) and a modelled accrual (R-L / R-Y) are not lines anyone can tick, so there the assertion legitimately outranks the model (R-S) and the question is genuinely "is this payday after the latest assertion". Rejected: sharpening the date rule with the bank's posted day, which still cannot tell a mid-day reading from a late-posting item -- the two carry the same civil day, which is `anchor_settle_partition.md` section 10.3's own impossibility argument **AMENDED 2026-08-13, the same day, by the adversarial review it was written against: the DIAGNOSIS stands and the IMPLEMENTATION does not.** A link cannot simply replace `covers`, for three measured reasons. (1) `dated_deltas` (`cash_ledger/_walk.py:392`) emits EVERY source fact and only the correction's delta cancels the absorbed ones, so a settled row dated at or before an assertion that carries NO link is counted TWICE -- `prefix = anchor + X` -- which is the `$4,001.42` class the day partition exists to make unspellable. The link must therefore SHARPEN a default that still clears everything dated on or before, not replace it. (2) A link partition is not a PREFIX, and both absorb loops are monotonic-pointer prefix scans whose own docstrings state that precondition; assertion B legitimately clears a line dated before one of A's, which halts the pointer and silently shorts the ledger. (3) The POSTED walk has no row to read a link from: `_source_net_days` (`account_posting_service/_walk.py:347`) returns `(day, net)` aggregates read off the LEDGER, one of whose three partitions is residue with both source FKs NULL by construction. **X-f3a is under-specified until all three are ruled** |
 | **R-FM** | 2026-08-13 | **A purchase that has CLEARED is a cash posting; an envelope's close books only what its cleared purchases did not.** Forced rather than chosen: R-DH (c)'s invariant -- recording a purchase and truing up by the same amount must not move the projected end balance -- holds today because the anchor RESET drops the balance by exactly what the entry reservation releases (`_entry_aware_amount`'s `max(estimated - settled_debit - credit, outstanding_debit)`). Delete the reset without this and ticking a `$150.27` purchase releases `$150.27` of reservation against a book that never moved, so the projected end balance rises by it. It is also the grain the bank speaks in: of 110 movements matched to the developer's bank lines, **58 are individual purchases and 52 are transaction rows**, and an envelope row has no bank counterpart at all |
 | **R-FN** | 2026-08-13 (developer) | **An assertion is a CHECK, and an unexplained difference is a transaction the user ACCEPTS -- never an automatic plug.** It is an ordinary row with NO category, so it books to the per-owner Uncategorized Expense / Income ledger account through the category-leg rule that already exists (`ledger_account_service.get_or_create_category_ledger_account`), needs no new ledger-account kind, and is CATEGORIZABLE later -- which is the mechanism that shrinks the bucket. **This amends R-EB's remedy, and the measurement is why -- restated 2026-08-13 by the adversarial review it was written against, which REFUTED the first two forms of it.** The gross is `$15,413.71` and the net `-$1,236.07`, but *"92% of it cancels"* is an algebraic identity rather than a finding (the plug is DEFINED as what forces the ledger to the asserted balance, so it telescopes and the net is a function of the LAST assertion alone), and the *"two independent instruments"* are one: `(opening + every settled leg) - bank close` minus `-cumulative plug` is identically `(last assertion - bank close)` = `$165.22`, verified to the cent on ledger account 8. **What survives is the real evidence**: adjacent assertions systematically undo one another (centred lag-1 autocorrelation `-0.306`, and the 30-day bucket collapses at the 1.8th percentile of a random-sign null), which is the signature of date misplacement rather than of spending; and the BANK-anchored untracked spend is `$2,096.37` over the span, up to `$4,153.79` if the `$2,057.42` dated on the opening day did not clear that day -- 1.4x to 2.8x the figure this ruling was first sized against. Booking the gross automatically would record `-$1,586.62` of "spending" on 2026-06-01 and `+$1,853.92` of "income" on 2026-06-02, either side of the `$1,910.95` mortgage payment that caused both. **The manual path is PRESERVED and that is the developer's own bound**: typing a balance away from a computer must still move the projected end balance, and it does -- in one accepted act that leaves a row you can find, instead of a plug you cannot. Rejected: automatic recording (books the churn), and leaving the difference underived (the projection then silently lags the bank) |
-| **R-FO** | 2026-08-14 (developer) | **What a balance assertion's difference MEANS is a property of the ACCOUNT, and the counter leg is a TOTAL DISPATCH over `classify_account` -- not a carve-out.** `PLAIN` books it to Uncategorized once X-f3c makes it a recorded, user-accepted transaction (**R-FN**) and stays on `anchor_equity` until then, because classifying it automatically is what R-FN refuses; `INTEREST` books per-account **Interest Income**; `INVESTMENT` and `APPRECIATING` book per-account **Unrealized Gain / Loss** in a FIFTH reporting class of their own; `AMORTIZING` is untouched (a loan has its own correction family and its own chart). Five kinds, five answers, one function. **This is N-171 on a different account class, and it is LARGER**: `ref.posting_sources` holds seven rows and none is an accrual, so nothing posts modelled interest or modelled return anywhere -- the true-up correction is the ledger's ONLY trace of them, and it lands in equity. Measured 2026-08-13: the whole Income side of the chart is `Income: Salary` and `Income: Other Income`, no interest / dividend / investment account or category exists at all, and **`$10,653.91` of return earned over 4.5 months is invisible on the income statement** (Roth `$4,523.33`, 401(k) `$4,157.50`, Traditional `$1,942.83`, Money Market `$30.25` -- every one POSITIVE). **The RESET stays on the modelled kinds, and R-EB's own reasoning is why**: it deletes the reset because *"the reset discards what the records say"*, and an IRA has no record of a price movement to discard -- the assertion is the only fact, so the reset IS mark-to-market and re-deriving the correction each read is CORRECT (a contribution back-dated under an assertion rightly shrinks the gain). **The fifth class is not decoration**: `net_income = income - expense`, so a `$40,000` house revaluation booked to Income would read as `$40,000` earned. Unrealized gain is other comprehensive income and is reported below the line. Rejected: one combined return account, which tells the owner the bank paid them `$10,654`; and removing the reset on the modelled kinds, which breaks R-S for two account kinds with nothing to replace it and makes the app's IRA balance stop equalling the statement |
+| **R-FO** | 2026-08-14 (developer) | **What a balance assertion's difference MEANS is a property of the ACCOUNT, and the counter leg is a TOTAL DISPATCH over `classify_account` -- not a carve-out.** `PLAIN` books it to Uncategorized once X-f3c makes it a recorded, user-accepted transaction (**R-FN**) and stays on `anchor_equity` until then, because classifying it automatically is what R-FN refuses; `INTEREST` books per-account **Interest Income**; `INVESTMENT` and `APPRECIATING` book per-account **Change in Value** in a SIXTH reporting class of their own (this ruling first said FIFTH, and `ref.ledger_account_classes` already held five rows; the class is also NAMED for what it measures rather than for a gain, developer 2026-08-14 -- see **N-277**); `AMORTIZING` is untouched (a loan has its own correction family and its own chart). Five kinds, five answers, one function. **This is N-171 on a different account class, and it is LARGER**: `ref.posting_sources` holds seven rows and none is an accrual, so nothing posts modelled interest or modelled return anywhere -- the true-up correction is the ledger's ONLY trace of them, and it lands in equity. Measured 2026-08-13: the whole Income side of the chart is `Income: Salary` and `Income: Other Income`, no interest / dividend / investment account or category exists at all, and **`$10,653.91` of return earned over 4.5 months is invisible on the income statement** (Roth `$4,523.33`, 401(k) `$4,157.50`, Traditional `$1,942.83`, Money Market `$30.25` -- every one POSITIVE). **The RESET stays on the modelled kinds, and R-EB's own reasoning is why**: it deletes the reset because *"the reset discards what the records say"*, and an IRA has no record of a price movement to discard -- the assertion is the only fact, so the reset IS mark-to-market and re-deriving the correction each read is CORRECT (a contribution back-dated under an assertion rightly shrinks the gain). **The sixth class is not decoration**: `net_income = income - expense`, so a `$40,000` house revaluation booked to Income would read as `$40,000` earned. Unrealized gain is other comprehensive income and is reported below the line. Rejected: one combined return account, which tells the owner the bank paid them `$10,654`; and removing the reset on the modelled kinds, which breaks R-S for two account kinds with nothing to replace it and makes the app's IRA balance stop equalling the statement |
 | **R-ES** | 2026-08-05 | **`account_anchor_history.notes` is DELETED and the origination assertion goes through the SAME write door as every later one**, so the table has ONE writer. An assertion is (account, day, balance) and nothing else -- the sentence ruling R-EO already wrote into the model. Measured: no code in `app/` READS the column (AST census), 76 of 78 production rows are NULL, and it labels the origination on 2 of 9 accounts. It is a SECOND answer to a question the app already decides positionally (`CashAnchorFact.is_opening` -> `account_opening` / `account_trueup`), and the forensic trail it was nominally for is `system.audit_log`, which records every INSERT with the full row and the acting user. The loan twin's typed `source_id` STAYS: that one is read |
 
 ## 5. The steps
@@ -333,15 +333,8 @@ four leaves, X-aq, X-as and X-ap -- their records already condensed in `archive/
     `covers` exactly, so `verify_balance_baseline.py` must report byte-identical. **The offer set
     WIDENS** from "still Projected" to "not yet cleared" -- a settled row the bank has not shown is
     an outstanding item -- keeping `9325fe6a`'s offer rule.
-  * [ ] **X-f3d** `feat(ledger): a true-up says what the difference WAS` -- ruling **R-FO**, closing
-    **N-276**. The correction's counter leg becomes a total dispatch over `classify_account`: two new
-    per-account `LedgerAccountKindEnum` members resolved exactly as `anchor_equity` is (same lazy
-    resolver, same `uq_ledger_accounts_account_kind` index, no new index), a FIFTH
-    `ref.ledger_account_classes` row, and the income statement's section for it. `PLAIN` keeps
-    `anchor_equity` and flips at X-f3c. **BALANCE-NEUTRAL and SELF-MIGRATING**: only the counter leg
-    moves, and `posted_correction_legs` reads every leg, so the next per-account sync re-posts the
-    whole history per period with no backfill. It runs FIRST -- smallest, unblocked, closing a live
-    reporting defect alone.
+  * [x] **X-f3d** `98ea657d` a balance assertion's counter leg NAMES what the difference was, by a
+    total dispatch over `classify_account`. Closed **N-276**; opened **N-277**, **N-278**.
   * [ ] **X-f3b** `feat(cash): a cleared purchase is a cash posting` -- ruling **R-FM**, closing
     **N-274**. A `TransactionEntry` linked to a statement posts its own cash leg and its envelope's
     close books the remainder, so the two cannot double-count. **It must RULE what a cleared
@@ -367,13 +360,19 @@ four leaves, X-aq, X-as and X-ap -- their records already condensed in `archive/
     R-FN forbids the automatic recording the self-heal needs to zero them; and what happens when a
     user ACCEPTS a residual and the purchase explaining it clears afterwards -- R-DH (c) row 3
     double-counts, and "re-openable" would rewrite a transaction the user authored and categorised.
+* [ ] **X-ay** `feat(ledger): a modelled account's own inflows are postings` -- closes **N-277**.
+  A modelled account's true-up residual is what it EARNED only where the app models no inflow it
+  fails to post, and it fails to post all of them: `ref.posting_sources` holds no accrual and no
+  contribution kind, so an employer match and a payroll deduction reach the balance through the
+  assertion alone. Measured 2026-08-14: account 6 grew `x1.15448` where both IRAs, modelled at the
+  same return, grew `x1.11084` -- **`$1,157.16`** X-f3d must call a change in value, not a gain.
 * [ ] **X-f4** `refactor(cash): delete what the cutover orphans` -- `ReconciledThrough`'s COVERAGE
   rule and its cash consumers, `account_posting_service/_anchors.py`, the correction machinery, the
   R-I seed compensator. **Its deletion set is NARROWER than it was**: X-f3a re-pointed the cash
   consumers and the modelled side keeps a latest-assertion accessor (R-FL), so what dies here is the
   `covers` rule and the correction family. Byte-identical by construction, and it must **name the
   residue arm it deletes** rather than letting it go unnoticed -- that branch has fired in production
-  (**N-176**). Closes **N-176** and **N-218**, and takes **N-161** with the family it belongs to;
+  (**N-176**). Closes **N-176**, takes **N-161** with its family, and **N-218 closed** (`7a466d31`);
   **N-169 closed already** at `C2-d` (`3e6cd4ec`). **GATES the recurrence redesign's `R5`**, which
   edits `cash_ledger/_events.py` inside this deletion set -- a column rename in a file this step
   deletes from is avoided by ordering rather than by merge.
@@ -419,16 +418,13 @@ hides.
   `X-i2`.
 * [x] **X-au-a** `81138fb8` a recurring definition's amount is an effective-dated series: the model,
   the ONE write door, the read-and-correct panel, and the backfill mining what the rows record.
-  **44 eligible templates, 47 versions, 625 minable rows reproduced with 0 mismatches** on a
-  production clone. **What a LATER leaf must obey**: the mining predicate is best-available, NOT
-  airtight, and the series answers by a row's own DUE date while the regeneration sweep still selects
-  by pay PERIOD. Opened **N-244**..**N-247**.
+  **44 templates, 47 versions, 625 minable rows reproduced with 0 mismatches** on a production
+  clone. Opened **N-244**..**N-247**, and its two obligations on a later leaf are those rows.
 * [x] **X-au-b** `81ad02d1` the TOTAL dispatch over the five amount rules, in
-  `cash_ledger/_amount_source.py` -- a module INSIDE that package, not more of `_amounts.py`
-  (developer, 2026-08-12). **997 of 997 rows on a 2026-08-12 production clone agree with the answer
-  the app publishes, 0 refusals, `$0.00` drift.** **What a LATER leaf must obey**: a derived row's
-  answer must be INVARIANT under a change to its own amount column -- agreement alone cannot see this
-  resolver at all. Opened **N-252**, **N-253**, **N-254**.
+  `cash_ledger/_amount_source.py` -- a module INSIDE that package (developer, 2026-08-12).
+  **997 of 997 rows on a production clone agree with what the app publishes, 0 refusals, `$0.00`
+  drift.** **What a LATER leaf must obey**: a derived row's answer must be INVARIANT under a change
+  to its own amount column -- agreement alone cannot see this resolver. Opened **N-252**, **N-253**.
 * [ ] **X-au-i** `refactor(cards): a payback is worth the purchases it repays` -- the CC PAYBACK
   cutover, closing **N-243** and **N-252**. The kind ruling R-FI names that carries NEITHER link, so
   no link-derived discriminator can reach it and X-au-b's dispatch places it as OWN: 21 rows on the
@@ -474,7 +470,7 @@ hides.
     every row is OWN, so the resolver answers the stored column through one arm, and that window
     closes at the first cutover.
   * [ ] **X-au-c3** `fix(cash): a settle freezes what the row is worth` -- the FREEZE and its
-    INVERSE, closing **N-241**, **N-242**, **N-245** and **N-259**. **It inherits X-aq's obligation**
+    INVERSE, closing **N-241**, **N-242**, **N-282** and **N-259**. **It inherits X-aq's obligation**
     (`9cabc206`, amended `c4932746`), carried here when that step was archived: a settle already
     books the freshest derivation into the CACHE, and this leaf FORMALISES that write rather than
     undoing it. At settle the resolved figure is
@@ -829,7 +825,9 @@ hides.
   measured when the columns still existed, and `balance_at/_investment.py` was deleted outright at
   `17c57cde` (its modelled-asset work went to `_asset_fold.py`).
 * [ ] **X-p** `fix(analytics): the calendar's chips and its balance line are on one clock` -- closes
-  **N-58**, **N-97**. **Sequenced AFTER X-f by that finding's own ruling**, and the reason is not
+  **N-58**. (**N-97** closed 2026-08-14, `7a466d31`; the "same day" guarantee beside its dead
+  citation had been false since X-c2b2 -- which is N-58.)
+  **Sequenced AFTER X-f by that finding's own ruling**, and the reason is not
   caution: X-f shrinks the date noise at its SOURCE, so ruling before it would decide the question
   against numbers X-f then changes. It is scheduled, not deferred. **Root: one day cell renders two
   facts on two clocks with no row explaining the gap** -- the chips are placed on the BUDGET
@@ -882,9 +880,10 @@ hides.
   registries are graded on findings, on steps and on the graph between them; the arc documents'
   RULINGS tables are not parsed at all, and the corpus carried a LIVE collision -- two sessions
   appended a different **R-EX** on one day, both reached `dev`, and X-f2-c2 / X-f2-c3 cited it
-  ambiguously until a reviewer read the table. One arm per arc document on the parser the other
-  arms already use, and the rule it grades is `conventions.md` rule 9's unstated half: a ruling is
-  the RULE and its date, under an id that names one rule.
+  ambiguously until a reviewer read the table. **N-234, N-254 and N-220 closed 2026-08-14**
+  (`d8aed644`). **What remains needs a RULING first**: a rulings table is spelled THREE ways --
+  the id in its own column, in a `#` column, or in PROSE with no id column at all -- so "an id
+  resolves to one ruling" is not gradeable until rulings take ONE grammar.
 * [ ] **X-al** `fix(pylint): a duplicate-code disable that suppresses nothing is a finding` --
   closes **N-154**. `useless-suppression` is enabled precisely so a stale disable is reported, and
   it is BLIND to a `duplicate-code` one -- measured both directions: removing a disable left

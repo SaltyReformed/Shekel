@@ -172,15 +172,22 @@ _REF_TABLE_SEEDS = (
     # ``LedgerAccountKind`` (Step 4) is the explicit row-kind discriminator
     # for ``budget.ledger_accounts``: the four kinds the chart already uses,
     # the three per-loan accounts the loan-payment correction books into, the
-    # ``equity_opening`` per-loan Equity account the read switch adds, and the
-    # ``anchor_equity`` per-NON-loan-account Equity account Step 5 adds.
+    # ``equity_opening`` per-loan Equity account the read switch adds, the
+    # ``anchor_equity`` per-NON-loan-account Equity account Step 5 adds, and
+    # the ``interest_income`` / ``unrealized_change`` per-account accounts a
+    # modelled account's true-up books into (ruling R-FO, plan step X-f3d;
+    # migration ``e6b4a2d8c713`` inline-seeds all three of that step's rows).
     # Names match the enum ``.value`` strings in ``app/enums.py`` exactly.
     ("LedgerAccountClass", [
-        {"name": "Asset",     "is_debit_normal": True},
-        {"name": "Liability", "is_debit_normal": False},
-        {"name": "Income",    "is_debit_normal": False},
-        {"name": "Expense",   "is_debit_normal": True},
-        {"name": "Equity",    "is_debit_normal": False},
+        {"name": "Asset",      "is_debit_normal": True},
+        {"name": "Liability",  "is_debit_normal": False},
+        {"name": "Income",     "is_debit_normal": False},
+        {"name": "Expense",    "is_debit_normal": True},
+        {"name": "Equity",     "is_debit_normal": False},
+        # Other comprehensive income (ruling R-FO, plan step X-f3d).  A gain is
+        # a CREDIT, so credit-normal like Income -- and a class of its OWN so
+        # ``net_income = income - expense`` can never count it.
+        {"name": "Unrealized", "is_debit_normal": False},
     ]),
     ("PostingKind", [
         "transfer", "income", "expense",
@@ -196,6 +203,10 @@ _REF_TABLE_SEEDS = (
         "linked", "category", "fallback", "orphan",
         "loan_interest", "loan_escrow", "loan_refund",
         "equity_opening", "anchor_equity",
+        # The two kinds ruling R-FO adds (plan step X-f3d): what a modelled
+        # account's TRUE-UP difference WAS.  Both share the ``anchor_equity``
+        # column shape and its ``(account_id, kind_id)`` unique.
+        "interest_income", "unrealized_change",
     ]),
     # Two-axis recurrence vocabulary (recurrence redesign, step R2; plan
     # ``docs/plans/implementation_plan_recurrence_redesign.md``).  A rule

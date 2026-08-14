@@ -654,10 +654,11 @@ def hard_delete_account(account_id):
          same FK reason.
       4. History check -- any non-deleted Transaction referencing this
          account triggers archive-instead-of-delete.
-      5. Posting-ledger check -- any posting on this account's linked
-         ledger account (a settled transfer's immutable entries, which
-         survive a transfer delete) triggers archive-instead-of-delete,
-         even when no transaction history remains.
+      5. Posting-ledger check -- any posting on ANY of this account's
+         ledger accounts (a settled transfer's immutable entries, which
+         survive a transfer delete, and its anchor corrections' counter
+         legs) triggers archive-instead-of-delete, even when no transaction
+         history remains.
 
     Permanent delete cleanup:
       After all guards pass, remaining RESTRICT-FK rows must be
@@ -722,7 +723,10 @@ def hard_delete_account(account_id):
     # ledger account; they are immutable history that survives a transfer
     # delete (``journal_entries.transfer_id`` SET NULL), so the account can
     # still hold posting legs after its transactions are gone (e.g. its ad-hoc
-    # transfer was hard-deleted).  Hard-deleting it would CASCADE-delete only
+    # transfer was hard-deleted).  The check spans every KIND the account
+    # carries, which is what covers an anchor correction re-pointed between
+    # two counter rows (ruling R-FO): it has no linked leg at all.
+    # Hard-deleting it would CASCADE-delete only
     # its own legs and strand the paired legs as unbalanced single-leg entries
     # (the balanced trigger does not fire on DELETE), so archive instead --
     # restoring the LedgerAccount cascade-imbalance impossibility premise

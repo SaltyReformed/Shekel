@@ -744,7 +744,7 @@ def resync_all_cash_postings() -> tuple[int, int]:
     else.
 
     **What it is FOR, and why it is a permanent hook rather than a one-off**
-    (ruling R-DH (b), ``docs/audits/balance_architecture/anchor_settle_partition.md``).
+    (ruling R-DH (b), ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``).
     ``journal_entries.entry_date`` is derived by :func:`_transaction_entry_date`,
     which moved from the UTC civil day to the user's on 2026-07-31.  Every entry
     written before that carries the old day, so the STORED ledger and the two

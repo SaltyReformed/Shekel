@@ -1,6 +1,6 @@
 """a purchase carries the day it was MADE and the day the bank TOOK it
 
-Plan step S1-c of ``docs/audits/balance_architecture/anchor_settle_partition.md``,
+Plan step S1-c of ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``,
 with ruling R-M re-ruled in the same session (2026-08-01).
 
 **One column carried two facts, and that was the root defect.**

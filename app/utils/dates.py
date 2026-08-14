@@ -487,11 +487,25 @@ def attribution_date(
 ) -> date:
     """Return the calendar day a pay-period item is attributed to, clamped.
 
-    The single attribution rule shared by the calendar's day-cell grouping
-    (``calendar_service``) and the balance-at seam's daily running-balance
-    ramp (``balance_resolver.daily_cash_balance_series``), so a flow's cell
-    and the balance line's step for it land on the SAME day (the design
-    principle "a figure and its caption never disagree").  An item lands on
+    The single BUDGET-attribution rule, shared by the calendar's day-cell
+    grouping (``calendar_service._get_display_day``) and the balance-at seam's
+    PLANNED tier (``balance_at._cash_fold._cash_plan``), so the two cannot come
+    to disagree about which day a planned item is BUDGETED to.
+
+    **Both halves of this paragraph were false and ledger row N-97 is the
+    correction.**  The seam's caller was named as
+    ``balance_resolver.daily_cash_balance_series`` -- a producer plan step
+    X-c2b3 had DELETED a month earlier, so the citation resolved to nothing.
+    And the guarantee stated here was that a flow's cell and the balance line's
+    step for it land on the SAME day: that stopped holding at plan step X-c2b2,
+    when the balance line became the cash fold, which steps a SETTLED row on the
+    day its money moved and a projected one on ``max(attribution, as_of + 1)``
+    (rulings R-DH (b) and R-G).  Neither is this date, so a chip and its own
+    step can sit days apart -- median 2, p75 6, max 25 on the real Checking
+    account.  That divergence is finding **N-58**, it is an open fork rather
+    than a settled rule, and ``calendar_service._get_display_day`` states it at
+    the site.  What this function still guarantees is the budget attribution
+    itself, which is what both readers ask it for.  An item lands on
     ``preferred`` -- its ``due_date`` -- falling back to the pay period's
     ``start_date`` when it has none; the result is then clamped into the
     item's own pay period ``[period_start, period_end]`` span.
