@@ -20,6 +20,14 @@ every moved line is reviewable beside the code that moved it:
 Regenerating to make a red test green is the thing this gate exists to prevent
 (CLAUDE.md rule 5).  A moved line is a behaviour change until its step's design
 says otherwise.
+
+**A regeneration run is never GREEN, since plan step R-F13** (ledger row F-13).
+The gate SKIPS while the variable is set, and a skip reads as a pass in every
+summary anyone looks at -- so an exported variable used to turn the 430-shape
+gate off and rewrite the snapshot it defends, with nothing saying so.
+:meth:`TestRecurrenceBaseline.test_the_regeneration_switch_is_off` fails for
+exactly as long as the switch is on, so the rewritten blob has to be compared
+by a second run before any suite can report success.
 """
 
 import os
@@ -40,6 +48,20 @@ BASELINE_PATH = Path(recurrence_baseline.__file__).with_suffix(".txt")
 _UPDATE_ENV = "SHEKEL_UPDATE_RECURRENCE_BASELINE"
 
 
+def _regeneration_requested() -> str | None:
+    """Return the regeneration switch's value, or ``None`` when it is off.
+
+    One reader for the switch, so the gate that OBEYS it and the control that
+    refuses to let a run be green while it is on cannot disagree about what
+    "set" means.  An empty string is off: an exported-but-blank variable is
+    how a shell says nothing.
+
+    Returns:
+        The switch's value, or ``None``.
+    """
+    return os.environ.get(_UPDATE_ENV) or None
+
+
 class TestRecurrenceBaseline:
     """The frozen baseline itself."""
 
@@ -51,7 +73,7 @@ class TestRecurrenceBaseline:
         """
         captured = recurrence_baseline.capture_baseline()
 
-        if os.environ.get(_UPDATE_ENV):
+        if _regeneration_requested():
             BASELINE_PATH.write_text(captured, encoding="utf-8")
             pytest.skip(
                 f"{_UPDATE_ENV} set -- rewrote {BASELINE_PATH.name}. "
@@ -81,6 +103,29 @@ class TestRecurrenceBaseline:
             f"{BASELINE_PATH.name} changed length: committed "
             f"{len(expected_lines)} lines, captured {len(captured_lines)}. "
             "A shape was added or removed."
+        )
+
+    def test_the_regeneration_switch_is_off(self):
+        """A run with the switch ON is never GREEN (ledger row F-13).
+
+        The gate above SKIPS when :data:`_UPDATE_ENV` is set, and a skip reads
+        as a pass in every summary the developer and CI look at -- so an
+        exported variable turned the 430-shape gate off and rewrote the
+        snapshot it was supposed to defend, silently.  That is the failure
+        CLAUDE.md rule 5 names, automated.
+
+        **This test is EXPECTED to fail during a deliberate regeneration**, and
+        that is the design rather than a wart: regenerating is not validating,
+        so the run that rewrites the baseline must not be able to report
+        success.  Unset the variable and re-run to get a green suite, which is
+        also the moment the rewritten snapshot is actually compared.
+        """
+        assert _regeneration_requested() is None, (
+            f"{_UPDATE_ENV} is set, so the baseline gate SKIPPED and the "
+            f"snapshot was rewritten instead of compared.  A skip reads as a "
+            f"pass: this run proves nothing about the recurrence engine.  "
+            f"Review the rewritten tests/oracles/recurrence_baseline.txt, "
+            f"unset {_UPDATE_ENV}, and run again."
         )
 
     def test_the_baseline_is_not_trivially_small(self):
@@ -203,6 +248,25 @@ class TestBaselineFiringControls:
             "the harness did not see a changed rule_occurrences -- it is "
             "blind to the code it exists to freeze"
         )
+
+    def test_the_switch_check_sees_the_variable(self, monkeypatch):
+        """The switch check reads the environment at CALL time.
+
+        The control for :meth:`TestRecurrenceBaseline
+        .test_the_regeneration_switch_is_off`, and it is the same question the
+        two controls above ask of the harness: a check bound at import would
+        pass whatever the shell did.  Both directions, because an
+        exported-but-blank variable means the switch is off and reading it as
+        on would fail every run in a shell that had merely mentioned it.
+        """
+        monkeypatch.setenv(_UPDATE_ENV, "1")
+        assert _regeneration_requested() == "1", (
+            "the switch check does not see a set variable, so the assertion "
+            "that keeps a regeneration run from reading as green is inert"
+        )
+
+        monkeypatch.setenv(_UPDATE_ENV, "")
+        assert _regeneration_requested() is None
 
     def test_the_capture_is_stable_across_runs(self):
         """Two captures with nothing changed are byte-identical.
