@@ -57,3 +57,22 @@ entry's job is to point at what a later step must obey.
 | **X-aq** | `9cabc206` (fixed at `c4932746`, `41f678e5`) | A settle books the freshest derivation of the row's own amount, in the VERB, so all its doors agree (`R-FE`); `c4932746` moved that write to the CACHE (`estimated_amount`) and off the human's column (`R-FH`). Figure-neutral on production (0 rows, `$0.00`) and **51 rows / `$4,897.50`** on a clone carrying one un-regenerated 3% raise -- the whole point of the step, in one number. Opened **N-224** |
 | **X-as** | `ffb9514c` | A tax year resolves to the latest CONFIGURED year's rules at or before it, PER CONFIG KIND, never to the clock's year -- which on 2027-01-01 resolved to NOTHING and dropped **$8,460.50** of withholding out of the projection (`$10,914.93` with that day's top-up), because the engine reads a missing `fica_config` as zero Social Security. Opened **N-235**, **N-236** |
 | **X-ap** | `8726beca` / `32db32af` / `616cf157` | THE THIRD SETTLE DOOR, which `R-FA`'s own text missed by naming two. Measured before and after on production: row 2231 *Gas*, an `$80.00` budget carrying one `$48.98` purchase, booked **`$80.00`** through the full-edit dropdown and `$48.98` through Mark Paid -- **`$31.02` of spend that never happened**. The first two commits moved no money: a ROUTE stopped deciding what a status change means, then **N-233** / **N-229**. Closed **N-219**, **N-230** (`R-FJ`); opened **N-244**-**N-247** |
+
+## Extended 2026-08-13: the anchor half's parent record
+
+The X-f3 decomposition took the live document to its cap, and rule 5 archived the rest of this
+span. Every step below already had a record HERE or in `phase_x_as_built_2026-08-04.md` except
+**X-an**, whose leaves were condensed on 2026-08-09 while the parent stayed in the index; its own
+line is this table's reason for existing.
+
+| step | commit | what it did, and what it closed |
+|---|---|---|
+| **X-an** | `3d3f0ef5` / `549015c0` | A loan payment is history from the day its money moved (`R-EK`) -- the DECOMPOSED parent, complete at two leaves (`X-an-a`, `X-an-b`, condensed in `phase_x_as_built_2026-08-04.md` 1b). Closed **N-187**, **N-196**; opened **N-207**-**N-211** |
+
+**The condition `phase_x_as_built_2026-08-04.md` 1b stated for keeping the parent in the index --
+"live sentences cite it by id" -- was OVERRIDDEN rather than falsified.** The citations are still
+there (`steps.md`, `conventions.md` rules 13 / 16, `tools/plan_gate/`, the recurrence plan), and
+conventions rule 10 is why that is legal: ids are append-only and a citation resolves through the
+archive. What the condition was really protecting is the parent's own `id / commit / what it
+closed` line, which is the row above.
+

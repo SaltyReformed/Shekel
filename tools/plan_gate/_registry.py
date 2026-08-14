@@ -88,6 +88,7 @@ ARC_DOCS = {
     "recurrence": PLANS / "implementation_plan_recurrence_redesign.md",
     "pay_calendar": PLANS / "implementation_plan_pay_calendar.md",
     "credit_card": PLANS / "implementation_plan_credit_card.md",
+    "bank_import": PLANS / "implementation_plan_bank_import.md",
 }
 
 
