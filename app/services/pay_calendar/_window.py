@@ -154,3 +154,45 @@ class PeriodWindow:
             The period count.
         """
         return len(self.periods)
+
+    def __getitem__(self, index: int) -> DerivedPeriod:
+        """Return the period at ordinal *index* within this window.
+
+        Completes the sequence protocol :meth:`__iter__` and :meth:`__len__`
+        already half-state, so a consumer that needs this window's first period
+        or its i-th plotted point says so directly instead of reaching through
+        to :attr:`periods` -- which is the one move that lets a run of periods
+        escape the type guaranteeing their order and their tiling.  **The index
+        is the window's own ordinal, not the calendar's** ``period_index``: a
+        window is a VIEW, and ``[0]`` is where this view starts rather than
+        where the schedule does.
+
+        **SLICING is deliberately not supported.**  A first cut returned a
+        :class:`PeriodWindow` for a slice and let :meth:`__post_init__` refuse
+        the stepped ones; two adversarial reviews of plan step C2-e landed on
+        it, and both were right.  Nothing in ``app/`` slices a window
+        (``CLAUDE.md`` rule 13), and the branch shipped a claim it did not
+        keep: ``window[::-1]`` tiles, so it passed the contiguity check and came
+        back silently RE-SORTED into payday order rather than reversed.  A
+        caller wanting the whole window backwards writes ``reversed(window)``,
+        which this method and :meth:`__len__` already provide.
+
+        Args:
+            index: A 0-based position within this window.
+
+        Returns:
+            The :class:`~._derive.DerivedPeriod` at that position.
+
+        Raises:
+            IndexError: *index* is outside the window.
+            TypeError: *index* is a slice -- see above.
+        """
+        if isinstance(index, slice):
+            raise TypeError(
+                "a PeriodWindow cannot be sliced: no consumer in app/ needs "
+                "one, and a slice that tiles (window[::-1]) would come back "
+                "re-sorted into payday order rather than reversed, which is a "
+                "wrong answer given silently.  reversed(window) walks it "
+                "backwards; PayCalendar.window() takes an ordinal range."
+            )
+        return self.periods[index]

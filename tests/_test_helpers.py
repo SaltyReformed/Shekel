@@ -4455,6 +4455,104 @@ def cadence_payload(unit=None, interval_n=1, placement=None):
     }
 
 
+def derived_window(paydays, cadence_days):
+    """Return a :class:`PeriodWindow` over *paydays*, derived rather than built.
+
+    The PURE test-side door onto the pay calendar, added at plan step **C2-e**,
+    when ``growth_engine`` stopped accepting a hand-built list of period-shaped
+    objects.  :func:`period_window` above is its database-backed sibling: use
+    that one when the test has real ``budget.pay_periods`` rows, and this one
+    for the unit tests that have no database at all.
+
+    **It derives; it does not assemble.**  The window comes out of a real
+    :class:`~app.services.pay_calendar.PayCalendar`, so its ends are the ones
+    the derivation computes (each period ends the day before the next payday,
+    and the last ends ``payday + cadence_days - 1``), its ordinals run in
+    payday order, and its periods TILE.  A test therefore cannot hand the
+    growth engine a shape production could not produce -- a gap between two
+    periods, an ordinal out of date order, an end below its own start -- which
+    is the whole reason the engine's parameter is a window rather than a list.
+
+    Args:
+        paydays: The paydays opening each period, in any order.  A test that
+            wants a plain biweekly run passes ``[d, d + 14, d + 28, ...]``.
+        cadence_days: Days between paydays, 1..365.  It sets the LAST period's
+            end and nothing else, so a run of evenly spaced paydays should
+            pass its own spacing.
+
+    Returns:
+        The :class:`~app.services.pay_calendar.PeriodWindow` over every derived
+        period, ``start_date`` ascending.
+
+    Raises:
+        PayCalendarError: Anything the derivation refuses -- a duplicate
+            payday, a cadence outside 1..365, a payday that is not a plain
+            ``date``.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PayCalendar,
+        PeriodWindow,
+    )
+
+    calendar = PayCalendar.from_paydays(
+        [
+            (index + 1, payday)
+            for index, payday in enumerate(sorted(paydays))
+        ],
+        cadence_days,
+        user_id=1,
+    )
+    return PeriodWindow(periods=calendar.periods)
+
+
+def biweekly_window(first_payday, count):
+    """Return a :class:`PeriodWindow` of *count* 14-day periods from *first_payday*.
+
+    The shorthand for the commonest shape in the unit tests -- an evenly
+    spaced biweekly run -- over :func:`derived_window`, which it defers every
+    guarantee to.
+
+    Args:
+        first_payday: The payday opening the first period.
+        count: How many periods to derive.
+
+    Returns:
+        The :class:`~app.services.pay_calendar.PeriodWindow`.
+    """
+    from datetime import timedelta  # pylint: disable=import-outside-toplevel
+
+    return derived_window(
+        [first_payday + timedelta(days=14 * step) for step in range(count)],
+        14,
+    )
+
+
+def window_head(window, count):
+    """Return the first *count* periods of *window* as a window of their own.
+
+    The test-side stand-in for slicing, which
+    :meth:`~app.services.pay_calendar.PeriodWindow.__getitem__` REFUSES (plan
+    step C2-e): no consumer in ``app/`` slices a window, and the branch that
+    once allowed it returned ``window[::-1]`` silently re-sorted into payday
+    order rather than reversed.  A leading run of a tiling tiles, so this
+    cannot build a window the type would refuse -- the constructor still
+    checks.
+
+    Args:
+        window: The :class:`~app.services.pay_calendar.PeriodWindow` to take
+            from.
+        count: How many periods to keep, from the window's own start.
+
+    Returns:
+        The leading :class:`~app.services.pay_calendar.PeriodWindow`.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PeriodWindow,
+    )
+
+    return PeriodWindow(periods=window.periods[:count])
+
+
 def period_window(periods):
     """Return the :class:`PeriodWindow` the seam reports over for *periods*.
 

@@ -4188,6 +4188,130 @@ class TestNetWorthHorizon:
                 hero.today.total_liabilities
             )
 
+    def test_the_asset_band_compounds_to_the_EXACT_sample_date(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Plan step **C2-e**: the asset band left the paycheck axis.
+
+        This band carries NO contributions -- it calls the growth engine with
+        ``periodic_contribution`` at its zero default -- so an axis was only
+        ever chopping the horizon into pieces the compound formula is
+        indifferent to.  Once the pieces are the owner's REAL paychecks that
+        indifference ends: the period covering today OPENED on their last
+        payday, up to a cadence in the past, while the band's seed is valued
+        TODAY, so every sample would have carried growth for days that had
+        already happened.
+
+        So each sample is now compounded straight from today, through the one
+        growth formula, and this asserts that identity to the cent at every
+        point.  A $400,000 Property at 4% is the shape that makes the
+        difference visible: a per-period walk from the last payday would run
+        the clock up to 13 days early AND round to the cent once per period.
+        """
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import make_appreciating_account
+            from app.services import balance_at, growth_engine
+            from app.utils.money import round_money
+            periods = seed_periods_today
+            prop = make_appreciating_account(
+                seed_user, db.session, periods[0],
+                Decimal("400000.00"), Decimal("0.04000"),
+            )
+            uid = seed_user["user"].id
+
+            data = savings_dashboard_service.compute_dashboard_data(uid)
+            horizon = data["net_worth"].horizon
+            band = horizon["composition"]["asset"]
+            dates = horizon["dates"]
+            today = dates[0]
+
+            # The band SUMS every asset-band account, and the seeded owner also
+            # holds flat cash there.  A flat account contributes the identical
+            # figure at every sample (its rate is zero), so the Property's own
+            # today value plus that constant reproduces the whole band.
+            by_account = {
+                ad.account.id: ad.current_balance
+                for ad in data["account_data"]
+            }
+            property_today = by_account[prop.id]
+            flat = band[0] - property_today
+
+            # **The BALANCE SEAM is the oracle for the day count**, not this
+            # test's own arithmetic.  A first cut recomputed the band's formula
+            # and asserted equality, which pinned the implementation rather than
+            # grading it -- and the implementation was one day out (an
+            # adversarial code review, 2026-08-14).  The seam accrues a modelled
+            # asset one day at a time, so the growth it gives from today to
+            # ``today + n`` is n days, and the band must agree.
+            bctx = BalanceContext.build(uid)
+            seam_today = balance_at.balance_at(prop, bctx, today)
+
+            assert len(dates) > 2, "a decade of samples, not a single point"
+            for index in range(1, len(dates)):
+                elapsed = (dates[index] - today).days
+                factor = 1 + growth_engine.growth_rate_for_days(
+                    Decimal("0.04000"), elapsed,
+                )
+                # The seam's own answer for the same span, on the same balance:
+                # this is what makes the day count independent of the band.
+                assert balance_at.balance_at(
+                    prop, bctx, dates[index],
+                ) == round_money(seam_today * factor), (
+                    f"the seam does not grow {elapsed} days to {dates[index]}"
+                )
+                assert band[index] == round_money(
+                    property_today * factor,
+                ) + flat, (
+                    f"sample {dates[index]} is not today's value compounded "
+                    f"over the {elapsed} days the seam counts"
+                )
+
+            # The firing control: the identity above is not vacuous.  The
+            # Property really does grow, by far more than a rounding error.
+            assert band[-1] - flat > property_today * Decimal("1.4")
+
+    def test_the_engine_band_keys_on_the_ORDINAL_not_the_period_id(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Ledger row **P21**: the projected tail shares one ``period_id``.
+
+        The horizon's retirement band samples a per-account balance map at each
+        annual sample date.  That map was keyed on ``ProjectedBalance.period_id``
+        -- and every period past the owner's saved horizon is a PROJECTION
+        whose id is ``None``, so over a ten-year axis the whole projected tail
+        collapsed onto one entry and every sample after the schedule ran out
+        read the same figure.
+
+        A seeded calendar covers months, so essentially the entire axis here is
+        projected: if the map still collapsed, every post-horizon sample would
+        be identical.  They are strictly increasing instead.
+        """
+        with app.app_context():
+            # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import make_investment_account
+            periods = seed_periods_today
+            make_investment_account(
+                seed_user, db.session, periods[0], Decimal("50000.00"),
+            )
+            uid = seed_user["user"].id
+
+            horizon = savings_dashboard_service.compute_dashboard_data(
+                uid,
+            )["net_worth"].horizon
+            band = horizon["composition"]["retirement"]
+
+            assert len(band) > 3
+            # Past the seeded schedule every sample is a distinct projected
+            # period, so the series must be strictly increasing rather than
+            # flat at one collapsed key.
+            for earlier, later in zip(band, band[1:]):
+                assert later > earlier, (
+                    "two horizon samples read the same projected period, "
+                    "which is the P21 collapse"
+                )
+            assert len(set(band)) == len(band)
+
     def test_group_subtotal_equals_horizon_band_at_today(
         self, app, db, seed_user, seed_periods_today,
     ):
@@ -4327,9 +4451,10 @@ class TestNetWorthHorizon:
             ctx = retirement_projection.build_projection_context(
                 uid, all_periods, current, horizon["dates"][-1], None, None,
             )
-            projections = retirement_projection.project_retirement_accounts(ctx)
+            projected = retirement_projection.project_retirement_accounts(ctx)
             expected = sum(
-                (p["projected_balance"] for p in projections), Decimal("0"),
+                (p["projected_balance"] for p in projected.projections),
+                Decimal("0"),
             )
             # 50k at 7% over a decade grows well past 50k.
             assert expected > Decimal("50000.00")

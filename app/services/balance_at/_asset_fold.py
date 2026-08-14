@@ -138,14 +138,16 @@ _ZERO = Decimal("0")
 _ZERO_MONEY = Decimal("0.00")
 _ONE_DAY = timedelta(days=1)
 
-# ``period_return_rate`` reads only a period's INCLUSIVE calendar-day span, and
-# that span is 1 for every single day of every year -- it carries no leap-day or
-# month-length switch (unlike the interest day count, which carries both).  So a
-# compound return's per-day rate is date-independent and is resolved ONCE, off a
-# span whose endpoints are a placeholder rather than a real day.
-_ONE_DAY_SPAN = growth_engine.SyntheticPeriod(
-    id=0, start_date=date.min, end_date=date.min,
-)
+# A compound return's per-day rate is DATE-INDEPENDENT: it is a function of the
+# span's LENGTH alone, and that length is 1 for every single day of every year --
+# it carries no leap-day or month-length switch (unlike the interest day count,
+# which carries both).  So it is resolved ONCE per rate, from the day count
+# itself.  It used to be resolved off a fabricated one-day
+# ``growth_engine.SyntheticPeriod`` at ``date.min``, because the rate function
+# took a duck-typed "period"; plan step C2-e gave that function a day count
+# (:func:`~app.services.growth_engine.growth_rate_for_days`) and the placeholder
+# period had nothing left to stand in for.
+_ONE_DAY_SPAN_LENGTH = 1
 
 
 @dataclass(frozen=True)
@@ -201,8 +203,9 @@ class _CompoundAccrual:
     """One day of an INVESTMENT's growth or an APPRECIATING asset's appreciation.
 
     Built by :func:`_compound_accrual`, which resolves the per-day rate once
-    through the shared :func:`~app.services.growth_engine.period_return_rate` so
-    this module states no growth formula of its own.
+    through the shared
+    :func:`~app.services.growth_engine.growth_rate_for_days`, so this module
+    states no growth formula of its own.
 
     Attributes:
         daily_rate: The compound rate for ONE calendar day,
@@ -216,8 +219,8 @@ class _CompoundAccrual:
         """Return the UNROUNDED growth *balance* accrues in one day.
 
         The leading underscore on the day parameter is the point: a compound
-        rate is date-INDEPENDENT (see :data:`_ONE_DAY_SPAN`), where an interest
-        rate is not.  The parameter is still taken so this and
+        rate is date-INDEPENDENT (see :data:`_ONE_DAY_SPAN_LENGTH`), where an
+        interest rate is not.  The parameter is still taken so this and
         :meth:`_InterestAccrual.one_day` answer one question through one
         signature, which is what lets :func:`_resolve` carry no branch on the
         account's kind.
@@ -369,8 +372,8 @@ def _compound_accrual(annual_rate) -> _CompoundAccrual:
         formula evaluated over a one-day span.
     """
     return _CompoundAccrual(
-        daily_rate=growth_engine.period_return_rate(
-            Decimal(str(annual_rate)), _ONE_DAY_SPAN,
+        daily_rate=growth_engine.growth_rate_for_days(
+            Decimal(str(annual_rate)), _ONE_DAY_SPAN_LENGTH,
         ),
     )
 

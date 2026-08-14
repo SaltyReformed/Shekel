@@ -299,7 +299,16 @@ def _investment(user_id, accounts):
 
 
 def _retirement(user_id):
-    """The retirement projection's per-account results (the cross-account batch)."""
+    """The retirement projection's per-account results (the cross-account batch).
+
+    Only the PROJECTIONS are dumped, not the whole
+    :class:`~app.services.retirement_projection.HorizonProjection` that carries
+    them: pay-calendar plan step C2-e made that entry publish the axis and the
+    clock beside the per-account dicts, and both are new facts rather than
+    moved ones.  The axis has its own harness
+    (:mod:`tests.manual.verify_projection_axis`); this one keeps grading the
+    figures it was written for.
+    """
     periods = pay_period_service.get_all_periods(user_id)
     current = pay_period_service.get_current_period(user_id)
     result = _guard(
@@ -308,7 +317,7 @@ def _retirement(user_id):
             retirement_projection.build_projection_context(
                 user_id, periods, current, None, None, None,
             ),
-        ),
+        ).projections,
     )
     return _plain(result)
 

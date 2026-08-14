@@ -702,26 +702,72 @@ class PayCalendar:
         """Return the spans covering ``[first_day, last_day]``, projecting past the horizon.
 
         **The replacement for ``growth_engine.generate_projection_periods``**,
-        which fabricates its own periods with ids numbered from 1 in the same
-        integer namespace as real ``budget.pay_periods.id`` (ledger row
-        **P17**) and at a hardcoded 14-day cadence that no call site overrides
-        (row **P20**).  This projects at the OWNER's cadence, and a projected
-        period says so with ``period_id = None``.
+        DELETED at plan step **C2-e**, which fabricated its own periods with ids
+        numbered from 1 in the same integer namespace as real
+        ``budget.pay_periods.id`` (ledger row **P17**) and at a hardcoded
+        14-day cadence that no call site overrode -- so an owner paid monthly
+        was credited ``365/14`` paycheck contributions a year and shown
+        ``$1,300,344.92`` against a true ``$711,385.70`` (row **P20**).  This
+        projects at the OWNER's cadence, and a projected period says so with
+        ``period_id = None``.
+
+        **It COVERS the range it is given or it refuses; it never covers part
+        of one** (ledger row **P23**, ruled 2026-08-14 by the developer).  A
+        range opening below :meth:`opening_bound` used to come back silently
+        short -- ``axis(2025-12-20, 2026-03-01)`` on a calendar opening
+        2026-01-02 left 13 days in no period -- and a short axis is
+        indistinguishable from a complete one in the result.  That is the
+        argument :meth:`overlapping` already makes for refusing a CROSSED
+        range, applied to the other end.  Nothing is projected backwards
+        (ruling 2026-08-10: before an owner's first payday there is no
+        paycheck), so covering such a range is not an option and refusing is
+        the only honest answer left.
+
+        **The clamp a live consumer needs is its own method**, and deliberately
+        not a branch in here: :meth:`projection_axis` raises *first_day* to
+        :meth:`opening_bound` for a pass that opens before the owner's first
+        payday -- an ordinary state, since the Generate form asks for "your
+        next (or first) payday".  The pairing is the one
+        :meth:`filing_period` already makes against
+        :meth:`period_starting_on_or_before`: the strict search answers or does
+        not, and the TOTAL companion beside it states its clamp in the open
+        where a reader and a test can both see it.  Every projecting surface
+        calls the companion, so **no caller in ``app/`` can reach the refusal
+        below** -- it guards the value against a caller assembled by hand, the
+        same standing :meth:`overlapping`'s crossed-range refusal has.
+
+        An EMPTY calendar is not that case and answers an empty window: an
+        owner with no paydays at all has no partial coverage to hide, which is
+        the same answer :meth:`saved` gives them.
 
         Args:
-            first_day: Inclusive lower bound of the range.
+            first_day: Inclusive lower bound of the range.  Must be at or after
+                :meth:`opening_bound` unless the calendar is empty.
             last_day: Inclusive upper bound of the range.
 
         Returns:
             The covering periods as a :class:`PeriodWindow`, saved where the
-            schedule reaches and projected beyond it.  Empty when the calendar
-            is empty, or when the range ends before the owner's first payday --
-            nothing is projected backwards.
+            schedule reaches and projected beyond it.  Empty only for an empty
+            calendar -- for any other calendar the range is covered in full.
 
         Raises:
-            PayCalendarError: *last_day* precedes *first_day*.
+            PayCalendarError: *last_day* precedes *first_day*, or *first_day*
+                precedes this calendar's :meth:`opening_bound`.
         """
         saved = self.overlapping(first_day, last_day)
+        opening = self.opening_bound()
+        if opening is not None and first_day < opening:
+            raise PayCalendarError(
+                f"axis() was asked for {first_day.isoformat()}.."
+                f"{last_day.isoformat()}, which opens before user "
+                f"{self.user_id}'s first payday ({opening.isoformat()}).  "
+                f"Nothing is projected backwards -- before the first payday "
+                f"there is no paycheck -- so the {(opening - first_day).days} "
+                f"day(s) below it can only be left out, and an axis that "
+                f"silently covers part of its range reads exactly like one "
+                f"that covers all of it.  Call projection_axis() if raising "
+                f"the range's start to the opening bound is what was meant."
+            )
         horizon = self.horizon()
         if horizon is None or last_day <= horizon:
             return saved
@@ -731,6 +777,67 @@ class PayCalendar:
                 projected.append(period)
             period = self._projected_after(period.end_date + timedelta(days=1))
         return PeriodWindow(periods=saved.periods + tuple(projected))
+
+    def projection_axis(self, first_day: date, last_day: date) -> PeriodWindow:
+        """Return the paychecks a FORWARD projection over ``[first_day, last_day]`` runs on.
+
+        :meth:`axis` with ONE clamp, and the same pairing :meth:`filing_period`
+        makes against :meth:`period_starting_on_or_before` (plan step C2-e).
+        The strict search refuses a range it can only half-cover; this is the
+        TOTAL companion every projecting surface actually calls, and it states
+        its clamp in the open rather than absorbing it.
+
+        **The clamp exists for the owner whose first payday has not happened
+        yet**, which is an ordinary state rather than a broken one: the
+        Generate form asks for "your next (or first) payday", so a read pass
+        whose ``as_of`` precedes the whole schedule is what a new owner looks
+        like on the day they set it up.  Three surfaces resolve a projection
+        axis -- /retirement with its two lever solvers, /savings Horizon, and
+        the /investment growth chart -- and each raising *first_day* itself
+        would be three copies of one rule, the fourth of which a later consumer
+        forgets.
+
+        **Nothing is clamped at the other end**, and the asymmetry is the
+        point.  A *last_day* past the schedule's horizon is exactly what
+        :meth:`axis` projects for, at the owner's own cadence; a *first_day*
+        below the opening bound is a span no paycheck ever covered.
+
+        **A CROSSED range is still refused**, and telling it apart from an
+        emptied one is why the two tests below are separate (adversarial code
+        review, 2026-08-14).  A caller whose bounds are the wrong way round is
+        a defect, and folding it into the empty answer is the hole
+        :meth:`overlapping` refuses to leave open one level down.  A range the
+        CLAMP empties is a different thing entirely -- a horizon already behind
+        the owner's first payday -- and is a real answer: it is the /retirement
+        lever page's ``past_horizon`` state, where a shortfall exists but no
+        paycheck remains for new money to land in.
+
+        Args:
+            first_day: The day the projection window opens -- the day AFTER the
+                balance it seeds from is valued.  Raised to :meth:`opening_bound`
+                when it precedes it.
+            last_day: The last day the projection reaches.  May lie past the
+                schedule's horizon, which is what the projection is for.
+
+        Returns:
+            The :class:`~._window.PeriodWindow` covering the (possibly raised)
+            range, saved where the schedule reaches and projected at the
+            owner's cadence beyond it.  **Empty** when this calendar holds no
+            payday, and when the raised range would end before it starts.
+
+        Raises:
+            PayCalendarError: *last_day* precedes *first_day* as the caller
+                supplied them.
+        """
+        if last_day < first_day:
+            return self.axis(first_day, last_day)
+        opening = self.opening_bound()
+        if opening is None:
+            return PeriodWindow(periods=())
+        window_opens = max(first_day, opening)
+        if last_day < window_opens:
+            return PeriodWindow(periods=())
+        return self.axis(window_opens, last_day)
 
     def _projected_after(self, day: date) -> DerivedPeriod:
         """Return the projected period covering *day*, past the saved horizon.

@@ -20,7 +20,7 @@ is a different KIND of evidence (plan Section 7.2's independence rule):
   deliberately KEEPS for the what-if surfaces, and which no balance path reads.
   On a shape isolating the grain (assertion on the anchor period's LAST day, no
   contribution feed), the daily replay tracks the per-PERIOD engine to within a
-  CENT on every post-anchor period: ``period_return_rate`` over a 14-day span is
+  CENT on every post-anchor period: ``span_return_rate`` over a 14-day span is
   ``(1 + annual) ** (14/365) - 1``, the 14th power of the one-day rate the
   replay applies, so the two compound the SAME curve and differ only where
   cent-rounding lands.  That is what shows the replay is one model read at a
@@ -47,6 +47,7 @@ from app.services.projection_inputs import load_investment_params_for_accounts
 from tests._test_helpers import (
     create_hysa_account,
     make_investment_account,
+    period_window,
     restamp_opening_assertion,
     settle_instant_on,
 )
@@ -78,7 +79,7 @@ class TestTheGrainIsARegroupingNotADifferentModel:
     On it the two other divergence classes cannot fire -- there is no period
     before the latest assertion to reverse-project, and the anchor period has
     exactly ONE day inside ruling R-Y's window.  What is left is the grain, and
-    the arithmetic says it is a re-grouping: ``period_return_rate`` over a
+    the arithmetic says it is a re-grouping: ``span_return_rate`` over a
     14-day span is ``(1 + annual) ** (14/365) - 1``, which is the 14th power of
     the one-day rate the replay applies, so the two compound the SAME curve and
     differ only where cent-rounding lands.
@@ -101,7 +102,7 @@ class TestTheGrainIsARegroupingNotADifferentModel:
 
         Measured on this shape: eight of the nine periods agree EXACTLY and one
         is a cent apart, which is the arithmetic saying what it should --
-        ``period_return_rate`` over a 14-day span is ``(1 + annual) **
+        ``span_return_rate`` over a 14-day span is ``(1 + annual) **
         (14/365) - 1``, the 14th power of the one-day rate the replay applies,
         so the two compound the same curve and differ only where cent-rounding
         lands.
@@ -121,13 +122,13 @@ class TestTheGrainIsARegroupingNotADifferentModel:
         engine = growth_engine.project_balance(
             current_balance=replayed[seed_periods[0].id].balance,
             assumed_annual_return=params.assumed_annual_return,
-            periods=seed_periods[1:],
+            periods=period_window(seed_periods[1:]),
         )
         assert len(engine) == 9
         for row in engine:
-            gap = replayed[row.period_id].balance - row.end_balance
+            gap = replayed[row.period.period_id].balance - row.end_balance
             assert abs(gap) <= _CENT, (
-                f"period {row.period_id} diverged by {gap}, which is more "
+                f"period {row.period.period_id} diverged by {gap}, which is more "
                 "than cent-rounding: the grain is supposed to be a "
                 "re-grouping of the same curve"
             )

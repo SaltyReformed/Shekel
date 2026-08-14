@@ -7,7 +7,7 @@ flag, the downsampled flight-path chart series, the countdown facts, and
 the per-account contribution facts.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -28,8 +28,11 @@ from app.services.retirement_readiness import (
     _downsample_indices,
     funded_ratio_state,
 )
+from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 from app.utils.dates import add_months
+
+from tests._test_helpers import derived_window
 
 
 def _gap_analysis(*, required, after_tax_projected):
@@ -110,24 +113,33 @@ class TestBuildCountdown:
 
     def test_no_horizon(self):
         """No retirement date -> zeroed countdown, no date."""
-        assert _build_countdown(None, []) == {
+        assert _build_countdown(
+            None, PeriodWindow(periods=()), date.today(),
+        ) == {
             "periods_remaining": 0,
             "years_remaining": Decimal("0.0"),
             "retirement_date": None,
         }
 
     def test_years_and_periods(self):
-        """periods_remaining is the synthetic count; years is days/365.25.
+        """periods_remaining is the AXIS length; years is days/365.25.
 
         A retirement date 365 days out gives 365 / 365.25 = 0.9993... ->
-        1.0 (one decimal, round-half-up); the synthetic-period count passes
+        1.0 (one decimal, round-half-up); the axis's period count passes
         straight through.
+
+        **The count is the owner's own cadence** since plan step C2-e -- the
+        axis is derived from their paydays, where it used to be a hardcoded
+        14-day rhythm (ledger row **P20**).  Seven weekly periods here, which
+        the old producer could not have expressed at all.
         """
-        planned = add_months(date.today(), 12)
-        days = (planned - date.today()).days
-        # Fabricate a synthetic-period list only for the count.
-        fake_periods = [object()] * 7
-        result = _build_countdown(planned, fake_periods)
+        as_of = date.today()
+        planned = add_months(as_of, 12)
+        days = (planned - as_of).days
+        axis = derived_window(
+            [as_of + timedelta(days=7 * step) for step in range(7)], 7,
+        )
+        result = _build_countdown(planned, axis, as_of)
         assert result["periods_remaining"] == 7
         assert result["retirement_date"] == planned
         expected_years = (

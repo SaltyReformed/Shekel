@@ -24,7 +24,6 @@ return math is duplicated.
 No Flask imports.
 """
 
-from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
 from app.services import growth_engine, retirement_gap_calculator
@@ -51,7 +50,7 @@ _YEARS_QUANTUM = Decimal("0.1")
 _DAYS_PER_YEAR = Decimal("365.25")
 
 # Maximum plotted points per readiness-chart series (a 20-year horizon is
-# ~520 synthetic periods; each series downsamples to at most this many,
+# ~520 projected periods; each series downsamples to at most this many,
 # first and last always kept, the SAME index set applied to both).
 _MAX_CHART_POINTS = 48
 
@@ -136,7 +135,13 @@ def readiness_from_gap_data(data, return_rate_override=None):
     projections = data["retirement_account_projections"]
     net, tax_rate_missing, effective_tax_rate = _net_frame(data)
     funded_ratio, no_savings_needed = funded_ratio_state(net)
-    synthetic_periods = _synthetic_periods(data["planned_retirement_date"])
+    # The axis and the clock the projections above were computed against,
+    # HANDED OVER rather than rebuilt (plan step C2-e).  This used to re-issue
+    # the axis producer with a comment claiming the two calls matched; the
+    # chart's per-account rows are aligned 1:1 against this window, so a
+    # rebuild that came back a different length would have mis-plotted every
+    # series with nothing raising.
+    axis = data["projection_axis"]
 
     return {
         "income_target_net_monthly": net.pre_retirement_net_monthly,
@@ -160,7 +165,7 @@ def readiness_from_gap_data(data, return_rate_override=None):
             data["pensions"], data["settings"],
         ),
         "chart": _build_readiness_chart(
-            data, projections, synthetic_periods,
+            data, projections, axis,
             net.required_retirement_savings, effective_tax_rate,
             return_rate_override,
         ),
@@ -177,7 +182,9 @@ def readiness_from_gap_data(data, return_rate_override=None):
             }
             for proj in projections
         ],
-        **_build_countdown(data["planned_retirement_date"], synthetic_periods),
+        **_build_countdown(
+            data["planned_retirement_date"], axis, data["as_of"],
+        ),
     }
 
 
@@ -417,37 +424,29 @@ def funded_ratio_state(net):
     )
 
 
-def _synthetic_periods(planned_retirement_date):
-    """Return the biweekly synthetic periods from today to retirement.
-
-    Matches the exact ``generate_projection_periods`` call the account
-    projection used, so the readiness chart's per-period rows align.
-
-    Args:
-        planned_retirement_date: The resolved retirement date, or ``None``.
-
-    Returns:
-        The list of synthetic periods (empty when there is no horizon).
-    """
-    if planned_retirement_date is None:
-        return []
-    return growth_engine.generate_projection_periods(
-        start_date=date.today(), end_date=planned_retirement_date,
-    )
-
-
-def _build_countdown(planned_retirement_date, synthetic_periods):
+def _build_countdown(planned_retirement_date, axis, as_of):
     """Build the countdown facts for the readiness header.
 
+    **"Paychecks remaining" is the owner's own cadence** since plan step C2-e:
+    the axis is their pay calendar projected forward at the cadence they
+    recorded, where it used to be a hardcoded 14-day rhythm.  A monthly-paid
+    owner planning a 20-year horizon was told 522 paychecks remained when 244
+    do (ledger row **P20**, whose money half is the contribution count riding
+    on that same axis).
+
     Args:
         planned_retirement_date: The resolved retirement date, or ``None``.
-        synthetic_periods: The biweekly synthetic periods from today to the
-            retirement date (their count is the remaining-paychecks fact).
+        axis: The projection axis from ``compute_gap_data`` -- the owner's
+            paychecks from the read pass's clock to the retirement date.  Its
+            LENGTH is the remaining-paychecks fact.
+        as_of: The read pass's clock, the same one the axis opens after, so
+            "years remaining" and "paychecks remaining" are measured from one
+            day rather than from two clock reads.
 
     Returns:
-        dict with ``periods_remaining`` (int biweekly paychecks left),
-        ``years_remaining`` (Decimal to one decimal place, clamped at 0),
-        and ``retirement_date`` (the date, or ``None``).
+        dict with ``periods_remaining`` (int paychecks left at the owner's own
+        cadence), ``years_remaining`` (Decimal to one decimal place, clamped
+        at 0), and ``retirement_date`` (the date, or ``None``).
     """
     if planned_retirement_date is None:
         return {
@@ -455,19 +454,19 @@ def _build_countdown(planned_retirement_date, synthetic_periods):
             "years_remaining": Decimal("0.0"),
             "retirement_date": None,
         }
-    days = (planned_retirement_date - date.today()).days
+    days = (planned_retirement_date - as_of).days
     years_remaining = (
         max(Decimal(days), Decimal("0")) / _DAYS_PER_YEAR
     ).quantize(_YEARS_QUANTUM, rounding=ROUND_HALF_UP)
     return {
-        "periods_remaining": len(synthetic_periods),
+        "periods_remaining": len(axis),
         "years_remaining": years_remaining,
         "retirement_date": planned_retirement_date,
     }
 
 
 def _build_readiness_chart(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    data, projections, synthetic_periods, required_target, effective_tax_rate,
+    data, projections, axis, required_target, effective_tax_rate,
     return_rate_override=None,
 ):
     """Build the two downsampled string-Decimal chart series (after-tax frame).
@@ -475,7 +474,7 @@ def _build_readiness_chart(  # pylint: disable=too-many-arguments,too-many-posit
     BOTH series are stated in the after-tax frame so the chart agrees with
     the after-tax funded verdict beside it (Gate A ruling 2: net-primary; a
     figure and its caption never disagree).  "your path" is the summed
-    per-account projected balance at each synthetic period with the
+    per-account projected balance at each axis period with the
     estimated retirement tax applied to the traditional portion
     (:func:`_build_your_path`); "needed path" is
     :func:`~app.services.growth_engine.reverse_project_balance` from the
@@ -493,8 +492,9 @@ def _build_readiness_chart(  # pylint: disable=too-many-arguments,too-many-posit
         projections: The per-account projection dicts (each carrying
             ``projection_rows``, ``is_traditional``, and the contribution
             facts).
-        synthetic_periods: The biweekly periods from today to retirement
-            (empty when there is no horizon).
+        axis: The projection axis published by ``compute_gap_data`` -- the
+            owner's paychecks from the read pass's clock to retirement (empty
+            when there is no horizon).
         required_target: The net-frame required savings figure the needed
             path reverse-projects from.
         effective_tax_rate: The explicit (possibly F1 zero) estimated
@@ -517,7 +517,7 @@ def _build_readiness_chart(  # pylint: disable=too-many-arguments,too-many-posit
         Decimals) and ``dates`` (ISO end-date of each plotted period);
         all empty when there is no horizon.
     """
-    if not synthetic_periods:
+    if not axis:
         return {"your_path": [], "needed_path": [], "dates": []}
 
     blended_return = (
@@ -526,20 +526,20 @@ def _build_readiness_chart(  # pylint: disable=too-many-arguments,too-many-posit
         else compute_slider_defaults(data)["current_return"] / _PCT_SCALE
     )
     your_path = _build_your_path(
-        projections, synthetic_periods, effective_tax_rate,
+        projections, axis, effective_tax_rate,
     )
     needed_path = _build_needed_path(
-        required_target, projections, synthetic_periods, blended_return,
+        required_target, projections, axis, blended_return,
     )
-    indices = _downsample_indices(len(synthetic_periods))
+    indices = _downsample_indices(len(axis))
     return {
         "your_path": [str(your_path[i]) for i in indices],
         "needed_path": [str(needed_path[i]) for i in indices],
-        "dates": [synthetic_periods[i].end_date.isoformat() for i in indices],
+        "dates": [axis[i].end_date.isoformat() for i in indices],
     }
 
 
-def _build_your_path(projections, synthetic_periods, effective_tax_rate):
+def _build_your_path(projections, axis, effective_tax_rate):
     """Sum the after-tax per-period projected balances across the horizon.
 
     At each point ``after_tax(t) = traditional_sum(t) * (1 - rate) +
@@ -551,21 +551,21 @@ def _build_your_path(projections, synthetic_periods, effective_tax_rate):
     value equals the pre-tax sum, so untaxed data plots unchanged.
 
     A projecting account contributes its per-period end balance from
-    ``projection_rows`` (aligned 1:1 with *synthetic_periods*); a
+    ``projection_rows`` (aligned 1:1 with *axis*); a
     non-projecting account (no params / no rows) contributes its flat
     current balance at every period.
 
     Args:
         projections: The per-account projection dicts (``is_traditional``
             selects the taxed bucket).
-        synthetic_periods: The biweekly periods from today to retirement.
+        axis: The projection axis the per-account rows were computed over.
         effective_tax_rate: The explicit (possibly zero) fractional tax
             rate applied to the traditional bucket.
 
     Returns:
         list[Decimal]: the after-tax portfolio balance at each period.
     """
-    count = len(synthetic_periods)
+    count = len(axis)
     traditional = [Decimal("0")] * count
     roth = [Decimal("0")] * count
     for proj in projections:
@@ -587,7 +587,7 @@ def _build_your_path(projections, synthetic_periods, effective_tax_rate):
 
 
 def _build_needed_path(
-    required_target, projections, synthetic_periods, blended_return,
+    required_target, projections, axis, blended_return,
 ):
     """Reverse-project the required savings target back to today.
 
@@ -614,7 +614,7 @@ def _build_needed_path(
         required_target: The net-frame required savings figure.
         projections: The per-account projection dicts (for the aggregate
             contribution).
-        synthetic_periods: The biweekly periods from today to retirement.
+        axis: The projection axis the per-account rows were computed over.
         blended_return: The blended annual return fraction.
 
     Returns:
@@ -622,7 +622,7 @@ def _build_needed_path(
         when the target is non-positive -- the pension already covers the
         gap, so no savings trajectory is required).
     """
-    count = len(synthetic_periods)
+    count = len(axis)
     if required_target <= Decimal("0"):
         return [Decimal("0")] * count
     aggregate_contribution = sum(
@@ -633,11 +633,15 @@ def _build_needed_path(
     reversed_proj = growth_engine.reverse_project_balance(
         anchor_balance=required_target,
         assumed_annual_return=blended_return,
-        periods=synthetic_periods,
+        periods=axis,
         periodic_contribution=aggregate_contribution,
     )
-    if len(reversed_proj) != count:
-        return [Decimal("0")] * count
+    # No length guard: ``reverse_project_balance`` emits exactly one row per
+    # input period, and since plan step C2-e ``count`` is the length of the SAME
+    # window that was handed to it.  The guard existed because the axis and the
+    # rows came from two producers held equal by a comment; one producer cannot
+    # disagree with itself, so the branch could no longer fire (CLAUDE.md
+    # rule 1).
     return [row.end_balance for row in reversed_proj]
 
 

@@ -7,7 +7,7 @@ direction-D page:
 * **Contribution lever (P2a).**  The additional per-period contribution
   that closes the after-tax shortfall by the retirement date -- closed
   form, no iteration: shortfall divided by the annuity factor of the
-  remaining synthetic periods at the blended return
+  remaining paychecks at the blended return
   (:func:`_annuity_factor`).  Ratified fork F2: the new money is treated
   as Roth-basis (untaxed at withdrawal), so it solves against the
   AFTER-TAX shortfall and its horizon value is added to the after-tax
@@ -36,7 +36,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.services import growth_engine, retirement_gap_calculator
-from app.services.pay_calendar import PayCadence
+from app.services.pay_calendar import PayCadence, PeriodWindow
 from app.services.retirement_dashboard_service import (
     GapInputs,
     compute_gap_net_biweekly,
@@ -52,6 +52,7 @@ from app.services.retirement_projection import (
     build_projection_context,
     load_projection_batch,
     project_accounts_with_batch,
+    resolve_projection_axis,
 )
 from app.services.retirement_readiness import funded_ratio_state
 from app.utils.dates import add_months
@@ -77,7 +78,7 @@ class _ProbeInputs:
     Built by :func:`_load_probe_inputs`.  Everything here is
     date-independent: a probe at month offset ``m`` recomputes only the
     salary path, the pension benefit, the employer salary basis, the
-    synthetic period axis, and the per-account engine walk.
+    projection axis, and the per-account engine walk.
 
     Attributes:
         gap: The :class:`GapInputs` bundle (settings, pensions, salary
@@ -107,8 +108,16 @@ class _ProbeInputs:
 class _ProbeResult:
     """One candidate retirement date's readiness picture.
 
+    **``month_offset`` was DELETED at plan step C2-e** (developer, 2026-08-14),
+    which is what keeps this record at seven fields and off a
+    ``too-many-instance-attributes`` suppression now that it carries the axis.
+    It was written by :func:`_probe` and read nowhere in ``app/``: the memo is
+    keyed on the offset by its CALLER (:func:`compute_lever_data`'s
+    ``probe_cache``), and both levers read :attr:`retirement_date` instead.  A
+    field whose only consumer was a test is a field with no consumer -- the same
+    ruling that deleted the milestone dicts' machine ``kind`` at plan step X-s1.
+
     Attributes:
-        month_offset: Whole months added to the stored plan.
         retirement_date: The shifted retirement date.
         required: The net-frame required savings at that date.
         after_tax_projected: The after-tax projected savings at that date.
@@ -119,15 +128,24 @@ class _ProbeResult:
         projections: The per-account projection dicts the probe produced
             (the baseline probe's list feeds the blended return and the
             headroom facts).
+        axis: The :class:`~app.services.pay_calendar.PeriodWindow` this probe
+            projected over -- the owner's paychecks from the read pass's clock
+            to :attr:`retirement_date`.  **Carried rather than rebuilt** (plan
+            step C2-e): the contribution lever's annuity factor is a fold over
+            exactly the periods the baseline probe used, and it used to
+            RE-ISSUE the axis producer with the same two arguments and trust
+            the two calls to agree.  An annuity factor over a different axis
+            than the shortfall it divides solves for a per-period contribution
+            that does not close the gap.
     """
 
-    month_offset: int
     retirement_date: date
     required: Decimal
     after_tax_projected: Decimal
     funded_ratio: Decimal | None
     no_savings_needed: bool
     projections: list
+    axis: PeriodWindow
 
 
 def compute_lever_data(user_id, contribution_override=None, months_override=None):
@@ -231,7 +249,7 @@ def _probe(inputs, month_offset):
     date, growing the years of service and the high-salary window), the
     income target re-derives from the longer salary path
     (:func:`compute_gap_net_biweekly`), the employer salary basis and the
-    synthetic growth horizon extend, and the per-account projections
+    growth horizon extends, and the per-account projections
     re-run over the longer axis -- all against the ONE loaded batch.
 
     Args:
@@ -254,13 +272,8 @@ def _probe(inputs, month_offset):
             inputs.gap.merit_horizon_years,
         ),
     )
-    projections = project_accounts_with_batch(
-        ctx_m,
-        inputs.batch,
-        growth_engine.generate_projection_periods(
-            start_date=date.today(), end_date=date_m,
-        ),
-    )
+    axis = resolve_projection_axis(ctx_m, inputs.batch.balance_ctx)
+    projections = project_accounts_with_batch(ctx_m, inputs.batch, axis)
     net = retirement_gap_calculator.calculate_gap(
         net_biweekly_pay=compute_gap_net_biweekly(
             inputs.gap.salary_profiles, date_m, inputs.gap.pay,
@@ -274,13 +287,13 @@ def _probe(inputs, month_offset):
     )
     funded_ratio, no_savings_needed = funded_ratio_state(net)
     return _ProbeResult(
-        month_offset=month_offset,
         retirement_date=date_m,
         required=net.required_retirement_savings,
         after_tax_projected=net.after_tax_projected_savings,
         funded_ratio=funded_ratio,
         no_savings_needed=no_savings_needed,
         projections=projections,
+        axis=axis,
     )
 
 
@@ -311,12 +324,14 @@ def _annuity_factor(periods, annual_return):
     balance BEFORE the contribution lands), so a contribution in period
     ``p`` compounds through periods ``p+1..n`` only, and the last
     period's dollar arrives uncompounded (factor 1).  Per-period rates
-    come from :func:`app.services.growth_engine.period_return_rate` --
+    come from :func:`app.services.growth_engine.span_return_rate` --
     the engine's own inclusive-day-count formula -- so the closed form
     cannot drift from an engine replay beyond per-period penny rounding.
 
     Args:
-        periods: The ordered synthetic periods to the horizon.
+        periods: The :class:`~app.services.pay_calendar.PeriodWindow` to the
+            horizon -- the SAME window the probe whose shortfall this divides
+            projected over.
         annual_return: The blended annual return fraction.
 
     Returns:
@@ -327,7 +342,9 @@ def _annuity_factor(periods, annual_return):
     for period in reversed(periods):
         factor += compound_to_horizon
         compound_to_horizon *= (
-            1 + growth_engine.period_return_rate(annual_return, period)
+            1 + growth_engine.span_return_rate(
+                annual_return, period.start_date, period.end_date,
+            )
         )
     return factor
 
@@ -433,7 +450,7 @@ def _contribution_lever(inputs, baseline, contribution_override):
     Closed form: ``solved = round(after-tax shortfall / AF)`` where the
     shortfall is ``required - after-tax projected`` (fork F2: Roth-basis
     money closes an after-tax gap) and AF is the annuity factor of the
-    remaining synthetic periods at the blended return.  A non-positive
+    remaining paychecks at the blended return.  A non-positive
     shortfall is the ``already_funded`` state (solved amount 0.00); a
     POSITIVE shortfall with a zero annuity factor -- the planned date is
     today or past, so no paycheck remains for new money to land in -- is
@@ -459,9 +476,7 @@ def _contribution_lever(inputs, baseline, contribution_override):
         ``exceeds_headroom``.
     """
     annuity_factor = _annuity_factor(
-        growth_engine.generate_projection_periods(
-            start_date=date.today(), end_date=baseline.retirement_date,
-        ),
+        baseline.axis,
         _blended_return(inputs.gap.settings, baseline.projections),
     )
     shortfall = baseline.required - baseline.after_tax_projected

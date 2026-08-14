@@ -25,7 +25,7 @@ this package imports no Flask symbol.  The route owns ``current_user`` /
 ``Decimal``-money math, ORM queries, and projection-engine calls, and
 returns plain dicts (``salary_profile_url`` is resolved route-side).
 
-The initial dashboard chart and the HTMX fragment share ONE synthetic-period
+The initial dashboard chart and the HTMX fragment share ONE pay-period
 basis at the slider default horizon (so they cannot disagree), carrying a
 modeled-history series with Today / retirement markers; the measured
 growth-since-anchor chip reconciles with the displayed balance via the

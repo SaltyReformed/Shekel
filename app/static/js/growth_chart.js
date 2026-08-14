@@ -13,7 +13,7 @@
  *     past, ending at the current period (balance_at.balance_map).
  *   data-labels / data-balances / data-contributions -- the dashed
  *     forward projection plus its contributions-only baseline, on the
- *     fragment's synthetic-period basis.
+ *     fragment's pay-period basis.
  *   data-boundary -- the Today split index (== history length).
  *   data-retirement-index / data-retirement-year -- the optional
  *     retirement-year marker slot on the combined axis.
