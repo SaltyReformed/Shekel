@@ -5,6 +5,7 @@ Tests the main budget grid view and transaction CRUD endpoints.
 """
 
 from datetime import date, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from decimal import Decimal
 
@@ -43,6 +44,32 @@ from tests._test_helpers import (
     settle_instant_on,
 )
 from app.services.row_valuation import owned_contribution
+
+#: Where the grid route's source lives, for the three STATIC guards below.
+#: It was the single file ``app/routes/grid.py`` until plan step C2-f2b split
+#: it into a package (991 of pylint's 1000-line ceiling).
+_GRID_ROUTE_PACKAGE = Path("app/routes/grid")
+
+
+def _grid_route_source() -> str:
+    """Return every module of the grid route package, concatenated.
+
+    The three static guards in this file read the route's own source to
+    refuse a shape rather than a behaviour -- an inline subtotal loop, a
+    producer swap, a direct read of a canonical producer's source column.
+    They each read ``app/routes/grid.py`` by name until plan step C2-f2b
+    made that file a package.
+
+    **It globs the DIRECTORY rather than naming the modules**, and that is
+    what keeps the guards from weakening as the package grows: a named list
+    would let the next module added to it carry the very line these refuse,
+    and every guard would still pass.  Sorted so a failure message's line
+    ordering is stable across filesystems.
+    """
+    return "\n".join(
+        module.read_text(encoding="utf-8")
+        for module in sorted(_GRID_ROUTE_PACKAGE.glob("*.py"))
+    )
 
 
 class TestGridView:
@@ -4487,7 +4514,7 @@ class TestGridSubtotalsRegressionBaseline:
     """Regression baseline: per-period subtotal reflects actual_amount.
 
     Pre-Commit-10 the grid subtotal was an inline ``sum(...
-    effective_amount ...)`` loop in ``app/routes/grid.py``.  The subtotal now
+    effective_amount ...)`` loop in ``app/routes/grid/``.  The subtotal now
     comes off the seam's ``GridColumn`` (plan steps X-c2b1 / X-c2b2), which
     uses ``effective_amount`` for income and the entries-aware reduction for
     expenses; for income with no entries the ``effective_amount`` rule is
@@ -4563,7 +4590,7 @@ class TestGridPeriodSubtotalCanonical:
     """Commit 10: per-period subtotals routed through ONE shared reduction.
 
     Pre-Commit-10 the grid's per-period subtotal was an inline
-    ``sum(... effective_amount ...)`` loop in ``app/routes/grid.py``
+    ``sum(... effective_amount ...)`` loop in ``app/routes/grid/``
     that did NOT apply the entries-aware reduction.  F-002 Pair C /
     F-004 (Q-10) flagged this as a same-page divergence: the subtotal
     row and the balance row consumed the same in-memory transactions
@@ -4820,24 +4847,24 @@ class TestGridPeriodSubtotalCanonical:
             )
 
     def test_grid_inline_subtotal_loop_removed(self):
-        """Static guard: no inline ``sum(... effective_amount ...)`` in grid.py.
+        """Static guard: no inline ``sum(... effective_amount ...)`` in the route.
 
         The plan's verification gate -- if the inline loop is ever
         reintroduced, the canonical-producer routing is silently
         bypassed.  This regression lock fires the moment a future edit
         re-grows the loop.
+
+        Scoped to the whole ``app/routes/grid/`` package since plan step
+        C2-f2b; see :func:`_grid_route_source`.
         """
-        import re
+        import re  # pylint: disable=import-outside-toplevel
 
-        from pathlib import Path
-
-        grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
         pattern = re.compile(
             r"sum\([^\)]*(effective_amount|estimated_amount)",
         )
-        offenders = pattern.findall(grid_source)
+        offenders = pattern.findall(_grid_route_source())
         assert not offenders, (
-            "app/routes/grid.py contains an inline subtotal loop "
+            "app/routes/grid/ contains an inline subtotal loop "
             f"({offenders!r}); read the seam's "
             "balance_at.grid_balance_view instead (F-002 Pair C, "
             "F-004 same-page regression)"
@@ -4852,7 +4879,7 @@ class TestGridPeriodSubtotalCanonical:
         bypass of the canonical producer because its grid reader
         re-runs the seam itself rather than parsing the rendered HTML.  A
         regression that re-introduces a hand-rolled balance loop in
-        ``app/routes/grid.py`` would therefore drift silently.  This static
+        the grid route package would therefore drift silently.  This static
         lock closes that gap.
 
         Updated for plan step X-c2b2: the grid reads EVERY per-period figure
@@ -4875,8 +4902,9 @@ class TestGridPeriodSubtotalCanonical:
         that can never fail, and reads as coverage while being none.
 
         Two assertions:
-          1. ``balance_at.grid_balance_view(`` must appear in
-             ``app/routes/grid.py`` (positive: the seam wiring is intact).
+          1. ``balance_at.grid_balance_view(`` must appear in the
+             ``app/routes/grid/`` package (positive: the seam wiring is
+             intact).
           2. ``balance_at.balance_map(`` (the KIND-CORRECT map) must NOT
              appear: the grid account may be interest-bearing, and reading
              the accrued balance without the accrual row beside it is the
@@ -4885,12 +4913,13 @@ class TestGridPeriodSubtotalCanonical:
         Complements ``test_grid_inline_subtotal_loop_removed`` above:
         that guard catches an inline ``sum(... effective_amount ...)``
         accumulator; this guard catches a swap to a producer.
-        """
-        from pathlib import Path  # pylint: disable=import-outside-toplevel
 
-        grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
+        Scoped to the whole package since plan step C2-f2b; see
+        :func:`_grid_route_source`.
+        """
+        grid_source = _grid_route_source()
         assert "balance_at.grid_balance_view(" in grid_source, (
-            "app/routes/grid.py no longer CALLS "
+            "app/routes/grid/ no longer CALLS "
             "``balance_at.grid_balance_view`` -- regression on the "
             "balance-at seam contract.  Route every per-period grid figure "
             "through the seam's one kind-aware view instead of a "
@@ -4899,7 +4928,7 @@ class TestGridPeriodSubtotalCanonical:
             "row with no row to explain it)."
         )
         assert "balance_at.balance_map(" not in grid_source, (
-            "app/routes/grid.py calls the KIND-CORRECT ``balance_map`` -- "
+            "app/routes/grid/ calls the KIND-CORRECT ``balance_map`` -- "
             "an interest account's accrued balance would then reach the "
             "balance row without the 'Interest' row that explains it "
             "(ruling R-K).  ``grid_balance_view`` owns that dispatch."
@@ -5240,11 +5269,13 @@ class TestGridMatchedByRowPeriod:
         ``test_grid_balance_computation_routed_through_resolver``
         (F-6 lock) by pinning the *count* of legacy reads rather
         than the presence/absence of the canonical-producer symbol.
+
+        Scoped to the whole ``app/routes/grid/`` package since plan step
+        C2-f2b; see :func:`_grid_route_source`.
         """
         import re  # pylint: disable=import-outside-toplevel
-        from pathlib import Path  # pylint: disable=import-outside-toplevel
 
-        grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
+        grid_source = _grid_route_source()
         current_anchor_balance_reads = len(
             re.findall(r"\.current_anchor_balance\b", grid_source),
         )
@@ -5259,7 +5290,7 @@ class TestGridMatchedByRowPeriod:
         )
 
         assert current_anchor_balance_reads == 0, (
-            "app/routes/grid.py contains "
+            "app/routes/grid/ contains "
             f"{current_anchor_balance_reads} reads of "
             "``.current_anchor_balance`` (expected 0 -- ruling R-EH deleted "
             "the column, and the header reads the account's latest assertion "
@@ -5267,16 +5298,16 @@ class TestGridMatchedByRowPeriod:
             "values through a canonical producer"
         )
         assert current_anchor_period_id_reads == 0, (
-            "app/routes/grid.py reads "
+            "app/routes/grid/ reads "
             "``.current_anchor_period_id`` directly; route through "
             "``balance_resolver`` instead"
         )
         assert current_principal_reads == 0, (
-            "app/routes/grid.py reads ``.current_principal`` directly; "
+            "app/routes/grid/ reads ``.current_principal`` directly; "
             "route through ``loan_resolver`` instead"
         )
         assert interest_rate_reads == 0, (
-            "app/routes/grid.py reads ``.interest_rate`` directly; "
+            "app/routes/grid/ reads ``.interest_rate`` directly; "
             "route through ``loan_resolver`` instead"
         )
 
@@ -8117,7 +8148,7 @@ class TestTheTwoRemainderRows:
         ``/grid`` also renders ``grid/_mobile_plan.html``, whose space-constrained
         chips say "Timing" and "Bank" rather than the full row labels -- and they
         are gated on ``plan_row_flags``, computed over the PLAN window
-        (``app/routes/grid.py``) rather than the tfoot's visible window.  So a
+        (``app/routes/grid/page.py``) rather than the tfoot's visible window.  So a
         regression could light a permanently-``$0`` chip on the Plan tab while
         the desktop ``reconciliation-row`` stayed hidden and the two full-label
         assertions below stayed green.  HEAD asserted ``b"Timing"``; narrowing to

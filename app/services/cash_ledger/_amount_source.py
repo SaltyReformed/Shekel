@@ -66,7 +66,8 @@ flag (``routes/transactions/mutations.py:251``), carry-forward sets it in a bulk
 ``query.update`` no ORM validator sees (``carry_forward_service/_execute.py:157``),
 and Credit and Cancelled leave Projected WITHOUT entering the settled band, so no
 freeze ever fires.  Production carries 7 Cancelled and 2 Credit template-linked
-rows and ``routes/grid.py:226`` loads every one of them with no status predicate,
+rows and ``routes/grid/page.py``'s ``_load_grid_transactions`` loads every one
+of them with no status predicate,
 so the first bucket to derive would have taken out the whole screen.  Asking the
 column instead makes the two agree by construction: the state the CHECK pairs a
 figure with is exactly the state this dispatch answers from that figure.
@@ -401,7 +402,7 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     Proven equal to the answer the app gives today for **every one of the 997
     rows** on the 2026-08-12 production clone
     (``tests/manual/verify_amount_resolver.py``).  "The answer the app gives
-    today" is not single-valued -- ``routes/grid.py:595`` reads the override map
+    today" is not single-valued -- ``routes/grid/page.py``'s ``index`` reads the override map
     while ``dashboard_service.py:279`` reads the raw column, which IS finding
     **N-224** -- so the oracle grades the OVERRIDE-MAP answer, the one every
     balance surface folds.

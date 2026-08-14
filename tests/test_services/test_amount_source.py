@@ -530,7 +530,7 @@ class TestTheDeclarationDecides:
         ``_own_figure`` raised on its empty column -- and production carries 7
         Cancelled and 2 Credit template-linked rows against a grid route that
         loads every row in the window with no status predicate
-        (``routes/grid.py:226``), so the first bucket to derive would have taken
+        (``routes/grid/page.py``'s ``_load_grid_transactions``), so the first bucket to derive would have taken
         out the whole screen.
         """
         template = _priced_template(seed_user)

@@ -7,7 +7,7 @@ projected ones --
 already answers, or the run fails naming the rows where it does not.
 
 **"The answer the app gives today" is not single-valued, so this file names the
-one it grades.**  ``routes/grid.py:595`` publishes ``live_estimated_amount`` as
+one it grades.**  ``routes/grid/page.py`` publishes ``live_estimated_amount`` as
 ``amount_overrides.get(txn.id, txn.estimated_amount)`` while
 ``dashboard_service.py:279`` reads the raw column, and that two-answer state IS
 finding **N-224**.  The graded expression is the grid's, and it is the right one
