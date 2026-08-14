@@ -12,11 +12,8 @@ Flask-isolated and commit-free: plain data in, ORM objects out; the caller owns
 the transaction boundary.
 """
 
-import logging
-
 from app import ref_cache
 from app.enums import LedgerAccountClassEnum, LedgerAccountKindEnum
-from app.extensions import db
 from app.models.account import Account
 from app.models.ledger_account import LedgerAccount
 from app.services.account_projection import (
@@ -24,13 +21,7 @@ from app.services.account_projection import (
     classify_account,
 )
 
-from ._common import (
-    LEDGER_ACCOUNT_NAME_MAX_LEN,
-    add_or_reuse,
-    load_owned_account,
-)
-
-logger = logging.getLogger(__name__)
+from ._common import ChartRowLink, get_or_create_chart_row, load_owned_account
 
 # The four per-loan ledger-account kinds this resolver materialises, each
 # mapped to (its accounting class, the display-name suffix snapshotted into
@@ -60,43 +51,6 @@ _LOAN_LEDGER_KINDS = {
     LedgerAccountKindEnum.LOAN_REFUND: (LedgerAccountClassEnum.ASSET, "Refund"),
     LedgerAccountKindEnum.EQUITY_OPENING: (LedgerAccountClassEnum.EQUITY, "Opening"),
 }
-
-
-def _find_existing_loan_ledger_account(
-    user_id: int, loan_account_id: int, kind_id: int,
-) -> LedgerAccount | None:
-    """Return the existing per-loan ledger account, or None.
-
-    The idempotency lookup for :func:`get_or_create_loan_ledger_account`,
-    keyed to match the ``uq_ledger_accounts_loan`` partial unique exactly:
-    ``(user_id, loan_account_id, kind_id)`` among the rows
-    ``WHERE loan_account_id IS NOT NULL``.  ``loan_account_id`` is non-NULL
-    here (the caller only resolves a concrete loan), so the row is inside the
-    index's predicate and the three-column key identifies at most one row --
-    one ``loan_interest`` / ``loan_escrow`` / ``loan_refund`` /
-    ``equity_opening`` account per (owner, loan).
-
-    Args:
-        user_id: The owning user's id.
-        loan_account_id: The loan ``budget.accounts`` id whose per-loan
-            account is sought.
-        kind_id: The ``ref.ledger_account_kinds`` PK of the loan kind
-            (``loan_interest`` / ``loan_escrow`` / ``loan_refund`` /
-            ``equity_opening``).
-
-    Returns:
-        The matching :class:`~app.models.ledger_account.LedgerAccount`, or
-        None when none exists yet.
-    """
-    return (
-        db.session.query(LedgerAccount)
-        .filter_by(
-            user_id=user_id,
-            loan_account_id=loan_account_id,
-            kind_id=kind_id,
-        )
-        .first()
-    )
 
 
 def _load_amortizing_loan_account(user_id: int, loan_account_id: int) -> Account:
@@ -211,35 +165,16 @@ def get_or_create_loan_ledger_account(
             f"got {kind!r}"
         )
     ledger_class, component = _LOAN_LEDGER_KINDS[kind]
-    class_id = ref_cache.ledger_account_class_id(ledger_class)
-    kind_id = ref_cache.ledger_account_kind_id(kind)
-
-    existing = _find_existing_loan_ledger_account(
-        user_id, loan_account_id, kind_id,
-    )
-    if existing is not None:
-        return existing
-
-    loan = _load_amortizing_loan_account(user_id, loan_account_id)
-    name = f"{loan.name} -- {component}"[:LEDGER_ACCOUNT_NAME_MAX_LEN]
-    ledger_account = add_or_reuse(
-        LedgerAccount(
-            user_id=user_id,
-            class_id=class_id,
-            kind_id=kind_id,
-            loan_account_id=loan_account_id,
-            name=name,
-        ),
-        lambda: _find_existing_loan_ledger_account(
-            user_id, loan_account_id, kind_id,
+    return get_or_create_chart_row(
+        user_id,
+        ref_cache.ledger_account_kind_id(kind),
+        ref_cache.ledger_account_class_id(ledger_class),
+        ChartRowLink(LedgerAccount.loan_account_id, loan_account_id),
+        # Called ONLY when a row is being created, which is what keeps the
+        # amortizing-loan guard off the hit path: an existing row resolves
+        # without loading (or re-validating) the loan.
+        lambda: (
+            f"{_load_amortizing_loan_account(user_id, loan_account_id).name}"
+            f" -- {component}"
         ),
     )
-    # "Resolved", not "Created" -- see the note on the category resolver: a
-    # lost natural-key race returns a row this call did not create.
-    logger.info(
-        "Resolved loan %s ledger account id=%d (user_id=%d, "
-        "loan_account_id=%d, class_id=%d, kind_id=%d)",
-        component, ledger_account.id, user_id, loan_account_id,
-        class_id, kind_id,
-    )
-    return ledger_account

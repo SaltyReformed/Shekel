@@ -11,16 +11,22 @@ What they genuinely share lives here so no resolver re-spells it (a
   read off the column so a snapshot clip can never drift from the schema.
 * :func:`add_or_reuse` -- the natural-key race handler every RACEABLE
   get-or-create defers to.
-* :func:`load_owned_account` -- the tenancy-filtered account load the two
-  account-linked resolvers guard their targets with.
+* :func:`get_or_create_chart_row` -- the get-or-create SKELETON the two
+  account-LINKED families share (:mod:`._loans`, :mod:`._counters`), keyed by
+  ``(user, link, kind)`` and parameterised by :class:`ChartRowLink`.
+* :func:`load_owned_account` -- the tenancy-filtered account load those two
+  families guard their targets with.
 
 Flask-isolated and commit-free like its consumers: plain data in, ORM objects
 out; flushes only inside its own SAVEPOINT; the caller owns the transaction.
 """
 
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import InstrumentedAttribute
 
 from app.extensions import db
 from app.models.account import Account
@@ -131,6 +137,115 @@ def add_or_reuse(ledger_account: LedgerAccount, find_existing) -> LedgerAccount:
             existing.id, existing.user_id, existing.kind_id,
         )
         return existing
+    return ledger_account
+
+
+@dataclass(frozen=True)
+class ChartRowLink:
+    """WHICH ``budget.accounts`` row a chart row links, and through which column.
+
+    ``budget.ledger_accounts`` reaches an account through TWO different columns
+    -- ``loan_account_id`` for the per-loan rows and ``account_id`` for the
+    linked row and the per-account counter rows -- and the column is what
+    distinguishes the two natural keys (``uq_ledger_accounts_loan`` versus
+    ``uq_ledger_accounts_account_kind``).  Naming the column as a value rather
+    than as a string keeps :func:`get_or_create_chart_row` one function over
+    both families without a stringly-typed branch: a typo is an
+    ``AttributeError`` at import, not a lookup that silently matches nothing.
+
+    Attributes:
+        column: The mapped :class:`~app.models.ledger_account.LedgerAccount`
+            column the link goes through, e.g. ``LedgerAccount.account_id``.
+        target_id: The ``budget.accounts`` id it points at (non-NULL).
+    """
+
+    column: InstrumentedAttribute
+    target_id: int
+
+
+def get_or_create_chart_row(
+    user_id: int,
+    kind_id: int,
+    class_id: int,
+    link: ChartRowLink,
+    name_for: Callable[[], str],
+) -> LedgerAccount:
+    """Return the ``(user, link, kind)`` chart row, inserting it when absent.
+
+    The get-or-create SKELETON both account-linked families share -- the four
+    per-loan kinds (:mod:`._loans`) and the three per-account counter kinds
+    (:mod:`._counters`).  They differ in their kind catalogue, in which column
+    carries the link and in how they validate the target account; they do NOT
+    differ in the resolve itself, and it was spelled twice until the
+    ``duplicate-code`` gate said so.
+
+    Idempotent against the family's partial unique: the lookup is keyed
+    ``(user_id, <link column>, kind_id)``, which is exactly
+    ``uq_ledger_accounts_loan`` for a loan row and exactly the
+    ``uq_ledger_accounts_account_kind`` slice a user's own account occupies.  A
+    lost race returns the winner's row (:func:`add_or_reuse`).
+
+    **``name_for`` is a callable, and that is the whole reason this stays
+    lazy.**  A display snapshot needs the target account's name, and loading
+    (and validating) the target is what each family's own guard does -- so
+    computing the label eagerly would put that query, and that refusal, in
+    front of every hit on an EXISTING row.  Called at most once, only when a
+    row is actually being created; its result is clipped to the ``name``
+    column here so no caller can forget.
+
+    Flushes so the new row's ``id`` is assigned, but does NOT commit -- the
+    caller owns the transaction boundary.
+
+    Args:
+        user_id: The owning user's id.
+        kind_id: The ``ref.ledger_account_kinds`` PK to stamp.
+        class_id: The ``ref.ledger_account_classes`` PK to stamp.
+        link: The account this row links and the column it links through
+            (:class:`ChartRowLink`).
+        name_for: Zero-argument label producer, called only on creation.  It is
+            where the family's target load and validation happen.
+
+    Returns:
+        The :class:`~app.models.ledger_account.LedgerAccount` for the key
+        (existing, or newly created and flushed).
+
+    Raises:
+        Exception: Whatever *name_for* raises -- each family's target guard is
+            inside it, and a malformed chart entry must fail loud rather than
+            be minted (see :func:`._loans._load_amortizing_loan_account` and
+            :func:`._counters._load_non_loan_account`).
+    """
+    natural_key = {
+        "user_id": user_id,
+        "kind_id": kind_id,
+        link.column.key: link.target_id,
+    }
+
+    def _find_existing():
+        return db.session.query(LedgerAccount).filter_by(**natural_key).first()
+
+    existing = _find_existing()
+    if existing is not None:
+        return existing
+
+    ledger_account = add_or_reuse(
+        LedgerAccount(
+            class_id=class_id,
+            name=name_for()[:LEDGER_ACCOUNT_NAME_MAX_LEN],
+            **natural_key,
+        ),
+        _find_existing,
+    )
+    # "Resolved", not "Created": :func:`add_or_reuse` returns the row a
+    # concurrent request won when this one lost the natural-key race, and that
+    # row is not one this call created.  ``add_or_reuse`` logs the reuse
+    # itself, so the two lines together read correctly either way.
+    logger.info(
+        "Resolved chart row id=%d (user_id=%d, kind_id=%d, class_id=%d, "
+        "%s=%d)",
+        ledger_account.id, user_id, kind_id, class_id,
+        link.column.key, link.target_id,
+    )
     return ledger_account
 
 

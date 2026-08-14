@@ -64,6 +64,7 @@ from app.extensions import db as _db
 from app.models.category import Category
 from app.models.ledger_account import LedgerAccount
 from app.services import ledger_account_service, posting_reads
+from app.services.account_projection import AccountProjectionKind
 # The shared race handler is PACKAGE-PRIVATE.  Plan step X-f3d split the
 # 962-line module into ``ledger_account_service/`` by the kind of chart row
 # each resolver writes, and ``_add_or_reuse`` became ``_common.add_or_reuse``:
@@ -971,39 +972,57 @@ class TestLoanLedgerResolverValidation:
             assert row.name == f"{long_name} -- Interest"[:100]
 
 
-class TestAnchorEquityResolver:
-    """``get_or_create_anchor_equity_account`` materialises the equity twin.
+class TestAccountCounterResolver:
+    """``get_or_create_account_counter_account`` materialises the counter rows.
 
-    Build-Order Step 5's chart resolver: one ``anchor_equity`` Equity account
-    per NON-loan account -- the counter-leg of its ``account_opening`` /
-    ``account_trueup`` corrections -- sharing the ``account_id`` column with
-    the ``linked`` row under the re-keyed ``uq_ledger_accounts_account_kind``
-    unique.  These tests pin the resolver's behaviour (the index itself is
-    covered by ``test_models/test_ledger_account.py::TestPartialUnique``):
-    correct shape / Equity class / name snapshot; idempotency; coexistence
-    with the linked row; archived accounts still resolving; and the clip.
+    Build-Order Step 5's chart resolver, widened by ruling **R-FO** (plan step
+    X-f3d): a NON-loan account's ``account_opening`` / ``account_trueup``
+    correction books its COUNTER leg into a per-account row, and there are now
+    three kinds of that row -- ``anchor_equity`` (Equity), ``interest_income``
+    (Income) and ``unrealized_change`` (Unrealized).  All three share the
+    ``account_id`` column with the ``linked`` row and coexist under the re-keyed
+    ``uq_ledger_accounts_account_kind`` unique, which is what lets the dispatch
+    add kinds without adding an index.  These tests pin the resolver's behaviour
+    (the index itself is covered by
+    ``test_models/test_ledger_account.py::TestPartialUnique``): correct shape /
+    class / name snapshot per kind; idempotency; coexistence with the linked row
+    AND with each other; archived accounts still resolving; and the clip.
     """
 
-    def test_creates_equity_twin_with_correct_shape(
-        self, app, db, seed_user,
+    @pytest.mark.parametrize("kind,expected_class,expected_suffix", [
+        (LedgerAccountKindEnum.ANCHOR_EQUITY,
+         LedgerAccountClassEnum.EQUITY, "Opening"),
+        (LedgerAccountKindEnum.INTEREST_INCOME,
+         LedgerAccountClassEnum.INCOME, "Interest Income"),
+        (LedgerAccountKindEnum.UNREALIZED_CHANGE,
+         LedgerAccountClassEnum.UNREALIZED, "Change in Value"),
+    ])
+    def test_creates_counter_row_with_correct_shape_per_kind(
+        self, app, db, seed_user, kind, expected_class, expected_suffix,
     ):
-        """The twin carries account_id, Equity class, the kind, and a snapshot.
+        """Each counter kind creates one correctly-shaped row with the right class.
 
         Shape contract: ``account_id`` points at the account (shared with the
         linked row); ``category_id`` / ``loan_account_id`` NULL and
-        ``is_fallback`` False; ``class_id`` Equity; ``kind_id``
-        ``anchor_equity``; ``name`` snapshots "<account> -- Opening" (unlike a
-        linked row -- the COALESCE display rule is the LINKED-row rule, so
-        readers render this snapshot); ``user_id`` the owner; flushed.
+        ``is_fallback`` False; ``class_id`` the class that kind implies;
+        ``kind_id`` the requested kind; ``name`` snapshots
+        "<account> -- <suffix>" (unlike a linked row -- the COALESCE display
+        rule is the LINKED-row rule, so readers render this snapshot);
+        ``user_id`` the owner; flushed.
+
+        The class-by-kind half is what a bare "it wrote a row" assertion would
+        miss: no CHECK pins ``class_id`` to ``kind_id``, so booking an
+        a value change into an Equity-class row would tie out perfectly and
+        still leave the income statement silent.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             account = create_account_of_type(
-                seed_user, _db.session, "Checking", "Twin Shape",
+                seed_user, _db.session, "Checking", "Counter Shape",
             )
 
-            row = ledger_account_service.get_or_create_anchor_equity_account(
-                user_id, account.id,
+            row = ledger_account_service.get_or_create_account_counter_account(
+                user_id, account.id, kind,
             )
 
             assert row.id is not None
@@ -1012,21 +1031,19 @@ class TestAnchorEquityResolver:
             assert row.loan_account_id is None
             assert row.is_fallback is False
             assert row.class_id == ref_cache.ledger_account_class_id(
-                LedgerAccountClassEnum.EQUITY,
+                expected_class,
             )
-            assert row.kind_id == ref_cache.ledger_account_kind_id(
-                LedgerAccountKindEnum.ANCHOR_EQUITY,
-            )
-            assert row.name == "Twin Shape -- Opening"
+            assert row.kind_id == ref_cache.ledger_account_kind_id(kind)
+            assert row.name == f"Counter Shape -- {expected_suffix}"
             assert row.user_id == user_id
 
     def test_idempotent_returns_existing_row(self, app, db, seed_user):
-        """A second call for the same account returns the same row.
+        """A second call for the same (account, kind) returns the same row.
 
         ``uq_ledger_accounts_account_kind`` permits one row per
         ``(account, kind)``; the resolver short-circuits on the existing row
         and returns the same PK.  The account's total ledger-row count stays
-        exactly two (the linked row + the one twin).
+        exactly two (the linked row + the one counter row).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1034,23 +1051,56 @@ class TestAnchorEquityResolver:
                 seed_user, _db.session, "HYSA", "Idem Savings",
             )
 
-            first = ledger_account_service.get_or_create_anchor_equity_account(
-                user_id, account.id,
+            first = ledger_account_service.get_or_create_account_counter_account(
+                user_id, account.id, LedgerAccountKindEnum.ANCHOR_EQUITY,
             )
-            second = ledger_account_service.get_or_create_anchor_equity_account(
-                user_id, account.id,
+            second = ledger_account_service.get_or_create_account_counter_account(
+                user_id, account.id, LedgerAccountKindEnum.ANCHOR_EQUITY,
             )
 
             assert second.id == first.id
             assert len(ledger_accounts_for_account(_db.session, account.id)) == 2
 
-    def test_twin_coexists_with_linked_row_and_hook_stays_idempotent(
+    def test_three_kinds_one_account_yield_three_distinct_rows(
         self, app, db, seed_user,
     ):
-        """The twin never displaces the linked pairing (the C3 hardening).
+        """All three counter kinds coexist on one account under the same unique.
 
-        After the twin exists, ``create_ledger_account_for_account`` must
-        still resolve the LINKED row (not the twin) -- the kind filter added
+        R-FO's dispatch adds kinds to a key that already carried the ``linked``
+        row and the ``anchor_equity`` twin, so the three counter rows must
+        coexist rather than collide on ``uq_ledger_accounts_account_kind``.
+        This is what makes "no new index" a property rather than a hope -- and
+        it is also the shape a RE-TYPED account reaches, where an old
+        ``interest_income`` row and a new ``unrealized_change`` row both exist.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = create_account_of_type(
+                seed_user, _db.session, "Money Market", "Triple Counter",
+            )
+
+            rows = [
+                ledger_account_service.get_or_create_account_counter_account(
+                    user_id, account.id, kind,
+                )
+                for kind in (
+                    LedgerAccountKindEnum.ANCHOR_EQUITY,
+                    LedgerAccountKindEnum.INTEREST_INCOME,
+                    LedgerAccountKindEnum.UNREALIZED_CHANGE,
+                )
+            ]
+
+            assert len({row.id for row in rows}) == 3
+            # The linked pairing plus the three counter rows.
+            assert len(ledger_accounts_for_account(_db.session, account.id)) == 4
+
+    def test_counter_row_coexists_with_linked_row_and_hook_stays_idempotent(
+        self, app, db, seed_user,
+    ):
+        """The counter row never displaces the linked pairing (the C3 hardening).
+
+        After the counter row exists, ``create_ledger_account_for_account`` must
+        still resolve the LINKED row (not the counter) -- the kind filter added
         in C3 -- and ``posting_reads._ledger_account_for`` must keep
         returning the linked row rather than raising ``MultipleResultsFound``.
         """
@@ -1061,10 +1111,12 @@ class TestAnchorEquityResolver:
             )
             linked_before = posting_reads._ledger_account_for(account.id)
 
-            twin = ledger_account_service.get_or_create_anchor_equity_account(
-                user_id, account.id,
+            counter = (
+                ledger_account_service.get_or_create_account_counter_account(
+                    user_id, account.id, LedgerAccountKindEnum.UNREALIZED_CHANGE,
+                )
             )
-            assert twin.id != linked_before.id
+            assert counter.id != linked_before.id
 
             # The hook's idempotency lookup still finds the LINKED row.
             hook_row = ledger_account_service.create_ledger_account_for_account(
@@ -1077,24 +1129,24 @@ class TestAnchorEquityResolver:
                 linked_before.id
             )
 
-            # THE DISCRIMINATING PIN for the C3 kind filter (the twin alone
-            # cannot catch a reverted filter: the linked row wins both heap
-            # and index order).  With the linked row GONE and only the twin
-            # left, an unfiltered lookup would return the twin and skip
-            # re-creating the pairing; the kind-filtered hook instead mints
-            # a fresh LINKED row distinct from the twin.
+            # THE DISCRIMINATING PIN for the C3 kind filter (the counter row
+            # alone cannot catch a reverted filter: the linked row wins both
+            # heap and index order).  With the linked row GONE and only the
+            # counter left, an unfiltered lookup would return the counter and
+            # skip re-creating the pairing; the kind-filtered hook instead
+            # mints a fresh LINKED row distinct from it.
             _db.session.delete(linked_before)
             _db.session.flush()
             recreated = ledger_account_service.create_ledger_account_for_account(
                 account,
             )
-            assert recreated.id != twin.id
+            assert recreated.id != counter.id
             assert recreated.kind_id == ref_cache.ledger_account_kind_id(
                 LedgerAccountKindEnum.LINKED,
             )
 
     def test_archived_account_still_resolves(self, app, db, seed_user):
-        """An archived (inactive) account keeps resolving its equity twin.
+        """An archived (inactive) account keeps resolving its counter row.
 
         Archiving disables new activity; it does not erase posted facts, so
         the corrections on an archived account must keep reconciling.  The
@@ -1108,8 +1160,8 @@ class TestAnchorEquityResolver:
             account.is_active = False
             _db.session.commit()
 
-            row = ledger_account_service.get_or_create_anchor_equity_account(
-                user_id, account.id,
+            row = ledger_account_service.get_or_create_account_counter_account(
+                user_id, account.id, LedgerAccountKindEnum.ANCHOR_EQUITY,
             )
             assert row.account_id == account.id
 
@@ -1118,11 +1170,13 @@ class TestAnchorEquityResolver:
     ):
         """A name + suffix wider than the column is clipped, not rejected.
 
-        ``accounts.name`` is ``String(100)``, so "<name> -- Opening" can
-        reach 111 chars -- wider than ``ledger_accounts.name``'s
+        ``accounts.name`` is ``String(100)``, so "<name> -- Change in Value"
+        can reach 118 chars -- wider than ``ledger_accounts.name``'s
         ``String(100)``, which PostgreSQL rejects on insert.  The resolver
         clips the snapshot; ``name`` is display-only, so the clip is lossless
-        for logic.
+        for logic.  The LONGEST suffix is the one under test: R-FO's new kinds
+        made the widest label wider, and a clip sized for "-- Opening" alone
+        would now overflow.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1131,28 +1185,69 @@ class TestAnchorEquityResolver:
                 seed_user, _db.session, "Checking", long_name,
             )
 
-            row = ledger_account_service.get_or_create_anchor_equity_account(
-                user_id, account.id,
+            row = ledger_account_service.get_or_create_account_counter_account(
+                user_id, account.id, LedgerAccountKindEnum.UNREALIZED_CHANGE,
             )
 
             assert len(row.name) == 100
-            assert row.name == f"{long_name} -- Opening"[:100]
+            assert row.name == f"{long_name} -- Change in Value"[:100]
 
 
-class TestAnchorEquityResolverValidation:
-    """The load-bearing guards: non-loan targets only, tenancy-filtered.
+class TestAccountCounterResolverValidation:
+    """The load-bearing guards: known kinds, non-loan targets, tenancy-filtered.
 
-    No database CHECK pins an ``anchor_equity`` row's target (the same
-    columns-only trust contract the loan shape CHECK carries), so the
+    No database CHECK pins a counter row's kind, its class, or its target (the
+    same columns-only trust contract the loan shape CHECK carries), so the
     resolver's guards are the app's sole defense -- and what keeps a loan's
-    linked ledger free of twins (the loan oracle's bare-``account_id``
+    linked ledger free of counter rows (the loan oracle's bare-``account_id``
     helpers rely on that, per the Step-5 plan's C6 checklist).
     """
+
+    @pytest.mark.parametrize("bad_kind", [
+        LedgerAccountKindEnum.LINKED,
+        LedgerAccountKindEnum.CATEGORY,
+        LedgerAccountKindEnum.FALLBACK,
+        LedgerAccountKindEnum.ORPHAN,
+        LedgerAccountKindEnum.LOAN_INTEREST,
+        LedgerAccountKindEnum.EQUITY_OPENING,
+    ])
+    def test_rejects_non_counter_kind(self, app, db, seed_user, bad_kind):
+        """A kind outside the three counter kinds raises, creating no row.
+
+        The map is what derives a row's ``class_id`` from its ``kind_id``, so a
+        kind absent from it has no class to carry -- and the per-loan kinds are
+        in the list because their column shape is ``loan_account_id``, which an
+        ``account_id``-linked row would violate with only a CHECK that cannot
+        see the kind.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            account = create_account_of_type(
+                seed_user, _db.session, "Checking", "Bad Kind Account",
+            )
+            # The rows the account ALREADY has: the linked pairing plus the
+            # ``anchor_equity`` twin the factory's sentinel opening minted.  The
+            # property under test is that the refusal ADDS none, which a
+            # fixed expected set cannot state (``LINKED`` is both a refused
+            # kind and a kind the account legitimately carries).
+            before = {
+                row.id
+                for row in ledger_accounts_for_account(_db.session, account.id)
+            }
+
+            with pytest.raises(ValueError, match="counter ledger account kind"):
+                ledger_account_service.get_or_create_account_counter_account(
+                    user_id, account.id, bad_kind,
+                )
+            assert {
+                row.id
+                for row in ledger_accounts_for_account(_db.session, account.id)
+            } == before
 
     def test_rejects_amortizing_loan(self, app, db, seed_user):
         """A Mortgage target raises: loans book equity via equity_opening.
 
-        Minting an ``anchor_equity`` twin for a loan would double-book its
+        Minting a per-account counter row for a loan would double-book its
         opening across two equity accounts (the loan path already posts onto
         the per-loan ``equity_opening`` account).
         """
@@ -1162,10 +1257,10 @@ class TestAnchorEquityResolverValidation:
                 seed_user, _db.session, "Mortgage", "Guarded Loan",
             )
             with pytest.raises(ValueError, match="amortizing loan"):
-                ledger_account_service.get_or_create_anchor_equity_account(
-                    user_id, loan.id,
+                ledger_account_service.get_or_create_account_counter_account(
+                    user_id, loan.id, LedgerAccountKindEnum.ANCHOR_EQUITY,
                 )
-            # No twin row was minted alongside the linked pairing.
+            # No counter row was minted alongside the linked pairing.
             rows = ledger_accounts_for_account(_db.session, loan.id)
             assert [row.kind_id for row in rows] == [
                 ref_cache.ledger_account_kind_id(LedgerAccountKindEnum.LINKED),
@@ -1176,8 +1271,8 @@ class TestAnchorEquityResolverValidation:
         with app.app_context():
             user_id = seed_user["user"].id
             with pytest.raises(ValueError, match="no account with id=999999"):
-                ledger_account_service.get_or_create_anchor_equity_account(
-                    user_id, 999999,
+                ledger_account_service.get_or_create_account_counter_account(
+                    user_id, 999999, LedgerAccountKindEnum.ANCHOR_EQUITY,
                 )
 
     def test_foreign_account_rejected(
@@ -1188,11 +1283,12 @@ class TestAnchorEquityResolverValidation:
             user_a = seed_user["user"].id
             foreign_account = seed_second_user["account"]
             with pytest.raises(ValueError, match="no account with id="):
-                ledger_account_service.get_or_create_anchor_equity_account(
+                ledger_account_service.get_or_create_account_counter_account(
                     user_a, foreign_account.id,
+                    LedgerAccountKindEnum.ANCHOR_EQUITY,
                 )
             # Only the owner's own rows survive (their linked pairing and
-            # the twin their $2000 opening minted) -- none owned by user A.
+            # the counter row their $2000 opening minted) -- none owned by A.
             foreign_rows = ledger_accounts_for_account(
                 _db.session, foreign_account.id,
             )
@@ -1201,6 +1297,94 @@ class TestAnchorEquityResolverValidation:
                 row.user_id == seed_second_user["user"].id
                 for row in foreign_rows
             )
+
+
+class TestTrueUpCounterKindIsTotal:
+    """``anchor_correction_counter_kind`` -- ruling R-FO's dispatch, TOTAL.
+
+    The rule the whole step turns on: what a balance assertion's difference
+    MEANS is a property of the ACCOUNT.  These cases pin both halves of it --
+    the per-kind answers, and the totality that makes "a new projection kind
+    silently books its return to equity" impossible.
+    """
+
+    @pytest.mark.parametrize("projection_kind,expected", [
+        (AccountProjectionKind.PLAIN, LedgerAccountKindEnum.ANCHOR_EQUITY),
+        (AccountProjectionKind.INTEREST, LedgerAccountKindEnum.INTEREST_INCOME),
+        (AccountProjectionKind.INVESTMENT, LedgerAccountKindEnum.UNREALIZED_CHANGE),
+        (AccountProjectionKind.APPRECIATING,
+         LedgerAccountKindEnum.UNREALIZED_CHANGE),
+    ])
+    def test_a_true_up_names_what_the_difference_was(
+        self, projection_kind, expected,
+    ):
+        """Each non-loan kind's true-up books to the counter R-FO names.
+
+        Pinned by hand, one row per kind, because these four values ARE the
+        ruling: an ``INVESTMENT`` true-up that resolved to ``ANCHOR_EQUITY``
+        would tie out, pass every balance assertion, and leave ``$10,623.66`` of
+        measured investment return off the income statement -- which is the
+        defect this step exists to close.
+        """
+        assert ledger_account_service.anchor_correction_counter_kind(
+            projection_kind, is_opening=False,
+        ) is expected
+
+    @pytest.mark.parametrize("projection_kind", list(AccountProjectionKind))
+    def test_an_opening_always_books_to_equity(self, projection_kind):
+        """An OPENING books to the equity row for EVERY kind, loans included.
+
+        An opening is capital brought onto the books, not something earned: a
+        Property's $350,000.00 opening as a "change in value" would say the house
+        appreciated by its whole value on the day it was recorded.  Parametrized
+        over the WHOLE enum -- ``AMORTIZING`` included -- because the opening
+        arm answers before the dispatch is consulted, and that is exactly the
+        property worth pinning.
+        """
+        assert ledger_account_service.anchor_correction_counter_kind(
+            projection_kind, is_opening=True,
+        ) is LedgerAccountKindEnum.ANCHOR_EQUITY
+
+    def test_a_true_up_refuses_the_kind_that_books_elsewhere(self):
+        """``AMORTIZING`` has no true-up rule here and says so loudly.
+
+        A loan's corrections belong to the loan posting package entirely, so
+        there is no honest answer to give -- and returning a default would put
+        a loan's balance on two equity accounts.
+        """
+        with pytest.raises(ValueError, match="no true-up counter rule"):
+            ledger_account_service.anchor_correction_counter_kind(
+                AccountProjectionKind.AMORTIZING, is_opening=False,
+            )
+
+    def test_the_dispatch_covers_every_kind_the_classifier_returns(self):
+        """No projection kind is left without an answer or a refusal.
+
+        THE totality guard.  ``classify_account`` returns one of five members;
+        this asserts each is either dispatched or explicitly refused, so adding
+        a sixth kind to the enum fails HERE -- at a named test -- instead of
+        booking that kind's return to equity in silence.  A dict lookup cannot
+        be made exhaustive by the language, so it is made exhaustive by a test.
+        """
+        answered, refused = [], []
+        for projection_kind in AccountProjectionKind:
+            try:
+                ledger_account_service.anchor_correction_counter_kind(
+                    projection_kind, is_opening=False,
+                )
+            except ValueError:
+                refused.append(projection_kind)
+            else:
+                answered.append(projection_kind)
+
+        # The loop above puts every member in exactly one list, so asserting
+        # their union is the enum would be a tautology; the refusal set is the
+        # guard, and a kind added without a rule lands in it.
+        assert refused == [AccountProjectionKind.AMORTIZING], (
+            "every non-loan projection kind must name what its true-up WAS; "
+            f"unruled kinds: {refused}"
+        )
+
 
 
 class TestAddOrReuseUnderALostRace:
@@ -1229,8 +1413,9 @@ class TestAddOrReuseUnderALostRace:
         through the resolver itself so the natural key is exactly the one the
         second call will collide on.
         """
-        return ledger_account_service.get_or_create_anchor_equity_account(
+        return ledger_account_service.get_or_create_account_counter_account(
             seed_user["user"].id, seed_user["account"].id,
+            LedgerAccountKindEnum.ANCHOR_EQUITY,
         )
 
     def test_a_lost_race_returns_the_winners_row(self, app, db, seed_user):

@@ -113,7 +113,7 @@ def account_has_history(account_id: int) -> bool:
 
 
 def account_has_ledger_postings(account_id: int) -> bool:
-    """Check if an account's linked ledger account has any postings.
+    """Check if any of an account's ledger accounts has postings.
 
     A settled transfer writes balanced journal entries onto the account's
     linked ledger account (Build-Order Step 2).  Those entries are immutable
@@ -126,11 +126,22 @@ def account_has_ledger_postings(account_id: int) -> bool:
     archives it instead.  The posting-ledger counterpart of
     :func:`account_has_history`.
 
+    **It joins by ``account_id`` across ALL kinds, and that is load-bearing
+    rather than incidental.**  An account carries its ``linked`` row plus its
+    per-account COUNTER rows, and since ruling **R-FO** a correction re-pointed
+    from one counter row to another emits an entry whose ONLY legs are counter
+    legs -- so a linked-row-scoped check would answer False for an account that
+    really does hold immutable posted history, and the hard delete would
+    proceed.  The kind-agnostic join is what makes the model's
+    cascade-imbalance impossibility argument true by construction rather than
+    by a premise about which rows corrections touch.
+
     Args:
         account_id: The Account.id to check.
 
     Returns:
-        True if the account's linked ledger account has at least one posting.
+        True if any ledger account linked to *account_id* has at least one
+        posting.
     """
 
     return db.session.query(

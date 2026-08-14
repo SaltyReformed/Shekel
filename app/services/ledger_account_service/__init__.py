@@ -23,8 +23,10 @@ surface.
 * :mod:`._loans` -- the four per-loan rows: ``loan_interest``, ``loan_escrow``,
   ``loan_refund`` (Step 4's payment split) and ``equity_opening`` (the loan
   read switch's origination entry).
-* :mod:`._counters` -- the per-account row that holds a non-loan account's
-  anchor-correction COUNTER leg, ``anchor_equity`` (Step 5).
+* :mod:`._counters` -- the per-account rows that hold a non-loan account's
+  anchor-correction COUNTER leg (``anchor_equity`` from Step 5,
+  ``interest_income`` and ``unrealized_change`` from ruling **R-FO**), and the
+  total dispatch that decides WHICH of them a given correction books into.
 
 It was ONE 962-line module until plan step X-f3d, which needed room in it: four
 unrelated resolvers had accumulated behind one name, and the split is by the
@@ -41,7 +43,8 @@ discriminator (``LedgerAccountKindEnum`` -> ``ref.ledger_account_kinds`` id):
 :func:`get_or_create_category_ledger_account` writes ``fallback`` (the
 Uncategorized bucket) or ``category``,
 :func:`get_or_create_loan_ledger_account` writes one of the four per-loan kinds,
-and :func:`get_or_create_anchor_equity_account` writes ``anchor_equity``.
+and :func:`get_or_create_account_counter_account` writes one of the three
+per-account counter kinds.
 ``kind_id`` is the authoritative discriminator readers branch on; no database
 CHECK pins it to the row shape (see
 :class:`app.models.ledger_account.LedgerAccount`), so stamping it correctly
@@ -69,7 +72,10 @@ from the live ``account.name`` (see
 """
 
 from ._categories import get_or_create_category_ledger_account
-from ._counters import get_or_create_anchor_equity_account
+from ._counters import (
+    anchor_correction_counter_kind,
+    get_or_create_account_counter_account,
+)
 from ._linked import (
     create_ledger_account_for_account,
     find_linked_ledger_account,
@@ -79,9 +85,10 @@ from ._linked import (
 from ._loans import get_or_create_loan_ledger_account
 
 __all__ = [
+    "anchor_correction_counter_kind",
     "create_ledger_account_for_account",
     "find_linked_ledger_account",
-    "get_or_create_anchor_equity_account",
+    "get_or_create_account_counter_account",
     "get_or_create_category_ledger_account",
     "get_or_create_loan_ledger_account",
     "ledger_class_id_for_category",
