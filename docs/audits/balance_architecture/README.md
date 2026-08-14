@@ -470,7 +470,7 @@ hides.
     every row is OWN, so the resolver answers the stored column through one arm, and that window
     closes at the first cutover.
   * [ ] **X-au-c3** `fix(cash): a settle freezes what the row is worth` -- the FREEZE and its
-    INVERSE, closing **N-241**, **N-242**, **N-278** and **N-259**. **It inherits X-aq's obligation**
+    INVERSE, closing **N-241**, **N-242**, **N-282** and **N-259**. **It inherits X-aq's obligation**
     (`9cabc206`, amended `c4932746`), carried here when that step was archived: a settle already
     books the freshest derivation into the CACHE, and this leaf FORMALISES that write rather than
     undoing it. At settle the resolved figure is
