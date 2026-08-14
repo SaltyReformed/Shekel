@@ -25,6 +25,7 @@ the failure being guarded against.
 | `implementation_plan_recurrence_redesign.md` | the recurrence arc's | argument |
 | `implementation_plan_pay_calendar.md` | the pay-calendar arc's | argument |
 | `implementation_plan_credit_card.md` | the credit-card arc's | argument |
+| `implementation_plan_bank_import.md` | the statement importer's, split out 2026-08-13 | argument |
 
 **Merge what shares KEYS; split what shares only a READER.** Findings and steps alias across arcs,
 so they are one table each. A root cause, its evidence, its target model and its rejected

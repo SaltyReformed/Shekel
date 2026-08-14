@@ -56,20 +56,26 @@ class TestTheOrderIsStatedOnlyInStepsMd:
 
     def test_the_control_fires_on_a_restated_sequence(self, stage_arc):
         """The exact shape the balance signpost carried until 2026-08-11."""
+        # The ids are CHOSEN from the live table, not named.  This fixture
+        # pinned four and the corpus later deleted one, silently degrading it
+        # to a three-id chain that still passed -- a control that cannot tell
+        # four from three cannot notice its own subject rotting, and pinning
+        # data the registry is expected to change is how it happened.
+        idents = [
+            row.ident for row in registry.step_rows() if row.arc == "balance"
+        ][:4]
+        assert len(idents) == 4, "the balance arc must hold four steps to chain"
+        a, b, c, d = idents
         stage_arc(
             "balance",
             "## Where the arc stands",
-            "## Where the arc stands\n\nOrder from here: **X-aq**, then **X-ap**, "
-            "then **X-f3** -> X-f4.\n",
+            f"## Where the arc stands\n\nOrder from here: **{a}**, then **{b}**, "
+            f"then **{c}** -> {d}.\n",
         )
         problems = duplication.order_restatement_violations()
         assert problems, "a four-step chain must be reported"
         assert "rule 16" in problems[0]
-        # The PAYLOAD, not just that something fired: this fixture named a step
-        # the corpus later deleted, which silently degraded it to a three-id
-        # chain that still passed.  A control that cannot tell four from three
-        # cannot notice its own subject rotting.
-        assert "X-aq -> X-ap -> X-f3 -> X-f4" in problems[0], problems
+        assert f"{a} -> {b} -> {c} -> {d}" in problems[0], problems
 
     def test_the_control_fires_on_the_shortest_chain(self, stage_arc):
         """Two steps and one connective is already a sequence.

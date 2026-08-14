@@ -12,7 +12,7 @@ Covers:
   - Grid page flow: entry_sums passes through to template context.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -685,3 +685,83 @@ class TestGridPageEntrySums:
             # The desktop grid cell should show progress format.
             # 180 + 70 = 250 spent on 500 budget.
             assert b"250 / 500" in resp.data
+
+
+class TestTheEntryListContextHasOneProducer:
+    """The whole entry-list context comes from ``entry_list_view``, everywhere.
+
+    **These are the controls the bug had none of.**  Every test of the
+    reconciled indicator drove ``GET /transactions/<id>/entries``
+    (``test_entries.py::TestTheDerivedReconciledIndicator``) -- the ONE render
+    path that supplied ``reconciled_ids``.  The grid macro, the mobile card,
+    the companion view and the full-edit popover all render the same partial
+    from :func:`build_entry_lists_dict`, which did not, and Jinja answers
+    ``entry.id in Undefined`` as ``False`` silently.  So on every initial
+    render a reconciled purchase read *"Still outstanding"* while the
+    projection had already released its reservation -- 9 of 9 such purchases
+    on the 2026-08-13 production clone.
+
+    A missing key cannot fail loudly in Jinja, so it is graded here instead:
+    the producer supplies the whole context, and the macro is asserted to
+    unpack every key of it.
+    """
+
+    def test_the_dict_carries_the_reconciled_indicator(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """A purchase inside the asserted balance comes back reconciled."""
+        from tests._test_helpers import (
+            append_balance_assertion, settle_instant_on,
+        )
+
+        with app.app_context():
+            txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
+            inside = _add_entry(txn, seed_user, Decimal("150.00"))
+            outside = _add_entry(txn, seed_user, Decimal("80.00"))
+            asserted_on = seed_periods_today[0].start_date
+            inside.settled_on = asserted_on
+            outside.settled_on = asserted_on + timedelta(days=1)
+            append_balance_assertion(
+                db.session, seed_user["account"], seed_periods_today[0],
+                Decimal("1000.00"), settle_instant_on(asserted_on),
+            )
+            db.session.commit()
+
+            data = build_entry_lists_dict([txn])[txn.id]
+
+        assert data["reconciled_through"] == asserted_on
+        assert data["reconciled_ids"] == {inside.id}, (
+            "a purchase dated at or before the asserted day is inside that "
+            "balance; one dated after it is not"
+        )
+
+    def test_the_grid_macro_unpacks_every_key_the_producer_returns(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """The macro's ``{% set %}`` list covers the whole context.
+
+        The negative control for the defect itself: delete either
+        ``reconciled_ids`` or ``reconciled_through`` from
+        ``_grid_row_macros.html`` and this fails, where the rendered page
+        would have gone on looking plausible.
+        """
+        from pathlib import Path
+
+        with app.app_context():
+            txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
+            _add_entry(txn, seed_user, Decimal("150.00"))
+            db.session.commit()
+            produced = set(build_entry_lists_dict([txn])[txn.id])
+
+        macro = Path(app.root_path) / "templates/grid/_grid_row_macros.html"
+        source = macro.read_text(encoding="utf-8")
+        unset = {
+            key for key in produced
+            if f"{{% set {key} = _entry_data.{key} %}}" not in source
+        }
+        assert not unset, (
+            f"_grid_row_macros.html does not unpack {sorted(unset)} from "
+            "_entry_data, and Jinja answers a membership test against an "
+            "Undefined as False SILENTLY -- so the partial would render the "
+            "wrong arm rather than raising"
+        )

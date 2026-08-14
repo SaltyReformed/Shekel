@@ -137,26 +137,19 @@ def _render_entry_list(
     entries = entry_service.get_entries_for_transaction(
         txn.id, current_user.id,
     )
-    remaining = entry_service.compute_remaining(
-        txn.estimated_amount, entries,
+    # The WHOLE derived context, from the one producer that builds it
+    # (:func:`app.services.entry_service.entry_list_view`), SPLATTED rather
+    # than named key by key.  This route assembled its own until 2026-08-13,
+    # and the grid macro assembled a different one that was missing
+    # ``reconciled_ids`` -- so every initial render showed reconciled
+    # purchases as outstanding while the projection had released them.  A
+    # caller that cannot name the keys cannot forget one.
+    view = entry_service.entry_list_view(
+        txn, entries, cash_ledger.reconciled_through(txn.account_id),
     )
-    out_of_period_ids = {
-        e.id for e in entries
-        if not entry_service.check_purchase_date_in_period(e.purchased_on, txn)
-    }
-    # The read-only reconciled indicator (ruling R-DH (d)).  Derived at read
-    # time from the SHARED predicate rather than from a stored flag, so what
-    # the row shows and what the projection held back cannot disagree -- the
-    # manual toggle this replaced could set either one against the other.
-    boundary = cash_ledger.reconciled_through(txn.account_id)
-    reconciled_ids = {
-        e.id for e in entries if boundary.covers(e.settled_on)
-    }
     return render_template(
         "grid/_transaction_entries.html",
         txn=txn,
-        entries=entries,
-        remaining=remaining,
         # The add form's ``purchased_on`` default, and both date pickers'
         # ``max``.  It is the USER's today (``display_today``), not the
         # server's UTC one, because the service refuses a future purchase date
@@ -166,16 +159,11 @@ def _render_entry_list(
         # rejects.
         today=display_today().isoformat(),
         editing_id=editing_id,
-        out_of_period_ids=out_of_period_ids,
-        reconciled_ids=reconciled_ids,
-        # The DAY, for the tooltip that names it.  Which entries the boundary
-        # reconciles is decided above, in Python; the template renders the
-        # answer and never re-derives it.
-        reconciled_through=boundary.observed_day,
         conflict=conflict,
         error=error,
         entry_list_host=host,
         entry_list_host_id=_entry_list_host_id(txn.id, host),
+        **view,
     )
 
 

@@ -48,11 +48,14 @@ CAPS = {
     "recurrence": 850,
     "pay_calendar": 500,
     "credit_card": 400,
+    "bank_import": 200,
 }
 
 #: The signpost's cap, per document.  The balance README's reached 1,019 lines
 #: as an append-only log before it was capped at all.
-SIGNPOST_CAPS = {"balance": 30, "recurrence": 20, "pay_calendar": 20}
+SIGNPOST_CAPS = {
+    "balance": 30, "recurrence": 20, "pay_calendar": 20, "bank_import": 30,
+}
 
 #: A SHIPPED step's entry cap (rule 7).
 #:
@@ -74,6 +77,7 @@ SIGNPOST_CAPS = {"balance": 30, "recurrence": 20, "pay_calendar": 20}
 #: archived one, so it moved UP to Section 3.1, which defines the "settled
 #: transaction rows" it is about.
 TICKED_CAPS = {
+    "bank_import": 6,
     "balance": 6,
     "recurrence": 6,
     "pay_calendar": 6,
@@ -104,6 +108,14 @@ SPECS = {
         arc_state_heading="## Where this stands",
         arc_state_cap=SIGNPOST_CAPS["pay_calendar"],
         ticked_entry_cap=TICKED_CAPS["pay_calendar"],
+    ),
+    "bank_import": PlanSpec(
+        path=registry.ARC_DOCS["bank_import"],
+        steps_heading="## The steps", steps_label="The steps",
+        line_cap=CAPS["bank_import"],
+        arc_state_heading="## Context",
+        arc_state_cap=SIGNPOST_CAPS["bank_import"],
+        ticked_entry_cap=TICKED_CAPS["bank_import"],
     ),
     "credit_card": PlanSpec(
         path=registry.ARC_DOCS["credit_card"],
