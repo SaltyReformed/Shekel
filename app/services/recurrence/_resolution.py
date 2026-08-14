@@ -602,6 +602,12 @@ def _first_of_month_anchor(calendar: PayCalendar, effective: date) -> date:
     a pattern defined in terms of paydays, not to this implementation, and
     equally true of the scan plan step R2b shipped.
 
+    **Plan step R-F7 deleted TWO dead guards here** (ledger row D11): the
+    scan's ``earliest is not None``, which asks about a period's OWN month so
+    that period is in the minimand; and the fallback's re-ask of the EFFECTIVE
+    month, whose answer is a ``start_date`` that would have returned inside
+    the scan.  The second carried a comment describing a case it never reached.
+
     Args:
         calendar: The owner's pay-period schedule.
         effective: The rule's opening bound.
@@ -612,17 +618,14 @@ def _first_of_month_anchor(calendar: PayCalendar, effective: date) -> date:
     for period in calendar.periods:
         if period.start_date < effective:
             continue
+        # Never ``None`` (R-F7, above): a broken invariant raises here.
         earliest = calendar.earliest_start_in_month(
             period.start_date.year, period.start_date.month,
         )
-        if earliest is not None and earliest >= effective:
+        if earliest >= effective:
             return date(period.start_date.year, period.start_date.month, 1)
     # Past the materialised horizon: no month can be inspected, so answer the
-    # one the schedule will reach.  The effective month qualifies only if its
-    # own first paycheck is on or after the bound.
-    earliest = calendar.earliest_start_in_month(effective.year, effective.month)
-    if earliest is not None and earliest >= effective:
-        return date(effective.year, effective.month, 1)
+    # one the schedule will reach.
     return _next_month_first(effective)
 
 
