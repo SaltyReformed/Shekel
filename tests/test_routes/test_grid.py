@@ -362,7 +362,6 @@ class TestBalanceRow:
             balances = balance_at.cash_balance_map(
                 seed_user["account"],
                 BalanceContext.build(seed_user["user"].id),
-                seed_periods_today,
             )
             assert balances[seed_periods_today[-1].id] == Decimal("-200.00")
 
@@ -2901,7 +2900,7 @@ class TestPeriodHeaderDateFormat:
         with app.app_context():
             today = date.today()
             start = today - timedelta(days=28)
-            periods = self._make_periods(db, seed_user, start)
+            self._make_periods(db, seed_user, start)
 
             # The grid starts at the current period -- find it.
             current = pay_period_service.get_current_period(
@@ -4791,7 +4790,6 @@ class TestGridPeriodSubtotalCanonical:
             columns = balance_at.grid_balance_view(
                 seed_user["account"],
                 BalanceContext.build(seed_user["user"].id),
-                periods,
             ).columns
             column = columns[target_period.id]
             prior_period = periods[target_index - 1]
@@ -8085,7 +8083,7 @@ class TestTheTwoRemainderRows:
                 p for p in all_periods
                 if p.period_index >= current.period_index
             ][:6]
-            view = balance_at.grid_balance_view(hysa, bctx, all_periods)
+            view = balance_at.grid_balance_view(hysa, bctx)
             # The shape this test needs: the window accrues, its first
             # column does not.
             assert view.row_flags(window).accrual is True
@@ -8637,10 +8635,9 @@ class TestGridInterestAccrual:
         scenario = seed_user["scenario"]
         bctx = BalanceContext.build(seed_user["user"].id)
         user_id = seed_user["user"].id
-        all_periods = pay_period_service.get_all_periods(user_id)
         current = pay_period_service.get_current_period(user_id)
         # Seam truth the route must render (current is the leftmost visible col).
-        view = balance_at.grid_balance_view(hysa, bctx, all_periods)
+        view = balance_at.grid_balance_view(hysa, bctx)
         accrued = view.columns[current.id].balance
         interest = view.columns[current.id].accrual
 
@@ -8769,11 +8766,10 @@ class TestGridInterestAccrual:
             income_service, "live_projected_net",
             lambda uid, sid, txns: {income.id: Decimal("5000.00")},
         )
-        all_periods = pay_period_service.get_all_periods(user_id)
         current = pay_period_service.get_current_period(user_id)
         # The seam builds the live map itself (ruling R-Q), so no override is
         # threaded here or by the route -- this IS the live figure.
-        live_view = balance_at.grid_balance_view(hysa, bctx, all_periods)
+        live_view = balance_at.grid_balance_view(hysa, bctx)
         accrued_live = live_view.columns[current.id].balance
         # Sanity: the live $5,000 (not the $1,000 stored) is reflected -- the
         # balance clears the $10,000 anchor + the live deposit.

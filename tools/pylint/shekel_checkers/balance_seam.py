@@ -597,6 +597,18 @@ _FENCED_MODULE_RULINGS = {
         # D-ctx-b / E1d-a), which is where a public balance producer would have
         # to be born to be reachable, and W9910 owns that.
         "loan_walk",
+        # The read pass's PAY CALENDAR memo, and the reporting window read off
+        # it (plan step C2-c).  Both NON-producers, on the same ground
+        # ``loan_walk`` stands on: a calendar is the owner's paydays with the
+        # two derived columns computed from them -- DATES, with no money
+        # anywhere in the value -- and ``pay_calendar`` is a PUBLIC leaf below
+        # this seam that any consumer may call directly for the identical
+        # answer.  These hand back nothing a caller could not obtain from
+        # ``pay_calendar.calendar_for`` itself; what they add is that the seam
+        # and its caller cannot end up on two different calendars in one
+        # render.
+        "calendar",
+        "reported_periods",
     })),
     # The loan-payment LOADER module (:data:`_LOAN_PAYMENT_SEAM_MODULES`).  It
     # was "the one reader-allowlisted module outside the defining package" until

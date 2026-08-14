@@ -352,7 +352,7 @@ class TestLiveIncomeThroughBalanceResolver:
 
             # The grid's income row reflects the live net.
             column = balance_at.grid_balance_view(
-                account, bctx, periods,
+                account, bctx,
             ).columns[period.id]
             assert column.income == expected_net, (
                 f"GridColumn.income should be live {expected_net}, "
@@ -365,7 +365,7 @@ class TestLiveIncomeThroughBalanceResolver:
             # walk onto the cash view at plan step X-g4b; the delta is
             # unchanged because both read one ``live_amount_overrides`` map.
             result = balance_at.cash_balance_map(
-                account, bctx, periods,
+                account, bctx,
             )
             idx = next(i for i, p in enumerate(periods) if p.id == period.id)
             prior = result[periods[idx - 1].id]
@@ -402,7 +402,7 @@ class TestLiveIncomeThroughBalanceResolver:
             db.session.commit()
 
             column = balance_at.grid_balance_view(
-                account, bctx, [period],
+                account, bctx,
             ).columns[period.id]
             assert column.income == Decimal("1234.56"), (
                 "An overridden income row must keep the user's amount, "

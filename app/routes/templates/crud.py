@@ -65,11 +65,13 @@ from app.routes._recurrence_form_helpers import (
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
     edit_form_cadence,
+    edit_form_end_bound,
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
-from app.routes._form_errors import validate_form_or_redirect
+from app.routes._form_errors import load_form_or_redirect
 from app.routes._redirect_target import RedirectTarget
+from app.schemas.validation import RECURRENCE_END_BOUND_KEY
 from app.routes.templates._bp import templates_bp
 
 logger = logging.getLogger(__name__)
@@ -265,6 +267,9 @@ def new_template():
         accounts=accounts,
         picker=picker_model(),
         selected_cadence=None,
+        # A create form starts on the unbounded shape; nothing is derived on
+        # a transaction template, so the control is never locked.
+        selected_end_bound=edit_form_end_bound(None),
         txn_types=txn_types,
         periods=periods,
         current_period=current_period,
@@ -282,13 +287,12 @@ def new_template():
 @require_owner
 def create_template():
     """Create a new transaction template with optional recurrence rule."""
-    invalid_payload = validate_form_or_redirect(
+    payload = load_form_or_redirect(
         _create_schema, RedirectTarget("templates.new_template"),
     )
-    if invalid_payload is not None:
-        return invalid_payload
-
-    data = _create_schema.load(request.form)
+    if isinstance(payload, Response):
+        return payload
+    data = payload
 
     # Validate account/category ownership + expense-only tracking.
     invalid = _validate_template_form(
@@ -309,9 +313,13 @@ def create_template():
     # repeats the transfers-side create-form preamble, and it cannot be
     # hoisted further (see plan.md Phase 2 notes).
     # pylint: disable=duplicate-code
-    # Extract start_period_id and end_date before creating the rule.
+    # Extract start_period_id and the closing bound before creating the rule.
     start_period_id = data.pop("start_period_id", None)
-    end_date = data.pop("end_date", None)
+    # The closing bound, composed by the schema's ``@post_load`` into ONE
+    # value under the mode key.  ABSENT when the form stated no bound --
+    # a disabled control, or a partial update -- which the helpers read as
+    # "leave the stored one alone" (plan step R7b-3).
+    end_bound = data.pop(RECURRENCE_END_BOUND_KEY, None)
 
     # Create the recurrence rule if a pattern was specified.  The
     # F-24 helper pops every recurrence-related key from ``data`` so
@@ -325,7 +333,7 @@ def create_template():
         user_id=current_user.id,
         start_period_id=start_period_id,
         ctx=RecurrenceFormContext(
-            end_date_value=end_date,
+            end_bound=end_bound,
             redirect=RedirectTarget("templates.new_template"),
             include_due_day_of_month=True,
         ),
@@ -400,6 +408,7 @@ def edit_template(template_id):
         # "Does not repeat" entry whose save DELETES the rule (R2e-1).
         picker=picker_model(),
         selected_cadence=edit_form_cadence(template),
+        selected_end_bound=edit_form_end_bound(template),
         txn_types=txn_types,
         periods=[],
         current_period=None,
@@ -453,12 +462,13 @@ def update_template(template_id):
     if template is None:
         abort(404)
 
-    invalid_payload = validate_form_or_redirect(
+    payload = load_form_or_redirect(
         _update_schema,
         RedirectTarget("templates.edit_template", {"template_id": template_id}),
     )
-    if invalid_payload is not None:
-        return invalid_payload
+    if isinstance(payload, Response):
+        return payload
+    data = payload
 
     # The load / version-guard / pop / resolve preamble below is the
     # standard parallel-CRUD update shape it shares with
@@ -476,8 +486,6 @@ def update_template(template_id):
     # mechanics in ``docs/audits/pylint-cleanup/plan.md`` (Phase 2 working
     # notes).
     # pylint: disable=duplicate-code
-    data = _update_schema.load(request.form)
-
     # Stale-form check (commit C-18 / F-010).  Routed through the
     # F-26 helper so the pre-flush optimistic-locking guard shares a
     # single implementation with the parallel transfer-template
@@ -505,7 +513,11 @@ def update_template(template_id):
 
     # Remove start_period_id from update data (set once at creation).
     data.pop("start_period_id", None)
-    end_date = data.pop("end_date", None)
+    # The closing bound, composed by the schema's ``@post_load`` into ONE
+    # value under the mode key.  ABSENT when the form stated no bound --
+    # a disabled control, or a partial update -- which the helpers read as
+    # "leave the stored one alone" (plan step R7b-3).
+    end_bound = data.pop(RECURRENCE_END_BOUND_KEY, None)
 
     # The template's before-image, captured BEFORE anything overwrites it
     # (plan step R2e-1).  ``had_recurrence_rule`` is what lets the
@@ -526,7 +538,7 @@ def update_template(template_id):
         template,
         data,
         ctx=RecurrenceFormContext(
-            end_date_value=end_date,
+            end_bound=end_bound,
             redirect=RedirectTarget(
                 "templates.edit_template",
                 {"template_id": template_id},

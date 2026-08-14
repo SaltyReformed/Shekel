@@ -130,9 +130,13 @@
 
 
 {# The remaining cadence-dependent fields inside #recurrence-fields: the
-   day / due-day / month row and the end date.  recurrence_form.js toggles each
-   on by id from the facts the chosen offer carries.  Does NOT include the
-   pay-period selector or the preview (each form places those).
+   day / due-day / month row.  recurrence_form.js toggles each on by id from
+   the facts the chosen offer carries.  Does NOT include the pay-period
+   selector, the preview or the "Ends" control (each form places those).
+
+   The END BOUND left at plan step R7b-3, into recurrence_end_bound below: it
+   is not cadence-dependent -- every cadence can stop -- and it needs the
+   picker and the stored bound, which this macro is not handed.
 
    The interval moved OUT at plan step
    R7b-2: it is one of the three cadence axes now, so it lives beside the unit
@@ -170,11 +174,89 @@
     </select>
   </div>
 </div>
-<div class="mb-3 d-none" id="field-end-date">
-  <label for="end_date" class="form-label">End Date</label>
-  <input type="date" id="end_date" name="end_date" class="form-control" aria-describedby="end-date-help"
-         value="{{ template.recurrence_rule.end_date.isoformat() if template and template.recurrence_rule and template.recurrence_rule.end_date else '' }}">
-  <div id="end-date-help" class="form-text">Leave blank for indefinite. Entries won't be generated after this date.</div>
+{% endmacro %}
+
+
+{# The "Ends" control (plan step R7b-3): ONE control for a bound that has
+   THREE shapes -- never, on a date, after N occurrences.  It replaced a bare
+   "End Date" input, and the shape is what makes
+   ck_recurrence_rules_single_end_bound unreachable rather than refused: a
+   rule cannot state two stops because the form cannot post two.
+
+   ``picker.end_bounds`` is the offer set, derived from the same closed tuple
+   app.services.recurrence.end_bound_from_token dispatches over, so a shape is
+   offerable and submittable together or neither.  ``selected`` is the stored
+   rule's own bound (edit_form_end_bound), or the unbounded shape on a create
+   form.
+
+   ``locked`` disables all three controls, for a definition whose bound the
+   app DERIVES rather than accepts: a loan payment's stop is the loan's
+   projected payoff, which loan_recurrence_sync rewrites on every
+   payoff-affecting edit, so an editable box here would discard the user's
+   value without saying so.  A disabled control posts nothing, so the mode key
+   arrives ABSENT -- which the schema and the update route read as "this form
+   said nothing about the bound" and leave the stored one alone.  The server
+   refuses a crafted submission that sends one anyway
+   (LOAN_PAYMENT_BOUND_IS_DERIVED); disabling is the affordance, not the
+   guard.
+
+   Both value inputs are disabled unless their own shape is chosen, which is
+   the same idiom the two interval controls use above: a disabled control does
+   not submit, so the payload carries the one input the chosen shape needs and
+   no other. #}
+{% macro recurrence_end_bound(picker, selected, locked=false) %}
+<div class="mb-3 d-none" id="field-end-bound">
+  <label for="recurrence_end_mode" class="form-label">Ends</label>
+  <div class="row g-2 align-items-center">
+    <div class="col-auto">
+      <select id="recurrence_end_mode" name="recurrence_end_mode" class="form-select"
+              aria-describedby="end-bound-help" {{ 'disabled' if locked else '' }}>
+        {# data-needs names the control this shape needs a value from, so the
+           script shows one and disables the rest without ever stating which
+           shapes exist.  Empty for the shape that needs none. #}
+        {% for opt in picker.end_bounds %}
+        <option value="{{ opt.token }}" data-needs="{{ opt.needs_field_id or '' }}"
+          {{ 'selected' if selected.token == opt.token else '' }}>
+          {{ opt.label }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    {# A value wrap is hidden until its own shape is chosen -- the script owns
+       that -- EXCEPT on a locked form, where the script returns early and
+       would leave the user a disabled "On a date" select with no date beside
+       it: a control that says where its value comes from and never shows it.
+       So the server reveals the wrap matching the stored shape, and it stays
+       disabled either way. #}
+    <div class="col-auto {{ '' if locked and selected.end_date is not none else 'd-none' }}"
+         id="field-end-date">
+      <input type="date" id="end_date" name="end_date" class="form-control"
+             aria-label="Date this stops repeating"
+             value="{{ selected.end_date.isoformat() if selected.end_date is not none else '' }}"
+             {{ 'disabled' if locked or selected.end_date is none else '' }}>
+    </div>
+    <div class="col-auto {{ '' if locked and selected.max_occurrences is not none else 'd-none' }}"
+         id="field-max-occurrences">
+      <div class="input-group">
+        {# ``is not none`` on both, never truthiness: the two attributes have
+           to agree, and a falsy-count bug would render an empty box that is
+           also ENABLED. #}
+        <input type="number" id="max_occurrences" name="max_occurrences"
+               class="form-control interval-box" min="1"
+               aria-label="How many times this repeats"
+               value="{{ selected.max_occurrences if selected.max_occurrences is not none else '' }}"
+               {{ 'disabled' if locked or selected.max_occurrences is none else '' }}>
+        <span class="input-group-text">times</span>
+      </div>
+    </div>
+  </div>
+  <div id="end-bound-help" class="form-text">
+    {%- if locked -%}
+      Set from the loan's projected payoff, and updated when the loan changes.
+    {%- else -%}
+      Entries won't be generated past this.
+    {%- endif -%}
+  </div>
 </div>
 {% endmacro %}
 

@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 from app.services import balance_at, savings_goal_service
 from app.services.balance_at import BalanceContext
 from app.services.account_category import is_liability_account
-from app.services.pay_calendar import cadence_for
+from app.services.pay_calendar import cadence_for, calendar_for
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
     _load_archived_accounts,
@@ -75,7 +75,7 @@ from app.services.savings_dashboard_service._types import (
 from app.utils.money import round_money
 
 if TYPE_CHECKING:
-    from app.services.pay_calendar import PayCadence
+    from app.services.pay_calendar import PayCalendar
     from app.services.paycheck_calculator import PaycheckBreakdown
     from app.services.savings_dashboard_service._types import (
         _AccountParams,
@@ -340,7 +340,12 @@ def compute_goal_progress(
             net_biweekly_pay=net_biweekly_pay,
             # After the no-goals early return above, for the reason
             # ``compute_debt_summary`` resolves it after ITS early return.
-            pay_cadence=cadence_for(user_id),
+            # The WHOLE schedule rather than the cadence since plan step
+            # R7b-3: the contribution filter has to tell whether a
+            # count-bounded template has spent its count, which depends on
+            # when the paychecks fall.  Two queries instead of one, paid only
+            # by an owner who HAS goals.
+            calendar=calendar_for(user_id),
         ),
         active_goals,
     )
@@ -602,7 +607,7 @@ def _compute_emergency_fund_section(
     user_id: int,
     core: _DashboardCoreData,
     account_data: list[AccountProjection],
-    pay_cadence: PayCadence,
+    calendar: PayCalendar,
 ) -> dict:
     """Assemble the cockpit's emergency-fund figures and their basis.
 
@@ -630,12 +635,14 @@ def _compute_emergency_fund_section(
         core: The loaded :class:`_DashboardCoreData` (its accounts, periods and
             scenario scope the expense baseline).
         account_data: The per-account projections (the liquid balances).
-        pay_cadence: How often the owner is paid
-            (:class:`~app.services.pay_calendar.PayCadence`).  BOTH figures
-            here rest on it -- the expense baseline converts a per-period
-            average into month space, and the coverage footer states its span
-            in paychecks -- so one value serves them and the caption cannot
-            name a basis the figure above it was not measured against.
+        calendar: The owner's whole pay-period schedule.  BOTH figures here
+            rest on it -- the expense baseline converts a per-period average
+            into month space through ``calendar.cadence``, and the coverage
+            footer states its span in paychecks -- so one value serves them
+            and the caption cannot name a basis the figure above it was not
+            measured against.  The WHOLE schedule rather than the cadence
+            because the committed half of that baseline has to tell whether a
+            count-bounded template has spent its count (plan step R7b-3).
 
     Returns:
         dict with ``emergency_metrics``
@@ -643,12 +650,12 @@ def _compute_emergency_fund_section(
         ``total_savings`` and ``avg_monthly_expenses``.
     """
     avg_monthly_expenses = _compute_avg_monthly_expenses(
-        user_id, core, pay_cadence,
+        user_id, core, calendar,
     )
     total_savings = _sum_liquid_balances(account_data)
     return {
         "emergency_metrics": savings_goal_service.calculate_savings_metrics(
-            total_savings, avg_monthly_expenses, pay_cadence,
+            total_savings, avg_monthly_expenses, calendar.cadence,
         ),
         "total_savings": total_savings,
         "avg_monthly_expenses": avg_monthly_expenses,
@@ -696,7 +703,13 @@ def compute_dashboard_data(user_id):
     # the honest answer rather than an assumed 26.  (``_compute_avg_monthly
     # _expenses`` needs it to decide whether expenses are even non-zero, so
     # "resolve it only when there are expenses" is not available here.)
-    pay_cadence = cadence_for(user_id)
+    # The WHOLE schedule, and the cadence off it: the goal-contribution filter
+    # has to tell whether a count-bounded template has spent its count, which
+    # depends on when the paychecks fall (plan step R7b-3).  ONE load serves
+    # both, which is what ``cadence_for``'s own docstring says a caller
+    # holding a calendar must do -- reading ``calendar.cadence`` rather than
+    # querying the schedule row a second time.
+    calendar = calendar_for(user_id)
 
     # ── Load account-type-specific parameters ───────────────────
     params = _load_account_params(core.accounts)
@@ -730,7 +743,7 @@ def compute_dashboard_data(user_id):
         _GoalInputs(
             all_periods=core.all_periods,
             net_biweekly_pay=net_biweekly_pay,
-            pay_cadence=pay_cadence,
+            calendar=calendar,
         ),
         _load_active_goals(user_id),
     )
@@ -767,7 +780,7 @@ def compute_dashboard_data(user_id):
         # The coverage figures and the two figures its caption names as their
         # basis, from one helper (plan step X-z2).
         **_compute_emergency_fund_section(
-            user_id, core, account_data, pay_cadence,
+            user_id, core, account_data, calendar,
         ),
         "savings_accounts": savings_accounts,
         "archived_accounts": _load_archived_accounts(user_id),

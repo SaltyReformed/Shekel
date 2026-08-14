@@ -4421,6 +4421,36 @@ def validated_cadence(unit=None, interval_n=1, placement=None):
     }
 
 
+def end_bound_payload(bound=None):
+    """Return the form keys that state one closing bound, as a BROWSER posts them.
+
+    The bound half of :func:`cadence_payload`, for plan step R7b-3's "Ends"
+    control.  The control is a mode ``<select>`` and two value inputs of which
+    exactly one is ever ENABLED, so a real submission carries the mode plus at
+    most one value -- and that is what this produces.  A helper that always
+    sent both would exercise a payload the form cannot make.
+
+    Args:
+        bound: An :class:`~app.services.recurrence.EndBound`.  Defaults to the
+            unbounded shape, which is what a create form starts on.
+
+    Returns:
+        A dict of form values -- strings, as an HTML form submits them.
+    """
+    # Pylint: ``import-outside-toplevel`` -- see :func:`validated_cadence`.
+    from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
+        NEVER_ENDS,
+    )
+
+    stated = NEVER_ENDS if bound is None else bound
+    payload = {"recurrence_end_mode": stated.token}
+    if stated.end_date is not None:
+        payload["end_date"] = stated.end_date.isoformat()
+    if stated.max_occurrences is not None:
+        payload["max_occurrences"] = str(stated.max_occurrences)
+    return payload
+
+
 def cadence_payload(unit=None, interval_n=1, placement=None):
     """Return the form keys that author one cadence, as a BROWSER posts them.
 
@@ -4453,3 +4483,52 @@ def cadence_payload(unit=None, interval_n=1, placement=None):
             ref_cache.period_placement_id(loaded["recurrence_placement"]),
         ),
     }
+
+
+def period_window(periods):
+    """Return the :class:`PeriodWindow` the seam reports over for *periods*.
+
+    The test-side door onto the pay calendar, added at plan step **C2-c**,
+    when the balance seam stopped taking a list of ORM ``PayPeriod`` rows and
+    started reading its reporting domain off the pay calendar
+    (``app.services.balance_at.BalanceContext.reported_periods``).  A handful
+    of seam producers still take a window explicitly -- the ones that take a
+    ``scenario_id`` and an ``as_of`` rather than a context -- and this is how a
+    test names the SUBSET of an owner's schedule it wants those to report.
+
+    It derives the owner's whole calendar and then selects the requested
+    periods out of it, rather than building period bounds from the ORM rows:
+    a window carries the ends the WHOLE calendar computed, which is the
+    property ledger row **P14** is about, and taking the ends off the stored
+    columns here would let a test pass against bounds production no longer
+    reads.
+
+    Args:
+        periods: The ``PayPeriod`` rows to report, in any order and all
+            belonging to one user.  Must be non-empty -- an empty request has
+            no owner to resolve a calendar for, and the seam entries take
+            ``PeriodWindow(periods=())`` directly for that case.
+
+    Returns:
+        The :class:`~app.services.pay_calendar.PeriodWindow` over exactly those
+        periods.
+
+    Raises:
+        PayCalendarError: The requested periods do not form an unbroken span,
+            which the window type refuses (plan finding **P32**).  That is a
+            real answer, not a helper limitation: a gapped column set renders
+            a balance row that does not add up.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PeriodWindow,
+        calendar_for,
+    )
+
+    wanted = {period.id for period in periods}
+    calendar = calendar_for(next(iter(periods)).user_id)
+    return PeriodWindow(
+        periods=tuple(
+            period for period in calendar.saved()
+            if period.period_id in wanted
+        ),
+    )

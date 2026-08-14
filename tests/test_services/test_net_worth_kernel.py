@@ -55,7 +55,7 @@ class TestBuildAccountBalanceMap:
             account = seed_user["account"]
 
             balances = net_worth_kernel.build_account_balance_map(
-                account, bctx, all_periods,
+                account, bctx,
                 ContributionInputs(
                     investment_params=None,
                     deductions=[],
@@ -101,12 +101,11 @@ class TestInterestByPeriodForAccount:
         with app.app_context():
             user_id = seed_user["user"].id
             ctx = BalanceContext.build(user_id)
-            all_periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
 
             _, from_projection = net_worth_kernel.interest_projection_for_account(
-                account, ctx, all_periods,
+                account, ctx,
             )
             assert net_worth_kernel.interest_by_period_for_account(
-                account, ctx, all_periods,
+                account, ctx,
             ) == from_projection

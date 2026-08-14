@@ -1466,7 +1466,6 @@ class TestBalanceContributingPredicate:
             column = balance_at.grid_balance_view(
                 seed_user["account"],
                 BalanceContext.build(seed_user["user"].id),
-                [p0],
             ).columns[p0.id]
             # 500.00 reservation + 200.00 confirmed cash leg; the Cancelled
             # $100 and the Credit $50 contribute nothing to either half.

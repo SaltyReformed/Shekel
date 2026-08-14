@@ -114,3 +114,35 @@ def a_shipped_balance_row() -> str:
     ]
     assert shipped, "the balance arc holds no shipped, unaliased leaf to stage"
     return f"| balance | {shipped[0].ident} |"
+
+
+def a_live_ledger_row() -> str:
+    """Return a ``| <arc> | <id> |`` prefix naming a live row with a BARE id.
+
+    The ledger counterpart of :func:`a_shipped_balance_row`, and it exists for
+    the same measured reason on a third registry.  Nine controls staged
+    ``| balance | N-128 |`` by name until ``pay_calendar:C2-c`` CLOSED that
+    finding on 2026-08-13 and all nine went red at once; the repair re-pinned
+    them to ``| balance | N-96 |``, which re-arms the trap for whichever step
+    closes N-96.  A finding row is the registry element MOST likely to be
+    closed by a shipping step -- that is what the ledger is FOR -- so a control
+    over it must state the shape it needs rather than a name.
+
+    A BARE id is required because these controls locate their subject by row
+    PREFIX: an annotated cell (``N-205 (X-f1e3's design review 2026-08-05)``)
+    does not match ``| balance | N-205 |``.
+
+    Returns:
+        A :func:`row_of` prefix matching exactly one live ledger row.
+    """
+    for row in registry.ledger_rows():
+        if " " in row.ident or "(" in row.ident:
+            continue
+        prefix = f"| {row.arc} | {row.ident} |"
+        matches = [
+            ln for ln in registry.LEDGER.read_text().splitlines()
+            if ln.startswith(prefix)
+        ]
+        if len(matches) == 1:
+            return prefix
+    raise AssertionError("no live ledger row carries a bare, unambiguous id")

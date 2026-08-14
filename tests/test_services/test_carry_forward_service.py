@@ -1026,7 +1026,6 @@ class TestCarryForwardOverrideSibling:
                 BalanceContext.build(
                     seed_user["user"].id, as_of=seed_periods[0].start_date,
                 ),
-                seed_periods,
             )
 
             # Two $250 expenses pull the period balance down by $500
@@ -2473,7 +2472,6 @@ class TestCarryForwardEnvelopeBalanceInvariant:
                 BalanceContext.build(
                     seed_user["user"].id, as_of=seed_periods[0].start_date,
                 ),
-                seed_periods,
             )
 
             # Anchor balance from seed_user is $1000; settled source

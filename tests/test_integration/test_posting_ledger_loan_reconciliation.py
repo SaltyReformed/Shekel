@@ -2847,7 +2847,7 @@ class TestLatePaidPaymentDating:
             )
             scalar = balance_at.balance_at(loan, bctx, _AS_OF)
             period_map = balance_at.build_maps(
-                [loan], bctx, seed_periods,
+                [loan], bctx,
             )[loan.id]
             current_period = next(
                 p for p in seed_periods
@@ -2938,7 +2938,7 @@ class TestLatePaidPaymentDating:
             assert next_period.end_date < date(2026, 6, 5)
 
             period_map = balance_at.build_maps(
-                [loan], BalanceContext.build(seed_user["user"].id), periods,
+                [loan], BalanceContext.build(seed_user["user"].id),
             )[loan.id]
 
             series = [period_map[p.id] for p in periods]

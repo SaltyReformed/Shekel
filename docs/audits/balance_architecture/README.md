@@ -292,15 +292,13 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
 ### Phase X -- the anchor half (ruling R-EB; runs FIRST)
 
 - [ ] **X-f** `feat(transactions): the app records when money moved` -- the DECOMPOSED parent,
-  carrying **N-42**, redesigned from scratch 2026-08-03 (R-EB) and re-decomposed 2026-08-13
-  (R-FL..R-FN). **It ticks with X-f4**, and no longer with the import: a leaf is derived WITHIN an
-  arc (`tools/plan_gate/_classes.py:78`), so moving X-f6 out severed that relation.
+  carrying **N-42**, redesigned 2026-08-03 (R-EB) and re-decomposed 2026-08-13 (R-FL..R-FO). **It
+  ticks with X-f4**, not the import: a leaf is derived WITHIN an arc (`_classes.py:78`).
 
 * [x] **X-f1** `8d812662` a settle carries the day the money moved; absorbs **S2-b**. Fourteen leaves
   in `archive/…2026-08-04.md` 1a. Did NOT close **N-173** (**X-f6a**'s).
-*Nine more of this span's shipped steps -- X-an, X-f2 with its four leaves, X-aq, X-as, X-ap --
-left here on
-2026-08-13 under rule 5. Their records were already condensed in `archive/`.*
+*Nine more of this span's shipped steps left here 2026-08-13 under rule 5 -- X-an, X-f2 with its
+four leaves, X-aq, X-as and X-ap -- their records already condensed in `archive/`.*
 
 * [ ] **X-ax** `fix(carry-forward): a rollover is reconciled against the source it divided` --
   closes **N-249**. **MOVES MONEY.** Carry-forward splits one budget across two periods: it settles
@@ -318,18 +316,18 @@ left here on
   RECORDED before it can be reconciled -- and that recording is a derived quantity, which is
   **R-FI**'s subject, so the design belongs beside the amount model rather than beneath it.
 * [ ] **X-f3** `feat(cash): the ledger is sum-of-postings` -- the DECOMPOSED parent of THE CUTOVER,
-  carrying **N-171**, **N-172** and **N-174**. **Decomposed 2026-08-13 (R-FL..R-FO)** because its
+  carrying **N-171**, **N-172** and **N-174**, and **decomposed 2026-08-13 (R-FL..R-FO)** because its
   one-commit form was refuted twice by measurement: the residual it would classify is dominated by
   date misplacement rather than spending (R-FN), and deleting the reset breaks its own ship gate
-  while a cleared purchase's cash is not in the book (R-FM). It ticks with X-f3c. **X-f5 is
-  SUPERSEDED by X-f3c**, which leaves `anchor_equity` holding only the opening by construction.
+  while a cleared purchase's cash is not in the book (R-FM). It ticks with X-f3c; **X-f5 is
+  SUPERSEDED**, its outcome being what the cutover produces by construction.
   * [ ] **X-f3a** `feat(reconcile): clearing is a recorded fact` -- ruling **R-FL**, closing
     **N-273**. `transactions.reconciled_by_id` and `transaction_entries.reconciled_by_id` name the
     `account_anchor_history` row whose statement showed the line; the panel's three arms write it and
     every CASH consumer of `ReconciledThrough.covers` reads it instead -- the two walks' absorb loops
     (`cash_ledger/_walk.py:290`, `account_posting_service/_walk.py:477`), the entry reservation
     (`_amounts.py:502`), the self-heal's skip predicate (`account_posting_service/_sync.py:336`) and
-    the entry list's indicator (`routes/entries.py:153`); the MODELLED consumers stay on a date and
+    the entry list's indicator (`entry_service.py:801`); the MODELLED consumers stay on a date and
     R-FL says why. **BALANCE-NEUTRAL, and the backfill proves it**: each settled row and each
     reconciled purchase links to the assertion its own day would have been covered by, reproducing
     `covers` exactly, so `verify_balance_baseline.py` must report byte-identical. **The offer set
@@ -340,10 +338,10 @@ left here on
     per-account `LedgerAccountKindEnum` members resolved exactly as `anchor_equity` is (same lazy
     resolver, same `uq_ledger_accounts_account_kind` index, no new index), a FIFTH
     `ref.ledger_account_classes` row, and the income statement's section for it. `PLAIN` keeps
-    `anchor_equity` here and flips at X-f3c. **BALANCE-NEUTRAL and SELF-MIGRATING**: only the counter
-    leg moves, and `posted_correction_legs` reads every leg, so the next per-account sync re-posts
-    the whole history per period with no backfill. It runs FIRST -- smallest, unblocked, and it
-    closes a live reporting defect alone.
+    `anchor_equity` and flips at X-f3c. **BALANCE-NEUTRAL and SELF-MIGRATING**: only the counter leg
+    moves, and `posted_correction_legs` reads every leg, so the next per-account sync re-posts the
+    whole history per period with no backfill. It runs FIRST -- smallest, unblocked, closing a live
+    reporting defect alone.
   * [ ] **X-f3b** `feat(cash): a cleared purchase is a cash posting` -- ruling **R-FM**, closing
     **N-274**. A `TransactionEntry` linked to a statement posts its own cash leg and its envelope's
     close books the remainder, so the two cannot double-count. **It must RULE what a cleared
@@ -725,9 +723,11 @@ hides.
   read off the CURRENT template row whatever date the pass is pinned at.
   * [ ] **X-i1 THE MEMO** -- additive, byte-identical on both databases. The context gains the input
     tier the loan derivations already have, through the SAME `_memoize_once` mechanism rather than a
-    second one: the calendar, the per-account contribution feed, the override map, the standing
-    extra, the contractual schedule. Every loader keeps the clock it has today, so no figure can
-    move and the harness is the proof. **Its tier is WIDENED by N-115** (ruling **R-BU**, which SEQUENCED the residual double load here
+    second one: the per-account contribution feed, the override map, the standing extra, the
+    contractual schedule. **The CALENDAR left this list 2026-08-13**, taken early by `C2-c`
+    (`b8a72f6c`) as a method beside `loan_walk`, which owns its derivation, rather than through
+    `_memoize_once`, which stores what the seam fills from above. Every loader keeps its clock, so no
+    figure can move and the harness is the proof. **Its tier is WIDENED by N-115** (ruling **R-BU**, which SEQUENCED the residual double load here
     rather than deferring it): the dashboard tracks
     section pays twice per render for three more loaders, and the expensive one is **two full
     `calculate_paycheck` runs (7.2 ms / 7 SQL for the second alone)**.

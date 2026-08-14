@@ -63,6 +63,7 @@ from app.exceptions import BaselineMissingError
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
+from app.services.pay_calendar import PayCalendar, PeriodWindow, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 
 if TYPE_CHECKING:
@@ -83,8 +84,22 @@ _Derived = TypeVar("_Derived")
 
 
 @dataclass(frozen=True)
-class BalanceContext:
-    """One read pass's pinned as-of, scenario, and memoized loan derivations.
+class BalanceContext:  # pylint: disable=too-many-instance-attributes
+    """One read pass's pinned as-of, scenario, and memoized derivations.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because the
+    eight ARE one read pass's state and there is no smaller cohesive object
+    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and five
+    MEMOS, each keyed by the thing it is a derivation of.  Bundling the memos
+    behind a nested record would put an access level in front of state the
+    seam fills from four different modules while creating a second object with
+    no behaviour of its own.  It reached 8 at plan step C2-c, when the pay
+    calendar became a pass-level derivation instead of an argument every caller
+    passed by hand, and plan step **X-i1** raises it further: that step's
+    remaining four inputs (the contribution feed, the override map, the
+    standing extra, the contractual schedule) are memos of exactly this kind,
+    so the count is a property of what a read pass IS rather than a threshold
+    this class is drifting past.
 
     Frozen: the pinned inputs (``user_id`` / ``scenario`` / ``as_of``) cannot be
     reassigned mid-pass, which is the whole point -- a producer that could move
@@ -94,10 +109,11 @@ class BalanceContext:
     contexts with the same pins are equal whether or not either has resolved a
     loan yet.
 
-    **One derivation this module still owns, and three it only stores.**  The WALK
-    memo (:meth:`loan_walk`) derives from the ``loan_ledger`` leaf BELOW this
-    module, which it imports outright, so it stays PRIVATE, filled by this
-    module's own method.  The RESOLUTION, PLAN, and PAYOFF caches (:attr:`loans` /
+    **Two derivations this module owns, and three it only stores.**  The WALK
+    memo (:meth:`loan_walk`) and the CALENDAR memo (:meth:`calendar`) both
+    derive from leaves BELOW this module, which it imports outright, so they
+    stay PRIVATE, filled by this module's own methods.  The RESOLUTION, PLAN,
+    and PAYOFF caches (:attr:`loans` /
     :attr:`plans` / :attr:`payoffs`) are derived in the ``balance_at`` seam modules
     ABOVE it (``_resolution`` / ``_plan`` / ``_positions``, which import THIS
     module); the context cannot import them back to compute them without inverting
@@ -146,6 +162,10 @@ class BalanceContext:
         payoffs: The read pass's per-loan derived-payoff cache, keyed by
             ``account.id`` and FILLED by the seam's
             :func:`~app.services.balance_at._positions.memoized_payoff`.
+        _calendars: The pass's pay-calendar memo, keyed by ``user_id`` and
+            filled by :meth:`calendar` -- private for the reason ``_walks`` is,
+            because this module owns the derivation rather than storing a
+            sibling's.
     """
 
     user_id: int
@@ -161,6 +181,9 @@ class BalanceContext:
         default_factory=dict, repr=False, compare=False,
     )
     payoffs: "dict[int, date | None]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    _calendars: "dict[int, PayCalendar]" = field(
         default_factory=dict, repr=False, compare=False,
     )
 
@@ -320,6 +343,97 @@ class BalanceContext:
                 account.id, self.scenario_id,
             )
         return self._walks[account.id]
+
+    def calendar(self) -> PayCalendar:
+        """Return the owner's pay calendar for this pass, deriving it once.
+
+        The memo that collapses a read pass's N loads of one pay calendar to
+        one.  Plan step **C2-c** put it here: every per-period entry the seam
+        publishes needs a period's BOUNDS, those bounds are derived from the
+        owner's paydays (``docs/plans/implementation_plan_pay_calendar.md``
+        section 1), and a render that asks four of those entries would
+        otherwise derive the same 62-payday calendar four times.
+
+        **It is a memo on the PASS, not a cache**, for the reason the class
+        docstring gives about the whole object: a write path that records a
+        payday and then re-renders builds a fresh context, so there is no
+        invalidation class of bug here -- only a memo whose lifetime is the one
+        read it was built for.
+
+        Keyed by ``user_id`` rather than held in a bare slot, and the honest
+        reason is SHAPE rather than safety -- a first draft of this paragraph
+        claimed the key made it impossible to serve one owner's calendar to
+        another, and ``frozen=True`` on a dataclass carrying ``user_id`` as a
+        field already makes that unreachable (an adversarial review of C2-c
+        caught the over-claim).  What the key buys is that this memo reads like
+        :meth:`loan_walk`'s beside it and needs no ``None`` sentinel to tell an
+        unfilled slot from a legitimately empty answer, which an owner with no
+        paydays gives.
+
+        **The derivation is imported outright**, so unlike the three
+        pass-through caches beside it this one is filled here: ``pay_calendar``
+        is a leaf BELOW the seam (it imports ``pay_schedule_service`` and the
+        models and nothing of ``balance_at``), so the arrow stays one-way and
+        no import cycle is opened -- the same standing ``loan_ledger`` has
+        above.
+
+        Returns:
+            The owner's :class:`~app.services.pay_calendar.PayCalendar`.
+            **Empty is a legal answer** -- an owner who has never generated a
+            schedule -- and the seam's per-period entries answer an empty map
+            for it rather than refusing.
+
+        Raises:
+            PayCalendarError: The owner has paydays that cannot define a
+                calendar -- in practice a cadence outside 1..365, which
+                ``resolve_cadence``'s legacy fallback can infer for an owner
+                with no ``budget.pay_schedule`` row (plan findings **P8** /
+                **P35**, owned by ``C4``, which deletes the fallback with the
+                column it reads).  Loud rather than defaulted: every projected
+                horizon is a function of the cadence, so an invented one
+                reports a whole schedule the owner never chose.
+        """
+        if self.user_id not in self._calendars:
+            self._calendars[self.user_id] = calendar_for(self.user_id)
+        return self._calendars[self.user_id]
+
+    def reported_periods(self) -> PeriodWindow:
+        """Return the pay periods every per-period seam entry reports over.
+
+        **The seam's reporting domain, stated ONCE** (plan step C2-c).  Before
+        it, all thirteen per-period entries TOOK the domain as an argument, and
+        all eight callers in ``app/`` filled that argument with the same value
+        -- the owner's complete saved period set, read out of the table as ORM
+        rows whose ``end_date`` and ``period_index`` are the two derived
+        columns plan step C4 drops.  An argument every caller answers
+        identically is not a contract; it is the one thing a caller can get
+        wrong, and ``_cash_periods``' own predecessor measured that mistake at
+        ``$150,000.00`` (a fold read against a window missing its own period).
+
+        Asking it of the pass rather than passing it in also means the answer
+        cannot differ BETWEEN entries in one render: the grid's balance row,
+        its subtotal rows and the cockpit's net-worth column are the same
+        periods with the same bounds by construction.
+
+        The window itself is memoized ON THE CALENDAR
+        (:meth:`~app.services.pay_calendar.PayCalendar.saved`) rather than
+        here, which is where the derivation lives; a second memo on this
+        object would have been a memo of a memo, and an adversarial review of
+        C2-c called that correctly.
+
+        Returns:
+            The :class:`~app.services.pay_calendar.PeriodWindow` over every
+            saved period, ``start_date`` ascending and contiguous.  Empty for
+            an owner with no pay periods.
+
+        Raises:
+            PayCalendarError: See :meth:`calendar`.  A window whose SAVED
+                periods do not cover an unbroken span raises here too, which
+                needs an unsaved candidate payday between two saved ones --
+                a calendar :func:`~app.services.pay_calendar.calendar_for`
+                cannot build (it reads saved rows only).
+        """
+        return self.calendar().saved()
 
 
 def _memoize_once(

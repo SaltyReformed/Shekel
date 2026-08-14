@@ -25,6 +25,7 @@ import ast
 from pathlib import Path
 
 import pytest
+from marshmallow import ValidationError
 
 from app import ref_cache
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
@@ -49,6 +50,20 @@ _MUST_BE_HEARD = (
     (
         "Invalid funding choice.",
         {"recurrence_placement": "999999"},
+    ),
+    # The "Ends" bound's three, from plan step R7b-3.  They live in a
+    # ``@post_load`` hook, which is why this arm LOADS rather than validating.
+    (
+        "Choose when this stops repeating.",
+        {"recurrence_end_mode": "whenever"},
+    ),
+    (
+        "Choose the date this stops repeating, or set it to never end.",
+        {"recurrence_end_mode": "on_date"},
+    ),
+    (
+        "Enter how many times this repeats, or set it to never end.",
+        {"recurrence_end_mode": "after_occurrences"},
     ),
 )
 
@@ -122,10 +137,22 @@ class TestEveryRecurrenceRefusalIsHeard:
 
     @pytest.mark.parametrize("expected,payload", _MUST_BE_HEARD)
     def test_a_field_refusal_is_flashed_verbatim(self, app, expected, payload):
-        """Each axis field's own message survives the allowlist."""
-        with app.app_context():
-            errors = TemplateCreateSchema().validate(payload, partial=True)
+        """Each refusal's own message survives the allowlist.
 
+        **It LOADS rather than validating, since plan step R7b-3**, and the
+        change is what lets this arm see half the refusals it claims to cover.
+        ``Schema.validate`` is ``_do_load(postprocess=False)``: it SKIPS
+        ``@post_load``, where the closing bound's three refusals live -- so an
+        arm built to catch "a refusal no user ever reads" was structurally
+        blind to them, and all three shipped as dead copy until an adversarial
+        review measured the generic prompt coming back instead.  It is the same
+        asymmetry ``load_form_or_redirect`` exists to remove one layer up.
+        """
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc_info:
+                TemplateCreateSchema().load(payload, partial=True)
+
+            errors = exc_info.value.normalized_messages()
             assert errors, f"{payload} was not refused at all"
             assert flash_message_for_errors(errors) == expected
 

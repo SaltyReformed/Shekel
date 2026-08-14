@@ -74,7 +74,6 @@ from app.services import (
     dashboard_pulse_service,
     dashboard_service,
     home_equity_service,
-    pay_period_service,
     reconcile_service,
     retirement_dashboard_service,
     savings_dashboard_service,
@@ -135,13 +134,14 @@ def _guarded(label, producer):
         return {"__error__": f"{label}: {type(exc).__name__}: {exc}"}
 
 
-def _account_surfaces(account, balance_ctx, all_periods):
+def _account_surfaces(account, balance_ctx):
     """Return every per-account anchor-derived figure outside the seam.
 
     Args:
         account: The :class:`~app.models.account.Account` to probe.
-        balance_ctx: The read pass's ``BalanceContext``.
-        all_periods: The owner's pay periods, ascending.
+        balance_ctx: The read pass's ``BalanceContext`` -- which since plan
+            step C2-c also carries the pay periods every per-period seam entry
+            reports over, so this no longer threads a period list.
 
     Returns:
         A dict of surface name to rendered figure.
@@ -154,9 +154,7 @@ def _account_surfaces(account, balance_ctx, all_periods):
         "grid_header_as_of": _plain(anchor.observed_on),
         "grid_view": _guarded(
             "grid_view",
-            lambda: balance_at.grid_balance_view(
-                account, balance_ctx, all_periods,
-            ),
+            lambda: balance_at.grid_balance_view(account, balance_ctx),
         ),
         "reconcile_outstanding": _guarded(
             "reconcile_outstanding",
@@ -216,7 +214,6 @@ def main(out_path):
         snapshot = {}
         users = db.session.query(User).order_by(User.id).all()
         for user in users:
-            all_periods = pay_period_service.get_all_periods(user.id)
             balance_ctx = balance_at.BalanceContext.build(user.id)
             accounts = (
                 db.session.query(Account)
@@ -230,7 +227,7 @@ def main(out_path):
                     # Keyed by id AND name: an id-only key hides a rename, and
                     # a name-only key collides across archived duplicates.
                     f"{account.id}:{account.name}": _account_surfaces(
-                        account, balance_ctx, all_periods,
+                        account, balance_ctx,
                     )
                     for account in accounts
                 },

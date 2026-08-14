@@ -302,14 +302,10 @@ def _cash_projection(
         # that fold -- and the two halves are one projection, so the page
         # would also have had two chances to disagree with itself.
         balances, interest_by_period = (
-            balance_at.interest_projection_for_account(
-                account, balance_ctx, all_periods,
-            )
+            balance_at.interest_projection_for_account(account, balance_ctx)
         )
     elif all_periods:
-        balances = balance_at.cash_balance_map(
-            account, balance_ctx, all_periods,
-        )
+        balances = balance_at.cash_balance_map(account, balance_ctx)
         anchor = cash_ledger.resolve_anchor(account)
     return balances, interest_by_period, anchor
 

@@ -248,7 +248,6 @@ def debt_schedule_rows(
 def _modelled_columns(
     account: Account,
     ctx: "BalanceContext",
-    periods: list,
     inputs: ContributionInputs,
 ) -> "OrderedDict[int, _asset_fold.AssetPeriodFigures]":
     """Resolve *account*'s modelled column for each period -- ONE replay.
@@ -271,23 +270,23 @@ def _modelled_columns(
             replay, to decide whether it models a return at all.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the fold and the contribution feed; its
-            ``as_of`` is ruling R-G's clamp floor).
-        periods: The pay periods to walk (the output domain).
+            ``as_of`` is ruling R-G's clamp floor, and since plan step C2-c
+            its :meth:`~app.services.balance_at.BalanceContext.reported_periods`
+            is the output domain).
         inputs: The account's
             :class:`~app.services.balance_at._asset_contributions.ContributionInputs`.
 
     Returns:
         ``OrderedDict`` period id ->
         :class:`~app.services.balance_at._asset_fold.AssetPeriodFigures`, one
-        per requested period.
+        per reported period.
     """
-    return _asset_fold.asset_period_view(account, ctx, periods, inputs)
+    return _asset_fold.asset_period_view(account, ctx, inputs)
 
 
 def interest_projection_for_account(
     account: Account,
     ctx: "BalanceContext",
-    periods: list,
 ) -> "tuple[OrderedDict[int, Decimal], dict[int, Decimal]]":
     """Return an interest account's BALANCES and its earned interest, together.
 
@@ -311,9 +310,9 @@ def interest_projection_for_account(
     Args:
         account: The interest-bearing account.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            (its scenario scopes the fold; its ``as_of`` is the reader's NOW).
-        periods: All user pay periods (the walk domain; the caller filters to
-            the periods it wants).
+            (its scenario scopes the fold; its ``as_of`` is the reader's NOW;
+            its ``reported_periods()`` is the walk domain, and the caller
+            filters to the periods it wants).
 
     Returns:
         ``(balances, interest_by_period)`` -- the interest-accrued end balance
@@ -322,9 +321,17 @@ def interest_projection_for_account(
         with ``current_anchor_period_id IS NULL``, a state the schema forbade
         and the column no longer exists to express (finding N-73, plan step
         X-f1c3a).
+
+    Raises:
+        PayCalendarError: The owner's paydays cannot define a calendar, which
+            since plan step C2-c is reachable from every per-period seam entry
+            rather than only from the recurrence pages -- see
+            :meth:`~app.services.balance_at.BalanceContext.calendar`, where the
+            reporting domain is derived, for the one state that produces it and
+            the step that removes it.
     """
     columns = _modelled_columns(
-        account, ctx, periods, ContributionInputs.absent(),
+        account, ctx, ContributionInputs.absent(),
     )
     return (
         OrderedDict(
@@ -341,7 +348,6 @@ def interest_projection_for_account(
 def interest_by_period_for_account(
     account: Account,
     ctx: "BalanceContext",
-    periods: list,
 ) -> dict[int, Decimal]:
     """Return period_id -> interest earned for an interest-bearing account.
 
@@ -366,28 +372,33 @@ def interest_by_period_for_account(
     Args:
         account: The interest-bearing account.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            (its scenario scopes the fold; its ``as_of`` is the reader's NOW).
-        periods: All user pay periods (the walk domain; the caller
+            (its scenario scopes the fold; its ``as_of`` is the reader's NOW;
+            its ``reported_periods()`` is the walk domain, and the caller
             filters to the periods whose interest it wants).
 
     Returns:
         ``dict`` mapping period_id to the ``Decimal`` interest earned in
-        that period, one entry per requested period.  **Never ``{}`` as a
+        that period, one entry per reported period.  **Never ``{}`` as a
         degradation**: it short-circuited for an account with
         ``current_anchor_period_id IS NULL``, a state the schema forbade and
         the column no longer exists to express (finding N-73, plan step
         X-f1c3a).
+
+    Raises:
+        PayCalendarError: The owner's paydays cannot define a calendar, which
+            since plan step C2-c is reachable from every per-period seam entry
+            rather than only from the recurrence pages -- see
+            :meth:`~app.services.balance_at.BalanceContext.calendar`, where the
+            reporting domain is derived, for the one state that produces it and
+            the step that removes it.
     """
-    _, interest_by_period = interest_projection_for_account(
-        account, ctx, periods,
-    )
+    _, interest_by_period = interest_projection_for_account(account, ctx)
     return interest_by_period
 
 
 def build_account_balance_map(
     account: Account,
     ctx: "BalanceContext",
-    periods: list,
     inputs: ContributionInputs,
 ) -> "OrderedDict[int, Decimal]":
     """Compute period_id -> balance for one NON-loan account.
@@ -423,8 +434,8 @@ def build_account_balance_map(
         account: The account to project.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the fold and the contribution feed; its
-            ``as_of`` is ruling R-G's clamp floor).
-        periods: All user pay periods.
+            ``as_of`` is ruling R-G's clamp floor, and its
+            ``reported_periods()`` is the output domain).
         inputs: This account's
             :class:`~app.services.balance_at._asset_contributions.ContributionInputs`
             -- its investment params, its deductions and the engine
@@ -438,10 +449,18 @@ def build_account_balance_map(
         it answered ``None`` for an account with ``current_anchor_period_id IS
         NULL``, a state the schema forbade and the column no longer exists to
         express (finding N-73, plan step X-f1c3a).
+
+    Raises:
+        PayCalendarError: The owner's paydays cannot define a calendar, which
+            since plan step C2-c is reachable from every per-period seam entry
+            rather than only from the recurrence pages -- see
+            :meth:`~app.services.balance_at.BalanceContext.calendar`, where the
+            reporting domain is derived, for the one state that produces it and
+            the step that removes it.
     """
     return OrderedDict(
         (period_id, column.balance)
         for period_id, column in _modelled_columns(
-            account, ctx, periods, inputs,
+            account, ctx, inputs,
         ).items()
     )

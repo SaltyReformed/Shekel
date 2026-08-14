@@ -68,7 +68,7 @@ def _params_for(account):
 def _replay(account, ctx, periods, params=None):
     """Return the modelled per-period columns, with no contribution feed."""
     return _asset_fold.asset_period_view(
-        account, ctx, periods, ContributionInputs(investment_params=params),
+        account, ctx, ContributionInputs(investment_params=params),
     )
 
 

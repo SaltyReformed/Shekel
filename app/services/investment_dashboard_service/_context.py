@@ -176,7 +176,6 @@ def _resolve_current_balance(
     account: Account,
     balance_ctx: BalanceContext,
     current_period,
-    all_periods: list,
 ) -> Decimal:
     """Return the model-from-anchor "current balance" headline for *account*.
 
@@ -198,14 +197,15 @@ def _resolve_current_balance(
     two: the no-current-period arm now reads the seam at ``ctx.as_of`` (the seam
     takes a DATE and never needed a period to answer one), and the ``balances is
     None`` arm went with the column that made it reachable (finding N-73).  The
-    map is TOTAL over the periods it is handed, so the current period's column
-    is INDEXED rather than defaulted -- ruling R-CA's own argument.
+    map is TOTAL over the pass's reported periods, so the current period's
+    column is INDEXED rather than defaulted -- ruling R-CA's own argument.
+    **It stopped taking the period list at plan step C2-c**: the seam reads the
+    owner's whole calendar off ``balance_ctx`` now, so there is no set for a
+    caller to get wrong.
     """
     if current_period is None:
         return balance_at.balance_at(account, balance_ctx, balance_ctx.as_of)
-    return balance_at.balance_map(
-        account, balance_ctx, all_periods,
-    )[current_period.id]
+    return balance_at.balance_map(account, balance_ctx)[current_period.id]
 
 
 def _projection_start(current_period) -> date:
@@ -364,7 +364,7 @@ def _load_projection_context(
     # projection seeds from the same curve one day before its own window opens,
     # so the two are read at different DATES rather than off different bases.
     current_balance = _resolve_current_balance(
-        account, balance_ctx, current_period, all_periods,
+        account, balance_ctx, current_period,
     )
     active_profile = _load_active_salary_profile(user_id)
     # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not the

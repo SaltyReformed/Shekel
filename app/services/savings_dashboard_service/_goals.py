@@ -17,7 +17,7 @@ from app.models.pay_period import PayPeriod
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator, savings_goal_service
-from app.services.pay_calendar import PayCadence
+from app.services.pay_calendar import PayCalendar
 from app.services.savings_goal_service import GoalTargetSpec, GoalTrajectory
 from app.utils.money import percent_complete
 
@@ -46,16 +46,19 @@ class _GoalInputs:
             canonical paycheck engine.  ``Decimal("0.00")`` when the owner has
             no salary configured, which is what
             :attr:`GoalProgress.has_salary_data` reports.
-        pay_cadence: How often the owner is paid
-            (:class:`~app.services.pay_calendar.PayCadence`) -- what turns
-            ``net_biweekly_pay`` into a monthly figure for a "months of salary"
-            goal, and what a paycheck-space contribution template's monthly
-            equivalent is measured against.
+        calendar: The owner's whole pay-period schedule.  ``calendar.cadence``
+            turns ``net_biweekly_pay`` into a monthly figure for a "months of
+            salary" goal; the WHOLE schedule is what
+            ``obligations_aggregator`` needs to tell whether a contribution
+            template bounded "after N occurrences" has spent its count (plan
+            step R7b-3).  It was the bare
+            :class:`~app.services.pay_calendar.PayCadence` until then, which
+            could answer the first and not the second.
     """
 
     all_periods: list[PayPeriod]
     net_biweekly_pay: Decimal
-    pay_cadence: PayCadence
+    calendar: PayCalendar
 
 
 @dataclass(frozen=True)
@@ -259,7 +262,7 @@ def _build_goal_datum(
             income_multiplier=goal.income_multiplier,
         ),
         inputs.net_biweekly_pay,
-        inputs.pay_cadence,
+        inputs.calendar.cadence,
     )
 
     remaining_periods = savings_goal_service.count_periods_until(
@@ -356,7 +359,7 @@ def _compute_goal_progress(
         # expired-rule guard and inflated per-goal floors indefinitely.
         acct_templates = templates_by_account.get(goal.account_id, [])
         monthly_contribution = obligations_aggregator.committed_monthly(
-            acct_templates, date.today(), inputs.pay_cadence,
+            acct_templates, date.today(), inputs.calendar,
         )
 
         goal_data.append(_build_goal_datum(
