@@ -38,7 +38,7 @@ from app.services.calendar_service import (
     DailyView,
     _detect_third_paycheck_months,
 )
-from app.services.pay_calendar import PayCadence
+from app.services.pay_calendar import PayCadence, PeriodWindow, calendar_for
 
 #: The cadence ``seed_periods`` builds: 14 days between paydays, 26 a year.
 #: An explicit input to the infrequent badge since plan step R7a-2b, where the
@@ -1060,13 +1060,16 @@ class TestThirdPaycheckDetection:
             )
             db.session.commit()
 
-            result = _detect_third_paycheck_months(periods, 2026)
+            # The CALENDAR's window, which is what production passes since
+            # plan step C2-f1; an ORM list only worked here by duck typing.
+            window = calendar_for(seed_user["user"].id).saved()
+            result = _detect_third_paycheck_months(window, 2026)
             assert len(result) == 2
 
     def test_third_paycheck_empty_periods(self, app):
         """Empty period list produces empty set."""
         with app.app_context():
-            result = _detect_third_paycheck_months([], 2026)
+            result = _detect_third_paycheck_months(PeriodWindow(periods=()), 2026)
             assert result == set()
 
     def test_third_paycheck_only_target_year(self, app, seed_user, db):
@@ -1082,7 +1085,9 @@ class TestThirdPaycheckDetection:
             )
             db.session.commit()
 
-            result_2026 = _detect_third_paycheck_months(periods, 2026)
+            result_2026 = _detect_third_paycheck_months(
+                calendar_for(seed_user["user"].id).saved(), 2026,
+            )
             # Should find 3rd paycheck months only from 2026 start_dates.
             for m in result_2026:
                 count = sum(
@@ -1109,7 +1114,9 @@ class TestThirdPaycheckDetection:
             )
             db.session.commit()
 
-            result = _detect_third_paycheck_months(periods, 2026)
+            result = _detect_third_paycheck_months(
+                calendar_for(seed_user["user"].id).saved(), 2026,
+            )
 
             # Verify by counting manually.
             from collections import Counter

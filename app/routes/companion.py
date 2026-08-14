@@ -42,13 +42,49 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.extensions import db
 from app.models.category import Category
-from app.services import companion_service, grid_view_service, pay_period_service
+from app.models.pay_period import PayPeriod
+from app.services import companion_service, grid_view_service
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
+from app.services.pay_calendar import DerivedPeriod, calendar_for
 from app.exceptions import NotFoundError
 
 logger = logging.getLogger(__name__)
 
 companion_bp = Blueprint("companion", __name__, url_prefix="/companion")
+
+
+def _period_neighbours(
+    period: PayPeriod,
+) -> "tuple[DerivedPeriod | None, DerivedPeriod | None]":
+    """Return the paychecks either side of *period* on the OWNER's calendar.
+
+    The companion view's back / forward links, resolved from ONE derivation
+    (plan step **C2-f**).  Both halves used to be their own query on
+    ``period_index`` -- ``pay_period_service.get_next_period`` and
+    ``companion_service.get_previous_period``, the second a copy of the first
+    with ``+ 1`` changed to ``- 1`` -- so stepping forward and back again was
+    two answers nothing held equal.  Here they are two searches of one value,
+    and the value derives its ordinals from payday order, so they cannot
+    disagree.
+
+    The calendar is the LINKED OWNER's, read off the period the companion is
+    already looking at: a companion holds no paydays of their own by design,
+    and ``companion_service`` has already refused a period belonging to anyone
+    but their owner.
+
+    Args:
+        period: The pay period currently on screen, owned by the companion's
+            linked owner.
+
+    Returns:
+        ``(previous, next)``.  Either is ``None`` at the ends of the saved
+        schedule, which is what hides the corresponding link.
+    """
+    calendar = calendar_for(period.user_id)
+    return (
+        calendar.period_starting_before(period.start_date),
+        calendar.period_starting_after(period.start_date),
+    )
 
 
 def _companion_or_redirect():
@@ -155,8 +191,7 @@ def index():
             next_period=None,
         )
 
-    prev_period = companion_service.get_previous_period(period)
-    next_period = pay_period_service.get_next_period(period)
+    prev_period, next_period = _period_neighbours(period)
 
     return render_template(
         "companion/index.html",
@@ -193,8 +228,7 @@ def period_view(period_id):
     except NotFoundError:
         return "Not found", 404
 
-    prev_period = companion_service.get_previous_period(period)
-    next_period = pay_period_service.get_next_period(period)
+    prev_period, next_period = _period_neighbours(period)
 
     return render_template(
         "companion/index.html",

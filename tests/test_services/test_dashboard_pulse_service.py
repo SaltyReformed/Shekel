@@ -171,25 +171,42 @@ class TestPulseHero:
     def test_next_paycheck_date_none_when_no_future_period(
         self, app, seed_user, db,
     ):
-        """No period starts after today -> next_paycheck_date is None.
+        """No period follows the current one -> next_paycheck_date is None.
 
-        Generate periods entirely in the past (starting 2024-02-02,
-        forward of the 2024 bootstrap), so none begins after the frozen
-        2026-03-20.  ``_next_paycheck_date`` returns None.
+        **Asked through the PRODUCER since plan step C2-f1**, where it used to
+        call a private ``_next_paycheck_date`` helper that issued its own
+        "first period starting after ``date.today()``" query.  That helper is
+        deleted: the same render already resolved "the period after the
+        current one" for the still-due panel, and the card shows both figures,
+        so two queries could put two different paydays on one card.
+
+        The state is built so today is inside the LAST period rather than past
+        every period: six paydays from 2026-01-02 at cadence 14 puts the frozen
+        2026-03-20 inside 2026-03-13 .. 2026-03-26, which is the last one.
+        (``seed_user`` carries a 2024 bootstrap payday too, so the calendar
+        holds seven; only the LAST one decides this.)  The
+        old fixture (periods entirely in the past) could not reach the producer
+        at all -- it answers ``None`` outright with no current period -- so
+        this grades the rendered value where that one graded a helper.
         """
         with app.app_context():
             pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
-                first_payday=date(2024, 2, 2),
-                num_periods=5,
+                first_payday=date(2026, 1, 2),
+                num_periods=6,
                 cadence_days=14,
             )
             db.session.commit()
 
-            result = dashboard_pulse_service._next_paycheck_date(
+            result = dashboard_pulse_service.compute_pulse_section(
                 seed_user["user"].id,
             )
-            assert result is None
+            assert result is not None
+            assert result["hero"]["next_paycheck_date"] is None
+            # The still-due panel reads the SAME value, which is the point of
+            # threading it: both are ``None`` together or neither is.
+            assert result["still_due"]["next_period_start"] is None
+            assert result["still_due"]["next_period_end"] is None
 
     def test_hero_staleness_fresh(self, app, seed_user, seed_periods, db):
         """A recently-updated anchor is NOT stale.

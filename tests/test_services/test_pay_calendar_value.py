@@ -603,6 +603,128 @@ class TestTheTwoOrderingSearchesAreMirrors:
         assert cal.period_starting_on_or_before(beyond) is cal.periods[-1]
 
 
+class TestPeriodStartingAfter:
+    """The STRICT pair, which plan step C2-f1 moved here with two deleted queries.
+
+    ``pay_period_service.get_next_period`` asked ``period_index + 1`` and
+    ``companion_service.get_previous_period`` asked ``period_index - 1`` -- one
+    rule written twice, on the stored ordinal.  The assertions below are the
+    ones those two carried, re-pointed at the value, plus the property their
+    ordinal form could not state: on a DERIVED calendar the ordinal IS payday
+    order, so stepping by index and stepping by payday cannot disagree.
+    """
+
+    def test_next_of_a_period_is_the_one_after_it(self):
+        """``get_next_period(periods[N])`` was ``periods[N + 1]``; it still is."""
+        cal = calendar()
+        assert cal.period_starting_after(cal.periods[1].start_date) is cal.periods[2]
+        assert cal.period_starting_after(cal.periods[0].start_date) is cal.periods[1]
+
+    def test_next_of_the_last_period_is_none(self):
+        """Past the last payday the schedule has not reached there yet."""
+        cal = calendar()
+        assert cal.period_starting_after(cal.periods[-1].start_date) is None
+
+    def test_previous_of_the_first_period_is_none(self):
+        """The mirror's end of the schedule, which the companion nav hides."""
+        cal = calendar()
+        assert cal.period_starting_before(cal.periods[0].start_date) is None
+        assert cal.period_starting_before(cal.periods[2].start_date) is cal.periods[1]
+
+    def test_the_two_are_inverses_across_the_whole_schedule(self):
+        """Step forward then back and land where you started, at every payday.
+
+        The property the two ordinal queries could not have: they read a
+        STORED ``period_index``, so a schedule whose index order disagreed with
+        its payday order would step forward into one period and back into a
+        different one.  Here the ordinal is derived from payday order, so the
+        round trip is closed by construction -- this asserts it rather than
+        assuming it.
+        """
+        cal = calendar()
+        for period in cal.periods[:-1]:
+            forward = cal.period_starting_after(period.start_date)
+            assert forward is not None
+            assert cal.period_starting_before(forward.start_date) is period
+
+    def test_strict_is_what_separates_them_from_the_inclusive_pair(self):
+        """A period's own payday is excluded -- the off-by-one five callers shared.
+
+        ``period_starting_on_or_after(payday)`` answers that period ITSELF, so
+        a caller that reached for the inclusive search to mean "the next one"
+        would file a credit-card payback in the very period it pays back.
+        """
+        cal = calendar()
+        payday = cal.periods[1].start_date
+        assert cal.period_starting_on_or_after(payday) is cal.periods[1]
+        assert cal.period_starting_after(payday) is cal.periods[2]
+        assert cal.period_starting_on_or_before(payday) is cal.periods[1]
+        assert cal.period_starting_before(payday) is cal.periods[0]
+
+    def test_they_SKIP_an_unsaved_candidate(self):
+        """The materialisation filter, which is what makes the FK write safe.
+
+        ``create_cc_payback_transaction`` writes this answer's ``period_id``
+        into ``transactions.pay_period_id``, which is ``NOT NULL``, with no
+        guard of its own -- because the SEARCH cannot answer a period that has
+        none.  A projection is not the risk (these never project); the risk is
+        the other way ``period_id`` is ``None``, an unsaved candidate, which
+        ``derive_periods`` accepts by design and which plan step C3's writer
+        builds.  ``WITH_INTERIOR_UNSAVED`` puts one BETWEEN two saved paydays,
+        which is the position a head-or-tail shape cannot test.
+
+        The INCLUSIVE pair is the control: it still answers the candidate, so
+        this pins the filter rather than the calendar's contents.
+        """
+        cal = PayCalendar.from_paydays(WITH_INTERIOR_UNSAVED, 14, user_id=1)
+        candidate = cal.periods[1]
+        assert candidate.period_id is None
+
+        after = cal.period_starting_after(cal.periods[0].start_date)
+        assert after is cal.periods[2]
+        assert after.period_id == 12
+
+        before = cal.period_starting_before(cal.periods[2].start_date)
+        assert before is cal.periods[0]
+        assert before.period_id == 10
+
+        # The control: the inclusive searches are unfiltered and unchanged,
+        # which is what the recurrence engine reads.
+        assert cal.period_starting_on_or_after(candidate.start_date) is candidate
+        assert cal.period_starting_on_or_before(candidate.start_date) is candidate
+
+    def test_no_materialised_period_at_all_answers_none(self):
+        """Every payday an unsaved candidate leaves nothing to answer with."""
+        cal = PayCalendar.from_paydays(
+            [(None, date(2026, 1, 2)), (None, date(2026, 1, 16))], 14, user_id=1,
+        )
+        assert cal.period_starting_after(date(2026, 1, 2)) is None
+        assert cal.period_starting_before(date(2026, 1, 16)) is None
+
+    def test_a_day_before_the_first_payday_answers_the_first_period(self):
+        """The forward search's other end, which the deleted query never reached.
+
+        ``get_next_period`` took a PERIOD, so it could not be asked about a day
+        below the schedule at all; the calendar can, and the answer is the
+        opening paycheck rather than ``None``.
+        """
+        cal = calendar()
+        assert cal.period_starting_after(date(2020, 1, 1)) is cal.periods[0]
+        assert cal.period_starting_before(date(2020, 1, 1)) is None
+
+    def test_they_answer_off_cadence_from_a_day_inside_a_period(self):
+        """Asked mid-period rather than on a payday, on an irregular schedule.
+
+        OFF_CADENCE on purpose: the searches key on ``start_date``, so a
+        schedule whose paydays are one cadence apart cannot distinguish "the
+        period after this payday" from "the period one cadence later".
+        """
+        cal = PayCalendar.from_paydays(OFF_CADENCE, 14, user_id=1)
+        mid = cal.periods[1].start_date + timedelta(days=3)
+        assert cal.period_starting_after(mid) is cal.periods[2]
+        assert cal.period_starting_before(mid) is cal.periods[1]
+
+
 class TestAWindowIsAViewAndKeepsTheRealEnds:
     """Ledger row P14, made structural by the type."""
 

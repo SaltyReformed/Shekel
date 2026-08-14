@@ -91,6 +91,7 @@ from ._loader import cadence_for, calendar_for
 from ._searches import (
     containing_period,
     earliest_start_in_month,
+    earliest_started_period,
     final_covered_day,
     latest_started_period,
     opening_payday,
@@ -112,6 +113,7 @@ __all__ = [
     "containing_period",
     "derive_periods",
     "earliest_start_in_month",
+    "earliest_started_period",
     "final_covered_day",
     "latest_started_period",
     "opening_payday",

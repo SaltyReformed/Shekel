@@ -23,6 +23,7 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
+from app.routes._period_options import period_move_options
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._helpers import (
@@ -82,9 +83,7 @@ def get_full_edit(txn_id):
         # Current + future periods (plus the transfer's own) power the
         # period-move selector when a transfer is edited from a grid
         # shadow cell -- same set the transfers blueprint supplies.
-        periods = pay_period_service.get_current_and_future_periods(
-            current_user.id, include_period_id=xfer.pay_period_id,
-        )
+        periods = period_move_options(current_user.id, xfer.pay_period_id)
         return render_template(
             "transfers/_transfer_full_edit.html",
             xfer=xfer,
@@ -115,9 +114,7 @@ def get_full_edit(txn_id):
     # in a past period stays selected (and is not silently re-pointed at
     # the first current period on save).  Periods are per-user; the PATCH
     # handler re-checks ownership of the submitted id (F-029).
-    periods = pay_period_service.get_current_and_future_periods(
-        current_user.id, include_period_id=txn.pay_period_id,
-    )
+    periods = period_move_options(current_user.id, txn.pay_period_id)
     return render_template(
         "grid/_transaction_full_edit.html",
         txn=txn,

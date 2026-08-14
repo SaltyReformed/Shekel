@@ -16,6 +16,7 @@ from app.services.account_resolver import resolve_grid_account
 from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
+from app.routes._period_options import period_move_options
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import _get_owned_transfer
 
@@ -59,9 +60,7 @@ def get_full_edit(xfer_id):
     # always including the transfer's own period so a transfer sitting in
     # a past period stays selected.  The service re-validates ownership of
     # the submitted id and moves the transfer plus both shadows together.
-    periods = pay_period_service.get_current_and_future_periods(
-        current_user.id, include_period_id=xfer.pay_period_id,
-    )
+    periods = period_move_options(current_user.id, xfer.pay_period_id)
     return render_template(
         "transfers/_transfer_full_edit.html",
         xfer=xfer, statuses=statuses, categories=categories, periods=periods,
