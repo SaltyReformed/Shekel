@@ -1025,8 +1025,19 @@ class TestTheTwoVocabulariesAgree:
 
 
 @pytest.mark.usefixtures("app")
-class TestAStatedDayOrMonthMustBeInItsColumnsDomain:
+class TestAnAuthoredValueMustBeInItsColumnsDomain:
     """NULL states nothing and defaults; 0 states something impossible.
+
+    **Four of the table's seven CHECKs are mirrored here since plan step
+    R7b-3**, which closed plan ledger row **D23**: ``dom`` and ``moy`` were
+    already here, ``due_dom`` and ``valid_offset`` joined them.  The other
+    three did not, for two reasons.  ``positive_interval`` is
+    ``_frequency.require_positive_interval``'s, beside the encode it guards.
+    ``single_end_bound`` and ``positive_max_occurrences`` became properties of
+    :class:`~app.services.recurrence.EndBound` that no value in the
+    application can break, so no door refuses them at all -- what remains is
+    ``end_bound_from_columns``, which PARSES untyped storage and is a read
+    rather than a rule the writers restate.
 
     **Plan step R4a changed this, and the change is a behaviour decision.**
     Plan step R2c-1 mirrored the reverse matcher's ``rule.day_of_month or 1``
@@ -1096,6 +1107,102 @@ class TestAStatedDayOrMonthMustBeInItsColumnsDomain:
                 ),
                 build_calendar(),
             )
+
+    @pytest.mark.parametrize("day", [0, -1, 32, 99])
+    def test_a_stated_due_day_outside_1_31_is_refused(self, day):
+        """``ck_recurrence_rules_due_dom``, mirrored at plan step R7b-3.
+
+        The third of the table's four day/month domains and the last to reach
+        the door.  ``_author`` writes ``spec.due_day_of_month`` verbatim like
+        the other two, so an out-of-domain value was an ``IntegrityError`` at
+        the flush naming neither the field nor the value -- plan ledger row
+        **D23**.
+        """
+        with pytest.raises(
+            RecurrenceResolutionError, match="due_day_of_month",
+        ):
+            resolve(
+                spec_for(
+                    RecurrencePatternEnum.MONTHLY,
+                    day_of_month=15,
+                    due_day_of_month=day,
+                ),
+                build_calendar(),
+            )
+
+    def test_a_null_due_day_states_nothing_and_passes(self):
+        """The control: the refusal is on a STATED value, not on absence.
+
+        All 46 live production rules carry NULL here (measured 2026-08-13), so
+        a refusal that caught absence would refuse every rule there is.
+        """
+        resolved = resolve(
+            spec_for(
+                RecurrencePatternEnum.MONTHLY,
+                day_of_month=15,
+                due_day_of_month=None,
+            ),
+            build_calendar(),
+        )
+
+        assert resolved.anchor_date == date(2026, 4, 15)
+
+    def test_a_due_day_is_refused_for_a_cadence_that_never_reads_it(self):
+        """It is the COLUMN's domain, not the walk's.
+
+        ``_author`` writes the value whatever the cadence, so a paycheck-space
+        rule carrying ``due_day_of_month = 32`` reaches the same CHECK even
+        though nothing would ever read the field -- the same reasoning the
+        day-of-month refusal above records.
+        """
+        with pytest.raises(
+            RecurrenceResolutionError, match="due_day_of_month",
+        ):
+            resolve(
+                spec_for(
+                    RecurrencePatternEnum.EVERY_PERIOD, due_day_of_month=32,
+                ),
+                build_calendar(),
+            )
+
+    @pytest.mark.parametrize("offset", [-1, -26])
+    def test_a_negative_phase_is_refused(self, offset):
+        """``ck_recurrence_rules_valid_offset``, mirrored at plan step R7b-3.
+
+        The fourth and last of plan ledger row **D23**'s CHECKs.  It is not
+        only a storage refusal: the phase test is
+        ``(period_index - offset) % interval_n == 0``, so a negative offset
+        selects a DIFFERENT set of paychecks from the one the rule names --
+        a bill charged in the wrong period rather than a save that fails.
+
+        Asserted on the AUTHORED value because that is the only arm of
+        :func:`~app.services.recurrence._resolution._derive_offset_periods`
+        that can carry one: the other two answer ``0`` or a schedule ordinal
+        modulo a positive interval.
+        """
+        spec = spec_for(
+            RecurrencePatternEnum.EVERY_N_PERIODS,
+            interval_n=3,
+            offset_periods=offset,
+        )
+
+        with pytest.raises(
+            RecurrenceResolutionError, match="offset_periods",
+        ):
+            resolve(spec, build_calendar())
+
+    def test_a_zero_phase_is_the_ordinary_case_and_passes(self):
+        """The control: the domain is ``>= 0``, and 0 is what 46 rules hold."""
+        resolved = resolve(
+            spec_for(
+                RecurrencePatternEnum.EVERY_N_PERIODS,
+                interval_n=3,
+                offset_periods=0,
+            ),
+            build_calendar(),
+        )
+
+        assert resolved.offset_periods == 0
 
 
 @pytest.mark.usefixtures("app")

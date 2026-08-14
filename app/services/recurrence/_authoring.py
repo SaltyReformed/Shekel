@@ -110,8 +110,15 @@ def _author(
     rule.month_of_year = spec.month_of_year
     rule.start_period_id = spec.start_period_id
     rule.start_date = spec.start_date
-    rule.end_date = spec.end_date
-    rule.max_occurrences = spec.max_occurrences
+    # The closing bound is ONE authored value and TWO columns under an
+    # exclusive arc (``ck_recurrence_rules_single_end_bound``), so it is split
+    # here and rejoined at the read door -- the only two places the pair is
+    # ever seen apart.  Assigning them from one ``columns()`` call rather than
+    # from two accessors is what makes "never both" a property of this line
+    # rather than of the value's two readers agreeing (plan step R7b-3).
+    end_columns = spec.end_bound.columns()
+    rule.end_date = end_columns.end_date
+    rule.max_occurrences = end_columns.max_occurrences
 
 
 def build_transient_rule(

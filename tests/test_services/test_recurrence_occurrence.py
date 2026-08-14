@@ -47,7 +47,8 @@ The rest of the file exercises the engine directly, at exact dates against
 hand-built schedules -- no database, no clock -- including the three things
 ``resolve`` cannot yet produce and only a hand-built
 :class:`~app.services.recurrence.ResolvedRecurrence` can reach: the ``WEEK``
-unit, ``max_occurrences``, and a business-day shift.
+unit and a business-day shift.  A COUNT bound was a third until plan step
+R7b-3 gave it a form control.
 """
 
 import calendar as calendar_module
@@ -64,6 +65,8 @@ from app.enums import (
 from app.exceptions import ShekelError
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
+    NEVER_ENDS,
+    EndsOnDate,
     RecurrenceGenerationError,
     ResolvedRecurrence,
     occurrence_placements,
@@ -77,6 +80,7 @@ from app.services.recurrence import (
 # that passes prove nothing -- the same reasoning
 # ``tests/oracles/recurrence_baseline.py`` records for the old engine.
 from app.services.recurrence import _months, _occurrence, _resolution
+from app.services.recurrence import EndBound, EndsAfterOccurrences
 from tests.oracles import recurrence_baseline
 from tests.test_services.test_recurrence_resolution import build_calendar
 
@@ -190,18 +194,20 @@ def resolved_value(
     offset_periods: int = 0,
     placement: PeriodPlacementEnum = PeriodPlacementEnum.CONTAINING_DATE,
     shift: BusinessDayShiftEnum = BusinessDayShiftEnum.NONE,
-    end_date: date | None = None,
-    max_occurrences: int | None = None,
+    end_bound: EndBound = NEVER_ENDS,
     nominal_day: int | None = None,
 ) -> ResolvedRecurrence:
     """Return a two-axis value stated directly, bypassing ``resolve``.
 
     The engine consumes :class:`~app.services.recurrence.ResolvedRecurrence`,
-    and three of its fields have no producer yet -- the ``WEEK`` unit,
-    ``max_occurrences`` and the business-day shift all wait on plan step R8.
-    Stating the value here is what lets those be tested before their author
-    exists; the shapes ``resolve`` CAN produce are covered by the parallel run
-    against every one of them.
+    and two of its fields have no producer yet -- the ``WEEK`` unit and the
+    business-day shift both wait on plan step R8.  Stating the value here is
+    what lets those be tested before their author exists; the shapes
+    ``resolve`` CAN produce are covered by the parallel run against every one
+    of them.
+
+    A COUNT bound was a third such field until plan step R7b-3, whose form
+    control is its first author.
 
     Args:
         unit: The cadence unit.
@@ -210,8 +216,7 @@ def resolved_value(
         offset_periods: Phase within the ``PERIOD`` cycle.
         placement: How an occurrence maps onto a pay period.
         shift: Weekend/holiday adjustment.
-        end_date: The closing date bound.
-        max_occurrences: The count bound.
+        end_bound: When the recurrence stops.
         nominal_day: The day the rule means when the anchor month clamped it.
 
     Returns:
@@ -224,8 +229,7 @@ def resolved_value(
         anchor_date=anchor_date,
         placement=placement,
         shift=shift,
-        end_date=end_date,
-        max_occurrences=max_occurrences,
+        end_bound=end_bound,
         nominal_day=nominal_day,
     )
 
@@ -1192,7 +1196,7 @@ class TestTheClosingBounds:
         calendar = build_calendar()
         value = resolved_value(
             unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
-            end_date=date(2026, 6, 14),
+            end_bound=EndsOnDate(on=date(2026, 6, 14)),
         )
 
         assert dates_through(value, calendar, calendar.horizon()) == [
@@ -1204,7 +1208,7 @@ class TestTheClosingBounds:
         calendar = build_calendar()
         value = resolved_value(
             unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
-            end_date=date(2026, 6, 15),
+            end_bound=EndsOnDate(on=date(2026, 6, 15)),
         )
 
         assert dates_through(value, calendar, calendar.horizon()) == [
@@ -1216,7 +1220,7 @@ class TestTheClosingBounds:
         calendar = build_calendar()
         value = resolved_value(
             unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
-            max_occurrences=3,
+            end_bound=EndsAfterOccurrences(count=3),
         )
 
         assert dates_through(value, calendar, calendar.horizon()) == [
@@ -1245,7 +1249,7 @@ class TestTheClosingBounds:
         )
         value = resolved_value(
             unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 1, 20),
-            max_occurrences=2,
+            end_bound=EndsAfterOccurrences(count=2),
         )
 
         placements = occurrence_placements(

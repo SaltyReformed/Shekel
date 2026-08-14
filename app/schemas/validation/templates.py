@@ -12,16 +12,14 @@ from app.schemas.validation._helpers import (
     EFFECTIVE_DATE_MAX,
     EFFECTIVE_DATE_MIN,
     BaseSchema,
-    PeriodPlacementField,
-    RecurrenceUnitField,
+    RecurrenceFormFieldsMixin,
     RowId,
     _normalize_empty_inputs,
     _reject_envelope_on_income,
-    validate_authorable_cadence,
 )
 
 
-class TemplateCreateSchema(BaseSchema):
+class TemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     """Validates POST data for creating a transaction template.
 
     Includes a cross-field rule (``validate_envelope_only_on_expense``)
@@ -59,47 +57,14 @@ class TemplateCreateSchema(BaseSchema):
     is_envelope = fields.Boolean(load_default=False)
     companion_visible = fields.Boolean(load_default=False)
 
-    # Recurrence rule fields -- the two AUTHORED axes since plan step R7b-2.
-    # Each value is the integer primary key of a ref row (recurrence_units,
-    # period_placements), submitted as a string via HTML form data and
-    # deserialized to the ENUM member it names.  The typed fields rather than
-    # bare ``RowId``s: they also refuse an id no enum member names -- what the
-    # application MODELS is narrower than what a table HOLDS, and the gap is a
-    # 500 (plan step R2e-2).  Carrying the rule in the FIELD is what stops a
-    # third schema declaring an axis without it; ``validate.Range(min=1)`` is
-    # unnecessary because ``RowId`` already floors at ``MIN_ROW_ID``.
-    #
-    # ``RowId`` underneath rather than ``Integer`` because these ARE row ids
-    # despite their names (plan step X-ae): an adversarial review found
-    # ``Integer`` reading '١', ' 2 ', '+3', '007' and '1_0' as ids, and the
-    # completeness gate could not see it while that gate matched on a ``_id``
-    # SUFFIX.
-    #
-    # They replaced ``recurrence_pattern``: the closed pattern set is now the
-    # STORAGE encoding the write door chooses, not a name a user picks.
-    #
-    # ``allow_none`` so the form's "Does not repeat" option survives
-    # the pre_load hook as an explicit ``None`` rather than a dropped key
-    # (plan step R2e-1).  The two are different requests and the update route
-    # acts on them differently -- a present ``None`` CLEARS the recurrence, an
-    # absent key leaves it alone -- so collapsing them would make an amount-only
-    # PATCH silently delete a template's cadence.  This is the same reason
-    # ``due_day_of_month`` and ``end_date`` below are nullable.
-    #
-    # ``offset_periods`` is GONE (defect D8).  It was a vestigial field no
-    # template ever rendered an input for, so every submission carried the
-    # schema default -- which the update path then wrote over the rule's real
-    # phase.  ``resolve`` derives the phase from the rule's own start period.
-    recurrence_unit = RecurrenceUnitField(allow_none=True)
-    recurrence_placement = PeriodPlacementField(allow_none=True)
-    interval_n = fields.Integer(validate=validate.Range(min=1))
-    day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
+    # The recurrence controls both template forms share are on
+    # :class:`~app.schemas.validation._helpers.RecurrenceFormFieldsMixin`.
+    # This one field is NOT shared: only a transaction template carries a
+    # separate bill due-day, and declaring it on the mixin would silently set
+    # a column from a key the transfer schemas never validate.
     due_day_of_month = fields.Integer(
         validate=validate.Range(min=1, max=31), allow_none=True,
     )
-    month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
-    start_period_id = RowId()
-    end_date = fields.Date(allow_none=True)
 
     @validates_schema
     def validate_envelope_only_on_expense(self, data, **kwargs):
@@ -133,27 +98,6 @@ class TemplateCreateSchema(BaseSchema):
             data,
             "Purchase tracking is only available for expense templates.",
         )
-
-    @validates_schema
-    def validate_cadence_is_storable(self, data, **kwargs):
-        """Reject a submitted cadence the closed pattern set cannot store.
-
-        Shared with the transfer-template schema through
-        :func:`~app.schemas.validation._helpers.validate_authorable_cadence`,
-        which carries the reasoning: the storable set is a property of the
-        whole ``(interval, unit, placement)`` triple, and the form already
-        makes an unstorable one unofferable, so this is what a hand-assembled
-        POST meets.
-
-        ``TemplateUpdateSchema`` inherits it; a partial update that omits the
-        recurrence keys returns early there for the same reason the envelope
-        rule does.
-
-        Raises:
-            ValidationError: The triple has no closed-set pattern to be stored
-                as.
-        """
-        validate_authorable_cadence(data)
 
 
 class TemplateUpdateSchema(TemplateCreateSchema):

@@ -25,20 +25,26 @@
    does not repeat -- which is ``recurrence_rule_id IS NULL`` on both
    template kinds since plan step R2e-3, and reads "One-time".
 
-   Both bounds are rendered.  They are mutually exclusive
-   (ck_recurrence_rules_single_end_bound) and plan step R8 is the first
-   author of the count bound, but a bound the row states and the cell omits
-   would be the surface lying about when a commitment stops. #}
+   When the recurrence STOPS is ONE worded phrase, produced by
+   app.services.recurrence.describe (plan step R7b-3).  It was two branches
+   over a date and a count until an adversarial review measured what that
+   costs: a closing bound has three shapes and plan step R8 adds a fourth, so
+   two branches keyed on which storage column is set render NOTHING for a shape
+   neither names -- and a cell showing no stop line reads as a commitment that
+   never ends.  The producer is total over the shapes and raises for one it
+   cannot word; this displays the answer.
+
+   It also stopped this partial calling strftime for a month name, which
+   follows the process LC_TIME -- the dependence app.utils.dates spells its
+   month names out to escape.  A hazard rather than a measured failure; see
+   RecurrenceDescription. #}
 {% macro recurrence_cell(description) %}
 {% if description is none %}
   <span class="text-muted">One-time</span>
 {% else %}
   {{ description.cadence }}
-  {% if description.until is not none %}
-    <br><small class="text-muted">until {{ description.until.strftime('%b %d, %Y') }}</small>
-  {% endif %}
-  {% if description.after_occurrences is not none %}
-    <br><small class="text-muted">for {{ description.after_occurrences }} occurrences</small>
+  {% if description.stops is not none %}
+    <br><small class="text-muted">{{ description.stops }}</small>
   {% endif %}
 {% endif %}
 {% endmacro %}

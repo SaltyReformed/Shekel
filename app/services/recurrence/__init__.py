@@ -72,6 +72,12 @@ What lives where
   two-axis vocabulary at all while it was fused to the anchor derivation.
   ``_resolution`` reads this module's tables rather than holding its own, so
   the two cannot disagree.
+* ``_bounds`` -- WHEN a recurrence stops: :class:`EndBound` and its three
+  shapes.  Its own module rather than a pair of fields on ``_resolution``'s two
+  values because "at most one closing bound" is then a property of the TYPE
+  rather than a CHECK three layers have to restate -- and because the shape set
+  is what the form offers, the schema accepts and the walk asks, so one closed
+  table serves all three (plan step R7b-3).
 * ``_resolution`` -- :class:`RecurrenceSpec`, :class:`ResolvedRecurrence` and
   :func:`resolve`, the pure derivation of what a recurrence means AGAINST a
   schedule.  It holds WHERE each family puts the anchor; the family router
@@ -120,6 +126,18 @@ from app.services.recurrence._authoring import (
     build_transient_rule,
     reauthor_rule,
 )
+from app.services.recurrence._bounds import (
+    END_BOUND_KINDS,
+    NEVER_ENDS,
+    EndBound,
+    EndBoundColumns,
+    EndBoundInputError,
+    EndsAfterOccurrences,
+    EndsOnDate,
+    NeverEnds,
+    end_bound_from_columns,
+    end_bound_from_token,
+)
 from app.services.recurrence._frequency import (
     Cadence,
     PatternReading,
@@ -143,6 +161,7 @@ from app.services.recurrence._occurrence import (
 )
 from app.services.recurrence._reading import (
     RuleReading,
+    has_ended,
     placed_periods,
     read_rule,
     recurrence_spec,
@@ -157,9 +176,11 @@ from app.services.recurrence._resolution import (
 )
 from app.services.recurrence._picker import (
     CadenceOption,
+    EndBoundOption,
     PickerModel,
     SelectedCadence,
     cadence_options,
+    end_bound_options,
     picker_model,
     selected_cadence,
 )
@@ -171,9 +192,18 @@ from app.services.recurrence._vocabulary import (
 )
 
 __all__ = [
+    "END_BOUND_KINDS",
+    "NEVER_ENDS",
     "UNAVAILABLE_PATTERN_MESSAGE",
     "Cadence",
     "CadenceOption",
+    "EndBound",
+    "EndBoundColumns",
+    "EndBoundInputError",
+    "EndBoundOption",
+    "EndsAfterOccurrences",
+    "EndsOnDate",
+    "NeverEnds",
     "OccurrencePlacement",
     "PatternReading",
     "PickerModel",
@@ -192,6 +222,10 @@ __all__ = [
     "cadence_options",
     "decode_pattern",
     "describe",
+    "end_bound_from_columns",
+    "end_bound_from_token",
+    "end_bound_options",
+    "has_ended",
     "is_authorable",
     "modelled_pattern",
     "modelled_placement",

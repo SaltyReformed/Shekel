@@ -57,16 +57,18 @@ Flask-isolated and read-only: it touches no session and issues no query -- the
 owner's schedule arrives as a
 :class:`~app.services.pay_calendar.PayCalendar` the caller already holds.
 """
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import DerivedPeriod, PayCalendar
+from app.services.recurrence._bounds import end_bound_from_columns
 from app.services.recurrence._occurrence import (
     OccurrencePlacement,
     occurrence_placements,
+    occurrences,
 )
 from app.services.recurrence._frequency import (
     RecurrenceResolutionError,
@@ -77,6 +79,11 @@ from app.services.recurrence._resolution import (
     ResolvedRecurrence,
     resolve,
 )
+
+#: One day, the step between an INCLUSIVE occurrence window and the EXCLUSIVE
+#: one a closing bound is asked about.  Named because getting it wrong reports
+#: a commitment finished while its last payment is still due today.
+_ONE_DAY = timedelta(days=1)
 
 
 @dataclass(frozen=True)
@@ -157,9 +164,11 @@ def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:
     Raises:
         RecurrenceResolutionError: When the row names a pattern this
             application does not model, or carries a non-positive interval --
-            see ``decode_pattern``.  A caller that is REPLACING the cadence
-            must take :func:`recurrence_spec_with_cadence` instead, which reads
-            no cadence and therefore cannot fail on one.
+            see ``decode_pattern`` -- or carries both closing-bound columns
+            (see :func:`recurrence_spec_with_cadence`).  A caller that is
+            REPLACING the cadence must take
+            :func:`recurrence_spec_with_cadence` instead, which reads no
+            cadence and therefore cannot fail on one.
     """
     reading = decode_pattern(rule.pattern_id, rule.interval_n)
     return recurrence_spec_with_cadence(
@@ -206,6 +215,13 @@ def recurrence_spec_with_cadence(
 
     Returns:
         The :class:`~app.services.recurrence.RecurrenceSpec`.
+
+    Raises:
+        RecurrenceResolutionError: The row carries BOTH closing-bound columns,
+            which ``ck_recurrence_rules_single_end_bound`` refuses in the
+            table -- see
+            :func:`~app.services.recurrence.end_bound_from_columns` for why
+            that is refused rather than resolved to one of the two.
     """
     return RecurrenceSpec(
         user_id=rule.user_id,
@@ -218,8 +234,12 @@ def recurrence_spec_with_cadence(
         month_of_year=rule.month_of_year,
         start_period_id=rule.start_period_id,
         start_date=rule.start_date,
-        end_date=rule.end_date,
-        max_occurrences=rule.max_occurrences,
+        # The exclusive arc rejoined into the one value that authored it --
+        # the inverse of ``_authoring._author``'s split, and the only other
+        # place the two columns are seen apart (plan step R7b-3).
+        end_bound=end_bound_from_columns(
+            rule.end_date, rule.max_occurrences,
+        ),
     )
 
 
@@ -370,6 +390,93 @@ def rule_occurrences(
     return read_rule(rule, calendar).placements
 
 
+def has_ended(
+    rule: RecurrenceRule, calendar: PayCalendar, *, on: date,
+) -> bool:
+    """Return whether *rule*'s own closing bound had stopped it before *on*.
+
+    "Is this still a FUTURE obligation" -- the question
+    ``obligations_aggregator`` asks per recurring template to decide whether
+    its monthly equivalent belongs in ``/obligations`` and the ``/savings``
+    emergency-fund baseline.
+
+    **It replaced a direct ``rule.end_date < as_of`` read, which had no answer
+    for a count bound at all** (plan step R7b-3).  That read was correct while
+    a date was the only bound anything wrote; the moment the "Ends" control
+    could author "after N occurrences", a spent count would have gone on
+    inflating both figures forever -- while the SAME row's "Next" column, which
+    walks occurrences, showed blank.  One row disagreeing with itself about
+    whether a commitment is over.
+
+    **It answers the RULE's bound, never the schedule's reach.**  A rule whose
+    remaining occurrences fall past the materialised horizon has not ended; the
+    schedule simply has not been extended to them, and answering "ended" there
+    would silently drop a live commitment out of two money totals.  That is why
+    this asks the bound rather than asking "does the walk still yield
+    anything".
+
+    The bound is read from the row's own columns rather than through
+    :func:`recurrence_spec`, so a rule naming a pattern this application no
+    longer models still answers -- and so the two cheap shapes cost no
+    resolution at all.  Only a count bound resolves, and only then.
+
+    Args:
+        rule: The stored recurrence rule.
+        calendar: The OWNER's whole pay-period schedule.  Read only by the
+            count shape, whose exhaustion depends on when the paychecks fall.
+        on: The day being asked about, normally today.
+
+    Returns:
+        ``True`` when the rule names no further occurrence on or after *on*
+        by its own bound.
+
+    Raises:
+        RecurrenceResolutionError: The row carries both bound columns, or --
+            for a count bound only -- it cannot be resolved against
+            *calendar*.
+        RecurrenceGenerationError: For a count bound only, when the resolved
+            value names something the occurrence engine cannot walk.  Neither
+            is reachable for the other two shapes, which never resolve; both
+            arrive with the count bound's first writer (plan step R7b-3).
+    """
+    return end_bound_from_columns(
+        rule.end_date, rule.max_occurrences,
+    ).has_closed(
+        on=on,
+        # ``through`` is INCLUSIVE, so the bound's "strictly before" contract
+        # needs the day before: passing ``on`` itself would count an
+        # occurrence falling ON the day being asked about and report a
+        # commitment finished while its last payment is still due today.
+        occurrences_before=lambda: _occurrences_before(rule, calendar, on),
+    )
+
+
+def _occurrences_before(
+    rule: RecurrenceRule, calendar: PayCalendar, on: date,
+) -> "Iterator[date]":
+    """Yield *rule*'s occurrences strictly before *on*, ascending.
+
+    The walk :func:`has_ended`'s count shape consumes, built only when that
+    shape asks for it -- see
+    :meth:`~app.services.recurrence._bounds.EndBound.has_closed` for why it
+    arrives as a callable rather than as an iterator.
+
+    Args:
+        rule: The stored recurrence rule.
+        calendar: The owner's whole pay-period schedule.
+        on: The exclusive upper bound.
+
+    Yields:
+        Occurrence dates, ascending, already limited by the rule's own bound.
+        Nothing at all when the owner has no pay periods, which is "the
+        occurrences have not happened yet" rather than "there are none".
+    """
+    resolved = resolved_recurrence(rule, calendar)
+    if resolved is None:
+        return
+    yield from occurrences(resolved, calendar, through=on - _ONE_DAY)
+
+
 def placed_periods(
     placements: Iterable[OccurrencePlacement],
     *,
@@ -421,6 +528,7 @@ def placed_periods(
 
 __all__ = [
     "RuleReading",
+    "has_ended",
     "placed_periods",
     "read_rule",
     "recurrence_spec",

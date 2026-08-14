@@ -126,12 +126,18 @@ The four derivations
    may have no payday at all; see :func:`_first_of_month_anchor` for the
    measured counterexample.
 
-Bounds are NOT validated here.  ``end_date >= anchor_date`` is a real
-invariant of the finished model and belongs to plan step R7c -- where the
-anchor becomes a stored column -- together with the Marshmallow validator
-that can refuse the pair at the door: 14 live rules resolve to an anchor in
-the future, and refusing them here would make "stop this recurring bill"
-raise.
+``end_date >= anchor_date`` is NOT validated here.  It is a real invariant of
+the finished model and belongs to plan step R7c -- where the anchor becomes a
+stored column -- together with the Marshmallow validator that can refuse the
+pair at the door: 14 live rules resolve to an anchor in the future, and
+refusing them here would make "stop this recurring bill" raise.
+
+**The bound's own shape needs no validation at all, since plan step R7b-3.**
+"At most one closing bound" and "a count names at least one occurrence" are
+carried by :class:`~app.services.recurrence.EndBound`, which cannot express
+either violation, so this module holds no refusal for them and neither does
+anything else.  What IS refused here is the set of column DOMAINS the write
+door writes verbatim -- see :func:`_require_authored_domains`.
 """
 import calendar as calendar_module
 from dataclasses import dataclass
@@ -144,6 +150,7 @@ from app.enums import (
     RecurrenceUnitEnum,
 )
 from app.services.pay_calendar import DerivedPeriod, PayCalendar
+from app.services.recurrence._bounds import NEVER_ENDS, EndBound
 from app.services.recurrence._frequency import (
     FAMILY_CALENDAR,
     FAMILY_FIRST_OF_MONTH,
@@ -170,16 +177,27 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
     forward occurrence engine consumes, and what plan step R7c's migration
     freezes into columns once the form authors it directly.
 
-    Pylint: ``too-many-instance-attributes`` (9/7) -- these nine ARE what one
+    Pylint: ``too-many-instance-attributes`` (8/7) -- these eight ARE what one
     recurrence means, read as a flat unit by a single consumer, and the plan's
-    END-state table (section 3) carries all but ``offset_periods``.  The two arguable
-    sub-groups were both weighed and rejected: pairing ``end_date`` with
-    ``max_occurrences`` behind a bound object would put their exclusivity in a
-    second place beside the ``ck_recurrence_rules_single_end_bound`` CHECK
-    that already owns it, and pairing ``anchor_date`` with ``nominal_day``
-    would make every consumer unwrap a two-field object to ask for a date.
-    Mirrors the :class:`RecurrenceSpec` and ``transfer_service.TransferSpec``
+    END-state table (section 3) carries all but ``offset_periods``.  Pairing
+    ``anchor_date`` with ``nominal_day`` was weighed and rejected: it would
+    make every consumer unwrap a two-field object to ask for a date.  Mirrors
+    the :class:`RecurrenceSpec` and ``transfer_service.TransferSpec``
     precedents.
+
+    **``end_date`` and ``max_occurrences`` DID pair, at plan step R7b-3**, and
+    the note here used to argue they should not -- that a bound object "would
+    put their exclusivity in a second place beside the
+    ``ck_recurrence_rules_single_end_bound`` CHECK that already owns it".  That
+    is true of a wrapper holding two optional fields and false of a value with
+    three shapes: :class:`~app.services.recurrence.EndBound` cannot state two
+    bounds at all.  What that removes is not the CHECK -- the table still needs
+    it, for writers that never see this type -- nor
+    ``end_bound_from_columns``'s refusal, which PARSES untyped storage.  It
+    removes the exclusivity from the WRITERS, which is where it could actually
+    be got wrong: ``loan_recurrence_sync`` states its change as
+    ``replace(spec, end_bound=payoff)``, and with two independent fields the
+    same call would leave a count sitting beside the date it just wrote.
 
     Carries ENUM members rather than ``ref`` table ids because nothing
     persists it.  The ids exist to put a value in a column; a consumer asking
@@ -220,11 +238,12 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
             on.
         shift: Weekend / holiday adjustment for the occurrence date.  Always
             ``NONE`` until plan step R8.
-        end_date: The closing bound, or ``None`` for indefinite.  Mutually
-            exclusive with *max_occurrences*
-            (``ck_recurrence_rules_single_end_bound``).
-        max_occurrences: The count-bounded end, or ``None``.  No writer sets
-            it until plan step R8.
+        end_bound: When the recurrence STOPS -- indefinitely, on a date, or
+            after a count of occurrences.  ONE value with three shapes, so
+            "at most one closing bound"
+            (``ck_recurrence_rules_single_end_bound``) is a state the type
+            cannot express rather than one anything has to check; see
+            :mod:`app.services.recurrence._bounds`.
         nominal_day: The day the rule MEANS when *anchor_date*'s own month was
             too short to hold it -- April has no 31st, so a day-31 rule
             anchored there carries ``anchor_date = 2026-04-30`` and
@@ -244,8 +263,7 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
     anchor_date: date
     placement: PeriodPlacementEnum
     shift: BusinessDayShiftEnum
-    end_date: date | None
-    max_occurrences: int | None
+    end_bound: EndBound
     nominal_day: int | None
 
     @property
@@ -301,13 +319,17 @@ _DAY_OF_MONTH_UNITS = MONTH_SPANNING_UNITS
 _DEFAULT_DAY_OF_MONTH = 1
 _DEFAULT_MONTH_OF_YEAR = 1
 
-#: The domains ``ck_recurrence_rules_dom`` and ``ck_recurrence_rules_moy``
-#: bound their columns to.  Named once, so the door and the table state one
-#: domain rather than two that happen to agree.
+#: The domains ``ck_recurrence_rules_dom``, ``ck_recurrence_rules_due_dom``,
+#: ``ck_recurrence_rules_moy`` and ``ck_recurrence_rules_valid_offset`` bound
+#: their columns to.  Named once, so the door and the table state one domain
+#: rather than two that happen to agree.  The two day columns share one pair
+#: because they hold the same KIND of value -- a day of a month -- and giving
+#: them separate constants would invite them to drift apart.
 _DAY_OF_MONTH_MIN = 1
 _DAY_OF_MONTH_MAX = 31
 _MONTH_OF_YEAR_MIN = 1
 _MONTH_OF_YEAR_MAX = 12
+_MIN_OFFSET_PERIODS = 0
 
 #: Upper bound on the month-ordinal walk in :func:`_calendar_anchor`.  Two
 #: candidates always suffice (the effective month's own occurrence, then one
@@ -330,7 +352,7 @@ class RecurrenceSpec:  # pylint: disable=too-many-instance-attributes
     ``encode_cadence`` on the way in and ``decode_pattern`` on the way out.
     Plan step R7c deletes both, and nothing above the door moves.
 
-    Pylint: ``too-many-instance-attributes`` (12/7) -- these are the
+    Pylint: ``too-many-instance-attributes`` (11/7) -- these are the
     irreducible inputs of one authoring request, exactly the fields the
     recurrence form collects, read as a flat unit by the single consumer
     (:func:`resolve`).  Mirrors the ``TransferSpec`` precedent.  Frozen so a
@@ -369,9 +391,15 @@ class RecurrenceSpec:  # pylint: disable=too-many-instance-attributes
         start_date: The rule's opening validity bound; written only by
             ``loan_recurrence_sync`` from the loan's first contractual
             installment (plan step C9a).
-        end_date: The rule's closing validity bound.
-        max_occurrences: The count-bounded end.  Mutually exclusive with
-            ``end_date`` (``ck_recurrence_rules_single_end_bound``).
+        end_bound: The rule's closing validity bound -- indefinite, a date, or
+            a count of occurrences, as ONE value
+            (:class:`~app.services.recurrence.EndBound`).  Replacing it is how
+            a closing bound CHANGES, which is what makes
+            ``replace(spec, end_bound=...)`` safe for the one writer that owns
+            a bound it did not author: ``loan_recurrence_sync`` states the
+            loan's payoff and the shape it replaces cannot leave a count
+            behind.  Defaults to :data:`~app.services.recurrence.NEVER_ENDS`,
+            which 41 of the 46 live rules carry.
     """
 
     user_id: int
@@ -384,8 +412,7 @@ class RecurrenceSpec:  # pylint: disable=too-many-instance-attributes
     month_of_year: int | None = None
     start_period_id: int | None = None
     start_date: date | None = None
-    end_date: date | None = None
-    max_occurrences: int | None = None
+    end_bound: EndBound = NEVER_ENDS
 
 
 def _effective_start(
@@ -720,8 +747,8 @@ def _require_owner(spec: RecurrenceSpec, calendar: PayCalendar) -> None:
         )
 
 
-def _require_authored_calendar_fields(spec: RecurrenceSpec) -> None:
-    """Refuse a day or month outside the domain its own column allows.
+def _require_authored_domains(spec: RecurrenceSpec) -> None:
+    """Refuse an authored value outside the domain its own column allows.
 
     **Plan step R4a moved this refusal here, and it was previously an
     accident.**  ``recurrence_engine._match_annual`` called
@@ -737,11 +764,12 @@ def _require_authored_calendar_fields(spec: RecurrenceSpec) -> None:
 
     The check is on the AUTHORED value for the same reason
     :func:`~app.services.recurrence._frequency.require_positive_interval`'s is:
-    ``app.services.recurrence._authoring._author``
-    writes ``spec.day_of_month`` / ``spec.month_of_year`` verbatim into columns
-    carrying ``ck_recurrence_rules_dom`` and ``ck_recurrence_rules_moy``, so an
-    out-of-domain value reaches the flush as an unhandled ``IntegrityError``
-    naming neither the field nor the value.  Refusing at the door names both.
+    ``app.services.recurrence._authoring._author`` writes ``spec.day_of_month``
+    / ``spec.due_day_of_month`` / ``spec.month_of_year`` verbatim into columns
+    carrying ``ck_recurrence_rules_dom``, ``ck_recurrence_rules_due_dom`` and
+    ``ck_recurrence_rules_moy``, so an out-of-domain value reaches the flush as
+    an unhandled ``IntegrityError`` naming neither the field nor the value.
+    Refusing at the door names both.
 
     **``NULL`` is the only value that means "this rule states no day", and
     ``0`` is REFUSED.**  A neutral review measured the first draft of this
@@ -762,28 +790,57 @@ def _require_authored_calendar_fields(spec: RecurrenceSpec) -> None:
     the field.  The reverse matcher ignored it for such a rule; that was the
     field being unread, not the value being legal.
 
-    The four other CHECK constraints on ``budget.recurrence_rules`` --
-    ``due_dom``, ``valid_offset``, ``positive_max_occurrences``,
-    ``single_end_bound`` -- are NOT mirrored here; nothing this step deletes
-    was refusing them, and closing that gap is plan ledger row D23.
+    **Plan step R7b-3 closed plan ledger row D23 here and in
+    :mod:`app.services.recurrence._bounds`.**  Four CHECK constraints on
+    ``budget.recurrence_rules`` reached the flush unmirrored, and they did not
+    all have the same remedy.  ``single_end_bound`` and
+    ``positive_max_occurrences`` are properties of a SHAPE -- "at most one
+    closing bound", "a count names at least one occurrence" -- so they went
+    into the type and no refusal is written for them anywhere: no value can
+    break them.  ``due_dom`` and ``valid_offset`` are DOMAINS over plain
+    integers, which is the same thing ``dom`` and ``moy`` are, so they are
+    mirrored here beside them.  Making those two structural as well means a
+    day-of-month value type, which is plan step **G2**'s work.
+
+    ``offset_periods`` is checked on the AUTHORED value even though the write
+    door writes the RESOLVED one, and the two cannot differ in the direction
+    that matters: :func:`_derive_offset_periods` answers ``0``, the authored
+    value, or ``start_period.period_index % interval_n`` -- and a period index
+    is a schedule ordinal, so only the middle arm can carry a negative.
 
     Args:
         spec: The authored recurrence.
 
     Raises:
-        RecurrenceResolutionError: When a STATED day is outside 1-31 or a
-            stated month is outside 1-12.  ``None`` states nothing and passes.
+        RecurrenceResolutionError: When a STATED day or due day is outside
+            1-31, a stated month is outside 1-12, or the phase is negative.
+            ``None`` states nothing and passes.
     """
-    day = spec.day_of_month
-    if day is not None and not _DAY_OF_MONTH_MIN <= day <= _DAY_OF_MONTH_MAX:
+    for field, day in (
+        ("day_of_month", spec.day_of_month),
+        ("due_day_of_month", spec.due_day_of_month),
+    ):
+        if day is None or _DAY_OF_MONTH_MIN <= day <= _DAY_OF_MONTH_MAX:
+            continue
         raise RecurrenceResolutionError(
-            f"recurrence day_of_month must be NULL or between "
+            f"recurrence {field} must be NULL or between "
             f"{_DAY_OF_MONTH_MIN} and {_DAY_OF_MONTH_MAX}, got {day} for a "
             f"{spec.unit!r} recurrence (user {spec.user_id}).  It is "
-            f"written to a column carrying ck_recurrence_rules_dom, so "
-            f"letting it through would raise an unhandled IntegrityError at "
-            f"the flush; and an over-large day would be CLAMPED to a month's "
-            f"last day, answering a plausible date the rule never named."
+            f"written to a column carrying ck_recurrence_rules_dom or "
+            f"ck_recurrence_rules_due_dom, so letting it through would raise "
+            f"an unhandled IntegrityError at the flush; and an over-large day "
+            f"would be CLAMPED to a month's last day, answering a plausible "
+            f"date the rule never named."
+        )
+    if spec.offset_periods < _MIN_OFFSET_PERIODS:
+        raise RecurrenceResolutionError(
+            f"recurrence offset_periods must be at least "
+            f"{_MIN_OFFSET_PERIODS}, got {spec.offset_periods} for a "
+            f"{spec.unit!r} recurrence (user {spec.user_id}).  It is written "
+            f"to a NOT NULL column carrying ck_recurrence_rules_valid_offset, "
+            f"and a negative phase also makes "
+            f"``(period_index - offset) % interval_n`` select a different set "
+            f"of paychecks than the one the rule names."
         )
     month = spec.month_of_year
     if (
@@ -860,10 +917,11 @@ def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
         RecurrenceResolutionError: When *spec* and *calendar* name different
             users, when ``interval_n`` is not positive, when the
             ``(unit, placement)`` pair has no anchor derivation, when
-            ``day_of_month`` or ``month_of_year`` is outside its column's
-            domain, or when the owner has no pay periods.  All five are broken
-            invariants: a recurrence read with a fabricated cadence is worse
-            than a refused read.
+            ``day_of_month`` / ``due_day_of_month`` / ``month_of_year`` /
+            ``offset_periods`` is outside its column's domain, or when the
+            owner has no pay periods.  All five are broken invariants: a
+            recurrence read with a fabricated cadence is worse than a refused
+            read.
     """
     _require_owner(spec, calendar)
     require_positive_interval(
@@ -871,7 +929,7 @@ def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
         f"a {spec.unit!r} recurrence (user {spec.user_id})",
     )
     family = anchor_family(spec.unit, spec.placement)
-    _require_authored_calendar_fields(spec)
+    _require_authored_domains(spec)
 
     start_period = calendar.period_by_id(spec.start_period_id)
     effective = _effective_start(spec, calendar, start_period)
@@ -893,7 +951,6 @@ def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
         anchor_date=anchor,
         placement=spec.placement,
         shift=BusinessDayShiftEnum.NONE,
-        end_date=spec.end_date,
-        max_occurrences=spec.max_occurrences,
+        end_bound=spec.end_bound,
         nominal_day=_month_anchor_day(spec.unit, anchor, nominal_day),
     )

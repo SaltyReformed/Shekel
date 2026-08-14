@@ -69,11 +69,18 @@ Pure: no Flask, no ORM, no clock, no database.  It takes a
 :class:`~app.services.recurrence.ResolvedRecurrence` and returns a value; the
 template picks the phrase up and styles it.
 """
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
+from typing import Any
 
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.exceptions import ShekelError
+from app.services.recurrence._bounds import (
+    EndBound,
+    EndsAfterOccurrences,
+    EndsOnDate,
+    NeverEnds,
+)
 from app.services.recurrence._resolution import ResolvedRecurrence
 from app.utils.dates import month_name, weekday_name
 
@@ -148,44 +155,44 @@ class RecurrenceDescription:
             template styles it and never assembles it, so the shape of the
             phrase is decided in one place for every cadence including the
             ones nothing authors yet.
-        until: The rule's closing date bound, or ``None`` for indefinite.  A
-            :class:`~datetime.date` rather than a formatted string, so the
-            surface formats it the same way it formats every other date on the
-            page.
-        after_occurrences: The rule's count bound, or ``None``.  Mutually
-            exclusive with *until* (``ck_recurrence_rules_single_end_bound``),
-            and carried even though plan step R8 is its first author: a bound
-            the row states and the cell omits is the surface lying about when
-            a commitment stops.
+        stops: When the recurrence stops, as ONE finished phrase --
+            ``"until Mar 01, 2027"``, ``"for 12 occurrences"`` -- or ``None``
+            when it runs indefinitely and the cell shows no second line.
+
+            **It was two fields, ``until`` and ``after_occurrences``, with a
+            ``__post_init__`` refusing the pair, until plan step R7b-3.**  That
+            guard existed because ``ck_recurrence_rules_single_end_bound``
+            refuses the pair in the TABLE and "a value built in memory is not
+            the table" -- without it a cell could render "until Mar 01, 2027"
+            AND "for 12 occurrences", two stop dates for one commitment.
+
+            Carrying the two fields was itself the defect one layer up, and an
+            adversarial review of this step named it: the template then
+            branched on ``description.until`` and
+            ``description.after_occurrences``, which is three shapes and TWO
+            branches, so a fourth shape
+            (plan step R8 adds one) would render nothing at all and the cell
+            would read as indefinite -- a commitment the app goes on charging.
+            :func:`_stops_phrase` is total over the shapes and RAISES for one
+            it has no wording for, exactly as :func:`_stem` and
+            :func:`_placement_note` do for their own closed sets.
+
+            A phrase rather than a date, so the wording of a stop is decided
+            here beside the wording of a cadence.  It also takes the month name
+            off ``strftime('%b')``, which the cell used and which delegates to
+            the platform and follows ``LC_TIME`` -- the dependence
+            :data:`app.utils.dates._MONTH_NAMES_ABBR` is spelled out to escape.
+            **That is a HAZARD rather than a measured failure**, and an
+            adversarial review of this step corrected an earlier note here for
+            claiming otherwise: CPython never calls ``setlocale``, nothing in
+            ``app/`` does either, and ``%b`` measured English under
+            ``LANG=de_DE.UTF-8`` in this repo's own venv.  What makes the move
+            load-bearing is the totality above; the locale is why it was worth
+            doing in the same pass rather than a reason of its own.
     """
 
     cadence: str
-    until: date | None
-    after_occurrences: int | None
-
-    def __post_init__(self) -> None:
-        """Refuse a value stating two answers to "when does this stop".
-
-        ``ck_recurrence_rules_single_end_bound`` refuses the pair in the
-        TABLE; this refuses it in a value built in memory, which is not the
-        table -- the same reasoning
-        :func:`app.services.recurrence._occurrence._bounded` records for
-        testing both bounds it can never see together.  Without it the cell
-        renders "until Mar 01, 2027" AND "for 12 occurrences", two stop dates
-        for one commitment, and the surface that exists to say when a bill
-        ends says it twice.
-
-        Raises:
-            RecurrenceDescriptionError: When both bounds are present.
-        """
-        if self.until is not None and self.after_occurrences is not None:
-            raise RecurrenceDescriptionError(
-                f"recurrence description states two closing bounds: until "
-                f"{self.until} AND after {self.after_occurrences} "
-                f"occurrences.  A rule has at most one "
-                f"(ck_recurrence_rules_single_end_bound), and a cell showing "
-                f"both would give a commitment two stop dates."
-            )
+    stops: str | None
 
 
 def _stem(unit: RecurrenceUnitEnum, interval_n: int) -> str:
@@ -351,6 +358,109 @@ def _parenthetical(resolved: ResolvedRecurrence) -> str | None:
     return f"{coordinate}, {note}"
 
 
+def _never_stops(_bound: NeverEnds) -> None:
+    """Return no phrase: an indefinite recurrence shows no second line.
+
+    Takes the bound it will not read, because the three phrase functions are
+    dispatched over one table and must share a signature -- and because a
+    shape that answers "nothing to say" IS an answer, not an absence the
+    dispatcher special-cases.
+
+    Returns:
+        Always ``None``.
+    """
+    return None
+
+
+def _stops_on_date(bound: EndsOnDate) -> str:
+    """Return ``"until Mar 01, 2027"``.
+
+    The month is named from :func:`app.utils.dates.month_name`, this
+    application's one month-name producer, rather than formatted with ``%b``
+    -- see :class:`RecurrenceDescription` for what that escapes and for what
+    it does NOT claim.  The day is zero-padded because that is what the cell
+    rendered before the phrase moved here, so no live row's wording changes
+    for a reason unrelated to this step.
+
+    Args:
+        bound: The date shape.
+
+    Returns:
+        The phrase.
+    """
+    day = bound.on
+    return f"until {month_name(day.month, abbr=True)} {day.day:02d}, {day.year}"
+
+
+def _stops_after_count(bound: EndsAfterOccurrences) -> str:
+    """Return ``"for 12 occurrences"``, singular at one.
+
+    Args:
+        bound: The count shape.
+
+    Returns:
+        The phrase.
+    """
+    noun = "occurrence" if bound.count == 1 else "occurrences"
+    return f"for {bound.count} {noun}"
+
+
+#: How each closing-bound shape is worded, keyed by the shape itself.
+#:
+#: Keyed by TYPE rather than by which column projection is set, so the table is
+#: total over the same closed set :data:`._bounds.END_BOUND_KINDS` names and a
+#: shape missing from it raises rather than rendering blank.  It sits here
+#: rather than on the shapes because this module owns display COPY -- the same
+#: division :data:`_UNIT_PLURALS` and :data:`_DEFERRED_NOTE` already keep.
+#:
+#: Each phrase function takes its OWN shape, so the value type is ``Any``
+#: rather than ``EndBound``: a table of exact-shape handlers is contravariant
+#: in its argument, and annotating it with the base would be a claim the
+#: members do not make.
+_STOP_PHRASES: dict[type[EndBound], "Callable[[Any], str | None]"] = {
+    NeverEnds: _never_stops,
+    EndsOnDate: _stops_on_date,
+    EndsAfterOccurrences: _stops_after_count,
+}
+
+
+def _stops_phrase(bound: EndBound) -> str | None:
+    """Return the words for when a recurrence stops, or ``None`` for never.
+
+    Total over :data:`~app.services.recurrence._bounds.END_BOUND_KINDS` and
+    RAISING for a shape it has no wording for, which is the same contract
+    :func:`_stem` and :func:`_placement_note` hold for their own closed sets --
+    and here it is the difference between a cell that omits a stop date and a
+    cell that says there is none.  A shape added for plan step R8 and left out
+    of :data:`_STOP_PHRASES` fails at the first render rather than reading as
+    an indefinite commitment.
+
+    Keyed on the shape's TYPE rather than on which of its two column
+    projections is non-``None``: the columns are storage, a shape R8 adds may
+    have neither, and asking "which column is set" is how three shapes came to
+    be worded by two branches.
+
+    Args:
+        bound: The recurrence's closing bound.
+
+    Returns:
+        The phrase for the cell's second line, or ``None`` when the recurrence
+        is indefinite and there is no second line.
+
+    Raises:
+        RecurrenceDescriptionError: When *bound*'s shape has no wording.
+    """
+    phrase = _STOP_PHRASES.get(type(bound))
+    if phrase is None:
+        raise RecurrenceDescriptionError(
+            f"recurrence bound {type(bound).__name__!r} has no wording.  Every "
+            f"shape a closing bound can take must have one: a cell that omits "
+            f"a stop the rule states reads as a commitment that never ends, "
+            f"which is money the surface says will keep being spent."
+        )
+    return phrase(bound)
+
+
 def describe(resolved: ResolvedRecurrence) -> RecurrenceDescription:
     """Describe a resolved recurrence in the words a surface shows.
 
@@ -379,9 +489,7 @@ def describe(resolved: ResolvedRecurrence) -> RecurrenceDescription:
     parenthetical = _parenthetical(resolved)
     cadence = stem if parenthetical is None else f"{stem} ({parenthetical})"
     return RecurrenceDescription(
-        cadence=cadence,
-        until=resolved.end_date,
-        after_occurrences=resolved.max_occurrences,
+        cadence=cadence, stops=_stops_phrase(resolved.end_bound),
     )
 
 

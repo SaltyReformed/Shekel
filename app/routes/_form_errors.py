@@ -23,6 +23,7 @@ model.  Those are worth saying out loud.
 from typing import Any
 
 from flask import Response, flash, request
+from marshmallow import ValidationError
 
 from app.routes._redirect_target import RedirectTarget
 
@@ -48,12 +49,32 @@ from app.routes._redirect_target import RedirectTarget
 #: allowlist naming a field no schema declares -- so every one of those
 #: messages was dead copy, and a user whose cadence was refused got the generic
 #: prompt after a redirect that highlights nothing.
+#: * ``recurrence_end_mode`` / ``end_date`` / ``max_occurrences`` -- the three
+#:   controls of the "Ends" bound (plan step R7b-3).  Each refusal names the
+#:   CONTROL at fault rather than the one the user answered correctly: "you
+#:   chose *ends on a date* and left the date blank" is attached to the date
+#:   box, not to the mode select.
+#:
+#: **The bound's three arrived a review late, and the miss is this list's own
+#: failure mode twice over.**  Plan step R7b-3 authored three sentences and
+#: allowlisted none of them, so every one was dead copy and a user whose bound
+#: was refused got the generic prompt after a redirect that highlights nothing
+#: -- exactly what plan step R7b-2's adversarial review caught for
+#: ``recurrence_pattern``.  Worse, the completeness gate could not see it: the
+#: refusals live in a ``@post_load`` hook, and
+#: ``tests/test_routes/test_form_errors.py``'s arm drove ``Schema.validate``,
+#: which is ``_do_load(postprocess=False)`` and SKIPS post-load processors.
+#: That arm loads now.
+#:
 #: ``tests/test_routes/test_form_errors.py`` pins the tuple against the schema
 #: package, so a renamed field cannot silence its own message again.
 ACTIONABLE_FLASH_FIELDS: tuple[str, ...] = (
     "is_envelope",
     "recurrence_unit",
     "recurrence_placement",
+    "recurrence_end_mode",
+    "end_date",
+    "max_occurrences",
 )
 
 GENERIC_VALIDATION_FLASH: str = (
@@ -66,7 +87,8 @@ def flash_message_for_errors(errors: dict[str, Any]) -> str:
     """Pick the user-facing flash message from a Marshmallow errors dict.
 
     Args:
-        errors: The dict returned by ``schema.validate(request.form)``.
+        errors: A Marshmallow errors dict -- ``ValidationError
+            .normalized_messages()``.
 
     Returns:
         The first :data:`ACTIONABLE_FLASH_FIELDS` message present, else
@@ -79,39 +101,60 @@ def flash_message_for_errors(errors: dict[str, Any]) -> str:
     return GENERIC_VALIDATION_FLASH
 
 
-def validate_form_or_redirect(
+def load_form_or_redirect(
     schema: Any, redirect: RedirectTarget,
-) -> Response | None:
-    """Validate ``request.form`` against *schema*, flashing and redirecting on failure.
+) -> dict[str, Any] | Response:
+    """Load ``request.form`` through *schema*, flashing and redirecting on failure.
 
-    The whole "refuse a bad payload" step of a CRUD route, in one place.  All
-    four template-CRUD routes ran it inline; once plan step R2e-2 gave the two
-    transfer routes the same message-picking as the two transaction routes, the
-    four copies became textually identical and ``duplicate-code`` said so.
-    Extracting is the honest answer to that, not a one-sided disable: the step
-    genuinely is one rule, and having one door means a future route cannot
-    validate a payload and then flash something else.
+    The whole "refuse a bad payload, or hand back the good one" step of a CRUD
+    route, in one place.  All four template-CRUD routes ran it inline; once
+    plan step R2e-2 gave the two transfer routes the same message-picking as
+    the two transaction routes, the four copies became textually identical and
+    ``duplicate-code`` said so.  Extracting is the honest answer to that, not a
+    one-sided disable: the step genuinely is one rule, and having one door
+    means a future route cannot validate a payload and then flash something
+    else.
+
+    **It LOADS rather than validating-then-loading, since plan step R7b-3**,
+    and the change fixes two things at once.
+
+    Every caller ran ``schema.validate(request.form)`` here and then
+    ``schema.load(request.form)`` on the next line, which is the whole
+    pre-load, field-deserialization and cross-field pass run TWICE for one
+    submission -- the redundant producer call this project treats as a DRY
+    violation rather than a cost question.
+
+    Worse, the two passes do not refuse the same things.  ``Schema.validate``
+    is ``_do_load(postprocess=False)``: it SKIPS ``@post_load``, so a refusal
+    raised there was invisible here and then escaped from the caller's
+    ``load`` as an unhandled 500.  Measured on plan step R7b-3's own
+    ``compose_end_bound``, which turns "you chose *ends on a date* and left the
+    date blank" into a field error: it flashed nothing and 500'd.  One
+    ``load`` in one ``try`` is what makes a refusal's placement in the schema
+    stop mattering to the route.
 
     Args:
-        schema: The Marshmallow schema to validate ``request.form`` against.
+        schema: The Marshmallow schema to load ``request.form`` through.
         redirect: Where to send the user when the payload is refused --
             typically back to the form they submitted.
 
     Returns:
-        A Flask redirect :class:`Response` when the payload is invalid (the
-        caller returns it directly), or ``None`` when it is valid and the
-        caller should proceed to ``schema.load``.
+        The deserialized payload when it is valid, or a Flask redirect
+        :class:`Response` when it is not.  The caller distinguishes them with
+        ``isinstance(result, Response)``, the idiom
+        ``build_recurrence_rule_from_form`` already uses for the same
+        two-outcome shape.
     """
-    errors = schema.validate(request.form)
-    if not errors:
-        return None
-    flash(flash_message_for_errors(errors), "danger")
-    return redirect.to_response()
+    try:
+        return schema.load(request.form)
+    except ValidationError as exc:
+        flash(flash_message_for_errors(exc.normalized_messages()), "danger")
+        return redirect.to_response()
 
 
 __all__ = [
     "ACTIONABLE_FLASH_FIELDS",
     "GENERIC_VALIDATION_FLASH",
     "flash_message_for_errors",
-    "validate_form_or_redirect",
+    "load_form_or_redirect",
 ]

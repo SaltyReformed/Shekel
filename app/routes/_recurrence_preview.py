@@ -32,9 +32,12 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.services import pay_period_service
 from app.services.pay_calendar import DerivedPeriod, PayCalendar, calendar_for
 from app.services.recurrence import (
+    NEVER_ENDS,
+    EndBoundInputError,
     RecurrenceResolutionError,
     RecurrenceSpec,
     build_transient_rule,
+    end_bound_from_token,
     modelled_placement,
     modelled_unit,
     placed_periods,
@@ -152,7 +155,23 @@ def build_preview_rule(
             day_of_month=request.args.get("day_of_month", type=int),
             month_of_year=request.args.get("month_of_year", type=int),
             start_period_id=start_period.id if start_period else None,
-            end_date=_submitted_end_date(),
+            # Composed through the SUBMISSION door, not the storage one (plan
+            # step R7b-3).  These are query args -- a submission -- so a
+            # mistake in them is user input, and
+            # ``end_bound_from_columns`` would have reported it as a row
+            # written around ``ck_recurrence_rules_single_end_bound``: a log
+            # line asserting corrupted data that does not exist.  The form
+            # posts the same three controls the save does, so the preview
+            # reads one submission the way the save reads it.
+            end_bound=end_bound_from_token(
+                request.args.get(
+                    "recurrence_end_mode", default=NEVER_ENDS.token,
+                ),
+                end_date=_submitted_end_date(),
+                max_occurrences=request.args.get(
+                    "max_occurrences", type=int,
+                ),
+            ),
         ),
         calendar,
     )
@@ -207,7 +226,8 @@ def recurrence_preview_fragment() -> str:
 
     **Every OTHER query arg is unvalidated, and plan step R4a made that a 200
     instead of a 500.**  ``interval_n`` / ``day_of_month`` / ``month_of_year``
-    / ``end_date`` are read straight from ``request.args``; the two form
+    / ``recurrence_end_mode`` / ``end_date`` / ``max_occurrences`` are read
+    straight from ``request.args``; the two form
     schemas bound them, nothing bounds this endpoint, and it is reachable by
     anyone signed in.  Measured at R4a: ``?interval_n=0`` raised out of the
     authoring seam, ``?month_of_year=13`` raised ``ValueError`` from
@@ -288,7 +308,7 @@ def recurrence_preview_fragment() -> str:
             rule_occurrences(rule, calendar),
             ending_on_or_after=effective_from,
         )
-    except RecurrenceResolutionError as exc:
+    except (RecurrenceResolutionError, EndBoundInputError) as exc:
         # The submitted arguments do not name a recurrence this application can
         # resolve OR can store.  The user gets a muted line either way, because
         # from the form's side both mean "there is nothing to preview for what

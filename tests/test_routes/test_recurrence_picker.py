@@ -41,6 +41,8 @@ import json
 import re
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -60,11 +62,17 @@ from app.routes._recurrence_form_helpers import (
     UNREPAIRED_CADENCE_CANNOT_BE_CLEARED,
 )
 from app.services import account_service
+from app.services.recurrence import _picker
 from app.services.recurrence import (
+    END_BOUND_KINDS,
     UNAVAILABLE_PATTERN_MESSAGE,
+    EndsAfterOccurrences,
+    EndsOnDate,
+    NeverEnds,
     RecurrenceResolutionError,
     cadence_options,
     decode_pattern,
+    end_bound_options,
     is_authorable,
     modelled_placement,
     modelled_unit,
@@ -1132,3 +1140,62 @@ class TestADeliberateClearStillWorks:
             reloaded = db.session.get(TransactionTemplate, template_id)
             assert reloaded.recurrence_rule_id is None
             assert db.session.get(RecurrenceRule, rule_id) is None
+
+
+@pytest.mark.usefixtures("app")
+class TestTheEndBoundOfferSet:
+    """What the "Ends" control offers, derived from the shape set (R7b-3).
+
+    The same property plan step R7b-2 gave the cadence controls, applied to
+    the closing bound: the offer set and the dispatch that accepts a
+    submission read ONE table, so a shape is offerable and submittable
+    together or neither.
+    """
+
+    def test_it_offers_every_shape_and_only_those(self):
+        """Derived from ``END_BOUND_KINDS``, in the tuple's own order.
+
+        Never first, because it is the default a create form starts on.
+        """
+        offered = [option.token for option in end_bound_options()]
+
+        assert offered == [kind.token for kind in END_BOUND_KINDS]
+
+    def test_every_offer_is_worded(self):
+        """A blank ``<option>`` is a choice the user cannot understand."""
+        for option in end_bound_options():
+            assert option.label.strip(), f"{option.token} has no label"
+
+    def test_a_shape_without_copy_raises_rather_than_rendering_blank(self):
+        """The contract ``_UNIT_LABELS`` holds, for the bound's shapes.
+
+        A shape added at plan step R8 without copy fails at the first render
+        instead of shipping an empty entry in a control that decides when a
+        bill stops being charged.
+        """
+        with patch.object(
+            _picker, "END_BOUND_KINDS",
+            (*END_BOUND_KINDS, SimpleNamespace(token="unworded")),
+        ):
+            with pytest.raises(KeyError):
+                end_bound_options()
+
+    def test_each_offer_names_the_control_its_shape_needs(self):
+        """The script shows one input and disables the rest from this.
+
+        Stated by the OFFER rather than by the template, so a shape and the
+        control it reads a value from cannot be added apart.  The unbounded
+        shape names none, which is what "no value input" is.
+        """
+        by_token = {
+            option.token: option.needs_field_id
+            for option in end_bound_options()
+        }
+
+        assert by_token[NeverEnds.token] is None
+        assert by_token[EndsOnDate.token] == "field-end-date"
+        assert by_token[EndsAfterOccurrences.token] == "field-max-occurrences"
+
+    def test_the_picker_model_carries_them(self):
+        """One producer call per render, for every control on the form."""
+        assert picker_model().end_bounds == end_bound_options()

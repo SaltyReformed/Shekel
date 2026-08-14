@@ -39,6 +39,12 @@ from dataclasses import asdict, dataclass
 
 from app import ref_cache
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
+from app.services.recurrence._bounds import (
+    END_BOUND_KINDS,
+    EndsAfterOccurrences,
+    EndsOnDate,
+    NeverEnds,
+)
 from app.services.recurrence._frequency import (
     authorable_cadences,
     decode_pattern,
@@ -237,6 +243,90 @@ def _first_by(
     return tuple(chosen)
 
 
+#: What each closing-bound SHAPE is called on the form, and which control it
+#: needs a value from, keyed by the token its ``<option>`` posts.
+#:
+#: Keyed by token rather than by class so this table and
+#: :data:`~app.services.recurrence._bounds.END_BOUND_KINDS` state one thing
+#: each -- the shapes are the bounds module's, the copy is this module's -- and
+#: a shape added there without copy here raises ``KeyError`` at the first
+#: render rather than shipping a blank option.  Exactly the contract
+#: :data:`_UNIT_LABELS` holds for the cadence units.
+#:
+#: The second entry is a DOM element id, which is more than copy, and it is
+#: here rather than in the template for the reason every other projection on
+#: :class:`PickerModel` is: "which input does this shape need" is a fact about
+#: the shape, and a template that decided it would be a second statement of the
+#: shape set -- keyed on a token STRING, which is the comparison this project
+#: rules out everywhere else.  ``None`` for the shape that needs no value.
+_END_BOUND_COPY: dict[str, tuple[str, str | None]] = {
+    NeverEnds.token: ("Never", None),
+    EndsOnDate.token: ("On a date", "field-end-date"),
+    EndsAfterOccurrences.token: (
+        "After a number of times", "field-max-occurrences",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class EndBoundOption:
+    """One shape a closing bound can take, worded for the form's mode select.
+
+    The bound half of what the recurrence form offers, and the same shape as
+    :class:`CadenceOption`: a token for the ``<option value>`` and a label
+    between the tags, so the template DISPLAYS and computes nothing.
+
+    Its token is not a ``ref`` id, and that is the difference from every other
+    control on this form.  A closing bound's shape is not a stored value --
+    which column is non-NULL decides it, ruling R-R13's "absence is the
+    discriminator" applied to the bound -- so there is no ``ref`` table to
+    carry an id, and inventing one would be the second representation that
+    ruling refuses.
+
+    Attributes:
+        token: What the ``<option>`` posts, and what
+            :func:`~app.services.recurrence.end_bound_from_token` dispatches
+            on.
+        label: The human copy for the option.
+        needs_field_id: The id of the control this shape needs a value from,
+            or ``None`` for the shape that needs none.  The script shows that
+            one and disables the others, so exactly the input the chosen shape
+            reads is the input that submits -- the same idiom the two interval
+            controls use, and what keeps a stale value from a shape the user
+            moved off from reaching the door.
+    """
+
+    token: str
+    label: str
+    needs_field_id: str | None
+
+
+def end_bound_options() -> tuple[EndBoundOption, ...]:
+    """Return every closing-bound shape the form may offer, worded.
+
+    Derived from :data:`~app.services.recurrence._bounds.END_BOUND_KINDS` --
+    the same tuple :func:`~app.services.recurrence.end_bound_from_token`
+    dispatches over -- so a shape is offerable and submittable together or
+    neither.  That is the property plan step R7b-2 gave the cadence controls by
+    serving them from the encoder's own table, applied to the bound.
+
+    Returns:
+        One :class:`EndBoundOption` per shape, in the order the form offers
+        them: never first, because it is the default and the form's first
+        entry.
+
+    Raises:
+        KeyError: A shape has no copy in :data:`_END_BOUND_COPY`.
+    """
+    options = []
+    for kind in END_BOUND_KINDS:
+        label, needs_field_id = _END_BOUND_COPY[kind.token]
+        options.append(EndBoundOption(
+            token=kind.token, label=label, needs_field_id=needs_field_id,
+        ))
+    return tuple(options)
+
+
 @dataclass(frozen=True)
 class PickerModel:
     """Everything the recurrence form needs to render its three controls.
@@ -264,6 +354,12 @@ class PickerModel:
         placements: One option per PLACEMENT, for the funding ``<select>``.  The
             script hides the whole row where the chosen ``(unit, interval)``
             pair allows only one.
+        end_bounds: Every shape the "Ends" control offers, worded.  It rides
+            on this bundle rather than being resolved separately for the same
+            reason the five cadence projections do: a route that took them
+            apart would resolve two producers for one render.  Unlike the
+            others it SURVIVES plan step R7c -- the closing bound is authored
+            the same way before and after the cutover.
         free_unit_ids: The units that take ANY positive interval, and therefore
             use the number box rather than the ``<select>``.  A fourth
             projection, and it decides which of the two ``interval_n`` controls
@@ -275,6 +371,7 @@ class PickerModel:
 
     options: tuple["CadenceOption", ...]
     options_json: str
+    end_bounds: tuple["EndBoundOption", ...]
     units: tuple["CadenceOption", ...]
     fixed_intervals: tuple["CadenceOption", ...]
     placements: tuple["CadenceOption", ...]
@@ -301,6 +398,7 @@ def picker_model() -> PickerModel:
     return PickerModel(
         options=options,
         options_json=json.dumps([asdict(option) for option in options]),
+        end_bounds=end_bound_options(),
         units=_first_by(options, lambda option: option.unit_id),
         fixed_intervals=_first_by(
             [option for option in options if option.interval_n is not None],
@@ -374,9 +472,11 @@ def selected_cadence(pattern_id: int, interval_n: int) -> SelectedCadence:
 
 __all__ = [
     "CadenceOption",
+    "EndBoundOption",
     "PickerModel",
     "SelectedCadence",
     "cadence_options",
+    "end_bound_options",
     "picker_model",
     "selected_cadence",
 ]

@@ -85,7 +85,7 @@ class TestBuildRecurrenceRuleFromForm:
                 user_id=seed_user["user"].id,
                 start_period_id=None,
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
                     include_due_day_of_month=True,
                 ),
@@ -115,7 +115,7 @@ class TestBuildRecurrenceRuleFromForm:
                 user_id=seed_user["user"].id,
                 start_period_id=None,
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget("transfers.new_transfer_template"),
                     include_due_day_of_month=False,
                 ),
@@ -163,7 +163,7 @@ class TestBuildRecurrenceRuleFromForm:
                 user_id=seed_user["user"].id,
                 start_period_id=chosen.id,
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
                     include_due_day_of_month=True,
                 ),
@@ -196,7 +196,7 @@ class TestBuildRecurrenceRuleFromForm:
                 user_id=seed_user["user"].id,
                 start_period_id=99_999_999,  # nonexistent
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget(
                         "templates.edit_template",
                         {"template_id": 42},
@@ -238,7 +238,7 @@ class TestBuildRecurrenceRuleFromForm:
                 user_id=seed_user["user"].id,
                 start_period_id=foreign_period.id,
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
                     include_due_day_of_month=True,
                 ),
@@ -286,7 +286,7 @@ class TestBuildRecurrenceRuleFromForm:
                 user_id=seed_user["user"].id,
                 start_period_id=own_period.id,
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
                     include_due_day_of_month=True,
                 ),
@@ -320,7 +320,7 @@ class TestBuildRecurrenceRuleFromForm:
                 user_id=seed_user["user"].id,
                 start_period_id=None,
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget("templates.new_template"),
                     include_due_day_of_month=True,
                 ),
@@ -388,7 +388,7 @@ class TestAnEditCannotRePhaseAPhaselessRule:
                 rule,
                 data,
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
@@ -439,7 +439,7 @@ class TestAnEditCannotRePhaseAPhaselessRule:
                 rule,
                 data,
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
@@ -486,7 +486,7 @@ class TestAnEditCannotRePhaseAPhaselessRule:
                 template,
                 data,
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
@@ -536,7 +536,7 @@ class TestUpdateKeepsTheStartPeriodsPhase:
                 user_id=seed_user["user"].id,
                 start_period_id=seed_periods[2].id,
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
@@ -556,7 +556,7 @@ class TestUpdateKeepsTheStartPeriodsPhase:
                     "due_day_of_month": None,
                 },
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
@@ -733,7 +733,7 @@ class TestTheColumnIsNotTheCadence:
             update_recurrence_rule_from_form(
                 rule, data,
                 ctx=RecurrenceFormContext(
-                    end_date_value=None,
+                    end_bound=None,
                     redirect=RedirectTarget(
                         "templates.edit_template", {"template_id": 1},
                     ),
@@ -855,7 +855,7 @@ class TestTheColumnIsNotTheCadence:
                 update_recurrence_rule_from_form(
                     rule, data,
                     ctx=RecurrenceFormContext(
-                        end_date_value=None,
+                        end_bound=None,
                         redirect=RedirectTarget(
                             "templates.edit_template", {"template_id": 1},
                         ),
@@ -905,7 +905,7 @@ class TestTheColumnIsNotTheCadence:
                 update_recurrence_rule_from_form(
                     rule, data,
                     ctx=RecurrenceFormContext(
-                        end_date_value=None,
+                        end_bound=None,
                         redirect=RedirectTarget(
                             "templates.edit_template", {"template_id": 1},
                         ),

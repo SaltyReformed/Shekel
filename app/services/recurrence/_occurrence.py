@@ -85,17 +85,17 @@ the first row's date.
 Bounds are OCCURRENCE bounds (ruling R-R6)
 ------------------------------------------
 
-``end_date`` and ``max_occurrences`` are applied to the occurrence, not to the
-period it lands in.  The reverse matcher bounded PERIODS -- ``end_date`` was
-tested against a period's START -- so it generated rows dated outside the
-window the user stated: measured on the R1 baseline, a monthly-15th rule
-ending 2025-06-05 generated a row due 2025-06-15.  That was plan defect
-**D5**, and it died here: an occurrence past ``end_date`` is simply never
-emitted.
+The closing bound (:class:`~app.services.recurrence.EndBound`) is applied to
+the occurrence, not to the period it lands in.  The reverse matcher bounded
+PERIODS -- the end date was tested against a period's START -- so it generated
+rows dated outside the window the user stated: measured on the R1 baseline, a
+monthly-15th rule ending 2025-06-05 generated a row due 2025-06-15.  That was
+plan defect **D5**, and it died here: an occurrence the bound does not admit is
+simply never emitted.
 
-``max_occurrences`` counts OCCURRENCES the cadence names, including any the
-schedule does not reach and never places.  "Stop after twelve" is a property
-of the rule, not of how many rows the schedule happened to host.
+A COUNT bound counts OCCURRENCES the cadence names, including any the schedule
+does not reach and never places.  "Stop after twelve" is a property of the
+rule, not of how many rows the schedule happened to host.
 
 The window, and the ONE answer ``period=None`` now gives (finding **D7**)
 -------------------------------------------------------------------------
@@ -416,18 +416,22 @@ def _bounded(
     """Yield from *raw* until the first occurrence past any stopping bound.
 
     The ONE place a bound is applied, so the three walks cannot come to
-    disagree about what ``end_date`` or ``max_occurrences`` means.  Every walk
-    is ascending, so the first occurrence past a date bound is also the last
-    one to check.
+    disagree about what a closing bound means.  Every walk is ascending, so the
+    first occurrence the bound refuses is also the last one to check.
 
-    ``end_date`` and ``max_occurrences`` are mutually exclusive
-    (``ck_recurrence_rules_single_end_bound``); both are tested anyway, because
-    a value built in memory is not the table and an untested second bound
-    would be silently ignored rather than refused.
+    **Two branches until plan step R7b-3, and now none.**  It tested
+    ``end_date`` and ``max_occurrences`` separately and tested BOTH even though
+    ``ck_recurrence_rules_single_end_bound`` refuses the pair, "because a value
+    built in memory is not the table".  The bound is one value with three
+    shapes now (:class:`~app.services.recurrence.EndBound`), so there is no
+    pair to be defensive about and no shape this loop can fail to handle: a
+    bound plan step R8 adds arrives with its own
+    :meth:`~app.services.recurrence.EndBound.admits`, and this function does
+    not change for it.
 
     Args:
         raw: The rule's unbounded occurrence sequence, ascending.
-        resolved: The recurrence's two-axis meaning, carrying the bounds.
+        resolved: The recurrence's two-axis meaning, carrying the bound.
         through: The last day the caller asked about.
 
     Yields:
@@ -437,11 +441,8 @@ def _bounded(
     for occurrence in raw:
         if occurrence > through:
             return
-        if resolved.end_date is not None and occurrence > resolved.end_date:
-            return
-        if (
-            resolved.max_occurrences is not None
-            and emitted >= resolved.max_occurrences
+        if not resolved.end_bound.admits(
+            emitted=emitted, occurrence=occurrence,
         ):
             return
         emitted += 1
@@ -551,9 +552,9 @@ def occurrences(
     occurrence is the payday of the paycheck that bound falls in, which is
     EARLIER than the anchor whenever the bound is mid-period -- deliberately,
     because that is where the cash leaves (plan step C9a).  So ruling R-R6's
-    "occurrence-bounded" holds on the ``end_date`` side for every unit and on
-    the opening side for the calendar units; ledger row D6 is the same
-    asymmetry seen from the schema.
+    "occurrence-bounded" holds on the CLOSING side for every unit and on the
+    opening side for the calendar units; ledger row D6 is the same asymmetry
+    seen from the schema.
 
     **There is no LOWER window argument, and each CALLER that has one applies
     it.**  The production paths that state a lower bound narrow generation to a
@@ -586,8 +587,9 @@ def occurrences(
 
     Returns:
         An ascending iterator of occurrence dates.  Empty when *through*
-        precedes the anchor, when the rule's ``end_date`` does, or -- for the
-        ``PERIOD`` unit -- when the schedule reaches no qualifying paycheck.
+        precedes the anchor, when the rule's closing bound admits none of
+        them, or -- for the ``PERIOD`` unit -- when the schedule reaches no
+        qualifying paycheck.
 
     Raises:
         RecurrenceGenerationError: See :func:`_require_generable`, plus a unit

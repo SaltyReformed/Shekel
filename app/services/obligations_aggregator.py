@@ -18,10 +18,10 @@ The shared filter applied here, in one place, by every consumer:
 
   1. Skip if the template has no recurrence rule (one-off charge or
      orphaned reference -- no defined cadence to monthly-equivalent).
-  2. Skip if ``rule.end_date is not None and rule.end_date < as_of``
-     -- an expired recurring template is no longer a future
-     obligation. This is the filter the audit found missing from
-     ``compute_committed_monthly``.
+  2. Skip if the rule's own CLOSING BOUND has already stopped it
+     (``recurrence.has_ended``) -- an expired recurring template is no
+     longer a future obligation. This is the filter the audit found
+     missing from ``compute_committed_monthly``.
   3. Skip if ``default_amount is None`` or ``default_amount == 0``
      -- nothing to contribute.
 
@@ -40,10 +40,20 @@ R7a-2a).  The paycheck-space patterns' monthly equivalent used to be computed
 against ``app.utils.money.PAY_PERIODS_PER_YEAR``, a hardcoded ``Decimal("26")``
 -- so this "single canonical producer" produced a figure that was simply wrong
 for an owner not paid biweekly.  Both entry points now take the owner's
-:class:`~app.services.pay_calendar.PayCadence`, resolved ONCE per request by
-the caller and threaded, never looked up per row.  The month denominator
-(``MONTHS_PER_YEAR``) stays a constant, because 12 is a property of the
-calendar rather than of an owner.
+schedule, resolved ONCE per request by the caller and threaded, never looked up
+per row.  The month denominator (``MONTHS_PER_YEAR``) stays a constant, because
+12 is a property of the calendar rather than of an owner.
+
+**They take the whole :class:`~app.services.pay_calendar.PayCalendar` rather
+than its cadence, since plan step R7b-3**, and the extra is what step 2 of the
+filter needs: a recurrence may now stop after a COUNT of occurrences, and when
+that count is spent depends on when the owner's paychecks fall.  Reading only
+the cadence, this module could answer "has it expired" for a DATE bound and had
+no answer at all for a count -- so a spent count would have gone on inflating
+``/obligations`` and the ``/savings`` emergency-fund baseline forever, which is
+the HIGH-05 defect this module exists to have fixed, reappearing on the other
+bound.  Two savings call sites trade ``cadence_for``'s one query for
+``calendar_for``'s two to pay for it.
 
 **And the conversion itself is ONE expression** (plan step R7a-2b).  It lived
 in ``savings_goal_service.amount_to_monthly`` as a seven-branch switch over
@@ -69,8 +79,8 @@ from typing import Iterable, Union
 
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.services.pay_calendar import PayCadence
-from app.services.recurrence import cadence_of
+from app.services.pay_calendar import PayCalendar
+from app.services.recurrence import cadence_of, has_ended
 from app.utils.money import MONTHS_PER_YEAR, round_money
 
 # Either ORM template class exposes ``recurrence_rule`` and
@@ -108,7 +118,7 @@ def template_rule(template: RecurringTemplate):
 def template_monthly_or_none(
     template: RecurringTemplate,
     as_of: date,
-    pay_cadence: PayCadence,
+    calendar: PayCalendar,
 ) -> Decimal | None:
     """Return the monthly equivalent of one recurring template, or None.
 
@@ -131,16 +141,17 @@ def template_monthly_or_none(
             attribute access; loading is the caller's responsibility
             (``joinedload(.recurrence_rule)`` in the production
             routes).
-        as_of: Reference date used to evaluate ``rule.end_date``. A
-            rule whose ``end_date`` is strictly before ``as_of`` is
-            treated as expired and excluded. Callers pass
-            ``date.today()`` for "as of now" semantics.
-        pay_cadence: How often the owner is paid
-            (:class:`~app.services.pay_calendar.PayCadence`).  Read only by the
-            paycheck-space patterns; a monthly or annual template's equivalent
-            is a property of the calendar alone.  Resolved once per request by
-            the caller -- ``PayCalendar.cadence`` where the caller already has
-            a schedule, ``pay_calendar.cadence_for`` where it does not.
+        as_of: Reference date used to evaluate the rule's closing bound. A
+            rule the bound has already stopped is treated as expired and
+            excluded. Callers pass ``date.today()`` for "as of now" semantics.
+        calendar: The owner's whole pay-period schedule.  It answers TWO
+            questions here and that is why it replaced the bare
+            :class:`~app.services.pay_calendar.PayCadence` at plan step
+            R7b-3: the cadence, off ``calendar.cadence``, which is all the
+            conversion needs -- and, for a COUNT-bounded rule, when that
+            count is spent, which depends on when the paychecks fall and so
+            cannot be answered from the cadence alone.  Resolved once per
+            request by the caller and threaded, never looked up per row.
 
     Returns:
         The full-precision Decimal monthly equivalent, or ``None`` if
@@ -154,21 +165,30 @@ def template_monthly_or_none(
             than a skip since plan step R7a-2b: a rule the app cannot read is
             a broken invariant, and dropping it silently understated every
             total this module feeds while the Recurring surface 500'd on the
-            same row.
+            same row.  Since plan step R7b-3 a COUNT-bounded rule can also
+            raise it from the filter itself, which resolves such a rule against
+            *calendar* -- the same disposition, one step earlier.
+        RecurrenceGenerationError: For a count-bounded rule only, when the
+            resolved value names something the occurrence engine cannot walk
+            (``recurrence.has_ended``).
     """
     rule = template_rule(template)
     if rule is None:
         return None
 
-    end_date = getattr(rule, "end_date", None)
-    if end_date is not None and end_date < as_of:
-        return None
-
+    # The AMOUNT guards run first, and the order matters since plan step
+    # R7b-3: step 2 resolves a COUNT-bounded rule against the owner's schedule
+    # and walks its occurrences, which is real work to reach the same ``None``
+    # a zero amount reaches for free.  The three are independent skips, so
+    # their order is ours to choose.
     amount = template.default_amount
     if amount is None:
         return None
     amount = Decimal(str(amount))
     if amount == 0:
+        return None
+
+    if has_ended(rule, calendar, on=as_of):
         return None
 
     # ONE division, and the denominator is an exact integer: a monthly
@@ -180,7 +200,7 @@ def template_monthly_or_none(
     # 52,000,000-case sweep, wrongly (see ``Cadence.units_per_year``).
     cadence = cadence_of(rule.pattern_id, rule.interval_n)
     return (
-        amount * cadence.units_per_year(pay_cadence)
+        amount * cadence.units_per_year(calendar.cadence)
         / (cadence.interval_n * MONTHS_PER_YEAR)
     )
 
@@ -188,7 +208,7 @@ def template_monthly_or_none(
 def committed_monthly(
     templates: Iterable[RecurringTemplate],
     as_of: date,
-    pay_cadence: PayCadence,
+    calendar: PayCalendar,
 ) -> Decimal:
     """Sum monthly equivalents across a set of recurring templates.
 
@@ -215,10 +235,10 @@ def committed_monthly(
             filter, not the data-ownership filter.
         as_of: Reference date for the expired-rule filter (see
             ``template_monthly_or_none``).
-        pay_cadence: How often the owner is paid, threaded to every
+        calendar: The owner's whole pay-period schedule, threaded to every
             per-template conversion (see ``template_monthly_or_none``).  One
             value for the whole set: these templates belong to one owner, so
-            summing figures resolved against two cadences would be adding
+            summing figures resolved against two schedules would be adding
             different units.
 
     Returns:
@@ -237,7 +257,7 @@ def committed_monthly(
     """
     total = Decimal("0")
     for template in templates:
-        monthly = template_monthly_or_none(template, as_of, pay_cadence)
+        monthly = template_monthly_or_none(template, as_of, calendar)
         if monthly is not None:
             total += monthly
     return round_money(total)

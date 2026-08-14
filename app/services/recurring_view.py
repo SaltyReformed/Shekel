@@ -516,7 +516,7 @@ def _build_section(
     prepared: list[_PreparedRow] = []
     section_total_full = Decimal("0")
     for template in templates:
-        monthly_full = template_monthly_or_none(template, as_of, pay_cadence)
+        monthly_full = template_monthly_or_none(template, as_of, calendar)
         rule = template_rule(template)
         prepared.append(_PreparedRow(
             template=template,

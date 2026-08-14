@@ -290,6 +290,12 @@ _NON_ROW_ID_INTEGERS = frozenset({
     # that named a row while being spelled as a position.
     "large_transaction_threshold",
     "low_balance_threshold",
+    # ``max_occurrences`` is a COUNT of occurrences, not a row: plan step
+    # R7b-3's "Ends" control posts it beside a mode naming which shape of
+    # closing bound the user chose.  ``>= 1`` here, refused again by
+    # ``EndsAfterOccurrences.__post_init__``, and again by
+    # ``ck_recurrence_rules_positive_max_occurrences``.
+    "max_occurrences",
     "max_term_months",
     "merit_raise_horizon_years",
     "month_of_year",
@@ -589,7 +595,14 @@ class TestNoIdFieldWasMissed:
         found = self._id_fields_by_class()
         row_ids = [f for f in found if f[3] in _STRICT_ROW_ID_SPELLINGS]
         integers = [f for f in found if f[3] in _LAX_DECLARATIONS]
-        assert len(row_ids) >= 77, (
+        # 74 since plan step R7b-3, down from 77 and for a reason the floor
+        # has to record rather than absorb: the three recurrence declarations
+        # both template schemas carried VERBATIM -- ``recurrence_unit``,
+        # ``recurrence_placement``, ``start_period_id`` -- moved onto
+        # ``RecurrenceFormFieldsMixin`` and are declared once.  Three fewer
+        # DECLARATIONS, the same fields, and none relaxed: the mixin's are
+        # still the strict spellings, which is what the arms below check.
+        assert len(row_ids) >= 74, (
             f"the scan found only {len(row_ids)} strict row-id declarations; "
             "it is not reading the schema package"
         )

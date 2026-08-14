@@ -41,8 +41,24 @@
   var dueDom = document.getElementById('field-due-dom');
   var moy = document.getElementById('field-moy');
   var startPeriod = document.getElementById('field-start-period');
-  var endDate = document.getElementById('field-end-date');
   var preview = document.getElementById('recurrence-preview');
+
+  // The "Ends" control (plan step R7b-3): a mode select and the value inputs
+  // its shapes need.  This file never states which shapes exist -- each
+  // <option> names the control ITS shape needs in data-needs, the same way
+  // each fixed-interval option names its unit in data-unit, so a shape plan
+  // step R8 adds needs no edit here.
+  var endBoundWrap = document.getElementById('field-end-bound');
+  var endMode = document.getElementById('recurrence_end_mode');
+
+  // Every control any shape can ask for, read off the offer set rather than
+  // listed: an id here that the options never name would be a control nothing
+  // can enable, and an option naming one that is missing would silently
+  // enable nothing.
+  var endValueWraps = endMode === null ? [] :
+    Array.prototype.map.call(endMode.options, function(opt) {
+      return document.getElementById(opt.getAttribute('data-needs') || '');
+    }).filter(function(el) { return el !== null; });
 
   var startPeriodLabel = document.getElementById('start-period-label');
   var startPeriodHelp = document.getElementById('start-period-help');
@@ -162,6 +178,39 @@
     placementWrap.classList.toggle('d-none', allowed.length < 2);
   }
 
+  // Whether the server rendered the "Ends" control locked -- a loan payment,
+  // whose closing bound the app DERIVES from the loan's projected payoff.
+  // Read ONCE, at load, because the toggling below turns the same controls off
+  // and on and must never hand back one the server disabled: a locked form
+  // that posted a bound would state a stop the next loan edit silently
+  // overwrites.
+  var endBoundLocked = endMode !== null && endMode.disabled;
+
+  // Show and enable only the input the chosen "Ends" shape needs, and disable
+  // the whole control when the definition does not repeat.
+  //
+  // Disabling rather than only hiding, because a hidden control still SUBMITS
+  // -- the defect class plan step R7b-2 shipped twice and the browser pass
+  // caught (tests/manual/verify_recurrence_form.py).  A stale date left in a
+  // box the user has moved off would otherwise reach the door beside a mode
+  // that does not name it.
+  function syncEndBound(repeating) {
+    if (!endMode || endBoundLocked) return;
+    endMode.disabled = !repeating;
+    var chosen = endMode.options[endMode.selectedIndex];
+    var needs = repeating && chosen
+      ? chosen.getAttribute('data-needs')
+      : '';
+    endValueWraps.forEach(function(wrap) {
+      var mine = wrap.id === needs;
+      wrap.classList.toggle('d-none', !mine);
+      Array.prototype.forEach.call(
+        wrap.querySelectorAll('input'),
+        function(input) { input.disabled = !mine; }
+      );
+    });
+  }
+
   function toggleFields() {
     var id = unitId();
 
@@ -173,6 +222,7 @@
       intervalFree.disabled = true;
       intervalFixed.disabled = true;
       container.classList.add('d-none');
+      syncEndBound(false);
       if (startPeriod) {
         startPeriod.classList.remove('d-none');
         if (startPeriodLabel) startPeriodLabel.textContent = 'Pay period';
@@ -219,9 +269,10 @@
       if (startPeriodHelp) startPeriodHelp.textContent = 'When should this first appear on the grid?';
     }
 
-    if (endDate) {
-      endDate.classList.remove('d-none');
+    if (endBoundWrap) {
+      endBoundWrap.classList.remove('d-none');
     }
+    syncEndBound(true);
 
     fetchPreview();
   }
@@ -252,8 +303,29 @@
     var spEl = document.querySelector('[name="start_period_id"]');
     if (spEl && spEl.value) params.set('start_period_id', spEl.value);
 
+    // The closing bound, as the SAME three controls the save posts: the mode
+    // that names the shape, and the one value input that shape enables.
+    //
+    // The MODE is what makes this a bound at all.  Sending only the values
+    // leaves the endpoint composing "never" -- it dispatches on the mode, and
+    // ``NeverEnds`` reads neither input -- so a rule the user has just bounded
+    // previews as unbounded, on the one surface whose contract is "what
+    // saving would produce".  Two adversarial reviews of plan step R7b-3
+    // measured exactly that, on a form whose own comment claimed the
+    // opposite.
+    if (endMode && !endMode.disabled) {
+      params.set('recurrence_end_mode', endMode.value);
+    }
+
     var endDateEl = document.getElementById('end_date');
-    if (endDateEl && endDateEl.value) params.set('end_date', endDateEl.value);
+    if (endDateEl && !endDateEl.disabled && endDateEl.value) {
+      params.set('end_date', endDateEl.value);
+    }
+
+    var maxOccEl = document.getElementById('max_occurrences');
+    if (maxOccEl && !maxOccEl.disabled && maxOccEl.value) {
+      params.set('max_occurrences', maxOccEl.value);
+    }
 
     // Abort any preview still in flight, then reject non-2xx so a 4xx/5xx or
     // session-expiry login page is never injected as if it were the dates.
@@ -286,10 +358,19 @@
   intervalFree.addEventListener('change', toggleFields);
   intervalFixed.addEventListener('change', toggleFields);
   placementSelect.addEventListener('change', toggleFields);
-  ['day_of_month', 'due_day_of_month', 'month_of_year', 'end_date'].forEach(function(id) {
+  ['day_of_month', 'due_day_of_month', 'month_of_year', 'end_date',
+   'max_occurrences'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('change', fetchPreview);
   });
+  // The "Ends" mode re-links which value input is enabled, then previews:
+  // switching from a date to a count changes the dates the preview lists.
+  if (endMode) {
+    endMode.addEventListener('change', function() {
+      syncEndBound(true);
+      fetchPreview();
+    });
+  }
   var spEl = document.querySelector('[name="start_period_id"]');
   if (spEl) spEl.addEventListener('change', fetchPreview);
 })();
