@@ -23,12 +23,18 @@ What READS this table today: ``app.services.recurrence.rule_occurrences``,
 which since plan step R4a reads the row WHOLE -- it builds a ``RecurrenceSpec`` from every
 authored column and hands it to ``app.services.recurrence.resolve``.  There is
 no per-pattern dispatch and no branch: ``interval_n`` is read (and refused when
-below 1) for every pattern, ``day_of_month`` / ``month_of_year`` are read for
-the calendar families and refused outside their CHECK domains for all of them,
-``start_period_id`` is read HERE now rather than only by
+below 1) for every pattern, ``day_of_month`` / ``due_day_of_month`` /
+``month_of_year`` / ``offset_periods`` are refused outside their CHECK domains
+for all of them, ``start_period_id`` is read HERE now rather than only by
 ``resolve_generation_plan``, and ``offset_periods`` is read only when the
 schedule handed in does not contain the start period (plan ledger row D24).
-``max_occurrences`` has no reader or writer until step R8.
+
+``end_date`` and ``max_occurrences`` are ONE authored value above this table
+(``app.services.recurrence.EndBound``, plan step R7b-3): the occurrence walk
+has read both since plan step R3, and the write door splits the single bound
+into this pair on the way in and rejoins it on the way out.  That is what makes
+the exclusive arc below structural rather than maintained -- no value in the
+application can state two closing bounds, so nothing has to check.
 
 **Every write goes through one door** (:mod:`app.services.recurrence`).  A
 caller states what it AUTHORS -- a ``RecurrenceSpec``, never a column -- and
@@ -57,9 +63,17 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
     __table_args__ = (
         db.CheckConstraint("interval_n > 0", name="ck_recurrence_rules_positive_interval"),
         db.CheckConstraint("offset_periods >= 0", name="ck_recurrence_rules_valid_offset"),
-        # At most ONE closing bound.  A rule that both ends on a date and
-        # after N occurrences has two answers to "when does this stop", and
-        # the engine would have to pick one; the schema refuses the question.
+        # At most ONE closing bound -- the EXCLUSIVE ARC this pair of nullable
+        # columns is.  A rule that both ends on a date and after N occurrences
+        # has two answers to "when does this stop", and the engine would have
+        # to pick one; the schema refuses the question.
+        #
+        # SQL has no sum type to write "one of three shapes" in, which is why
+        # the arc is a pair plus a CHECK here and ONE value above the door
+        # (``app.services.recurrence.EndBound``, plan step R7b-3).  This
+        # constraint therefore guards writers that never see that value -- a
+        # restore, a hand edit, a raw-SQL migration -- rather than the
+        # application, which cannot express the violation.
         db.CheckConstraint(
             "end_date IS NULL OR max_occurrences IS NULL",
             name="ck_recurrence_rules_single_end_bound",
@@ -162,8 +176,12 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
     end_date = db.Column(db.Date, nullable=True)
     # Count-bounded end: stop after this many occurrences.  Genuinely
     # optional and mutually exclusive with ``end_date`` (see the
-    # ``ck_recurrence_rules_single_end_bound`` CHECK above).  No writer
-    # sets it until plan step R8; NULL means "not count-bounded".
+    # ``ck_recurrence_rules_single_end_bound`` CHECK above); NULL means "not
+    # count-bounded", which is what all 46 live rules carry as of 2026-08-13.
+    # Read by the occurrence walk since plan step R3
+    # (``recurrence._occurrence._bounded``); its first WRITER is plan step
+    # R7b-3's "Ends" form control, which took the count-bounded end over from
+    # plan step R8's four add-ons.
     max_occurrences = db.Column(db.Integer, nullable=True)
 
     # Relationships

@@ -28,7 +28,7 @@ from app.services.savings_dashboard_service._debt_line import (
     debt_without_payoff_model,
     loan_payoff_outlook,
 )
-from app.services.pay_calendar import PayCadence
+from app.services.pay_calendar import PayCadence, PayCalendar
 from app.services.row_valuation import owned_contribution
 from app.services.savings_dashboard_service._types import (
     AccountProjection,
@@ -401,7 +401,7 @@ def _recent_settled_expenses_monthly(
 
 
 def _committed_expense_floor(
-    user_id: int, checking_ids: list[int], pay_cadence: PayCadence,
+    user_id: int, checking_ids: list[int], calendar: PayCalendar,
 ) -> Decimal:
     """Committed monthly expense floor from active checking templates.
 
@@ -416,10 +416,12 @@ def _committed_expense_floor(
         checking_ids: IDs of the user's checking accounts (the
             :func:`_checking_account_ids` set the historical operand
             also uses).
-        pay_cadence: How often the owner is paid
-            (:class:`~app.services.pay_calendar.PayCadence`), threaded into the
+        calendar: The owner's whole pay-period schedule, threaded into the
             aggregator so a paycheck-space template's monthly equivalent is
-            measured against the owner's real rhythm.
+            measured against the owner's real rhythm -- and so a
+            count-bounded template that has spent its count leaves the
+            baseline, which needs the paydays and not just their spacing
+            (plan step R7b-3).
 
     Returns:
         The committed monthly floor as a Decimal.  ``Decimal("0.00")``
@@ -451,12 +453,12 @@ def _committed_expense_floor(
     return obligations_aggregator.committed_monthly(
         list(active_expense_templates) + list(active_transfer_templates),
         date.today(),
-        pay_cadence,
+        calendar,
     )
 
 
 def _compute_avg_monthly_expenses(
-    user_id: int, core: _DashboardCoreData, pay_cadence: PayCadence,
+    user_id: int, core: _DashboardCoreData, calendar: PayCalendar,
 ) -> Decimal:
     """Compute average monthly expenses for emergency fund coverage.
 
@@ -481,10 +483,11 @@ def _compute_avg_monthly_expenses(
         user_id: Integer ID of the current user.
         core: The read pass's loaded bundle -- its accounts scope the checking
             set, and its periods and scenario scope the historical operand.
-        pay_cadence: How often the owner is paid
-            (:class:`~app.services.pay_calendar.PayCadence`), which converts
-            BOTH operands into month space.  One value for both, so the
-            ``max()`` cannot compare figures measured against two rhythms.
+        calendar: The owner's whole pay-period schedule.  ``calendar.cadence``
+            converts BOTH operands into month space -- one value for both, so
+            the ``max()`` cannot compare figures measured against two rhythms
+            -- and the committed operand needs the whole schedule to tell
+            whether a count-bounded template still commits anything.
 
     Returns:
         The higher of the two monthly figures, as a Decimal.
@@ -492,9 +495,9 @@ def _compute_avg_monthly_expenses(
     checking_ids = _checking_account_ids(core.accounts)
     historical = _recent_settled_expenses_monthly(
         checking_ids, core.all_periods, core.current_period,
-        core.balance_ctx.scenario_id, pay_cadence,
+        core.balance_ctx.scenario_id, calendar.cadence,
     )
-    floor = _committed_expense_floor(user_id, checking_ids, pay_cadence)
+    floor = _committed_expense_floor(user_id, checking_ids, calendar)
     return max(historical, floor)
 
 

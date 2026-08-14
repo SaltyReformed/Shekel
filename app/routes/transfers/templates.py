@@ -60,11 +60,14 @@ from app.routes._recurrence_form_helpers import (
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
     edit_form_cadence,
+    edit_form_end_bound,
     handle_stale_form_conflict,
+    is_loan_payment,
     resolve_recurrence_rule_for_update,
 )
-from app.routes._form_errors import validate_form_or_redirect
+from app.routes._form_errors import load_form_or_redirect
 from app.routes._redirect_target import RedirectTarget
+from app.schemas.validation import RECURRENCE_END_BOUND_KEY
 from app.routes._transfer_creation_helpers import (
     flush_template_or_namedup_redirect,
     generate_transfers_for_all_periods,
@@ -143,6 +146,10 @@ def new_transfer_template():
         categories=categories,
         picker=picker_model(),
         selected_cadence=None,
+        selected_end_bound=edit_form_end_bound(None),
+        # A transfer template only becomes a loan payment through the loan
+        # flow, never through this form, so a CREATE is never locked.
+        end_bound_is_derived=False,
         periods=periods,
         current_period=current_period,
         prefill_from=prefill_from,
@@ -179,13 +186,12 @@ def create_transfer_template():
     by re-rendering the same form page rather than confirming
     whether the FK exists for someone else.
     """
-    invalid_payload = validate_form_or_redirect(
+    payload = load_form_or_redirect(
         _create_schema, RedirectTarget("transfers.new_transfer_template"),
     )
-    if invalid_payload is not None:
-        return invalid_payload
-
-    data = _create_schema.load(request.form)
+    if isinstance(payload, Response):
+        return payload
+    data = payload
 
     # --- Route-boundary FK ownership ---
     # Single-return loop so adding a future FK does not push the
@@ -201,7 +207,11 @@ def create_transfer_template():
             return redirect(url_for("transfers.new_transfer_template"))
 
     start_period_id = data.pop("start_period_id", None)
-    end_date = data.pop("end_date", None)
+    # The closing bound, composed by the schema's ``@post_load`` into ONE
+    # value under the mode key.  ABSENT when the form stated no bound --
+    # a disabled control, or a partial update -- which the helpers read as
+    # "leave the stored one alone" (plan step R7b-3).
+    end_bound = data.pop(RECURRENCE_END_BOUND_KEY, None)
 
     # Create the recurrence rule via the F-24 helper, or NO rule when the form
     # says "Does not repeat".  ``rule is None`` is the one-time transfer since
@@ -219,7 +229,7 @@ def create_transfer_template():
         user_id=current_user.id,
         start_period_id=start_period_id,
         ctx=RecurrenceFormContext(
-            end_date_value=end_date,
+            end_bound=end_bound,
             redirect=RedirectTarget("transfers.new_transfer_template"),
             include_due_day_of_month=False,
         ),
@@ -289,6 +299,12 @@ def edit_transfer_template(template_id):
         # to a wrong cadence.  ``edit_form_cadence`` is what selects it.
         picker=picker_model(),
         selected_cadence=edit_form_cadence(template),
+        selected_end_bound=edit_form_end_bound(template),
+        # A LOAN PAYMENT's stop is the loan's projected payoff, rewritten by
+        # ``loan_recurrence_sync`` on every payoff-affecting edit -- so the
+        # control renders disabled and states where the value comes from,
+        # rather than accepting one the next loan edit discards.
+        end_bound_is_derived=is_loan_payment(template),
         periods=[],
         current_period=None,
         # The amount's dated history (plan step X-au-a), precomputed into
@@ -336,16 +352,15 @@ def update_transfer_template(template_id):
     if template is None:
         abort(404)
 
-    invalid_payload = validate_form_or_redirect(
+    payload = load_form_or_redirect(
         _update_schema,
         RedirectTarget(
             "transfers.edit_transfer_template", {"template_id": template_id},
         ),
     )
-    if invalid_payload is not None:
-        return invalid_payload
-
-    data = _update_schema.load(request.form)
+    if isinstance(payload, Response):
+        return payload
+    data = payload
 
     # Stale-form check (commit C-18 / F-010).  Routed through the
     # F-26 helper so the pre-flush optimistic-locking guard shares a
@@ -372,7 +387,11 @@ def update_transfer_template(template_id):
 
     effective_from = data.pop("effective_from", display_today())
     data.pop("start_period_id", None)
-    end_date = data.pop("end_date", None)
+    # The closing bound, composed by the schema's ``@post_load`` into ONE
+    # value under the mode key.  ABSENT when the form stated no bound --
+    # a disabled control, or a partial update -- which the helpers read as
+    # "leave the stored one alone" (plan step R7b-3).
+    end_bound = data.pop(RECURRENCE_END_BOUND_KEY, None)
 
     # The template's before-image, captured BEFORE anything overwrites it
     # (plan step R2e-1).  ``had_recurrence_rule`` is what lets the
@@ -397,7 +416,7 @@ def update_transfer_template(template_id):
         template,
         data,
         ctx=RecurrenceFormContext(
-            end_date_value=end_date,
+            end_bound=end_bound,
             redirect=RedirectTarget(
                 "transfers.edit_transfer_template",
                 {"template_id": template_id},

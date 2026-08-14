@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
 {% from "_amount_macros.html" import amount_field, amount_history with context %}
-{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_detail_fields, recurrence_preview, start_period_field with context %}
+{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_detail_fields, recurrence_end_bound, recurrence_preview, start_period_field with context %}
 {% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if template else 'New' }} Recurring Transaction -- Shekel{% endblock title %}
 
@@ -95,6 +95,7 @@
         <div id="recurrence-fields" class="d-none">
           {% if not template %}{{ start_period_field(periods, current_period) }}{% endif %}
           {{ recurrence_detail_fields(template, include_due_day=true) }}
+          {{ recurrence_end_bound(picker, selected_end_bound) }}
           {{ recurrence_preview(url_for('templates.preview_recurrence')) }}
         </div>
       </div>

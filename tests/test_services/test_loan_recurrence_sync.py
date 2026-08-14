@@ -120,6 +120,78 @@ class TestSyncRecurringPaymentBounds:
             assert rule.end_date == date(2028, 7, 1)
             assert isinstance(rule.end_date, date)
 
+    def test_a_count_bound_is_REPLACED_by_the_derived_payoff(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The crash plan step R7b-3's bound type exists to make impossible.
+
+        A loan payment's stop is DERIVED, and this module states its change as
+        ``replace(spec, end_bound=...)``.  While the bound was two independent
+        columns the same call wrote a date beside a count the rule already
+        carried, and ``ck_recurrence_rules_single_end_bound`` refused the pair
+        at the flush -- a 500 on an ordinary loan edit.
+
+        A count can only reach a loan payment's rule around the form door,
+        which refuses one; this drives the sync directly against such a row, so
+        the TYPE's half of the guarantee is pinned rather than resting on the
+        door's.
+        """
+        with app.app_context():
+            loan = self._current_loan(seed_user, db.session)
+            tpl = make_transfer_template(db.session, seed_user, loan)
+            rule = tpl.recurrence_rule
+            rule.max_occurrences = 12
+            db.session.commit()
+
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            db.session.commit()
+            db.session.refresh(rule)
+
+            assert rule.end_date == date(2028, 7, 1)
+            assert rule.max_occurrences is None
+
+    def test_a_count_bound_is_cleared_even_when_the_loan_never_pays_off(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The case the COLUMN comparison could not see.
+
+        The idempotence guard used to read ``rule.end_date``; a count-bounded
+        rule has ``end_date IS NULL``, so against a loan whose derived payoff is
+        ``None`` it compared ``None == None`` and returned early -- leaving a
+        count bound on a payment whose stop this module owns.  Comparing BOUNDS
+        is what closes it.
+
+        Reached with a template that names no loan the seam can value: the
+        no-configured-loan path returns before any write, so the case is built
+        instead on a loan that DOES resolve and a bound that is already
+        correct -- the count must still go.
+        """
+        with app.app_context():
+            loan = self._current_loan(seed_user, db.session)
+            tpl = make_transfer_template(db.session, seed_user, loan)
+            rule = tpl.recurrence_rule
+            db.session.commit()
+
+            # First sync writes the derived payoff.
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            db.session.commit()
+            db.session.refresh(rule)
+            payoff = rule.end_date
+            assert payoff is not None
+
+            # Now put the rule in the state only a row written around the form
+            # door can reach: a COUNT bound where the derived answer is a date.
+            rule.end_date = None
+            rule.max_occurrences = 6
+            db.session.commit()
+
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            db.session.commit()
+            db.session.refresh(rule)
+
+            assert rule.end_date == payoff
+            assert rule.max_occurrences is None
+
     def test_unpaid_overdue_installments_push_the_bound_out(
         self, app, db, seed_user, seed_periods,
     ):

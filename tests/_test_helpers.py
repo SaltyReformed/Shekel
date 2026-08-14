@@ -4421,6 +4421,36 @@ def validated_cadence(unit=None, interval_n=1, placement=None):
     }
 
 
+def end_bound_payload(bound=None):
+    """Return the form keys that state one closing bound, as a BROWSER posts them.
+
+    The bound half of :func:`cadence_payload`, for plan step R7b-3's "Ends"
+    control.  The control is a mode ``<select>`` and two value inputs of which
+    exactly one is ever ENABLED, so a real submission carries the mode plus at
+    most one value -- and that is what this produces.  A helper that always
+    sent both would exercise a payload the form cannot make.
+
+    Args:
+        bound: An :class:`~app.services.recurrence.EndBound`.  Defaults to the
+            unbounded shape, which is what a create form starts on.
+
+    Returns:
+        A dict of form values -- strings, as an HTML form submits them.
+    """
+    # Pylint: ``import-outside-toplevel`` -- see :func:`validated_cadence`.
+    from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
+        NEVER_ENDS,
+    )
+
+    stated = NEVER_ENDS if bound is None else bound
+    payload = {"recurrence_end_mode": stated.token}
+    if stated.end_date is not None:
+        payload["end_date"] = stated.end_date.isoformat()
+    if stated.max_occurrences is not None:
+        payload["max_occurrences"] = str(stated.max_occurrences)
+    return payload
+
+
 def cadence_payload(unit=None, interval_n=1, placement=None):
     """Return the form keys that author one cadence, as a BROWSER posts them.
 

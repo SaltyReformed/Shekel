@@ -13,11 +13,9 @@ from app.schemas.validation._helpers import (
     EFFECTIVE_DATE_MAX,
     EFFECTIVE_DATE_MIN,
     BaseSchema,
-    PeriodPlacementField,
-    RecurrenceUnitField,
+    RecurrenceFormFieldsMixin,
     RowId,
     _normalize_empty_inputs,
-    validate_authorable_cadence,
 )
 
 
@@ -40,7 +38,7 @@ def _reject_same_account_transfer(data):
             raise ValidationError("From and To accounts must be different.")
 
 
-class TransferTemplateCreateSchema(BaseSchema):
+class TransferTemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     """Validates POST data for creating a transfer template."""
 
     @pre_load
@@ -57,38 +55,15 @@ class TransferTemplateCreateSchema(BaseSchema):
     to_account_id = RowId(required=True)
     category_id = RowId(required=True)
 
-    # Recurrence rule fields -- the two AUTHORED axes since plan step R7b-2.
-    # See the identical pair on
-    # :class:`~app.schemas.validation.templates.TemplateCreateSchema` for why
-    # they are typed ``RowId`` subclasses that deserialize to enum members,
-    # why a present ``None`` and an absent key must stay distinguishable, and
-    # why ``offset_periods`` is gone (defect D8).
-    recurrence_unit = RecurrenceUnitField(allow_none=True)
-    recurrence_placement = PeriodPlacementField(allow_none=True)
-    interval_n = fields.Integer(validate=validate.Range(min=1))
-    day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
-    month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
-    start_period_id = RowId()
-    end_date = fields.Date(allow_none=True)
+    # Every recurrence control this form submits is on
+    # :class:`~app.schemas.validation._helpers.RecurrenceFormFieldsMixin`.
+    # A transfer template declares none of its own: ``due_day_of_month`` is
+    # the transaction form's alone.
 
     @validates_schema
     def validate_different_accounts(self, data, **kwargs):
         """Reject a transfer whose source and destination are the same account."""
         _reject_same_account_transfer(data)
-
-    @validates_schema
-    def validate_cadence_is_storable(self, data, **kwargs):
-        """Reject a submitted cadence the closed pattern set cannot store.
-
-        Shared with the transaction-template schema through
-        :func:`~app.schemas.validation._helpers.validate_authorable_cadence`,
-        which carries the reasoning.
-
-        Raises:
-            ValidationError: The triple has no closed-set pattern to be stored
-                as.
-        """
-        validate_authorable_cadence(data)
 
 
 class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):

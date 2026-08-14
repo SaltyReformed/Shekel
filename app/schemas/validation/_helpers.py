@@ -14,7 +14,9 @@ from decimal import Decimal, InvalidOperation
 from marshmallow import (
     Schema,
     fields,
+    post_load,
     validate,
+    validates_schema,
     ValidationError,
     EXCLUDE,
 )
@@ -79,6 +81,21 @@ _NON_NEGATIVE_MONETARY = validate.Range(
 # database for writers that never see a schema.
 EFFECTIVE_DATE_MIN: date = date(2000, 1, 1)
 EFFECTIVE_DATE_MAX: date = date(2100, 12, 31)
+
+# The largest occurrence count ``budget.recurrence_rules.max_occurrences`` can
+# hold: it is a Postgres ``integer``, so a larger value dies at the DATABASE
+# with ``psycopg2.errors.NumericValueOutOfRange`` -- an unhandled 500 on a door
+# an ordinary crafted POST reaches, which is the ``MarkDoneSchema`` defect the
+# monetary bound above records.  A schema-tier bound AT the column's domain is
+# what keeps an unstorable count a designed 400.
+#
+# There is deliberately NO lower bound beside it (plan step R7b-3).  "A count
+# names at least one occurrence" is
+# :class:`~app.services.recurrence.EndsAfterOccurrences`'s own invariant, held
+# at construction where no path can miss it; stating it here as well would put
+# one rule in two places AND take the refusal away from the shape, whose
+# message names the control and says what to type.
+_MAX_OCCURRENCE_COUNT = 2147483647
 
 
 # E-28 / HIGH-06 (Commit 24): the percent-to-fraction divisor used by
@@ -477,6 +494,211 @@ def validate_authorable_cadence(data):
             "interval or a different funding choice.",
             field_name="recurrence_unit",
         )
+
+
+#: The key a form posts its closing-bound SHAPE under, and the key the
+#: composed bound is handed to the route under.
+#:
+#: They are the same field: :func:`compose_end_bound` replaces the submitted
+#: token with the value it names, the way
+#: :class:`RecurrenceUnitField` replaces a submitted id with its enum member.
+#: One key rather than two is what keeps "the form said nothing about the
+#: bound" expressible -- an ABSENT key, which a loan payment's form and an
+#: amount-only PATCH both produce, and which the update route reads as "leave
+#: the stored bound alone".
+RECURRENCE_END_BOUND_KEY: str = "recurrence_end_mode"
+
+
+def compose_end_bound(data):
+    """Replace the submitted bound token with the :class:`EndBound` it names.
+
+    The closing bound crosses the wire as THREE controls -- a mode select and
+    the two inputs its shapes need -- and is ONE value everywhere above this
+    line.  Composing it here rather than in the route is the placement
+    :class:`_RefEnumField` records for the axis fields: the schema is the
+    boundary between the wire format and the logic value, so a second form
+    door cannot forget the conversion.
+
+    **The two payload inputs are consumed, not left beside the result.**  A
+    route that could still read ``end_date`` would be able to write a bound the
+    mode did not name, which is the two-independent-fields reading
+    :class:`~app.services.recurrence.EndBound` exists to remove.
+
+    **An ABSENT mode leaves the payload untouched**, and the distinction is
+    load-bearing rather than tidy.  "The form did not mention the bound" is a
+    real request -- a loan payment's form, whose bound is DERIVED from the loan
+    and whose controls are therefore disabled, and any partial update -- and it
+    must not read as "ends never", which would silently clear a stop the user
+    set.  It is the same present-``None``-versus-absent distinction
+    ``recurrence_unit`` already turns on.
+
+    Args:
+        data: The deserialized schema payload, mutated in place.
+
+    Returns:
+        The same payload, so a ``@post_load`` hook can hand it straight back.
+
+    Raises:
+        ValidationError: The mode names no shape, or the shape it names needs
+            an input the submission left blank.  Raised against the CONTROL at
+            fault -- the empty date box, not the mode select the user answered
+            correctly -- which is what
+            :class:`~app.services.recurrence.EndBoundInputError` carries the
+            field for.
+    """
+    # Pylint: ``import-outside-toplevel`` -- see
+    # :meth:`RecurrenceUnitField._member_for`.
+    from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
+        EndBoundInputError,
+        end_bound_from_token,
+    )
+
+    if RECURRENCE_END_BOUND_KEY not in data:
+        return data
+    token = data.pop(RECURRENCE_END_BOUND_KEY)
+    end_date = data.pop("end_date", None)
+    max_occurrences = data.pop("max_occurrences", None)
+    try:
+        data[RECURRENCE_END_BOUND_KEY] = end_bound_from_token(
+            token, end_date=end_date, max_occurrences=max_occurrences,
+        )
+    except EndBoundInputError as exc:
+        raise ValidationError(exc.message, field_name=exc.field) from exc
+    return data
+
+
+class RecurrenceFormFieldsMixin:
+    """The recurrence controls both template forms submit, declared once.
+
+    A form authors a recurrence the same way whichever kind of definition it
+    belongs to -- the cadence's two axes, the calendar coordinates, the opening
+    bound and the closing one -- so the two template schemas
+    (``TemplateCreateSchema``, ``TransferTemplateCreateSchema``) carried SEVEN
+    identical field declarations and an identical cross-field cadence rule.
+    Plan step R7b-3 would have made it nine and added an identical
+    ``@post_load`` to each, which is when ``duplicate-code`` said so and the
+    copy stopped being worth keeping.  They differ in exactly ONE field:
+    ``due_day_of_month``, which only a transaction template carries, and which
+    that schema declares for itself.
+
+    **Declared here rather than copied because a copy is what a THIRD form
+    would have neither of**, which is the same reasoning
+    :class:`_RefEnumField` records for putting the modelled-value check in the
+    field type: a rule that travels with the declaration cannot be forgotten.
+    Plan step R7b-3 is what made the duplication worth removing -- it added the
+    closing bound's three controls and its hook to both, and ``duplicate-code``
+    caught the pair.
+
+    Marshmallow collects fields and hooks across the whole MRO, so a plain
+    mixin beside :class:`BaseSchema` is all this needs; it deliberately does
+    NOT subclass ``Schema``, which would make it a schema in its own right and
+    invite it to be loaded.
+    """
+
+    # The two AUTHORED cadence axes since plan step R7b-2.  Each value is the
+    # integer primary key of a ref row (recurrence_units, period_placements),
+    # submitted as a string via HTML form data and deserialized to the ENUM
+    # member it names.  The typed fields rather than bare ``RowId``s: they also
+    # refuse an id no enum member names -- what the application MODELS is
+    # narrower than what a table HOLDS, and the gap is a 500 (plan step R2e-2).
+    #
+    # ``RowId`` underneath rather than ``Integer`` because these ARE row ids
+    # despite their names (plan step X-ae): an adversarial review found
+    # ``Integer`` reading '١', ' 2 ', '+3', '007' and '1_0' as ids, and the
+    # completeness gate could not see it while that gate matched on a ``_id``
+    # SUFFIX.
+    #
+    # They replaced ``recurrence_pattern``: the closed pattern set is now the
+    # STORAGE encoding the write door chooses, not a name a user picks.
+    #
+    # ``allow_none`` so the form's "Does not repeat" option survives the
+    # pre_load hook as an explicit ``None`` rather than a dropped key (plan step
+    # R2e-1).  The two are different requests and the update route acts on them
+    # differently -- a present ``None`` CLEARS the recurrence, an absent key
+    # leaves it alone -- so collapsing them would make an amount-only PATCH
+    # silently delete a template's cadence.
+    #
+    # ``offset_periods`` is GONE (defect D8).  It was a vestigial field no
+    # template ever rendered an input for, so every submission carried the
+    # schema default -- which the update path then wrote over the rule's real
+    # phase.  ``resolve`` derives the phase from the rule's own start period.
+    recurrence_unit = RecurrenceUnitField(allow_none=True)
+    recurrence_placement = PeriodPlacementField(allow_none=True)
+    interval_n = fields.Integer(validate=validate.Range(min=1))
+    day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
+    month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
+    start_period_id = RowId()
+
+    # The CLOSING BOUND, as three controls that compose into ONE value (plan
+    # step R7b-3).  ``recurrence_end_mode`` names which of the bound's three
+    # shapes the user chose and :meth:`build_end_bound` replaces it with the
+    # :class:`~app.services.recurrence.EndBound` that shape builds, consuming
+    # the two inputs beside it -- the same wire-format-to-logic-value
+    # conversion :class:`RecurrenceUnitField` performs one field up.
+    #
+    # ``max_occurrences`` carries only an UPPER bound here, and the asymmetry
+    # is the point.  "At least one occurrence" is the SHAPE's invariant
+    # (``EndsAfterOccurrences.__post_init__``), held where no path can miss it
+    # and refused with a message that names the control; repeating it as a
+    # ``min=`` would put one rule in two places and hand the user marshmallow's
+    # generic wording instead.  What the shape has no opinion about is how
+    # large a count the COLUMN can hold, so that bound is here -- see
+    # :data:`_MAX_OCCURRENCE_COUNT`.
+    #
+    # No ``allow_none`` on the mode, deliberately.  An empty select value is
+    # dropped by :func:`_normalize_empty_inputs`, so it arrives ABSENT -- and
+    # an absent mode is what "this form said nothing about the bound" means (a
+    # loan payment, whose bound is derived; an amount-only PATCH).  Keeping it
+    # as a present ``None`` would make those requests indistinguishable from
+    # "ends never", which silently clears a stop the user set.
+    #
+    # ``end_date`` stays ``allow_none`` because clearing a date input has to
+    # reach the schema as a stated empty rather than a dropped key.
+    recurrence_end_mode = fields.String()
+    end_date = fields.Date(allow_none=True)
+    max_occurrences = fields.Integer(
+        validate=validate.Range(max=_MAX_OCCURRENCE_COUNT),
+    )
+
+    @validates_schema
+    def validate_cadence_is_storable(self, data, **kwargs):
+        """Reject a submitted cadence the closed pattern set cannot store.
+
+        See :func:`validate_authorable_cadence` for the reasoning: the
+        storable set is a property of the whole ``(interval, unit,
+        placement)`` triple, and the form already makes an unstorable one
+        unofferable, so this is what a hand-assembled POST meets.
+
+        The update schemas inherit it; a partial update that omits the
+        recurrence keys returns early there for the same reason the envelope
+        rule does.
+
+        Args:
+            data: The deserialized payload.
+            **kwargs: Marshmallow's hook contract.
+
+        Raises:
+            ValidationError: The triple has no closed-set pattern to be stored
+                as.
+        """
+        validate_authorable_cadence(data)
+
+    @post_load
+    def build_end_bound(self, data, **kwargs):
+        """Replace the submitted bound token with the value it names.
+
+        See :func:`compose_end_bound`, which carries the reasoning.
+
+        Args:
+            data: The deserialized payload.
+            **kwargs: Marshmallow's hook contract.
+
+        Returns:
+            The payload, with the three bound controls collapsed into one
+            ``recurrence_end_mode`` entry holding an
+            :class:`~app.services.recurrence.EndBound`.
+        """
+        return compose_end_bound(data)
 
 
 class BaseSchema(Schema):

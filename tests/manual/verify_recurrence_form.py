@@ -24,6 +24,16 @@ suite was green and two adversarial reviews had passed the code.**
 Neither is visible to a rendered-HTML assertion, which is why this file is
 here and not in ``tests/``.
 
+**Plan step R7b-3 added a FOURTH control and the same coverage for it**
+(:func:`_drive_end_bound`): an "Ends" select whose three shapes -- never, on a
+date, after N occurrences -- each enable at most one value input.  It is the
+same defect class one control over: a date the user typed and then moved off
+would reach the write door beside a mode that does not name it, and rendered
+HTML cannot tell a hidden input from a disabled one.  The transfer form's
+LOCKED case (a loan payment, whose bound the app derives) is asserted in
+``tests/test_routes/test_templates.py`` instead, because it is a property of
+the SERVER's render rather than of the script.
+
 **It writes nothing.**  Every check reads the form's own DOM; the crafted POSTs
 in the refusal pass are all expected to be REFUSED, and the pass asserts that
 no template and no recurrence rule was persisted by any of them.  Run it
@@ -219,6 +229,131 @@ def _unit_ids(page) -> dict[str, str]:
         )
         if value
     }
+
+
+def _posted_bound(page) -> dict[str, list[str]]:
+    """Return the closing-bound keys the form would actually submit.
+
+    From a real ``FormData``, for the reason :func:`_posted_intervals` reads
+    one: a control hidden by a class still SUBMITS, and a disabled one does
+    not, and rendered HTML cannot tell those apart.  Plan step R7b-3's "Ends"
+    control turns on exactly that -- the shape the user chose must be the only
+    shape whose value reaches the door.
+
+    Args:
+        page: The Playwright page.
+
+    Returns:
+        Each bound key mapped to every value posted under it.
+    """
+    return page.evaluate(
+        """() => {
+            const form = document.getElementById('recurrence_unit').form;
+            const data = new FormData(form);
+            return {
+                recurrence_end_mode: data.getAll('recurrence_end_mode'),
+                end_date: data.getAll('end_date'),
+                max_occurrences: data.getAll('max_occurrences'),
+            };
+        }"""
+    )
+
+
+def _select_end_mode(page, token: str) -> None:
+    """Choose one "Ends" shape and let the script re-link the value inputs.
+
+    By VALUE here, unlike the interval select: a bound token IS unique across
+    the offer set (it is the shape's own name), which the interval values are
+    not.
+
+    Args:
+        page: The Playwright page.
+        token: The shape's token -- ``never``, ``on_date``,
+            ``after_occurrences``.
+    """
+    page.select_option("#recurrence_end_mode", token)
+    page.wait_for_timeout(200)
+
+
+def _drive_end_bound(page, kind: str, url: str) -> None:
+    """Check the "Ends" control shows and posts exactly one shape's value.
+
+    The property pytest cannot see, and the one plan step R7b-2 was bitten by
+    twice: which controls are VISIBLE and which are ENABLED.  A stale date
+    left in a box the user has moved off would otherwise reach the door beside
+    a mode that does not name it.
+
+    Args:
+        page: The Playwright page.
+        kind: "transaction" or "transfer", for the labels.
+        url: The create form's path.
+    """
+    print(f"\n=== {kind} ends control: {url} ===")
+    page.goto(f"{DEV_BASE_URL}{url}", wait_until="domcontentloaded")
+    page.wait_for_selector("#recurrence_unit")
+    units = _unit_ids(page)
+    page.locator("#recurrence_unit").select_option(units["paychecks"])
+    page.wait_for_timeout(200)
+
+    _check(f"{kind} G: the Ends row is shown for a repeating definition",
+           _visible(page, "field-end-bound"), "hidden")
+
+    # Never: neither value input shows, and NEITHER posts.
+    _select_end_mode(page, "never")
+    posted = _posted_bound(page)
+    _check(f"{kind} G: never shows no value input",
+           not _visible(page, "field-end-date")
+           and not _visible(page, "field-max-occurrences"),
+           "a value input is shown for the unbounded shape")
+    _check(f"{kind} G: never posts only the mode",
+           posted["end_date"] == [] and posted["max_occurrences"] == [],
+           f"posted={posted}")
+
+    # On a date: the date box shows and posts; the count does neither.
+    _select_end_mode(page, "on_date")
+    page.fill("#end_date", "2030-01-01")
+    posted = _posted_bound(page)
+    _check(f"{kind} H: the date box is shown",
+           _visible(page, "field-end-date"), "hidden")
+    _check(f"{kind} H: the count box is hidden",
+           not _visible(page, "field-max-occurrences"), "shown")
+    _check(f"{kind} H: only the date posts",
+           posted["end_date"] == ["2030-01-01"]
+           and posted["max_occurrences"] == [],
+           f"posted={posted}")
+
+    # After N: the count box shows and posts, and the DATE the user typed a
+    # moment ago must not follow it.
+    _select_end_mode(page, "after_occurrences")
+    page.fill("#max_occurrences", "6")
+    posted = _posted_bound(page)
+    _check(f"{kind} I: the count box is shown",
+           _visible(page, "field-max-occurrences"), "hidden")
+    _check(f"{kind} I: the date box is hidden",
+           not _visible(page, "field-end-date"), "shown")
+    _check(f"{kind} I: only the count posts",
+           posted["max_occurrences"] == ["6"] and posted["end_date"] == [],
+           f"a stale value from the shape the user moved off still posts: "
+           f"{posted}")
+    _check(f"{kind} I: exactly one mode posts",
+           posted["recurrence_end_mode"] == ["after_occurrences"],
+           f"posted={posted}")
+
+    # Back to "does not repeat": the whole control goes, and posts NOTHING --
+    # a hidden-but-enabled control is the defect class this file exists for.
+    page.locator("#recurrence_unit").select_option("")
+    page.wait_for_timeout(200)
+    posted = _posted_bound(page)
+    _check(f"{kind} J: a non-repeating definition posts no bound at all",
+           posted["recurrence_end_mode"] == []
+           and posted["end_date"] == []
+           and posted["max_occurrences"] == [],
+           f"posted={posted}")
+
+    _check(f"{kind}: the preview survived the bound changes",
+           "Could not load preview"
+           not in page.locator("#recurrence-preview").inner_text(),
+           "preview broke")
 
 
 def _drive_visibility(page, kind: str, url: str) -> None:
@@ -429,6 +564,7 @@ def main() -> int:
         for kind, url in (("transaction", "/templates/new"),
                           ("transfer", "/transfers/new")):
             _drive_visibility(page, kind, url)
+            _drive_end_bound(page, kind, url)
         _drive_refusals(context, page)
 
         # A blocked inline style is a console error and nothing else, which is

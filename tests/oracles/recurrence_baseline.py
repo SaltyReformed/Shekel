@@ -75,7 +75,11 @@ from app.enums import RecurrencePatternEnum
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import PayCalendar
-from app.services.recurrence import RecurrenceSpec, decode_pattern
+from app.services.recurrence import (
+    RecurrenceSpec,
+    decode_pattern,
+    end_bound_from_columns,
+)
 # Both imported as MODULES, not as names, and the recurrence producer is
 # imported from its DEFINITION site (``_reading``) rather than through the
 # package's re-export.  ``from ... import rule_occurrences`` would bind the
@@ -313,7 +317,12 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
         due_day_of_month=shape.due_day_of_month,
         month_of_year=shape.month_of_year,
         start_date=shape.start_date,
-        end_date=shape.end_date,
+        # Read through the same column-to-bound seam the READ DOOR uses
+        # (plan step R7b-3), for the reason the pattern is decoded rather than
+        # passed: a shape is a set of stored COLUMN values, so building the
+        # spec's bound any other way would let a shape mean one thing to the
+        # engine and another to the resolver.
+        end_bound=end_bound_from_columns(shape.end_date, None),
     )
 
 

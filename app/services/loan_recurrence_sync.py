@@ -50,7 +50,13 @@ from app.extensions import db
 from app.models.account import Account
 from app.services import balance_at, loan_loaders, rate_period_engine
 from app.services.pay_calendar import calendar_for
-from app.services.recurrence import reauthor_rule, recurrence_spec
+from app.services.recurrence import (
+    NEVER_ENDS,
+    EndsOnDate,
+    end_bound_from_columns,
+    reauthor_rule,
+    recurrence_spec,
+)
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )
@@ -296,10 +302,26 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
     new_end_date = recurrence_end_date(
         figures.payoff_date, figures.is_retired, ctx.as_of,
     )
-    if rule.end_date == new_end_date:
+    new_bound = (
+        NEVER_ENDS if new_end_date is None else EndsOnDate(on=new_end_date)
+    )
+    # The idempotence guard compares BOUNDS, not the date column (plan step
+    # R7b-3).  Reading ``rule.end_date`` alone is the two-independent-fields
+    # shape this step removed, and it is wrong in a way that matters: a rule
+    # carrying a COUNT bound has ``end_date IS NULL``, so against a loan that
+    # never pays off (``new_end_date is None``) the column test would compare
+    # ``None == None`` and return -- leaving a count bound on a loan payment
+    # whose stop this module owns.  Frozen dataclasses, so ``==`` is the whole
+    # comparison.
+    old_bound = end_bound_from_columns(rule.end_date, rule.max_occurrences)
+    if old_bound == new_bound:
         return
 
-    old_end_date = rule.end_date
+    # The whole OLD BOUND, not its date half: when this fires because the old
+    # bound was a COUNT -- the case the comparison above exists for -- reading
+    # ``rule.end_date`` logs ``None`` and loses the fact a count bound was
+    # discarded.  Repr'd rather than str'd so the shape is named.
+    old_end_date = repr(old_bound)
     # Re-authored like the cadence above, and for the same reason: a rule is
     # written whole through one door, so there is no field-at-a-time write to
     # leave some other column holding a value this edit invalidated.
@@ -307,9 +329,23 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
     # re-author is ordinarily a no-op on every column but the one named --
     # which is the point of a uniform rule rather than one applied only where
     # it happens to matter.
+    #
+    # **The whole BOUND is replaced, not the date half of one** (plan step
+    # R7b-3), and that is what keeps this line correct now that a rule can
+    # also stop after a COUNT of occurrences.  While the bound was two
+    # independent columns, ``replace(spec, end_date=payoff)`` wrote a date
+    # beside a count the rule already carried and the pair reached the flush
+    # as a ``CheckViolation`` on ``ck_recurrence_rules_single_end_bound`` --
+    # an ordinary loan edit, 500ing.  An
+    # :class:`~app.services.recurrence.EndBound` has three shapes and holds
+    # one, so naming the new one discards whatever it replaces and there is no
+    # second field for this writer to remember to clear.
     reauthor_rule(
         rule,
-        replace(recurrence_spec(rule), end_date=new_end_date),
+        replace(
+            recurrence_spec(rule),
+            end_bound=new_bound,
+        ),
         calendar_for(account.user_id),
     )
     log_event(
@@ -318,6 +354,6 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
         "Updated recurrence rule end date to projected payoff",
         account_id=account_id,
         template_id=template.id,
-        old_end_date=str(old_end_date),
+        old_end_date=old_end_date,
         new_end_date=str(new_end_date),
     )
