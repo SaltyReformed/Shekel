@@ -24,9 +24,9 @@ row. You do not need to read anything else to find it.
 | `pay_calendar` | `implementation_plan_pay_calendar.md`, section 4 |
 | `credit_card` | `implementation_plan_credit_card.md`, "The steps" |
 
-*Only the forks table at the foot of this file may have THREE columns: `tools/plan_gate` separates
-the tables in this document by their column count, so a three-column table anywhere else is silently
-read as a fork. That fragility is finding **N-234**, owned by `balance:X-ao`.*
+*A table in this file is found by its own HEADER, so one added for any other purpose joins no
+registry: `tools/plan_gate` separated them by COLUMN COUNT until 2026-08-14, and a three-column
+reference table read as four unruled forks. That was finding **N-234**, closed by `d8aed644`.*
 
 **Anything under an `archive/` or `historical/` directory is a HISTORICAL RECORD and governs
 nothing.** It may be cited for how something came to be; it may never be read as a live plan or as a
@@ -42,13 +42,13 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 42 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 38 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**134 steps, 103 open.** The dependency graph holds 96 edges over 62 rows.
+**134 steps, 99 open.** The dependency graph holds 96 edges over 62 rows.
 
 ## The order
 
@@ -59,7 +59,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-f3b | -- | Make a cleared purchase a cash posting, so an envelope's close books only the remainder and ruling R-DH (c)'s invariant stops resting on the anchor reset. Closes **N-274**. | #3 | -- | after #2 / balance:X-f3a |
 | bank_import | X-f6a | -- | Build the statement importer's core -- one normalized line shape behind a source adapter, matched against rows AND purchases, reviewed before it commits -- writing the bank's posted day and the clearing link. **MOVES MONEY.** Closes **N-173**. | #4 | -- | after #2 / balance:X-f3a |
 | balance | X-f3c | -- | THE CUTOVER: the assertion stops resetting the ledger, `balance(T)` becomes opening equity plus the sum of postings, and an unexplained difference becomes a recorded uncategorized transaction the user accepts. **MOVES MONEY, OWN PR, NO BACKLOG.** Closes **N-171**, **N-172**, **N-174**, **N-275**, **N-276**. | #5 | -- | after #4 / balance:X-f3b / bank_import:X-f6a |
-| balance | X-f4 | -- | Delete what the cutover orphans: `ReconciledThrough`'s coverage rule, `_anchors.py`, the correction machinery and the R-I seed compensator, a set X-f3a has already narrowed. Closes **N-176**, **N-218**, **N-161**, **N-170**. | #6 | -- | after #5 / balance:X-f3c |
+| balance | X-f4 | -- | Delete what the cutover orphans: `ReconciledThrough`'s coverage rule, `_anchors.py`, the correction machinery and the R-I seed compensator, a set X-f3a has already narrowed. Closes **N-176**, **N-161**, **N-170**. | #6 | -- | after #5 / balance:X-f3c |
 | bank_import | X-f6b | -- | Add the automated SOURCE ADAPTER -- SimpleFIN recommended on the security ground ruling R-FP states -- so a statement arrives without a manual download, deciding first where a scheduled fetch runs in an app with no scheduler. | #7 | -- | after #4 / bank_import:X-f6a |
 | balance | X-au-c2b | -- | Route the readers that take a row's BUDGET straight off `estimated_amount` -- the envelope remaining, the carry-forward leftover, the payback amount -- through a batch amount resolver, so no reader still reads a column a derived row will not carry. | #8 | -- | NOW / balance:X-au-c2a (shipped) |
 | balance | X-au-c3 | -- | Turn X-aq's settle refresh into the FREEZE and the revert into its inverse: a settle writes the resolved figure into the row's own amount column and declares it owned, and leaving the settled band hands the declaration back. Closes **N-241**, **N-242**, **N-278**, **N-259**. | #9 | -- | NOW / balance:X-au-c2a (shipped) |
@@ -105,7 +105,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-e | -- | Re-take the census the column deletions made historical, then resolve what remains: two callerless public seam entries and a falsified de-duplication rationale. Carries **N-96**, **N-85**, **N-180**. | #49 | -- | NOW |
 | balance | X-ab | -- | Give the posting path ONE asset-vs-liability rule instead of asking X-z's question a second time, and decide what a re-class does to accounts already carrying postings. Closes **N-122**. | #50 | -- | NOW |
 | balance | X-ac | -- | Stop the cockpit reducing `_sum_liquid_balances` twice per render and publishing the answer under two context keys. Closes **N-121**. | #51 | -- | NOW |
-| balance | X-ao | -- | Grade the arc documents' RULINGS tables, which no gate parses today, so a ruling id resolves to exactly one ruling and that ruling states a rule. Closes **N-217**, **N-220**. | #52 | -- | NOW |
+| balance | X-ao | -- | Grade the arc documents' RULINGS tables, which no gate parses today, so a ruling id resolves to exactly one ruling and that ruling states a rule. Closes **N-217**, which needs its own ruling first: three arc documents spell a rulings table three ways and one carries no id column at all. | #52 | -- | NOW |
 | balance | X-ag | -- | Build the instrument that refuses lax digit acceptance, shown FIRING on a planted defect; both earlier method-name designs were refuted by measurement. Closes **N-139**. | #53 | -- | NOW |
 | balance | X-ah | -- | Rule each of the 42 `request.args.get(..., type=int)` sites and parse them like every other id, with a second rule that admits a meaningful zero. Closes **N-142**. | #54 | -- | NOW |
 | balance | X-al | -- | Census the fifteen live `duplicate-code` disables, none of them re-measured, and build the arm that catches a stale one -- `useless-suppression` is blind to them. Closes **N-154**. | #55 | -- | NOW |
@@ -127,22 +127,18 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | credit_card | CC4c | -- | Warn on underpayment with a one-click "pay statement balance", and maintain ONE projected finance-charge expense when grace fails. | #71 | -- | after #35 / balance:X-f4 / balance:X-am |
 | credit_card | CC5a | -- | Accrue rewards as a derived figure over settled purchases minus redemptions, carrying the `system_origin_id` migration. | #72 | -- | after #35 / balance:X-f4 / balance:X-am |
 | credit_card | CC5b | -- | Add manual redemptions and the auto-redeem threshold, holding the one-live-row invariant under the concurrency shape. | #73 | -- | after #35 / balance:X-f4 / balance:X-am |
-| balance | X-p | -- | Put the analytics calendar's day chips and its balance line on one clock, or render the row that explains the gap. Closes **N-58**, **N-97**. | #74 | -- | after #6 / balance:X-f (the container ticks at #6; the import shrinks the date noise at its source, so ruling before it decides against numbers that then change) |
-| recurrence | R-F2 | -- | Tighten the ref-seed parity scan's statement boundary. Closes **F-2**. | #75 | -- | NOW |
-| recurrence | R-F3 | -- | Resolve the ref-table constraint-naming disagreement. Closes **F-3**. | #76 | -- | NOW |
-| recurrence | R-F6 | -- | Close the recurrence-rule leak, then delete the orphaned rules it made. Closes **F-6**. | #77 | -- | NOW |
-| recurrence | R-F7 | -- | Delete two unreachable branches in `_first_of_month_anchor`. Closes **D11**. | #78 | -- | NOW |
-| recurrence | R-F13 | -- | Close the three holes in this arc's own gate. Closes **F-13**. | #79 | -- | NOW |
-| balance | E2-0 | -- | Trace the super-package membership from the code: which modules are members, what the public re-export surface is, and whether any member imports a non-member. Expect it to DECOMPOSE. Carries **N-33**, **N-35**. | #80 | -- | NOW |
-| balance | E2-n | -- | Make the move and delete the registry, with `_FENCED_MODULE_RULINGS` as the LAST commit rather than the first. Its decomposition is decided from #77's trace. | #81 | -- | NOW |
-| balance | G1 | -- | Trace each allowlist entry to its real cause, then stop the ledger-model and balance-seam fences carrying name lists. Closes **N-147**. | #82 | -- | NOW |
-| balance | G2 | -- | Build the `Money` and `DisplayLabel` value types that retire W9901, W9904 and W9902, taking the small label half first. Phase G runs INSIDE E2 by ruling R-DQ. | #83 | -- | NOW |
-| balance | X-at | -- | Surface which tax year a figure was actually computed against, and give a new year's bracket set a write door, so the resolver's substitution stops being invisible and the settings screen can finish the year it starts. Closes **N-235**, **N-236**. | #84 | -- | NOW |
-| balance | X-av | -- | Give the base annual salary an effective date so the app can tell a raise from a correction, which `apply_raises` already does for every raise but cannot do for the figure they are applied to. Closes **N-237**. | #85 | -- | NOW |
-| balance | X-aw | -- | Count a calendar year's paydays from the stored cadence rather than from whichever periods happen to have been generated, so a period's gross stops moving by a cent when the schedule extends. Closes **N-239**. | #86 | -- | NOW |
-| balance | X-ax | -- | Reconcile a carry-forward rollover against its source: when a settled source's spend changes, the target row's top-up moves by the same amount so the two always sum to the budget the rollover divided. **MOVES MONEY.** Closes **N-249**. | #87 | -- | NOW |
-| recurrence | R-F16 | -- | Give the paycheck engine's divisor and the monthly-equivalent conversions ONE producer, deleting `salary_profiles.pay_periods_per_year` -- which must first RULE what semi-monthly pay means when no `cadence_days` can express the 1st and the 15th. **MOVES MONEY**. Closes **F-16**. | #88 | -- | NOW / recurrence:R7a-2a (shipped) |
-| recurrence | R-F17 | -- | Derive the two period-INDEX horizon windows from the owner's cadence instead of a hardcoded 26, deciding first what a fractional period offset means. Closes **F-17**. | #89 | -- | NOW / recurrence:R7a-2a (shipped) |
+| balance | X-p | -- | Put the analytics calendar's day chips and its balance line on one clock, or render the row that explains the gap. Closes **N-58**. | #74 | -- | after #6 / balance:X-f (the container ticks at #6; the import shrinks the date noise at its source, so ruling before it decides against numbers that then change) |
+| recurrence | R-F6 | -- | Close the recurrence-rule leak, then delete the orphaned rules it made. Closes **F-6**. | #75 | -- | NOW |
+| balance | E2-0 | -- | Trace the super-package membership from the code: which modules are members, what the public re-export surface is, and whether any member imports a non-member. Expect it to DECOMPOSE. Carries **N-33**, **N-35**. | #76 | -- | NOW |
+| balance | E2-n | -- | Make the move and delete the registry, with `_FENCED_MODULE_RULINGS` as the LAST commit rather than the first. Its decomposition is decided from #77's trace. | #77 | -- | NOW |
+| balance | G1 | -- | Trace each allowlist entry to its real cause, then stop the ledger-model and balance-seam fences carrying name lists. Closes **N-147**. | #78 | -- | NOW |
+| balance | G2 | -- | Build the `Money` and `DisplayLabel` value types that retire W9901, W9904 and W9902, taking the small label half first. Phase G runs INSIDE E2 by ruling R-DQ. | #79 | -- | NOW |
+| balance | X-at | -- | Surface which tax year a figure was actually computed against, and give a new year's bracket set a write door, so the resolver's substitution stops being invisible and the settings screen can finish the year it starts. Closes **N-235**, **N-236**. | #80 | -- | NOW |
+| balance | X-av | -- | Give the base annual salary an effective date so the app can tell a raise from a correction, which `apply_raises` already does for every raise but cannot do for the figure they are applied to. Closes **N-237**. | #81 | -- | NOW |
+| balance | X-aw | -- | Count a calendar year's paydays from the stored cadence rather than from whichever periods happen to have been generated, so a period's gross stops moving by a cent when the schedule extends. Closes **N-239**. | #82 | -- | NOW |
+| balance | X-ax | -- | Reconcile a carry-forward rollover against its source: when a settled source's spend changes, the target row's top-up moves by the same amount so the two always sum to the budget the rollover divided. **MOVES MONEY.** Closes **N-249**. | #83 | -- | NOW |
+| recurrence | R-F16 | -- | Give the paycheck engine's divisor and the monthly-equivalent conversions ONE producer, deleting `salary_profiles.pay_periods_per_year` -- which must first RULE what semi-monthly pay means when no `cadence_days` can express the 1st and the 15th. **MOVES MONEY**. Closes **F-16**. | #84 | -- | NOW / recurrence:R7a-2a (shipped) |
+| recurrence | R-F17 | -- | Derive the two period-INDEX horizon windows from the owner's cadence instead of a hardcoded 26, deciding first what a fractional period offset means. Closes **F-17**. | #85 | -- | NOW / recurrence:R7a-2a (shipped) |
 
 ## Containers
 
@@ -174,6 +170,10 @@ The fuller as-built entries are in each arc's archive.
 
 | arc | id | also | what this step does | order | commit | starts |
 |---|---|---|---|---|---|---|
+| recurrence | R-F2 | -- | The ref-seed parity scan bounds a statement where the SQL does -- at the Python string literal carrying it, with the keyword list as the inner rule -- and four negative controls were shown to fire against the reader it replaces. Closed **F-2**. | SHIPPED | `672c18b1` | -- |
+| recurrence | R-F3 | -- | A `ref` lookup table's single-column PK and UNIQUE take PostgreSQL's generated names, stated in both places the constraint-naming rule lives; measured 24 of 24 live `ref` tables. Closed **F-3**. | SHIPPED | `e37b736c` | -- |
+| recurrence | R-F7 | -- | `_first_of_month_anchor` loses two provably dead guards, one of which commented a case that cannot execute; the 430-shape baseline stayed byte-identical. Closed **D11**. | SHIPPED | `5ac7ab4d` | -- |
+| recurrence | R-F13 | -- | A baseline REGENERATION run can no longer report success, so a skip cannot read as a pass. Its other two holes no longer exist: `PlacementOutcome` and the `OccurrencePlacement` invariant died at `pay_calendar:C2-b2`. Closed **F-13**. | SHIPPED | `b97ec1c3` | -- |
 | pay_calendar | C2-e | -- | The projection axis is the OWNER'S paychecks: `growth_engine.generate_projection_periods` and `SyntheticPeriod` are DELETED and every forward projection runs on `PayCalendar.projection_axis`, so a monthly-paid owner stops being credited 26 contributions a year. Closed **P17**, **P20**, **P21**, **P22**, **P23**; re-pointed **P7** to **C2-f**; opened **P40**-**P44**. | SHIPPED | `8143c6fe` | -- |
 | pay_calendar | C2-c | -- | Retire `balance_at/_cash_periods._PeriodSpans` so the cash view answers from the one calendar, keeping `None` outside the reported window as a VIEW question. Closes **P14**. | SHIPPED | `b8a72f6c` | -- |
 | balance | X-au-c2a | -- | Every reader of the two `effective_amount` model properties moved onto the amount model -- the cheap accessor where a loader filters to settled, the batch resolver where it cannot -- and both properties were DELETED with their 104 test reads. `investment_projection` is valued at its boundary. Closed **N-262**; opened **N-266**-**N-272**. | SHIPPED | `d44a4f01` | -- |

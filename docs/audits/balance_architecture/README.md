@@ -373,7 +373,7 @@ four leaves, X-aq, X-as and X-ap -- their records already condensed in `archive/
   consumers and the modelled side keeps a latest-assertion accessor (R-FL), so what dies here is the
   `covers` rule and the correction family. Byte-identical by construction, and it must **name the
   residue arm it deletes** rather than letting it go unnoticed -- that branch has fired in production
-  (**N-176**). Closes **N-176** and **N-218**, and takes **N-161** with the family it belongs to;
+  (**N-176**). Closes **N-176**, takes **N-161** with its family, and **N-218 closed** (`7a466d31`);
   **N-169 closed already** at `C2-d` (`3e6cd4ec`). **GATES the recurrence redesign's `R5`**, which
   edits `cash_ledger/_events.py` inside this deletion set -- a column rename in a file this step
   deletes from is avoided by ordering rather than by merge.
@@ -419,16 +419,13 @@ hides.
   `X-i2`.
 * [x] **X-au-a** `81138fb8` a recurring definition's amount is an effective-dated series: the model,
   the ONE write door, the read-and-correct panel, and the backfill mining what the rows record.
-  **44 eligible templates, 47 versions, 625 minable rows reproduced with 0 mismatches** on a
-  production clone. **What a LATER leaf must obey**: the mining predicate is best-available, NOT
-  airtight, and the series answers by a row's own DUE date while the regeneration sweep still selects
-  by pay PERIOD. Opened **N-244**..**N-247**.
+  **44 templates, 47 versions, 625 minable rows reproduced with 0 mismatches** on a production
+  clone. Opened **N-244**..**N-247**, and its two obligations on a later leaf are those rows.
 * [x] **X-au-b** `81ad02d1` the TOTAL dispatch over the five amount rules, in
-  `cash_ledger/_amount_source.py` -- a module INSIDE that package, not more of `_amounts.py`
-  (developer, 2026-08-12). **997 of 997 rows on a 2026-08-12 production clone agree with the answer
-  the app publishes, 0 refusals, `$0.00` drift.** **What a LATER leaf must obey**: a derived row's
-  answer must be INVARIANT under a change to its own amount column -- agreement alone cannot see this
-  resolver at all. Opened **N-252**, **N-253**, **N-254**.
+  `cash_ledger/_amount_source.py` -- a module INSIDE that package (developer, 2026-08-12).
+  **997 of 997 rows on a production clone agree with what the app publishes, 0 refusals, `$0.00`
+  drift.** **What a LATER leaf must obey**: a derived row's answer must be INVARIANT under a change
+  to its own amount column -- agreement alone cannot see this resolver. Opened **N-252**, **N-253**.
 * [ ] **X-au-i** `refactor(cards): a payback is worth the purchases it repays` -- the CC PAYBACK
   cutover, closing **N-243** and **N-252**. The kind ruling R-FI names that carries NEITHER link, so
   no link-derived discriminator can reach it and X-au-b's dispatch places it as OWN: 21 rows on the
@@ -829,7 +826,9 @@ hides.
   measured when the columns still existed, and `balance_at/_investment.py` was deleted outright at
   `17c57cde` (its modelled-asset work went to `_asset_fold.py`).
 * [ ] **X-p** `fix(analytics): the calendar's chips and its balance line are on one clock` -- closes
-  **N-58**, **N-97**. **Sequenced AFTER X-f by that finding's own ruling**, and the reason is not
+  **N-58**. (**N-97** closed 2026-08-14, `7a466d31`; the "same day" guarantee beside its dead
+  citation had been false since X-c2b2 -- which is N-58.)
+  **Sequenced AFTER X-f by that finding's own ruling**, and the reason is not
   caution: X-f shrinks the date noise at its SOURCE, so ruling before it would decide the question
   against numbers X-f then changes. It is scheduled, not deferred. **Root: one day cell renders two
   facts on two clocks with no row explaining the gap** -- the chips are placed on the BUDGET
@@ -882,9 +881,10 @@ hides.
   registries are graded on findings, on steps and on the graph between them; the arc documents'
   RULINGS tables are not parsed at all, and the corpus carried a LIVE collision -- two sessions
   appended a different **R-EX** on one day, both reached `dev`, and X-f2-c2 / X-f2-c3 cited it
-  ambiguously until a reviewer read the table. One arm per arc document on the parser the other
-  arms already use, and the rule it grades is `conventions.md` rule 9's unstated half: a ruling is
-  the RULE and its date, under an id that names one rule.
+  ambiguously until a reviewer read the table. **N-234, N-254 and N-220 closed 2026-08-14**
+  (`d8aed644`). **What remains needs a RULING first**: a rulings table is spelled THREE ways --
+  the id in its own column, in a `#` column, or in PROSE with no id column at all -- so "an id
+  resolves to one ruling" is not gradeable until rulings take ONE grammar.
 * [ ] **X-al** `fix(pylint): a duplicate-code disable that suppresses nothing is a finding` --
   closes **N-154**. `useless-suppression` is enabled precisely so a stale disable is reported, and
   it is BLIND to a `duplicate-code` one -- measured both directions: removing a disable left
