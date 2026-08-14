@@ -134,6 +134,11 @@ no reconciler.
 - **A CENSUS THAT IS NOT COMMITTED IS AN UNCITED CLAIM.**
 - **COUNT THE CALL GRAPH, NOT THE CALL SITES.** One finding said four spellings; the tree held 18.
 - **A COUNT IN A DOCSTRING IS A CLAIM, AND THIS ARC KEEPS WRITING IT WRONG.**
+- **PLANT THE FIRING CONTROL AT EVERY WIRING SITE, AND CHECK THE PLANTED DEFECT IS REACHABLE ON THE
+  REAL DATA.** C2-f2a's first control dropped the FIRST period from the contribution axis and moved
+  `$0.00` -- every early period sits at or before the account's latest assertion, which that tier
+  skips -- so the harness read as blind when it was not. The same defect at the LAST period moved
+  `-$182.29` and `-$190.39` at the two sites.
 
 ## Working this plan
 
