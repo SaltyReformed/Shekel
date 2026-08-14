@@ -64,6 +64,15 @@ from app.extensions import db as _db
 from app.models.category import Category
 from app.models.ledger_account import LedgerAccount
 from app.services import ledger_account_service, posting_reads
+# The shared race handler is PACKAGE-PRIVATE.  Plan step X-f3d split the
+# 962-line module into ``ledger_account_service/`` by the kind of chart row
+# each resolver writes, and ``_add_or_reuse`` became ``_common.add_or_reuse``:
+# one helper the four resolvers consume, not a name on the package's public
+# surface.  :class:`TestAddOrReuseUnderALostRace` drives it DIRECTLY (its own
+# docstring says why a resolver cannot reach the branch), so this file reaches
+# the private module by name rather than asking for a re-export that would
+# exist only for a test.
+from app.services.ledger_account_service import _common as _chart_common
 from tests._test_helpers import (
     create_account_of_type,
     ledger_accounts_for_account,
@@ -1195,7 +1204,7 @@ class TestAnchorEquityResolverValidation:
 
 
 class TestAddOrReuseUnderALostRace:
-    """``_add_or_reuse`` -- the shared race-safe insert every resolver consumes.
+    """``_common.add_or_reuse`` -- the race-safe insert every resolver consumes.
 
     **It exists because plan step X-f1c3c made a pre-existing race REACHABLE**
     (ruling R-EN).  Every ``get_or_create_*`` here is a check-then-INSERT: two
@@ -1227,7 +1236,7 @@ class TestAddOrReuseUnderALostRace:
     def test_a_lost_race_returns_the_winners_row(self, app, db, seed_user):
         """The loser gets the winner's row back, not an IntegrityError.
 
-        Drives ``_add_or_reuse`` directly with a row whose natural key is
+        Drives ``add_or_reuse`` directly with a row whose natural key is
         already taken, which is precisely the state a lost race leaves.  A
         helper that let the ``IntegrityError`` escape -- the behaviour before
         this step -- fails here.
@@ -1247,7 +1256,7 @@ class TestAddOrReuseUnderALostRace:
                 account_id=seed_user["account"].id,
                 name="Checking -- Opening",
             )
-            resolved = ledger_account_service._add_or_reuse(
+            resolved = _chart_common.add_or_reuse(
                 duplicate,
                 lambda: _db.session.query(LedgerAccount).filter_by(
                     user_id=seed_user["user"].id,
@@ -1273,7 +1282,7 @@ class TestAddOrReuseUnderALostRace:
             winner = self._seed_conflicting_row(seed_user)
             _db.session.commit()
 
-            # Driven through ``_add_or_reuse`` DIRECTLY, not through the
+            # Driven through ``add_or_reuse`` DIRECTLY, not through the
             # resolver: the resolver's own check-first lookup finds the winner
             # and never reaches the helper, so routing through it would make
             # this case unable to fail.  Caught by planting the race-unsafe
@@ -1290,7 +1299,7 @@ class TestAddOrReuseUnderALostRace:
                 account_id=seed_user["account"].id,
                 name="Checking -- Opening",
             )
-            assert ledger_account_service._add_or_reuse(
+            assert _chart_common.add_or_reuse(
                 duplicate, lambda: winner,
             ) is winner
             # Real work, after the reuse path, in the same transaction.
@@ -1324,7 +1333,7 @@ class TestAddOrReuseUnderALostRace:
                 name="No Owner",
             )
             with pytest.raises(IntegrityError):
-                ledger_account_service._add_or_reuse(orphan, lambda: None)
+                _chart_common.add_or_reuse(orphan, lambda: None)
             _db.session.rollback()
 
     def test_the_natural_key_names_are_real_indexes(self, app, db):
@@ -1345,7 +1354,7 @@ class TestAddOrReuseUnderALostRace:
                 ))
             }
             missing = set(
-                ledger_account_service._LEDGER_ACCOUNT_NATURAL_KEYS,
+                _chart_common._LEDGER_ACCOUNT_NATURAL_KEYS,
             ) - live
             assert not missing, (
                 f"allowlisted index names that do not exist: {missing}"
