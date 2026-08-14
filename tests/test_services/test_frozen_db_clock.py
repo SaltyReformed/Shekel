@@ -37,6 +37,7 @@ from tests._test_helpers import (
     _rewrite_db_clock_calls,
     create_settled_cash_transaction,
     override_anchor,
+    same_instant_writes,
 )
 
 #: The instant ``tests/test_services/conftest.py`` freezes the suite to.
@@ -328,3 +329,50 @@ class TestTheDatabaseClockIsTheTestClock:
             # The explicitly-pinned row is untouched: the freeze supplies an
             # instant, it never overwrites one a fixture chose.
             assert first.created_at.date() == seed_periods[4].start_date
+
+    def test_same_instant_writes_builds_the_tie_production_produces(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Ledger row **N-209**: the suite gets a door onto the flat instant.
+
+        The microsecond step above is deliberate and load-bearing -- and it also
+        made the whole ``created_at`` TIE-BREAK class unreachable from a test,
+        while production produces one routinely: PostgreSQL's ``now()`` is
+        TRANSACTION START, so every row a backfill writes in one transaction
+        shares an instant (``shekel-prod-db`` carries four).  Finding **N-196**
+        could not have been found by this suite, and was not; it was found by
+        reading, and X-an-b's control had to set ``created_at`` by hand.
+
+        Both directions are asserted, because the value of the block is that it
+        is SCOPED: inside it two rows tie, and the very next write outside it
+        advances again.  A helper that left the clock flat afterwards would
+        turn every later ``ORDER BY created_at DESC`` in the test into the coin
+        flip the step above exists to prevent.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+
+            def _anchor(balance):
+                row = AccountAnchorHistory(
+                    account_id=account.id,
+                    anchor_balance=balance,
+                    observed_on=display_today(),
+                )
+                db.session.add(row)
+                db.session.commit()
+                db.session.expire(row)
+                return row
+
+            with same_instant_writes():
+                tied_first = _anchor(Decimal("400.00"))
+                tied_second = _anchor(Decimal("500.00"))
+            after = _anchor(Decimal("600.00"))
+
+            assert tied_first.created_at == tied_second.created_at, (
+                f"the block did not tie: {tied_first.created_at!r} against "
+                f"{tied_second.created_at!r}"
+            )
+            assert after.created_at > tied_second.created_at, (
+                "the clock did not resume advancing after the block, so every "
+                "later ORDER BY created_at DESC in this test is a coin flip"
+            )

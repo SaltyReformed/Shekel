@@ -13,6 +13,7 @@ import sys
 import weakref
 
 from collections import namedtuple
+from contextlib import contextmanager
 from datetime import (
     date as _real_date,
     datetime as _real_datetime,
@@ -328,6 +329,13 @@ _FROZEN_DB_CLOCK = None
 #: the microsecond step exists to prevent.
 _DB_CLOCK_ISSUED = 0
 
+#: How many :func:`same_instant_writes` blocks are open.  While it is non-zero
+#: :meth:`_FrozenDbClock.stamp` stops advancing, so every clock-defaulted write
+#: inside shares ONE instant -- the shape a real transaction produces, which the
+#: microsecond step above otherwise makes unreachable (ledger row **N-209**).
+#: A DEPTH rather than a flag because the blocks nest.
+_DB_CLOCK_TIE_DEPTH = 0
+
 #: ``mapper class -> (attribute name, stamp kind)`` for every column whose
 #: INSERT value comes from the database clock.  DERIVED from the mapped columns
 #: rather than listed.  Populated lazily and never invalidated: a model's
@@ -394,10 +402,53 @@ class _FrozenDbClock:
         self._instant = instant
 
     def stamp(self):
-        """Return the next instant: the frozen one, plus one microsecond."""
+        """Return the next instant: the frozen one, plus one microsecond.
+
+        **Unless a :func:`same_instant_writes` block is open**, in which case
+        every stamp inside it is the SAME instant -- see that function for the
+        production state this exists to reproduce (ledger row N-209).
+        """
         global _DB_CLOCK_ISSUED  # pylint: disable=global-statement
+        if _DB_CLOCK_TIE_DEPTH:
+            return self._instant + _real_timedelta(
+                microseconds=_DB_CLOCK_ISSUED,
+            )
         _DB_CLOCK_ISSUED += 1
         return self._instant + _real_timedelta(microseconds=_DB_CLOCK_ISSUED)
+
+
+@contextmanager
+def same_instant_writes():
+    """Make every clock-defaulted write inside the block share ONE instant.
+
+    **The state production produces routinely and the suite could not build**
+    (ledger row **N-209**).  PostgreSQL's ``now()`` is TRANSACTION START, so
+    every row a backfill or a multi-row service call writes in one transaction
+    carries the identical ``created_at``: ``shekel-prod-db`` holds four such
+    rows (ids 1-4, all ``2026-05-22 02:41:22.187019+00``).  The frozen clock
+    issues each stamp one microsecond past the last -- deliberately, so an
+    ``ORDER BY created_at DESC`` tie is not a coin flip and a fixture stays
+    deterministic -- and that determinism also made the whole tie-break class
+    UNREACHABLE from a test.  Finding **N-196** could not have been found by
+    the suite, and was not: it was found by reading.
+
+    So the tie gets a door rather than each test setting ``created_at`` by
+    hand, which is what plan step X-an-b had to do.  Determinism stays the
+    DEFAULT everywhere outside the block: a test that does not open one cannot
+    accidentally produce a tie.
+
+    Nests, because a helper that opens one may be called from a test that has
+    already opened one, and the inner exit must not re-arm the counter early.
+
+    Yields:
+        ``None``; the block is the whole interface.
+    """
+    global _DB_CLOCK_TIE_DEPTH  # pylint: disable=global-statement
+    _DB_CLOCK_TIE_DEPTH += 1
+    try:
+        yield
+    finally:
+        _DB_CLOCK_TIE_DEPTH -= 1
 
 
 def _db_clock_insert_attrs(model_class):
