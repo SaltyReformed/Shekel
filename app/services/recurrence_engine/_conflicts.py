@@ -6,9 +6,16 @@ the chooser a :class:`~app.exceptions.RecurrenceConflict` raised.
 
 **Nothing here deletes.**  "Keep" leaves the row untouched and "use" clears the
 override / soft-delete flags and applies the template's amount, so a row that
-reaches the chooser survives whichever branch the owner picks -- which is what
-makes routing a row here the safe answer when a maintain pass must not change
-it unasked.
+reaches the chooser survives whichever branch the owner picks.
+
+**It answers the OVERRIDDEN and SOFT-DELETED conflicts only, never a RETAINED
+one.**  ``RecurrenceConflict.retained`` (plan step R10-a) names rows a maintain
+pass left untouched because the owner has records against them, and there is no
+keep-vs-use question to put to the owner about such a row: the pass already
+took the only safe outcome.  The route reports them with
+``flash_retained_notice`` and does not render the chooser for them, and
+``apply_conflict_decisions`` allow-lists ``overridden | deleted``, so a
+retained id cannot reach this module even from a crafted form.
 """
 import logging
 

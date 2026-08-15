@@ -203,17 +203,22 @@ def resolve_generation_plan(
     #
     # **The ORM row is resolved BEFORE the bound is applied, and the ORDER is
     # load-bearing** (found by adversarial review of plan step C2-b2).
-    # ``effective_from`` also bounds the DELETE sweep that
-    # ``regenerate_for_template`` runs before calling here, and that sweep is
-    # SQL over ``pay_periods.end_date`` -- the STORED column
+    # ``effective_from`` also bounds the ROW SELECT that
+    # ``_maintain.regenerate_for_template`` runs beside this call, and that
+    # select is SQL over ``pay_periods.end_date`` -- the STORED column
     # (``_recurrence_common.query_rows_from_effective_date``).  Testing
     # ``placement.period.end_date`` here would test the DERIVED end instead, so
-    # on a schedule where the two disagree the sweep and the regeneration would
-    # select different periods: rows deleted and never recreated where the
-    # derived end is earlier, and a stale amount surviving an edit where it is
-    # later.  Reading the bound off the same column the sweep reads makes the
-    # two one statement again.  Plan step C4 deletes that column, at which point
-    # the sweep has to move onto the calendar and this comment with it.
+    # on a schedule where the two disagree the two halves would consider
+    # different periods: a row selected but never NAMED where the derived end
+    # is earlier, and a stale amount surviving an edit where it is later.
+    # Reading the bound off the same column the select reads makes the two one
+    # statement again.  **This said "the DELETE sweep ... runs before calling
+    # here" until plan step R10-a**, which is no longer the shape: that pass
+    # maintains rows rather than deleting them, and resolves this plan first
+    # rather than afterwards.  The hazard is unchanged and its consequence is
+    # now WORSE -- an unnamed row is RETIRED rather than merely recreated.
+    # Plan step C4 deletes that column, at which point the select has to move
+    # onto the calendar and this comment with it.
     window = schedule.write_periods
     placements = []
     for placement in rule_occurrences(rule, schedule.calendar):

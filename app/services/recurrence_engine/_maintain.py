@@ -155,6 +155,14 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     outcome = _maintain_instances(template, plan, schedule, scenario_id, existing)
     db.session.flush()
 
+    # **ONE event per pass, and it gained a field while another LEFT.**  This
+    # used to delegate its create half to ``generate_for_template``, so every
+    # template edit emitted ``EVT_RECURRENCE_GENERATED`` as well; the maintain
+    # pass creates rows itself, so it no longer does.  ``updated_count`` is new
+    # and ``deleted_count`` now counts only rows the rule stopped naming --
+    # under the old shape it counted every row in the window, and its twin
+    # ``created_count`` counted the same rows again.  A reader comparing
+    # forensics across this step must not treat the two as the same number.
     log_event(
         logger, logging.INFO, EVT_RECURRENCE_REGENERATED, BUSINESS,
         "Recurrence regenerated for template",
@@ -241,15 +249,51 @@ class _MaintainOutcome(NamedTuple):
 
 
 
+# What the owner can own about a generated row, and therefore the three ways a
+# row stops being the rule's to rewrite: its PERMANENCE (an immutable status),
+# its AMOUNT (``is_override``) and its EXISTENCE (``is_deleted``).  Named
+# because :func:`_classify_maintain_work` must tell them apart -- each routes to
+# a different conflict list -- while :func:`_is_maintainable` only asks whether
+# there is one.
+_BLOCK_IMMUTABLE = "immutable"
+_BLOCK_OVERRIDE = "override"
+_BLOCK_DELETED = "deleted"
+
+
+def _owner_hold_on(row) -> str | None:
+    """Return which owner-held fact stops *row* being the rule's to rewrite.
+
+    **The ONE statement of the three, so its two readers cannot drift.**  The
+    classifier needs to tell them apart (each is a different conflict list) and
+    the repeat refusal only needs to know whether there is one, so a bare
+    boolean could not serve both and two copies of the chain is what an
+    adversarial review of plan step R10-a actually found here.  The order is
+    load-bearing: an immutable row is never touched whatever else is true of
+    it, which is what keeps a settled row out of every list.
+
+    Args:
+        row: The Transaction to classify.
+
+    Returns:
+        :data:`_BLOCK_IMMUTABLE`, :data:`_BLOCK_OVERRIDE` or
+        :data:`_BLOCK_DELETED`, or ``None`` when the row is the rule's own --
+        auto-generated, live and still mutable.
+    """
+    if row.status and row.status.is_immutable:
+        return _BLOCK_IMMUTABLE
+    if row.is_override:
+        return _BLOCK_OVERRIDE
+    if row.is_deleted:
+        return _BLOCK_DELETED
+    return None
+
+
 def _is_maintainable(row) -> bool:
     """Return True when *row* is the RULE's own row, free to be maintained.
 
-    The one definition of "this row belongs to the definition, not to the
-    owner", asked by both the classifier and the repeat refusal.  Its three
-    negatives are the three things the owner can own about a row -- its
-    permanence (an immutable status), its amount (``is_override``) and its
-    existence (``is_deleted``) -- each of which makes the row a conflict to
-    surface rather than a row to rewrite.
+    The boolean face of :func:`_owner_hold_on`, for the one caller that does
+    not care WHICH hold applies -- :func:`_refuse_repeats_this_pass`, which
+    only needs to know whether a row blocks a write.
 
     Args:
         row: The Transaction to classify.
@@ -257,9 +301,7 @@ def _is_maintainable(row) -> bool:
     Returns:
         True when the row is auto-generated, live and still mutable.
     """
-    if row.status and row.status.is_immutable:
-        return False
-    return not row.is_override and not row.is_deleted
+    return _owner_hold_on(row) is None
 
 
 
@@ -280,12 +322,25 @@ def _rows_holding_owner_records(existing) -> set[int]:
     classifier would issue a query per row on the hot path of every template
     edit.
 
+    **A STATEMENT LINK counts too, and it is here for symmetry with the child**
+    (adversarial review of plan step R10-a).  The account-move half of the
+    retention rule is justified by two composite keys that scope a clearing
+    link BY ACCOUNT -- ``fk_transaction_entries_reconciled_by`` on the purchase
+    and ``fk_transactions_reconciled_by`` on the row itself -- and the rule
+    named both while the predicate tested neither directly.  A row carrying its
+    own ``reconciled_by_id`` is unreachable here today through a chain of three
+    separate facts (a link needs ``settled_on``, which only the status seam
+    writes, and only alongside a settled status, and every settled status is
+    immutable), but a rule that holds by a three-step chain elsewhere in the
+    codebase is a rule that will stop holding without anyone noticing.  One
+    condition makes it structural.
+
     Args:
         existing: The rows this pass is considering.
 
     Returns:
-        The subset of their ids that hold purchases, a note, or a hand-entered
-        actual.
+        The subset of their ids that hold purchases, a note, a hand-entered
+        actual, or a statement link of their own.
     """
     ids = [row.id for row in existing]
     if not ids:
@@ -302,6 +357,8 @@ def _rows_holding_owner_records(existing) -> set[int]:
         if row.notes is not None and row.notes.strip():
             holding.add(row.id)
         elif row.actual_amount is not None:
+            holding.add(row.id)
+        elif row.reconciled_by_id is not None:
             holding.add(row.id)
     return holding
 
@@ -347,12 +404,13 @@ def _classify_maintain_work(existing, named_period_ids, account_id, with_records
             # it -- including the immutable, overridden and soft-deleted rows
             # the loop below then declines to maintain.
             occupied.add(row.pay_period_id)
-        if row.status and row.status.is_immutable:
+        hold = _owner_hold_on(row)
+        if hold == _BLOCK_IMMUTABLE:
             continue
-        if row.is_override:
+        if hold == _BLOCK_OVERRIDE:
             work.overridden_ids.append(row.id)
             continue
-        if row.is_deleted:
+        if hold == _BLOCK_DELETED:
             work.deleted_ids.append(row.id)
             continue
         if not named:
@@ -450,13 +508,20 @@ def _refuse_repeats_this_pass(template, placements, existing):
     (:func:`_recurrence_common.refuse_unstorable_repeats`, plan ledger row
     **D19**).
 
-    **The blocking set is narrower here than on the generate path, and it has
-    to be.**  That refusal skips a paycheck it considers already occupied, and
-    on the generate path ANY existing row occupies one.  A maintain pass
-    MAINTAINS the rule's own row rather than adding beside it, so such a row
-    does not make the paycheck safe -- two placements onto it would still be
-    two rows.  Passing only the rows that genuinely block a write keeps the
-    refusal firing exactly where the index would.
+    **The blocking set is narrower here than on the generate path, and the
+    reason is PARITY rather than storage.**  An earlier revision of this
+    docstring said two placements onto a maintained row "would still be two
+    rows"; an adversarial review disproved it.  On this path they would not:
+    ``create_in`` excludes every occupied period and ``update`` holds at most
+    one row per period, so a repeat is physically storable here and no index
+    violation is possible.  What the narrowing preserves is the ANSWER the old
+    delete-then-generate pass gave -- it deleted the rule's own row first, so
+    the paycheck looked empty to the refusal and an unstorable cadence was
+    reported.  Widening the set would silently start ACCEPTING a cadence this
+    app has refused since plan ledger row **D19**, turning a loud refusal into
+    a schedule that quietly bills one paycheck once for a rule that names it
+    twice.  Verified to fire identically on both sides: a maintainable row does
+    not make its paycheck safe, a non-maintainable one does.
 
     Args:
         template: The template being maintained -- read for its name by the

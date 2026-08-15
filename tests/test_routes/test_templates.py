@@ -758,6 +758,103 @@ class TestTemplateUpdate:
             assert reloaded.estimated_amount == Decimal("1400.00")
             assert reloaded.name == "Apartment Rent"
 
+    def test_amount_edit_commits_when_the_only_conflict_is_a_retained_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A RETAINED row must not swallow the edit that produced it.
+
+        **This pins a defect that shipped and was caught by adversarial review
+        of plan step R10-a.**  ``regenerate_or_conflict_chooser`` branched on
+        "the amount changed", not on "there is something to decide", so a
+        conflict carrying ONLY ``retained`` rendered the chooser -- whose rows
+        come from ``overridden`` and ``deleted`` alone, so the page listed
+        NOTHING -- and then rolled the whole pending edit back.  The owner saw
+        "Some upcoming instances were hand-edited" over an empty list, and
+        their amount change silently did not happen.
+
+        A retained row is not a question: the pass already left it untouched.
+        So the edit must COMMIT, and the notice must name what was skipped.
+        """
+        with app.app_context():
+            from app.services import (
+                account_service, entry_service, pay_period_service,
+                recurrence_engine,
+            )
+            template = _create_template(
+                seed_user, name="Groceries", pattern_name="Every Period",
+                amount="500.00",
+            )
+            template.is_envelope = True  # rows track purchases, as production
+            db.session.flush()
+            scenario = seed_user["scenario"]
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(
+                template,
+                GenerationSchedule.for_periods(template.user_id, periods),
+                scenario.id,
+            )
+            db.session.flush()
+
+            # One row carries a purchase, so the pass RETAINS it -- and there
+            # is no override or soft-delete anywhere, so retained is the ONLY
+            # list populated.  That is the shape the branch got wrong.
+            # The CURRENT period's row, which is the only one that satisfies
+            # both constraints at once: the update route sweeps from today, so
+            # an earlier row is out of the window, and a purchase may not be
+            # dated in the future (ruling R-M), so a later row cannot hold one.
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            txn = (
+                db.session.query(Transaction)
+                .filter_by(
+                    template_id=template.id, pay_period_id=current.id,
+                )
+                .one()
+            )
+            entry_service.create_entry(
+                txn.id,
+                seed_user["user"].id,
+                entry_service.EntryDetails(
+                    amount=Decimal("40.00"),
+                    description="Kroger",
+                    purchased_on=current.start_date,
+                ),
+            )
+            # Moving the template's ACCOUNT is what retains the row: its
+            # purchases would follow onto the new account and lose whatever
+            # statement link cleared them.
+            moved_to = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=seed_user["account"].account_type_id,
+                    name="Second Checking",
+                    anchor_balance=Decimal("0.00"),
+                ),
+            )
+            db.session.add(moved_to)
+            db.session.commit()
+            tid, moved_to_id = template.id, moved_to.id
+
+            resp = auth_client.post(f"/templates/{tid}", data={
+                "name": "Groceries",
+                "default_amount": "650.00",
+                "account_id": str(moved_to_id),
+                **cadence_payload(),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            # The chooser must NOT have rendered: it had nothing to ask.
+            assert b"Some upcoming instances were hand-edited" not in resp.data
+            # And the owner is told which rows the pass declined to change.
+            assert b"kept the value it already had" in resp.data
+
+            db.session.expire_all()
+            reloaded = db.session.get(TransactionTemplate, tid)
+            assert reloaded.default_amount == Decimal("650.00"), (
+                "the edit was rolled back by a conflict that asked nothing"
+            )
+
     def test_rename_template_propagates_to_all_instances(
         self, app, auth_client, seed_user, seed_periods_today,
     ):

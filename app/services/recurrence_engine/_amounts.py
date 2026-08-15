@@ -52,14 +52,26 @@ class DerivedRowFields(NamedTuple):
     ``status_id`` -- are deliberately absent: they are the classification the
     caller applies BEFORE deciding to write, never something a write restates.
 
+    **``amount_source_id`` is absent too, and that one is a considered
+    omission rather than a category** (adversarial review of plan step R10-a).
+    ``ck_transactions_amount_ownership`` pairs it with ``estimated_amount`` --
+    exactly one of the two is ever set -- so assigning an amount onto a row
+    already in the DERIVED state would violate the CHECK.  No writer sets that
+    column today, so that state is unreachable; plan steps X-au-d..i are the
+    ones that create it.  If they land before this is revisited the failure is
+    a loud ``IntegrityError`` at flush, not a wrong figure, whereas carrying
+    the field here would SILENTLY un-derive such a row.  Loud is the better
+    failure, so the field stays out until the step that owns the semantics
+    arrives.  Ledger row **N-293**.
+
     Attributes:
         account_id: The account the row's money moves through, from the
             template.  **The one derived field whose change is not always
             applicable**: ``fk_transaction_entries_parent_account`` binds a
             purchase's account to its parent's, so moving a row that holds
             purchases moves them too and invalidates any statement link they
-            carry.  :func:`_account_move_needs_a_decision` routes that case to
-            the owner instead of applying it.
+            carry.  ``_maintain._classify_maintain_work`` routes that case to
+            the owner, as a RETAINED conflict, instead of applying it.
         name: The template's name.  Also propagated to rows OUTSIDE this pass's
             reach by ``routes.templates.crud._apply_fields_and_propagate_rename``,
             which covers the historic and immutable rows a regeneration never

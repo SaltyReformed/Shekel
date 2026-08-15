@@ -581,14 +581,21 @@ def update_template(template_id):
     ))
     if response is not None:
         return response
-    # An edit that ended the recurrence deleted this template's upcoming
+    # An edit that ended the recurrence removed this template's upcoming
     # projected rows; "updated." alone would report a destructive change as a
     # routine one.  Mirrors the archive route, which already names what it
     # removed.
+    #
+    # **It names THREE kept classes since plan step R10-a, not two.**  A row
+    # carrying the owner's own records -- purchases, a note, a hand-entered
+    # actual -- is now RETAINED rather than removed (ruling R-R19), so the
+    # earlier wording asserted a removal that did not happen and contradicted
+    # the warning ``_flash_retained`` emits in the same response.
     if before.had_recurrence_rule and template.recurrence_rule_id is None:
         flash(
             f"'{template.name}' no longer repeats. Its upcoming projected "
-            "entries were removed; settled and hand-edited ones were kept.",
+            "entries were removed; settled ones, hand-edited ones, and any "
+            "carrying purchases or notes were kept.",
             "success",
         )
     else:

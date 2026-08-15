@@ -118,7 +118,7 @@ def parse_conflict_decisions(form) -> dict[int, str] | None:
     return decisions
 
 
-def _flash_retained(conflict) -> None:
+def flash_retained_notice(conflict) -> None:
     """Tell the owner which rows the pass left alone, and why.
 
     ``RecurrenceConflict.retained`` names the rows a regeneration declined to
@@ -471,7 +471,6 @@ def regenerate_or_conflict_chooser(
             template, schedule, scenario.id, effective_from=effective_from,
         )
     except RecurrenceConflict as conflict:
-        _flash_retained(conflict)
         if decisions is not None:
             apply_conflict_decisions(
                 kind=kind,
@@ -481,7 +480,18 @@ def regenerate_or_conflict_chooser(
                 user_id=current_user.id,
             )
         elif (
-            amount_drives_instances
+            # **A conflict is not automatically a QUESTION** (plan step R10-a,
+            # adversarial review).  The chooser asks one thing -- keep this
+            # instance's amount or move it to the template's -- and
+            # ``_build_conflict_choices`` builds its rows from ``overridden``
+            # and ``deleted`` alone.  A RETAINED row has no such question: the
+            # pass already left it untouched.  Without this arm a
+            # retained-only conflict rendered the chooser over an EMPTY list
+            # and then rolled the edit back below, so an ordinary amount
+            # change silently did nothing and said "some upcoming instances
+            # were hand-edited" over no instances.
+            (conflict.overridden or conflict.deleted)
+            and amount_drives_instances
             and template.recurrence_rule is not None
             and template.default_amount != before.amount
         ):
@@ -500,7 +510,12 @@ def regenerate_or_conflict_chooser(
                 request.form,
             )
             db.session.rollback()
+            # No retained notice on this path: the rollback above discards the
+            # whole pending edit, so telling the owner what a pass "kept" would
+            # describe a pass that no longer happened.  The notice fires on the
+            # two paths that reach the caller's commit, below.
             return chooser
+        flash_retained_notice(conflict)
     return None
 
 
@@ -512,6 +527,7 @@ __all__ = [
     "PreEditTemplateState",
     "RecurrenceConflictKind",
     "apply_conflict_decisions",
+    "flash_retained_notice",
     "parse_conflict_decisions",
     "regenerate_or_conflict_chooser",
     "render_recurrence_conflict_chooser",

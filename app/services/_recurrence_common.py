@@ -14,7 +14,8 @@ place, where the two cannot drift:
   - the generate row fetch + repeat refusal
     (:func:`existing_rows_refusing_repeats`, over
     :func:`existing_rows_by_period` and :func:`refuse_unstorable_repeats`),
-  - the regenerate row-partition (:func:`partition_regeneration_rows`),
+  - the regenerate row-partition (:func:`partition_regeneration_rows`) --
+    **the TRANSFER engine's only, since plan step R10-a**; see its docstring,
   - the regenerate sweep bound (:func:`regeneration_bound`),
   - the regenerate row fetch (:func:`query_rows_from_effective_date`),
   - the cross-user audit ``log_event(...)`` blocks (the ``log_*`` helpers
@@ -334,13 +335,23 @@ def regeneration_bound(schedule, effective_from):
 
 
 def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:
-    """Partition existing rows for the regenerate state machine.
+    """Partition existing rows for the DELETE-and-recreate regenerate machine.
 
-    Shared by both recurrence engines' ``regenerate_for_template``: an
-    existing template-linked row is classified per §4.8 as either a
-    conflict to surface to the user (overridden or soft-deleted), an
-    immutable row to leave untouched, or an auto-generated row that is
-    safe to delete and regenerate.
+    An existing template-linked row is classified per §4.8 as either a conflict
+    to surface to the user (overridden or soft-deleted), an immutable row to
+    leave untouched, or an auto-generated row that is safe to delete and
+    regenerate.
+
+    **The TRANSFER engine is its only caller since plan step R10-a.**  It was
+    shared by both until that step (ruling **R-R19**) gave the transaction
+    engine a pass that MAINTAINS the rows it already generated -- the last
+    class in the tuple below, "safe to delete and regenerate", is the premise
+    that step deleted, because ``transaction_entries`` CASCADE and a projected
+    envelope holds the owner's purchases.  A transfer holds none, which is why
+    the transfer engine still reads this and why moving it onto the same shape
+    is plan step R10-b rather than an emergency.  **Do not extend this for the
+    transaction engine**; the classifier that replaced it is
+    ``recurrence_engine._maintain._classify_maintain_work``.
 
     Args:
         existing_rows: All existing (Transaction|Transfer) rows whose
