@@ -129,7 +129,10 @@ no reconciler.
   no differences, loudly and wrongly. Assert the identity a result is attributed to, not just that a
   result came back.
 - **A GATE MUST BE EXERCISED AGAINST THE ARTIFACT IT GRADES, never read or tested only
-  synthetically.** A pattern that matches the real file nowhere passes every synthetic control.
+  synthetically.** A pattern that matches the real file nowhere passes every synthetic control. Row
+  **P52** is this lesson found live: a docstring-stated `grep` canary whose pattern is line-based
+  against a call site that WRAPS, so it has always matched zero lines and "the gate passes" has
+  always meant "nothing matched".
 - **An ORACLE that states a different rule than the engine lets both be wrong together.**
 - **AN AGREEMENT ORACLE CANNOT SEE A PRODUCER THAT READS THE VALUE IT IS REPLACING.** The control
   that sees it is INVARIANCE -- perturb the input the new rule must not be reading and require the
@@ -146,6 +149,12 @@ no reconciler.
 - **A CENSUS THAT IS NOT COMMITTED IS AN UNCITED CLAIM.**
 - **COUNT THE CALL GRAPH, NOT THE CALL SITES.** One finding said four spellings; the tree held 18.
 - **A COUNT IN A DOCSTRING IS A CLAIM, AND THIS ARC KEEPS WRITING IT WRONG.**
+- **BEFORE READING A CLEAN DIFF, CHECK THE FIGURE THE STEP IS ABOUT IS NOT NULL IN IT.** C2-f2c's
+  harness came back byte-identical over 39,939 lines while `retirement_marker_index` -- the one
+  figure its ledger row (**P48**) names -- was `None` on every line, because the clone's owner had
+  set no retirement date. A production clone is a sample of one owner's CHOICES, not of the state
+  space; where it does not exercise the subject, WRITE the state into the clone and re-capture both
+  sides rather than accepting the clean run.
 - **PLANT THE FIRING CONTROL AT EVERY WIRING SITE, AND CHECK THE PLANTED DEFECT IS REACHABLE ON THE
   REAL DATA.** C2-f2a's first control dropped the FIRST period from the contribution axis and moved
   `$0.00` -- every early period sits at or before the account's latest assertion, which that tier

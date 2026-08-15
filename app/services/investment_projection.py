@@ -21,6 +21,19 @@ BOUNDARY instead (``projection_inputs.load_shadow_income_contributions_*``)
 resolves the whole row set ONCE, drops the rows that contribute nothing, and
 retires all four copies of the status screen with them.  What is left here is
 arithmetic over plain data, which is what the paragraph above always claimed.
+
+**They arrive DATED too, since plan step C2-f2c**, and for the same reason one
+tier down.  A contribution's pay period was carried here as an id, so the three
+readers that needed to know WHEN it landed took the owner's whole period list
+as an argument and looked the payday up in it -- a join table threaded through
+a public signature to answer a question the loader can answer once, where the
+session is.  ``calculate_investment_inputs`` and
+:func:`build_contribution_timeline` are the readers; neither takes a period id
+now, and the period list left the first of them outright.  It also ended a
+shape collision this module could not have absorbed otherwise: it is shared by
+``/retirement``, which holds ORM rows spelling that key ``id``, and by
+``/investment``, which since C2-f2c holds
+:class:`~app.services.pay_calendar.DerivedPeriod`\\ s spelling it ``period_id``.
 """
 
 from collections import namedtuple
@@ -38,7 +51,7 @@ from app.utils.money import ZERO, round_money
 
 @dataclass(frozen=True)
 class PricedContribution:
-    """ONE shadow contribution, already valued and already screened.
+    """ONE shadow contribution, already valued, screened and DATED.
 
     The boundary record this module consumes in place of a
     :class:`~app.models.transaction.Transaction` (plan step X-au-c2).  It
@@ -48,18 +61,39 @@ class PricedContribution:
 
     **Non-contributing rows are ABSENT rather than zero, and that is load
     bearing rather than tidy.**  :func:`_average_transfer_contribution` divides
-    by the number of DISTINCT ``pay_period_id`` values it sees, so a Cancelled
-    contribution carried as ``$0.00`` would enlarge that denominator and quietly
-    reduce the average -- where the ``status_contributes_to_balance`` screen it
-    replaces dropped the row before the count.  The loader applies that screen
-    and omits what fails it.
+    by the number of DISTINCT paydays it sees, so a Cancelled contribution
+    carried as ``$0.00`` would enlarge that denominator and quietly reduce the
+    average -- where the ``status_contributes_to_balance`` screen it replaces
+    dropped the row before the count.  The loader applies that screen and omits
+    what fails it.
+
+    **It carries the PAYDAY rather than the ``pay_period_id`` since plan step
+    C2-f2c**, and that is what let the period LIST leave this module's public
+    surface.  Every reader here bucketed on the id and then needed a lookup
+    table to find out WHEN that period was: the YTD windows built a set of ids
+    filtered by each period's ``start_date``, and the timeline built an
+    id-keyed map to stamp each record with one.  So the period list was an
+    argument three functions took to answer one question the loader can answer
+    once, where the session is -- the same move plan step X-au-c2 made for the
+    amount and the status.  It also ended a shape collision: this module is
+    shared with ``/retirement``, which holds ORM rows spelling that key ``id``,
+    while ``/investment`` now holds
+    :class:`~app.services.pay_calendar.DerivedPeriod`\\ s spelling it
+    ``period_id``.
+
+    A payday identifies a period as exactly as the id does: paydays are unique
+    per owner (``uq_pay_periods_user_start``) and every batch the loader builds
+    is scoped to one.
 
     Attributes:
         account_id: The investment / retirement account the contribution
             landed in.  Read by the cross-account consumers, which load one
             batch and partition it per account.
-        pay_period_id: The pay period the contribution belongs to -- the key
-            every window, average and YTD sum here buckets on.
+        payday: The ``start_date`` of the pay period the contribution belongs
+            to -- the day every average, YTD sum and timeline record here dates
+            it at.  It is a PAYDAY rather than a posting date on purpose: the
+            growth engine matches a contribution to a period by that period's
+            opening day.
         amount: What the row CONTRIBUTES
             (:func:`app.services.cash_ledger.contributions_by_id`): the entered
             ``actual_amount`` where a human read one off a statement, else the
@@ -71,7 +105,7 @@ class PricedContribution:
     """
 
     account_id: int
-    pay_period_id: int
+    payday: date
     amount: Decimal
     is_confirmed: bool
 
@@ -314,8 +348,12 @@ def _average_transfer_contribution(all_contributions):
         return ZERO
 
     total_contrib = sum(c.amount for c in all_contributions)
+    # DISTINCT PAYDAYS, which is distinct periods: a payday is unique per owner
+    # (``uq_pay_periods_user_start``) and one batch is one owner's.  It read
+    # ``pay_period_id`` until plan step C2-f2c moved the period key onto the
+    # record's own date; the denominator is the same set either way.
     num_periods_with_contrib = len(
-        set(c.pay_period_id for c in all_contributions)
+        set(c.payday for c in all_contributions)
     )
     if num_periods_with_contrib > 0:
         return round_money(total_contrib / num_periods_with_contrib)
@@ -367,122 +405,79 @@ def employer_contribution_params(investment_params, gross_biweekly):
     }
 
 
-def _current_year_period_ids(all_periods, current_period, *, inclusive):
-    """Current-calendar-year period ids up to the current period.
+def _ytd_contributions(all_contributions, current_period, *, inclusive):
+    """Sum this calendar year's contributions up to the current period.
 
     ``inclusive`` controls the current period itself: ``True`` keeps it
     (``<=``, the through-current YTD shown on the limit card); ``False``
-    drops it (``<``, the strictly-before seed handed to the growth
-    engine).  Sharing one builder keeps the two YTD windows from drifting
-    (deep-quality-hunt #10).
+    drops it (``<``, the strictly-before seed handed to the growth engine,
+    whose per-period walk then applies and counts the current period's own
+    contribution against the annual limit -- seeding the through-current value
+    there would charge that period twice, deep-quality-hunt #10).  ONE
+    expression for both keeps them from drifting.
 
-    Args:
-        all_periods:    Period objects with .id and .start_date.
-        current_period: The current period object (caller guards None).
-        inclusive:      Keyword-only; include the current period or not.
-
-    Returns:
-        The set of matching ``period_id`` values.
-    """
-    year = current_period.start_date.year
-    boundary = current_period.start_date
-    return {
-        p.id for p in all_periods
-        if p.start_date.year == year
-        and (p.start_date <= boundary if inclusive else p.start_date < boundary)
-    }
-
-
-def _sum_year_contributions(all_contributions, period_ids):
-    """Sum the priced contributions falling in ``period_ids``.
+    Both bounds read the current period's own ``start_date``, so the year and
+    the boundary are one fact rather than two: a contribution counts when its
+    PAYDAY falls in that period's calendar year at or before that period's
+    payday.  **It used to build a set of period IDS and match each record's
+    ``pay_period_id`` against it**, which needed the owner's whole period list
+    as an argument; the record carries its payday since plan step C2-f2c, so
+    the list has nothing left to answer (see :class:`PricedContribution`).  The
+    two select identically -- every record the loader returns belongs to a
+    period in that list, because the list is what scoped the query.
 
     Every record here has already passed the boundary's
-    ``status_contributes_to_balance`` screen (see :class:`PricedContribution`),
-    so this sums what it is given.  :attr:`~PricedContribution.amount` -- the
-    realized actual when a shadow is settled, else what its amount resolves to
-    -- is the ONE answer to what a row contributes, so this YTD-seed/limit
-    accounting agrees with the per-period timeline
-    (:func:`build_contribution_timeline`, reading the same records) once a
-    transfer shadow is settled with an actual that differs from its estimate
-    (deep-quality-hunt #11).  Summing ``estimated_amount`` here previously let
-    the cap/limit math read a different dollar than the engine actually
-    applied; the prior "F-027 S18 contract-safe" rationale assumed a shadow's
-    ``actual_amount`` is always ``None``, which is untrue once a settle sets it
-    (the ``Transfer`` parent has no ``actual_amount`` column, so a settled
-    actual lives only on the shadows).
+    ``status_contributes_to_balance`` screen, so this sums what it is given.
+    :attr:`~PricedContribution.amount` -- the realized actual when a shadow is
+    settled, else what its amount resolves to -- is the ONE answer to what a row
+    contributes, so this YTD/limit accounting agrees with the per-period
+    timeline (:func:`build_contribution_timeline`, reading the same records)
+    once a transfer shadow is settled with an actual that differs from its
+    estimate (deep-quality-hunt #11).  Summing ``estimated_amount`` here
+    previously let the cap/limit math read a different dollar than the engine
+    actually applied; the prior "F-027 S18 contract-safe" rationale assumed a
+    shadow's ``actual_amount`` is always ``None``, which is untrue once a settle
+    sets it (the ``Transfer`` parent has no ``actual_amount`` column, so a
+    settled actual lives only on the shadows).
 
     Args:
         all_contributions: :class:`PricedContribution` records for one account.
-        period_ids:        The period_id set to sum over.
+        current_period:    The current period object -- anything carrying a
+                           ``start_date`` -- or None.
+        inclusive:         Keyword-only; include the current period or not.
 
     Returns:
-        The contribution total (Decimal).
+        The contribution total (Decimal); ZERO when ``current_period`` is None,
+        the state in which there is no year and no boundary to ask about.
     """
+    if current_period is None:
+        return ZERO
+    boundary = current_period.start_date
     return sum(
-        (c.amount for c in all_contributions if c.pay_period_id in period_ids),
+        (
+            c.amount for c in all_contributions
+            if c.payday.year == boundary.year
+            and (c.payday <= boundary if inclusive else c.payday < boundary)
+        ),
         ZERO,
     )
 
 
-def _ytd_contributions(all_contributions, all_periods, current_period):
-    """Sum year-to-date contributions THROUGH the current period (``<=``).
-
-    The displayed limit-card YTD value.  Sums the priced amount of every
-    contribution whose pay period falls in the current calendar year up to and
-    including ``current_period``.
-
-    Args:
-        all_contributions: :class:`PricedContribution` records for one account.
-        all_periods:       Period objects with .id and .start_date.
-        current_period:    The current period object, or None.
-
-    Returns:
-        The YTD contribution total (Decimal); ZERO when current_period
-        is None.
-    """
-    if current_period is None:
-        return ZERO
-    period_ids = _current_year_period_ids(
-        all_periods, current_period, inclusive=True,
-    )
-    return _sum_year_contributions(all_contributions, period_ids)
-
-
-def _ytd_contributions_seed(all_contributions, all_periods, current_period):
-    """Sum year-to-date contributions STRICTLY BEFORE the current period (``<``).
-
-    The ``ytd_contributions_start`` seed handed to the growth engine.
-    The engine's per-period walk then applies and counts the current
-    period's own contribution against the annual limit, so seeding the
-    through-current value (:func:`_ytd_contributions`) instead would
-    charge the current period twice (deep-quality-hunt #10).
-
-    Args:
-        all_contributions: :class:`PricedContribution` records for one account.
-        all_periods:       Period objects with .id and .start_date.
-        current_period:    The current period object, or None.
-
-    Returns:
-        The strictly-before-current YTD total (Decimal); ZERO when
-        current_period is None.
-    """
-    if current_period is None:
-        return ZERO
-    period_ids = _current_year_period_ids(
-        all_periods, current_period, inclusive=False,
-    )
-    return _sum_year_contributions(all_contributions, period_ids)
-
-
-def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def calculate_investment_inputs(
     investment_params,
     deductions,
     all_contributions,
-    all_periods,
     current_period,
     salary_gross_biweekly=None,
 ):
     """Compute projection inputs for an investment account.
+
+    **It stopped taking the owner's period LIST at plan step C2-f2c.**  The
+    list served the two YTD windows alone, as a lookup from a contribution's
+    ``pay_period_id`` to that period's payday; the loader that prices a
+    contribution now dates it too, so there is no lookup left to do and one
+    argument fewer for a caller to get wrong.  That also retired this
+    function's ``too-many-arguments`` disable rather than re-justifying it.
 
     Args:
         investment_params:     Object with employer fields and
@@ -492,24 +487,18 @@ def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-
                                .pay_periods_per_year.
         all_contributions:     List of :class:`PricedContribution` records
                                for this account -- shadow-income rows already
-                               valued and screened at the boundary.
-        all_periods:           List of period objects with .id,
-                               .start_date, .period_index.
-        current_period:        The current period object, or None.
+                               valued, screened and dated at the boundary.
+        current_period:        The current period object -- anything carrying a
+                               ``start_date``, which both
+                               :class:`~app.models.pay_period.PayPeriod` and
+                               :class:`~app.services.pay_calendar.DerivedPeriod`
+                               do -- or None.
         salary_gross_biweekly: Engine gross per pay period used as the
                                fallback gross when no deduction supplied
                                one (Decimal or None).
 
     Returns:
         InvestmentInputs dataclass.
-
-    Pylint: ``too-many-arguments`` (6/5) / ``too-many-positional-arguments``
-    (6/5) -- the six inputs are independent, heterogeneous projection inputs
-    (account config, two contribution feeds, the period calendar, and a
-    salary-gross fallback); each is consumed by a different step, so a
-    param object would be stamp coupling.  The scoped disable mirrors the
-    immediately-downstream ``growth_engine.project_balance``, which takes
-    the same documented disable for the same reason.
     """
     periodic_contribution, gross_biweekly = deduction_contribution_per_period(
         deductions, salary_gross_biweekly,
@@ -524,14 +513,14 @@ def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-
         annual_contribution_limit=getattr(
             investment_params, "annual_contribution_limit", None),
         ytd_contributions=_ytd_contributions(
-            all_contributions, all_periods, current_period),
-        ytd_contributions_seed=_ytd_contributions_seed(
-            all_contributions, all_periods, current_period),
+            all_contributions, current_period, inclusive=True),
+        ytd_contributions_seed=_ytd_contributions(
+            all_contributions, current_period, inclusive=False),
         gross_biweekly=gross_biweekly,
     )
 
 
-def _deduction_contribution_records(deductions, periods, pct_id, today):
+def _deduction_contribution_records(deductions, periods, pct_id, as_of):
     """Per-period deduction ContributionRecords, each clamped to its annual cap.
 
     Deductions contribute the same raw amount every period; each is clamped to
@@ -550,7 +539,8 @@ def _deduction_contribution_records(deductions, periods, pct_id, today):
         deductions: Deduction-like objects (see build_contribution_timeline).
         periods:    Period objects with .start_date.
         pct_id:     The ref ID for the PERCENTAGE calculation method.
-        today:      The date splitting confirmed (past) from projected periods.
+        as_of:      The read pass's clock -- the day splitting confirmed (past)
+                    from projected periods.
 
     Returns:
         list[ContributionRecord] in period-start-date order; empty when no
@@ -585,7 +575,7 @@ def _deduction_contribution_records(deductions, periods, pct_id, today):
             amount=period_total,
             # Past periods are confirmed (the deduction was taken from the
             # paycheck); future periods are projected.
-            is_confirmed=period.start_date < today,
+            is_confirmed=period.start_date < as_of,
         ))
     return records
 
@@ -594,6 +584,7 @@ def build_contribution_timeline(
     deductions,
     contribution_transactions,
     periods,
+    as_of,
 ):
     """Build ContributionRecords from deductions and shadow transactions.
 
@@ -615,6 +606,18 @@ def build_contribution_timeline(
     The growth engine handles same-date aggregation (summing amounts,
     conservative is_confirmed rule) via its lookup dict.
 
+    **It reads no clock and needs no period IDENTITY since plan step C2-f2c.**
+    The confirmation split took ``date.today()``, so a render that straddled
+    midnight could date this timeline one day and the pass around it another;
+    it takes the read pass's own ``as_of`` now, which is what every other
+    producer on that render already runs on.  And path 2 resolved each
+    contribution's date through an id-keyed map of *periods*, which forced this
+    function to know how the caller's period type spells its primary key --
+    ``id`` on an ORM row, ``period_id`` on a
+    :class:`~app.services.pay_calendar.DerivedPeriod`.  A contribution carries
+    its own payday now, so the only thing read off a period here is its
+    ``start_date`` and both types serve.
+
     Args:
         deductions:                 List of deduction-like objects with
                                     .amount, .calc_method_id,
@@ -623,33 +626,35 @@ def build_contribution_timeline(
                                     calendar-year ceiling; absent = uncapped).
         contribution_transactions:  List of :class:`PricedContribution`
                                     records -- shadow-income rows already
-                                    valued and screened at the boundary.
-        periods:                    List of period objects with .id,
-                                    .start_date.
+                                    valued, screened and dated at the boundary.
+        periods:                    The timeline's DOMAIN: period objects with
+                                    a ``start_date``, one record emitted per
+                                    period for the deduction path and any
+                                    contribution outside them dropped.
+        as_of:                      The read pass's clock; a period opening
+                                    strictly before it is confirmed.
 
     Returns:
         list[ContributionRecord] sorted by contribution_date.  Empty
         list if no deductions and no qualifying contributions exist.
     """
     records = []
-    today = date.today()
     pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
 
     # Path 1: Paycheck deductions -- same raw amount every period, each
     # clamped to its own calendar-year cap.
     records.extend(
-        _deduction_contribution_records(deductions, periods, pct_id, today)
+        _deduction_contribution_records(deductions, periods, pct_id, as_of)
     )
 
     # Path 2: Transfer-based contributions -- per-transaction amounts.
-    period_by_id = {p.id: p for p in periods}
+    paydays = {p.start_date for p in periods}
     for contribution in contribution_transactions:
-        period = period_by_id.get(contribution.pay_period_id)
-        if period is None:
-            # Contribution in a period outside the projection range.
+        if contribution.payday not in paydays:
+            # Contribution in a period outside this timeline's domain.
             continue
         records.append(ContributionRecord(
-            contribution_date=period.start_date,
+            contribution_date=contribution.payday,
             amount=contribution.amount,
             # Transfer-based: determined by the row's settlement status
             # (Paid/Settled=True, Projected=False), resolved at the boundary.

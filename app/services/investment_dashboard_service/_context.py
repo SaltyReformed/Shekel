@@ -18,7 +18,6 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
@@ -34,6 +33,7 @@ from app.services.investment_projection import (
     adapt_deductions,
     build_contribution_timeline,
 )
+from app.services.pay_calendar import DerivedPeriod
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_account,
@@ -44,18 +44,28 @@ from app.services.projection_inputs import (
 class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
     """Every per-account input the dashboard + growth-chart both consume.
 
-    Pylint: ``too-many-instance-attributes`` (11/7) -- a cohesive load-once
-    *feed*, not a god-object: every field is a per-account projection input
+    Pylint: ``too-many-instance-attributes`` (13/7) -- a cohesive load-once
+    *feed*, not a god-object: every field is a per-request projection input
     resolved once by :func:`_load_projection_context` and fanned out to
     different consumers (``contributions`` -> the growth projection;
-    ``deductions`` / ``active_profile`` -> the contribution prompt; ``scenario``
-    / ``all_periods`` -> the history chart and anchor caption, so they read the
-    SAME inputs the headline resolved against).  Bundling them removes the
-    parallel-load duplication the dashboard and chart fragment each carried
-    inline (S6-01).  The annual contribution limit is reachable two ways
-    (``params.annual_contribution_limit`` /
+    ``deductions`` / ``active_profile`` -> the contribution prompt;
+    ``balance_ctx`` / ``current_period`` -> the history chart and anchor
+    caption, so they read the SAME inputs the headline resolved against).
+    Bundling them removes the parallel-load duplication the dashboard and chart
+    fragment each carried inline (S6-01).  The annual contribution limit is
+    reachable two ways (``params.annual_contribution_limit`` /
     ``inputs.annual_contribution_limit``, copied in
     ``calculate_investment_inputs``); read it from one place.
+
+    **The owner's period SET is deliberately NOT a field** (plan step C2-f2c).
+    It is :meth:`~app.services.balance_at.BalanceContext.reported_periods` off
+    :attr:`balance_ctx`, which is memoized on the calendar
+    (:meth:`~app.services.pay_calendar.PayCalendar.saved`), so a field here
+    would be a memo of a memo -- the shape an adversarial review of plan step
+    C2-c already refused one tier down.  ``current_period`` IS a field because
+    nothing memoizes it: it is a bisect over that window at
+    ``balance_ctx.as_of``, and holding one answer for the render is what stops
+    two of this package's readers pairing one clock with another's calendar.
 
     Attributes:
         params: The account's :class:`InvestmentParams` row, or ``None``
@@ -99,11 +109,28 @@ class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
         active_profile: The user's active :class:`SalaryProfile`, or
             ``None``; drives the deduction-path salary-profile link.
         balance_ctx: The read pass's ``BalanceContext``; the history chart and
-            anchor caption read it so both agree with the headline balance.
+            anchor caption read it so both agree with the headline balance, and
+            its :meth:`~app.services.balance_at.BalanceContext.reported_periods`
+            is this package's whole period domain.
         anchor_as_of: Display-tz date of the account's latest anchor event
             (C1 hero caption), or ``None`` when no baseline scenario exists.
-        all_periods: The user's full pay-period calendar (C2 history basis).
-        current_period: The current :class:`PayPeriod`, or ``None``.
+        planned_retirement_date: The owner's planned retirement date, or
+            ``None`` when unset.  Resolved ONCE here because two consumers read
+            it -- the horizon slider's default (:func:`._cards
+            ._compute_default_horizon`) and the chart's retirement marker
+            (:func:`._chart._build_chart_markers`) -- and each loading it
+            privately meant two ``user_settings`` queries per dashboard render
+            for one value.
+        current_period: The SAVED pay period covering ``balance_ctx.as_of``, or
+            ``None`` when the pass's clock falls outside the owner's schedule
+            -- before their first payday or past their horizon.  ``None`` is a
+            real answer FOUR readers here branch on, so it is preserved rather
+            than clamped: the headline falls back to a date-precise seam read,
+            the history series is empty, the growth chip is hidden, and the
+            suggested contribution spreads from the pass's clock instead.  The
+            fourth is the one that matters most for this attribute: unlike the
+            other three it changes a DOLLAR figure -- the amount the
+            contribution-transfer form arrives pre-filled with.
     """
 
     params: InvestmentParams | None
@@ -117,8 +144,8 @@ class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
     active_profile: SalaryProfile | None
     balance_ctx: BalanceContext
     anchor_as_of: date | None
-    all_periods: list
-    current_period: PayPeriod | None
+    planned_retirement_date: date | None
+    current_period: DerivedPeriod | None
 
 
 def _load_active_salary_profile(user_id: int) -> SalaryProfile | None:
@@ -137,6 +164,37 @@ def _load_investment_params(account_id: int) -> InvestmentParams | None:
         .filter_by(account_id=account_id)
         .first()
     )
+
+
+def _current_period(balance_ctx: BalanceContext) -> "DerivedPeriod | None":
+    """Return the SAVED pay period covering this pass's clock, or ``None``.
+
+    **The one place this package asks "which paycheck is it"** (plan step
+    C2-f2c).  It was ``pay_period_service.get_current_period(user_id)`` at three
+    sites -- the dashboard, the growth-chart fragment and the balance hero cell
+    -- each of which issued its own SQL against its own ``date.today()``, so one
+    render could hold two answers and neither was the one the balance seam
+    beside it was reporting over.  The calendar is memoized on the pass and the
+    clock is pinned on it, so both halves of the question come off the same
+    object and this issues no query.
+
+    ``period_containing`` rather than ``span_containing``: ``None`` outside the
+    schedule is a real answer three readers here branch on (see
+    :attr:`_ProjectionContext.current_period`), and the TOTAL search would
+    hand them a projected period whose ``period_id`` is ``None`` -- which
+    :func:`_resolve_current_balance` would then use to index a map keyed by
+    ``budget.pay_periods.id``.  That is ledger row **P19**'s warning, taken
+    here: preserve the ``None``.
+
+    Args:
+        balance_ctx: The read pass's ``BalanceContext``.
+
+    Returns:
+        The covering :class:`~app.services.pay_calendar.DerivedPeriod`, whose
+        ``period_id`` is never ``None``, or ``None`` when the clock precedes
+        the owner's first payday or lies past their horizon.
+    """
+    return balance_ctx.calendar().period_containing(balance_ctx.as_of)
 
 
 def _resolve_anchor_as_of(account: Account) -> date | None:
@@ -193,11 +251,26 @@ def _resolve_current_balance(
     column is INDEXED rather than defaulted -- ruling R-CA's own argument.
     **It stopped taking the period list at plan step C2-c**: the seam reads the
     owner's whole calendar off ``balance_ctx`` now, so there is no set for a
-    caller to get wrong.
+    caller to get wrong.  **The period it DOES take became a
+    :class:`~app.services.pay_calendar.DerivedPeriod` at plan step C2-f2c**,
+    which is the same value the map below is keyed by: ``balance_map`` reports
+    over ``balance_ctx.reported_periods()``, so indexing it with a period taken
+    off that same calendar cannot miss, where the ORM row this used to take
+    came from a separate query on a separate clock.
+
+    Args:
+        account: The investment account.
+        balance_ctx: The read pass's ``BalanceContext``.
+        current_period: The saved period covering the pass's clock
+            (:func:`_current_period`), or ``None``.
+
+    Returns:
+        The headline balance -- read at the current period's END, or at the
+        pass's own ``as_of`` when no saved period covers it.
     """
     if current_period is None:
         return balance_at.balance_at(account, balance_ctx, balance_ctx.as_of)
-    return balance_at.balance_map(account, balance_ctx)[current_period.id]
+    return balance_at.balance_map(account, balance_ctx)[current_period.period_id]
 
 
 def _projection_start(balance_ctx: BalanceContext) -> date:
@@ -257,10 +330,11 @@ def _projection_start(balance_ctx: BalanceContext) -> date:
 def _resolve_seed_balance(
     account: Account,
     balance_ctx: BalanceContext,
+    projection_start: date,
 ) -> Decimal:
     """Return the balance the forward growth projection seeds from.
 
-    The account's MODELLED balance on the day before :func:`_projection_start`,
+    The account's MODELLED balance on the day before *projection_start*,
     read through the seam's date-precise scalar -- the same number the history
     line's last point renders (rulings R-AB / R-AE).
 
@@ -273,9 +347,20 @@ def _resolve_seed_balance(
     change, would have started the projection line BELOW the history line by
     every cent earned since the last balance assertion (findings N-80 / N-84).
 
+    **It TAKES the window's opening day rather than deriving it a second
+    time** (plan step C2-f2c).  It called :func:`_projection_start` itself while
+    :func:`_load_projection_context` called it again two lines later for the
+    field the CHART reads, so the seed's date and the axis's opening day were
+    two evaluations that had to agree -- which is the shape this function's own
+    third paragraph records costing 10-13 days once already.  They are one
+    value now, resolved once and threaded, so the identity is structural
+    instead of arithmetic.
+
     Args:
         account: The investment account.
         balance_ctx: The read pass's ``BalanceContext``.
+        projection_start: The day the projection window opens
+            (:func:`_projection_start`).  The seed is valued the day BEFORE it.
 
     Returns:
         The seed balance, always from the seam.  It used to fall back to
@@ -288,8 +373,7 @@ def _resolve_seed_balance(
         figure the app could not know.
     """
     return balance_at.balance_at(
-        account, balance_ctx,
-        _projection_start(balance_ctx) - timedelta(days=1),
+        account, balance_ctx, projection_start - timedelta(days=1),
     )
 
 
@@ -345,8 +429,6 @@ def _load_projection_context(
     user_id: int,
     account: Account,
     params: InvestmentParams | None,
-    all_periods: list,
-    current_period,
 ) -> _ProjectionContext:
     """Load every per-account input the dashboard + chart fragment share.
 
@@ -364,25 +446,29 @@ def _load_projection_context(
     rather than re-queried here, so neither surface issues a second
     :class:`InvestmentParams` lookup.
 
+    **The owner's PERIODS stopped being arguments at plan step C2-f2c.**  Both
+    public entries used to resolve them with their own
+    ``pay_period_service.get_all_periods`` / ``get_current_period`` pair and
+    hand them down -- two queries per render on a clock of their own, beside a
+    read pass that had already derived the same calendar for the balance seam.
+    They come off ``balance_ctx`` now (:meth:`~app.services.balance_at
+    .BalanceContext.reported_periods` and :func:`_current_period`), so there is
+    one calendar and one clock per render by construction and neither entry can
+    fill an argument wrongly.
+
     Args:
         user_id: ID of the authenticated user.
         account: The pre-ownership-checked account instance.
         params: The account's :class:`InvestmentParams`, or ``None``.
-        all_periods: All pay periods for the user.
-        current_period: The current :class:`PayPeriod`, or ``None``.
 
     Returns:
-        A :class:`_ProjectionContext` carrying the seven per-account
-        values the projection primitives and card builders consume.
+        A :class:`_ProjectionContext` carrying every per-request value the
+        projection primitives and card builders consume.
     """
     balance_ctx = BalanceContext.build(user_id)
-    # The headline tile shows the model-from-anchor balance at the current
-    # period's END (so it agrees with /savings and the net-worth trend); the
-    # projection seeds from the same curve one day before its own window opens,
-    # so the two are read at different DATES rather than off different bases.
-    current_balance = _resolve_current_balance(
-        account, balance_ctx, current_period,
-    )
+    periods = balance_ctx.reported_periods()
+    current_period = _current_period(balance_ctx)
+    projection_start = _projection_start(balance_ctx)
     active_profile = _load_active_salary_profile(user_id)
     # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not the
     # off-engine ``annual_salary / pay_periods_per_year`` recompute that
@@ -392,27 +478,37 @@ def _load_projection_context(
     adapted_deductions = adapt_deductions(deductions)
     acct_contributions = load_shadow_income_contributions_for_account(
         user_id, balance_ctx.scenario_id,
-        account.id, [p.id for p in all_periods],
+        account.id, [period.period_id for period in periods],
     ).records
     # Seed for the forward projection: the account's MODELLED balance on the
     # day before the window opens, which is the history line's own last point
     # (rulings R-AB / R-AE).  Nothing is filtered out of it and nothing is
     # subtracted from it -- the window opens strictly after the seed's date, so
     # there is no overlap for a compensator to correct.
-    projection_seed = _resolve_seed_balance(account, balance_ctx)
+    projection_seed = _resolve_seed_balance(
+        account, balance_ctx, projection_start,
+    )
     inputs = build_investment_projection_inputs(
         params, adapted_deductions, acct_contributions,
-        all_periods, current_period, salary_gross_biweekly,
+        current_period, salary_gross_biweekly,
     )
     contributions = build_contribution_timeline(
         deductions=adapted_deductions,
         contribution_transactions=acct_contributions,
-        periods=all_periods,
+        periods=periods,
+        as_of=balance_ctx.as_of,
     )
     return _ProjectionContext(
         params=params,
-        current_balance=current_balance,
-        projection_start=_projection_start(balance_ctx),
+        # The headline tile shows the model-from-anchor balance at the current
+        # period's END (so it agrees with /savings and the net-worth trend);
+        # the projection seeds from the same curve one day before its own
+        # window opens, so the two are read at different DATES rather than off
+        # different bases.  Inlined to stay under the locals limit.
+        current_balance=_resolve_current_balance(
+            account, balance_ctx, current_period,
+        ),
+        projection_start=projection_start,
         projection_ytd=_projection_ytd(inputs),
         projection_seed=projection_seed,
         inputs=inputs,
@@ -420,9 +516,9 @@ def _load_projection_context(
         deductions=deductions,
         active_profile=active_profile,
         balance_ctx=balance_ctx,
-        # C1 anchor caption date (inlined to stay under the locals limit).
+        # Two per-user lookups, inlined to stay under the locals limit.
         anchor_as_of=_resolve_anchor_as_of(account),
-        all_periods=all_periods,
+        planned_retirement_date=_load_planned_retirement_date(user_id),
         current_period=current_period,
     )
 
@@ -430,7 +526,12 @@ def _load_projection_context(
 def _load_planned_retirement_date(user_id: int) -> date | None:
     """Return the user's planned retirement date, or ``None`` if unset (C2).
 
-    Shared by :func:`_compute_default_horizon` and :func:`_build_chart_markers`.
+    **One caller since plan step C2-f2c**: :func:`_load_projection_context`,
+    which puts the answer on the shared feed.  It was called directly by both
+    :func:`._cards._compute_default_horizon` and
+    :func:`._chart._build_chart_markers`, so rendering the dashboard queried
+    ``user_settings`` twice for one value -- the redundant-producer shape a
+    read pass exists to remove.
     """
     settings = (
         db.session.query(UserSettings)

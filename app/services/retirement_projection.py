@@ -750,7 +750,7 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
     )
     inputs = build_investment_projection_inputs(
         params, adapted_deductions, acct_contributions,
-        ctx.all_periods, ctx.current_period, batch.salary_gross_biweekly,
+        ctx.current_period, batch.salary_gross_biweekly,
     )
     annual_return = (
         ctx.return_rate_override

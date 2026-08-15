@@ -3,17 +3,18 @@
 ## Where this stands
 
 **Built:** **C1**, **C2-a**, **C2-b1**, **C2-b** (both leaves, which also ticked **C5a** and the
-recurrence arc's **R-F10**), **C2-c**, **C2-d**, **C2-e**, **C2-f1**, **C2-f2a**, **C2-f2b**, and
-**C3** (both leaves) -- section 4 carries each one's commit. What reached `main` and production is a
-MEASUREMENT (`git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`).
+recurrence arc's **R-F10**), **C2-c**, **C2-d**, **C2-e**, **C2-f1**, **C2-f2a**, **C2-f2b**,
+**C2-f2c**, and **C3** (both leaves) -- section 4 carries each one's commit. What reached `main` and
+production is a MEASUREMENT (`git log --oneline origin/main..dev`,
+`docker inspect shekel-prod-app`).
 
-**Both engines, every forward PROJECTION, the WHOLE balance seam and the GRID read the DERIVED
-calendar** -- since C2-b2, C2-c, C2-e, C2-f1, C2-f2a and C2-f2b respectively, the last of those
-taking the COMPANION with it. **C2-f DECOMPOSED into three leaves 2026-08-14** (developer) and
-**`C2-f2` into five the same day**; `C2-f2c`-`C2-f2e` and `C2-f3` carry the **39** `app/` call sites
-left of the 60 it opened with. Where a stored column disagrees with the derivation every consumer
-believes the derivation; those shapes are named in `recurrence/_occurrence.py` and section 3, all
-owned by **C4**.
+**Both engines, every forward PROJECTION, the WHOLE balance seam, the GRID and `/investment` read
+the DERIVED calendar** -- since C2-b2, C2-c, C2-e, C2-f1, C2-f2a, C2-f2b and C2-f2c respectively,
+C2-f2b taking the COMPANION with it. **C2-f DECOMPOSED into three leaves 2026-08-14** (developer)
+and **`C2-f2` into five the same day**; `C2-f2d`, `C2-f2e` and `C2-f3` carry the **34** `app/` call
+sites left of the 60 it opened with. Where a stored column disagrees with the derivation every
+consumer believes the derivation; those shapes are named in `recurrence/_occurrence.py` and section
+3, all owned by **C4**.
 
 **The writer is ONE module** -- `pay_period_write` -- so C4 changes one file plus those readers.
 **R-PC1's coverage half was DELETED 2026-08-11** (developer), leaving the floor as this arc's only
@@ -291,10 +292,12 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       ENFORCES the "SAVED" it claimed. Proof: `verify_grid_cutover`'s docstring -- byte-identical, 0
       mismatches on PRODUCTION, and SHOWN skipping `$5,827.75`.
 
-- [ ] **C2-f2c -- `/investment`.** Five sites across `_orchestrator`, `_context`, `_cards` and
-      `_chart`. `_chart._build_chart_markers`' linear containment scan over a `PeriodWindow` retires
-      into that type's own `containing` -- the last surviving member of row **P6**'s census, which
-      still cites its pre-C2-e location. Closes **P48**.
+- [x] **C2-f2c -- `/investment`.** `d4621147`. Closed **P48**; opened **P52**-**P54**. No module in
+      that package imports `pay_period_service`; its three public entries take the calendar AND the
+      clock off the pass's `BalanceContext`, and the marker scan retired into
+      `PeriodWindow.containing_index` -- the OFFSET, because `containing` alone answers the period.
+      A contribution carries its PAYDAY (`241b7b40`), which let the period list leave three SHARED
+      signatures without moving `/retirement`. Proof: `verify_investment_cutover`'s docstring.
 
 - [ ] **C2-f2d -- `/savings` and `/retirement` together, and EXPECT IT TO DECOMPOSE.** Ten modules,
       ONE leaf because both run through `retirement_projection.load_projection_batch`, which builds
