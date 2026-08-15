@@ -818,6 +818,62 @@ class TestAWindowIsAViewAndKeepsTheRealEnds:
         assert window.containing(date(2026, 1, 2)) is None
         assert window.containing(date(2026, 2, 20)) is None
 
+    def test_containing_index_answers_WHERE_in_the_view_that_period_sits(self):
+        """The offset a consumer plotting one point per period needs (C2-f2c).
+
+        ``window[window.containing_index(d)] is window.containing(d)`` wherever
+        either answers, which is what makes the two incapable of disagreeing:
+        they run one bisect between them.
+        """
+        cal = calendar()
+        window = cal.window(first_index=1, count=2)
+        assert window.containing_index(date(2026, 1, 20)) == 0
+        assert window.containing_index(date(2026, 2, 1)) == 1
+        assert window[window.containing_index(date(2026, 2, 1))] is (
+            window.containing(date(2026, 2, 1))
+        )
+
+    def test_containing_index_is_the_VIEWS_ordinal_not_the_calendars(self):
+        """The firing control for the test above.
+
+        A window opening at calendar ordinal 1 answers ``0`` for a day in its
+        own first period.  A consumer deriving the offset as
+        ``found.period_index - window[0].period_index`` gets the same number
+        here; one that read ``found.period_index`` alone would get ``1``, plot
+        its marker one point to the right, and be wrong by more the further
+        into the schedule the window opens.
+        """
+        window = calendar().window(first_index=1, count=2)
+        assert window.containing_index(date(2026, 1, 20)) == 0
+        assert window.containing(date(2026, 1, 20)).period_index == 1
+
+    def test_containing_index_answers_None_outside_the_window(self):
+        """Scoped exactly as :meth:`containing` is, and for the same reason.
+
+        Both bounds, because a day BEFORE the view and a day AFTER it take
+        different branches of the bisect: the first has no candidate at all,
+        the second has one whose ``end_date`` the day is past.  ``0`` is a
+        legal answer here, so a caller testing the result for truthiness rather
+        than for ``None`` would drop the view's own first period -- which is
+        why both of these assert ``is None``.
+        """
+        window = calendar().window(first_index=1, count=2)
+        assert window.containing_index(date(2026, 1, 2)) is None
+        assert window.containing_index(date(2026, 2, 20)) is None
+
+    def test_containing_index_survives_a_window_supplied_out_of_order(self):
+        """The bisect's ordering precondition is the TYPE's, not the caller's.
+
+        ``__post_init__`` sorts, so this cannot be got wrong -- the same
+        argument the containment test one class down makes, asserted for the
+        index answer too because a silently wrong OFFSET moves a chart marker
+        rather than raising.
+        """
+        cal = calendar()
+        window = PeriodWindow(periods=tuple(reversed(cal.periods)))
+        assert window.containing_index(date(2026, 1, 2)) == 0
+        assert window.containing_index(date(2026, 2, 20)) == 3
+
     def test_an_interior_window_is_exactly_the_ordinals_asked_for(self):
         """``window(1, 2)`` is ordinals 1 and 2, and no neighbour of theirs.
 
