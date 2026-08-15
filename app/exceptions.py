@@ -258,19 +258,38 @@ class RecurrenceWindowError(ShekelError):
 
 
 class RecurrenceConflict(ShekelError):
-    """Recurrence regeneration found overridden or deleted transactions.
+    """Recurrence regeneration found rows it must not change unasked.
+
+    Three kinds, because the owner owns three different things about a
+    generated row: its AMOUNT, its EXISTENCE, and the RECORDS kept against it.
 
     Attributes:
-        overridden:  List of transaction IDs with is_override = True.
-        deleted:     List of transaction IDs with is_deleted = True.
+        overridden:  List of row IDs with is_override = True -- the owner set
+                     this row's AMOUNT by hand, so re-pricing it from the
+                     template would discard that.
+        deleted:     List of row IDs with is_deleted = True -- the owner removed
+                     this row, so recreating it would resurrect it.
+        retained:    List of row IDs the pass LEFT ALONE because the owner has
+                     records against them that applying the definition change
+                     would have destroyed or re-attributed.  Added at plan step
+                     R10-a with finding **N-292**, in two shapes: the new rule
+                     no longer fires in this row's period (the old behaviour
+                     deleted the row, and ``transaction_entries`` CASCADE, so
+                     the purchases went with it), or the template's ACCOUNT
+                     moved, which drags every purchase onto the new account and
+                     invalidates the statement link that cleared it.  **Unlike
+                     the other two, this list names rows the pass did not touch
+                     at all**, so abandoning the prompt is always the safe
+                     outcome.
     """
 
-    def __init__(self, overridden=None, deleted=None):
+    def __init__(self, overridden=None, deleted=None, retained=None):
         self.overridden = overridden or []
         self.deleted = deleted or []
+        self.retained = retained or []
         super().__init__(
             f"Recurrence conflict: {len(self.overridden)} overridden, "
-            f"{len(self.deleted)} deleted."
+            f"{len(self.deleted)} deleted, {len(self.retained)} retained."
         )
 
 

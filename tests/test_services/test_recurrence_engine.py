@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern, TransactionType, Status
@@ -269,7 +270,7 @@ class TestRecurrenceGeneration:
             # only the FK leaves the engine reading the stale object.
             rule = template.recurrence_rule
             template.recurrence_rule = None
-            template.recurrence_rule_id = None
+            template.recurrence_rule = None
             db.session.flush()
             db.session.delete(rule)
             db.session.flush()
@@ -2006,10 +2007,229 @@ class TestRegenerateForTemplate:
         db.session.refresh(template)
         return template
 
-    def test_regenerate_deletes_unmodified_and_recreates(
+    def _record_purchase(self, txn, seed_user, amount="12.79"):
+        """Record one purchase against *txn*, as the entry door would.
+
+        Written straight onto the model rather than through
+        ``entry_service.create_entry`` on purpose: what these tests are about
+        is what a REGENERATION does to a purchase that is already there, so
+        going through the creation door would only add its own guards to the
+        thing under test.
+        """
+        entry = TransactionEntry(
+            transaction_id=txn.id,
+            account_id=txn.account_id,
+            user_id=seed_user["user"].id,
+            amount=Decimal(amount),
+            description="Kroger",
+            purchased_on=txn.pay_period.start_date,
+        )
+        db.session.add(entry)
+        db.session.flush()
+        return entry
+
+    def test_regeneration_keeps_the_purchases_recorded_against_a_row(
         self, app, db, seed_user, seed_periods
     ):
-        """Regenerate with changed amount → old entries deleted, new created."""
+        """A template edit must not destroy what the owner recorded buying.
+
+        **Finding N-292, the defect this step closes** (ruling **R-R19**).
+        Measured on a production clone before the fix: editing template 38
+        ("Groceries") destroyed txn 2282 and CASCADE took its 3 purchase
+        records worth ``$499.82`` with it, with no prompt and an
+        ``overridden_conflict_count`` of 0.
+
+        Three assertions, and each fails against the old delete-and-recreate:
+        the purchase still exists, it still belongs to the SAME row (the old
+        code gave the period a new row with a new id), and the row was re-priced
+        rather than rebuilt.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, "Every Period")
+            created = recurrence_engine.generate_for_template(
+                template,
+                GenerationSchedule.for_periods(template.user_id, seed_periods),
+                seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            spent_on = created[0]
+            txn_id = spent_on.id
+            entry_id = self._record_purchase(spent_on, seed_user).id
+
+            template.default_amount = Decimal("200.00")
+            db.session.flush()
+
+            recurrence_engine.regenerate_for_template(
+                template,
+                GenerationSchedule.for_periods(template.user_id, seed_periods),
+                seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            entry = db.session.get(TransactionEntry, entry_id)
+            assert entry is not None, "the purchase was destroyed"
+            assert entry.transaction_id == txn_id
+            assert entry.amount == Decimal("12.79")
+
+            txn = db.session.get(Transaction, txn_id)
+            assert txn is not None, "the row the purchase hangs off was destroyed"
+            assert txn.estimated_amount == Decimal("200.00")
+
+    def test_a_row_the_rule_no_longer_names_is_retained_when_it_holds_a_purchase(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Clearing a recurrence must not take a part-spent envelope with it.
+
+        The second shape of **N-292**: with no rule left, every existing row is
+        an orphan, and the old sweep deleted each one.  A row carrying the
+        owner's purchases is now RETAINED instead -- untouched, and named in
+        the raise so the route can say so.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, "Every Period")
+            schedule = GenerationSchedule.for_periods(
+                template.user_id, seed_periods,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            spent_on, untouched = created[0], created[1]
+            spent_id, empty_id = spent_on.id, untouched.id
+            entry_id = self._record_purchase(spent_on, seed_user).id
+
+            # "Does not repeat" -- the rule is gone, so the rule names nothing.
+            template.recurrence_rule = None
+            db.session.flush()
+
+            with pytest.raises(RecurrenceConflict) as raised:
+                recurrence_engine.regenerate_for_template(
+                    template, schedule, seed_user["scenario"].id,
+                )
+            db.session.flush()
+
+            assert raised.value.retained == [spent_id]
+            assert db.session.get(TransactionEntry, entry_id) is not None
+            assert db.session.get(Transaction, spent_id) is not None
+            # The CONTROL: an orphan with nothing on it is still removed, so
+            # the retention above is the purchase's doing and not a blanket
+            # refusal to delete.
+            assert db.session.get(Transaction, empty_id) is None
+
+    def test_an_account_move_retains_a_row_that_holds_a_purchase(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Repointing a template's account must not drag purchases silently.
+
+        The developer's ruling on the third shape: a purchase's account IS its
+        parent's (``fk_transaction_entries_parent_account``) and its statement
+        link is scoped BY account (``fk_transaction_entries_reconciled_by``), so
+        moving the row moves the purchases and invalidates what cleared them.
+        The pass leaves such a row exactly as it found it and reports it.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, "Every Period")
+            schedule = GenerationSchedule.for_periods(
+                template.user_id, seed_periods,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            spent_on, untouched = created[0], created[1]
+            spent_id, empty_id = spent_on.id, untouched.id
+            original_account_id = spent_on.account_id
+            self._record_purchase(spent_on, seed_user)
+
+            moved_to = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=seed_user["account"].account_type_id,
+                    name="Second Checking",
+                    anchor_balance=Decimal("0.00"),
+                ),
+            )
+            db.session.add(moved_to)
+            db.session.flush()
+            template.account_id = moved_to.id
+            db.session.flush()
+
+            with pytest.raises(RecurrenceConflict) as raised:
+                recurrence_engine.regenerate_for_template(
+                    template, schedule, seed_user["scenario"].id,
+                )
+            db.session.flush()
+
+            assert raised.value.retained == [spent_id]
+            assert db.session.get(Transaction, spent_id).account_id == (
+                original_account_id
+            )
+            # The CONTROL: a row with no purchases DOES follow the template, so
+            # the retention is the purchase's doing and the move still works.
+            assert db.session.get(Transaction, empty_id).account_id == moved_to.id
+
+    def test_a_note_alone_retains_an_orphaned_row(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Purchases are not the only thing a template cannot reconstruct.
+
+        ``notes`` is free text the owner typed and no writer derives, so the
+        old delete-and-recreate dropped it exactly as it dropped purchases.
+        Measured at 0 rows on the production clone -- luck, not safety, which
+        is why the predicate covers it rather than waiting for the first note.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, "Every Period")
+            schedule = GenerationSchedule.for_periods(
+                template.user_id, seed_periods,
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            annotated, blank = created[0], created[1]
+            annotated_id, blank_id = annotated.id, blank.id
+            annotated.notes = "split with Kayla"
+            # The CONTROL for the whitespace arm: a note that is only spaces is
+            # not a record worth blocking an edit over.
+            blank.notes = "   "
+            db.session.flush()
+
+            template.recurrence_rule = None
+            db.session.flush()
+
+            with pytest.raises(RecurrenceConflict) as raised:
+                recurrence_engine.regenerate_for_template(
+                    template, schedule, seed_user["scenario"].id,
+                )
+            db.session.flush()
+
+            assert raised.value.retained == [annotated_id]
+            assert db.session.get(Transaction, annotated_id) is not None
+            assert db.session.get(Transaction, blank_id) is None
+
+    def test_regenerate_maintains_unmodified_rows_in_place(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Regenerate with a changed amount re-prices the SAME rows.
+
+        **RE-RULED at plan step R10-a** (ruling **R-R19**, finding **N-292**).
+        It asserted the opposite -- ``len(new_created) == 10`` and ``txn.id not
+        in old_ids``, that is, that a regeneration DESTROYS every row and
+        builds replacements.  That contract is what took the purchases recorded
+        against a part-spent envelope with it, since ``transaction_entries``
+        CASCADE from their parent, so the developer ruled it out: a row the
+        rule still names is now maintained, keeping its id and everything
+        hanging off it.
+
+        The assertion is STRONGER than the one it replaces, not weaker.  The
+        old one could not tell a re-priced row from a rebuilt one -- both give
+        ten rows at $200.00 -- and this pins the identity of all ten.
+        """
         with app.app_context():
             template = self._make_template_with_rule(
                 seed_user, "Every Period"
@@ -2020,23 +2240,29 @@ class TestRegenerateForTemplate:
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
-            old_ids = [txn.id for txn in created]
+            old_ids = sorted(txn.id for txn in created)
             assert len(old_ids) == 10
 
             # Change the template amount.
             template.default_amount = Decimal("200.00")
             db.session.flush()
 
-            # Regenerate -- should delete old and create new.
+            # Regenerate.  Every period the rule names already holds the rule's
+            # own row, so there is nothing to CREATE and the return is empty.
             new_created = recurrence_engine.regenerate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
             db.session.flush()
+            assert new_created == []
 
-            assert len(new_created) == 10
-            for txn in new_created:
+            surviving = (
+                db.session.query(Transaction)
+                .filter(Transaction.template_id == template.id)
+                .all()
+            )
+            assert sorted(txn.id for txn in surviving) == old_ids
+            for txn in surviving:
                 assert txn.estimated_amount == Decimal("200.00")
-                assert txn.id not in old_ids
 
     def test_regenerate_raises_conflict_for_deleted_entries(
         self, app, db, seed_user, seed_periods
@@ -2961,7 +3187,7 @@ class TestPaycheckAmountFallback:
             "app.services.tax_config_service.load_tax_configs_for_year",
             self._fake_tax_configs,
         )
-        from app.services.recurrence_engine import _get_transaction_amount
+        from app.services.recurrence_engine._amounts import _get_transaction_amount
 
         class FakeTemplate:
             default_amount = Decimal("1500.00")
@@ -2995,7 +3221,7 @@ class TestPaycheckAmountFallback:
             "app.services.tax_config_service.load_tax_configs_for_year",
             self._fake_tax_configs,
         )
-        from app.services.recurrence_engine import _get_transaction_amount
+        from app.services.recurrence_engine._amounts import _get_transaction_amount
 
         class FakeTemplate:
             default_amount = Decimal("2000.00")
@@ -3027,7 +3253,7 @@ class TestPaycheckAmountFallback:
             "app.services.tax_config_service.load_tax_configs_for_year",
             self._fake_tax_configs,
         )
-        from app.services.recurrence_engine import _get_transaction_amount
+        from app.services.recurrence_engine._amounts import _get_transaction_amount
 
         class FakeTemplate:
             default_amount = Decimal("1500.00")
@@ -3047,7 +3273,7 @@ class TestPaycheckAmountFallback:
 
     def test_returns_default_amount_when_no_salary_profile(self, app, db):
         """When salary_profile is None, returns template.default_amount directly."""
-        from app.services.recurrence_engine import _get_transaction_amount
+        from app.services.recurrence_engine._amounts import _get_transaction_amount
 
         class FakeTemplate:
             default_amount = Decimal("500.00")
@@ -3220,7 +3446,16 @@ class TestEndDateIntegration:
                 assert period.start_date <= end
 
     def test_regenerate_respects_end_date(self, app, db, seed_user, seed_periods):
-        """regenerate_for_template respects end_date on re-creation."""
+        """regenerate_for_template leaves an end-dated rule bounded at 3 rows.
+
+        **RE-RULED at plan step R10-a** (ruling **R-R19**): the assertion was
+        ``len(regenerated) == 3``, which read the count of rows the pass
+        CREATED as the count of rows the rule names.  Those were the same
+        number only while a regeneration rebuilt everything it touched.  The
+        step's intent -- an ``end_date`` bounds a regeneration exactly as it
+        bounds a generation -- is unchanged and is now asserted against the
+        rows themselves, which is what it was always about.
+        """
         with app.app_context():
             end = seed_periods[2].start_date
             template = self._make_template_with_rule(
@@ -3233,11 +3468,19 @@ class TestEndDateIntegration:
             )
             assert len(created) == 3
 
-            # Regenerate -- should produce the same count.
-            regenerated = recurrence_engine.regenerate_for_template(
+            recurrence_engine.regenerate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
-            assert len(regenerated) == 3
+            db.session.flush()
+
+            surviving = (
+                db.session.query(Transaction)
+                .filter(Transaction.template_id == template.id)
+                .all()
+            )
+            assert len(surviving) == 3
+            for txn in surviving:
+                assert txn.pay_period.start_date <= end
 
 
 # --- Due Date Generation Tests -----------------------------------------------
