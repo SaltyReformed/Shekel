@@ -1638,6 +1638,13 @@ _LEDGER_IMPORT_TOKENS = (
     # account correction package can share the write path without an import
     # cycle -- equally off-limits to the resolver stack.
     "_posting_write",
+    # The PURCHASE posting source (plan step X-f3b, ruling **R-FM**): a
+    # purchase whose bank posting day is recorded books its own cash leg, and
+    # this leaf holds what that target is.  Split out of ``posting_service``
+    # when adding it took that module past the 1,000-line ceiling, so the
+    # "posting_service" substring does NOT cover it -- which is exactly the
+    # evasion the M-2 coverage guard exists to catch, and did.
+    "_posting_purchases",
     "loan_posting_service",
     "ledger_account_service",
     # The Step-5 reporting package (income statement / balance sheet): its

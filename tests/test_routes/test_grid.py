@@ -4609,17 +4609,26 @@ class TestGridPeriodSubtotalCanonical:
     ):
         """Rendered grid subtotal reflects the entry-aware reduction.
 
-        Setup: a Projected $500.00 envelope expense in the visible
-        current period carries three cleared debit entries summing
-        $462.34.  Pre-Commit-10 the subtotal row showed $500
-        (raw ``effective_amount``); the corrected entries-aware
-        impact is $37.66.
+        Setup: a Projected $500.00 envelope expense in the visible current
+        period, OVERSPENT -- three purchases the bank has taken, summing
+        $562.34.
 
-        Hand arithmetic (F-002 Pair C / F-004):
-          cleared_debit = 20.00 + 442.34 + 0.00 = 462.34
-          uncleared_debit = 0
+        Hand arithmetic (F-002 Pair C / F-004, on ruling **R-FM**'s two halves):
+          posted_debit = 20.00 + 442.34 + 100.00 = 562.34
+          unposted_debit = 0
           sum_credit = 0
-          impact = max(500.00 - 462.34 - 0, 0) = 37.66.
+          reservation = max(500.00 - 562.34 - 0, 0) = 0.00
+          subtotal = 562.34 posted + 0.00 still reserved = **$562.34**.
+
+        **The overspend is what keeps this test able to fail** (plan step
+        X-f3b).  Before it, a posted purchase was no fact at all and the
+        subtotal was the reservation ALONE, so an under-budget envelope
+        distinguished the entry-aware answer ($37.66) from the raw
+        ``effective_amount`` ($500).  The subtotal now counts both halves, and
+        for an under-budget envelope they sum to exactly the estimate -- the
+        same $500 the F-002 defect printed, which would leave this guard unable
+        to tell them apart.  Overspending separates all three: $562 correct,
+        $500 the raw-estimate defect, $0 the reservation-only answer.
         """
         from app.models.transaction_entry import TransactionEntry
 
@@ -4665,6 +4674,7 @@ class TestGridPeriodSubtotalCanonical:
             for amt in (
                 Decimal("20.00"),
                 Decimal("442.34"),
+                Decimal("100.00"),
             ):
                 entry = TransactionEntry(
                     transaction_id=txn.id, account_id=txn.account_id,
@@ -4685,16 +4695,23 @@ class TestGridPeriodSubtotalCanonical:
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # Grid formats subtotals as "${:,.0f}", so $37.66 -> $38.
-            # The pre-Commit-10 value would have rounded $500 -> $500.
-            assert "$38" in html, (
-                "Expense subtotal should be entry-aware: "
-                "$500 estimated - $462.34 cleared = $37.66 (-> $38)"
+            # Grid formats subtotals as "${:,.0f}", so $562.34 -> $562.
+            expense_cell = html.split(
+                "subtotal-row-expense",
+            )[1].split("</tr>")[0]
+            assert "$562" in expense_cell, (
+                "Expense subtotal is what the period COSTS: $562.34 of "
+                "purchases the bank has taken plus $0.00 still reserved"
             )
-            assert "$500" not in html.split("subtotal-row-expense")[1].split("</tr>")[0], (
+            assert "$500" not in expense_cell, (
                 "Subtotal expense cell must not show the raw "
                 "effective_amount $500 (F-002 Pair C / F-004 regression)"
             )
+            # The reservation-only answer ($0.00, what this cell showed while
+            # a posted purchase was no fact) is refused by the $562 assertion
+            # above rather than by a "$0 absent" one: the subtotal ROW spans
+            # every reported period, and the periods with no rows in them
+            # legitimately print $0.
 
     def test_grid_subtotal_reconciles_balance_delta(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -4717,15 +4734,26 @@ class TestGridPeriodSubtotalCanonical:
         remainder terms are the ones R-K added and ruling R-DH (f) split in two.
 
         Setup: anchor $1000 at periods[0]; one Projected $300.00
-        envelope expense in the CURRENT period with two cleared debits
-        summing $250.00, dated that period's start.
+        envelope expense in the CURRENT period with two purchases the bank has
+        taken summing $250.00, dated that period's start, and a re-assertion of
+        $750.00 on that same day.
 
-        Hand arithmetic:
-          impact = max(300.00 - 250.00 - 0, 0) = 50.00.
-          columns[current].expense = 50.00, .income = 0.00, .net = -50.00.
-          Nothing has SETTLED and nobody re-anchored, so the remainder is
-          0.00 and a PLAIN account carries no accrual:
-          balance[current] - balance[current - 1] = -50.00 == net.
+        Hand arithmetic (ruling **R-FM**'s two halves, plan step X-f3b):
+          posted = 250.00, reservation = max(300.00 - 250.00 - 0, 0) = 50.00.
+          columns[current].expense = 250.00 + 50.00 = 300.00, .income = 0.00,
+          .net = -300.00.
+          balance[current] = 750.00 - 50.00 = 700.00, and
+          balance[current - 1] = 1000.00, so the delta is -300.00 == net.
+
+        **The re-assertion is $750.00 and that figure is the fixture's
+        correctness, not a detail.**  It re-stated $1,000.00 while a posted
+        purchase was no fact, which then booked a $0.00 correction; the two
+        purchases ARE facts now, so the records read $750.00 that day and
+        asserting $1,000.00 would book a $250.00 ``book_vs_bank`` correction --
+        a true diagnosis of a fixture whose owner had spent $250.00 out of
+        $1,000.00 and claimed to still hold all of it.  Asserting what the
+        records say keeps BOTH remainders at $0.00, which is what lets this test
+        grade the identity rather than a remainder absorbing a mis-grouped row.
 
         **The rows were in ``periods[5]`` -- a FUTURE period -- until plan step
         X-c2b3, and moving them to the current one is a fixture correction, not
@@ -4780,14 +4808,14 @@ class TestGridPeriodSubtotalCanonical:
             )
             db.session.add(txn)
             db.session.flush()
-            # As in the sibling test above: the balance the user read that
-            # day is what puts the purchases inside it, and re-stating the
-            # $1,000.00 the records already hold books a $0.00 correction --
-            # so ``book_vs_bank`` stays $0.00 and the identity below is
-            # unchanged by it.
+            # $750.00 is what the RECORDS say that day -- the $1,000.00
+            # opening less the $250.00 of purchases the bank has taken -- so
+            # this assertion books a $0.00 correction and ``book_vs_bank``
+            # stays $0.00.  See the docstring: it was $1,000.00 while a posted
+            # purchase was no fact.
             append_balance_assertion(
                 db.session, seed_user["account"], target_period,
-                Decimal("1000.00"),
+                Decimal("750.00"),
                 settle_instant_on(target_period.start_date),
             )
             for amt in (Decimal("100.00"), Decimal("150.00")):
@@ -4823,11 +4851,12 @@ class TestGridPeriodSubtotalCanonical:
             prior_period = periods[target_index - 1]
             delta = column.balance - columns[prior_period.id].balance
 
-            # 0 - max(300 - 100 - 150, 0) = -50.00.
-            assert column.expense == Decimal("50.00"), (
-                f"expected $50.00 entry-aware expense, got {column.expense!r}"
+            # 250.00 posted + max(300 - 250, 0) = 250.00 + 50.00 = 300.00.
+            assert column.expense == Decimal("300.00"), (
+                f"expected $300.00 -- what the period costs, posted plus "
+                f"reserved -- got {column.expense!r}"
             )
-            assert column.net == Decimal("-50.00")
+            assert column.net == Decimal("-300.00")
             # Nothing settled and nobody re-anchored, so BOTH remainders are
             # zero and a PLAIN account carries no accrual: asserting all of
             # them is what keeps the identity below from passing on a

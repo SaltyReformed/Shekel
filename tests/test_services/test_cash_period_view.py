@@ -198,22 +198,20 @@ class TestTheSubtotalsCountEveryAttributedRow:
         # ``sum_projected`` re-applies ``is_projected`` over whatever it is
         # handed, so the figure is unchanged.
         # The basis is REQUIRED (plan step S1-c), so the reference states the
-        # one the producer itself would build for this account: no live
-        # override candidate, and the account's own clearing rule.  The $75.00
-        # bill carries no entries, so neither field can move the figure --
+        # one the producer itself would build for this account.  The $75.00
+        # bill carries no entries, so nothing in it can move the figure --
         # which is why the basis is built honestly rather than zeroed to make
-        # the call compile.
+        # the call compile.  It was a ``ProjectedBasis`` carrying the account's
+        # clearing rule beside this until plan step X-f3b (ruling **R-FM**),
+        # when a purchase's posted-ness became a fact about the purchase.
         period_rows = [
             row for row in cash_ledger.planned_cash_rows(
                 account.id, scenario.id,
             )
             if row.pay_period_id == seed_periods[2].id
         ]
-        basis = cash_ledger.ProjectedBasis(
-            amounts=cash_ledger.amount_basis(
-                account.user_id, scenario.id, period_rows,
-            ),
-            coverage=cash_ledger.coverage_for(account.id),
+        basis = cash_ledger.amount_basis(
+            account.user_id, scenario.id, period_rows,
         )
         _, unpaid_only_expense = cash_ledger.sum_projected(period_rows, basis)
         assert unpaid_only_expense == Decimal("75.00")
@@ -308,28 +306,36 @@ class TestTheSubtotalsCountEveryAttributedRow:
     def test_a_projected_envelope_counts_its_entries_aware_reservation(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """A still-projected envelope is worth what it still holds back.
+        """A partially-spent envelope counts on BOTH sides, and they sum.
 
         A ``$200.00`` Groceries envelope due 2026-02-10 in period 2, carrying one
-        ``$120.00`` debit purchase made 01-31 and RECORDED AS SETTLED that same
+        ``$120.00`` debit purchase made 01-31 and RECORDED AS POSTED that same
         day, read at ``as_of = 2026-02-01``.
 
-        Hand-computed: the reservation is
-        ``max(200.00 - 120.00 - 0.00, 0.00) = $80.00``.  The purchase's
-        ``settled_on`` (01-31) is at or before the account's latest asserted day
-        -- the opening assertion of 2026-01-01 is the only one, so it is NOT,
-        and that is exactly the precondition this fixture has to state.  The
-        opening is restamped to 01-31 below so the reconciliation the figure
-        depends on is REACHABLE (finding N-132 / R8): a purchase gets inside a
-        declared balance by the user declaring the balance after it posted.
-        The expense row then reads ``$80.00`` (never the ``$200.00`` estimate)
-        and the balance ``1000 - 80 = $920.00``.  Its due date is past
-        ``as_of + 1``, so ruling R-G's clamp is a no-op and both remainders stay
-        ``$0.00``.
+        Hand-computed, in two halves that are one row's cost:
+
+        * the ``$120.00`` has LEFT the account, so it is a settled fact of its
+          own on 01-31 (ruling **R-FM**, plan step X-f3b), counted on the budget
+          clock at its PARENT's column -- period 2;
+        * the reservation holds the rest,
+          ``max(200.00 - 120.00 - 0.00, 0.00) = $80.00``, landing on the due
+          date.
+
+        So the expense row reads ``$200.00`` -- what this period actually costs
+        -- rather than the ``$80.00`` it read before X-f3b, when a purchase was
+        no fact at all and its spend was inside the owner's asserted balance and
+        nowhere in these subtotals.  **The BALANCE does not move**: the opening
+        is restamped to 01-31 (finding N-132 / R8: a purchase gets inside a
+        declared balance by the user declaring the balance after it posted), so
+        that assertion absorbs the ``$120.00`` and the balance stays
+        ``1000 - 80 = $920.00``.  Both remainders stay ``$0.00``: 01-31 is
+        inside period 2's own span so the cash clock and the budget clock agree,
+        the due date is past ``as_of + 1`` so ruling R-G's clamp is a no-op, and
+        the OPENING assertion is excluded from ``book_vs_bank`` by ruling R-I.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        # The opening is the account's ONLY assertion, so it is what decides
-        # whether the purchase is reconciled; it is dated 01-31 so it can be.
+        # The opening is the account's ONLY assertion, so it is what absorbs
+        # the purchase's own movement; it is dated 01-31 so it can.
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 31))
         txn = create_envelope_txn(
             seed_user, db.session, seed_periods[2], "Groceries",
@@ -345,7 +351,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
         figures = _view(
             account, scenario, seed_periods, as_of=date(2026, 2, 1),
         )[seed_periods[2].id]
-        assert figures.expense == Decimal("80.00")
+        assert figures.expense == Decimal("200.00")
         assert figures.period_timing == Decimal("0.00")
         assert figures.book_vs_bank == Decimal("0.00")
         assert figures.balance == Decimal("920.00")

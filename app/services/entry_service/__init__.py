@@ -1,0 +1,79 @@
+"""
+Shekel Budget App -- Transaction Entry Service
+
+CRUD operations, validation, and computation for individual purchase
+entries on entry-capable transactions.  This service is the foundation
+consumed by the balance calculator (Commit 3), entry credit workflow
+(Commit 4), mark-paid logic (Commit 5), and all entry UI (Commits
+7, 8, 10).
+
+**The OUTSTANDING SET left this module at plan step X-f2-c1** for
+:mod:`app.services.reconcile_service`: "which of these had the bank taken by
+the day you asserted a balance for" stopped being a question about ENTRIES
+when ruling R-EW widened it to bills, envelope closes and transfer shadows.
+That module carries the rule and the measurement that forced the cut.
+
+**It became a PACKAGE at plan step X-f3b**, when ruling **R-FM**'s write-door
+work took the module past pylint's 1,000-line ceiling.  That ceiling is a
+forcing function rather than a budget (findings **N-152**, **N-201**,
+**N-270**): the answer is a shape, not a fourth round of shaved prose.  The
+shape was already there --
+
+* :mod:`._doors` -- what a user may DO to one purchase: the guards a mutation
+  must pass, create / update / delete, and the re-derivation every door
+  triggers.  It writes;
+* :mod:`._sums` -- what a SET of purchases adds up to, and the contexts a
+  screen renders from those sums.  It does not.
+
+-- and the arrow runs ONE way, ``_doors`` reading
+:func:`~._sums.compute_actual_from_entries` and ``_sums`` reading nothing back.
+
+**Every public name is re-exported here**, so the split moved no call site:
+``entry_service.create_entry`` and ``entry_service.entry_list_view`` resolve
+exactly as they did.  That is the property that makes a package the cheap
+answer to the ceiling and a sibling module the expensive one.
+
+Architecture:
+  - No Flask imports.  Receives plain data, returns ORM objects or
+    raises exceptions.
+  - All monetary arithmetic uses Decimal.
+  - Flushes to the session but does NOT commit.  The caller owns the
+    database transaction boundary.
+"""
+
+from ._doors import (
+    EntryDetails,
+    _resolve_owner_id,
+    create_entry,
+    delete_entry,
+    get_entries_for_transaction,
+    resolve_owner_id,
+    update_entry,
+)
+from ._sums import (
+    build_entry_lists_dict,
+    build_entry_sums_dict,
+    check_purchase_date_in_period,
+    compute_actual_from_entries,
+    compute_entry_sums,
+    compute_remaining,
+    entry_list_view,
+    pct_complete,
+)
+
+__all__ = [
+    "EntryDetails",
+    "build_entry_lists_dict",
+    "build_entry_sums_dict",
+    "check_purchase_date_in_period",
+    "compute_actual_from_entries",
+    "compute_entry_sums",
+    "compute_remaining",
+    "create_entry",
+    "delete_entry",
+    "entry_list_view",
+    "get_entries_for_transaction",
+    "pct_complete",
+    "resolve_owner_id",
+    "update_entry",
+]

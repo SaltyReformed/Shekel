@@ -134,6 +134,215 @@ def _emit_balanced_entry(
     return entry
 
 
+def posted_by_period(source_filter) -> "dict[tuple[int, date], dict[int, Decimal]]":
+    """Return a source's posted legs grouped by (pay period, entry date).
+
+    The "already posted" side of the reconcile both sync functions share: sums
+    ``account_postings.amount`` across every journal entry matching
+    *source_filter* (``JournalEntry.transfer_id == x`` for a transfer,
+    ``JournalEntry.transaction_id == x`` for a transaction), grouped by the
+    entry's ``pay_period_id``, its ``entry_date``, and the leg's ledger
+    account.  Reading the posted side back per PERIOD is what lets a reversal
+    land in the period of the postings it reverses (the 2026-07-02 adversarial
+    review's R2 attribution rule): a source row whose ``pay_period_id`` later
+    moved (the revert-and-move PATCH) reverses into its ORIGINAL period, so the
+    net-zero pair never straddles periods and a later period truncate cannot
+    strand half of it.
+
+    **Per ENTRY DATE as well as period since plan step E1a (finding N-13).**
+    ``entry_date`` is the day the recorded event happened (step C2's one
+    clock), and the balance fold counts each event from that day -- so a
+    correct NET in the right period at the WRONG date is still a wrong ledger
+    (the per-visible-date checked-projection assert catches exactly that).
+    Keying the reconcile by ``(period, entry_date)`` makes a stale-dated
+    posting a first-class delta: it is reversed AT ITS OWN DATE and re-posted
+    at the source's current settle date, instead of surviving because its
+    period's amount happened to match.  This also retires the old
+    latest-``entry_date`` heuristic a reversal-only entry inherited -- each
+    key carries the exact date its delta nets against.
+
+    Args:
+        source_filter: The SQLAlchemy filter expression selecting the source's
+            journal entries (by ``transfer_id``, ``transaction_id`` or
+            ``transaction_entry_id``).  The three are disjoint by construction
+            -- every entry sets exactly one -- so a source's reconcile never
+            reads back a sibling's legs.
+
+    Returns:
+        ``{(pay_period_id, entry_date): {ledger_account_id: net Decimal}}``
+        over the source's posted legs (empty when nothing is posted yet; a
+        fully-reversed account appears with a ``Decimal("0")`` net, its delta
+        then dropping out).
+    """
+    rows = (
+        db.session.query(
+            JournalEntry.pay_period_id,
+            JournalEntry.entry_date,
+            Posting.ledger_account_id,
+            db.func.sum(Posting.amount),
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(source_filter)
+        .group_by(
+            JournalEntry.pay_period_id,
+            JournalEntry.entry_date,
+            Posting.ledger_account_id,
+        )
+        .all()
+    )
+    posted: "dict[tuple[int, date], dict[int, Decimal]]" = {}
+    for period_id, entry_date, ledger_id, net in rows:
+        posted.setdefault((period_id, entry_date), {})[ledger_id] = net
+    return posted
+
+
+def reconcile_periods(
+    targets: "dict[tuple[int, date], dict[int, Decimal]]",
+    posted: "dict[tuple[int, date], dict[int, Decimal]]",
+    kind_id: int,
+) -> "dict[tuple[int, date], list[_PostingLeg]]":
+    """Return the balanced delta legs per (period, entry date) bringing *posted* to *targets*.
+
+    The keyed core of the reconcile both sync functions share: for every
+    ``(pay_period_id, entry_date)`` either side touches, the delta per ledger
+    account is ``target - posted``; zero deltas drop.  Within one key the
+    non-zero deltas always sum to zero -- a target sums to zero by
+    construction, and the posted side sums to zero because every prior entry
+    balanced and an entry lives in exactly one (period, date) -- so each key's
+    legs form one balanced entry (never a single leg).
+
+    A stale-DATED posting (finding N-13: a settled ``settled_on`` edit moves the
+    event's day but no amount) therefore reconciles as two keys: its old date
+    reverses to zero and the target's date posts fresh -- converging in ONE
+    pass, so a repeat sync writes nothing.
+
+    Args:
+        targets: ``{(pay_period_id, entry_date): {ledger_account_id: amount}}``
+            the ledger should net to (at most the source's current period at
+            its settle date; empty to reverse everything to zero).
+        posted: The :func:`posted_by_period` net map.
+        kind_id: The posting kind stamped on every delta leg (both legs of a
+            transfer / transaction entry carry the source's one kind).
+
+    Returns:
+        ``{(pay_period_id, entry_date): [_PostingLeg, ...]}`` for every key
+        with a non-zero delta; empty when the ledger is already at target.
+    """
+    legs_by_key: "dict[tuple[int, date], list[_PostingLeg]]" = {}
+    for key in sorted(set(targets) | set(posted)):
+        key_target = targets.get(key, {})
+        key_posted = posted.get(key, {})
+        legs = [
+            _PostingLeg(ledger_id, delta, kind_id)
+            for ledger_id in sorted(set(key_target) | set(key_posted))
+            if (
+                delta := key_target.get(ledger_id, Decimal("0"))
+                - key_posted.get(ledger_id, Decimal("0"))
+            ) != 0
+        ]
+        if legs:
+            legs_by_key[key] = legs
+    return legs_by_key
+
+
+def emit_source_deltas(
+    *,
+    targets: "dict[tuple[int, date], dict[int, Decimal]]",
+    source_filter,
+    kind_id: int,
+    build_entry: "Callable[[int, date], JournalEntry]",
+    log_label: str,
+) -> "list[JournalEntry]":
+    """Reconcile ONE source's posted legs to *targets*, emitting the deltas.
+
+    **The reconcile-to-target algorithm itself, stated once.**  Read back what
+    the source has already posted per ``(pay period, entry date)``, take the
+    per-ledger-account difference against what it should hold, and emit one
+    balanced entry per key that differs -- writing nothing at all when it is
+    already at target.  Every writer in the ledger is that sentence over a
+    different target: the transfer sync, the transaction sync and the purchase
+    sync (plan step X-f3b, ruling **R-FM**), which is when three copies of the
+    five-line body became a measured ``duplicate-code`` finding.
+
+    What a caller still owns is the only thing that differs -- WHAT the target
+    is.  Everything downstream of that is here.
+
+    Args:
+        targets: ``{(pay_period_id, entry_date): {ledger_account_id: amount}}``
+            the ledger should net to; EMPTY to reverse the source to zero.
+        source_filter: The SQLAlchemy filter selecting this source's journal
+            entries (see :func:`posted_by_period`).
+        kind_id: The posting kind stamped on every emitted leg.
+        build_entry: The entry-header closure
+            (:func:`source_entry_builder`).
+        log_label: Names the source in the per-entry INFO line.
+
+    Returns:
+        The emitted delta entries, or ``[]`` when the ledger is already at
+        target (the idempotent no-op every caller's contract promises).
+    """
+    legs_by_key = reconcile_periods(
+        targets, posted_by_period(source_filter), kind_id,
+    )
+    if not legs_by_key:
+        return []
+    return emit_keyed_delta_entries(legs_by_key, build_entry, log_label)
+
+
+def source_entry_builder(
+    *,
+    user_id: int,
+    scenario_id: int,
+    source_kind_id: int,
+    description: str,
+    **linkage: int,
+) -> "Callable[[int, date], JournalEntry]":
+    """Return the ``build_entry`` closure for ONE source's delta entries.
+
+    The ONE statement of what a source-linked journal entry header IS, for the
+    three writers that emit one: the transfer sync, the transaction sync and the
+    purchase sync (plan step X-f3b, ruling **R-FM**).  They differed in exactly
+    three things -- the source KIND, which concrete FK carries the linkage, and
+    the human description -- and stated the other five fields three times, which
+    pylint's ``duplicate-code`` measured the moment the third arrived.
+
+    **The per-key fields are this closure's and the rest are the caller's**:
+    ``pay_period_id`` and ``entry_date`` ARE the reconcile key (the R2
+    attribution rule, per-date since plan step E1a), so they arrive per call and
+    nothing else does.
+
+    Args:
+        user_id: The owning user (tenancy).
+        scenario_id: The scenario the source lives in.
+        source_kind_id: ``ref.posting_sources.id`` for this source's kind.
+        description: The human label, already truncated by the caller to
+            :data:`_MAX_DESCRIPTION_LENGTH` -- the column's own width, applied
+            where the label is composed rather than here, so a caller cannot be
+            handed a silently-clipped string it thinks it chose.
+        **linkage: The ONE concrete source FK this kind sets, by keyword --
+            ``transfer_id``, ``transaction_id`` or ``transaction_entry_id``.
+            Passed through verbatim, so adding a source kind adds a keyword
+            rather than a branch here.
+
+    Returns:
+        A callable taking ``(pay_period_id, entry_date)`` and returning the
+        UNSAVED :class:`~app.models.journal_entry.JournalEntry` header.
+    """
+    def build(period_id: int, entry_date: date) -> JournalEntry:
+        """Build one delta entry header for its ``(period, date)`` key."""
+        return JournalEntry(
+            user_id=user_id,
+            scenario_id=scenario_id,
+            pay_period_id=period_id,
+            entry_date=entry_date,
+            source_kind_id=source_kind_id,
+            description=description,
+            **linkage,
+        )
+
+    return build
+
+
 def emit_keyed_delta_entries(
     legs_by_key: "dict[tuple[int, date], list[_PostingLeg]]",
     build_entry: "Callable[[int, date], JournalEntry]",

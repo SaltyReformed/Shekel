@@ -691,13 +691,13 @@ class TestTheEntryListContextHasOneProducer:
     """The whole entry-list context comes from ``entry_list_view``, everywhere.
 
     **These are the controls the bug had none of.**  Every test of the
-    reconciled indicator drove ``GET /transactions/<id>/entries``
-    (``test_entries.py::TestTheDerivedReconciledIndicator``) -- the ONE render
-    path that supplied ``reconciled_ids``.  The grid macro, the mobile card,
+    posted-purchase indicator drove ``GET /transactions/<id>/entries``
+    (``test_entries.py::TestTheDerivedPostedIndicator``) -- the ONE render
+    path that supplied its key.  The grid macro, the mobile card,
     the companion view and the full-edit popover all render the same partial
     from :func:`build_entry_lists_dict`, which did not, and Jinja answers
     ``entry.id in Undefined`` as ``False`` silently.  So on every initial
-    render a reconciled purchase read *"Still outstanding"* while the
+    render an already-posted purchase read *"Still outstanding"* while the
     projection had already released its reservation -- 9 of 9 such purchases
     on the 2026-08-13 production clone.
 
@@ -706,10 +706,18 @@ class TestTheEntryListContextHasOneProducer:
     unpack every key of it.
     """
 
-    def test_the_dict_carries_the_reconciled_indicator(
+    def test_the_dict_carries_the_posted_indicator(
         self, app, seed_user, seed_periods_today,
     ):
-        """A purchase inside the asserted balance comes back reconciled."""
+        """A purchase whose bank posting day is recorded comes back POSTED.
+
+        Both purchases below carry one, a day apart and either side of the
+        account's only assertion, and both come back posted -- because the
+        indicator asks the PURCHASE since plan step X-f3b (ruling **R-FM**).
+        It asked the account's clearing rule before, so this test expected the
+        later one to be absent; that answer would now contradict the
+        reservation, which releases both.
+        """
         from tests._test_helpers import (
             append_balance_assertion, settle_instant_on,
         )
@@ -718,6 +726,7 @@ class TestTheEntryListContextHasOneProducer:
             txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
             inside = _add_entry(txn, seed_user, Decimal("150.00"))
             outside = _add_entry(txn, seed_user, Decimal("80.00"))
+            unobserved = _add_entry(txn, seed_user, Decimal("20.00"))
             asserted_on = seed_periods_today[0].start_date
             inside.settled_on = asserted_on
             outside.settled_on = asserted_on + timedelta(days=1)
@@ -728,21 +737,22 @@ class TestTheEntryListContextHasOneProducer:
             db.session.commit()
 
             data = build_entry_lists_dict([txn])[txn.id]
+            unobserved_id = unobserved.id
 
-        assert data["reconciled_through"] == asserted_on
-        assert data["reconciled_ids"] == {inside.id}, (
-            "a purchase dated at or before the asserted day is inside that "
-            "balance; one dated after it is not"
+        assert data["posted_ids"] == {inside.id, outside.id}, (
+            "a purchase with a recorded posting day has left the account, "
+            "whichever side of a declared balance its day falls on; one with "
+            "no posting day has not"
         )
+        assert unobserved_id not in data["posted_ids"]
 
     def test_the_grid_macro_unpacks_every_key_the_producer_returns(
         self, app, seed_user, seed_periods_today,
     ):
         """The macro's ``{% set %}`` list covers the whole context.
 
-        The negative control for the defect itself: delete either
-        ``reconciled_ids`` or ``reconciled_through`` from
-        ``_grid_row_macros.html`` and this fails, where the rendered page
+        The negative control for the defect itself: delete ``posted_ids``
+        from ``_grid_row_macros.html`` and this fails, where the rendered page
         would have gone on looking plausible.
         """
         from pathlib import Path

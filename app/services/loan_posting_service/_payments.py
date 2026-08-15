@@ -52,10 +52,11 @@ from app.extensions import db
 from app.models.journal_entry import JournalEntry
 from app.models.transaction import Transaction
 from app.services import ledger_account_service
-from app.services.posting_service import (
+from app.services.posting_service import _ledger_account_for
+from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
-    _ledger_account_for,
     emit_keyed_delta_entries,
+    source_entry_builder,
 )
 
 from app.services._posting_reconcile import (
@@ -137,7 +138,7 @@ def _posted_loan_payment_legs(
     ``{(pay_period_id, entry_date): {ledger_account_id: (net_amount,
     posting_kind_id)}}`` summed over every ``loan_payment``-sourced journal
     entry linked to *transaction_id* (the income shadow's id).  The loan analog
-    of :func:`~app.services.posting_service._posted_by_period`, additionally
+    of :func:`~app.services._posting_write.posted_by_period`, additionally
     carrying each ledger's posting kind: within a loan correction a ledger
     account always carries ONE kind (the loan-linked principal leg, or a
     per-loan interest / escrow / refund leg), so grouping by
@@ -296,31 +297,26 @@ def _reconcile_loan_payment(
     if not legs_by_key:
         return []
 
-    def _build_correction_entry(
-        period_id: int, entry_date: date,
-    ) -> JournalEntry:
-        """Build one correction entry header for its (period, date) key."""
-        return JournalEntry(
+    # Each delta entry carries its key's period and date: the target entry the
+    # shadow's settle instant, a reversal the exact date of the correction it
+    # reverses (the R2 rule, per-date since step E1a).  The header's other
+    # fields are one statement for every posting source
+    # (``_posting_write.source_entry_builder``).  Linked by transaction_id (the
+    # income shadow), leaving transfer_id NULL -- and that NULL is load-bearing:
+    # the Step-2 cash path reads the loan ledger by transfer_id, so a
+    # transfer_id here would corrupt its cash reversals (plan Section 5 / the
+    # CRITICAL bug v1 had).
+    return emit_keyed_delta_entries(
+        legs_by_key,
+        source_entry_builder(
             user_id=shadow.pay_period.user_id,
             scenario_id=shadow.scenario_id,
-            pay_period_id=period_id,
-            # Each delta entry carries its key's date: the target entry the
-            # shadow's settle instant, a reversal the exact date of the
-            # correction it reverses (the R2 rule, per-date since step E1a).
-            entry_date=entry_date,
             source_kind_id=ref_cache.posting_source_id(
                 PostingSourceEnum.LOAN_PAYMENT
             ),
-            # Linked by transaction_id (the income shadow), leaving transfer_id
-            # NULL.  That NULL is load-bearing: the Step-2 cash path reads the
-            # loan ledger by transfer_id, so a transfer_id here would corrupt
-            # its cash reversals (plan Section 5 / the CRITICAL bug v1 had).
-            transaction_id=shadow.id,
             description=_loan_payment_description(shadow),
-        )
-
-    return emit_keyed_delta_entries(
-        legs_by_key, _build_correction_entry,
+            transaction_id=shadow.id,
+        ),
         f"loan-payment split correction for shadow {shadow.id}",
     )
 
