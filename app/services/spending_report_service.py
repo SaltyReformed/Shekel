@@ -58,7 +58,7 @@ from app.models.transaction import Transaction
 from app.services import spending_analysis
 from app.services.account_resolver import resolve_analytics_account
 from app.services.row_valuation import owned_contribution
-from app.services.pay_period_service import get_overlapping_periods
+from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.money import ZERO, round_money
 
@@ -385,16 +385,18 @@ class _CategoryTotal:
 
 @dataclass(frozen=True)
 class _ScopeIds:
-    """The identifier triple every settled-spend window load is scoped by.
+    """The scope every settled-spend window load reads through.
 
-    One cohesive concept -- WHOSE data a window reads (the user's periods,
-    the checking account, the baseline scenario) -- bundled so the window
-    loaders take the scope as one argument instead of three parallel ids.
+    One cohesive concept -- WHOSE data a window reads (the owner, the checking
+    account, the baseline scenario) and the pay CALENDAR they resolve against,
+    which rides here because ``_build_series`` resolves thirteen windows and it
+    varies with none -- thirteen derivations of one value otherwise (C2-f1).
     """
 
     user_id: int
     account_id: int
     scenario_id: int
+    calendar: PayCalendar
 
 
 # ── Public API ──────────────────────────────────────────────────────
@@ -425,9 +427,9 @@ def compute_spending_report(
         a zero spent total (the documented empty shape), never ``None``.
 
     Raises:
-        ValueError: If the window is an invalid type or omits a field its
-            type requires (via
-            :func:`app.services.spending_analysis.validate_window`).
+        ValueError: An invalid window (``validate_window``), or -- as its
+            ``PayCalendarError`` subclass, newly reachable at plan step C2-f1
+            -- an owner whose paydays cannot define a calendar (finding **P8**).
     """
     spending_analysis.validate_window(
         window.window_type, window.period_id, window.month, window.year,
@@ -442,8 +444,9 @@ def compute_spending_report(
 
     ids = _ScopeIds(
         user_id=user_id, account_id=account.id, scenario_id=scenario.id,
+        calendar=calendar_for(user_id),
     )
-    resolved = _resolve_window(user_id, window)
+    resolved = _resolve_window(ids, window)
     txns = _window_transactions(ids, resolved)
     viewed_total = _window_total(resolved, txns)
 
@@ -485,7 +488,7 @@ def compute_spending_report(
 # ── Window resolution ───────────────────────────────────────────────
 
 
-def _resolve_window(user_id: int, window: SpendingWindow) -> _ResolvedWindow:
+def _resolve_window(ids: _ScopeIds, window: SpendingWindow) -> _ResolvedWindow:
     """Resolve a window to its period ids, date span, and human label.
 
     A ``"pay_period"`` window resolves to its single period with no date
@@ -495,13 +498,13 @@ def _resolve_window(user_id: int, window: SpendingWindow) -> _ResolvedWindow:
     as the tracked-window signal.
 
     Args:
-        user_id: The owning user (scopes the overlapping-period lookup).
+        ids: The report's scope, whose ``calendar`` answers the overlap.
         window: The window to resolve.
 
     Returns:
         The :class:`_ResolvedWindow`.  ``period_ids`` is empty when a
-        pay-period window's id resolves no row, or a calendar window
-        overlaps no pay period (before the user's history).
+        pay-period window's id resolves no row, or a calendar window overlaps
+        none.  ``calendar_window_bounds`` never crosses its bounds (C2-f).
     """
     if window.window_type == "pay_period":
         period = db.session.get(PayPeriod, window.period_id)
@@ -514,12 +517,9 @@ def _resolve_window(user_id: int, window: SpendingWindow) -> _ResolvedWindow:
     first_day, last_day = spending_analysis.calendar_window_bounds(
         window.window_type, window.year, window.month,
     )
-    overlapping = get_overlapping_periods(user_id, first_day, last_day)
     return _ResolvedWindow(
-        [p.id for p in overlapping],
-        first_day,
-        last_day,
-        _window_label(window, None),
+        [p.period_id for p in ids.calendar.overlapping(first_day, last_day)],
+        first_day, last_day, _window_label(window, None),
     )
 
 
@@ -615,7 +615,7 @@ def _load_window(
     Returns:
         ``(transactions, total)``; ``total`` per :func:`_window_total`.
     """
-    resolved = _resolve_window(ids.user_id, window)
+    resolved = _resolve_window(ids, window)
     txns = _window_transactions(ids, resolved)
     return txns, _window_total(resolved, txns)
 

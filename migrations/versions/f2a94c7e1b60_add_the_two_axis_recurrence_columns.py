@@ -156,8 +156,17 @@ stands THEN, which is the same answer unless the pay calendar has moved in
 between -- the same window ``_authoring``'s docstring records and plan step
 R7c-b's re-backfill closes.
 
+**Re-pointed on the merge into `dev`, 2026-08-14.**  It was written against
+``e6b4a2d8c713``, and the balance arc's ``d5b8e2c74a19`` (plan step X-f3a's
+recording half) landed on the same parent while this leaf was in review -- two
+heads off one revision, which Alembic refuses to upgrade through.  The branch
+that had NOT shipped is the one that moves, so this migration now chains off
+theirs.  The two do not interact: theirs adds a clearing link to
+``budget.transactions`` and the purchase table, this one adds five columns to
+``budget.recurrence_rules``, and neither reads what the other writes.
+
 Revision ID: f2a94c7e1b60
-Revises: e6b4a2d8c713
+Revises: d5b8e2c74a19
 Create Date: 2026-08-14
 """
 from alembic import op
@@ -166,7 +175,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "f2a94c7e1b60"
-down_revision = "e6b4a2d8c713"
+down_revision = "d5b8e2c74a19"
 branch_labels = None
 depends_on = None
 

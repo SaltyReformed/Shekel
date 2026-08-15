@@ -145,7 +145,7 @@ def _render_entry_list(
     # purchases as outstanding while the projection had released them.  A
     # caller that cannot name the keys cannot forget one.
     view = entry_service.entry_list_view(
-        txn, entries, cash_ledger.reconciled_through(txn.account_id),
+        txn, entries, cash_ledger.coverage_for(txn.account_id),
     )
     return render_template(
         "grid/_transaction_entries.html",

@@ -90,7 +90,7 @@ def _add_entry(txn, seed_user, amount, is_credit=False,
                description="Purchase"):
     """Add a purchase entry to a transaction."""
     entry = TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=amount,
         description=description,

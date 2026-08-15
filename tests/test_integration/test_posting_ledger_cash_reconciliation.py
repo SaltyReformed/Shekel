@@ -949,7 +949,7 @@ class TestEverySettledTransactionPosts:
                 actual_amount="75.00",
             )
             db.session.add(TransactionEntry(
-                transaction_id=all_credit.id, user_id=user_id,
+                transaction_id=all_credit.id, account_id=all_credit.account_id, user_id=user_id,
                 amount=Decimal("75.00"), description="cc purchase",
                 purchased_on=period.start_date, is_credit=True,
             ))

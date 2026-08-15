@@ -31,6 +31,11 @@ class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.
 
     Columns:
         transaction_id  -- The parent transaction this entry belongs to.
+        account_id      -- The account this purchase's cash leaves.  It IS the
+                           parent's, and ``fk_transaction_entries_parent_account``
+                           makes a disagreement unrepresentable rather than
+                           merely unlikely.  See the column comment for why the
+                           app stores what it could join for.
         user_id         -- The user who created the entry (owner or companion).
         amount          -- Positive purchase amount (CHECK > 0).
         description     -- Short description of the purchase (e.g. "Kroger").
@@ -96,6 +101,55 @@ class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.
             "settled_on IS NULL OR settled_on >= purchased_on",
             name="ck_transaction_entries_settled_not_before_purchase",
         ),
+        # **This entry's account IS its parent's, guaranteed rather than
+        # maintained** (plan step X-f3a-1).  The pair keys straight onto
+        # ``uq_transactions_id_account``, so a row whose ``account_id`` differs
+        # from its parent's cannot be written at all -- which is what lets
+        # ``fk_transaction_entries_reconciled_by`` below scope a clearing link by
+        # account without trusting any writer to remember.
+        #
+        # ``ON DELETE CASCADE`` matches the single-column ``transaction_id`` key
+        # beside it, which stays as this relationship's declared join path: that
+        # key is about the PARENT'S EXISTENCE and this one is about AGREEMENT,
+        # and two keys over the same column cascading differently would make a
+        # delete's outcome depend on which PostgreSQL evaluated.
+        db.ForeignKeyConstraint(
+            ["transaction_id", "account_id"],
+            ["budget.transactions.id", "budget.transactions.account_id"],
+            name="fk_transaction_entries_parent_account",
+            ondelete="CASCADE",
+        ),
+        # WHICH STATEMENT showed this purchase, as a COMPOSITE key over the
+        # account (ruling **R-FL**).  The transaction twin of
+        # ``fk_transactions_reconciled_by``; see
+        # ``app.models.transaction.Transaction`` for why a single-column key
+        # cannot express the rule.
+        db.ForeignKeyConstraint(
+            ["account_id", "reconciled_by_id"],
+            ["budget.account_anchor_history.account_id",
+             "budget.account_anchor_history.id"],
+            name="fk_transaction_entries_reconciled_by",
+            ondelete="RESTRICT",
+        ),
+        db.Index("idx_transaction_entries_reconciled_by", "reconciled_by_id"),
+        # A statement cannot have shown money that never moved: the link and the
+        # posting day are one fact in two columns, and every door that clears
+        # one releases the other (``entry_service.update_entry``).  This refuses
+        # the pair a third writer would leave behind.
+        db.CheckConstraint(
+            "reconciled_by_id IS NULL OR settled_on IS NOT NULL",
+            name="ck_transaction_entries_cleared_needs_settle_day",
+        ),
+        # A CARD purchase never touches checking -- it leaves through its own CC
+        # Payback sibling -- so this link, which is scoped to the ENVELOPE's
+        # account, could only ever claim that the checking statement showed it.
+        # False by construction, and unwritable rather than merely unoffered.
+        # The credit-card arc revisits it (CC1b): a card with statements of its
+        # own is an account this column cannot name at all.
+        db.CheckConstraint(
+            "reconciled_by_id IS NULL OR is_credit IS FALSE",
+            name="ck_transaction_entries_card_purchase_clears_nowhere",
+        ),
         {"schema": "budget"},
     )
 
@@ -105,6 +159,19 @@ class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.
         db.ForeignKey("budget.transactions.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # The account this purchase's cash leaves.  NOT NULL, and it is the PARENT'S
+    # account by construction -- ``fk_transaction_entries_parent_account`` above
+    # is what says so, so this is a co-located key rather than a copy some writer
+    # has to keep in step.
+    #
+    # **It is stored rather than joined for because clearing is a PER-ACCOUNT
+    # question.**  A checking statement shows a transfer's outgoing leg and the
+    # savings statement shows the incoming one, so "which statement showed this"
+    # is only checkable against an account -- and a foreign key cannot reach one
+    # two hops away.  Plan step X-f3b then makes a cleared purchase a cash
+    # posting on this same account, at which point the column is the fact rather
+    # than the constraint's scaffolding.
+    account_id = db.Column(db.Integer, nullable=False)
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     description = db.Column(db.String(200), nullable=False)
     purchased_on = db.Column(
@@ -115,6 +182,18 @@ class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.
     # treats it as still outstanding.  Filling it with a default would be
     # storing a guess where a read-time rule can at least be seen.
     settled_on = db.Column(db.Date)
+    # WHICH statement showed this purchase -- the ``account_anchor_history`` row
+    # whose balance the user was reading when they ticked it off.  Ruling
+    # **R-FL**, and the transaction twin of
+    # ``app.models.transaction.Transaction.reconciled_by_id``; that column's
+    # comment carries the full rationale, including why NULL is a FACT (UNKNOWN,
+    # not "not cleared") and why nothing was backfilled into it.
+    #
+    # It does NOT replace ``settled_on`` beside it.  The two record different
+    # facts: ``settled_on`` is WHEN the money moved, this is WHICH statement was
+    # seen to show it, and a statement legitimately shows a line that moved days
+    # earlier.
+    reconciled_by_id = db.Column(db.Integer)
     is_credit = db.Column(
         db.Boolean, nullable=False, default=False, server_default="false",
     )

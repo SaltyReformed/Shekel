@@ -2,20 +2,21 @@
 
 ## Where this stands
 
-**Built:** **C1** (`f9d148fe`), **C2-a** (`3cb3082f`), **C2-b1** (`90f2fbb7`), **C2-b** (both
-leaves, `fe365de1`, which also ticked **C5a** and the recurrence arc's **R-F10**), **C2-c**
-(`b8a72f6c`), **C2-d** (`3e6cd4ec`), **C2-e** (`8143c6fe`) and **C3** (both leaves, `7e3fb33b`).
-What reached `main` and production is a MEASUREMENT (`git log --oneline origin/main..dev`,
-`docker inspect shekel-prod-app`); what is ready now is `steps.md`'s order table.
+**Built:** **C1**, **C2-a**, **C2-b1**, **C2-b** (both leaves, which also ticked **C5a** and the
+recurrence arc's **R-F10**), **C2-c**, **C2-d**, **C2-e**, **C2-f1**, **C2-f2a**, and **C3** (both
+leaves) -- section 4 carries each one's commit. What reached `main` and production is a MEASUREMENT
+(`git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`).
 
-**Both engines and every forward PROJECTION read the DERIVED calendar now** -- the recurrence engine
-since C2-b2, the balance seam since C2-c, the projections since C2-e. One leaf still asks
-`pay_period_service`: `C2-f`, its six `get_*` readers over 66 call sites. Where a stored column
-disagrees with the derivation both engines believe the derivation; the shapes that can disagree are
-named in `recurrence/_occurrence.py` and section 3, all owned by **C4**.
+**Both engines, every forward PROJECTION and the WHOLE balance seam read the DERIVED calendar** --
+the recurrence engine since C2-b2, the seam's per-period entries since C2-c, the projections since
+C2-e, three of `pay_period_service`'s six readers since C2-f1, and that module's last reader inside
+`balance_at` since C2-f2a. **C2-f DECOMPOSED into three leaves 2026-08-14** (developer) and
+**`C2-f2` into five the same day**; `C2-f2b`-`C2-f2e` and `C2-f3` carry the rest. The six readers
+have **60** `app/` call sites by AST, not the 66 this document claimed and no census reproduced.
+Where a stored column disagrees with the derivation every consumer believes the derivation; the
+shapes that can are named in `recurrence/_occurrence.py` and section 3, all owned by **C4**.
 
-**The writer is ONE module** -- `pay_period_write`, the only code in `app/` that constructs or
-deletes a pay period -- so C4 changes one file plus those readers.
+**The writer is ONE module** -- `pay_period_write` -- so C4 changes one file plus those readers.
 **R-PC1's coverage half was DELETED 2026-08-11** (developer), leaving the floor as this arc's only
 write refusal and **P33** open. **A cold session starts at section 4**; the shared registries are
 `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
@@ -39,7 +40,11 @@ write refusal and **P33** open. **A cold session starts at section 4**; the shar
 | **`PayCalendarError` reaching a balance page** | **RECORD it, do not build the handler. Ruled 2026-08-13 (developer).** `C2-c` widens the raise from the recurrence and savings surfaces to `/grid` and `/accounts/<id>`, where `app/error_handlers.py` leaves it on the bare 500. The raise is right (a defaulted cadence misreports every horizon); what is missing is a recovery page, which is a ruling of `BaselineMissingError`'s size. Row **P35** carries it and `C4` deletes the fallback that causes it |
 | **The axis below the first payday** | **REFUSE, and clamp in ONE named companion. Ruled 2026-08-14 (developer)**, ledger row **P23**. `axis()` answered a range opening below `opening_bound` with the part above it -- silently, and a short axis is indistinguishable from a complete one, which is the argument `overlapping()` already makes for refusing a CROSSED range. Nothing is projected backwards (the 2026-08-10 ruling), so covering such a range was never an option and refusing is the only answer that is not a half-truth. The owner whose first payday has not happened yet is an ordinary state -- the Generate form asks for "your next (or first) payday" -- so `projection_axis()` sits beside `axis()` as the TOTAL companion every projecting surface calls, exactly as `filing_period` sits beside `period_starting_on_or_before`. Rejected: stating the truncation in the `Returns` block (a value that answers a different question than it was asked, however honestly documented), and projecting backwards (it would attribute money to paychecks that never happened) |
 | **What the projection axis HEAD is** | **Each surface keeps its own, and the SEED follows it. Ruled 2026-08-14 (developer)**, ledger row **P22**. The axis covers the range it is given, so a caller passing the read pass's clock gets the period CONTAINING it -- opening up to a cadence in the past. That is correct wherever the seed is read at `axis[0].start_date - 1`, which `retirement_projection._resolve_seed_balances` already did and which `investment_dashboard_service` was corrected to do. The one surface whose seed CANNOT follow -- the Horizon's asset band, seeded from the figure the net-worth hero shows -- left the axis instead: it carries no contributions, so an axis was only chopping the horizon into pieces the compound formula is indifferent to. Rejected: clipping the axis head to the requested day (a partial period is not a period, and the window type exists to say so), and re-seeding the asset band at the axis head (one balance-seam read per account, and index 0 would stop equalling the hero) |
-| **C2's shape** | **DECOMPOSED into `C2-a`..`C2-f`, the value first with nothing calling it. Ruled 2026-08-10 (developer).** A single commit over 66 call sites cannot be proven against production BEFORE its consumers depend on it, which is exactly the technique that made C1 safe, cannot be reviewed in focus, and cannot be reverted precisely -- and two of the cutovers move money |
+| **C2's shape** | **DECOMPOSED into `C2-a`..`C2-f`, the value first with nothing calling it. Ruled 2026-08-10 (developer).** A single commit over 60 call sites cannot be proven against production BEFORE its consumers depend on it, which is exactly the technique that made C1 safe, cannot be reviewed in focus, and cannot be reverted precisely -- and two of the cutovers move money |
+| **`C2-f`'s shape** | **DECOMPOSED again into three leaves, split by READER. Ruled 2026-08-14 (developer)**, on a measurement the first decomposition did not have: 13 functions read two or more of the six readers over 27 of their 60 sites, and 11 pair `get_current_period` with `get_all_periods`. Splitting THAT pair would leave a dozen context objects holding an ORM row in one field and a `DerivedPeriod` in another, so the two travel together in `C2-f3`. Rejected: by SURFACE (no leaf can then delete a reader, so no leaf has a checkable end state) and one commit (the shape this ruling's parent already refused) |
+| **`C2-f2`'s shape** | **DECOMPOSED into FIVE leaves, split by PACKAGE. Ruled 2026-08-14 (developer)**, on a measurement the parent decomposition did not have: the **20** call sites at a surface holding a `BalanceContext` (AST census over the seven packages) feed **23** `app/` modules -- those calling one of the three readers or carrying its rows onward -- and **12** templates, being those reading a period's `id`, `start_date`, `end_date`, `period_index` or `label`; every one of the 12 is the grid's. One commit over that is the shape the `C2's shape` ruling already refused. **The by-READER axis its parent used is UNAVAILABLE here, which is why the split is by package** (adversarial design review, 2026-08-14): six of the seven surfaces read `get_current_period` and `get_all_periods` inside ONE function, so a reader split yields exactly two leaves -- `get_periods_in_range` (3 sites, all grid) and everything else (17 sites, 7 packages) -- and the second is the leaf this ruling exists to refuse. Each leaf's end state is a GRADED predicate rather than a grep: `a` closes **P37**, `b` DELETES `get_periods_in_range` whole, `c` closes **P48**, `d` closes **P43**, `e` closes **P36**. The SEAM goes first: it is the only leaf touching money-shaped logic (the annual-limit accumulation order) and the smallest diff, so it gets a review of its own. Rejected: three leaves (the middle one is 17 modules, the same objection one size down) and one commit |
+| **How the CONTRIBUTION tier learns its periods** | **A REQUIRED `PayCalendar` parameter on `_asset_fold.resolve`, which derives the window itself. Ruled 2026-08-14 (developer)**, ledger row **P37**; the type was `PeriodWindow` until an adversarial design review of `C2-f2a` refuted it the same day. That function deliberately takes no `BalanceContext` -- a fold assembled at one scenario beside a context carrying another loads the modelled tier against rows the cash tiers never saw -- and a calendar carries neither a scenario nor a clock, so passing one reintroduces nothing. **The CALENDAR and not the window, on three counts the window loses.** The tier's precondition is the owner's WHOLE schedule (the annual limit is a calendar-year accumulation, so a slice restarts the year-to-date total mid-year and uncaps it) and `PeriodWindow` cannot say whether `saved()`, `window()` or `axis()` produced it, so a window put that precondition in a docstring one call from the grid's six-period slice; the calendar keeps the OWNER on the value where a period list drops it; and **C9**, which projects this tier past the horizon on `projection_axis`, becomes a one-line change inside `resolve` rather than a sixth parameter, which `max-args` and `max-positional-arguments` (both 5, and this signature is at 5) would refuse. *The superseded window ruling claimed its two callers held two DIFFERENT windows; they did not -- both were `reported_periods()`, which is the argument ruling "How the seam learns WHICH periods to report" deleted, at a smaller scale.* Rejected: a field on `ContributionInputs` (its `absent()` token would carry an empty window, the silent failure made reachable) and a field on `AssembledCashFold` (an OWNER value copied onto a per-ACCOUNT record, and an argument every cash reader pays for that only the modelled tier reads -- two of its four callers discard everything but `.walk`) |
+| **The modelled fold past the horizon** | **PROJECT the contributions; ruling `balance:R-AG` is SUPERSEDED. Ruled 2026-08-14 (developer)**, and the evidence is what changed rather than the argument: R-AG (2026-07-27) let the fold run a half model because no total calendar existed, `C2-e` built one, and three surfaces already project on it -- so the seam is now the only one that does not and it disagrees with the pages built on it. `C9` is the remedy and it MOVES MONEY (row **P7**, `+$5,427.07` at six months out) |
 
 ---
 
@@ -203,17 +208,17 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       `balance_at/_cash_periods.py:320` (a bisect over the STORED spans, 3 in-module sites) at
       `C2-c`, and `loan_ledger/_visible.py:150` at `C2-d` (`3e6cd4ec`, with
       `resolve_anchor_pay_period` and `owner_pay_periods`). What survives:
-      `investment_dashboard_service/_chart.py:200` (linear scan over SYNTHETIC periods),
-      `pay_period_service.get_current_period` (`:226`, SQL, `.first()` with NO `ORDER BY` -- row
-      **P19**), `get_overlapping_periods` (`:364`, SQL range), and
-      `savings_dashboard_service/_horizon.py:246-271` `_period_id_at` (linear containment scan with
-      a FORWARD clamp) -- FOUR, all owned by `C2-e` and `C2-f`. `entry_service.py:816` is EXCLUDED:
-      it asks MEMBERSHIP, the primitive the searches are built on, not a search.
-      **The lesson, and why the count may still be low:** an AST census keyed on the containment
-      PREDICATE could not see `_period_id_at` -- it was found by reading the consumers of the
-      producer C2-e retires, and its own docstring says why it exists (its synthetic periods "carry
-      no `period_index` for the general `find_period_containing_date`"). Do not treat seven as
-      final.
+      `pay_period_service.get_current_period` (SQL, `.first()` with NO `ORDER BY` -- row **P19**,
+      owned by `C2-f3`), and `investment_dashboard_service/_chart._build_chart_markers` (a linear
+      containment scan over a `PeriodWindow`, which that type's own `containing` answers -- owned by
+      `C2-f2`, row **P48**). `savings_dashboard_service`'s `_period_id_at` went at `C2-e` and
+      `get_overlapping_periods` at `C2-f1`; the `_chart` entry MOVED rather than surviving in place.
+      `entry_service.py:816` is EXCLUDED: it asks MEMBERSHIP, the primitive the searches are built
+      on, not a search. **The lesson, and why the count is still low:** an AST census keyed on the
+      containment PREDICATE could not see `_period_id_at` -- it was found by reading the consumers
+      of the producer C2-e retires -- and one keyed on containment cannot see an ORDINAL search at
+      all. `C2-f1` found three more that way (rows **P45**, **P47**, **P49**) and its reviews a
+      fourth, so this list is a floor rather than a census.
 
 - [x] **C2-a -- the one calendar VALUE, and nothing calls it.** `3cb3082f`. Opened **P21**-**P25**.
       Proof: `_calendar.py`'s docstring.
@@ -246,9 +251,70 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       here, the tier its `+$5,427.07` was measured on did not. Proof: `projection_axis`'s docstring
       and `tests/manual/verify_projection_axis.py` against a production clone.
 
-- [ ] **C2-f -- the readers answer from the calendar.** `pay_period_service`'s six `get_*` (`:213`,
-  `:237`, `:260`, `:277`, `:317`, `:336`) resolve against the one value across their 66 call
-  sites. Closes **P19** with `get_current_period`'s unordered `.first()`.
+- [ ] **C2-f -- the readers answer from the calendar** -- the DECOMPOSED parent, split into three
+      leaves 2026-08-14 (developer). Its six `get_*` readers have **60** `app/` call sites (AST,
+      2026-08-14). **The split is by READER and its ORDER is measured**: 13 functions read two or
+      more of the six across 27 of those sites, and 11 of them pair `get_current_period` with
+      `get_all_periods`, so those two may never be separated -- splitting them leaves a dozen
+      context objects holding an ORM row in one field and a `DerivedPeriod` in another.
+      `earliest_recordable_day` is NOT one of the six and stays: it asks no "which period" question,
+      only `min(first payday, today)`, and `start_date` is the column C4 keeps.
+
+- [x] **C2-f1 -- the three the calendar already answered.** `792e3b21`. Opened **P45**-**P50**.
+      **TWO shapes a later step must not undo.** `period_starting_after` / `_before` filter to
+      MATERIALISED periods, which is what makes the credit-payback FK write safe with no guard --
+      `filing_period`'s correction, taken again. And a surface that SELECTS its periods by the
+      derived span must PLACE its rows by that same one: splitting those cost `$1,234.56` on a
+      planted disagreement. Proof: `tests/manual/verify_period_window_cutover.py`'s docstring.
+
+- [ ] **C2-f2 -- the readers at a surface that already holds a read pass** -- the DECOMPOSED parent,
+      split into five leaves by PACKAGE 2026-08-14 (developer). Every remaining reader in a package
+      that builds or receives a `BalanceContext` takes the calendar off `ctx.calendar()` rather than
+      querying, and **`get_current_period` becomes `calendar().period_containing(ctx.as_of)` at
+      every one of them** -- which retires the process clock those sites read (ledger row **P49**'s
+      half) and puts the whole pass on one clock. Closes **P36** when the last leaf lands.
+      **The measurement the split rests on**: 20 call sites, 23 `app/` modules and 12 templates, in
+      seven packages -- and all 12 templates are the grid's, so only `C2-f2b` carries any. The `.id`
+      -> `.period_id` rename goes into the templates rather than an alias on `DerivedPeriod`, which
+      would be row **P21**'s nullable-id trap under the name a reader trusts least.
+
+- [x] **C2-f2a -- the SEAM's own reader.** `dd5c48a5`. Closed **P37**. No module under
+      `app/services/balance_at/` IMPORTS `pay_period_service`. Proof: `verify_balance_baseline`
+      byte-identical over 9 accounts / 427 grid cells / 5,978 daily points on a production clone,
+      with the harness SHOWN firing on a planted wrong axis: taking the calendar collapsed the two
+      wiring sites into ONE derivation, so one plant moves the Empower's grid column, its
+      `balance_map` and its 2029 scalar together (`-$182.29`, `-$182.29`, `-$190.39`).
+
+- [ ] **C2-f2b -- the GRID.** Six sites in `routes/grid.py`, plus `grid_view_service` and
+      `GridBalanceView.row_flags`, which take derived periods, and the 12 `templates/grid/` files
+      that read a period attribute. **It DELETES `get_periods_in_range`**: all three of that
+      reader's `app/` call sites are this route's, so the leaf ends with one of the six readers gone
+      rather than with sites moved. Closes **P36**'s grid half.
+
+- [ ] **C2-f2c -- `/investment`.** Five sites across `_orchestrator`, `_context`, `_cards` and
+      `_chart`. `_chart._build_chart_markers`' linear containment scan over a `PeriodWindow` retires
+      into that type's own `containing` -- the last surviving member of row **P6**'s census, which
+      still cites its pre-C2-e location. Closes **P48**.
+
+- [ ] **C2-f2d -- `/savings` and `/retirement` together, and EXPECT IT TO DECOMPOSE.** Ten modules,
+      ONE leaf because both run through `retirement_projection.load_projection_batch`, which builds
+      a SECOND `BalanceContext` with its own clock read (`retirement_projection.py:502`); threading
+      the pass's context there is the fix for both and has three call sites. Measured by an
+      adversarial review 2026-08-14 at **99** downstream `all_periods` / `current_period` references
+      plus a type change on two bundle dataclasses in `savings_dashboard_service/_types.py`, which
+      is a multi-session leaf by `lessons.md`'s own rule; the likely split is the P43 fix, then
+      `/retirement`, then `/savings`. Closes **P43**.
+
+- [ ] **C2-f2e -- the budget dashboard and `/accounts/<id>` detail.** The last two
+      `BalanceContext`-holding surfaces: `dashboard_service`, `dashboard_pulse_service` and
+      `routes/accounts/detail.py` with its templates. Ticks `C2-f2`, and with it **P36**.
+
+- [ ] **C2-f3 -- the rest, and the module's last two readers.** Every remaining site loads
+      `calendar_for` ONCE per producer and threads it; the three write-path reads in
+      `pay_period_admin` that hand ORM ROWS to `pay_period_write` move into that writer, which
+      already declares itself the one place in `app/` that constructs or deletes a pay period.
+      Deletes `get_current_period` and `get_all_periods`, leaving `pay_period_service` holding
+      `earliest_recordable_day` alone. Closes **P19**, **P45**, **P49**.
 
 - [x] **C3 -- the writer writes paydays, forward-only.** `7e3fb33b`. The DECOMPOSED parent; ticked
       with C3-b, its last leaf.
@@ -346,6 +412,23 @@ one control that sets it beside payday forms that only record paydays.
 **C3-b took the extend door's half by DELETING its input** (finding **P29**) and the developer ruled
 2026-08-11 that the remaining three are a UX step rather than a writer step, sequenced after C4 so
 the control lands on a column whose job has already narrowed. Closes **P30**.
+
+- [ ] **C9 -- the modelled fold projects contributions past the horizon.**
+
+**It SUPERSEDES the balance arc's ruling R-AG** (2026-07-27: "past the pay-period horizon, let the
+fold answer and RECORD the half-model rather than capping it"), re-ruled 2026-08-14 by the developer
+on evidence that ruling did not have. Past the last saved payday an investment account keeps
+ACCRUING while its CONTRIBUTION tier stops, because `_asset_contributions.contribution_events` walks
+the SAVED periods -- `+$2,501.92` on Empower and `+$5,427.07` on Property at six months out, which
+is row **P7**'s price and the half `C2-e` did not close. R-AG was ruled before a TOTAL calendar
+existed; `C2-e` built one, and `/retirement`, `/savings` and `/investment` already project
+contributions on `PayCalendar.projection_axis`. **So the balance seam is now the ONE surface that
+does not, and the seam disagrees with the three pages built on it** -- which is a stronger reason to
+close it than the reason R-AG had to leave it open. **MOVES MONEY, OWN PR**, and its measurement is
+a production clone rather than an argument. Closes **P7**; carries **P42**, **P44** and **P50** --
+the /savings and /retirement seeding defects `C2-e`'s reviews opened, and the savings-goal divisor
+that counts only saved periods -- because every one is the projection's own reach rather than a
+reader move.
 
 ## 5. Findings ledger
 

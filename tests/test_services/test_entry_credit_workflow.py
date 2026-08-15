@@ -35,7 +35,7 @@ class TestSyncEntryPayback:
         Returns the new TransactionEntry (flushed, id available).
         """
         entry = TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=user.id,
             amount=Decimal(amount),
             description=desc,
@@ -52,7 +52,7 @@ class TestSyncEntryPayback:
         Returns the new TransactionEntry (flushed, id available).
         """
         entry = TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=user.id,
             amount=Decimal(amount),
             description=desc,
@@ -384,7 +384,7 @@ class TestPaybackCorrectness:
             user = seed_user["user"]
 
             entry = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="Field parity",
@@ -430,7 +430,7 @@ class TestPaybackCorrectness:
             assert txn.pay_period_id == seed_periods[0].id
 
             entry = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("50.00"),
                 description="Period check",
@@ -457,7 +457,7 @@ class TestPaybackCorrectness:
             user = seed_user["user"]
 
             entry = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("50.00"),
                 description="Name check",
@@ -503,12 +503,12 @@ class TestPaybackCorrectness:
             db.session.flush()
 
             e1 = TransactionEntry(
-                transaction_id=txn1.id, user_id=user.id,
+                transaction_id=txn1.id, account_id=txn1.account_id, user_id=user.id,
                 amount=Decimal("100.00"), description="Txn1",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
-                transaction_id=txn2.id, user_id=user.id,
+                transaction_id=txn2.id, account_id=txn2.account_id, user_id=user.id,
                 amount=Decimal("200.00"), description="Txn2",
                 purchased_on=date(2026, 1, 30), is_credit=True,
             )
@@ -537,7 +537,7 @@ class TestPaybackCorrectness:
 
             for amt in ["33.33", "33.33", "33.34"]:
                 e = TransactionEntry(
-                    transaction_id=txn.id,
+                    transaction_id=txn.id, account_id=txn.account_id,
                     user_id=user.id,
                     amount=Decimal(amt),
                     description="Split",
@@ -563,7 +563,7 @@ class TestPaybackCorrectness:
             user = seed_user["user"]
 
             e = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("0.01"),
                 description="Penny",
@@ -595,7 +595,7 @@ class TestEntryLinkIntegrity:
             entries = []
             for i, amt in enumerate(["30.00", "40.00", "30.00"]):
                 e = TransactionEntry(
-                    transaction_id=txn.id,
+                    transaction_id=txn.id, account_id=txn.account_id,
                     user_id=user.id,
                     amount=Decimal(amt),
                     description=f"Store {i}",
@@ -624,7 +624,7 @@ class TestEntryLinkIntegrity:
             user = seed_user["user"]
 
             e1 = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="First",
@@ -638,7 +638,7 @@ class TestEntryLinkIntegrity:
             assert e1.credit_payback_id == payback.id
 
             e2 = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("50.00"),
                 description="Second",
@@ -666,7 +666,7 @@ class TestEntryLinkIntegrity:
             user = seed_user["user"]
 
             entry = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="Toggle",
@@ -703,7 +703,7 @@ class TestEntryLinkIntegrity:
             user = seed_user["user"]
 
             debit = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("200.00"),
                 description="Debit",
@@ -711,7 +711,7 @@ class TestEntryLinkIntegrity:
                 is_credit=False,
             )
             credit = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="Credit",
@@ -740,12 +740,12 @@ class TestEntryLinkIntegrity:
             user = seed_user["user"]
 
             e1 = TransactionEntry(
-                transaction_id=txn.id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("100.00"), description="A",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
-                transaction_id=txn.id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("50.00"), description="B",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
@@ -791,17 +791,17 @@ class TestPaybackLifecycle:
             user = seed_user["user"]
 
             e1 = TransactionEntry(
-                transaction_id=txn.id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("100.00"), description="A",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
-                transaction_id=txn.id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("50.00"), description="B",
                 purchased_on=date(2026, 1, 6), is_credit=True,
             )
             e3 = TransactionEntry(
-                transaction_id=txn.id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("75.00"), description="C",
                 purchased_on=date(2026, 1, 7), is_credit=True,
             )
@@ -842,7 +842,7 @@ class TestPaybackLifecycle:
             user = seed_user["user"]
 
             entry = TransactionEntry(
-                transaction_id=txn.id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("100.00"), description="Toggle",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
@@ -873,7 +873,7 @@ class TestPaybackLifecycle:
 
             for i in range(3):
                 e = TransactionEntry(
-                    transaction_id=txn.id, user_id=user.id,
+                    transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                     amount=Decimal("50.00"), description=f"Debit {i}",
                     purchased_on=date(2026, 1, 5), is_credit=False,
                 )

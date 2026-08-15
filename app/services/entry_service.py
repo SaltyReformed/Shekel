@@ -34,7 +34,7 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import posting_service
-from app.services.cash_ledger import ReconciledThrough, reconciled_through
+from app.services.cash_ledger import StatementCoverage, coverage_for
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.utils.balance_predicates import is_archived, is_cancelled
 # ``is_credit`` from balance_predicates collides with the
@@ -404,6 +404,11 @@ def create_entry(
 
     entry = TransactionEntry(
         transaction_id=transaction_id,
+        # The parent's account, written explicitly rather than derived at flush
+        # time.  ``fk_transaction_entries_parent_account`` refuses any other
+        # value, so this line cannot be silently wrong -- it can only be absent,
+        # and absent is a NOT NULL violation.
+        account_id=txn.account_id,
         user_id=user_id,
         amount=details.amount,
         description=details.description,
@@ -494,8 +499,34 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
         valid_updates.get("settled_on", entry.settled_on),
     )
 
+    moved_the_posting_day = (
+        "settled_on" in valid_updates
+        and valid_updates["settled_on"] != entry.settled_on
+    )
     for field, value in valid_updates.items():
         setattr(entry, field, value)
+    # **Moving the posting day RELEASES the clearing fact** (plan step X-f3a-1,
+    # ruling **R-FL**).  ``reconciled_by_id`` records that a named statement was
+    # seen to show this purchase ON that day; a user moving the day is
+    # correcting the observation, not confirming it, and the two facts must not
+    # be left to disagree.
+    #
+    # **Releasing rather than refusing is deliberate, and the alternative was
+    # measured.**  A link whose day the date rule would not pick is
+    # UNRENDERABLE while an assertion resets the ledger -- the fold emits the
+    # purchase on its settle day and the correction on the statement's, so the
+    # balance stops equalling what the user asserted (see
+    # ``StatementCoverage._recorded_anchor_id`` for the theorem and the
+    # production figure).  Refusing the edit would trap a user who is doing
+    # exactly what the panel's own copy asks -- *"correct it if your statement
+    # shows a different day"* -- so the day wins and the observation is dropped
+    # back to UNKNOWN, where the date rule answers it exactly as it did before
+    # any of this shipped.  Re-ticking on the next statement records it again.
+    #
+    # It fires on ANY move, including to ``None``, which is also what
+    # ``ck_transaction_entries_cleared_needs_settle_day`` requires.
+    if moved_the_posting_day:
+        entry.reconciled_by_id = None
     db.session.flush()
 
     log_event(
@@ -695,11 +726,10 @@ def build_entry_lists_dict(
     Expects ``entries`` and ``template`` eager-loaded on the
     Transaction objects.  **It stopped being a PURE function on
     2026-08-13**: the reconciled indicator needs each account's
-    coverage boundary, which is a read.  One indexed ``MAX`` per
-    distinct account is the cost, and the alternative -- taking the
-    boundaries as an argument -- is the defect this change fixes,
-    one tier up (an argument a caller can get wrong is a defect,
-    not a contract).
+    clearing rule, which is a read.  One indexed read per distinct
+    account is the cost, and the alternative -- taking the rules as
+    an argument -- is the defect this change fixes, one tier up (an
+    argument a caller can get wrong is a defect, not a contract).
 
     Args:
         transactions: List of Transaction objects with ``entries`` and
@@ -714,20 +744,22 @@ def build_entry_lists_dict(
         template.
     """
     result: dict[int, dict] = {}
-    # One boundary per distinct ACCOUNT, not per transaction: a grid render
-    # passes every visible envelope of every account, and
-    # ``reconciled_through`` is one indexed ``MAX`` per account rather than a
-    # row load.  Memoising here keeps the count at the number of accounts on
-    # screen (six on the developer's grid) instead of the number of envelopes
-    # (~sixty), which is the fan-out this function exists to remove.
-    boundaries: dict[int, ReconciledThrough] = {}
+    # One clearing rule per distinct ACCOUNT, not per transaction: a grid render
+    # passes every visible envelope of every account, and ``coverage_for`` is
+    # one indexed read per account.  Memoising here keeps the count at the
+    # number of accounts on screen (six on the developer's grid) instead of the
+    # number of envelopes (~sixty), which is the fan-out this function exists to
+    # remove.  It loads ROWS where the boundary it replaced was one ``MAX``, and
+    # that is what asking WHICH statement cleared a line costs (ruling R-FL);
+    # the memoisation is what keeps the cost per account rather than per row.
+    coverages: dict[int, StatementCoverage] = {}
     for txn in transactions:
         if not txn.tracks_purchases:
             continue
-        if txn.account_id not in boundaries:
-            boundaries[txn.account_id] = reconciled_through(txn.account_id)
+        if txn.account_id not in coverages:
+            coverages[txn.account_id] = coverage_for(txn.account_id)
         result[txn.id] = entry_list_view(
-            txn, list(txn.entries), boundaries[txn.account_id],
+            txn, list(txn.entries), coverages[txn.account_id],
         )
     return result
 
@@ -735,7 +767,7 @@ def build_entry_lists_dict(
 def entry_list_view(
     txn: Transaction,
     entries: list[TransactionEntry],
-    boundary: ReconciledThrough,
+    coverage: StatementCoverage,
 ) -> dict:
     """Return the WHOLE derived context one envelope's entry list renders from.
 
@@ -766,10 +798,10 @@ def entry_list_view(
             the owner-scoped :func:`get_entries_for_transaction`, the grid off
             an eager-loaded relationship -- and neither may lose its scoping to
             share this derivation.
-        boundary: The account's coverage boundary
-            (:func:`app.services.cash_ledger.reconciled_through`).  An
-            ARGUMENT so a caller rendering many envelopes resolves it once per
-            account; :func:`build_entry_lists_dict` memoises it.
+        coverage: The account's clearing rule
+            (:func:`app.services.cash_ledger.coverage_for`).  An ARGUMENT so a
+            caller rendering many envelopes resolves it once per account;
+            :func:`build_entry_lists_dict` memoises it.
 
     Returns:
         The five keys the template consumes:
@@ -780,15 +812,16 @@ def entry_list_view(
           - ``out_of_period_ids`` (set[int]): entry IDs whose ``purchased_on``
             falls outside the parent pay period, surfacing the OP-4
             date-awareness warning.
-          - ``reconciled_ids`` (set[int]): entry IDs the account's latest
-            asserted balance already contains, derived from the SHARED
-            predicate (ruling **R-DH (d)**) rather than from a stored flag, so
-            what the row shows and what the projection held back cannot
-            disagree.
-          - ``reconciled_through`` (date | None): the civil day that boundary
-            names, for the tooltip that renders it.  Which entries it
-            reconciles is decided HERE, in Python; the template renders the
-            answer and never re-derives it.
+          - ``reconciled_ids`` (set[int]): entry IDs a declared balance already
+            contains, from the SHARED rule (ruling **R-FL**) rather than from a
+            stored flag or a second date comparison, so what the row shows and
+            what the projection held back cannot disagree.
+          - ``reconciled_through`` (date | None): the account's latest statement
+            day, for the tooltip that renders it -- a CAPTION, and the tooltip's
+            sentence stays true for a purchase an earlier statement cleared,
+            because a line inside that balance is inside this one too.  WHICH
+            entries are reconciled is decided HERE, in Python; the template
+            renders the answer and never re-derives it.
     """
     return {
         "entries": entries,
@@ -798,9 +831,9 @@ def entry_list_view(
             if not check_purchase_date_in_period(e.purchased_on, txn)
         },
         "reconciled_ids": {
-            e.id for e in entries if boundary.covers(e.settled_on)
+            e.id for e in entries if coverage.is_cleared(e)
         },
-        "reconciled_through": boundary.observed_day,
+        "reconciled_through": coverage.latest_statement_day,
     }
 
 

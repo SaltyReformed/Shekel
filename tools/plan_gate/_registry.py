@@ -717,8 +717,22 @@ def blocked_by_violations() -> list[str]:
 #: The relief that does exist: 10 rows are blocked on nothing but a decision
 #: (``operator`` or ``developer-decision`` owners), and ruling any one of them
 #: closes a row.  Prefer that to a second raise.
+#:
+#: **``ledger.md`` was raised 241 -> 250 on 2026-08-14 -- the SECOND raise, by
+#: developer ruling, and recorded rather than quietly applied.**  Plan step
+#: ``pay_calendar:C2-f1`` recorded six findings its two adversarial reviews
+#: opened and landed two lines above the headroom arm; the paragraph above had
+#: already measured why rule 5 cannot answer, and nothing about that changed.
+#:
+#: **Two raises in as many days is the signal, so the ruling names the fix and
+#: dates it.**  The decision-blocked pile is now **14** rows, not the 10 above,
+#: and the developer has committed the NEXT session to clearing it -- every one
+#: ruled closes a row, which is what pays this raise back.  Recorded here
+#: because if that pass does not happen, this comment is the evidence that the
+#: cap drifted rather than the ledger shrinking, which is precisely what rule 5
+#: exists to make visible.
 REGISTRY_CAPS = {
-    "ledger.md": 241,
+    "ledger.md": 250,
     "steps.md": 260,
     "conventions.md": 280,
     "verification.md": 120,

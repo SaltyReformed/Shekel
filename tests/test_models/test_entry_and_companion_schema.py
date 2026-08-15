@@ -29,7 +29,7 @@ from app.services.auth_service import hash_password
 def _make_entry(txn, user, amount, description, **kwargs):
     """Create and flush a TransactionEntry with the given fields."""
     entry = TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=user.id,
         amount=amount,
         description=description,
@@ -106,7 +106,7 @@ class TestTransactionEntryAmountCheck:
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods)
             entry = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("0.00"),
                 description="Zero amount",
@@ -125,7 +125,7 @@ class TestTransactionEntryAmountCheck:
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods)
             entry = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("-5.00"),
                 description="Negative amount",
@@ -453,7 +453,7 @@ class TestTransactionEntryEdgeCases:
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods)
             entry = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("5.00"),
                 description="A" * 201,
@@ -515,7 +515,7 @@ class TestTransactionEntryEdgeCases:
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods)
             entry = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("12.50"),
                 description="No date specified",

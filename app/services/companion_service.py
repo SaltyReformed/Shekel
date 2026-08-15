@@ -68,28 +68,6 @@ def _validate_companion(user_id: int) -> User:
     return user
 
 
-def get_previous_period(period: PayPeriod) -> PayPeriod | None:
-    """Return the pay period immediately before the given one.
-
-    Mirrors ``pay_period_service.get_next_period`` but queries
-    for ``period_index - 1`` instead of ``+ 1``.
-
-    Args:
-        period: A PayPeriod object.
-
-    Returns:
-        The previous PayPeriod, or None if it doesn't exist.
-    """
-    return (
-        db.session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == period.user_id,
-            PayPeriod.period_index == period.period_index - 1,
-        )
-        .first()
-    )
-
-
 def get_visible_transactions(
     companion_user_id: int,
     period_id: int | None = None,

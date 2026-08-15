@@ -352,6 +352,7 @@ class TestAnchorPointDataclass:
         reason than before.
         """
         anchor = AnchorPoint(
+            anchor_id=1,
             balance=Decimal("100.00"),
             observed_on=_date(2026, 1, 1),
             created_at=_datetime(2026, 1, 1, 12, tzinfo=_timezone.utc),

@@ -126,7 +126,7 @@ from app.services.account_projection import (
 )
 from app.services.cash_ledger import ReconciledThrough
 from app.services.interest_projection import accrued_interest
-from app.services.pay_calendar import PeriodWindow
+from app.services.pay_calendar import PayCalendar, PeriodWindow
 from app.utils.money import round_money
 
 from . import _asset_contributions, _cash_fold
@@ -617,6 +617,7 @@ def resolve(
     cash: _cash_fold.AssembledCashFold,
     horizon_end: date,
     inputs: ContributionInputs,
+    calendar: PayCalendar,
 ) -> ModelledFold:
     """Resolve *account*'s modelled tiers onto an ALREADY-assembled cash fold.
 
@@ -639,6 +640,20 @@ def resolve(
     cash tiers underneath it never saw.  Reading it off the fold removes the
     disagreement rather than documenting it.
 
+    **The pay CALENDAR is the exception, and it is not that context** (plan
+    step **C2-f2a**, ledger row **P37**): the contribution tier below used to
+    load the owner's schedule itself, the last ``pay_period_service`` read in
+    this package.  A :class:`~app.services.pay_calendar.PayCalendar` carries no
+    scenario and no clock, so it cannot reproduce the disagreement above, and
+    it is REQUIRED, so an omission fails at the call rather than modelling an
+    account's payroll contributions as nothing.  **The calendar and not a
+    WINDOW**, because the tier's precondition is the owner's WHOLE schedule --
+    the annual limit is a calendar-year accumulation, so a slice restarts the
+    year-to-date total mid-year and uncaps it -- and a ``PeriodWindow`` cannot
+    say whether ``saved()``, ``window()`` or ``axis()`` produced it.  Deriving
+    it here leaves no window for a caller to state and makes plan step **C9**
+    the one-line change below; the arc's ruling carries the rejected options.
+
     Args:
         account: The account to value.
         cash: The account's
@@ -652,6 +667,12 @@ def resolve(
             :class:`~app.services.balance_at._asset_contributions.ContributionInputs`
             -- its ``absent()`` constructor for a reader that cannot have a
             contribution feed.
+        calendar: The OWNER's pay calendar for this read pass
+            (:meth:`~app.services.balance_at.BalanceContext.calendar`), read
+            for the CONTRIBUTION tier's axis alone and only on the modelled
+            arm.  That it is the right owner's is the seam's standing contract
+            (every account a context resolves belongs to ``ctx.user_id``), not
+            a check here -- which would be a second spelling of it.
 
     Returns:
         The resolved :class:`ModelledFold`.
@@ -675,8 +696,14 @@ def resolve(
     )
     return _resolve(
         cash,
+        # The ONE line plan step C9 changes -- ``saved()`` becomes
+        # ``projection_axis(...)`` so this tier stops halting at the horizon
+        # the ACCRUAL tier runs past (ledger row **P7**).  Both are methods on
+        # the value already in hand, so that step edits no signature and no
+        # caller.
         _asset_contributions.contribution_events(
             account, cash.scenario_id, inputs, reconciled_through,
+            calendar.saved(),
         ),
         window,
     )
@@ -694,23 +721,51 @@ def _assemble(
     a period map and a growth decomposition of the same account are readings of
     ONE resolved step list rather than three producers a test keeps in step.
 
+    **It reads THREE things off the context and nothing else**: the scenario
+    that scopes the fold, the ``as_of`` ruling R-G clamps to, and -- since plan
+    step **C2-f2a** -- the owner's pay CALENDAR, the CONTRIBUTION tier's axis
+    (ledger row **P37**, which that tier used to query for itself once per
+    modelled account in a pass already holding it).  This function exists to be
+    the ONE place a context is unpacked into the values :func:`resolve` takes.
+    The calendar is read EAGERLY, before :func:`resolve` can early-out on an
+    account that models no return, so a scalar read of a plain checking account
+    now derives one where it derived none: free on a pass that has already
+    asked (the context memoizes it), two queries on one that has not.
+
     Args:
         account: The account to value.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the fold and the contribution feed, its
-            ``as_of`` is ruling R-G's clamp floor).
+            ``as_of`` is ruling R-G's clamp floor, and its calendar is where
+            the contribution tier's axis comes from).
         horizon_end: The furthest date this read will be sampled at.
         inputs: The account's
             :class:`~app.services.balance_at._asset_contributions.ContributionInputs`.
 
     Returns:
         The resolved :class:`ModelledFold`.
+
+    Raises:
+        PayCalendarError: The owner's paydays cannot define a calendar -- see
+            :meth:`~app.services.balance_at.BalanceContext.calendar`.  **The
+            contribution tier could not raise this before plan step C2-f2a**,
+            which read the schedule through a query that cannot fail, so where
+            it can now surface was CENSUSED; that census is in the step's
+            commit message.  Of the ten ``app/`` callers of the two public doors
+            above, nine already reach the calendar in the same request or take
+            the ``positions`` arm; the ONE that does not is
+            ``investment_dashboard_service._orchestrator.compute_balance_hero_cell``,
+            which is ``C2-f2c``'s module.  The STATE needs an owner with
+            paydays, no ``budget.pay_schedule`` row and a cadence inferred
+            outside 1..365 -- unreachable through registration since plan step
+            X-ad-a, absent from the production clone, deleted at ``C4``.
     """
     return resolve(
         account,
         _cash_fold.assemble(account, ctx.scenario_id, ctx.as_of),
         horizon_end,
         inputs,
+        ctx.calendar(),
     )
 
 
@@ -744,6 +799,11 @@ def fold_asset_balances(
     Returns:
         ``{date: balance}`` -- one cent-quantized ``Decimal`` per distinct
         requested date.  ``{}`` for an empty *dates*.
+
+    Raises:
+        PayCalendarError: The owner's paydays cannot define a calendar, which
+            this reaches through :func:`_assemble` since plan step C2-f2a --
+            see that function's own ``Raises`` for the census.
     """
     if not dates:
         return {}
@@ -871,6 +931,11 @@ def asset_growth_at(
         ``(accrual, contribution)`` -- cumulative cent-quantized ``Decimal``
         totals through *as_of*.  ``(0.00, 0.00)`` for an account that models
         neither, which is a real answer and not a missing one.
+
+    Raises:
+        PayCalendarError: The owner's paydays cannot define a calendar, which
+            this reaches through :func:`_assemble` since plan step C2-f2a --
+            see that function's own ``Raises`` for the census.
     """
     folded = _assemble(account, ctx, as_of, inputs)
     return (

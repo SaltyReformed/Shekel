@@ -1618,7 +1618,7 @@ def seed_cross_page_account(app, db, seed_user):
         # the resolver's anchor-period balance by construction.
         for amount, is_credit, is_settled in entries:
             db.session.add(TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=amount,
                 description="PT-01 entry",

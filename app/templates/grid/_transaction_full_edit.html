@@ -200,14 +200,18 @@
          and flags template-generated rows as overrides when the period
          changes so the recurrence engine does not regenerate over the
          moved row.  Not rendered for transfer shadows: those edit through
-         transfers/_transfer_full_edit.html instead. #}
+         transfers/_transfer_full_edit.html instead.
+
+         ``p`` is a ``DerivedPeriod`` since plan step C2-f, so its identity is
+         ``period_id`` rather than ``id`` -- see the transfer twin for why the
+         calendar draws that distinction. #}
       {% if periods %}
       <div class="mb-2">
         <label class="form-label mb-0 small">Pay Period</label>
         <select name="pay_period_id" class="form-select form-select-sm"
                 {{ 'disabled' if locked else '' }}>
           {% for p in periods %}
-          <option value="{{ p.id }}" {{ 'selected' if txn.pay_period_id == p.id else '' }}>
+          <option value="{{ p.period_id }}" {{ 'selected' if txn.pay_period_id == p.period_id else '' }}>
             {{ p.label }}
           </option>
           {% endfor %}

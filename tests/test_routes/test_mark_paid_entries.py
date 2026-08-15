@@ -53,6 +53,10 @@ def _make_entry(txn_id, user_id, amount="50.00", description="Kroger",
     """
     entry = TransactionEntry(
         transaction_id=txn_id,
+        # The parent's account, resolved here rather than taken as an argument:
+        # this helper's whole point is that a caller passes IDS, and an entry's
+        # account IS its parent's (``fk_transaction_entries_parent_account``).
+        account_id=db.session.get(Transaction, txn_id).account_id,
         user_id=user_id,
         amount=Decimal(amount),
         description=description,

@@ -1406,7 +1406,7 @@ def _add_entry(txn, seed_user, amount, *, description="Test purchase",
     from datetime import date as _date  # local import keeps top clean
 
     entry = TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description=description,

@@ -40,7 +40,7 @@ def _make_entry(transaction, user, amount="50.00", description="Kroger",
     the full create_entry validation chain.
     """
     entry = TransactionEntry(
-        transaction_id=transaction.id,
+        transaction_id=transaction.id, account_id=transaction.account_id,
         user_id=user.id,
         amount=Decimal(amount),
         description=description,

@@ -1800,7 +1800,7 @@ class TestTheReconcileRoute:
 
         for amount, purchased_on, is_credit, settled_on in entries:
             db.session.add(TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal(amount),
                 description="Test purchase",
@@ -5467,7 +5467,7 @@ def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
     from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
 
     db_session.add(TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=user_id,
         amount=amount,
         description="Cleared purchase",

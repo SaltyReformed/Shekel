@@ -28,8 +28,10 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
+from app.routes.companion import _period_neighbours
 from app.services import companion_service
 from app.services.auth_service import hash_password
+from app.services.pay_calendar import calendar_for
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -506,7 +508,7 @@ class TestEntryEagerLoading:
             name="Groceries", amount=Decimal("500.00"),
         )
         entry = TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=Decimal("42.50"),
             description="Kroger",
@@ -552,12 +554,12 @@ class TestEntryDataComputation:
             name="Groceries", amount=Decimal("500.00"),
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("100.00"), description="Kroger",
             purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="Walmart",
             purchased_on=date(2026, 1, 6),
         ))
@@ -595,12 +597,12 @@ class TestEntryDataComputation:
             name="Gas", amount=Decimal("100.00"),
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("70.00"), description="Shell",
             purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="BP",
             purchased_on=date(2026, 1, 6),
         ))
@@ -653,21 +655,75 @@ class TestGetCompanionPeriods:
         assert periods == []
 
 
-# ── get_previous_period ──────────────────────────────────────────────
+# ── period navigation ────────────────────────────────────────────────
 
 
-class TestGetPreviousPeriod:
-    """Verify previous period navigation."""
+class TestPeriodNavigationMovedToTheCalendar:
+    """``get_previous_period`` is GONE; its two cases live on the route helper.
 
-    def test_returns_previous_period(self, app, db, seed_user, seed_periods_today):
-        """Returns the period with period_index - 1."""
-        prev = companion_service.get_previous_period(seed_periods_today[1])
-        assert prev is not None
-        assert prev.id == seed_periods_today[0].id
+    Plan step **C2-f1**.  That function was ``pay_period_service.get_next_period``
+    with ``+ 1`` changed to ``- 1`` -- one rule written twice on the stored
+    ordinal -- and the companion view asked both, so a schedule whose
+    ``period_index`` disagreed with its payday order could step forward into
+    one period and back into another.  Both halves are now searches of the
+    owner's ONE derived calendar, resolved together by
+    :func:`app.routes.companion._period_neighbours`, and the assertions below
+    are the deleted tests' own, re-pointed.
+    """
 
-    def test_returns_none_for_first_period(
+    def test_returns_previous_and_next_together(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """Returns None for the first period (no previous)."""
-        prev = companion_service.get_previous_period(seed_periods_today[0])
-        assert prev is None
+        """Period 1's neighbours are periods 0 and 2, from ONE calendar load."""
+        with app.app_context():
+            prev, nxt = _period_neighbours(seed_periods_today[1])
+            assert prev is not None
+            assert prev.period_id == seed_periods_today[0].id
+            assert nxt is not None
+            assert nxt.period_id == seed_periods_today[2].id
+
+    def test_returns_none_for_the_first_period(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The first period has no previous, which is what hides the back link."""
+        with app.app_context():
+            prev, nxt = _period_neighbours(seed_periods_today[0])
+            assert prev is None
+            assert nxt is not None
+            assert nxt.period_id == seed_periods_today[1].id
+
+    def test_returns_none_for_the_last_period(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The mirror the deleted pair never had a test for.
+
+        ``get_previous_period`` was tested at the schedule's head and
+        ``get_next_period`` at its tail, in two different files, so neither
+        end was covered on both sides.  One helper answers both, so both ends
+        are graded here.
+        """
+        with app.app_context():
+            prev, nxt = _period_neighbours(seed_periods_today[-1])
+            assert nxt is None
+            assert prev is not None
+            assert prev.period_id == seed_periods_today[-2].id
+
+    def test_it_reads_the_LINKED_OWNERS_calendar(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """The paydays come off the period on screen, which is the OWNER's.
+
+        A companion holds no paydays of their own by design, so a helper that
+        resolved the calendar from the REQUESTING user would answer ``None``
+        on both sides and silently remove the navigation.  The control is the
+        companion's own empty calendar beside the owner's answer.
+        """
+        with app.app_context():
+            assert seed_companion["user"].linked_owner_id == seed_user["user"].id
+            assert seed_periods_today[1].user_id == seed_user["user"].id
+
+            prev, nxt = _period_neighbours(seed_periods_today[1])
+            assert prev is not None and nxt is not None
+
+            companion_calendar = calendar_for(seed_companion["user"].id)
+            assert companion_calendar.periods == ()

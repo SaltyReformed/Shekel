@@ -11,10 +11,15 @@
      analogous header is hardcoded to ``/grid?periods=1&offset=N``.
      The include below sets ``show_period_nav=False`` (via the
      companion route's context build) to suppress the partial's
-     own header so this one is the sole period-nav source. #}
+     own header so this one is the sole period-nav source.
+
+     ``prev_period`` / ``next_period`` are ``DerivedPeriod`` values since plan
+     step C2-f -- the owner's one pay calendar answers both -- so their
+     identity is ``period_id``.  ``period`` itself is still the ORM row the
+     transaction query was scoped by. #}
   <div class="d-flex justify-content-between align-items-center my-3">
     {% if prev_period %}
-    <a href="{{ url_for('companion.period_view', period_id=prev_period.id) }}"
+    <a href="{{ url_for('companion.period_view', period_id=prev_period.period_id) }}"
        class="btn btn-outline-secondary btn-sm"
        aria-label="Previous period">
       <i class="bi bi-chevron-left"></i>
@@ -28,7 +33,7 @@
     </h5>
 
     {% if next_period %}
-    <a href="{{ url_for('companion.period_view', period_id=next_period.id) }}"
+    <a href="{{ url_for('companion.period_view', period_id=next_period.period_id) }}"
        class="btn btn-outline-secondary btn-sm"
        aria-label="Next period">
       <i class="bi bi-chevron-right"></i>

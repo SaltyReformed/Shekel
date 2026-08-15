@@ -87,14 +87,20 @@
        ownership of the submitted id and propagates it to both shadows
        (Transfer Invariant 3); the route flags template-generated
        transfers as overrides on a move.  Only rendered when the route
-       supplies the period list. #}
+       supplies the period list.
+
+       ``p`` is a ``DerivedPeriod`` since plan step C2-f, so its identity is
+       ``period_id`` rather than ``id``: the calendar distinguishes a paycheck
+       a foreign key can point at from a span it merely projected, and only
+       the first can be a ``pay_period_id``.  ``period_move_options`` offers
+       saved periods only, so every value here is an int. #}
     {% if periods %}
     <div class="mb-2">
       <label class="form-label mb-0 small">Pay Period</label>
       <select name="pay_period_id" class="form-select form-select-sm"
               {{ 'disabled' if locked else '' }}>
         {% for p in periods %}
-        <option value="{{ p.id }}" {{ 'selected' if xfer.pay_period_id == p.id else '' }}>
+        <option value="{{ p.period_id }}" {{ 'selected' if xfer.pay_period_id == p.period_id else '' }}>
           {{ p.label }}
         </option>
         {% endfor %}

@@ -193,6 +193,9 @@ def _modelled_scalar(
 
     Returns:
         The cent-quantized ``Decimal`` balance at *as_of*.
+
+    Raises:
+        PayCalendarError: See :func:`._asset_fold._assemble`.
     """
     return _asset_fold.fold_asset_balances(
         account, ctx, [as_of], _contribution_inputs_for_account(account),
@@ -274,6 +277,10 @@ def balance_at(
         BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
             subclass; ONE application-level handler answers it (plan step
             X-v2, ruling R-BW), so no caller pre-checks.
+        PayCalendarError: The owner's paydays cannot define a calendar.  The
+            REPLAY arm reaches it through :func:`._asset_fold._assemble`
+            since plan step C2-f2a; that function's ``Raises`` censuses
+            which surfaces the widening reached.  The loan arm does not.
     """
     _require_scenario(ctx)
     if configured_loan(account, ctx) is not None:
@@ -340,6 +347,10 @@ def investment_growth_since_anchor(
         BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
             subclass; ONE application-level handler answers it (plan step
             X-v2, ruling R-BW), so no caller pre-checks.
+        PayCalendarError: The owner's paydays cannot define a calendar.  The
+            REPLAY arm reaches it through :func:`._asset_fold._assemble`
+            since plan step C2-f2a; that function's ``Raises`` censuses
+            which surfaces the widening reached.  The loan arm does not.
     """
     _require_scenario(ctx)
     inputs = _contribution_inputs_for_account(account)

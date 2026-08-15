@@ -7,6 +7,7 @@ to a specific paycheck.
 
 from app.extensions import db
 from app.models.mixins import CreatedAtMixin, UserScopedMixin
+from app.utils.dates import pay_period_label
 
 
 #: The shortest cadence the CURRENT writer can materialise into this table.
@@ -71,13 +72,17 @@ class PayPeriod(UserScopedMixin, CreatedAtMixin, db.Model):
 
     @property
     def label(self):
-        """Human-readable label, e.g. '02/21 - 03/06' or '12/26/26 - 01/08/27'."""
-        if self.start_date.year != self.end_date.year:
-            return (
-                f"{self.start_date.strftime('%m/%d/%y')} - "
-                f"{self.end_date.strftime('%m/%d/%y')}"
-            )
-        return f"{self.start_date.strftime('%m/%d')} - {self.end_date.strftime('%m/%d')}"
+        """Human-readable label, e.g. '02/21 - 03/06' or '12/26/26 - 01/08/27'.
+
+        **The rule itself is :func:`app.utils.dates.pay_period_label`**, shared
+        with :attr:`app.services.pay_calendar.DerivedPeriod.label` since plan
+        step C2-f: two types answer "which paycheck" in this application and a
+        user comparing two screens is looking at the same period, so the format
+        is stated once.  Plan step **C4** deletes this accessor along with the
+        ``end_date`` column it reads; the shared function and the derived
+        value's property are what survive.
+        """
+        return pay_period_label(self.start_date, self.end_date)
 
     def __repr__(self):
         return f"<PayPeriod {self.start_date} idx={self.period_index}>"

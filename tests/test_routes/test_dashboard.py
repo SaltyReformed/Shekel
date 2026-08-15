@@ -218,7 +218,7 @@ class TestDashboardPulseRendering:
             db.session.add(envelope)
             db.session.flush()
             db.session.add(TransactionEntry(
-                transaction_id=envelope.id,
+                transaction_id=envelope.id, account_id=envelope.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("130.00"),
                 description="overspend",
@@ -340,7 +340,7 @@ class TestDashboardPulseRendering:
             db.session.add(tracked)
             db.session.flush()
             db.session.add(TransactionEntry(
-                transaction_id=tracked.id,
+                transaction_id=tracked.id, account_id=tracked.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("200.00"),
                 description="groceries",
@@ -426,11 +426,17 @@ class TestDashboardPulseRendering:
         template, not a producer defect.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
-            nxt = pay_period_service.get_next_period(cur)
-            assert nxt is not None
-            peak_period = pay_period_service.get_next_period(nxt)
-            assert peak_period is not None  # offset 2 from the current period
+            # POSITIONAL, not resolved through the app's own search (plan step
+            # C2-f1).  ``seed_periods_today`` puts today in index 4; the peak
+            # chip's ``offset=2`` is what this asserts, so a fixture that
+            # picked its period with ``period_starting_after`` -- the same
+            # search the producer walks -- would move WITH a defect in it and
+            # the test would still pass.  Never a producer as its own oracle
+            # (``docs/plans/verification.md`` #2).
+            cur = seed_periods_today[4]
+            assert cur.start_date <= date.today() <= cur.end_date
+            nxt = seed_periods_today[5]
+            peak_period = seed_periods_today[6]
             income = Transaction(
                 account_id=seed_user["account"].id,
                 pay_period_id=peak_period.id,
@@ -467,9 +473,11 @@ class TestDashboardPulseRendering:
         and links to ``/grid?offset=1``.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
-            nxt = pay_period_service.get_next_period(cur)
-            assert nxt is not None
+            # POSITIONAL -- see the peak test above for why the fixture does
+            # not ask the search this asserts on.
+            cur = seed_periods_today[4]
+            assert cur.start_date <= date.today() <= cur.end_date
+            nxt = seed_periods_today[5]
             _add_txn(
                 db.session, seed_user, nxt, "Next Period Bill", "175.00",
                 due_date=nxt.start_date + timedelta(days=1),

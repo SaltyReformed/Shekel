@@ -81,7 +81,10 @@ from app.services.transfer_service._create import (
 )
 from app.services.transfer_service._delete import delete_transfer
 from app.services.transfer_service._restore import restore_transfer
-from app.services.transfer_service._settle import settle_amount
+from app.services.transfer_service._settle import (
+    record_clearing,
+    settle_amount,
+)
 from app.services.transfer_service._update import (
     settle_transfer,
     update_transfer,
@@ -92,6 +95,7 @@ __all__ = [
     "create_transfer",
     "delete_transfer",
     "restore_transfer",
+    "record_clearing",
     "settle_amount",
     "settle_transfer",
     "update_transfer",

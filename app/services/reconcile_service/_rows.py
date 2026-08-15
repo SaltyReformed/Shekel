@@ -57,6 +57,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.services.cash_ledger import AnchorPoint
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_projected_clause,
@@ -69,25 +70,48 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Statement:
-    """The bank statement being reconciled: whose, which account, which day.
+    """The bank statement being reconciled: whose, which account, which ASSERTION.
 
-    The three scalars every function in this package takes together, as one
-    value.  They are not independent -- an assertion declares the real balance
-    of ONE account on ONE civil day for ONE owner, and a call site that could
-    pair one account's id with another day's would be a call site that can
-    reconcile against a statement nobody read.
+    The facts every function in this package takes together, as one value.  They
+    are not independent -- an assertion declares the real balance of ONE account
+    on ONE civil day for ONE owner, and a call site that could pair one
+    account's id with another day's would be a call site that can reconcile
+    against a statement nobody read.
+
+    **It carried a bare ``observed_on`` until plan step X-f3a-1** and now
+    carries the ASSERTION, with the day derived from it.  Ruling **R-FL** makes
+    a tick record WHICH statement showed the money, and a civil day cannot name
+    one: production carries three days on which Checking holds two or three
+    assertions.  The day is a property rather than a second field for the reason
+    the value exists at all -- two fields that must agree are two fields a
+    caller can mismatch, and here the mismatch would stamp a line with a
+    statement it was not measured against.
 
     Attributes:
         owner_id: The user_id whose rows may be offered or settled.
         account_id: The cash account whose balance was asserted.
-        observed_on: The civil day that balance was true for -- the bound
-            every offer is measured against, and the day every tick records
-            its money as having moved.
+        anchor: The governing :class:`~app.services.cash_ledger.AnchorPoint` --
+            the assertion being reconciled against.  Its ``anchor_id`` is what a
+            tick writes into ``reconciled_by_id``.
     """
 
     owner_id: int
     account_id: int
-    observed_on: date
+    anchor: AnchorPoint
+
+    @property
+    def observed_on(self) -> date:
+        """Return the civil day this statement's balance was true for.
+
+        The bound every offer is measured against, and the day every tick
+        records its money as having moved.  Read THROUGH the assertion rather
+        than stored beside it, so the day and the statement a tick names can
+        never describe different rows.
+
+        Returns:
+            The assertion's ``observed_on``.
+        """
+        return self.anchor.observed_on
 
 
 @dataclass(frozen=True)
@@ -262,9 +286,12 @@ def wholly_spent_by(txn: Transaction, observed_on: date) -> bool:
     clone of production, planting one `$137.45` purchase three days after
     Checking's 2026-08-06 assertion made the panel offer *Close Groceries* at
     `$622.55` instead of `$485.10`; ticking it booked `$622.55` stamped
-    2026-08-06, which ``ReconciledThrough.covers`` then absorbs into that day's
-    anchor correction -- so the purchase contributed nothing forward and the
-    projected balance rose by exactly `$137.45` at +30d, +90d and +365d.  That
+    2026-08-06, which that day's assertion then absorbs into its own correction
+    -- so the purchase contributed nothing forward and the projected balance
+    rose by exactly `$137.45` at +30d, +90d and +365d.  (The measurement was
+    taken while the absorbing rule was ``ReconciledThrough.covers``; plan step
+    X-f3a-1 made it ``StatementCoverage``, which answers the same for an
+    unlinked row and so leaves the figure standing.)  That
     is already-spent money handed back to the projection, which is the class of
     defect this arc exists to remove.
 
@@ -350,9 +377,17 @@ def record_settled(
     """Settle every row of *arm* the form ticked, and report what landed.
 
     **The WRITER, once, for both source-row arms**, and what an arm keeps is
-    :class:`Arm`.  Three things happen per row and none of them is a money
-    rule: the arm's own settle runs, what it says about a human's figure is
-    counted, and the totals are logged once.
+    :class:`Arm`.  Three things happen per row and none of them is a money rule:
+    the arm's own settle runs, what it says about a human's figure is counted,
+    and the totals are logged once.
+
+    **Recording WHICH statement showed the row is the ARM's** (ruling **R-FL**),
+    and that is not a preference: for the transfer arm the row is a SHADOW, and
+    ``CLAUDE.md``'s transfer invariant 4 says no code path mutates one directly.
+    A write here would be the first exception to a rule the project treats as
+    critical, so the transfer arm goes through
+    ``transfer_service.record_clearing`` and the transaction arm -- whose scope
+    is that arm's complement, ``transfer_id IS NULL`` -- writes its own row.
 
     **It is one function because the two writers HAD BECOME one**, and the gate
     is what said so rather than a preference.  X-f2-c2 left the loop per-arm on

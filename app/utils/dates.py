@@ -435,6 +435,53 @@ def month_name(value: int | None, abbr: bool = False) -> str:
     return names[index - 1]
 
 
+def pay_period_label(start_date: date, end_date: date) -> str:
+    """Return a pay period's human label (``"02/21 - 03/06"``).
+
+    **One rule, two accessors**, and that is why it is here rather than on
+    either of them.  A pay period is answered by TWO types in this
+    application: the ORM row (:class:`app.models.pay_period.PayPeriod`) and
+    the derived value
+    (:class:`app.services.pay_calendar.DerivedPeriod`), which plan step
+    **C2-f** moved every "which paycheck" reader onto -- a period-move
+    ``<select>`` renders one and the conflict chooser the other.  **What this
+    buys is that the FORMAT is stated once; it does not yet make the two
+    labels equal**, and saying so is the honest form: the row feeds it the
+    STORED ``end_date`` and the derived value the DERIVED one, so on the last
+    period under the P12 / P28 shape the two screens still render one paycheck
+    two ways.  Plan step C4 closes that by deleting the stored column.
+    Neither type can import the other's
+    module (the model would close a cycle through
+    ``pay_calendar._loader``, and the calendar package is deliberately
+    model-free), so the shared rule lives in this one, which both already
+    depend on.
+
+    **Plan step C4 deletes the model accessor with the column it reads**
+    (``budget.pay_periods.end_date``); this function and the derived value's
+    property are what survive it, which is the other reason the rule is not
+    written inside the model.
+
+    The year is shown only when the period STRADDLES one, because that is
+    the only time it disambiguates: ``"12/26/26 - 01/08/27"`` says which
+    January, while ``"02/21/26 - 03/06/26"`` says nothing ``"02/21 -
+    03/06"`` did not.
+
+    Args:
+        start_date: The payday that opens the period.
+        end_date: The last day the period covers.
+
+    Returns:
+        The label, with a two-digit year on both halves when the period
+        crosses a year boundary and no year at all when it does not.
+    """
+    if start_date.year != end_date.year:
+        return (
+            f"{start_date.strftime('%m/%d/%y')} - "
+            f"{end_date.strftime('%m/%d/%y')}"
+        )
+    return f"{start_date.strftime('%m/%d')} - {end_date.strftime('%m/%d')}"
+
+
 def attribution_date(
     preferred: date | None, period_start: date, period_end: date,
 ) -> date:

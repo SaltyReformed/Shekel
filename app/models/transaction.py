@@ -262,6 +262,41 @@ class Transaction(
             "version_id > 0",
             name="ck_transactions_version_id_positive",
         ),
+        # The SUPERKEY ``transaction_entries`` names to prove its own
+        # ``account_id`` is its parent's (plan step X-f3a-1).  It constrains
+        # nothing -- ``id`` is already the primary key, so this key can reject no
+        # row -- and exists only because PostgreSQL requires a UNIQUE over
+        # exactly the referenced columns before a composite foreign key may
+        # target them.
+        db.UniqueConstraint("id", "account_id", name="uq_transactions_id_account"),
+        # WHICH STATEMENT showed this line, as a COMPOSITE key over the account
+        # (ruling **R-FL**, plan step X-f3a-1).  A single-column
+        # ``REFERENCES account_anchor_history (id)`` could not say "an assertion
+        # of THIS row's account", so a writer that forgot the account scope would
+        # produce a link that is silently wrong about whose statement showed the
+        # money -- and clearing is a per-account question: a checking statement
+        # shows a transfer's outgoing leg, the savings statement shows the
+        # incoming one.  ``MATCH SIMPLE`` (PostgreSQL's default) is what lets it
+        # sit beside a nullable link: a row with ``reconciled_by_id IS NULL``
+        # satisfies it whatever ``account_id`` says.
+        db.ForeignKeyConstraint(
+            ["account_id", "reconciled_by_id"],
+            ["budget.account_anchor_history.account_id",
+             "budget.account_anchor_history.id"],
+            name="fk_transactions_reconciled_by",
+            ondelete="RESTRICT",
+        ),
+        db.Index("idx_transactions_reconciled_by", "reconciled_by_id"),
+        # A statement cannot have shown money that never moved.  The link and
+        # the settle day are one fact in two columns, and every door that moves
+        # or clears the day releases the link (``status_seam`` on a revert and
+        # on a correction); this refuses the pair a third writer would leave
+        # behind.  ``settled_on`` is itself NULL exactly when the row is not in
+        # the settled band, so it also says a linked row has settled.
+        db.CheckConstraint(
+            "reconciled_by_id IS NULL OR settled_on IS NOT NULL",
+            name="ck_transactions_cleared_needs_settle_day",
+        ),
         {"schema": "budget"},
     )
 
@@ -349,6 +384,29 @@ class Transaction(
     # ``status_id`` -- so they cannot diverge.  See the class docstring for why
     # this is not a CHECK constraint and why it has no bounds.
     settled_on = db.Column(db.Date)
+    # WHICH statement showed this line -- the ``account_anchor_history`` row
+    # whose balance the user (or, from plan step X-f6a, the bank's own export)
+    # was reading when they confirmed the money had moved.  Ruling **R-FL**.
+    #
+    # Nullable, and the NULL is a FACT rather than a gap: it means no statement
+    # has been RECORDED as showing this line.  It is not "not cleared" -- the
+    # three-state model the developer ruled on 2026-08-14 calls it UNKNOWN, and
+    # the ONE clearing rule (``cash_ledger.StatementCoverage``) answers an
+    # UNKNOWN line from the date rule this column exists to retire.  What turns
+    # UNKNOWN into NOT CLEARED is the statement itself being recorded as walked
+    # line by line, which is plan step X-f3a-2's fact and not this column's.
+    #
+    # **Nothing was backfilled and that is deliberate.**  The date rule is a
+    # guess -- of 110 movements matched to the developer's bank lines only 33
+    # carry the day the bank posted them -- so backfilling this column from it
+    # would launder that guess into an observation nobody made, and no later
+    # reader could tell the two apart.  History is filled from the BANK at plan
+    # step X-f6a.
+    #
+    # Its foreign key is COMPOSITE over ``account_id``; see
+    # ``fk_transactions_reconciled_by`` above for why a single-column one cannot
+    # express the rule.
+    reconciled_by_id = db.Column(db.Integer)
 
     @validates("settled_on")
     def _refuse_a_settle_instant(self, _key, value):
