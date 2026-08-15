@@ -32,7 +32,10 @@ check beside them.
 * ``dashboard_pulse_service.compute_pulse_section`` -- the hero's
   next-paycheck caption and the still-due panel's next-period range now come
   from ONE value where they were two queries.
-* ``companion_service`` + the companion navigation -- the prev/next links.
+* the companion navigation -- the prev/next links.  **Its probe went at plan
+  step C2-f2b**, with ``companion_service.get_companion_periods``: that
+  reader had no ``app/`` caller, so the figure it dumped described nothing
+  any request could reach.
 
 **BYTE-IDENTITY IS THE GATE HERE**, which is the opposite of
 ``verify_projection_axis``' standing and worth stating plainly: every
@@ -108,7 +111,6 @@ from app.models.pay_period import PayPeriod
 from app.models.user import User
 from app.services import (
     calendar_service,
-    companion_service,
     dashboard_pulse_service,
     spending_report_service,
 )
@@ -324,14 +326,6 @@ def _pulse_figures(user_id):
     )
 
 
-def _companion_figures(user_id):
-    """Dump the companion period set, whose navigation was two ordinal queries."""
-    return _guard(
-        "get_companion_periods",
-        lambda: _plain(companion_service.get_companion_periods(user_id)),
-    )
-
-
 def main(out_path):
     """Write the dump for every user in the database to *out_path*."""
     app = create_app("production")
@@ -351,7 +345,6 @@ def main(out_path):
                     "spending", lambda uid=user.id: _spending_figures(uid),
                 ),
                 "pulse": _pulse_figures(user.id),
-                "companion": _companion_figures(user.id),
             }
             for user in users
         }

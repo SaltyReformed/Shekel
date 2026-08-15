@@ -366,13 +366,24 @@ class PayCalendar:
         seating a bill in a paycheck whose span does not contain it silently
         misplaces real money.
 
+        **SAVED is ENFORCED rather than described, since plan step C2-f2b** --
+        the last of the five searches here to rest on "no calendar holding an
+        UNSAVED candidate reaches it".  That was true, and this package has
+        twice ruled true is not structural: :meth:`filing_period` and
+        :meth:`period_starting_after` were each corrected after a review fed
+        them a candidate and got ``period_id=None`` back for a ``NOT NULL``
+        column.  Both consumers here write that column -- the recurrence engine
+        PLACES a row on this answer, ``companion_service`` SCOPES its query by
+        it -- and ``== None`` is ``IS NULL``, which returns no rows silently.
+
         Args:
             day: The calendar day to place.
 
         Returns:
-            The containing :class:`~._derive.DerivedPeriod`, or ``None``.
+            The containing :class:`~._derive.DerivedPeriod`, whose ``period_id``
+            is never ``None``, or ``None`` when no saved period covers *day*.
         """
-        return containing_period(self.periods, day)
+        return containing_period(materialised_periods(self.periods), day)
 
     def span_containing(self, day: date) -> "DerivedPeriod | None":
         """Return the span covering *day*, projecting past the horizon.
@@ -400,10 +411,14 @@ class PayCalendar:
         Args:
             day: The calendar day to place.
 
+        Args:
+            day: The calendar day to place.
+
         Returns:
-            The covering :class:`~._derive.DerivedPeriod` -- saved when the
-            schedule reaches *day*, projected when it does not -- or ``None``
-            when the calendar is empty or *day* precedes
+            The covering :class:`~._derive.DerivedPeriod` -- MATERIALISED when
+            the schedule reaches *day* (:meth:`period_containing` answers that
+            half and states its own filter), projected when it does not -- or
+            ``None`` when the calendar is empty or *day* precedes
             :meth:`opening_bound`.
         """
         opening = self.opening_bound()

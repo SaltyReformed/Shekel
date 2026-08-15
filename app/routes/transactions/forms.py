@@ -259,13 +259,20 @@ def get_empty_cell():
     if err is not None:
         return err
     category = objs[Category]
-    period = objs[PayPeriod]
     account = objs[Account]
 
     return render_template(
         "grid/_transaction_empty_cell.html",
         category=category,
-        period=period,
+        # The ID, not the row.  The ORM lookup above is the OWNERSHIP check
+        # (the IDOR fix H1) and nothing more; the partial builds one URL from
+        # one integer, and its other render entry -- the desktop grid macro --
+        # has only a ``DerivedPeriod`` to give it since plan step C2-f2b.  One
+        # partial, two callers, one contract they can both keep.  The value is
+        # the request's own ``period_id``, which ``_resolve_owned_fks`` has
+        # just proved belongs to this user; reading it back off the row would
+        # be the same integer by a longer route.
+        period_id=period_id,
         account=account,
         txn_type_id=transaction_type_id,
     )

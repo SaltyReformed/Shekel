@@ -165,7 +165,6 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
     return render_template(
         "grid/_mobile_card_single.html",
         rk=row_keys[0],
-        period=txn.pay_period,
         txn=txn,
         entry_sums=build_entry_sums_dict([txn]),
         entry_lists=build_entry_lists_dict([txn]),

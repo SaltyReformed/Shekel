@@ -36,7 +36,7 @@
    producers (ruling R-K).
 
    Expected context (* required):
-     periods *    -- the visible PayPeriod slice.
+     periods *    -- the visible `PeriodWindow` (plan step C2-f2b).
      columns *    -- dict[period_id -> GridColumn], each with .income /
                      .expense / .net Decimals.  A period absent from it
                      renders blank cells.
@@ -66,7 +66,7 @@
   <tr class="subtotal-row subtotal-row-income">
     <th class="sticky-col row-label fw-bold">Total Income</th>
     {% for period in periods %}
-      {% set col = columns.get(period.id) %}
+      {% set col = columns.get(period.period_id) %}
       <td class="text-end font-mono fw-bold{{ mstart(periods, loop.index0) }}">
         {% if col is not none %}{{ money(col.income, cents=false) }}{% endif %}
       </td>
@@ -84,7 +84,7 @@
   <tr class="subtotal-row subtotal-row-expense">
     <th class="sticky-col row-label fw-bold">Total Expenses</th>
     {% for period in periods %}
-      {% set col = columns.get(period.id) %}
+      {% set col = columns.get(period.period_id) %}
       <td class="text-end font-mono fw-bold{{ mstart(periods, loop.index0) }}">
         {% if col is not none %}{{ money(col.expense, cents=false) }}{% endif %}
       </td>
@@ -95,7 +95,7 @@
   <tr class="net-cash-flow-row">
     <th class="sticky-col row-label fw-bold">Net Cash Flow</th>
     {% for period in periods %}
-      {% set col = columns.get(period.id) %}
+      {% set col = columns.get(period.period_id) %}
       {% set net = col.net if col is not none else none %}
       <td class="text-end font-mono fw-bold {{ 'balance-negative' if net is not none and net < 0 else '' }}{{ mstart(periods, loop.index0) }}">
         {% if net is not none %}

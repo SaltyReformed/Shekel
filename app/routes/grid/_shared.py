@@ -1,12 +1,13 @@
 """
 Shekel Budget App -- Grid route package: what the page and its partials share.
 
-The four helpers BOTH halves of this package call, and nothing else.  The
-budget grid renders once as a full page (:mod:`~app.routes.grid.page`) and
-then re-renders three fragments of itself on HTMX events
-(:mod:`~app.routes.grid.partials`) -- and the fragments must agree with the
-page they are replacing, figure for figure.  These are the producers that
-make that agreement structural rather than a claim two modules keep:
+What BOTH halves of this package share, and nothing else.  The budget grid
+renders once as a full page (:mod:`~app.routes.grid.page`) and then re-renders
+three fragments of itself on HTMX events (:mod:`~app.routes.grid.partials`) --
+and the fragments must agree with the page they are replacing, figure for
+figure.  These are the producers that make that agreement structural rather
+than a claim two modules keep: :func:`_resolve_visible_window` is the ONE
+answer to "which paychecks is this request looking at",
 :func:`_build_grid_view` is the ONE seam call every surface reads its columns
 from (ruling R-K), :func:`_accrual_row_label` is the ONE word all three
 surfaces name the modelled-return row with (ruling R-AI / R-P), and
@@ -25,6 +26,60 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import DerivedPeriod, PeriodWindow
+
+
+def _resolve_visible_window(
+    ctx: BalanceContext, num_periods: int, start_offset: int,
+) -> tuple[DerivedPeriod, PeriodWindow] | None:
+    """Return the paycheck this request opens on and the columns it shows.
+
+    **The one rule the page and its self-refresh fragments must not disagree
+    about**, and the reason this module exists.  ``/grid`` renders a window;
+    ``/grid/balance-row`` and ``/grid/subtotal-rows`` then recompute their
+    summaries for *the same* window on a ``balanceChanged`` event.  If the two
+    resolved it separately, a refresh could patch a footer that describes
+    different paychecks from the columns above it -- and nothing on screen
+    would say so, because both halves would render consistently within
+    themselves.  Written twice, in both modules, until an adversarial design
+    review of plan step **C2-f2b** pointed out that the step which created this
+    module had extracted everything but the rule that needed it.
+
+    Both period reads come off the pass's own calendar (that step), so a
+    request resolves ONE derivation and reads the clock ONCE.
+
+    Args:
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`,
+            which carries both the pinned ``as_of`` and the owner's calendar.
+        num_periods: How many columns to show.  The CALLER supplies it, because
+            the two differ legitimately: the page falls back to the owner's
+            ``grid_default_periods`` setting and the fragments to a literal 6,
+            the fragments' own URLs always carrying an explicit ``periods=``.
+        start_offset: Columns to shift the window by, relative to the current
+            paycheck.  A user-supplied query parameter, so a value below the
+            schedule's start is ordinary; the window then comes back SHORT
+            rather than re-based (:meth:`~app.services.pay_calendar.PayCalendar.window`).
+
+    Returns:
+        ``(current_period, window)``, or ``None`` when no SAVED paycheck covers
+        the pass's ``as_of`` -- the state the page answers with
+        ``no_periods.html`` and the fragments with ``204``.  Saved containment
+        rather than :meth:`~app.services.pay_calendar.PayCalendar.span_containing`
+        is deliberate: every column is keyed by the id a transaction points at,
+        so a projected period past the horizon would anchor the grid on a
+        paycheck no row can belong to.
+    """
+    calendar = ctx.calendar()
+    current_period = calendar.period_containing(ctx.as_of)
+    if current_period is None:
+        return None
+    # A VIEW over the whole calendar, so each column keeps the end the complete
+    # payday set dictated rather than one re-derived from the periods on screen
+    # (ledger row P14, $150,000.00 on the sibling shape).
+    return current_period, calendar.window(
+        current_period.period_index + start_offset, num_periods,
+    )
 
 
 # Whole-dollar threshold used to flag a projected balance as "low"

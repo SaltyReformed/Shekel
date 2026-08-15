@@ -30,6 +30,7 @@ from app.services import (
 )
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import DerivedPeriod
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
@@ -6834,9 +6835,16 @@ class TestMobileCardActionBar:
                 txn_name=txn.name,
                 display_name=txn.name,
             )
-            period = SimpleNamespace(id=current.id)
+            period = DerivedPeriod(
+                period_id=current.id, period_index=current.period_index,
+                start_date=current.start_date, end_date=current.end_date,
+                end_is_projected=False,
+            )
             matched = {
-                (rk.category_id, rk.template_id, rk.txn_name, period.id): [txn],
+                (
+                    rk.category_id, rk.template_id, rk.txn_name,
+                    period.period_id,
+                ): [txn],
             }
 
             tmpl = app.jinja_env.from_string(
@@ -7181,20 +7189,23 @@ class TestMobilePlanTab:
         from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            p_neg = SimpleNamespace(
-                id=101, start_date=_date(2026, 6, 1),
-                end_date=_date(2026, 6, 14), period_index=10,
+            p_neg = DerivedPeriod(
+                period_id=101, period_index=10,
+                start_date=_date(2026, 6, 1), end_date=_date(2026, 6, 14),
+                end_is_projected=False,
             )
-            p_low = SimpleNamespace(
-                id=102, start_date=_date(2026, 6, 15),
-                end_date=_date(2026, 6, 28), period_index=11,
+            p_low = DerivedPeriod(
+                period_id=102, period_index=11,
+                start_date=_date(2026, 6, 15), end_date=_date(2026, 6, 28),
+                end_is_projected=False,
             )
-            p_ok = SimpleNamespace(
-                id=103, start_date=_date(2026, 6, 29),
-                end_date=_date(2026, 7, 12), period_index=12,
+            p_ok = DerivedPeriod(
+                period_id=103, period_index=12,
+                start_date=_date(2026, 6, 29), end_date=_date(2026, 7, 12),
+                end_is_projected=False,
             )
             plan_columns = {
-                period.id: balance_at.GridColumn(
+                period.period_id: balance_at.GridColumn(
                     balance=balance,
                     income=Decimal("0"), expense=Decimal("0"),
                     net=Decimal("0"), period_timing=Decimal("0.00"),
@@ -7244,9 +7255,9 @@ class TestMobilePlanTab:
                             item_end = next_item
                 return html[item_start:item_end]
 
-            neg_chunk = card_chunk(p_neg.id)
-            low_chunk = card_chunk(p_low.id)
-            ok_chunk = card_chunk(p_ok.id)
+            neg_chunk = card_chunk(p_neg.period_id)
+            low_chunk = card_chunk(p_low.period_id)
+            ok_chunk = card_chunk(p_ok.period_id)
 
             assert "balance-negative" in neg_chunk
             assert "bi-exclamation-triangle-fill" in neg_chunk
@@ -7330,9 +7341,10 @@ class TestMobilePlanTab:
         from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            period = SimpleNamespace(
-                id=200, start_date=_date(2026, 6, 1),
-                end_date=_date(2026, 6, 14), period_index=10,
+            period = DerivedPeriod(
+                period_id=200, period_index=10,
+                start_date=_date(2026, 6, 1), end_date=_date(2026, 6, 14),
+                end_is_projected=False,
             )
             rk_exp = SimpleNamespace(
                 category_id=1, template_id=None,
@@ -7353,10 +7365,10 @@ class TestMobilePlanTab:
                 plan_expense_row_keys=[rk_exp],
                 plan_matched_by_row_period={
                     (rk_exp.category_id, rk_exp.template_id,
-                     rk_exp.txn_name, period.id): [txn_exp],
+                     rk_exp.txn_name, period.period_id): [txn_exp],
                 },
                 plan_columns={
-                    period.id: balance_at.GridColumn(
+                    period.period_id: balance_at.GridColumn(
                         balance=Decimal("3000.00"),
                         income=Decimal("0"),
                         expense=Decimal("1200"),
@@ -7392,9 +7404,10 @@ class TestMobilePlanTab:
         from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            period = SimpleNamespace(
-                id=201, start_date=_date(2026, 6, 1),
-                end_date=_date(2026, 6, 14), period_index=10,
+            period = DerivedPeriod(
+                period_id=201, period_index=10,
+                start_date=_date(2026, 6, 1), end_date=_date(2026, 6, 14),
+                end_is_projected=False,
             )
             rk_inc = SimpleNamespace(
                 category_id=2, template_id=None,
@@ -7415,10 +7428,10 @@ class TestMobilePlanTab:
                 plan_expense_row_keys=[],
                 plan_matched_by_row_period={
                     (rk_inc.category_id, rk_inc.template_id,
-                     rk_inc.txn_name, period.id): [txn_inc],
+                     rk_inc.txn_name, period.period_id): [txn_inc],
                 },
                 plan_columns={
-                    period.id: balance_at.GridColumn(
+                    period.period_id: balance_at.GridColumn(
                         balance=Decimal("3000.00"),
                         income=Decimal("2500"),
                         expense=Decimal("0"),
@@ -7455,9 +7468,10 @@ class TestMobilePlanTab:
         from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            period = SimpleNamespace(
-                id=300, start_date=_date(2026, 6, 1),
-                end_date=_date(2026, 6, 14), period_index=10,
+            period = DerivedPeriod(
+                period_id=300, period_index=10,
+                start_date=_date(2026, 6, 1), end_date=_date(2026, 6, 14),
+                end_is_projected=False,
             )
             rk = SimpleNamespace(
                 category_id=3, template_id=42,
@@ -7485,10 +7499,10 @@ class TestMobilePlanTab:
                 plan_expense_row_keys=[rk],
                 plan_matched_by_row_period={
                     (rk.category_id, rk.template_id,
-                     rk.txn_name, period.id): [txn_a, txn_b],
+                     rk.txn_name, period.period_id): [txn_a, txn_b],
                 },
                 plan_columns={
-                    period.id: balance_at.GridColumn(
+                    period.period_id: balance_at.GridColumn(
                         balance=Decimal("3000.00"),
                         income=Decimal("0"),
                         expense=Decimal("125"),
@@ -7731,15 +7745,24 @@ class TestMobileJumpToPeriod:
 
 
 def _summary_periods():
-    """Two period stand-ins carrying what the summary templates read."""
+    """Two periods carrying what the summary templates read.
+
+    REAL :class:`~app.services.pay_calendar.DerivedPeriod` values rather than
+    ``SimpleNamespace`` stand-ins since plan step C2-f2b, which is the type the
+    grid's templates now receive.  A stand-in cannot go stale against the type
+    it imitates -- it keeps answering the attribute the template stopped asking
+    for -- and these render tests are the only proof several of these rows have.
+    """
     return [
-        SimpleNamespace(
-            id=101, start_date=date(2026, 6, 1),
-            end_date=date(2026, 6, 14), period_index=10,
+        DerivedPeriod(
+            period_id=101, period_index=10,
+            start_date=date(2026, 6, 1), end_date=date(2026, 6, 14),
+            end_is_projected=False,
         ),
-        SimpleNamespace(
-            id=102, start_date=date(2026, 6, 15),
-            end_date=date(2026, 6, 28), period_index=11,
+        DerivedPeriod(
+            period_id=102, period_index=11,
+            start_date=date(2026, 6, 15), end_date=date(2026, 6, 28),
+            end_is_projected=False,
         ),
     ]
 
@@ -7760,7 +7783,7 @@ def _summary_columns(
     money moves.
     """
     return {
-        period.id: balance_at.GridColumn(
+        period.period_id: balance_at.GridColumn(
             balance=Decimal("3000.00"),
             income=Decimal("2400.00"),
             expense=Decimal("1450.00"),
@@ -7971,7 +7994,7 @@ class TestTheTwoRemainderRows:
         with app.app_context():
             periods = self._periods()
             columns = self._columns(periods=periods)
-            columns[periods[0].id] = balance_at.GridColumn(
+            columns[periods[0].period_id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
                 period_timing=Decimal("-788.68"),
@@ -8108,17 +8131,20 @@ class TestTheTwoRemainderRows:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            all_periods = pay_period_service.get_all_periods(user_id)
-            current = pay_period_service.get_current_period(user_id)
-            window = [
-                p for p in all_periods
-                if p.period_index >= current.period_index
-            ][:6]
+            # The windows the route itself cuts (plan step C2-f2b): the
+            # visible six off the pass's own calendar, and the ONE-period
+            # window the mobile card's flags are asked of.  Built the same way
+            # here so the precondition below cannot hold for a window shape
+            # production never renders.
+            calendar = bctx.calendar()
+            current = calendar.period_containing(bctx.as_of)
+            window = calendar.window(current.period_index, 6)
+            card_window = [window[0]]
             view = balance_at.grid_balance_view(hysa, bctx)
             # The shape this test needs: the window accrues, its first
             # column does not.
             assert view.row_flags(window).accrual is True
-            assert view.row_flags(window[:1]).accrual is False
+            assert view.row_flags(card_window).accrual is False
 
         resp = auth_client.get(f"/grid?account_id={hysa.id}&periods=6")
         assert resp.status_code == 200
@@ -8253,7 +8279,7 @@ class TestTheContributionsRow:
         with app.app_context():
             periods = _summary_periods()
             columns = _summary_columns(periods)
-            columns[periods[0].id] = balance_at.GridColumn(
+            columns[periods[0].period_id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
                 period_timing=Decimal("0.00"),
@@ -8459,7 +8485,7 @@ class TestTheAccrualRowSignReachesItsStyling:
         periods = _summary_periods()
         with app.app_context():
             columns = _summary_columns(periods)
-            columns[periods[0].id] = balance_at.GridColumn(
+            columns[periods[0].period_id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
                 period_timing=Decimal("0.00"),
@@ -8636,6 +8662,65 @@ class TestTheAccrualRowLabelIsPerKind:
         html = resp.data.decode()
         bar = html[html.index("modelled-accrual-row"):]
         assert "Interest" in bar[:bar.index("</div>")]
+
+
+class TestTheMobileSummaryRefusesAnotherOwnersPaycheck:
+    """``/grid/this-period-summary`` answers only for the requester's own periods.
+
+    **This class did not exist until plan step C2-f2b, and the endpoint's IDOR
+    guard had no direct test at all** -- which is exactly why it is here, since
+    that step REPLACED the guard.  It was ``db.session.get(PayPeriod,
+    period_id)`` followed by ``period.user_id != user_id``, written out by
+    hand; it is now ``ctx.calendar().period_by_id(period_id)``, and a calendar
+    holds ONE owner's paydays, so another owner's id is absent rather than
+    rejected.
+
+    Both spellings answer ``204`` -- and the whole risk is that they answer it
+    for different REASONS, so a test asserting only the status code would pass
+    just as happily against a guard deleted outright.  The first test therefore
+    also pins that the body is EMPTY: a 204 carrying the other owner's Net Cash
+    Flow and Projected Balance is the leak, and 204 is exactly the status this
+    endpoint's swap-nothing no-op already uses for a transient miss.
+
+    The two cases are separate tests rather than one (``conventions.md``: merge
+    what shares KEYS, split what shares only a READER).  "That id does not
+    exist" and "that id is someone else's" are two states this route must
+    answer IDENTICALLY, and a single test asserting both cannot show that they
+    agree.
+    """
+
+    def test_another_owners_period_id_is_answered_204(
+        self, app, auth_client, seed_user, seed_periods_today,
+        seed_second_user, seed_second_periods,
+    ):
+        """A real period id belonging to a DIFFERENT owner leaks nothing."""
+        foreign = seed_second_periods[0]
+        with app.app_context():
+            assert foreign.user_id != seed_user["user"].id, (
+                "the fixture must supply another OWNER's period or this "
+                "test proves nothing"
+            )
+        resp = auth_client.get(
+            f"/grid/this-period-summary?period_id={foreign.id}",
+        )
+        assert resp.status_code == 204
+        assert resp.data == b"", (
+            "a 204 carrying a body would be the leak: this partial renders "
+            "the Net Cash Flow and Projected Balance of whatever period it is "
+            "given, and that period belongs to another owner"
+        )
+
+    def test_a_nonexistent_period_id_is_answered_the_same_way(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """"Not found" and "not yours" are indistinguishable to the caller.
+
+        The project's security response rule, on the one endpoint whose answer
+        to both is a swap-nothing ``204`` rather than a ``404``.
+        """
+        resp = auth_client.get("/grid/this-period-summary?period_id=99999999")
+        assert resp.status_code == 204
+        assert resp.data == b""
 
 
 class TestGridInterestAccrual:

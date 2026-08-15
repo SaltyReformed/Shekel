@@ -22,12 +22,10 @@ from typing import NamedTuple
 from flask import render_template, request
 from flask_login import current_user, login_required
 
-from app.extensions import db
 from app.models.account import Account
-from app.models.pay_period import PayPeriod
-from app.services import pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import PeriodWindow
 from app.utils.auth_helpers import require_owner
 
 from app.routes.grid._bp import grid_bp
@@ -35,6 +33,7 @@ from app.routes.grid._shared import (
     _accrual_row_label,
     _build_grid_view,
     _resolve_low_balance_threshold,
+    _resolve_visible_window,
 )
 
 
@@ -110,14 +109,16 @@ class _PartialWindow(NamedTuple):
         start_offset: Offset added to the current period's
             ``period_index`` for the leftmost visible column (the
             ``offset`` query param, default 0).
-        periods: The visible period slice (length up to ``num_periods``).
+        periods: The visible period slice, as a
+            :class:`~app.services.pay_calendar.PeriodWindow` of length up to
+            ``num_periods``.
     """
 
     balance_ctx: BalanceContext
     account: Account | None
     num_periods: int
     start_offset: int
-    periods: list[PayPeriod]
+    periods: PeriodWindow
 
 
 def _resolve_partial_window(user_id):
@@ -131,6 +132,14 @@ def _resolve_partial_window(user_id):
     resolution is one definition shared by both.  Builds on
     :func:`_resolve_partial_base` so the scenario + account prefix is the
     same one :func:`mobile_this_period_summary` uses.
+
+    **The window itself is resolved by
+    :func:`~app.routes.grid._shared._resolve_visible_window`**, the same
+    function ``page._resolve_grid_context`` calls (plan step C2-f2b).  That
+    shared rule is what these endpoints most need: they exist to recompute the
+    SAME window the page is showing, so a second copy of the resolution could
+    answer for different columns than the render it is replacing -- and both
+    halves would still look self-consistent.
 
     Args:
         user_id: ID of the requesting user.
@@ -147,14 +156,12 @@ def _resolve_partial_window(user_id):
     num_periods = request.args.get("periods", default=6, type=int)
     start_offset = request.args.get("offset", default=0, type=int)
 
-    current_period = pay_period_service.get_current_period(user_id)
-    if not current_period:
-        return None
-
-    start_index = current_period.period_index + start_offset
-    periods = pay_period_service.get_periods_in_range(
-        user_id, start_index, num_periods,
+    resolved = _resolve_visible_window(
+        base.balance_ctx, num_periods, start_offset,
     )
+    if resolved is None:
+        return None
+    _current_period, periods = resolved
 
     return _PartialWindow(
         balance_ctx=base.balance_ctx,
@@ -302,16 +309,28 @@ def mobile_this_period_summary():
     scenario gets the same 204 from the application-level
     ``BaselineMissingError`` handler (plan step X-v2) rather than from a guard
     here.
-    """
-    user_id = current_user.id
 
-    base = _resolve_partial_base(user_id)
+    **The OWNERSHIP check is STRUCTURAL since plan step C2-f2b.**  This route
+    resolved the submitted id with ``db.session.get(PayPeriod, ...)`` and then
+    compared ``period.user_id`` against the requester -- the IDOR guard written
+    out by hand, in a place a later edit could drop it and no test would see
+    the difference (both states answer 204).  It asks the read pass's own
+    calendar now, which holds ONE owner's paydays, so another user's id is
+    simply absent and there is no comparison left to forget.  The lookup is
+    cheap: the calendar is a per-pass memo, so the column set below reads the
+    same derivation rather than a second one.  *On the MISS path it is not
+    free* -- an unknown or another owner's id now costs one calendar
+    derivation before the 204, where the ORM lookup cost one primary-key
+    ``session.get``.  Stated rather than glossed, because this docstring is
+    the record of a security decision.
+    """
+    base = _resolve_partial_base(current_user.id)
 
     period_id = request.args.get("period_id", type=int)
     if period_id is None:
         return "", 204
-    period = db.session.get(PayPeriod, period_id)
-    if period is None or period.user_id != user_id:
+    period = base.balance_ctx.calendar().period_by_id(period_id)
+    if period is None:
         return "", 204
 
     # Kind-aware balance, subtotals and accrual from the ONE seam view (the

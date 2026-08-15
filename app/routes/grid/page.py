@@ -21,19 +21,18 @@ from sqlalchemy.orm import selectinload
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.services import (
     baseline_service,
     grid_view_service,
     pay_period_admin,
-    pay_period_service,
 )
 from app.services.account_resolver import resolve_grid_account
 from app.services.balance_at import BalanceContext
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
+from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
 
@@ -42,6 +41,7 @@ from app.routes.grid._shared import (
     _accrual_row_label,
     _build_grid_view,
     _resolve_low_balance_threshold,
+    _resolve_visible_window,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,11 +66,16 @@ class _GridContext(NamedTuple):
     orchestrator's pylint ``R0914`` count below the project threshold
     after the mobile-follow-up Commit 8 / F-6 decomposition.
 
+    **Every period here is DERIVED since plan step C2-f2b**, and ``user_id``
+    went with the change: the three ``pay_period_service`` queries that needed
+    it are now three views of the ONE calendar the read pass memoizes, and
+    :attr:`balance_ctx` already carries the owner.  Nothing here reads
+    ``end_date`` or ``period_index`` out of the table, which is what plan step
+    **C4** needs before it can drop both columns.
+
     Attributes:
-        user_id: ID of the requesting user.  Drives the user-scoped
-            pay-period queries -- notably the forward Plan-tab window
-            rebuilt by :func:`_build_plan_view`.
-        balance_ctx: The read pass's ``BalanceContext`` (scenario + as-of).
+        balance_ctx: The read pass's ``BalanceContext`` (scenario + as-of +
+            the owner's pay calendar).
         account: The grid account (checking by default, or the user's
             preferred grid account), or ``None`` when the user has no
             account rows at all (the post-Commit-3 user-with-zero-
@@ -78,24 +83,27 @@ class _GridContext(NamedTuple):
         num_periods: Count of visible pay-period columns.
         start_offset: Offset added to the current period's
             ``period_index`` for the leftmost visible column.
-        current_period: The user's current pay period (the natural
+        current_period: The paycheck covering the pass's ``as_of`` (the natural
             leftmost column when ``start_offset == 0``).
-        periods: The visible period slice (length ``num_periods``).
-        all_periods: ALL of the user's pay periods; the balance-at seam's
-            grid view folds this list into one column per period.  Not
+        periods: The visible period slice, as a
+            :class:`~app.services.pay_calendar.PeriodWindow` of length at most
+            ``num_periods`` -- shorter where the schedule ends first.
+        all_periods: ALL of the user's SAVED pay periods -- the seam's own
+            reporting domain (``BalanceContext.reported_periods``) rather than
+            a second reading of it, so the columns and the transactions this
+            route loads cannot describe different period sets.  Not
             anchor-forward: the fold answers a pre-anchor period with the
-            balance in force then (plan step X-c2b2), and each period is
-            valued off its own span.
+            balance in force then (plan step X-c2b2), and each period is valued
+            off its own span.
     """
 
-    user_id: int
     balance_ctx: BalanceContext
     account: Account | None
     num_periods: int
     start_offset: int
-    current_period: PayPeriod
-    periods: list[PayPeriod]
-    all_periods: list[PayPeriod]
+    current_period: DerivedPeriod
+    periods: PeriodWindow
+    all_periods: PeriodWindow
 
 
 def _resolve_grid_context(user_id, request_args, settings):
@@ -124,6 +132,24 @@ def _resolve_grid_context(user_id, request_args, settings):
     card first.  Neither is a dead end (the card is one click from any balance
     page), and a user with no periods and no baseline needs both repairs.
 
+    **All three period reads come off the pass's own calendar since plan step
+    C2-f2b**, through the one resolver
+    :func:`~app.routes.grid._shared._resolve_visible_window` the self-refresh
+    fragments also call.  What that consolidated is the number of CLOCK READS,
+    not the number of clocks: ``get_current_period`` defaulted to
+    ``date.today()`` and ``BalanceContext.build`` defaults to the same, so the
+    two agreed except across midnight, where one request could seat the current
+    column in one paycheck and value the pass in another.  *The render still
+    carries a second clock and this is not the step that unifies it*:
+    ``today=display_today()`` below drives the past-column styling and the
+    carry-forward button, and it is the DISPLAY day where ``as_of`` is the
+    process day (ledger row **P49**, owned by ``C2-f3``).
+
+    It is DETERMINISTIC now too: the retired reader's SQL carried no
+    ``ORDER BY`` and took ``.first()`` (ledger row **P19**), so two rows
+    covering one day -- expressible in the stored columns, unconstructible in
+    the derivation -- returned whichever the planner reached first.
+
     Returns:
         A :class:`_GridContext` on success, OR a rendered HTML string (the
         ``no_periods.html`` early-return page) when the user has no current pay
@@ -144,29 +170,25 @@ def _resolve_grid_context(user_id, request_args, settings):
     )
     start_offset = request_args.get("offset", default=0, type=int)
 
-    # Find the current period as the baseline starting point.
-    current_period = pay_period_service.get_current_period(user_id)
-    if current_period is None:
+    resolved = _resolve_visible_window(balance_ctx, num_periods, start_offset)
+    if resolved is None:
         return render_template("grid/no_periods.html")
-
-    # Load the visible period slice (offset applied to current).
-    periods = pay_period_service.get_periods_in_range(
-        user_id, current_period.period_index + start_offset, num_periods,
-    )
+    current_period, periods = resolved
     if not periods:
         return render_template("grid/no_periods.html")
 
     return _GridContext(
-        user_id=user_id,
         balance_ctx=balance_ctx,
         account=account,
         num_periods=num_periods,
         start_offset=start_offset,
         current_period=current_period,
         periods=periods,
-        # ALL of the user's periods -- the fold answers every one of them,
-        # and each render window is a slice of this domain.
-        all_periods=pay_period_service.get_all_periods(user_id),
+        # ALL of the user's periods -- the fold answers every one, and each
+        # render window is a slice of this domain.  Asked of the PASS rather
+        # than of the calendar so this and the seam's column set are the same
+        # window by construction, not two reads that happen to agree.
+        all_periods=balance_ctx.reported_periods(),
     )
 
 
@@ -181,6 +203,10 @@ def _load_grid_transactions(account, balance_ctx, all_periods):
     edge case) omits the account filter so the resulting list is
     naturally empty.
 
+    ``all_periods`` is the pass's reported window, every member of which is
+    MATERIALISED -- so ``period_id`` is never ``None`` and the ``IN`` clause
+    cannot be silently scoped by a null.
+
     Eager-loads ``entries`` (for entry-sum rendering) and ``template``
     (for row-key generation) -- these are read in the row-data helper
     and the cell template, so the eager-load avoids per-row N+1
@@ -188,7 +214,7 @@ def _load_grid_transactions(account, balance_ctx, all_periods):
 
     Returns the list of matching :class:`Transaction` rows.
     """
-    period_ids = [p.id for p in all_periods]
+    period_ids = [p.period_id for p in all_periods]
     txn_filters = [
         Transaction.pay_period_id.in_(period_ids),
         Transaction.scenario_id == balance_ctx.scenario_id,
@@ -267,7 +293,7 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
     if show_all:
         row_source_txns = transactions
     else:
-        visible_period_ids = {p.id for p in periods}
+        visible_period_ids = {p.period_id for p in periods}
         row_source_txns = [
             t for t in transactions
             if t.pay_period_id in visible_period_ids
@@ -320,8 +346,10 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories):
 
     Args:
         ctx: The :class:`_GridContext` for this request.  Supplies
-            ``user_id`` and ``current_period`` (the plan window's
-            anchor and its pay-period query).
+            ``current_period`` (the plan window's anchor) and, through
+            ``balance_ctx``, the pass's own pay calendar -- the same memoized
+            derivation the visible window was cut from, so Plan and This Period
+            are two views of one schedule rather than two reads of the table.
         all_transactions: The list already loaded by
             :func:`_load_grid_transactions`.  Re-used here instead of
             re-querying; ``_build_grid_row_data`` filters by visible
@@ -340,7 +368,8 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories):
         Dict with six ``plan_*`` keys ready to splice into the
         ``render_template`` kwargs of :func:`index`:
 
-          - ``plan_periods``: list[PayPeriod], up to
+          - ``plan_periods``: a
+            :class:`~app.services.pay_calendar.PeriodWindow`, up to
             :data:`PLAN_WINDOW_PERIODS` long starting at
             ``current_period``.  May be shorter when the user has
             fewer remaining generated periods.
@@ -358,8 +387,8 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories):
             visible one -- the Plan tab reaches periods the grid may not
             show).
     """
-    plan_periods = pay_period_service.get_periods_in_range(
-        ctx.user_id, ctx.current_period.period_index, PLAN_WINDOW_PERIODS,
+    plan_periods = ctx.balance_ctx.calendar().window(
+        ctx.current_period.period_index, PLAN_WINDOW_PERIODS,
     )
 
     row_data = _build_grid_row_data(
@@ -372,8 +401,8 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories):
         "plan_expense_row_keys": row_data.expense_row_keys,
         "plan_matched_by_row_period": row_data.matched_by_row_period,
         "plan_columns": {
-            p.id: grid_view.columns[p.id]
-            for p in plan_periods if p.id in grid_view.columns
+            p.period_id: grid_view.columns[p.period_id]
+            for p in plan_periods if p.period_id in grid_view.columns
         },
         "plan_row_flags": grid_view.row_flags(plan_periods),
     }
@@ -469,7 +498,7 @@ def index():
         # window's flags is what keeps the initial include and the
         # ``mobileCardSettled`` refresh (which sees one period and no window)
         # from disagreeing about whether a row is on screen.
-        period_row_flags=grid_view.row_flags(ctx.periods[:1]),
+        period_row_flags=grid_view.row_flags([ctx.periods[0]]),
         # ONE label for the three surfaces this render feeds -- the desktop
         # <tfoot>, the mobile This Period card and the Plan recap all read it
         # from this context (ruling R-AI / R-P), so the form factors cannot name
