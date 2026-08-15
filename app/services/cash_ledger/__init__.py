@@ -41,11 +41,12 @@ is facts (what happened, in the order it happened); the FOLD that samples those
 facts at a date is the seam's, exactly as plan step D-fold split the loan pair.
 
 **The walk (plan step X-a, ruling R-H).**  :mod:`._events` and :mod:`._walk`
-build the account's ONE event stream -- every balance ASSERTION plus every
-SETTLED row -- and replay it into per-assertion corrections, each source
-assigned to the assertion that CLEARED it (:mod:`._clearing`, ruling R-FL) and,
-where no statement has recorded showing it, to the first assertion dated on or
-after it (ruling R-DH).  The seam's
+build the account's ONE event stream -- every balance ASSERTION, every SETTLED
+row, and every PURCHASE whose bank posting day the owner recorded (ruling
+**R-FM**, plan step X-f3b) -- and replay it into per-assertion corrections, each
+source assigned to the assertion that CLEARED it (:mod:`._clearing`, ruling
+R-FL) and, where no statement has recorded showing it, to the first assertion
+dated on or after it (ruling R-DH).  The seam's
 read fold TAKES it, and since plan step X-c2b2 every cash figure on every screen
 is that fold sampled at a date.  The second consumer is still to come: at step
 X-d the posting WRITER reads this walk too, replacing the postings-sourced
@@ -90,7 +91,6 @@ from ._amount_source import (
     resolve_transfer_amount,
 )
 from ._amounts import (
-    ProjectedBasis,
     ReconciledThrough,
     contributed_amount,
     contribution_of,
@@ -100,6 +100,7 @@ from ._amounts import (
     live_amounts,
     live_override,
     owned_contribution,
+    posted_purchase_sum,
     settled_cash_leg,
 )
 from ._clearing import (
@@ -141,7 +142,6 @@ __all__ = [
     "CashLedgerWalk",
     "CashSourceFact",
     "ClearableLine",
-    "ProjectedBasis",
     "ReconciledThrough",
     "StatementCoverage",
     "amount_basis",
@@ -158,6 +158,7 @@ __all__ = [
     "live_override",
     "owned_contribution",
     "planned_cash_rows",
+    "posted_purchase_sum",
     "reconciled_through",
     "resolve_anchor",
     "resolve_transaction_amount",

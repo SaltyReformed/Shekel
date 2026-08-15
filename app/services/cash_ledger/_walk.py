@@ -166,11 +166,12 @@ class CashLedgerWalk:
 
     Attributes:
         source_facts: One :class:`~._events.CashSourceFact` per settled
-            balance-contributing row, ascending by
-            ``(settled_on, transaction_id)`` -- including rows dated BEFORE
-            the account's opening assertion, which the opening's correction
-            absorbs (the same treatment the loan walk gives a pre-origination
-            payment).
+            balance-contributing row AND per posted purchase recorded against
+            one (ruling **R-FM**, plan step X-f3b), ascending by
+            ``(settled_on, transaction_id, entry_id)`` -- including facts dated
+            BEFORE the account's opening assertion, which the opening's
+            correction absorbs (the same treatment the loan walk gives a
+            pre-origination payment).
         anchor_corrections: One :class:`CashAnchorCorrection` per assertion the
             account carries, chronological.
     """
@@ -288,8 +289,8 @@ def walk_cash_ledger(account_id: int, scenario_id: int) -> CashLedgerWalk:
     ``(observed_on, created_at, id)`` -- BUSINESS date first, which is what the
     coverage rule bisects and what makes "the FIRST is the opening" true -- and
     ``settled_cash_facts`` returns sources ascending by
-    ``(settled_on, transaction_id)``, which keeps the replay reproducible.
-    Neither is now load-bearing for WHICH assertion absorbs what.
+    ``(settled_on, transaction_id, entry_id)``, which keeps the replay
+    reproducible.  Neither is now load-bearing for WHICH assertion absorbs what.
 
     Reads only (no writes, no commit).
 

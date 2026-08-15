@@ -89,11 +89,8 @@ from app.services import (
     status_seam,
     transfer_service,
 )
-from app.services._posting_write import _emit_balanced_entry
-from app.services.posting_service import (
-    PostingError,
-    _PostingLeg,
-)
+from app.services._posting_write import _emit_balanced_entry, _PostingLeg
+from app.services.posting_service import PostingError
 from app.exceptions import ValidationError
 from app.utils.dates import display_today
 from tests._test_helpers import (
@@ -156,7 +153,7 @@ def _period_nets(entries):
     The per-period reconciliation view the R2 attribution tests assert on:
     an INDEPENDENT re-grouping of the entries' legs by the entry's pay period
     and the leg's ledger account (never the service's own
-    ``_posted_by_period``), so the tests re-derive the nets the production
+    ``_posting_write.posted_by_period``), so the tests re-derive the nets the production
     reconcile must have produced.
     """
     nets: dict[int, dict] = {}

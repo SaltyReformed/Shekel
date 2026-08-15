@@ -237,6 +237,22 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
         posting_service.sync_transaction_postings(
             source_txn, settled=source_txn.status.is_settled,
         )
+    # **The DISCRETE rows need one too, since plan step X-f3b** (ruling
+    # **R-FM**).  They are RELOCATED rather than settled -- two bulk UPDATEs
+    # above set ``pay_period_id`` to the target -- and a posting carries the
+    # BUDGET column its source row is attributed to, so an ad-hoc ENVELOPE
+    # (``is_envelope`` with no template, which ``_context`` routes here
+    # deliberately, "moves whole, carrying its entries") would leave its
+    # purchases' legs filed under the period it left.  The comment above used to
+    # justify skipping them with "carry-forward moves only Projected rows",
+    # which was sound while only a settled row held postings and is the same
+    # premise ``routes/transactions/mutations`` re-listed ``pay_period_id``
+    # for.  Empty-handed for every row whose family never posted, which is every
+    # bill and every plain expense in the batch.
+    for moved_txn in ctx.discrete_txns:
+        posting_service.sync_transaction_postings(
+            moved_txn, settled=moved_txn.status.is_settled,
+        )
 
     log_event(logger, logging.INFO, EVT_CARRY_FORWARD, BUSINESS,
               "Carried forward unpaid items",

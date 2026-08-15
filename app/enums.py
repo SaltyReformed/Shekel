@@ -424,12 +424,18 @@ class PostingSourceEnum(enum.Enum):
     they make every non-loan linked ledger sum to an ABSOLUTE balance, closing
     the app-wide trial balance.  None of the four links a transfer or a
     transaction (both source FKs are nullable); the source kind is what
-    disambiguates them.  Later steps add ``paycheck`` and ``credit_payback``
-    via data migrations.  Values match ``ref.posting_sources.name``.
+    disambiguates them.  ``purchase`` is a single PURCHASE recorded against an
+    envelope whose bank posting day the owner has recorded (plan step X-f3b,
+    ruling **R-FM**): it links ``transaction_entry_id`` and carries NULL in the
+    other two source FKs, and it books its own cash leg on its own day so its
+    envelope's close books only the remainder.  Later steps add ``paycheck``
+    and ``credit_payback`` via data migrations.  Values match
+    ``ref.posting_sources.name``.
     """
 
     TRANSFER = "transfer"
     TRANSACTION = "transaction"
+    PURCHASE = "purchase"
     LOAN_PAYMENT = "loan_payment"
     LOAN_OPENING = "loan_opening"
     LOAN_TRUEUP = "loan_trueup"

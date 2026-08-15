@@ -58,6 +58,7 @@ from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -102,7 +103,7 @@ class AccountAnchorCorrection:
 class _PostedSource:
     """One source's posted effect on a linked ledger, with what cleared it.
 
-    The three source loaders' shared return shape, and it is a RECORD rather
+    The four source loaders' shared return shape, and it is a RECORD rather
     than the ``(day, net)`` tuple it replaced because the walk now needs a third
     fact: which statement was recorded as showing this money (ruling **R-FL**).
     It satisfies :class:`app.services.cash_ledger.ClearableLine`, so
@@ -111,12 +112,12 @@ class _PostedSource:
     :class:`~app.services.cash_ledger.CashSourceFact`.
 
     Attributes:
-        settled_on: The civil day this source's cash moved -- a transaction's or
-            a transfer shadow's stored ``settled_on``, and for RESIDUE the
-            period's ``start_date``.
+        settled_on: The civil day this source's cash moved -- a transaction's, a
+            transfer shadow's or a PURCHASE's stored ``settled_on``, and for
+            RESIDUE the period's ``start_date``.
         reconciled_by_id: The ``account_anchor_history`` row whose statement was
             recorded as showing it, or ``None``.  **Residue always answers
-            ``None``, structurally**: its journal entries carry both source FKs
+            ``None``, structurally**: its journal entries carry every source FK
             NULL by construction, so there is no row to read a link from.  That
             is not a gap -- an unlinked source is UNKNOWN, and the clearing rule
             answers UNKNOWN from the date exactly as this walk always has.
@@ -137,10 +138,11 @@ def _linked_net_rows(
 ) -> list:
     """Return ``(group_key, net)`` sums over one linked ledger's postings.
 
-    The shared query shape of the three source loaders: sum
+    The shared query shape of the four source loaders: sum
     ``account_postings.amount`` over the linked ledger's legs in
     *scenario_id*, grouped by the caller's source-identity column
-    (``transaction_id``, ``transfer_id``, or the residue period start).
+    (``transaction_id``, ``transfer_id``, ``transaction_entry_id``, or the
+    residue period start).
 
     Args:
         linked_ledger_id: The account's LINKED ledger account id.
@@ -183,14 +185,14 @@ def _transaction_source_days(
     resolved.  The pay-period join this used to carry is gone with the
     NULL-instant fallback it fed.
 
-    The ``transfer_id IS NULL`` filter makes the three source loaders a
-    provable PARTITION of the linked ledger: no writer produces a
-    dual-linked entry today (the docstring convention in
-    :mod:`app.models.journal_entry`), but nothing at the storage tier
-    forbids one, and without the filter such an entry would be summed into
-    both this loader and the transfer loader -- double-counted in
-    ``ledger_before``.  A dual-linked entry classifies as transfer-linked
-    (the plan's reader-contract C-3 ordering).
+    The ``transfer_id IS NULL`` and ``transaction_entry_id IS NULL`` filters
+    make the FOUR source loaders a provable PARTITION of the linked ledger: no
+    writer produces a multi-linked entry today (the docstring convention in
+    :mod:`app.models.journal_entry`), but nothing at the storage tier forbids
+    one, and without the filters such an entry would be summed into two loaders
+    -- double-counted in ``ledger_before``.  A multi-linked entry classifies as
+    transfer-linked first and purchase-linked second (the plan's
+    reader-contract C-3 ordering, extended at plan step X-f3b).
 
     Args:
         linked_ledger_id: The account's LINKED ledger account id.
@@ -213,6 +215,7 @@ def _transaction_source_days(
             [
                 JournalEntry.transaction_id.isnot(None),
                 JournalEntry.transfer_id.is_(None),
+                JournalEntry.transaction_entry_id.is_(None),
             ],
         )
         if net != 0
@@ -347,15 +350,115 @@ def _transfer_source_days(
     ]
 
 
+def _purchase_source_days(
+    linked_ledger_id: int, scenario_id: int,
+) -> list[_PostedSource]:
+    """Return one :class:`_PostedSource` per purchase-linked source.
+
+    The fourth partition (ruling **R-FM**, plan step X-f3b): a PURCHASE whose
+    bank posting day the owner recorded books its own cash leg, so the walk must
+    read that leg's own day and its own clearing link.  Groups the linked
+    ledger's postings under purchase-linked journal entries by
+    ``transaction_entry_id`` and attributes each nonzero net to the STORED
+    ``transaction_entries.settled_on``.
+
+    **This is the loader the linkage exists for.**  Grouping a purchase's legs
+    under its parent's ``transaction_id`` instead would date them at
+    ``transactions.settled_on`` -- a day a still-projected envelope does not
+    have at all -- and would read the PARENT's ``reconciled_by_id``, attributing
+    whichever statement showed the envelope's close to money that left the bank
+    days earlier.  Both facts are per-purchase, so the source is per-purchase.
+
+    Unlike its transaction twin this reads no shared ``settled_day`` accessor:
+    that one REFUSES a settled row carrying no day, because a settled
+    transaction with no day is a broken invariant.  A purchase with no day is an
+    ordinary outstanding purchase -- it simply posts nothing, so a nonzero net
+    against one is the broken state, and it is refused below with the missing-
+    linkage case rather than dated by any fallback.
+
+    Args:
+        linked_ledger_id: The account's LINKED ledger account id.
+        scenario_id: The budget scenario to scope to.
+
+    Returns:
+        The sources, unordered (the walk sorts the merged set).
+
+    Raises:
+        PostingError: If a nonzero net's ``transaction_entry_id`` resolves no
+            purchase row, or resolves one carrying no ``settled_on``.  The FK is
+            ON DELETE SET NULL, so a live id always resolves; a miss means the
+            reverse-before-delete discipline was violated
+            (``posting_service.reverse_purchase_postings_before_delete``), and a
+            dayless resolution means a leg was posted for a purchase that has
+            not been seen to move.  Either must fail loudly rather than silently
+            mis-partition real money.
+    """
+    nets = {
+        entry_id: net
+        for entry_id, net in _linked_net_rows(
+            linked_ledger_id, scenario_id, JournalEntry.transaction_entry_id,
+            [
+                JournalEntry.transaction_entry_id.isnot(None),
+                # The exclusion that makes the FOUR loaders a partition rather
+                # than three plus an overlap: no writer produces a multi-linked
+                # entry (``source_entry_builder`` sets exactly one FK), and
+                # nothing at the storage tier forbids one, so without this a
+                # transfer-linked entry carrying a purchase id would be summed
+                # by this loader AND the transfer loader -- double-counted into
+                # ``ledger_before``.  Transfer-linked wins, which is the
+                # reader-contract C-3 ordering the sibling loader states.
+                JournalEntry.transfer_id.is_(None),
+            ],
+        )
+        if net != 0
+    }
+    if not nets:
+        return []
+    # The clearing link comes off the SAME row the day does, in the same read:
+    # two queries for two fields of one fact is how the two come to describe
+    # different rows.
+    dated = (
+        db.session.query(
+            TransactionEntry.id, TransactionEntry.settled_on,
+            TransactionEntry.reconciled_by_id,
+        )
+        .filter(TransactionEntry.id.in_(nets))
+        .all()
+    )
+    facts = {
+        entry_id: (settled_on, reconciled_by_id)
+        for entry_id, settled_on, reconciled_by_id in dated
+        if settled_on is not None
+    }
+    missing = set(nets) - set(facts)
+    if missing:
+        raise PostingError(
+            f"Ledger account {linked_ledger_id} holds a nonzero net for "
+            f"purchase ids {sorted(missing)} that either no longer exist or "
+            f"carry no recorded posting day; a purchase's legs are reversed "
+            f"before it is deleted and are only ever written for a purchase "
+            f"that has one, so the linkage invariant is broken."
+        )
+    return [
+        _PostedSource(
+            settled_on=facts[key][0],
+            reconciled_by_id=facts[key][1],
+            net=nets[key],
+        )
+        for key in nets
+    ]
+
+
 def _residue_source_days(
     linked_ledger_id: int, scenario_id: int,
 ) -> list[_PostedSource]:
     """Return one :class:`_PostedSource` for each unlinked non-correction group.
 
-    The residue bucket: journal entries on the linked ledger with BOTH
+    The residue bucket: journal entries on the linked ledger with ALL THREE
     concrete source FKs NULL and a non-correction source kind -- in
-    practice hard-delete residue, whose ``transaction_id`` /
-    ``transfer_id`` were SET-NULLed when the source row was deleted.  Each
+    practice hard-delete residue, whose ``transaction_id`` / ``transfer_id`` /
+    ``transaction_entry_id`` were SET-NULLed when the source row was deleted.
+    Each
     period's residue is attributed at that period's ``start_date`` -- a civil
     date used AS a civil date, never routed through an instant, which is the
     same discipline the settled-source loaders keep (ruling R-DH):
@@ -372,8 +475,8 @@ def _residue_source_days(
     resolvers guarantee loan and non-loan corrections book onto disjoint
     accounts).
 
-    **Residue can carry NO clearing link, structurally**, because both source
-    FKs are NULL by construction -- there is no row to read one from.  It is
+    **Residue can carry NO clearing link, structurally**, because every source
+    FK is NULL by construction -- there is no row to read one from.  It is
     therefore always UNKNOWN, and the clearing rule answers an UNKNOWN source
     from its date, which is exactly what this loader has always supplied
     (ruling **R-FL**; the ruling's own amendment names this loader as the third
@@ -401,6 +504,7 @@ def _residue_source_days(
             [
                 JournalEntry.transaction_id.is_(None),
                 JournalEntry.transfer_id.is_(None),
+                JournalEntry.transaction_entry_id.is_(None),
                 JournalEntry.source_kind_id.notin_(excluded_source_ids),
             ],
         )
@@ -431,8 +535,9 @@ def _source_net_days(
 ) -> list[_PostedSource]:
     """Return every source fact on one linked ledger, sorted by day.
 
-    The union of the three source partitions -- transaction-linked,
-    transfer-linked, and residue -- covering every posting on the linked
+    The union of the FOUR source partitions -- transaction-linked,
+    transfer-linked, purchase-linked (ruling **R-FM**, plan step X-f3b) and
+    residue -- covering every posting on the linked
     ledger except the account's own anchor corrections, each as a
     :class:`_PostedSource`.  Sorted ascending by day, which is no longer what
     decides which assertion absorbs what (that is the clearing rule's, ruling
@@ -450,6 +555,7 @@ def _source_net_days(
     sources = (
         _transaction_source_days(linked_ledger_id, scenario_id)
         + _transfer_source_days(account_id, linked_ledger_id, scenario_id)
+        + _purchase_source_days(linked_ledger_id, scenario_id)
         + _residue_source_days(linked_ledger_id, scenario_id)
     )
     sources.sort(key=lambda source: source.settled_on)

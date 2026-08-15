@@ -32,12 +32,13 @@
     </span>
     {% endif %}
     {% if group.settle.cash_amount is not none %}
-    {# Finding N-226: an envelope books ``sum(entries)`` over EVERY entry, and
-       a card purchase is one of those -- but it never touches checking, so
-       the statement shows LESS than the tick books.  Both figures are the
-       producer's; this prints them and composes neither. #}
+    {# Finding N-226, widened by ruling R-FM.  An envelope books
+       ``sum(entries)`` over EVERY entry, and two kinds of those do not leave
+       checking at this tick: a card purchase (it leaves through its own CC
+       Payback) and one that has ALREADY posted on its own recorded day.  Both
+       figures are the producer's; this prints them and composes neither. #}
     <span class="d-block text-body-secondary fw-normal fs-xs">
-      {{ money(group.settle.cash_amount) }} on your statement -- the rest went on a card
+      {{ money(group.settle.cash_amount) }} leaves your account now -- the rest is on a card or has already posted
     </span>
     {% endif %}
   </label>

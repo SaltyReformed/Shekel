@@ -404,6 +404,11 @@ _FENCED_MODULE_RULINGS = {
         # the same reasoning one step further along: it is not even an amount
         # per transaction, it is a component of one.
         "credit_entry_sum",
+        # The OTHER term ruling **R-FM** adds to that rule (plan step X-f3b) --
+        # ``Sigma(posted debit purchases)`` for one row -- published for exactly
+        # the reason its sibling above is, and refused for the same one: it is a
+        # component of an amount per transaction, not a balance per account.
+        "posted_purchase_sum",
         # ``_flows`` -- what a SET of rows sums to: what MOVED, not what is HELD
         # at a date.  A peer reduction over the same rows a balance folds, not a
         # step toward one.  ``sum_projected`` is the shared engine BOTH cash

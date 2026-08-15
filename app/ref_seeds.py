@@ -168,7 +168,8 @@ _REF_TABLE_SEEDS = (
     # own migration, the same dual-seed pattern); Step 5 adds the
     # ``account_opening`` / ``account_trueup`` sources (the non-loan anchor
     # corrections -- the ``opening`` / ``trueup`` KINDS are reused, the source
-    # disambiguates), and later steps INSERT more.
+    # disambiguates); plan step X-f3b adds the ``purchase`` source (the
+    # ``expense`` KIND is reused), and later steps INSERT more.
     # ``LedgerAccountKind`` (Step 4) is the explicit row-kind discriminator
     # for ``budget.ledger_accounts``: the four kinds the chart already uses,
     # the three per-loan accounts the loan-payment correction books into, the
@@ -198,6 +199,12 @@ _REF_TABLE_SEEDS = (
         "transfer", "transaction", "loan_payment",
         "loan_opening", "loan_trueup",
         "account_opening", "account_trueup",
+        # A single PURCHASE whose bank posting day the owner recorded (ruling
+        # **R-FM**, plan step X-f3b): it links
+        # ``journal_entries.transaction_entry_id`` and books its own cash leg
+        # on its own day, so its envelope's close books only the remainder.
+        # Migration ``b7c3d9e1f204`` inline-seeds it.
+        "purchase",
     ]),
     ("LedgerAccountKind", [
         "linked", "category", "fallback", "orphan",

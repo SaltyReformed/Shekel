@@ -56,6 +56,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import RecurrenceConflict, ValidationError
+from app.services import posting_service
 from app.services.recurrence import rule_occurrences
 from app.services._recurrence_common import (
     check_scenario_ownership,
@@ -519,8 +520,19 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     )
     overridden_ids, deleted_ids, to_delete = partition_regeneration_rows(existing)
 
-    # Delete the safe-to-remove entries.
+    # Delete the safe-to-remove entries, reversing whatever each has posted
+    # FIRST.  **The premise that made this unnecessary fell at plan step X-f3b**
+    # (ruling **R-FM**): ``partition_regeneration_rows`` skips immutable rows,
+    # and "a settled row is immutable, and every posted row is settled" was true
+    # only while a purchase was not a cash movement.  A PROJECTED envelope
+    # carrying a purchase whose bank posting day is recorded now holds ledger
+    # legs, and ``transaction_entries`` CASCADE from their parent while
+    # ``journal_entries.transaction_entry_id`` is ON DELETE SET NULL -- so
+    # deleting one without reversing strands both of its legs on their ledger
+    # accounts with nothing to offset them.  Idempotent no-op for a row whose
+    # family has never posted, which is every other row this sweep touches.
     for txn in to_delete:
+        posting_service.reverse_postings_before_delete(txn)
         db.session.delete(txn)
     db.session.flush()
 
@@ -577,6 +589,9 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
     if action == "update":
         resolved_count = 0
         skipped_count = 0
+        # The rows this pass actually restored, collected so the ledger
+        # reconcile below runs over exactly them (see its comment).
+        restored = []
         for txn_id in transaction_ids:
             txn = db.session.get(Transaction, txn_id)
             if txn is None:
@@ -628,8 +643,20 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
             txn.is_deleted = False
             if new_amount is not None:
                 txn.estimated_amount = new_amount
+            restored.append(txn)
             resolved_count += 1
         db.session.flush()
+        # **Restoring a row restores its purchases' cash legs** (plan step
+        # X-f3b, ruling **R-FM**).  This loop un-deletes rows and may re-price
+        # them, and both moves are ledger acts now that a PROJECTED envelope can
+        # hold postings: ``delete_transaction`` reversed a soft-deleted row's
+        # family on the way out, so without this the read fold re-acquires a
+        # movement the ledger no longer holds.  Idempotent and empty-handed for
+        # a row whose family never posted, which is every other row here.
+        for txn in restored:
+            posting_service.sync_transaction_postings(
+                txn, settled=txn.status.is_settled,
+            )
         log_event(
             logger, logging.INFO, EVT_RECURRENCE_CONFLICTS_RESOLVED, BUSINESS,
             "Recurrence conflicts resolved (update)",

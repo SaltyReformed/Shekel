@@ -69,17 +69,22 @@ from app.enums import (
     PostingSourceEnum,
 )
 from app.extensions import db
-from app.models.journal_entry import JournalEntry, Posting
+from app.models.journal_entry import JournalEntry
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import ledger_account_service, posting_reads
 from app.services.cash_ledger import settled_cash_leg
 from app.services.posting_reads import PostingError, _ledger_account_for
 from app.services.user_write_lock import lock_every_user_writes
+from app.services._posting_purchases import (
+    emit_purchase_deltas,
+    posted_purchase_exists_clause,
+    purchase_posts,
+)
 from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
-    _PostingLeg,
-    emit_keyed_delta_entries,
+    emit_source_deltas,
+    source_entry_builder,
 )
 from app.utils.balance_predicates import settled_day, settled_status_ids
 
@@ -98,117 +103,10 @@ logger = logging.getLogger(__name__)
 account_posting_total = posting_reads.account_posting_total
 settled_transfer_effect = posting_reads.settled_transfer_effect
 settled_transaction_effect = posting_reads.settled_transaction_effect
+posted_purchase_effect = posting_reads.posted_purchase_effect
 
 
 # ── Private helpers ────────────────────────────────────────────────
-
-
-def _posted_by_period(source_filter) -> "dict[tuple[int, date], dict[int, Decimal]]":
-    """Return a source's posted legs grouped by (pay period, entry date).
-
-    The "already posted" side of the reconcile both sync functions share: sums
-    ``account_postings.amount`` across every journal entry matching
-    *source_filter* (``JournalEntry.transfer_id == x`` for a transfer,
-    ``JournalEntry.transaction_id == x`` for a transaction), grouped by the
-    entry's ``pay_period_id``, its ``entry_date``, and the leg's ledger
-    account.  Reading the posted side back per PERIOD is what lets a reversal
-    land in the period of the postings it reverses (the 2026-07-02 adversarial
-    review's R2 attribution rule): a source row whose ``pay_period_id`` later
-    moved (the revert-and-move PATCH) reverses into its ORIGINAL period, so the
-    net-zero pair never straddles periods and a later period truncate cannot
-    strand half of it.
-
-    **Per ENTRY DATE as well as period since plan step E1a (finding N-13).**
-    ``entry_date`` is the day the recorded event happened (step C2's one
-    clock), and the balance fold counts each event from that day -- so a
-    correct NET in the right period at the WRONG date is still a wrong ledger
-    (the per-visible-date checked-projection assert catches exactly that).
-    Keying the reconcile by ``(period, entry_date)`` makes a stale-dated
-    posting a first-class delta: it is reversed AT ITS OWN DATE and re-posted
-    at the source's current settle date, instead of surviving because its
-    period's amount happened to match.  This also retires the old
-    latest-``entry_date`` heuristic a reversal-only entry inherited -- each
-    key carries the exact date its delta nets against.
-
-    Args:
-        source_filter: The SQLAlchemy filter expression selecting the source's
-            journal entries (by ``transfer_id`` or ``transaction_id``).
-
-    Returns:
-        ``{(pay_period_id, entry_date): {ledger_account_id: net Decimal}}``
-        over the source's posted legs (empty when nothing is posted yet; a
-        fully-reversed account appears with a ``Decimal("0")`` net, its delta
-        then dropping out).
-    """
-    rows = (
-        db.session.query(
-            JournalEntry.pay_period_id,
-            JournalEntry.entry_date,
-            Posting.ledger_account_id,
-            db.func.sum(Posting.amount),
-        )
-        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
-        .filter(source_filter)
-        .group_by(
-            JournalEntry.pay_period_id,
-            JournalEntry.entry_date,
-            Posting.ledger_account_id,
-        )
-        .all()
-    )
-    posted: "dict[tuple[int, date], dict[int, Decimal]]" = {}
-    for period_id, entry_date, ledger_id, net in rows:
-        posted.setdefault((period_id, entry_date), {})[ledger_id] = net
-    return posted
-
-
-def _reconcile_periods(
-    targets: "dict[tuple[int, date], dict[int, Decimal]]",
-    posted: "dict[tuple[int, date], dict[int, Decimal]]",
-    kind_id: int,
-) -> "dict[tuple[int, date], list[_PostingLeg]]":
-    """Return the balanced delta legs per (period, entry date) bringing *posted* to *targets*.
-
-    The keyed core of the reconcile both sync functions share: for every
-    ``(pay_period_id, entry_date)`` either side touches, the delta per ledger
-    account is ``target - posted``; zero deltas drop.  Within one key the
-    non-zero deltas always sum to zero -- a target sums to zero by
-    construction, and the posted side sums to zero because every prior entry
-    balanced and an entry lives in exactly one (period, date) -- so each key's
-    legs form one balanced entry (never a single leg).
-
-    A stale-DATED posting (finding N-13: a settled ``settled_on`` edit moves the
-    event's day but no amount) therefore reconciles as two keys: its old date
-    reverses to zero and the target's date posts fresh -- converging in ONE
-    pass, so a repeat sync writes nothing.
-
-    Args:
-        targets: ``{(pay_period_id, entry_date): {ledger_account_id: amount}}``
-            the ledger should net to (at most the source's current period at
-            its settle date; empty to reverse everything to zero).
-        posted: The :func:`_posted_by_period` net map.
-        kind_id: The posting kind stamped on every delta leg (both legs of a
-            transfer / transaction entry carry the source's one kind).
-
-    Returns:
-        ``{(pay_period_id, entry_date): [_PostingLeg, ...]}`` for every key
-        with a non-zero delta; empty when the ledger is already at target.
-    """
-    legs_by_key: "dict[tuple[int, date], list[_PostingLeg]]" = {}
-    for key in sorted(set(targets) | set(posted)):
-        key_target = targets.get(key, {})
-        key_posted = posted.get(key, {})
-        legs = [
-            _PostingLeg(ledger_id, delta, kind_id)
-            for ledger_id in sorted(set(key_target) | set(key_posted))
-            if (
-                delta := key_target.get(ledger_id, Decimal("0"))
-                - key_posted.get(ledger_id, Decimal("0"))
-            ) != 0
-        ]
-        if legs:
-            legs_by_key[key] = legs
-    return legs_by_key
 
 
 def _settle_effective(xfer: Transfer) -> Decimal:
@@ -368,7 +266,10 @@ def _settled_target(txn: Transaction, owner_id: int) -> dict[int, Decimal]:
     The two-account map the ledger should net to once *txn* is settled:
     ``{cash_ledger_id: cash_leg, category_ledger_id: -cash_leg}``, summing to
     zero by construction.  ``cash_leg`` is
-    :func:`app.services.cash_ledger.settled_cash_leg`; the cash
+    :func:`app.services.cash_ledger.settled_cash_leg` -- which since plan step
+    X-f3b (ruling **R-FM**) is net of the row's already-posted purchases, so
+    this books only the remainder and :func:`_purchase_target` books the rest;
+    the cash
     account is the transaction's linked ledger account
     (:func:`_ledger_account_for`); the counter account is the per-category
     Income/Expense ledger account (or the per-(owner, class) Uncategorized
@@ -456,9 +357,10 @@ def sync_transfer_postings(
     transfer's settled effective amount in its CURRENT pay period when
     *settled*, else zero everywhere -- by emitting one balanced delta journal
     entry PER PAY PERIOD whose posted legs differ from the target
-    (:func:`_reconcile_periods`).  A no-op (returns ``[]``) when the ledger is
-    already at target.  See the module docstring for the reconcile-to-target
-    rationale and the debit-positive sign convention.
+    (:func:`~app.services._posting_write.emit_source_deltas`).  A no-op
+    (returns ``[]``) when the ledger is already at target.  See the module
+    docstring for the reconcile-to-target rationale and the debit-positive sign
+    convention.
 
     Every transfer lifecycle path is one call to this function:
 
@@ -476,7 +378,8 @@ def sync_transfer_postings(
     The target's magnitude is the income shadow's effective amount (read
     fresh each call), so a revert -> edit-amount -> re-settle sequence posts
     the new amount.  The reversal's magnitude is read back from the ledger
-    per ``(period, entry date)`` (:func:`_posted_by_period`), so it negates
+    per ``(period, entry date)``
+    (:func:`~app.services._posting_write.posted_by_period`), so it negates
     exactly what was posted regardless of any later edit to *xfer* -- and
     lands in the PERIOD of the postings it reverses AT THEIR OWN DATE (the
     2026-07-02 adversarial review's R2 attribution rule, per-date since plan
@@ -524,35 +427,27 @@ def sync_transfer_postings(
             from_ledger.id: -effective,
             to_ledger.id: effective,
         }
-    posted = _posted_by_period(JournalEntry.transfer_id == xfer.id)
-    legs_by_key = _reconcile_periods(
-        targets, posted, ref_cache.posting_kind_id(PostingKindEnum.TRANSFER),
-    )
-    if not legs_by_key:
-        # Already at target: settling an already-posted transfer, reverting an
-        # already-reversed one, cancelling a never-posted one.  No entry.
-        return []
-
-    def _build_transfer_entry(period_id: int, entry_date: date) -> JournalEntry:
-        """Build one transfer delta entry header for its (period, date) key."""
-        return JournalEntry(
+    # Each delta entry carries its key's period and date: the settle-side entry
+    # the settle instant, a reversal the exact date of the postings it reverses
+    # (the R2 attribution rule, per-date since step E1a).  Everything else is
+    # this source's, stated once for all three sources in
+    # ``_posting_write.source_entry_builder``.  An empty result means the ledger
+    # is already at target: settling an already-posted transfer, reverting an
+    # already-reversed one, cancelling a never-posted one.
+    entries = emit_source_deltas(
+        targets=targets,
+        source_filter=JournalEntry.transfer_id == xfer.id,
+        kind_id=ref_cache.posting_kind_id(PostingKindEnum.TRANSFER),
+        build_entry=source_entry_builder(
             user_id=xfer.user_id,
             scenario_id=xfer.scenario_id,
-            pay_period_id=period_id,
-            # Each delta entry carries its key's date: the settle-side entry
-            # the settle instant, a reversal the exact date of the postings it
-            # reverses (the R2 attribution rule, per-date since step E1a).
-            entry_date=entry_date,
             source_kind_id=ref_cache.posting_source_id(
                 PostingSourceEnum.TRANSFER
             ),
-            transfer_id=xfer.id,
             description=_transfer_description(xfer),
-        )
-
-    entries = emit_keyed_delta_entries(
-        legs_by_key, _build_transfer_entry,
-        f"transfer {xfer.id} (settled={settled})",
+            transfer_id=xfer.id,
+        ),
+        log_label=f"transfer {xfer.id} (settled={settled})",
     )
     _self_heal_account_anchor_corrections(
         (xfer.from_account_id, xfer.to_account_id), xfer.scenario_id, entries,
@@ -563,23 +458,39 @@ def sync_transfer_postings(
 def sync_transaction_postings(
     txn: Transaction, *, settled: bool
 ) -> list[JournalEntry]:
-    """Reconcile a transaction's posted ledger effect to its target, idempotently.
+    """Reconcile a transaction's whole posted FAMILY to its target, idempotently.
 
     The ordinary-transaction analog of :func:`sync_transfer_postings`: ensures
     the NET amount posted for *txn* equals its target -- the settled
     debit-positive split ``{cash_ledger: cash_leg, category_ledger: -cash_leg}``
     in its CURRENT pay period when *settled*, or nothing when not -- by
     emitting one balanced delta journal entry PER PAY PERIOD whose posted legs
-    differ from the target (:func:`_reconcile_periods`), then a no-op
+    differ from the target
+    (:func:`~app.services._posting_write.emit_source_deltas`), then a no-op
     (returns ``[]``) on any repeat.  See the module docstring for the
     reconcile-to-target rationale and the debit-positive sign convention; see
     :func:`app.services.cash_ledger.settled_cash_leg` for the
-    ``effective - Sigma(credit)`` cash-effect
-    formula.
+    ``effective - Sigma(credit) - Sigma(posted purchases)`` cash-effect formula.
+
+    **A FAMILY since plan step X-f3b, and that is ruling R-FM** (finding
+    **N-274**).  A purchase whose bank posting day the owner recorded is a cash
+    movement of its own, on its own day, so this reconciles the parent's leg AND
+    one entry per such purchase
+    (:func:`~app.services._posting_purchases.emit_purchase_deltas`) in a single
+    pass.  The two halves cannot double-count, structurally: what the parent's
+    leg books is ``sum(entries) - credit - posted``, so the family always sums
+    to the row's whole debit total whatever subset of its purchases has posted.
+    **Owning both halves here is what makes the trigger set complete** -- every
+    door that already reconciles a transaction (a settle, a revert, a
+    re-category, an amount edit, a period move, a status change) now reconciles
+    its purchases too, with no second list of call sites to keep in step.  A
+    change to ONE purchase that leaves the parent alone has its own narrower
+    door, :func:`sync_purchase_postings`.
 
     **Reconciles over the accounts, periods, AND entry dates the transaction
     has ALREADY posted to**, read from the ledger by ``transaction_id``
-    (:func:`_posted_by_period`), unioned with the target -- NOT a single fixed
+    (:func:`~app.services._posting_write.posted_by_period`), unioned with the
+    target -- NOT a single fixed
     pair.  This is what makes a revert-and-recategorize correct (the reversal
     lands on the OLD category -- the one in the ledger -- not the new
     ``txn.category_id``; plan Section 2.8 CRITICAL), and what makes a
@@ -640,11 +551,44 @@ def sync_transaction_postings(
     # handlers act on the primary row; transfers go through transfer_service), so
     # this is defense-in-depth -- but a settled shadow that slipped through would
     # otherwise be given a second, transaction-sourced entry and double-counted
-    # against the transfer posting, so the guard stays.
+    # against the transfer posting, so the guard stays.  A shadow also carries no
+    # entries (``entry_service`` refuses them), so the purchase arm below has
+    # nothing to do for one either.
     if txn.transfer_id is not None:
         return []
 
     owner_id = txn.pay_period.user_id
+    entries = _emit_transaction_deltas(txn, settled=settled, owner_id=owner_id)
+    for purchase in txn.entries:
+        entries.extend(
+            emit_purchase_deltas(
+                purchase, txn,
+                posted=purchase_posts(txn, purchase), owner_id=owner_id,
+            )
+        )
+    _self_heal_account_anchor_corrections(
+        (txn.account_id,), txn.scenario_id, entries,
+    )
+    return entries
+
+
+def _emit_transaction_deltas(
+    txn: Transaction, *, settled: bool, owner_id: int,
+) -> "list[JournalEntry]":
+    """Emit the delta entries for the transaction's OWN cash leg.
+
+    :func:`sync_transaction_postings`' first half, split out so its purchase
+    arm and the teardown door (:func:`reverse_postings_before_delete`) compose
+    the same two halves without either running the anchor self-heal twice.
+
+    Args:
+        txn: The transaction (already known not to be a transfer shadow).
+        settled: Whether its confirmed effect should be posted.
+        owner_id: ``txn.pay_period.user_id``.
+
+    Returns:
+        The emitted delta entries; ``[]`` when the ledger is already at target.
+    """
     targets: "dict[tuple[int, date], dict[int, Decimal]]" = {}
     if settled:
         # The target lives at the transaction's current period AND its settle
@@ -652,80 +596,163 @@ def sync_transaction_postings(
         targets[(txn.pay_period_id, _transaction_entry_date(txn))] = (
             _settled_target(txn, owner_id)
         )
-    posted = _posted_by_period(JournalEntry.transaction_id == txn.id)
-    # Both legs of an ordinary-transaction entry carry the same kind, by the
-    # transaction type (mirrors Step 2, where both transfer legs are
-    # ``transfer``); no Step-3 reader differentiates per-leg kind.
-    kind_id = ref_cache.posting_kind_id(
-        PostingKindEnum.INCOME if txn.is_income else PostingKindEnum.EXPENSE
-    )
-    legs_by_key = _reconcile_periods(targets, posted, kind_id)
-    if not legs_by_key:
-        # Already at target: a repeat settle, an already-reversed revert, a
-        # cancel of a never-posted row, or an all-credit envelope (cash_leg 0).
-        return []
-
-    def _build_transaction_entry(
-        period_id: int, entry_date: date,
-    ) -> JournalEntry:
-        """Build one transaction delta entry header for its (period, date) key."""
-        return JournalEntry(
+    # An empty result means the ledger is already at target: a repeat settle, an
+    # already-reversed revert, a cancel of a never-posted row, or an envelope
+    # whose whole debit total is already carried by its own purchases.
+    return emit_source_deltas(
+        targets=targets,
+        source_filter=JournalEntry.transaction_id == txn.id,
+        # Both legs of an ordinary-transaction entry carry the same kind, by the
+        # transaction type (mirrors Step 2, where both transfer legs are
+        # ``transfer``); no Step-3 reader differentiates per-leg kind.
+        kind_id=ref_cache.posting_kind_id(
+            PostingKindEnum.INCOME if txn.is_income else PostingKindEnum.EXPENSE
+        ),
+        build_entry=source_entry_builder(
             user_id=owner_id,
             scenario_id=txn.scenario_id,
-            pay_period_id=period_id,
-            # Each delta entry carries its key's date: the settle-side entry
-            # the settle instant, a reversal the exact date of the postings it
-            # reverses (the R2 attribution rule, per-date since step E1a).
-            entry_date=entry_date,
             source_kind_id=ref_cache.posting_source_id(
                 PostingSourceEnum.TRANSACTION
             ),
-            transaction_id=txn.id,
             description=txn.name[:_MAX_DESCRIPTION_LENGTH],
-        )
+            transaction_id=txn.id,
+        ),
+        log_label=f"transaction {txn.id} (settled={settled})",
+    )
 
-    entries = emit_keyed_delta_entries(
-        legs_by_key, _build_transaction_entry,
-        f"transaction {txn.id} (settled={settled})",
+
+def sync_purchase_postings(entry) -> "list[JournalEntry]":
+    """Reconcile ONE purchase's posted ledger effect to its target.
+
+    The per-purchase door, for the write paths that change a purchase without
+    touching its parent's own cash leg: ``entry_service``'s create / update
+    doors and ``reconcile_service``'s statement tick.  It resolves whether the
+    purchase should be posted itself
+    (:func:`~app.services._posting_purchases.purchase_posts`), so no caller
+    restates that rule.
+
+    A caller that has changed the PARENT -- a settle, a revert, a re-category, a
+    delete -- calls :func:`sync_transaction_postings` instead, which reconciles
+    the whole family in one pass.
+
+    Flushes but does not commit (the caller owns the transaction).
+
+    Args:
+        entry: The purchase, flushed (``entry.id`` set), with its parent
+            reachable through ``entry.transaction``.
+
+    Returns:
+        The new delta entries, or ``[]`` when the ledger is already at target.
+
+    Raises:
+        PostingError: If the account has no linked ledger account.
+    """
+    txn = entry.transaction
+    # The same guard the two transaction doors take, for the same reason and
+    # over the same row set: a shadow's postings are Step 2's and link by
+    # ``transfer_id``.  ``entry_service.create_entry`` refuses a shadow outright,
+    # so this is defense-in-depth -- but three doors refusing three different row
+    # sets is how the fourth one is written wrongly.
+    if txn.transfer_id is not None:
+        return []
+    owner_id = txn.pay_period.user_id
+    entries = emit_purchase_deltas(
+        entry, txn, posted=purchase_posts(txn, entry), owner_id=owner_id,
     )
     _self_heal_account_anchor_corrections(
-        (txn.account_id,), txn.scenario_id, entries,
+        (entry.account_id,), txn.scenario_id, entries,
     )
     return entries
+
+
+def reverse_purchase_postings_before_delete(entry) -> None:
+    """Reverse one purchase's ledger postings before the row is deleted.
+
+    The purchase twin of :func:`reverse_postings_before_delete`, and it exists
+    for the identical reason: ``journal_entries.transaction_entry_id`` is ``ON
+    DELETE SET NULL``, so once the purchase row is gone the link is severed and
+    its legs would be stranded on their ledger accounts with no offsetting
+    reversal -- breaking per-account reconciliation and leaving RESIDUE the
+    posted walk can only absorb, never explain.  Reversing FIRST leaves the
+    original entry and its reversal as an immutable net-zero pair.
+
+    Idempotent no-op for a purchase that never posted (no recorded posting day,
+    a card purchase, a non-contributing parent).
+
+    Args:
+        entry: The purchase about to be deleted.  Must still be flushed
+            (``entry.id`` set) so the reversal can read its posted legs back.
+    """
+    txn = entry.transaction
+    if txn.transfer_id is not None:
+        return
+    owner_id = txn.pay_period.user_id
+    entries = emit_purchase_deltas(
+        entry, txn, posted=False, owner_id=owner_id,
+    )
+    _self_heal_account_anchor_corrections(
+        (entry.account_id,), txn.scenario_id, entries,
+    )
 
 
 def reverse_postings_before_delete(txn: Transaction) -> None:
     """Reverse a transaction's ledger postings before the row is deleted.
 
     The delete-side reconcile every transaction-delete path runs FIRST, while
-    ``txn.id`` still exists: it brings the transaction's net posted effect to
-    zero by reconciling to an empty (``settled=False``) target via
-    :func:`sync_transaction_postings`, emitting a balanced reversal entry for
-    whatever the ledger currently holds.  Running it before the delete is
-    load-bearing for a HARD delete: ``journal_entries.transaction_id`` is
-    ``ON DELETE SET NULL``, so once the row is gone the link is severed and the
-    original legs would be stranded on their ledger accounts with no offsetting
-    reversal -- breaking per-account reconciliation.  Reversing first leaves the
-    original entry and its reversal as an immutable net-zero pair (their
-    ``transaction_id`` SET-NULLs together on the delete), so every ledger
-    account still nets correctly.  The transaction analog of
+    ``txn.id`` still exists: it brings the row's WHOLE posted family -- its own
+    cash leg and every one of its purchases' -- to zero, emitting a balanced
+    reversal entry for whatever the ledger currently holds.  Running it before
+    the delete is load-bearing for a HARD delete: ``journal_entries``'
+    ``transaction_id`` and ``transaction_entry_id`` are both ``ON DELETE SET
+    NULL`` (and ``transaction_entries`` CASCADE from their parent), so once the
+    rows are gone the links are severed and the original legs would be stranded
+    on their ledger accounts with no offsetting reversal -- breaking per-account
+    reconciliation.  Reversing first leaves each original entry and its reversal
+    as an immutable net-zero pair (their links SET-NULL together on the delete),
+    so every ledger account still nets correctly.  The transaction analog of
     ``transfer_service.delete_transfer``'s ``sync_transfer_postings(xfer,
     settled=False)`` reverse-before-delete.
 
-    Idempotent no-op for a never-settled or already-reversed transaction (a
-    Projected row has no postings).  Shared by the delete route
-    (``delete_transaction``) and the three payback-delete paths
-    (``credit_workflow.delete_payback_on_credit_revert`` /
+    **It is NOT ``sync_transaction_postings(txn, settled=False)``, and since
+    plan step X-f3b it cannot be.**  That call means "this row has not settled",
+    which is a true and ORDINARY state for an envelope whose purchases have
+    posted -- a revert must leave them exactly where they are, because the money
+    really did leave the bank.  A teardown means something else entirely, so it
+    says so rather than borrowing a flag whose meaning stops at the parent's own
+    leg.
+
+    Idempotent no-op for a transaction whose family has never posted (a
+    Projected row with no posted purchases).  Shared by the delete route
+    (``delete_transaction``), the regeneration sweep
+    (``recurrence_engine.regenerate_for_template``) and the three payback-delete
+    paths (``credit_workflow.delete_payback_on_credit_revert`` /
     ``delete_payback_on_source_delete`` / ``entry_credit_workflow
     .sync_entry_payback``'s DELETE branch) so no delete path can strand a
     posting.  Flushes but does not commit (the caller owns the transaction).
 
     Args:
         txn: The transaction about to be deleted (soft or hard).  Must still be
-            flushed (``txn.id`` set) so the reversal entry can link by
-            ``transaction_id`` and read the already-posted legs back.
+            flushed (``txn.id`` set) so the reversal entries can link by
+            ``transaction_id`` / ``transaction_entry_id`` and read the
+            already-posted legs back.
     """
-    sync_transaction_postings(txn, settled=False)
+    # A transfer shadow carries no transaction-sourced postings and no entries;
+    # the guard mirrors ``sync_transaction_postings``' so both doors refuse the
+    # same row rather than one of them reading ``pay_period`` for a row it will
+    # do nothing with.
+    if txn.transfer_id is not None:
+        return
+    owner_id = txn.pay_period.user_id
+    entries = _emit_transaction_deltas(txn, settled=False, owner_id=owner_id)
+    for purchase in txn.entries:
+        entries.extend(
+            emit_purchase_deltas(
+                purchase, txn, posted=False, owner_id=owner_id,
+            )
+        )
+    _self_heal_account_anchor_corrections(
+        (txn.account_id,), txn.scenario_id, entries,
+    )
 
 
 def resync_all_cash_postings() -> tuple[int, int]:
@@ -809,9 +836,19 @@ def resync_all_cash_postings() -> tuple[int, int]:
     "the only multi-owner transactions" and missed this one, which is the FIRST
     of the three deploy hooks to run.
 
+    **Its transaction half is no longer settled-only** (ruling **R-FM**, plan
+    step X-f3b): it walks every non-transfer row that is settled OR carries a
+    purchase with a recorded bank posting day, and passes each row its own
+    settled truth.  That is what makes the hook total over the family the ledger
+    now holds -- a purchase against a still-Projected envelope is real cash that
+    left the bank -- and it is what moves the existing rows onto the new split
+    without a backfill: the first deploy after migration ``b7c3d9e1f204``
+    reverses the part of each envelope's cash leg its posted purchases now own
+    and posts those purchases at their own days, in one balanced pass per row.
+
     Returns:
-        ``(transactions_changed, transfers_changed)`` -- how many settled
-        sources this pass actually re-posted, for the deploy log.
+        ``(transactions_changed, transfers_changed)`` -- how many sources this
+        pass actually re-posted, for the deploy log.
     """
     lock_every_user_writes()
     settled_ids = settled_status_ids()
@@ -830,14 +867,27 @@ def resync_all_cash_postings() -> tuple[int, int]:
         .filter(
             Transaction.is_deleted.is_(False),
             Transaction.transfer_id.is_(None),
-            Transaction.status_id.in_(settled_ids),
+            # SETTLED, or carrying a purchase that has posted a leg of its own
+            # (ruling **R-FM**, plan step X-f3b).  The second arm is what makes
+            # this hook TOTAL over the family the ledger now holds: a purchase
+            # against a still-PROJECTED envelope is real cash that left the bank,
+            # and without it that envelope's legs would be maintained by
+            # per-mutation calls and by nothing else -- the exact gap this
+            # function exists to close for transactions.  It is an EXISTS rather
+            # than a join so a row with several posted purchases is walked once.
+            db.or_(
+                Transaction.status_id.in_(settled_ids),
+                posted_purchase_exists_clause(),
+            ),
         )
         .order_by(Transaction.id)
         .all()
     )
     transactions_changed = sum(
         1 for txn in transactions
-        if sync_transaction_postings(txn, settled=True)
+        if sync_transaction_postings(
+            txn, settled=txn.status_id in settled_ids,
+        )
     )
 
     transfers = (

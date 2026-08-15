@@ -35,7 +35,10 @@ from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import ledger_account_service
-from app.utils.balance_predicates import settled_status_ids
+from app.utils.balance_predicates import (
+    balance_excluded_status_ids,
+    settled_status_ids,
+)
 
 
 class PostingError(ShekelError):
@@ -199,9 +202,19 @@ def settled_transaction_effect(account_id: int, scenario_id: int) -> Decimal:
     (``settled_status_ids`` is disjoint from the balance-excluded set), so no
     excluded-status guard is needed.
 
+    **It does NOT subtract the row's already-posted purchases, and that is what
+    keeps it an ORACLE** (ruling **R-FM**, plan step X-f3b).  Since that step a
+    settled envelope's own leg books ``effective - credit - posted purchases``
+    while each posted purchase books its own leg, so the FAMILY still sums to
+    ``effective - credit`` -- which is what this expression already computes.
+    Restating the split here would make the oracle share the implementation it
+    grades; leaving it whole makes it grade the split's own arithmetic.
+
     For a real account A, ``account_posting_total(A) ==
-    settled_transfer_effect(A) + settled_transaction_effect(A)`` once the
-    ledger is in sync (the oracle's per-account invariant).
+    settled_transfer_effect(A) + settled_transaction_effect(A) +
+    posted_purchase_effect(A)`` once the ledger is in sync (the oracle's
+    per-account invariant).  The third term covers the purchases whose PARENT is
+    not settled, which no ``effective`` figure contains.
 
     Args:
         account_id: The real account whose settled transactions to sum.
@@ -252,6 +265,68 @@ def settled_transaction_effect(account_id: int, scenario_id: int) -> Decimal:
             Transaction.transfer_id.is_(None),
             Transaction.is_deleted.is_(False),
             Transaction.status_id.in_(settled_status_ids()),
+        )
+        .scalar()
+    )
+
+
+def posted_purchase_effect(account_id: int, scenario_id: int) -> Decimal:
+    """Return an account's net effect from purchases on UNSETTLED parents.
+
+    The third term of the oracle's per-account invariant, and ruling **R-FM**
+    is why it exists (plan step X-f3b).  A purchase whose bank posting day is
+    recorded books its own cash leg, so an account's posted total now contains
+    money that no settled row's ``effective`` figure accounts for: the
+    purchases whose PARENT is still Projected.  A purchase on a SETTLED parent
+    is already inside :func:`settled_transaction_effect` -- that expression sums
+    ``effective - credit`` over the whole row, which is exactly what the parent
+    leg and its purchases' legs sum to -- so counting one here would
+    double-count it.
+
+    Over the account's non-deleted, balance-contributing, NON-transfer
+    transactions in *scenario_id* that are NOT settled: sum ``-amount`` over
+    their debit entries carrying a ``settled_on``.  Always negative or zero: a
+    purchase is an expense and its money leaves.
+
+    **The three narrowings are the write side's, restated in SQL rather than
+    shared with it** -- the same deliberate independence
+    :func:`settled_transaction_effect` keeps.  An oracle that imported
+    ``posting_service._purchase_posts`` could not grade it.
+
+    Args:
+        account_id: The real account whose posted purchases to sum.
+        scenario_id: The scenario to scope to.
+
+    Returns:
+        The signed net effect as a ``Decimal``.
+
+    Raises:
+        PostingError: If *scenario_id* is ``None``.
+    """
+    if scenario_id is None:
+        raise PostingError(
+            "posted_purchase_effect requires a scenario_id (transactions "
+            "are scenario-scoped); got None."
+        )
+    return (
+        db.session.query(
+            db.func.coalesce(
+                db.func.sum(-TransactionEntry.amount), Decimal("0")
+            )
+        )
+        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+        .filter(
+            Transaction.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
+            Transaction.transfer_id.is_(None),
+            Transaction.is_deleted.is_(False),
+            Transaction.status_id.notin_(
+                # NOT settled and NOT excluded: the parents whose own
+                # ``effective`` figure is in no other term of the invariant.
+                set(settled_status_ids()) | set(balance_excluded_status_ids())
+            ),
+            TransactionEntry.settled_on.isnot(None),
+            TransactionEntry.is_credit.is_(False),
         )
         .scalar()
     )

@@ -33,6 +33,7 @@ from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import (
     account_service,
     category_service,
+    posting_service,
     recurrence_engine,
     template_amount_service,
 )
@@ -624,6 +625,38 @@ def delete_amount_version(template_id, version_id):
     return withdraw_amount_version(template, version_id, _AMOUNT_VERSION_ACTION)
 
 
+
+
+def _rows_holding_purchase_postings(*scope):
+    """Return the template rows matching *scope* that hold ledger postings.
+
+    **A PROJECTED row can hold postings since plan step X-f3b** (ruling
+    **R-FM**): a purchase whose bank posting day the owner recorded books its
+    own balanced cash leg whatever its envelope's status is.  Every bulk
+    statement in this module was written under the opposite premise -- "a
+    Projected row has no postings, so a bulk archive / restore / delete cannot
+    touch the ledger" -- and that premise is what fell.
+
+    The narrowing is what keeps the cost honest: a template generates ~50 rows
+    over the forward horizon and at most a handful can ever hold a purchase, so
+    this returns the empty list with ONE indexed read in the ordinary case and
+    the callers loop over nothing.
+
+    Args:
+        *scope: The SQLAlchemy clauses selecting the rows the bulk statement is
+            about to touch -- built by the caller, so this reader can never
+            select a different set from the statement it guards.
+
+    Returns:
+        The matching :class:`~app.models.transaction.Transaction` rows.
+    """
+    return (
+        db.session.query(Transaction)
+        .filter(*scope, posting_service.posted_purchase_exists_clause())
+        .all()
+    )
+
+
 @templates_bp.route("/templates/<int:template_id>/archive", methods=["POST"])
 @login_required
 @require_owner
@@ -646,10 +679,19 @@ def archive_template(template_id):
     # Centralized ``is_projected_clause`` (D6-09 / MED-02) so the
     # archive-template, unarchive-template, and hard-delete-fallback
     # filters in this module share one definition.
-    deleted_count = db.session.query(Transaction).filter(
+    scope = (
         Transaction.template_id == template.id,
         is_projected_clause(Transaction),
         Transaction.is_deleted.is_(False),
+    )
+    # A soft-deleted row contributes to no balance, so whatever its purchases
+    # posted must come back out FIRST -- and it must be first: the deploy
+    # resync skips ``is_deleted`` rows, so a leg stranded here is stranded for
+    # good rather than until the next boot (plan step X-f3b, ruling **R-FM**).
+    for txn in _rows_holding_purchase_postings(*scope):
+        posting_service.reverse_postings_before_delete(txn)
+    deleted_count = db.session.query(Transaction).filter(
+        *scope,
     ).update({"is_deleted": True}, synchronize_session="fetch")
 
     conflict = commit_or_handle_stale(StaleConflictContext(
@@ -688,11 +730,23 @@ def unarchive_template(template_id):
 
     # Restore soft-deleted projected transactions.  Routed through
     # ``is_projected_clause`` (D6-09 / MED-02); see ``archive_template``.
-    restored_count = db.session.query(Transaction).filter(
+    restore_scope = (
         Transaction.template_id == template.id,
         is_projected_clause(Transaction),
         Transaction.is_deleted.is_(True),
+    )
+    restored = _rows_holding_purchase_postings(*restore_scope)
+    restored_count = db.session.query(Transaction).filter(
+        *restore_scope,
     ).update({"is_deleted": False}, synchronize_session="fetch")
+    # The mirror of the archive: a restored row contributes again, so its
+    # purchases' legs go back.  AFTER the update, and read through the session
+    # the bulk statement synchronised, so each row's ``is_deleted`` is the value
+    # the reconcile must price it at.
+    for txn in restored:
+        posting_service.sync_transaction_postings(
+            txn, settled=txn.status.is_settled,
+        )
 
     # Regenerate to fill in any missing future periods.
     if template.recurrence_rule:
@@ -778,11 +832,17 @@ def hard_delete_template(template_id):
             # pylint: enable=duplicate-code
             # Soft-delete projected transactions (same logic as
             # archive_template).  Routed through ``is_projected_clause``
-            # (D6-09 / MED-02); see ``archive_template`` above.
-            db.session.query(Transaction).filter(
+            # (D6-09 / MED-02); see ``archive_template`` above, including why
+            # the posting reversal has to precede the bulk statement.
+            fallback_scope = (
                 Transaction.template_id == template.id,
                 is_projected_clause(Transaction),
                 Transaction.is_deleted.is_(False),
+            )
+            for txn in _rows_holding_purchase_postings(*fallback_scope):
+                posting_service.reverse_postings_before_delete(txn)
+            db.session.query(Transaction).filter(
+                *fallback_scope,
             ).update({"is_deleted": True}, synchronize_session="fetch")
             conflict = commit_or_handle_stale(StaleConflictContext(
                 logger=logger,
@@ -808,9 +868,19 @@ def hard_delete_template(template_id):
     settled_status_ids = db.session.query(Status.id).filter(
         Status.is_settled.is_(True)
     ).scalar_subquery()
-    db.session.query(Transaction).filter(
+    delete_scope = (
         Transaction.template_id == template.id,
         Transaction.status_id.notin_(settled_status_ids),
+    )
+    # The strongest form of the same rule: ``transaction_entries`` CASCADE from
+    # their parent and ``journal_entries.transaction_entry_id`` is ON DELETE SET
+    # NULL, so a purchase deleted here without a reversal leaves both of its
+    # legs on their ledger accounts with nothing left to explain them -- the
+    # RESIDUE the posted walk can absorb and never account for.
+    for txn in _rows_holding_purchase_postings(*delete_scope):
+        posting_service.reverse_postings_before_delete(txn)
+    db.session.query(Transaction).filter(
+        *delete_scope,
     ).delete(synchronize_session="fetch")
 
     db.session.delete(template)

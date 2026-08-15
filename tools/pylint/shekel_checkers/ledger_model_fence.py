@@ -65,9 +65,11 @@ _LEDGER_LEAF_MODULE_NAMES = frozenset(
 _LEDGER_MODEL_NAMES = frozenset({"Posting", "JournalEntry", "LedgerAccount"})
 
 # Modules allowed to import a ledger model directly: the posting-ledger write
-# core (``posting_service`` + its ``_posting_write`` / ``_posting_reconcile``
-# leaves), the readers (``posting_reads``, the loan / account posting packages,
-# the ledger report package), the chart-of-accounts resolver
+# core (``posting_service`` + its ``_posting_write`` / ``_posting_reconcile`` /
+# ``_posting_purchases`` leaves -- the last added at plan step X-f3b, which made
+# a PURCHASE a posting source of its own), the readers (``posting_reads``, the
+# loan / account posting packages, the ledger report package), the
+# chart-of-accounts resolver
 # (``ledger_account_service``), the pay-period LOCK CLASSIFIER whose
 # ``LEDGER_POSTINGS`` gate sums a period's postings, and the archive
 # guard that counts a linked account's postings. Fully-qualified names, matched
@@ -83,6 +85,7 @@ _LEDGER_MODEL_ALLOWLIST = frozenset({
     "app.services.posting_service",
     "app.services.posting_reads",
     "app.services._posting_reconcile",
+    "app.services._posting_purchases",
     "app.services._posting_write",
     "app.services.loan_posting_service",
     "app.services.account_posting_service",
