@@ -42,13 +42,13 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 40 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 41 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**149 steps, 106 open.** The dependency graph holds 99 edges over 65 rows.
+**151 steps, 107 open.** The dependency graph holds 100 edges over 66 rows.
 
 ## The order
 
@@ -142,6 +142,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-ay | -- | Post a modelled account's own CONTRIBUTIONS and ACCRUALS, so its balance-assertion residual is what the account earned rather than what it earned plus what was paid into it. Closes **N-277**. | #86 | -- | NOW |
 | recurrence | R-F16 | -- | Give the paycheck engine's divisor and the monthly-equivalent conversions ONE producer, deleting `salary_profiles.pay_periods_per_year` -- which must first RULE what semi-monthly pay means when no `cadence_days` can express the 1st and the 15th. **MOVES MONEY**. Closes **F-16**. | #87 | -- | NOW / recurrence:R7a-2a (shipped) |
 | recurrence | R-F17 | -- | Derive the two period-INDEX horizon windows from the owner's cadence instead of a hardcoded 26, deciding first what a fractional period offset means. Closes **F-17**. | #88 | -- | NOW / recurrence:R7a-2a (shipped) |
+| recurrence | R10-b | -- | Move the transfer recurrence engine onto ruling **R-R19**'s maintain shape, so a regeneration updates the transfers it already generated -- through `transfer_service.update_transfer`, which propagates to both shadows atomically -- instead of hard-deleting and recreating them with their shadow pairs. | #89 | -- | NOW / recurrence:R10-a (shipped) |
 
 ## Containers
 
@@ -178,6 +179,7 @@ The fuller as-built entries are in each arc's archive.
 | arc | id | also | what this step does | order | commit | starts |
 |---|---|---|---|---|---|---|
 | balance | X-f3b | -- | A purchase carrying a recorded bank posting day is a cash movement of its OWN -- in the walk, in the ledger and as its own posting source -- so an envelope's close books only what its purchases did not. 1 of 215 sampled days moves on a production clone. Closed **N-274**, **N-286**, **N-288**; opened **N-290**, **N-291**. | SHIPPED | `38ffd87b` | -- |
+| recurrence | R10-a | -- | A regeneration MAINTAINS the rows it already generated rather than destroying and rebuilding them, so a template edit can no longer take the purchases recorded against a part-spent envelope with it, and a row holding the owner's own records is retained and reported instead of rewritten. Closed **N-292**. | SHIPPED | `5fc13cdb` | -- |
 | recurrence | R7c-a | -- | The two-axis columns land NULLABLE and backfilled -- `unit_id`, `placement_id`, `shift_id`, `starts_on` and `nominal_day` -- with the write door keeping them in step from the same `resolve` call, and nothing reading them yet. Closed **D12**. | SHIPPED | `370a30cc` | -- |
 | recurrence | R-F2 | -- | The ref-seed parity scan bounds a statement where the SQL does -- at the Python string literal carrying it, with the keyword list as the inner rule -- and four negative controls were shown to fire against the reader it replaces. Closed **F-2**. | SHIPPED | `672c18b1` | -- |
 | recurrence | R-F3 | -- | A `ref` lookup table's single-column PK and UNIQUE take PostgreSQL's generated names, stated in both places the constraint-naming rule lives; measured 24 of 24 live `ref` tables. Closed **F-3**. | SHIPPED | `e37b736c` | -- |
