@@ -4667,7 +4667,7 @@ class TestGridPeriodSubtotalCanonical:
                 Decimal("442.34"),
             ):
                 entry = TransactionEntry(
-                    transaction_id=txn.id,
+                    transaction_id=txn.id, account_id=txn.account_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
                     description="confirmed purchase",
@@ -4792,7 +4792,7 @@ class TestGridPeriodSubtotalCanonical:
             )
             for amt in (Decimal("100.00"), Decimal("150.00")):
                 entry = TransactionEntry(
-                    transaction_id=txn.id,
+                    transaction_id=txn.id, account_id=txn.account_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
                     description="confirmed purchase",

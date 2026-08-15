@@ -27,15 +27,28 @@ and keyword construction but not ORM bulk ``update()``, Core ``update()`` on
 honest; it is not kept.  :func:`resolve` is a pure function and the only
 producer, so two readers cannot disagree.
 
-The two-axis values become COLUMNS -- authored, NOT NULL, from one backfill,
-in the same transaction that drops the closed-set columns -- at plan step
-R7c, where the form starts collecting them.
+The two-axis values become COLUMNS across plan step R7c's three leaves, which
+are an expand / migrate / contract rather than one transaction: **R7c-a** adds
+them and has the write door keep them in step while nothing reads them,
+**R7c-b** moves every reader across and the form starts collecting
+``starts_on`` directly, **R7c-c** drops the closed-set columns.  From R7c-b
+they are AUTHORED rather than derived for every form-authored rule, which is
+what makes storing them correct under the R2d ruling above -- a stored
+derivation is a cache, and a stored authored value is a fact.  (A day-less LOAN
+payment is the one shape that stays partly schedule-derived; plan ledger row D6
+tracks it.)
 
 What this package offers
 ------------------------
 
 * :func:`resolve` -- ``(spec, calendar) -> ResolvedRecurrence``, the two-axis
   meaning.  Pure: no Flask, no ORM, no clock, no database.
+* :func:`first_occurrence` -- ``(resolved, calendar) -> date``, the date a
+  recurrence FIRST fires on, with ONE meaning for every unit.  It is what
+  ``budget.recurrence_rules.starts_on`` holds (developer ruling 2026-08-14,
+  plan ledger row **D28**), and it is not ``anchor_date``: that field is the
+  first occurrence for a calendar cadence and the opening BOUND for a
+  pay-period one (row **D6**).
 * :func:`author_rule` / :func:`reauthor_rule` / :func:`build_transient_rule`
   -- the ORM-facing door.  A caller states what it AUTHORS
   (:class:`RecurrenceSpec`), never a column.
@@ -88,7 +101,10 @@ What lives where
   through that package's one door -- this package held a second calendar type
   and a second loader until plan step **C2-b2** deleted both.
 * ``_occurrence`` -- the forward occurrence engine: walk the cadence, place
-  each occurrence on a pay period.  Consumes :class:`ResolvedRecurrence`.
+  each occurrence on a pay period.  Consumes :class:`ResolvedRecurrence`.  It
+  also holds :func:`first_occurrence`, which is the walk's first element stated
+  as a direct search -- beside the walk rather than beside the anchor
+  derivation, because the walk is what it has to agree with.
 * ``_reading`` -- the READ door: a stored rule's authored state, its
   occurrences, and the projection onto periods.  Its own module rather than a
   line in ``_authoring`` because reading is not writing -- and because
@@ -156,6 +172,7 @@ from app.services.recurrence._describe import (
 from app.services.recurrence._occurrence import (
     OccurrencePlacement,
     RecurrenceGenerationError,
+    first_occurrence,
     occurrence_placements,
     occurrences,
     place,
@@ -227,6 +244,7 @@ __all__ = [
     "end_bound_from_columns",
     "end_bound_from_token",
     "end_bound_options",
+    "first_occurrence",
     "has_ended",
     "is_authorable",
     "modelled_pattern",

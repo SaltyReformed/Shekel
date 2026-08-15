@@ -48,7 +48,7 @@ from app.models.transaction import Transaction
 from app.services.cash_ledger._amount_source import AmountBasis
 from app.services.cash_ledger import (
     ProjectedBasis,
-    ReconciledThrough,
+    StatementCoverage,
     sum_projected,
 )
 from tests._test_helpers import (
@@ -83,7 +83,9 @@ def _unreconciled(*rows):
             salary_net={},
             loan_cash={},
         ),
-        reconciled_through=ReconciledThrough(date(2026, 1, 1)),
+        coverage=StatementCoverage(
+            anchor_ids=(9001,), observed_days=(date(2026, 1, 1),),
+        ),
     )
 
 
@@ -292,7 +294,9 @@ class TestTheTwoLegs:
                     salary_net={},
                     loan_cash={},
                 ),
-                reconciled_through=ReconciledThrough(date(2026, 1, 31)),
+                coverage=StatementCoverage(
+                    anchor_ids=(9002,), observed_days=(date(2026, 1, 31),),
+                ),
             )
 
             assert sum_projected([txn], basis) == (_ZERO, Decimal("50.00"))

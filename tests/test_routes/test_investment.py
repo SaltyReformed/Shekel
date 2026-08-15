@@ -1875,7 +1875,7 @@ def _add_envelope_expense_with_cleared_entries_inv(
 
     for amt in cleared_amounts:
         db_session.add(TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=user_id,
             amount=amt,
             description="Cleared purchase",

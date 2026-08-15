@@ -2893,7 +2893,7 @@ def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-argumen
     from app.models.transaction_entry import TransactionEntry
 
     db_session.add(TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=amount,
         description=description,

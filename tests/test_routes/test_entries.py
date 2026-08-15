@@ -71,7 +71,7 @@ def _add_entry(txn, user, amount, description,
     """
     uid = user["user"].id if isinstance(user, dict) else user.id
     entry = TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=uid,
         amount=Decimal(str(amount)),
         description=description,
@@ -1273,6 +1273,7 @@ class TestTheSettledOnEditPath:
             other = _create_other_user_txn()
             other_entry = TransactionEntry(
                 transaction_id=other["transaction"].id,
+                account_id=other["transaction"].account_id,
                 user_id=other["user"].id,
                 amount=Decimal("50.00"),
                 description="Other",

@@ -559,7 +559,7 @@ class TestDeactivateCompanion:
         db.session.flush()
 
         entry = TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=comp.id,
             amount=Decimal("42.50"),
             description="Kroger",

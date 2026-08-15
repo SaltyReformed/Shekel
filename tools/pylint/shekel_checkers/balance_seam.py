@@ -307,6 +307,14 @@ _FENCED_MODULE_RULINGS = {
         # are the two anchor WRITE doors, deciding whether a submission changes
         # anything.
         "governing_anchor_on",
+        # The NON-RAISING twin of ``resolve_anchor``, added at plan step
+        # X-f3a-1 for the reconcile panel: same row, same tie-breaks, same
+        # ``_governing_row`` query, and the only difference is that "this
+        # account has never had a balance declared" is an honest empty state to
+        # a panel where it is a broken invariant to a reader.  It carries
+        # ``resolve_anchor``'s ruling verbatim -- a stored user-asserted FACT,
+        # not a computed projection.
+        "governing_anchor",
         # The PLAN loader (plan step X-b), a non-producer on the same ground
         # as its settled twin ``settled_cash_facts`` below: it SELECTS rows and
         # returns them unchanged.  Its WINDOWED sibling
@@ -456,6 +464,35 @@ _FENCED_MODULE_RULINGS = {
         # into corrections at plan step X-d.
         "dated_deltas",
         "walk_cash_ledger",
+        # ``_clearing`` (plan step X-f3a-1, ruling **R-FL**) -- WHICH STATEMENT
+        # showed a line, which is the recorded fact that replaced ``covers``'
+        # date comparison on the cash side.  Five names, one ruling, because
+        # they are one question at three surfaces:
+        # ``clearing_anchor_id`` names the assertion that cleared ONE line,
+        # ``is_cleared`` is that answer reduced to a bool for the entry
+        # reservation, ``statement_coverage`` builds the rule from an account's
+        # assertion facts, ``coverage_for`` is its database twin for a caller
+        # holding no walk, and ``coverage`` is the property on ``CashLedgerWalk``
+        # for a caller holding one.
+        #
+        # Non-producers on exactly the ground ``covers`` and
+        # ``reconciled_through`` stand on, and the classification did not change
+        # when the fact did: each answers whether ONE event is inside ONE
+        # assertion, or which assertion it is inside.  None of them reads a
+        # figure -- an ``account_anchor_history`` id and a bool are not money --
+        # and none folds, dates, sums or samples anything.
+        #
+        # ``latest_statement_day`` is the deliberate escape hatch, ruled here
+        # rather than left to a call site: it returns the raw civil DAY the
+        # entry list captions and the reconcile panel bounds its offer set with,
+        # and it is the exact twin of ``ReconciledThrough.observed_day``, which
+        # the same argument admits.  A day is not a balance.
+        "clearing_anchor_id",
+        "coverage",
+        "coverage_for",
+        "is_cleared",
+        "latest_statement_day",
+        "statement_coverage",
     })),
     # The account-KIND classifier -- why it is scoped is recorded once, at
     # :data:`_KIND_CLASSIFIER_MODULES`.  Its ``find_period_containing_date``

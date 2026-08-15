@@ -52,6 +52,7 @@ R7b-3 gave it a form control.
 """
 
 import calendar as calendar_module
+import functools
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -69,6 +70,7 @@ from app.services.recurrence import (
     EndsOnDate,
     RecurrenceGenerationError,
     ResolvedRecurrence,
+    first_occurrence,
     occurrence_placements,
     occurrences,
     place,
@@ -392,6 +394,27 @@ def _baseline_calendars(biweekly, long_cadence):
             long_cadence, recurrence_baseline.LONG_CADENCE_DAYS,
         ),
     }
+
+
+@functools.cache
+def _cached_baseline_calendars() -> dict:
+    """Return :func:`_baseline_calendars` built ONCE for the whole module.
+
+    The uncached pair costs two schedule builds per call, which is invisible
+    at a handful of call sites and is not at 432: plan step R7c-a's
+    walk-agreement class is parametrised over every baseline shape, and
+    rebuilding there took the class from seconds to minutes.  Cached rather
+    than made a fixture because the value is a pure function of module
+    constants -- there is nothing per-test about it.
+
+    The returned calendars are frozen values (``PayCalendar`` is immutable and
+    its periods are a tuple), so sharing them across tests cannot leak state.
+
+    Returns:
+        ``{long_cadence flag: PayCalendar}``.
+    """
+    biweekly, long_cadence = _baseline_schedules()
+    return _baseline_calendars(biweekly, long_cadence)
 
 
 def _new_engine_placements() -> dict[str, list[tuple[date, int | None]]]:
@@ -1675,3 +1698,125 @@ class TestTheScheduleSearches:
             )
             day += timedelta(days=1)
         assert calendar.horizon() == date(2026, 2, 25)
+
+
+class TestTheFirstOccurrenceIsTheWalksFirstYield:
+    """:func:`first_occurrence` against the WALK, which is its only oracle.
+
+    Plan step **R7c-a** added that function to seed
+    ``budget.recurrence_rules.starts_on``, and its docstring states the
+    property this class checks: *it is the walk's first yield wherever the
+    walk yields at all*.
+
+    **An adversarial review of R7c-a asked for this by name**, and the reason
+    generalises past this function.  That step's other new assertion compares
+    the column the write door wrote against ``first_occurrence`` -- and the
+    door wrote it BY CALLING ``first_occurrence``, so that comparison cannot
+    fail for any bug inside it.  ``docs/plans/verification.md`` standard 2:
+    *never a producer as its own oracle*.  :func:`occurrences` is a genuinely
+    separate implementation -- a forward walk rather than a direct search --
+    so it is the oracle, and the two hand-computed cases below are the ground
+    truth neither of them can fabricate.
+    """
+
+    def test_it_equals_the_first_date_the_walk_emits(self):
+        """Over every frozen baseline shape, the two answers agree.
+
+        ONE case rather than 430 parametrised ones, which is this file's own
+        idiom for a whole-baseline sweep (``test_the_baseline_has_not_moved``
+        one module over): the per-case fixture cost dominated the assertion by
+        an order of magnitude, and a sweep that reports every disagreement at
+        once is more useful than 430 ids of which a handful are red.
+        """
+        calendars = _cached_baseline_calendars()
+        disagreed: list[str] = []
+        walked_at_all = 0
+        for shape in recurrence_baseline.build_shapes():
+            calendar = calendars[shape.long_cadence]
+            resolved = resolve(
+                recurrence_baseline.build_shape_spec(shape), calendar,
+            )
+            seeded = first_occurrence(resolved, calendar)
+            walked = list(
+                occurrences(resolved, calendar, through=calendar.horizon()),
+            )
+            if not walked:
+                # The walk reaches nothing inside the horizon -- a bound past
+                # it, or a closing bound admitting none.  ``first_occurrence``
+                # still answers, because the column it seeds cannot hold "no
+                # answer"; what it must not do is CONTRADICT the walk, and
+                # there is nothing here to contradict.
+                assert seeded is not None, shape.label
+                continue
+            walked_at_all += 1
+            if seeded != walked[0]:
+                disagreed.append(
+                    f"{shape.label}: seeded {seeded}, walk first {walked[0]}",
+                )
+
+        assert not disagreed, (
+            f"{len(disagreed)} of {walked_at_all} shapes seed a starts_on "
+            f"that is not the first date the rule fires on, so a stored first "
+            f"occurrence and a generated row would disagree from the cutover "
+            f"onward: {disagreed[:5]}"
+        )
+        assert walked_at_all > 300, (
+            f"only {walked_at_all} baseline shapes reached the walk at all, "
+            f"so this sweep is grading far less than the baseline holds"
+        )
+
+    def test_a_mid_period_bound_names_the_paycheck_that_pays_it(self):
+        """A PERIOD rule bound mid-paycheck starts on THAT paycheck's payday.
+
+        Hand-computed, and the case the function exists for: paydays every 14
+        days from 2026-01-02, and a bound of 2026-01-20 falling inside the
+        2026-01-16 paycheck (which covers 01-16..01-29).  The answer is
+        **2026-01-16** -- the payday, not the bound -- because that is where
+        the cash leaves, which is what lets a loan whose first installment
+        falls mid-period bill in that period (plan step C9a).
+
+        It is also where ``first_occurrence`` and ``anchor_date`` part: the
+        anchor IS the bound for this unit (ruling R-R8), so a column seeded
+        from the anchor would carry 2026-01-20 -- a date the rule never fires
+        on.
+        """
+        calendar = build_calendar(
+            first_payday=date(2026, 1, 2), cadence_days=14, count=10,
+        )
+        resolved = resolve(
+            _resolution.RecurrenceSpec(
+                user_id=_USER_ID,
+                unit=RecurrenceUnitEnum.PERIOD,
+                start_date=date(2026, 1, 20),
+            ),
+            calendar,
+        )
+
+        assert resolved.anchor_date == date(2026, 1, 20)
+        assert first_occurrence(resolved, calendar) == date(2026, 1, 16)
+        assert dates_through(
+            resolved, calendar, date(2026, 3, 1),
+        )[0] == date(2026, 1, 16)
+
+    def test_a_calendar_rule_starts_on_its_own_firing_date(self):
+        """A MONTH rule's first occurrence is the cadence's date, not a payday.
+
+        The other half of the pair, hand-computed on the same schedule: a
+        day-15 rule with no stated bound.  The schedule opens 2026-01-02, so
+        the first 15th on or after it is **2026-01-15** -- not a payday, which
+        is exactly the difference from the case above.
+        """
+        calendar = build_calendar(
+            first_payday=date(2026, 1, 2), cadence_days=14, count=10,
+        )
+        resolved = resolve(
+            _resolution.RecurrenceSpec(
+                user_id=_USER_ID,
+                unit=RecurrenceUnitEnum.MONTH,
+                day_of_month=15,
+            ),
+            calendar,
+        )
+
+        assert first_occurrence(resolved, calendar) == date(2026, 1, 15)
+        assert resolved.anchor_date == date(2026, 1, 15)

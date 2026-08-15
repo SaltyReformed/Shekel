@@ -15,6 +15,19 @@ column at a time.  Here PRESENCE is the discriminator and the FK's UNIQUE
 constraint enforces the cardinality, so every column on every row is
 meaningful.
 
+**HALF of that argument was overturned by ruling R-R16** (2026-08-14), and it
+is left standing rather than deleted because the half that survives is the
+useful one.  ``budget.recurrence_rules.nominal_day`` is now a nullable column
+on the rule, and it does NOT rebuild the sparse-table defect -- because its
+absence is the discriminator and its presence is CONSTRAINED
+(``ck_recurrence_rules_nominal_day``: 29-31, and strictly greater than the day
+``starts_on`` already carries).  What made the old columns a defect was not
+their nullability; it was that nothing tied presence to meaning.
+:class:`RecurrenceMonthAnchor` therefore never gains a writer and plan step
+**R7c-c** drops it.  :class:`RecurrenceWeekdayAnchor` stays a real subtype:
+``(nth_week, weekday)`` is two fields with their own domain, and ``-1`` (the
+LAST weekday of the month) cannot be recovered from a date at all.
+
 **Why each carries a surrogate ``id`` rather than the design's
 ``recurrence_rule_id PK``.**  Both tables hold user-controlled ``budget``
 state, so both are in ``app.audit_infrastructure.AUDITED_TABLES`` -- and
@@ -122,15 +135,16 @@ class RecurrenceMonthAnchor(db.Model):
     for what the model PERMITS going forward -- and the failure is silent: the
     user sees a plausible date, never an error.
 
-    **Empty until plan step R7c**, which is where the anchor becomes a stored
-    column and can therefore clamp.  Today the two-axis view is computed on
-    demand and carries the nominal day in
-    :attr:`~app.services.recurrence.ResolvedRecurrence.nominal_day`, derived
-    from the rule's own ``day_of_month`` -- so there is nothing for this table
-    to hold that is not already in the row (plan step R2d).  From R7c the
-    resolved nominal day is ``month_anchor.nominal_day if month_anchor else
-    anchor_date.day``, clamped per occurrence month exactly as
-    ``app.services.recurrence._months.clamped_day`` clamps ``day_of_month``.
+    **EMPTY, with no writer, and plan step R7c-c drops it.**  This table was
+    to hold the clamped day once the anchor became a stored column; ruling
+    **R-R16** (2026-08-14) put that day on the rule itself instead, as
+    ``budget.recurrence_rules.nominal_day``, under a CHECK that ties its
+    presence to meaning.  The reading this docstring used to specify --
+    ``month_anchor.nominal_day if month_anchor else anchor_date.day`` -- is
+    dead: the join is ``nominal_day if nominal_day is not None else
+    starts_on.day``, which is the same rule with one table instead of two, and
+    :attr:`~app.services.recurrence.ResolvedRecurrence.day_of_month` is its
+    one reader.
 
     Attributes:
         nominal_day: The day the user meant, 29-31.  Below 29 no month can

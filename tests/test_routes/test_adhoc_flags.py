@@ -53,7 +53,7 @@ def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False
 def _add_entry(txn, seed_user, amount, description, purchased_on=None):
     """Attach a debit entry to a transaction directly via ORM."""
     entry = TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(str(amount)),
         description=description,

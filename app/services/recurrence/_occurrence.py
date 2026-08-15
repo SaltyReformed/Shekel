@@ -343,6 +343,84 @@ def _period_walk(
         yield period.start_date
 
 
+def first_occurrence(
+    resolved: ResolvedRecurrence, calendar: PayCalendar,
+) -> date:
+    """Return the date this recurrence FIRST fires on, for any unit.
+
+    **The value ``budget.recurrence_rules.starts_on`` holds** (developer ruling
+    2026-08-14, plan ledger row **D28**), and the whole content of that ruling:
+
+        ``starts_on`` is the rule's FIRST OCCURRENCE.  For a calendar cadence
+        it is the first date the cadence fires on; for a pay-period cadence it
+        is the payday of the first paycheck the rule bills in.  Nothing is
+        generated before it, and its position in the cycle IS the rule's phase.
+
+    **It is ``anchor_date`` for three of the four UNITS and not for the fourth**,
+    which is the asymmetry this function exists to remove.  Ruling R-R8 made a
+    pay-period-space rule anchor on its opening BOUND rather than on an
+    occurrence, so ``anchor_date`` means the first occurrence for a MONTH,
+    YEAR or WEEK cadence and a bound for a PERIOD one -- one field with two
+    meanings, which is plan ledger row **D6** seen from the schema.  (Units,
+    not anchor FAMILIES: there are three of those, and two of them anchor on
+    an occurrence.)
+
+    **It lives HERE, beside :func:`_period_walk`, because that is the function
+    it has to agree with.**  The paycheck arm below is the walk's own first
+    yield restated as a direct search, and putting the two in different modules
+    is how the answer that seeds a stored column comes to differ from the
+    answer that generates the rows -- the shape ``_months`` records one module
+    over, where the anchor derivation and the occurrence walk were two copies
+    of one piece of arithmetic.
+
+    **``span_containing`` rather than ``period_containing``, so the answer is
+    TOTAL** -- the same choice ``_resolution._derive_offset_periods`` makes for
+    the phase, and for the same reason: an anchor past the horizon has no SAVED
+    paycheck to take a payday from, and a ``NOT NULL`` column has no shape for
+    the ``None`` that would leave.  It is the walk's first yield wherever the
+    walk yields at all: :func:`_period_walk` skips a paycheck whose
+    ``end_date`` precedes the anchor and one whose index is out of phase, and
+    the span CONTAINING the anchor fails neither test -- periods tile their
+    covered span, so the earliest one not ending before a date is the one
+    containing it, and the phase is read off that same span, which puts it in
+    phase by construction.
+
+    Migration ``f2a94c7e1b60`` carries what D28 measured and why this arc's
+    earlier specification was refuted; it is stated there rather than here
+    because that is the artifact that acts on it.
+
+    Args:
+        resolved: The recurrence's two-axis meaning, from
+            :func:`app.services.recurrence.resolve`.
+        calendar: The owner's pay-period schedule.  Read only by the ``PERIOD``
+            unit, whose occurrences are paydays; a calendar-space cadence names
+            its own first date.
+
+    Returns:
+        The first occurrence date.
+
+    Raises:
+        RecurrenceGenerationError: When a ``PERIOD``-unit anchor has no
+            covering span -- an empty schedule, or an anchor before the opening
+            payday.  Neither is reachable from
+            :func:`app.services.recurrence.resolve`, which refuses the first
+            and returns at least the opening payday for the second, so it is a
+            broken invariant rather than a state to paper over.
+    """
+    if resolved.unit is not RecurrenceUnitEnum.PERIOD:
+        return resolved.anchor_date
+    span = calendar.span_containing(resolved.anchor_date)
+    if span is None:
+        raise RecurrenceGenerationError(
+            f"no pay period spans {resolved.anchor_date} for user "
+            f"{calendar.user_id}, so a pay-period-space recurrence has no "
+            f"first paycheck to name.  ``resolve`` refuses an empty schedule "
+            f"and clamps the anchor to the opening payday, so reaching this "
+            f"means the anchor was not produced by it."
+        )
+    return span.start_date
+
+
 def _unbounded(
     resolved: ResolvedRecurrence, calendar: PayCalendar,
 ) -> Iterator[date]:
@@ -696,6 +774,7 @@ def occurrence_placements(
 __all__ = [
     "OccurrencePlacement",
     "RecurrenceGenerationError",
+    "first_occurrence",
     "occurrence_placements",
     "occurrences",
     "place",

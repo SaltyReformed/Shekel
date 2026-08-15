@@ -47,7 +47,6 @@ delegates every read and write to :mod:`app.services.reconcile_service` and
 :mod:`app.services.cash_ledger`.
 """
 
-from datetime import date
 from decimal import Decimal
 
 from flask import render_template, request
@@ -172,7 +171,7 @@ _PARTIAL_MESSAGE = (
 
 
 def _refusal(
-    account: Account, observed_on: date | None, message: str,
+    account: Account, statement: "cash_ledger.AnchorPoint | None", message: str,
 ):
     """Re-render the panel carrying *message*, as a designed 400.
 
@@ -196,7 +195,7 @@ def _refusal(
 
     Args:
         account: The owned, attached account.
-        observed_on: The already-resolved asserted day (finding **N-222**).
+        statement: The already-resolved governing assertion (finding **N-222**).
         message: The user-facing reason, one sentence.
 
     Returns:
@@ -207,7 +206,7 @@ def _refusal(
             "accounts/_reconcile_panel.html",
             error=message,
             **reconcile_context(
-                account, panel=panel_id(account.id), observed_on=observed_on,
+                account, panel=panel_id(account.id), statement=statement,
             ),
         ),
         400,
@@ -215,8 +214,8 @@ def _refusal(
     )
 
 
-def observed_day(account: Account) -> date | None:
-    """Return the civil day this account's latest balance was asserted for.
+def governing_statement(account: Account) -> "cash_ledger.AnchorPoint | None":
+    """Return the ASSERTION this account is being reconciled against.
 
     **Resolved ONCE per request and threaded** (finding **N-222**).  This module
     used to compute it in three places inside one POST -- the writer's bound,
@@ -225,26 +224,36 @@ def observed_day(account: Account) -> date | None:
     the fix is the discipline ``BalanceContext`` applies one tier down: resolve
     at the top of the handler, pass it in.
 
+    **It returned the raw DAY until plan step X-f3a-1** (ruling **R-FL**), and a
+    day is not enough any more: a tick now records WHICH statement showed the
+    money, and production carries three days on which Checking holds more than
+    one assertion, so ``MAX(observed_on)`` cannot name one.  The whole record is
+    also what the offer set's bound and the rendered caption were already
+    reading a second query for.
+
     PUBLIC for the reason :func:`panel_id` is: ``app.routes.accounts.detail``
-    renders the detail page's copy of the panel and needs the same day for the
-    same context, so an underscore here would be finding **N-33**'s shape.
+    renders the detail page's copy of the panel and needs the same assertion for
+    the same context, so an underscore here would be finding **N-33**'s shape.
 
     Args:
         account: The account to resolve.
 
     Returns:
-        The day, or ``None`` for an account carrying no assertion at all.
+        The governing :class:`~app.services.cash_ledger.AnchorPoint`, or
+        ``None`` for an account carrying no assertion at all.
     """
-    # The raw DAY, and every use is why the boundary offers it: an SQL bound on
-    # the offer set, the day a tick stamps, and a rendered caption.  None of
-    # them asks whether a movement is inside the balance -- that question has
-    # one implementation (``ReconciledThrough.covers``) and none of these is a
-    # second one.
-    return cash_ledger.reconciled_through(account.id).observed_day
+    # The NON-RAISING resolver, because "this account has never had a balance
+    # declared" is a legitimate empty state for this panel where it is a broken
+    # invariant for a reader.  Nothing here asks whether a movement is inside a
+    # balance -- that question has one implementation
+    # (``StatementCoverage.clearing_anchor_id``) and none of these is a second
+    # one.
+    return cash_ledger.governing_anchor(account.id)
 
 
 def reconcile_context(
-    account: Account, panel: str, observed_on: date | None,
+    account: Account, panel: str,
+    statement: "cash_ledger.AnchorPoint | None",
 ) -> dict:
     """Assemble the reconcile panel's context for one account.
 
@@ -260,11 +269,12 @@ def reconcile_context(
             swaps in place.  Named ``panel`` rather than ``panel_id`` because
             :func:`panel_id` is now a module-level function and a parameter
             shadowing it would make the two indistinguishable at a glance.
-        observed_on: The day from :func:`observed_day`, resolved by the caller.
-            **Taken rather than resolved here** (finding **N-222**): the POST
-            needs the same day for its writers, and a builder that re-derived it
-            would be the second of two answers inside one request -- with a
-            write in between them, which is when two answers become a wrong one.
+        statement: The assertion from :func:`governing_statement`, resolved by
+            the caller.  **Taken rather than resolved here** (finding
+            **N-222**): the POST needs the same assertion for its writers, which
+            stamp its id, and a builder that re-derived it would be the second
+            of two answers inside one request -- with a write in between them,
+            which is when two answers become a wrong one.
 
     Returns:
         The template context.  ``outstanding`` is an
@@ -278,16 +288,21 @@ def reconcile_context(
     # ``observed_on`` non-optional.
     outstanding = (
         reconcile_service.OutstandingSet.empty()
-        if observed_on is None
+        if statement is None
         else reconcile_service.outstanding_set(
-            current_user.id, account.id, observed_on,
+            current_user.id, account.id, statement,
         )
     )
     return {
         "account": account,
         "outstanding": outstanding,
-        "reconciled_through": observed_on,
-        "anchor_balance": cash_ledger.resolve_anchor(account).balance,
+        "reconciled_through": None if statement is None else statement.observed_on,
+        # The SAME record, not a second resolution: ``resolve_anchor`` and
+        # ``governing_anchor`` share ``_governing_row``, so re-asking here would
+        # be one request putting one question twice and trusting the answers to
+        # agree -- finding **N-222**'s shape, which this builder already carries
+        # for the day.
+        "anchor_balance": None if statement is None else statement.balance,
         "panel_id": panel,
     }
 
@@ -344,7 +359,7 @@ def prompt_fragment(account: Account) -> str:
         return ""
     context = reconcile_context(
         account, panel="reconcile-panel-modal",
-        observed_on=observed_day(account),
+        statement=governing_statement(account),
     )
     if context["outstanding"].is_empty:
         return ""
@@ -381,7 +396,7 @@ def reconcile_panel(account_id):
         "accounts/_reconcile_panel.html",
         **reconcile_context(
             account, panel=panel_id(account.id),
-            observed_on=observed_day(account),
+            statement=governing_statement(account),
         ),
     )
 
@@ -443,8 +458,8 @@ def record_reconciliation(account_id):
     to be the exception in the first place.
     """
     account = load_cash_account_or_404(account_id)
-    observed_on = observed_day(account)
-    if observed_on is None:
+    statement = governing_statement(account)
+    if statement is None:
         # No balance has ever been asserted for this account, so there is
         # nothing for an offer to be inside of.  Unreachable through the UI
         # (the panel renders no form in that state) and answered rather than
@@ -452,7 +467,7 @@ def record_reconciliation(account_id):
         return render_template(
             "accounts/_reconcile_panel.html",
             **reconcile_context(
-                account, panel=panel_id(account.id), observed_on=None,
+                account, panel=panel_id(account.id), statement=None,
             ),
         )
 
@@ -466,16 +481,16 @@ def record_reconciliation(account_id):
                 entry_ids=entry_ids,
                 transaction_ids=transaction_ids,
                 corrections=_submitted_corrections(request.form),
-                observed_on=observed_on,
+                anchor=statement,
             ),
         )
         db.session.commit()
     except ValidationError as exc:
         db.session.rollback()
-        return _refusal(account, observed_on, str(exc))
+        return _refusal(account, statement, str(exc))
     except StaleDataError:
         db.session.rollback()
-        return _refusal(account, observed_on, _STALE_MESSAGE)
+        return _refusal(account, statement, _STALE_MESSAGE)
 
     # A tick that did not all land is REPORTED rather than swallowed.  The
     # ordinary way to reach it is a second device settling the same rows while
@@ -490,15 +505,16 @@ def record_reconciliation(account_id):
     elif recorded < asked:
         notice = _PARTIAL_MESSAGE
 
-    # The SAME day, not a second resolution (finding N-222).  Neither writer
-    # touches ``account_anchor_history``, so re-reading it here would be one
-    # request asking one question twice and trusting that the answers agree.
+    # The SAME assertion, not a second resolution (finding N-222).  Neither
+    # writer touches ``account_anchor_history``, so re-reading it here would be
+    # one request asking one question twice and trusting that the answers agree
+    # -- and one of those answers is now the id every ticked row just recorded.
     return (
         render_template(
             "accounts/_reconcile_panel.html",
             error=notice,
             **reconcile_context(
-                account, panel=panel_id(account.id), observed_on=observed_on,
+                account, panel=panel_id(account.id), statement=statement,
             ),
         ),
         200,

@@ -13,9 +13,16 @@ what is stored?      :mod:`._facts`                  ``loan_loaders``
 what happened, when? :mod:`._events`                 ``loan_ledger._events``
 what IS the amount?  :mod:`._amount_source`          (see below)
 what was it worth?   :mod:`._amounts`                ``loan_ledger._split``
+did the bank show it? :mod:`._clearing`              (no loan analog)
 in what order?       :mod:`._walk`                   ``loan_ledger._walk``
 what do they sum to? :mod:`._flows`                  (a peer reduction)
 ===================  ==============================  ==========================
+
+**The clearing row has no loan analog because a loan has no bank statement to
+clear against**: its balance is an amortization the app derives, and its
+assertions are the user correcting that derivation.  A cash account's balance is
+what a third party says it is, so *which statement showed this line* is a fact
+the app must be told (ruling **R-FL**) rather than one it can compute.
 
 **The third and fourth rows are two questions, not one split in half** (plan
 step X-au-b, ruling **R-FI**).  :mod:`._amount_source` answers *where does this
@@ -35,9 +42,10 @@ facts at a date is the seam's, exactly as plan step D-fold split the loan pair.
 
 **The walk (plan step X-a, ruling R-H).**  :mod:`._events` and :mod:`._walk`
 build the account's ONE event stream -- every balance ASSERTION plus every
-SETTLED row -- and replay it into per-assertion corrections, partitioned by
-CIVIL DAY so an assertion covers exactly the settles dated on or before the day
-it is the closing balance for (ruling R-DH).  The seam's
+SETTLED row -- and replay it into per-assertion corrections, each source
+assigned to the assertion that CLEARED it (:mod:`._clearing`, ruling R-FL) and,
+where no statement has recorded showing it, to the first assertion dated on or
+after it (ruling R-DH).  The seam's
 read fold TAKES it, and since plan step X-c2b2 every cash figure on every screen
 is that fold sampled at a date.  The second consumer is still to come: at step
 X-d the posting WRITER reads this walk too, replacing the postings-sourced
@@ -94,14 +102,21 @@ from ._amounts import (
     owned_contribution,
     settled_cash_leg,
 )
+from ._clearing import (
+    ClearableLine,
+    StatementCoverage,
+    statement_coverage,
+)
 from ._events import (
     CashAnchorFact,
     CashSourceFact,
     cash_anchor_facts,
+    coverage_for,
     settled_cash_facts,
 )
 from ._facts import (
     AnchorPoint,
+    governing_anchor,
     governing_anchor_on,
     planned_cash_rows,
     reconciled_through,
@@ -119,16 +134,20 @@ __all__ = [
     "AmountBasis",
     "AmountRule",
     "AnchorPoint",
+    "governing_anchor",
     "governing_anchor_on",
     "CashAnchorCorrection",
     "CashAnchorFact",
     "CashLedgerWalk",
     "CashSourceFact",
+    "ClearableLine",
     "ProjectedBasis",
     "ReconciledThrough",
+    "StatementCoverage",
     "amount_basis",
     "amount_rule",
     "cash_anchor_facts",
+    "coverage_for",
     "contributed_amount",
     "contribution_of",
     "contributions_by_id",
@@ -145,6 +164,7 @@ __all__ = [
     "resolve_transfer_amount",
     "settled_cash_facts",
     "settled_cash_leg",
+    "statement_coverage",
     "sum_projected",
     "walk_cash_ledger",
 ]

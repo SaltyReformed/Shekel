@@ -258,11 +258,30 @@ def self_heal_anchor_corrections(
        adds to the ledger without moving any correction.  The test asks the
        account's own boundary
        (:meth:`app.services.cash_ledger.ReconciledThrough.covers`) about the
-       earliest emitted ``entry_date`` -- the SAME rule both walks apply to a
-       source, called rather than re-spelled, so a cost guard cannot come to
-       disagree with the money rule it is a guard for (finding N-133 / F4; see
-       :func:`app.services.cash_ledger.reconciled_through` for the
-       timezone-sign bug the third form carried).  A settle-side entry is
+       earliest emitted ``entry_date``.
+
+       **This is the last cash caller of that boundary and it stayed
+       deliberately** (plan step X-f3a-1, ruling **R-FL**).  The step moved
+       every consumer that asks *which statement cleared this LINE* onto
+       :class:`~app.services.cash_ledger.StatementCoverage`; this one asks a
+       different question -- *could this emission have moved a posted
+       correction* -- of a set of JOURNAL ENTRY dates, and a journal entry is
+       not a line that clears.  The plan's own list of five consumers named it,
+       and tracing it made the difference visible.
+
+       **It remains SOUND, and the reason is an invariant rather than luck.**
+       Every emitted ``entry_date`` is a source's ``settled_on``
+       (``posting_service._entry_date`` / ``_transaction_entry_date``), and a
+       linked source's clearing statement must close on the day the DATE rule
+       picks -- ``StatementCoverage._recorded_anchor_id`` refuses any other,
+       and every door that moves a settle day releases the link.  So a source
+       cleared by some assertion is always dated on or before the latest one,
+       which is exactly what ``covers`` tests: the predicate cannot skip a
+       change that moves a correction.  Were the link ever freed from the day
+       (which the cutover, X-f3c, is what does), this arm would have to ask the
+       coverage instead.
+
+       A settle-side entry is
        dated at the source's CURRENT
        attribution civil date, and a reversal entry inherits the latest date
        it reverses (the R2 rule) -- the OLD attribution's civil date -- so
@@ -333,13 +352,17 @@ def self_heal_anchor_corrections(
     lock_user_writes(delta_entries[0].user_id)
     earliest = min(entry.entry_date for entry in delta_entries)
     for account_id in sorted(set(account_ids)):
-        # ONE statement of "the account's coverage boundary", shared with the
-        # entry reservation and the reconcile panel (plan step S1-c), and asked
-        # through the rule's ONE implementation rather than re-spelled as a
-        # ``<=`` here.  This module had its own copy of both; a second copy of
-        # this question is what carried a silent timezone-sign dependency until
-        # finding N-133 / F4, and it is the site a lint-based fence could never
-        # have seen, because both of its operands were bare locals.
+        # ONE statement of "the account's coverage boundary", asked through the
+        # rule's ONE implementation rather than re-spelled as a ``<=`` here.
+        # This module had its own copy of both; a second copy of this question
+        # is what carried a silent timezone-sign dependency until finding
+        # N-133 / F4, and it is the site a lint-based fence could never have
+        # seen, because both of its operands were bare locals.
+        #
+        # **It shared that boundary with the entry reservation and the panel
+        # until plan step X-f3a-1**, which moved both onto the recorded clearing
+        # fact.  This is the last cash caller, and the docstring above says why
+        # it stayed and what would make it have to move.
         boundary = reconciled_through(account_id)
         if boundary.observed_day is None:
             continue

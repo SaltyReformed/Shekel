@@ -71,12 +71,6 @@ _SUBTYPE_TABLES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("recurrence_month_anchors", ("nominal_day",)),
 )
 
-#: The two-axis values, which are DERIVED and therefore must not be columns
-#: on ``budget.recurrence_rules`` until plan step R7c makes them authored.
-_DERIVED_COLUMNS: tuple[str, ...] = (
-    "unit_id", "anchor_date", "placement_id", "shift_id",
-)
-
 
 class TestMigrationRevisionPair:
     """The migration chains off the R2a vocabulary head."""
@@ -114,39 +108,23 @@ class TestNewColumnShape:
                 )
 
 
-class TestTheDerivedColumnsAreAbsent:
-    """The two-axis values are computed, so they are not columns yet.
+class TestTheSubtypeTablesAreStillEmpty:
+    """Neither anchor subtype has a writer yet.
 
-    Developer ruling, 2026-08-07 (plan step R2d).  ``unit_id`` /
-    ``anchor_date`` / ``placement_id`` / ``shift_id`` are a DERIVATION over
-    the columns beside them plus the owner's pay-period schedule, and a
-    derivation stored next to its own inputs is a cache that drifts the moment
-    one writer moves one side alone.  They are produced on demand by
-    ``app.services.recurrence.resolve`` instead.
+    **This class lost its first test at plan step R7c-a**, which is what that
+    test's own docstring instructed: it asserted that ``unit_id`` /
+    ``anchor_date`` / ``placement_id`` / ``shift_id`` were NOT columns, on the
+    R2d ruling that a derivation must not be stored beside its own inputs.
+    R7c-a adds them, and the ruling is not broken -- see the migration and
+    ``app.models.recurrence_rule`` for why an expand / migrate / contract is
+    not a cache: nothing reads them until R7c-b, and from R7c-b they are
+    AUTHORED rather than derived.
 
-    **This test must be DELETED by plan step R7c**, which adds the four
-    columns NOT NULL -- authored by the form rather than derived -- in the
-    same transaction that drops the closed-set columns they came from.  Until
-    then it is what fails if a migration re-introduces the cache.
+    The coverage moved rather than lapsing, and it inverted:
+    ``test_recurrence_two_axis_backfill.py`` asserts the five columns exist
+    with the shape R7c-a gives them, and that the migration's backfill fills
+    them with what the write door would write.
     """
-
-    def test_no_derived_column_exists_on_the_rule_table(self, app, db):
-        """None of the four is a column at HEAD."""
-        with app.app_context():
-            present = db.session.execute(text(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'budget' "
-                "  AND table_name = 'recurrence_rules' "
-                "  AND column_name = ANY(:cols)"
-            ), {"cols": list(_DERIVED_COLUMNS)}).scalars().all()
-
-        assert not present, (
-            f"budget.recurrence_rules carries {sorted(present)}, which plan "
-            f"step R2d removed: these values are derived from the columns "
-            f"beside them, and storing a derivation next to its inputs is the "
-            f"cache the ruling exists to prevent.  If plan step R7c is "
-            f"landing, delete this test with the ruling it enforces."
-        )
 
     def test_the_subtype_tables_are_still_empty(self, app, db):
         """Neither anchor subtype has a writer yet.
@@ -490,21 +468,14 @@ class TestDowngradeIsAReversal:
             "ck_recurrence_rules_positive_max_occurrences",
         }, f"downgrade drops constraints {sorted(dropped)}"
 
-    def test_the_upgrade_adds_no_derived_column(self):
-        """No ``add_column`` names one of the four derived values.
-
-        The AST sibling of :class:`TestTheDerivedColumnsAreAbsent`: that class
-        asserts the live catalogue, this one asserts the migration source, so
-        re-introducing the cache fails whether or not the reader has a
-        database.  Delete both at plan step R7c.
-        """
-        tree = ast.parse(_MIGRATION_SOURCE)
-        added = {
-            node.value for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
-            and node.value in _DERIVED_COLUMNS
-        }
-        assert not added, (
-            f"the migration names {sorted(added)} as a string literal; plan "
-            f"step R2d removed those columns because they are derived."
-        )
+    # ``test_the_upgrade_adds_no_derived_column`` was DELETED at plan step
+    # R7c-a, which its own docstring instructed ("delete both at plan step
+    # R7c").  It was the AST sibling of ``TestTheDerivedColumnsAreAbsent``:
+    # both asserted that ``unit_id`` / ``anchor_date`` / ``placement_id`` /
+    # ``shift_id`` were not columns, on the R2d ruling that a derivation must
+    # not sit beside its own inputs.  R7c-a adds them under an expand /
+    # migrate / contract -- nothing reads them until R7c-b, and from R7c-b
+    # they are authored -- so what the pair guarded is no longer a state to
+    # refuse.  Their coverage inverted into
+    # ``test_recurrence_two_axis_backfill.py``, which asserts the columns
+    # arrived with the right shape and hold what the write door would write.

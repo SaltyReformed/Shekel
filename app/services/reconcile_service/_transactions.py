@@ -38,13 +38,13 @@ Architecture (``CLAUDE.md``):
     boundary.
 """
 
-from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.orm import selectinload
 
 from app.models.transaction import Transaction
 from app.services import cash_ledger, transaction_service
+from app.services.cash_ledger import AnchorPoint
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
@@ -157,6 +157,16 @@ def _settle_one(
     transaction_service.settle_transaction(
         txn, actual_amount=submitted, settled_on=statement.observed_on,
     )
+    # WHICH statement showed this row (ruling **R-FL**), recorded HERE rather
+    # than inside ``settle_transaction`` -- and that placement is the rule.  The
+    # verb is shared with the grid's Mark Paid, which settles a row without any
+    # statement having shown it, so a link written there would record an
+    # observation nobody made.  Ticking a row on this panel IS the observation.
+    #
+    # It follows the settle, which RELEASES any prior link as it stamps the day
+    # (``status_seam``): the release is about the day that moved, and this is
+    # the new day's own fact.
+    txn.reconciled_by_id = statement.anchor.anchor_id
     return corrected
 
 
@@ -187,7 +197,7 @@ ARM = _rows.Arm(
 
 
 def outstanding_transactions(
-    owner_id: int, account_id: int, observed_on: date,
+    owner_id: int, account_id: int, anchor: AnchorPoint,
 ) -> "dict[int, OutstandingTransaction]":
     """Return this arm's offers, ``{transaction id: offer}``.
 
@@ -207,7 +217,9 @@ def outstanding_transactions(
     Args:
         owner_id: The user_id whose rows to list.
         account_id: The cash account whose balance was asserted.
-        observed_on: The civil day that balance was true for.
+        anchor: The governing assertion -- the STATEMENT being
+            reconciled against.  Its ``observed_on`` bounds the offer
+            set and its id is what a tick records (ruling **R-FL**).
 
     Returns:
         ``{transaction_id: OutstandingTransaction}``, insertion-ordered by
@@ -219,7 +231,7 @@ def outstanding_transactions(
         of its own period and only closing it clears it.  Finding **N-227**
         owns whether that bound is right.
     """
-    statement = _rows.Statement(owner_id, account_id, observed_on)
+    statement = _rows.Statement(owner_id, account_id, anchor)
     return {
         txn.id: _offer(txn)
         for txn in _rows.outstanding_rows(ARM, statement)

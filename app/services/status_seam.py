@@ -171,10 +171,20 @@ def reject_future_settle_day(settled_on: Optional[date]) -> None:
 
     **The opposite rule on ``TransactionEntry.settled_on`` is not a
     contradiction.**  A future ENTRY posting day is the CONSERVATIVE direction --
-    ``ReconciledThrough.covers`` answers False, the debit stays reserved, the
-    balance stays low -- so that door bounds only from below and says so.  A
-    future ``Transaction.settled_on`` points the other way: it takes settled
-    money OUT of the balance.  The two fields' rationales do not transfer.
+    no assertion closes over it, so the debit stays reserved and the balance
+    stays low -- so that door bounds only from below and says so.  A future
+    ``Transaction.settled_on`` points the other way: it takes settled money OUT
+    of the balance.  The two fields' rationales do not transfer.
+
+    **The recorded clearing fact does not undo that** (plan step X-f3a-1, ruling
+    **R-FL**), and an adversarial review was right to ask: a LINKED purchase is
+    cleared whatever its day says, so a linked entry moved to a future day would
+    release its reservation and put already-reserved money back in the
+    projection -- the very failure this refusal exists to prevent, arriving
+    through the exempt door.  It cannot happen, because
+    ``entry_service.update_entry`` RELEASES the link whenever the posting day
+    moves: a future-dated entry is therefore always unlinked, and the day rule
+    answers it exactly as this paragraph describes.
 
     It lives here, beside :func:`reject_settle_day_without_settled_status` and
     the ``datetime`` refusal, for the reason those are here: ONE door, every
@@ -460,11 +470,33 @@ def apply_status_change(
     # leaves it, and arm 3 fills the band's first entry.  A settled row always
     # leaves here dated and a non-settled row always leaves here undated.
     if isinstance(row, Transaction):
+        # **Any MOVE of the settle day releases the clearing fact** (plan step
+        # X-f3a-1, ruling **R-FL**), and the three arms below are exactly the
+        # three ways it can move.  ``reconciled_by_id`` records that a named
+        # statement was seen to show this money ON that day: a revert says the
+        # money did not move at all, and a correction says it moved on a
+        # different day, and neither leaves the observation standing.
+        #
+        # **It is not tidiness, it is what keeps the ledger renderable.**  A link
+        # whose day the date rule would not pick cannot be folded while an
+        # assertion RESETS the balance -- the fold emits the source on its
+        # settle day and the correction on the statement's, so the balance stops
+        # equalling what the user asserted (``StatementCoverage``'s
+        # ``_recorded_anchor_id`` carries the theorem and the production
+        # figure).  ``ck_transactions_cleared_needs_settle_day`` catches only the
+        # NULL half of that; this catches the move.
+        #
+        # Re-settling afterwards is a fresh act, which the reconcile panel
+        # records against whatever statement is current then.
+        released = settled_on is not None and settled_on != row.settled_on
         if settled_on is not None:
             row.settled_on = settled_on
         elif new_status_id not in settled_status_ids():
             row.settled_on = None
+            released = True
         elif row.settled_on is None:
             row.settled_on = display_today()
+        if released:
+            row.reconciled_by_id = None
 
     db.session.expire(row, ["status"])

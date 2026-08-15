@@ -218,7 +218,7 @@ class TestDashboardPulseRendering:
             db.session.add(envelope)
             db.session.flush()
             db.session.add(TransactionEntry(
-                transaction_id=envelope.id,
+                transaction_id=envelope.id, account_id=envelope.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("130.00"),
                 description="overspend",
@@ -340,7 +340,7 @@ class TestDashboardPulseRendering:
             db.session.add(tracked)
             db.session.flush()
             db.session.add(TransactionEntry(
-                transaction_id=tracked.id,
+                transaction_id=tracked.id, account_id=tracked.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("200.00"),
                 description="groceries",
