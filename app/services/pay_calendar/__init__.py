@@ -89,7 +89,6 @@ from ._derive import (
 )
 from ._loader import cadence_for, calendar_for
 from ._searches import (
-    containing_index,
     containing_period,
     earliest_start_in_month,
     earliest_started_period,
@@ -111,7 +110,6 @@ __all__ = [
     "PeriodWindow",
     "cadence_for",
     "calendar_for",
-    "containing_index",
     "containing_period",
     "derive_periods",
     "earliest_start_in_month",

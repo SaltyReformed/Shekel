@@ -57,7 +57,9 @@ def containing_index(
     as ``found.period_index - window[0].period_index`` would be a second rule
     about how a window's ordinals relate to the calendar's, true today and
     unenforced, where this is the same bisect the containment answer already
-    ran.  The scan it replaced was the last live member of row P6's census.
+    ran.  The scan it replaced was the last HAND-ROLLED member of row P6's
+    census; ``pay_period_service.get_current_period`` is still live at every
+    surface outside the read passes, and plan step **C2-f3** retires it.
 
     Args:
         periods: Periods in ``start_date`` ascending order.

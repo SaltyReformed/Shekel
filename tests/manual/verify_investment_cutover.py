@@ -51,18 +51,34 @@ records.
 * ``derived_vs_stored`` -- per saved period, the stored ``end_date`` /
   ``period_index`` against the derivation's.  Read this BEFORE reading the
   diff: it says whether this database can express a disagreement at all.
-
-**Two axes it CANNOT vary**, named so the next reader does not over-read a
-clean run.  It reads at ONE clock -- the day it runs -- so it cannot exercise
-an owner whose schedule has lapsed (no period covers today) or one whose clock
-falls in the LAST saved period, where the derived end and the stored end can
-part company.  Both are covered by hand-computed cases in
-``tests/test_routes/test_investment.py`` instead, which is where a state the
-production clone does not hold belongs.
 * ``readers`` -- ``get_current_period`` and ``get_all_periods`` beside
   ``period_containing(as_of)`` and ``saved()``.  Both readers survive this leaf
   (plan step ``C2-f3`` deletes them), so this file runs unchanged on both sides
   and records what the two answers were on each.
+
+**Two axes it CANNOT vary**, named so the next reader does not over-read a
+clean run.  Both are covered by hand-computed cases in
+``tests/test_routes/test_investment.py`` instead, which is where a state the
+production clone does not hold belongs.
+
+1. **One CLOCK -- the day it runs.**  So it cannot exercise an owner whose
+   schedule has lapsed, where no period covers today and this package's
+   ``current_period`` is ``None`` at four readers.
+   ``TestTheProjectionMeetsItsSeedOnALapsedSchedule`` holds that state.
+2. **One relationship between the STORED columns and the DERIVATION -- equal.**
+   This is the sharper of the two and an earlier draft of this paragraph
+   understated it (adversarial review, 2026-08-15): it named "the clock in the
+   LAST saved period", as though only a clock position were at stake.  It is
+   not.  ``_cards._compute_default_horizon`` reads the LAST period's end
+   wherever the clock sits, and three more readers take a derived
+   ``end_date`` / ``period_index``, so the exposure is every render on any
+   database where the two disagree.  This harness cannot see it on ANY
+   database a write door built -- ``pay_period_write`` materialises the
+   derivation on every write since plan step C3-b, which is why
+   ``derived_vs_stored`` reports zero mismatches and why no fixture can
+   express one either.  ``TestTheCutoverReadsTheDERIVEDPeriodEnd`` plants the
+   disagreement by hand and pins which column wins; that draft claimed the
+   axis was covered when nothing covered it.
 
 **BYTE-IDENTITY IS THE GATE HERE.**  Every replacement in this leaf is claimed
 EQUAL to the query it replaces on any schedule whose stored columns match the

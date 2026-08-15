@@ -28,12 +28,12 @@ from app.services import (
     income_service,
 )
 from app.services.balance_at import BalanceContext
-from app.services.pay_calendar import DerivedPeriod
 from app.services.investment_projection import (
     InvestmentInputs,
     adapt_deductions,
     build_contribution_timeline,
 )
+from app.services.pay_calendar import DerivedPeriod
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_account,
@@ -124,9 +124,13 @@ class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
         current_period: The SAVED pay period covering ``balance_ctx.as_of``, or
             ``None`` when the pass's clock falls outside the owner's schedule
             -- before their first payday or past their horizon.  ``None`` is a
-            real answer three readers here branch on, so it is preserved rather
+            real answer FOUR readers here branch on, so it is preserved rather
             than clamped: the headline falls back to a date-precise seam read,
-            the history series is empty, and the growth chip is hidden.
+            the history series is empty, the growth chip is hidden, and the
+            suggested contribution spreads from the pass's clock instead.  The
+            fourth is the one that matters most for this attribute: unlike the
+            other three it changes a DOLLAR figure -- the amount the
+            contribution-transfer form arrives pre-filled with.
     """
 
     params: InvestmentParams | None
@@ -326,10 +330,11 @@ def _projection_start(balance_ctx: BalanceContext) -> date:
 def _resolve_seed_balance(
     account: Account,
     balance_ctx: BalanceContext,
+    projection_start: date,
 ) -> Decimal:
     """Return the balance the forward growth projection seeds from.
 
-    The account's MODELLED balance on the day before :func:`_projection_start`,
+    The account's MODELLED balance on the day before *projection_start*,
     read through the seam's date-precise scalar -- the same number the history
     line's last point renders (rulings R-AB / R-AE).
 
@@ -342,9 +347,20 @@ def _resolve_seed_balance(
     change, would have started the projection line BELOW the history line by
     every cent earned since the last balance assertion (findings N-80 / N-84).
 
+    **It TAKES the window's opening day rather than deriving it a second
+    time** (plan step C2-f2c).  It called :func:`_projection_start` itself while
+    :func:`_load_projection_context` called it again two lines later for the
+    field the CHART reads, so the seed's date and the axis's opening day were
+    two evaluations that had to agree -- which is the shape this function's own
+    third paragraph records costing 10-13 days once already.  They are one
+    value now, resolved once and threaded, so the identity is structural
+    instead of arithmetic.
+
     Args:
         account: The investment account.
         balance_ctx: The read pass's ``BalanceContext``.
+        projection_start: The day the projection window opens
+            (:func:`_projection_start`).  The seed is valued the day BEFORE it.
 
     Returns:
         The seed balance, always from the seam.  It used to fall back to
@@ -357,8 +373,7 @@ def _resolve_seed_balance(
         figure the app could not know.
     """
     return balance_at.balance_at(
-        account, balance_ctx,
-        _projection_start(balance_ctx) - timedelta(days=1),
+        account, balance_ctx, projection_start - timedelta(days=1),
     )
 
 
@@ -453,13 +468,7 @@ def _load_projection_context(
     balance_ctx = BalanceContext.build(user_id)
     periods = balance_ctx.reported_periods()
     current_period = _current_period(balance_ctx)
-    # The headline tile shows the model-from-anchor balance at the current
-    # period's END (so it agrees with /savings and the net-worth trend); the
-    # projection seeds from the same curve one day before its own window opens,
-    # so the two are read at different DATES rather than off different bases.
-    current_balance = _resolve_current_balance(
-        account, balance_ctx, current_period,
-    )
+    projection_start = _projection_start(balance_ctx)
     active_profile = _load_active_salary_profile(user_id)
     # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not the
     # off-engine ``annual_salary / pay_periods_per_year`` recompute that
@@ -476,7 +485,9 @@ def _load_projection_context(
     # (rulings R-AB / R-AE).  Nothing is filtered out of it and nothing is
     # subtracted from it -- the window opens strictly after the seed's date, so
     # there is no overlap for a compensator to correct.
-    projection_seed = _resolve_seed_balance(account, balance_ctx)
+    projection_seed = _resolve_seed_balance(
+        account, balance_ctx, projection_start,
+    )
     inputs = build_investment_projection_inputs(
         params, adapted_deductions, acct_contributions,
         current_period, salary_gross_biweekly,
@@ -489,8 +500,15 @@ def _load_projection_context(
     )
     return _ProjectionContext(
         params=params,
-        current_balance=current_balance,
-        projection_start=_projection_start(balance_ctx),
+        # The headline tile shows the model-from-anchor balance at the current
+        # period's END (so it agrees with /savings and the net-worth trend);
+        # the projection seeds from the same curve one day before its own
+        # window opens, so the two are read at different DATES rather than off
+        # different bases.  Inlined to stay under the locals limit.
+        current_balance=_resolve_current_balance(
+            account, balance_ctx, current_period,
+        ),
+        projection_start=projection_start,
         projection_ytd=_projection_ytd(inputs),
         projection_seed=projection_seed,
         inputs=inputs,

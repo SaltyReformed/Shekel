@@ -223,8 +223,12 @@ def _build_chart_markers(
     C2-f2c, ledger row **P48**).  This walked the window period by period
     testing ``start_date <= retirement_date <= end_date``, which is
     :meth:`~app.services.pay_calendar.PeriodWindow.containing`'s predicate
-    written a second time -- the last live member of ledger row **P6**'s census
-    of "which pay period contains this date" implementations.  The two agree
+    written a second time -- the last HAND-ROLLED member of ledger row **P6**'s
+    census of "which pay period contains this date" implementations.  *Not the
+    last member*: that census names one other survivor,
+    ``pay_period_service.get_current_period``, which is SQL rather than a scan,
+    which is live at every surface outside a read pass, and which plan step
+    **C2-f3** retires (ledger row **P19**).  The two agree
     over a tiling window, so this retired a DUPLICATE rather than a
     divergence; what it buys is that the answer now comes from the same bisect
     the rest of the application places a date with, and cannot drift from it.
@@ -249,16 +253,18 @@ def _build_chart_markers(
         before it opens or past its horizon.
     """
     retirement_date = ctx.planned_retirement_date
-    if retirement_date is None:
-        return {
-            "today_boundary_index": history_len,
-            "retirement_year": None,
-            "retirement_marker_index": None,
-        }
-    offset = projection_periods.containing_index(retirement_date)
+    offset = (
+        None if retirement_date is None
+        else projection_periods.containing_index(retirement_date)
+    )
     return {
         "today_boundary_index": history_len,
-        "retirement_year": retirement_date.year,
+        "retirement_year": (
+            None if retirement_date is None else retirement_date.year
+        ),
+        # ``offset is None``, never falsiness: ZERO is the answer for a date in
+        # the window's own FIRST period, and a truthiness test would drop that
+        # marker to the Today boundary instead of one point past it.
         "retirement_marker_index": (
             None if offset is None else history_len + offset
         ),

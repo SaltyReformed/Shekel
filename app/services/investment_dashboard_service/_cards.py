@@ -107,10 +107,11 @@ def _compute_default_horizon(ctx: _ProjectionContext) -> int:
     retirement date resolved once on the shared feed rather than by a second
     ``user_settings`` query, the periods off the pass's own calendar rather
     than a ``pay_period_service.get_all_periods`` call, and the year counted
-    from ``ctx.balance_ctx.as_of`` rather than from ``date.today()``.  The
-    clock is the one that matters here: this figure is compared against a
-    period end resolved on the pass's clock, so reading a second one could
-    size the slider a year short for a render straddling New Year's Eve.
+    from ``ctx.balance_ctx.as_of`` rather than from ``date.today()``.
+    The clock matters on the FIRST arm only: the second reads a period end
+    derived from paydays and a cadence, which no clock takes part in.  A render
+    straddling New Year's Eve would otherwise size the retirement arm against
+    one civil year while every other figure on the page ran on the other.
 
     Args:
         ctx: The shared per-request projection feed.
@@ -122,7 +123,7 @@ def _compute_default_horizon(ctx: _ProjectionContext) -> int:
     if ctx.planned_retirement_date is not None:
         return max(1, ctx.planned_retirement_date.year - today.year)
     periods = ctx.balance_ctx.reported_periods()
-    if len(periods):
+    if periods:
         return max(1, (periods[-1].end_date.year - today.year) + 1)
     return _FALLBACK_HORIZON_YEARS
 
@@ -140,8 +141,8 @@ def _compute_suggested_contribution(ctx: _ProjectionContext) -> Decimal:
 
     ``remaining_periods`` is anchored on ``current_period.start_date`` --
     the SAME boundary the subtracted ``ytd_contributions`` uses
-    (:func:`investment_projection._current_year_period_ids`: same
-    calendar year, ``<= current_period.start_date``).  So the current
+    (:func:`investment_projection._ytd_contributions`: same calendar year,
+    ``<= current_period.start_date``).  So the current
     period is counted once -- in YTD (already contributed) -- and the
     remaining limit is spread over the periods STRICTLY AFTER it.
     Anchoring on the clock instead double-counted the current
