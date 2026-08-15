@@ -428,7 +428,7 @@ def is_cancelled(txn: Transaction) -> bool:
     """Return True iff *txn*'s status is ``Cancelled``.
 
     Centralizes the inline ``status_id == cancelled_id`` comparisons
-    in ``app/routes/grid.py`` (skip-cancelled row-key collection,
+    in ``app/routes/grid/`` (skip-cancelled row-key collection,
     mirroring the templates' ``!= STATUS_CANCELLED`` guards in
     ``grid.html``, ``_mobile_grid.html``) and ``entry_service.py``
     (block entries on cancelled-status transactions). Pure status

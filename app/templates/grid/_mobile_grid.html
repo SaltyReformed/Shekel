@@ -12,7 +12,7 @@
        managed by mobile_grid.js.
 
    Expected context (from grid.index route):
-     periods           -- list of PayPeriod objects (visible window)
+     periods           -- the visible `PeriodWindow` of DerivedPeriods
      income_row_keys   -- list[RowKey] (category_id, template_id, txn_name, group_name, display_name, ...)
      expense_row_keys  -- list[RowKey]
      matched_by_row_period -- dict[(category_id, template_id, txn_name, period_id) -> list[Transaction]]

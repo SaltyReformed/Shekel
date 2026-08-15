@@ -3,18 +3,17 @@
 ## Where this stands
 
 **Built:** **C1**, **C2-a**, **C2-b1**, **C2-b** (both leaves, which also ticked **C5a** and the
-recurrence arc's **R-F10**), **C2-c**, **C2-d**, **C2-e**, **C2-f1**, **C2-f2a**, and **C3** (both
-leaves) -- section 4 carries each one's commit. What reached `main` and production is a MEASUREMENT
-(`git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`).
+recurrence arc's **R-F10**), **C2-c**, **C2-d**, **C2-e**, **C2-f1**, **C2-f2a**, **C2-f2b**, and
+**C3** (both leaves) -- section 4 carries each one's commit. What reached `main` and production is a
+MEASUREMENT (`git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`).
 
-**Both engines, every forward PROJECTION and the WHOLE balance seam read the DERIVED calendar** --
-the recurrence engine since C2-b2, the seam's per-period entries since C2-c, the projections since
-C2-e, three of `pay_period_service`'s six readers since C2-f1, and that module's last reader inside
-`balance_at` since C2-f2a. **C2-f DECOMPOSED into three leaves 2026-08-14** (developer) and
-**`C2-f2` into five the same day**; `C2-f2b`-`C2-f2e` and `C2-f3` carry the rest. The six readers
-have **60** `app/` call sites by AST, not the 66 this document claimed and no census reproduced.
-Where a stored column disagrees with the derivation every consumer believes the derivation; the
-shapes that can are named in `recurrence/_occurrence.py` and section 3, all owned by **C4**.
+**Both engines, every forward PROJECTION, the WHOLE balance seam and the GRID read the DERIVED
+calendar** -- since C2-b2, C2-c, C2-e, C2-f1, C2-f2a and C2-f2b respectively, the last of those
+taking the COMPANION with it. **C2-f DECOMPOSED into three leaves 2026-08-14** (developer) and
+**`C2-f2` into five the same day**; `C2-f2c`-`C2-f2e` and `C2-f3` carry the **39** `app/` call sites
+left of the 60 it opened with. Where a stored column disagrees with the derivation every consumer
+believes the derivation; those shapes are named in `recurrence/_occurrence.py` and section 3, all
+owned by **C4**.
 
 **The writer is ONE module** -- `pay_period_write` -- so C4 changes one file plus those readers.
 **R-PC1's coverage half was DELETED 2026-08-11** (developer), leaving the floor as this arc's only
@@ -285,11 +284,12 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       wiring sites into ONE derivation, so one plant moves the Empower's grid column, its
       `balance_map` and its 2029 scalar together (`-$182.29`, `-$182.29`, `-$190.39`).
 
-- [ ] **C2-f2b -- the GRID.** Six sites in `routes/grid.py`, plus `grid_view_service` and
-      `GridBalanceView.row_flags`, which take derived periods, and the 12 `templates/grid/` files
-      that read a period attribute. **It DELETES `get_periods_in_range`**: all three of that
-      reader's `app/` call sites are this route's, so the leaf ends with one of the six readers gone
-      rather than with sites moved. Closes **P36**'s grid half.
+- [x] **C2-f2b -- the GRID.** `f4d4abe6`. Carried **P36**'s grid half. All six sites answer from the
+      pass's calendar and `get_periods_in_range` is DELETED, taking the six readers from 47 `app/`
+      call sites to 39; the COMPANION moved with it (one shared partial), `routes/grid.py` became a
+      package first (`29e4fab8`, a pure move off the 1000-line ceiling), and `period_containing` now
+      ENFORCES the "SAVED" it claimed. Proof: `verify_grid_cutover`'s docstring -- byte-identical, 0
+      mismatches on PRODUCTION, and SHOWN skipping `$5,827.75`.
 
 - [ ] **C2-f2c -- `/investment`.** Five sites across `_orchestrator`, `_context`, `_cards` and
       `_chart`. `_chart._build_chart_markers`' linear containment scan over a `PeriodWindow` retires

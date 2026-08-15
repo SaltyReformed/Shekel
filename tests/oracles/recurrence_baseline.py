@@ -194,7 +194,7 @@ class _ShapeAccumulator:
 def build_schedule(
     start: date, cadence_days: int, count: int,
 ) -> list[PayPeriod]:
-    """Return ``count`` contiguous unsaved pay periods.
+    """Return ``count`` contiguous unflushed pay periods, each with an id.
 
     Mirrors ``pay_period_service.generate_pay_periods`` exactly: each period
     ends ``cadence_days - 1`` after it starts, and the next begins the
@@ -203,19 +203,40 @@ def build_schedule(
     forward placement depends on, so the baseline must be built the same way
     the app builds one.
 
+    **Each row carries an explicit ``id`` since pay-calendar plan step
+    C2-f2b**, and the reason is fidelity rather than plumbing.  These rows are
+    never flushed, so SQLAlchemy left ``id`` as ``None`` and
+    :func:`build_shape_calendar` handed the resulting ``(None, payday)`` pairs
+    to :meth:`PayCalendar.from_paydays` -- giving the oracle a calendar every
+    one of whose periods is an UNSAVED CANDIDATE.  The application cannot
+    produce one: ``calendar_for`` reads saved rows, so every period the
+    recurrence engine actually places against has an id.  The baseline was
+    therefore grading the engine on a schedule shape production never holds,
+    which C2-f2b surfaced by making
+    :meth:`~app.services.pay_calendar.PayCalendar.period_containing` filter to
+    materialised periods -- the same filter its four sibling searches already
+    apply, because this answer becomes ``transactions.pay_period_id`` and that
+    column is ``NOT NULL``.
+
+    The ids are positional and start at 1 so they cannot be confused with the
+    0-based ``period_index`` beside them (ledger row **P13**'s confusion).  The
+    430-shape snapshot records period INDICES and does not move.
+
     Args:
         start: The first payday.
         cadence_days: Days between paydays.
         count: How many periods to build.
 
     Returns:
-        Unsaved :class:`~app.models.pay_period.PayPeriod` rows ordered by
-        ``period_index``, which starts at 0 as the real generator's does.
+        Unflushed :class:`~app.models.pay_period.PayPeriod` rows ordered by
+        ``period_index``, which starts at 0 as the real generator's does, each
+        carrying a 1-based ``id``.
     """
     periods = []
     for index in range(count):
         period_start = start + timedelta(days=cadence_days * index)
         periods.append(PayPeriod(
+            id=index + 1,
             start_date=period_start,
             end_date=period_start + timedelta(days=cadence_days - 1),
             period_index=index,

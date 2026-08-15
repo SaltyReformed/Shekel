@@ -97,7 +97,7 @@ decided it**: 5 of the owner's 61 truncation points refused, one over three
 rows that cleared the bank ONE day late.
 
 **"Outside the reported window" is not a windowing nicety on the load-bearing
-surface**: ``routes/grid.py`` passes the owner's COMPLETE period set, so there
+surface**: ``routes/grid/page.py`` passes the owner's COMPLETE period set, so there
 the phrase means "outside every paycheck they have".  The identity holds all
 the same -- it is a property of where each column is valued, not of how the
 window was chosen -- but the reassurance must not be read as "only a partial

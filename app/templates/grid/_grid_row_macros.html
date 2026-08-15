@@ -145,8 +145,8 @@
     {{ rk.display_name }}
   </th>
   {% for period in periods %}
-    {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
-    <td class="text-end cell{{ ' cur' if period.id == current_period_id else '' }}{{ mstart(periods, loop.index0) }}">
+    {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id), []) %}
+    <td class="text-end cell{{ ' cur' if period.period_id == current_period_id else '' }}{{ mstart(periods, loop.index0) }}">
       {% if matched %}
         {% for txn in matched %}
           <div id="txn-cell-{{ txn.id }}">
@@ -156,6 +156,15 @@
         {% endfor %}
       {% else %}
         {% set category = rk.category %}
+        {#- The partial takes the ID, not the period: its other render entry
+            (`transactions.get_empty_cell`) resolves an ORM `PayPeriod` to
+            check ownership of a submitted id, so the two callers carry
+            different TYPES and only the id is common to both (plan step
+            C2-f2b).  Whitespace-controlled (`{%-`): this row renders once per
+            EMPTY cell, 226 of them on the real 6-period grid and ~1,200 at
+            `?periods=52`, so an uncontrolled tag costs 29 KB of blank lines on
+            the widest window -- measured before it was controlled. -#}
+        {%- set period_id = period.period_id %}
         {% include "grid/_transaction_empty_cell.html" with context %}
       {% endif %}
     </td>
@@ -178,18 +187,29 @@
     matching the v1 _mobile_grid.html pattern where the header
     lives inside the `{% if matched %}` guard.
 
-    All parameters are forwarded verbatim to `render_one_card`; see
-    that macro for `can_edit` / `id_prefix` / `entry_lists` / `today`
-    semantics.
+    `period` is read ONLY to key the cell lookup below -- `render_one_card`
+    renders one transaction and names no period at all (plan step C2-f2b
+    dropped the parameter it had been passed through).  Every other
+    parameter is forwarded verbatim; see that macro for `can_edit` /
+    `id_prefix` / `entry_lists` / `today` semantics.
 -#}
-{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id), []) %}
 {% for txn in matched %}
-{{ render_one_card(rk, period, txn, entry_sums, can_edit, id_prefix, entry_lists, today) }}
+{{ render_one_card(rk, txn, entry_sums, can_edit, id_prefix, entry_lists, today) }}
 {% endfor %}
 {%- endmacro %}
 
-{% macro render_one_card(rk, period, txn, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none, error=none) -%}
+{% macro render_one_card(rk, txn, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none, error=none) -%}
 {#- Render exactly one mobile transaction card.
+
+    It took a `period` between `rk` and `txn` until plan step C2-f2b and
+    never read it -- neither this body nor the `_mobile_card_actions.html`
+    it includes `with context` names one.  The argument was dead weight the
+    day the cell lookup moved up into `render_row_card`, and it stopped
+    being harmless when the grid's periods became `DerivedPeriod` values:
+    it would have obliged `transactions._render_mobile_card` to keep
+    handing an ORM `PayPeriod` into a macro family that no longer speaks
+    that type, for a parameter nothing reads.
 
     error (default none): optional message string.  When set, a danger
     banner renders as the wrapper's first child: a rejected mutation
@@ -499,7 +519,7 @@
     in a "future" period that has nevertheless been advanced) renders
     consistently with This Period.
 -#}
-{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id), []) %}
 {% for txn in matched %}
   {# Workstream B: live projected salary income via the route-set
      txn.live_estimated_amount, with a safe fallback to the stored

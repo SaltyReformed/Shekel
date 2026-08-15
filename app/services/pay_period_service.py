@@ -33,8 +33,29 @@ a policy about editing rather than a fact about the schedule.
 ``companion_service.get_previous_period`` -- a copy of ``get_next_period``
 with ``+ 1`` changed to ``- 1`` -- went with them.
 
-``get_current_period``, ``get_all_periods`` and ``get_periods_in_range``
-remain, for **C2-f2** and **C2-f3**.
+**A FOURTH is gone at C2-f2b**, and it went whole rather than by call
+site: ``get_periods_in_range`` -- a window selected by ``period_index``,
+which is one of the two derived columns plan step **C4** drops -- had all
+three of its ``app/`` call sites in the grid route -- ``page.py`` twice and
+``partials.py`` once, that module having become the ``app/routes/grid/``
+package the same branch -- so moving the grid onto
+:meth:`~app.services.pay_calendar.PayCalendar.window` left it with no caller
+at all.  The question it answered is the calendar's:
+
+======================================= ==================================
+retired reader                          what answers it now
+======================================= ==================================
+``get_periods_in_range``                ``PayCalendar.window``
+======================================= ==================================
+
+``get_current_period`` and ``get_all_periods`` remain, for the rest of
+**C2-f2** and then **C2-f3**: only the GRID leaf of that step has landed, and
+``C2-f2c``-``C2-f2e`` still move both readers at ``/investment``,
+``/savings``, ``/retirement``, the budget dashboard and ``/accounts/<id>``.
+**They travel together and may not be separated** (the C2-f decomposition
+ruling, 2026-08-14): 11 functions read both, so splitting them leaves a
+dozen context objects holding an ORM row in one field and a
+:class:`~app.services.pay_calendar.DerivedPeriod` in another.
 """
 
 from datetime import date
@@ -125,29 +146,6 @@ def get_current_period(user_id, as_of=None):
             PayPeriod.end_date >= as_of,
         )
         .first()
-    )
-
-
-def get_periods_in_range(user_id, start_index, count):
-    """Return a window of pay periods by index.
-
-    Args:
-        user_id:     The user's ID.
-        start_index: The first period_index to include.
-        count:       Number of periods to return.
-
-    Returns:
-        List of PayPeriod objects ordered by period_index.
-    """
-    return (
-        db.session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == user_id,
-            PayPeriod.period_index >= start_index,
-            PayPeriod.period_index < start_index + count,
-        )
-        .order_by(PayPeriod.period_index)
-        .all()
     )
 
 

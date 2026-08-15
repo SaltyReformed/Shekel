@@ -3,13 +3,22 @@
 
    Expected context:
      category      -- Category object for this row (may be None for uncategorized)
-     period        -- PayPeriod object for this column
+     period_id     -- int; budget.pay_periods.id of this column's paycheck
      account       -- Account object for the viewed account
      txn_type_id   -- integer transaction type ID (TXN_TYPE_INCOME or TXN_TYPE_EXPENSE)
+
+   It took the whole `period` object until plan step C2-f2b and read one
+   scalar off it.  This partial has TWO render entries and they no longer
+   hold the same TYPE of period: the desktop grid macro
+   (`grid/_grid_row_macros.html`) iterates the read pass's derived calendar,
+   while `transactions.get_empty_cell` resolves an ORM `PayPeriod` to check
+   ownership of a submitted id.  Both can name an id, and an id is all this
+   ever wanted -- so the contract is the value rather than whichever object
+   happened to be carrying it.
 #}
 {% if category %}
 <div class="txn-cell txn-empty-cell"
-     hx-get="{{ url_for('transactions.get_quick_create', category_id=category.id, period_id=period.id, transaction_type_id=txn_type_id, account_id=account.id) }}"
+     hx-get="{{ url_for('transactions.get_quick_create', category_id=category.id, period_id=period_id, transaction_type_id=txn_type_id, account_id=account.id) }}"
      hx-trigger="click"
      hx-target="closest td"
      hx-swap="innerHTML"

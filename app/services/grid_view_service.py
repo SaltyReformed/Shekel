@@ -9,7 +9,7 @@ matching dict that drives every cell render.
 
 Single source of truth shared by:
 
-  * the owner-facing grid (``app/routes/grid.py::index``), which
+  * the owner-facing grid (``app/routes/grid/page.py::index``), which
     consumes the dict from the desktop ``render_row_cells`` and the
     mobile ``render_row_card`` macros in
     ``app/templates/grid/_grid_row_macros.html``;
@@ -36,8 +36,8 @@ from collections.abc import Iterable
 
 
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.services.pay_calendar import DerivedPeriod
 from app.utils.balance_predicates import is_cancelled
 
 
@@ -180,7 +180,7 @@ def build_row_keys(
 
 def _match_row_in_period(
     rk: RowKey,
-    period: PayPeriod,
+    period: DerivedPeriod,
     txn_by_period: dict[int, list[Transaction]],
     is_income_section: bool,
 ) -> list[Transaction]:
@@ -194,7 +194,7 @@ def _match_row_in_period(
     semantics.
     """
     matched: list[Transaction] = []
-    for txn in txn_by_period.get(period.id, []):
+    for txn in txn_by_period.get(period.period_id, []):
         if txn.category_id != rk.category_id:
             continue
         if is_income_section and not txn.is_income:
@@ -215,7 +215,7 @@ def _match_row_in_period(
 def build_matched_by_row_period(
     income_row_keys: list[RowKey],
     expense_row_keys: list[RowKey],
-    periods: Iterable[PayPeriod],
+    periods: Iterable[DerivedPeriod],
     transactions: Iterable[Transaction],
 ) -> dict[tuple[int, int | None, str, int], list[Transaction]]:
     """Pre-compute the (row_key, period) -> matched transactions dict.
@@ -249,8 +249,15 @@ def build_matched_by_row_period(
             row-render order.
         expense_row_keys: row keys for the expense section, in
             row-render order.
-        periods: iterable of PayPeriod objects -- the visible cells
-            to render.
+        periods: iterable of :class:`~app.services.pay_calendar.DerivedPeriod`
+            values -- the visible cells to render.  **The owner's own
+            calendar answers them since plan step C2-f2b**, where they were
+            ORM ``PayPeriod`` rows read out of the table by
+            ``pay_period_service``; only ``period_id`` is read, and it is
+            the same ``budget.pay_periods.id`` the transactions carry.  A
+            PROJECTED period (``period_id`` ``None``) matches nothing here,
+            which is correct rather than incidental: no transaction can
+            point at a period that has no row.
         transactions: iterable of Transaction objects (already filtered
             for user / account / scenario / soft-delete).  The function
             indexes these by ``pay_period_id`` internally so the caller
@@ -284,7 +291,10 @@ def build_matched_by_row_period(
                     rk, period, txn_by_period, is_income_section,
                 )
                 if matched:
-                    matched_by_row_period[
-                        (rk.category_id, rk.template_id, rk.txn_name, period.id)
-                    ] = matched
+                    matched_by_row_period[(
+                        rk.category_id,
+                        rk.template_id,
+                        rk.txn_name,
+                        period.period_id,
+                    )] = matched
     return matched_by_row_period

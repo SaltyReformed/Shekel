@@ -12,8 +12,13 @@ supports companion access via ``_get_accessible_transaction``.
 
 Rendering pipeline (mobile-first v3 plan Commit 13):
 
-  * ``companion_service.get_visible_transactions`` returns the
-    visibility-filtered transactions for the chosen period.
+  * ``companion_service.get_visible_transactions`` returns everything one
+    render needs off the linked owner's ONE derived pay calendar: the
+    visibility-filtered transactions, the period itself as a
+    ``DerivedPeriod``, and the paychecks either side of it for the
+    navigation header (plan step **C2-f2b**).  ``_period_neighbours`` lived
+    here until that step and asked the last two itself, which meant loading
+    the owner's whole calendar a second time.
   * ``grid_view_service.build_row_keys`` collapses those into
     one row per (category, template) for income + expense
     sections; ``grid_view_service.build_matched_by_row_period``
@@ -33,7 +38,6 @@ Rendering pipeline (mobile-first v3 plan Commit 13):
 """
 
 import logging
-from datetime import date
 
 from flask import Blueprint, redirect, render_template, url_for
 from flask_login import current_user, login_required
@@ -42,49 +46,14 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.extensions import db
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.services import companion_service, grid_view_service
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
-from app.services.pay_calendar import DerivedPeriod, calendar_for
+from app.utils.dates import display_today
 from app.exceptions import NotFoundError
 
 logger = logging.getLogger(__name__)
 
 companion_bp = Blueprint("companion", __name__, url_prefix="/companion")
-
-
-def _period_neighbours(
-    period: PayPeriod,
-) -> "tuple[DerivedPeriod | None, DerivedPeriod | None]":
-    """Return the paychecks either side of *period* on the OWNER's calendar.
-
-    The companion view's back / forward links, resolved from ONE derivation
-    (plan step **C2-f**).  Both halves used to be their own query on
-    ``period_index`` -- ``pay_period_service.get_next_period`` and
-    ``companion_service.get_previous_period``, the second a copy of the first
-    with ``+ 1`` changed to ``- 1`` -- so stepping forward and back again was
-    two answers nothing held equal.  Here they are two searches of one value,
-    and the value derives its ordinals from payday order, so they cannot
-    disagree.
-
-    The calendar is the LINKED OWNER's, read off the period the companion is
-    already looking at: a companion holds no paydays of their own by design,
-    and ``companion_service`` has already refused a period belonging to anyone
-    but their owner.
-
-    Args:
-        period: The pay period currently on screen, owned by the companion's
-            linked owner.
-
-    Returns:
-        ``(previous, next)``.  Either is ``None`` at the ends of the saved
-        schedule, which is what hides the corresponding link.
-    """
-    calendar = calendar_for(period.user_id)
-    return (
-        calendar.period_starting_before(period.start_date),
-        calendar.period_starting_after(period.start_date),
-    )
 
 
 def _companion_or_redirect():
@@ -100,7 +69,9 @@ def _companion_or_redirect():
     return None
 
 
-def _build_partial_context(transactions: list, period) -> dict:
+def _build_partial_context(
+    view: companion_service.CompanionPageRead,
+) -> dict:
     """Assemble the ``_mobile_this_period.html`` context for companion.
 
     Centralises the rendering inputs shared by :func:`index` and
@@ -110,11 +81,15 @@ def _build_partial_context(transactions: list, period) -> dict:
     set (active + archived) so transactions on archived categories
     still render in their original group.
 
+    **The period it publishes is a
+    :class:`~app.services.pay_calendar.DerivedPeriod` since plan step
+    C2-f2b**, which is what keeps ``grid/_mobile_this_period.html`` ONE
+    partial: the owner's mobile grid moved to derived periods in that step,
+    and a shared partial reading ``period.period_id`` from one caller and
+    ``period.id`` from the other is not shared, it is forked.
+
     Args:
-        transactions: Visibility-filtered Transaction objects from
-            :func:`companion_service.get_visible_transactions`,
-            with ``entries`` and ``template`` eager-loaded.
-        period: The PayPeriod being rendered.
+        view: The page's :class:`~app.services.companion_service.CompanionPageRead`.
 
     Returns:
         Dict with the keys the shared partial expects, ready to
@@ -125,6 +100,7 @@ def _build_partial_context(transactions: list, period) -> dict:
         (the partial's jump-to and prev/next are suppressed via
         ``show_period_nav=False``).
     """
+    transactions = view.transactions
     owner_id = current_user.linked_owner_id
     all_categories = (
         db.session.query(Category)
@@ -139,24 +115,36 @@ def _build_partial_context(transactions: list, period) -> dict:
         transactions, all_categories, is_income_section=False,
     )
     matched_by_row_period = grid_view_service.build_matched_by_row_period(
-        income_row_keys, expense_row_keys, [period], transactions,
+        income_row_keys, expense_row_keys, [view.period], transactions,
     )
     entry_sums = build_entry_sums_dict(transactions)
     # Pre-render context for the inline envelope entries list -- see
-    # the matching comment in app/routes/grid.py::_build_grid_row_data
+    # the matching comment in app/routes/grid/page.py::_build_grid_row_data
     # for the rate-limit rationale.  Companion shares the macro with
     # owner mobile (mobile-first v3 plan Commit 13), so it needs the
     # same context shape.
     entry_lists = build_entry_lists_dict(transactions)
     return {
-        "periods": [period],
-        "current_period": period,
+        "periods": [view.period],
+        "current_period": view.period,
         "income_row_keys": income_row_keys,
         "expense_row_keys": expense_row_keys,
         "matched_by_row_period": matched_by_row_period,
         "entry_sums": entry_sums,
         "entry_lists": entry_lists,
-        "today": date.today(),
+        # The USER's civil day, never the process's.  This reaches
+        # ``grid/_transaction_entries.html``'s add-purchase form as the
+        # ``purchased_on`` default and both date pickers' ``max``, and
+        # ``entry_service._reject_future_purchase_date`` judges that field
+        # against ``display_today()`` (ruling R-M).  With ``date.today()``
+        # here -- which is what this passed until plan step C2-f2b -- the two
+        # clocks disagree on any process not pinned to ``America/New_York``,
+        # and the companion's own form defaulted to a date its own server
+        # rejects.  The owner's mobile card path
+        # (``routes/transactions/_helpers._render_mobile_card``) had already
+        # been corrected; this was the same two-clock shape left on the
+        # surface that shares its macro.
+        "today": display_today(),
         "can_edit": False,
         "show_period_nav": False,
     }
@@ -178,9 +166,7 @@ def index():
         return redir
 
     try:
-        transactions, period = companion_service.get_visible_transactions(
-            current_user.id,
-        )
+        view = companion_service.get_visible_transactions(current_user.id)
     except NotFoundError:
         # No current period or misconfigured companion -- show empty view.
         return render_template(
@@ -191,15 +177,13 @@ def index():
             next_period=None,
         )
 
-    prev_period, next_period = _period_neighbours(period)
-
     return render_template(
         "companion/index.html",
-        transactions=transactions,
-        period=period,
-        prev_period=prev_period,
-        next_period=next_period,
-        **_build_partial_context(transactions, period),
+        transactions=view.transactions,
+        period=view.period,
+        prev_period=view.previous,
+        next_period=view.next_period,
+        **_build_partial_context(view),
     )
 
 
@@ -221,20 +205,18 @@ def period_view(period_id):
         return redir
 
     try:
-        transactions, period = companion_service.get_visible_transactions(
+        view = companion_service.get_visible_transactions(
             current_user.id,
             period_id=period_id,
         )
     except NotFoundError:
         return "Not found", 404
 
-    prev_period, next_period = _period_neighbours(period)
-
     return render_template(
         "companion/index.html",
-        transactions=transactions,
-        period=period,
-        prev_period=prev_period,
-        next_period=next_period,
-        **_build_partial_context(transactions, period),
+        transactions=view.transactions,
+        period=view.period,
+        prev_period=view.previous,
+        next_period=view.next_period,
+        **_build_partial_context(view),
     )

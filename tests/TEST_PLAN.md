@@ -746,7 +746,7 @@ was the hardcoded `26` this table used to name.
 
 ---
 
-### 2.9 `routes/grid.py` -- Priority P2
+### 2.9 `routes/grid/` -- Priority P2
 
 **Status: Complete (12 tests in `test_routes/test_grid.py` -- 8 existing + 4 new).**
 
