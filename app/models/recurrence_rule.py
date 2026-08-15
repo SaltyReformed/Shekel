@@ -4,20 +4,35 @@ Shekel Budget App -- Recurrence Rule Model (budget schema)
 Defines the pattern by which transactions are auto-generated into
 future pay periods (every_period, monthly, annual, etc.).
 
-**This table holds only what a user AUTHORS.**  Plan step R2d of
-``docs/plans/implementation_plan_recurrence_redesign.md`` (developer ruling,
-2026-08-07) settled that the redesign's two-axis values -- the cadence unit,
-the first occurrence, the placement, the business-day shift -- are a
-DERIVATION over the columns below plus the owner's pay-period schedule, and
-that a derivation must not be stored beside its own inputs.  A stored
-derivation is a cache; a cache drifts the moment one writer moves one side
-alone, and nothing can police that completely.  So it is not stored:
-:func:`app.services.recurrence.resolve` computes the two-axis view on demand,
-from one producer, and there is no second copy to disagree with the first.
+**This table is mid-CUTOVER, and it carries two statements of one recurrence.**
+Plan step R2d (developer ruling, 2026-08-07) settled that the redesign's
+two-axis values -- the cadence unit, the first occurrence, the placement, the
+business-day shift -- must not be STORED while they are a derivation over the
+closed-set columns plus the owner's schedule, because a stored derivation is a
+cache and a cache drifts the moment one writer moves one side alone.
 
-Those four values become columns -- authored, NOT NULL, from one backfill, in
-the same transaction that drops the closed-set columns they were derived from
--- at plan step R7c, where the recurrence form starts collecting them.
+Plan step **R7c-a** adds them anyway, and the ruling is not being broken: the
+three leaves of R7c are an expand / migrate / contract, and until R7c-b moves
+the readers across **nothing reads the new columns at all**, so no consumer can
+take a stale one.  From R7c-b they are AUTHORED rather than derived for every
+form-authored rule -- ``starts_on`` is what the form collects -- so there is no
+input left for them to lag.  A day-less LOAN payment stays partly
+schedule-derived even then; see ``_authoring._author`` and plan ledger
+row D6.  R7c-c drops the closed-set columns and the table states its
+recurrence once.  Both sides are written from ONE ``resolve`` call in ONE function
+(``recurrence._authoring._author``) for the duration, so no write leaves them
+disagreeing -- though a SCHEDULE rebuilt with no rule written does move the
+derivation past the stored value, which is why R7c-b re-runs the backfill
+before it switches the readers.
+
+**``interval_n`` is NOT one of the two sets, and it belongs to the closed one
+until R7c-c.**  ``encode_cadence`` writes ``1`` for every pattern whose
+interval is baked into its name, so a Quarterly rule stores
+``(interval_n = 1, unit_id = month)`` -- which reads as MONTHLY to anything
+that takes the pair at face value.  Nothing does: every reader goes through
+``decode_pattern``, which answers ``3`` from the pattern and consults the
+column only for ``Every N Periods``.  R7c-c re-points it in the migration that
+drops ``pattern_id``, which is where the interval stops being the encoding's.
 
 What READS this table today: ``app.services.recurrence.rule_occurrences``,
 which since plan step R4a reads the row WHOLE -- it builds a ``RecurrenceSpec`` from every
@@ -86,6 +101,25 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
             "max_occurrences IS NULL OR max_occurrences > 0",
             name="ck_recurrence_rules_positive_max_occurrences",
         ),
+        # ``nominal_day`` records a day the ANCHOR MONTH clamped, and nothing
+        # else (plan step R7c-a; ruling R-R3).  Both halves are needed and
+        # neither implies the other: the range keeps it a real month-end day,
+        # and the comparison keeps it from restating a day ``starts_on``
+        # already carries -- a ``nominal_day`` of 15 beside a 15th would be the
+        # second representation the D28 ruling removes, and one of 15 beside a
+        # 20th would name a day the rule does not fire on.
+        #
+        # ``EXTRACT(day FROM <date>)`` is IMMUTABLE for a ``date`` argument
+        # (it lowers to ``date_part(text, date)``; the STABLE spellings are the
+        # ``timestamptz`` ones), which is what lets it appear in a CHECK at
+        # all.  Verified against the live server rather than assumed.
+        db.CheckConstraint(
+            "nominal_day IS NULL OR ("
+            "starts_on IS NOT NULL "
+            "AND nominal_day BETWEEN 29 AND 31 "
+            "AND nominal_day > EXTRACT(day FROM starts_on))",
+            name="ck_recurrence_rules_nominal_day",
+        ),
         # **There is deliberately NO ``end_date >= anchor_date`` CHECK**, and
         # there is no ``anchor_date`` column for one to name: the anchor is
         # computed, not stored (plan step R2d).  The constraint lands with the
@@ -94,7 +128,9 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
         # and live, and a CHECK against a value the form does not yet collect
         # would surface as an unhandled CheckViolation out of
         # ``update_template``'s autoflush, leaving the user unable to stop a
-        # recurring bill.
+        # recurring bill.  ``starts_on`` exists from R7c-a; the CHECK naming
+        # it lands at R7c-b, the leaf where the FORM authors that column and
+        # the pair becomes a two-field comparison a schema can refuse.
         {"schema": "budget"},
     )
 
@@ -103,6 +139,87 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
         db.Integer, db.ForeignKey("ref.recurrence_patterns.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    # ---- The two-axis columns (plan step R7c-a) --------------------------
+    #
+    # **Written and read by NOBODY but the write door, until plan step
+    # R7c-b.**  They are the EXPAND half of an expand / migrate / contract:
+    # this leaf adds them, backfills them and has ``_authoring._author`` keep
+    # them in step on every write, while the closed-set columns above stay
+    # authoritative; R7c-b moves every reader onto them; R7c-c drops what they
+    # replace.  Writing both sides for one leaf is what makes each of the three
+    # independently revertible without a translation shim in any of them.
+    #
+    # **NULLABLE for now, and R7c-b tightens them.**  That is the documented
+    # three-step (``.claude/rules/database.md``: add nullable, backfill,
+    # tighten), and the third step belongs with the leaf that makes the columns
+    # matter: nothing reads them here, so a NULL is invisible, while R7c-b
+    # moves the readers across and a NULL becomes a wrong answer.
+    #
+    # What ``NOT NULL`` would reach in THIS leaf is the ~40 test modules that
+    # build a ``RecurrenceRule`` directly rather than through
+    # :func:`app.services.recurrence.author_rule` -- and some of those are
+    # transient values exercising pure functions, which must stay transient.
+    # Sorting them is R7c-b's, with the commit that gives it a reason.  The
+    # backfill's totality is proven by the migration's own refusal query, not
+    # by a constraint.
+    unit_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.recurrence_units.id", ondelete="RESTRICT",
+            name="fk_recurrence_rules_unit_id",
+        ),
+        nullable=True,
+    )
+    placement_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.period_placements.id", ondelete="RESTRICT",
+            name="fk_recurrence_rules_placement_id",
+        ),
+        nullable=True,
+    )
+    shift_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.business_day_shifts.id", ondelete="RESTRICT",
+            name="fk_recurrence_rules_shift_id",
+        ),
+        nullable=True,
+    )
+    # The rule's FIRST OCCURRENCE, and since the developer ruling of
+    # 2026-08-14 (plan ledger row D28) that is its ONE meaning for every unit:
+    # for a calendar cadence the first date the cadence fires on, for a
+    # pay-period cadence the payday of the first paycheck it bills in.  Nothing
+    # is generated before it, and its position in the cycle IS the rule's
+    # phase -- which is why ``day_of_month`` and ``month_of_year`` have nothing
+    # left to say once R7c-b's readers move here.
+    #
+    # The ruling REPLACED this arc's earlier specification, which made the
+    # column the opening validity BOUND.  A bound is not in the cycle's residue
+    # class, so it cannot carry the phase: measured on a 2026-08-14 production
+    # clone, 18 of the 24 live multi-month rules would have fired in the wrong
+    # months forever under that reading.
+    #
+    # Produced by ``recurrence._occurrence.first_occurrence``, which is also
+    # what the R7c-a migration's SQL backfill is proven against.  Nullable
+    # until R7c-b for the reason the three above are.
+    starts_on = db.Column(db.Date, nullable=True)
+    # The day the rule MEANS when ``starts_on``'s own month was too short to
+    # hold it -- April has no 31st, so a day-31 rule first occurring there
+    # carries ``starts_on = 2026-04-30`` and ``nominal_day = 31``.  NULL when
+    # the date holds the day itself, which is every rule whose day is 1-28,
+    # every rule that does not fire on a day of the month at all, and all 46
+    # live rules as of 2026-08-14.  Presence is the discriminator (ruling
+    # R-R3), and it is what stops a month-end rule decaying to the 30th
+    # forever.
+    #
+    # **The domain is 29-31, not 1-31**, and the difference is the ruling: a
+    # value at or below ``starts_on``'s own day would be a SECOND statement of
+    # a day the date already holds, which is the two-representations defect
+    # this step removes.  The CHECK says both halves -- the range, and that it
+    # exceeds the day the date carries -- so the only rows it admits are the
+    # ones where the date genuinely lost the intent.
+    nominal_day = db.Column(db.SmallInteger, nullable=True)
     # Used by 'every_n_periods': repeat every N periods.
     interval_n = db.Column(
         db.Integer, nullable=False, default=1, server_default=db.text("1"),
@@ -224,13 +341,24 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
     # defers to the FK's ON DELETE CASCADE rather than loading the child to
     # delete it.
     #
-    # BOTH ARE EMPTY, and their first writers are plan steps R7c
-    # (``month_anchor``, once ``anchor_date`` becomes a stored column and can
-    # therefore clamp) and R8 (``weekday_anchor``).  A rule carries at most
-    # ONE of them: it fires on a day-of-month OR on an nth-weekday, never
-    # both.  DDL cannot say "at most one row across two tables", so that
-    # exclusivity is a write-door invariant -- step R8 owns it in the
-    # authoring seam.
+    # BOTH ARE EMPTY, and only ONE will ever be written.
+    #
+    # ``month_anchor`` was to take the clamped day once the anchor became a
+    # column.  Ruling **R-R16** (2026-08-14) put that day on the RULE instead
+    # -- ``nominal_day`` above -- so the satellite has no writer and never
+    # will: plan step **R7c-c** drops it unwritten.  The design argument in
+    # ``recurrence_anchors`` is what changed, and the counter-argument is
+    # worth keeping: a nullable column is a wide sparse table one column at a
+    # time UNLESS its absence is the discriminator and its presence is
+    # constrained, which ``ck_recurrence_rules_nominal_day`` is what makes
+    # true here.
+    #
+    # ``weekday_anchor`` is a REAL subtype and plan step R8 is its first
+    # writer: two fields with their own domain, and "the LAST Tuesday"
+    # (``nth_week = -1``) is not derivable from a date at all.  A rule carries
+    # at most one of the two -- day-of-month OR nth-weekday -- and with one
+    # table left that is a CHECK against ``nominal_day`` rather than the
+    # cross-table invariant it used to be; step R8 owns it.
     weekday_anchor = db.relationship(
         "RecurrenceWeekdayAnchor",
         uselist=False, lazy="select",

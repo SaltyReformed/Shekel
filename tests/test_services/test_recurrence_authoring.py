@@ -53,6 +53,7 @@ from app.services.recurrence import (
     ResolvedRecurrence,
     author_rule,
     decode_pattern,
+    first_occurrence,
     reauthor_rule,
     recurrence_spec,
     resolve,
@@ -65,14 +66,42 @@ from app.services.recurrence import _authoring
 from tests._test_helpers import create_loan_account
 
 
-#: Every column of ``budget.recurrence_rules`` a user authors.  Named once so
+#: Every column of ``budget.recurrence_rules`` a CALLER states.  Named once so
 #: :func:`authored_columns` cannot silently stop covering one that is added,
-#: and pinned against the table itself by
+#: and pinned against the table by
 #: :class:`TestTheAuthoredSurfaceIsWholeAndClosed`.
+#:
+#: **A caller's request decides these and nothing else does**, which is what
+#: makes "re-authoring changes nothing" and "a schedule rebuild changes
+#: nothing" meaningful assertions about them.
 _AUTHORED_COLUMNS = (
-    "user_id", "pattern_id", "interval_n", "offset_periods", "day_of_month",
+    "user_id", "pattern_id", "interval_n", "day_of_month",
     "due_day_of_month", "month_of_year", "start_date",
     "end_date", "max_occurrences",
+)
+
+#: Every column the write door DERIVES, from ``resolve`` and the owner's
+#: schedule rather than from the request.
+#:
+#: **They are a separate list because they answer a different question**, and
+#: plan step R7c-a is what made the difference observable.  ``offset_periods``
+#: has been derived since plan step R2c-1 but sat in the list above unnoticed:
+#: it is ``period_index % interval_n``, which is 0 for every live rule, so no
+#: assertion could tell a derived column from an authored one.  ``starts_on``
+#: can: it is the first occurrence measured against the schedule the owner has
+#: NOW, so a full rebuild legitimately moves it -- which
+#: ``TestScheduleRebuildRepoint``'s own docstring already said about the
+#: anchor, one paragraph before this list forced the two together.
+#:
+#: The distinction is not bookkeeping.  A derived column that failed to move
+#: with its inputs would be the stale cache plan step R2d refused, and
+#: :meth:`TestTheAuthoredSurfaceIsWholeAndClosed.test_the_derived_columns_equal_the_resolver`
+#: is what says it moves.
+_DERIVED_COLUMNS = (
+    "offset_periods",
+    # Plan step R7c-a, the EXPAND half: written from the same ``resolve`` call
+    # as the phase, and read by nobody until R7c-b.
+    "unit_id", "placement_id", "shift_id", "starts_on", "nominal_day",
 )
 
 #: The two columns the DATABASE assigns, which no caller may author: the
@@ -108,6 +137,18 @@ def authored_columns(rule: RecurrenceRule) -> dict:
         ``{column_name: value}`` over :data:`_AUTHORED_COLUMNS`.
     """
     return {name: getattr(rule, name) for name in _AUTHORED_COLUMNS}
+
+
+def derived_columns(rule: RecurrenceRule) -> dict:
+    """Return every DERIVED column of *rule* as a plain dict.
+
+    Args:
+        rule: The rule to read.
+
+    Returns:
+        ``{column_name: value}`` over :data:`_DERIVED_COLUMNS`.
+    """
+    return {name: getattr(rule, name) for name in _DERIVED_COLUMNS}
 
 
 def resolved_for(rule: RecurrenceRule) -> ResolvedRecurrence:
@@ -178,10 +219,19 @@ def assert_reauthoring_changes_nothing(rule: RecurrenceRule) -> None:
         rule: The persisted rule to round-trip.
     """
     before = authored_columns(rule)
+    before_derived = derived_columns(rule)
 
     reauthor_rule(rule, recurrence_spec(rule), calendar_for(rule.user_id))
 
     assert authored_columns(rule) == before
+    # The DERIVED columns are stable too, and they are asserted separately
+    # because they are stable for a different reason: an authored column
+    # survives because nothing rewrote it, a derived one because the same
+    # inputs produce the same answer.  A caller that re-authors after the
+    # SCHEDULE moved gets a different answer legitimately -- see
+    # ``TestScheduleRebuildRepoint``, which is why this helper is not used
+    # across a reset.
+    assert derived_columns(rule) == before_derived
 
 
 def assert_resolves_completely(rule: RecurrenceRule) -> None:
@@ -252,8 +302,15 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
     the spec carries and the door forgets, which the old comparison could not
     see.
 
-    This is what will fail, on purpose, at plan step R7c, when ``unit_id`` /
-    ``anchor_date`` / ``placement_id`` / ``shift_id`` arrive as columns.
+    **It DID fail, on purpose, at plan step R7c-a**, which is what this
+    paragraph used to predict -- though it named ``anchor_date``, a column the
+    D28 ruling of 2026-08-14 replaced with ``starts_on``.  Exactly one of the
+    two arms fired, and which one is the useful part: the door already assigned
+    all five new columns, so the census passed; what failed was
+    :meth:`test_the_helper_covers_every_authored_column`, because the list the
+    comparison helpers read had not grown with the table.  That is the arm
+    catching a column that would otherwise sit outside every round-trip
+    assertion in this file.
     """
 
     def test_the_write_door_assigns_every_column_the_database_does_not(self):
@@ -272,20 +329,76 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
             "value nobody writes also never changes."
         )
 
-    def test_the_helper_covers_every_authored_column(self):
-        """:data:`_AUTHORED_COLUMNS` is every authored column, not a subset.
+    def test_the_helpers_cover_every_column_between_them(self):
+        """The two lists PARTITION the table, so no column escapes both.
 
         The comparison helpers in this file read only these names, so a name
-        missing here would exempt that column from every assertion built on
-        them.  Keyed on the TABLE because that is what they ``getattr`` off.
+        missing from both would exempt that column from every assertion built
+        on them.  Keyed on the TABLE because that is what they ``getattr`` off.
+
+        **Disjointness is asserted too**: a column on both lists would be
+        claimed as caller-stated AND as resolver-derived, and the two carry
+        opposite expectations under a schedule rebuild -- one must not move,
+        the other legitimately does.
         """
+        assert not set(_AUTHORED_COLUMNS) & set(_DERIVED_COLUMNS), (
+            "a column cannot be both authored and derived: the reset and "
+            "round-trip assertions expect it to hold still, and the resolver "
+            "assertion expects it to follow the schedule."
+        )
         table_columns = {
             column.key for column in RecurrenceRule.__table__.columns
         }
 
-        assert set(_AUTHORED_COLUMNS) == (
+        assert set(_AUTHORED_COLUMNS) | set(_DERIVED_COLUMNS) == (
             table_columns - _DB_ASSIGNED_COLUMNS - _RETIRED_COLUMNS
         )
+
+    def test_the_derived_columns_equal_the_resolver(self, seed_user, db, seed_periods):  # pylint: disable=unused-argument
+        """Every DERIVED column holds what the resolver answers, per cadence.
+
+        **What this proves, stated narrowly because an adversarial review of
+        plan step R7c-a found the wider claim false.**  It says the write door
+        ASSIGNS every derived column from the resolver and that the read door
+        round-trips them -- so a door that forgot one, or a read that lost a
+        field, fails here.  It does **not** grade ``first_occurrence``: both
+        sides of the comparison call it, so it is a producer checked against
+        itself, which ``docs/plans/verification.md`` standard 2 rules out.
+        The independent oracle for that function is the occurrence WALK, in
+        ``test_recurrence_occurrence.TestTheFirstOccurrenceIsTheWalksFirstYield``.
+
+        Asserted per cadence rather than once because the door's branch set is
+        per unit -- a pay-period rule's ``starts_on`` is a PAYDAY and a
+        calendar rule's is the anchor date.
+
+        Args:
+            seed_user: The owner fixture.
+            db: The session fixture.
+            seed_periods: The owner's schedule.
+        """
+        user_id = seed_user["user"].id
+        calendar = calendar_for(user_id)
+        for pattern in RecurrencePatternEnum:
+            rule = author_rule(
+                spec_for(pattern, user_id=user_id, day_of_month=15),
+                calendar,
+            )
+            db.session.flush()
+            resolved = resolve(recurrence_spec(rule), calendar)
+            assert derived_columns(rule) == {
+                "offset_periods": resolved.offset_periods,
+                "unit_id": ref_cache.recurrence_unit_id(resolved.unit),
+                "placement_id": ref_cache.period_placement_id(
+                    resolved.placement,
+                ),
+                "shift_id": ref_cache.business_day_shift_id(resolved.shift),
+                "starts_on": first_occurrence(resolved, calendar),
+                "nominal_day": resolved.nominal_day,
+            }, (
+                f"the {pattern.value} rule's stored two-axis columns disagree "
+                f"with what the resolver answers for it, so the table states "
+                f"its cadence twice and the two have drifted."
+            )
 
     def test_every_retired_column_still_exists(self):
         """:data:`_RETIRED_COLUMNS` names columns, not memories.
@@ -504,6 +617,30 @@ class TestScheduleRebuildRepoint:
         assert new_periods[0].start_date == date(2027, 3, 5)
         assert authored_columns(rule) == before
         assert resolved_for(rule).anchor_date == date(2027, 3, 5)
+
+        # **The stored first occurrence is now STALE, and that is pinned
+        # rather than tolerated** (plan step R7c-a).  The dual write refreshes
+        # the two-axis columns on every RULE write and on no other event, so a
+        # schedule rebuilt with nothing rewriting the rule moves the
+        # derivation and leaves the column.  Harmless while nothing reads it;
+        # at plan step R7c-b the stored value becomes authoritative, and this
+        # is the state that would then FREEZE a first occurrence from a
+        # schedule the owner no longer has.
+        #
+        # **R7c-b's re-backfill is what makes this assertion fail**, and it is
+        # meant to: a test that has to be deleted by the leaf that fixes the
+        # thing it describes is the mechanism, where a paragraph is not.
+        new_calendar = calendar_for(user_id)
+        assert rule.starts_on == date(2026, 1, 2)
+        assert first_occurrence(
+            resolve(recurrence_spec(rule), new_calendar), new_calendar,
+        ) == date(2027, 3, 5)
+
+        reauthor_rule(rule, recurrence_spec(rule), new_calendar)
+        db.session.flush()
+        assert rule.starts_on == date(2027, 3, 5), (
+            "a rule REWRITTEN after the rebuild must pick the new schedule up"
+        )
         assert_reauthoring_changes_nothing(rule)
 
     def test_a_reset_keeps_a_bound_that_falls_INSIDE_the_new_schedule(
@@ -640,15 +777,24 @@ class TestScheduleRebuildRepoint:
         assert resolved_for(rule).anchor_date == date(2027, 3, 5)
 
 
-class TestTheClampIsResolvedNeverStored:
-    """The month-end clamp is carried by the resolved value, not a row.
+class TestTheClampIsResolvedAndStoredOnTheRuleNeverInASubtype:
+    """The month-end clamp is carried by the RULE, never by a subtype row.
 
-    ``budget.recurrence_month_anchors`` exists to hold the day an
-    ``anchor_date`` COLUMN clamped -- and there is no such column until plan
-    step R7c, so the table must stay empty.  These are the regression guard
-    for re-introducing subtype writing ahead of the column it describes: an
-    anchor row written now would describe a value nothing stores, and nothing
-    would read it.
+    **Rewritten at plan step R7c-a**, which falsified what this class used to
+    say: that ``budget.recurrence_month_anchors`` holds the day a clamped
+    anchor lost and that "there is no such column until plan step R7c, so the
+    table must stay empty".  There is such a column now --
+    ``recurrence_rules.nominal_day`` -- and ruling R-R16 means the satellite
+    table is never written at all: it is dropped unwritten at R7c-c.
+
+    So the guard flips.  It is no longer "nothing is stored"; it is **the
+    clamp is stored on the rule and cleared from the rule**, and the subtype
+    stays empty because it has no writer and never will.  Asserting the
+    CLEARING is what the previous version could not: it checked the resolved
+    value only, and a write door that set ``nominal_day`` and never unset it
+    would have passed -- restoring the 31st on the next read of a rule the
+    user had moved to the 15th, which is the exact residue the old row-based
+    design was rejected for.
     """
 
     @pytest.mark.usefixtures("seed_periods")
@@ -677,6 +823,10 @@ class TestTheClampIsResolvedNeverStored:
         assert resolved.anchor_date == date(2026, 4, 30)
         assert resolved.nominal_day == 31
         assert rule.day_of_month == 31
+        # The COLUMN carries what the resolved value carries (plan step
+        # R7c-a): the date the month could hold, and the day the rule meant.
+        assert rule.starts_on == date(2026, 4, 30)
+        assert rule.nominal_day == 31
         assert rule.month_anchor is None
         assert db.session.query(RecurrenceMonthAnchor).count() == 0
 
@@ -714,8 +864,76 @@ class TestTheClampIsResolvedNeverStored:
         resolved = resolved_for(rule)
         assert resolved.anchor_date == date(2026, 4, 15)
         assert resolved.nominal_day is None
+        # **The CLEARING, which is what this case exists for.**  A door that
+        # set the column and never unset it would leave 31 here and restore
+        # the month-end on the next read.
+        assert rule.starts_on == date(2026, 4, 15)
+        assert rule.nominal_day is None
         assert db.session.query(RecurrenceMonthAnchor).count() == 0
         assert_reauthoring_changes_nothing(rule)
+
+
+class TestTheIntervalIsStillTheClosedSets:
+    """``interval_n`` is the ENCODING's column, and reading it raw is a bug.
+
+    **The guard plan step R7c-a owes plan step R7c-b**, added because an
+    adversarial review measured what the two-axis columns actually say: a
+    Quarterly rule stores ``(unit_id = month, interval_n = 1)``, because
+    ``encode_cadence`` writes ``1`` for every pattern whose interval is baked
+    into its NAME.  Read at face value that pair says MONTHLY -- 12
+    occurrences a year where 4 are owed, over the whole ~2-year projection, in
+    generated rows and the projected balance.
+
+    Nothing reads it that way today: every reader goes through
+    ``decode_pattern``, which answers 3 from the pattern and consults the
+    column only for ``Every N Periods``.  **R7c-c re-points the column** in the
+    migration that drops ``pattern_id``, which is the first moment the pair
+    can be honest.
+
+    So this class asserts a DELIBERATE INEQUALITY, which is unusual and is the
+    point: it is red the moment someone re-points the column, and whoever does
+    that is the person who must have moved the readers with it.  Delete it at
+    R7c-c, with the encoding it describes.
+    """
+
+    @pytest.mark.usefixtures("seed_periods")
+    @pytest.mark.parametrize(
+        ("pattern", "two_axis_interval"),
+        [
+            (RecurrencePatternEnum.QUARTERLY, 3),
+            (RecurrencePatternEnum.SEMI_ANNUAL, 6),
+        ],
+    )
+    def test_the_column_holds_the_encoders_one_not_the_cadences_interval(
+        self, seed_user, db, pattern, two_axis_interval,
+    ):
+        """The stored column says 1; the RESOLVED cadence says 3 or 6.
+
+        Args:
+            seed_user: The owner fixture.
+            db: The session fixture.
+            pattern: The closed-set pattern whose interval is in its name.
+            two_axis_interval: The interval that pattern actually means.
+        """
+        user_id = seed_user["user"].id
+        rule = author_rule(
+            spec_for(pattern, user_id=user_id, day_of_month=15),
+            calendar_for(user_id),
+        )
+        db.session.flush()
+
+        assert rule.interval_n == 1, (
+            "the column stopped holding the encoder's 1.  If plan step R7c-c "
+            "is landing, delete this class with the encoding; if it is not, a "
+            "MONTH count now sits in a column nothing has re-pointed"
+        )
+        assert rule.unit_id == ref_cache.recurrence_unit_id(
+            RecurrenceUnitEnum.MONTH,
+        )
+        assert resolved_for(rule).interval_n == two_axis_interval, (
+            f"the rule no longer MEANS every {two_axis_interval} months; that "
+            f"bill would generate {12 // two_axis_interval}x too often"
+        )
 
 
 class TestPhasePreservedAcrossAnEdit:

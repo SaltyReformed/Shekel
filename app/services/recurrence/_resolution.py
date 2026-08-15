@@ -31,10 +31,12 @@ pay-period schedule, so storing either beside its inputs would be a cache; a
 cache drifts the moment one writer moves one side alone, and no mechanism that
 polices it can be complete.
 
-``anchor_date`` becomes a COLUMN -- authored, NOT NULL, from one backfill, in
-the same transaction that drops the closed-set columns -- at plan step R7c.  At
-that point it is authored rather than derived and storing it is correct.  See
-``c8f2b6a41d93``'s module docstring for the full reasoning.
+**The first occurrence becomes ``starts_on`` -- authored, NOT NULL -- across
+plan step R7c's three leaves** (**R7c-a** adds it, **R7c-b** moves the readers,
+**R7c-c** drops the closed set), at which point it is authored rather than
+derived and storing it is correct.  See ``c8f2b6a41d93`` for why storing a
+DERIVED one would not be, and ``_occurrence.first_occurrence`` for what it
+holds.
 
 **Every cadence this resolves NAMES A REAL RHYTHM, and a consumer may rely on
 that.**  ``Once`` used to be the exception -- it meant "does not recur", so no
@@ -137,11 +139,12 @@ The four derivations
    may have no payday at all; see :func:`_first_of_month_anchor` for the
    measured counterexample.
 
-``end_date >= anchor_date`` is NOT validated here.  It is a real invariant of
-the finished model and belongs to plan step R7c -- where the anchor becomes a
-stored column -- together with the Marshmallow validator that can refuse the
-pair at the door: 14 live rules resolve to an anchor in the future, and
-refusing them here would make "stop this recurring bill" raise.
+``end_date >= starts_on`` is NOT validated here.  It belongs to plan step
+**R7c-b**, the leaf where the FORM authors ``starts_on`` -- which is what makes
+the pair a two-field comparison Marshmallow can refuse without a calendar.
+Landing the CHECK earlier would make it reachable from a value the user never
+typed: 13 of the 46 live rules resolve to a first occurrence after 2026-08-14,
+so "stop this recurring bill" would become a ``CheckViolation`` at autoflush.
 
 **The bound's own shape needs no validation at all, since plan step R7b-3.**
 "At most one closing bound" and "a count names at least one occurrence" are
