@@ -149,7 +149,7 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
     db.session.flush()
 
     entry = TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description="Past-dated debit",
@@ -1073,6 +1073,53 @@ class TestApplyAnchorTrueUpReraisesUnknownIntegrityError:
 # 200, both assertions survive).
 
 
+#: Every unique index on either anchor table, with the columns it keys on --
+#: the catalog query behind :func:`_content_keys_on_anchor_tables`.  Read from
+#: ``pg_index`` rather than ``pg_indexes.indexdef`` because the question is
+#: about the COLUMN SET and a text ``LIKE`` over a rendered definition cannot
+#: ask it: ``indexdef`` for ``(account_id, id)`` and for
+#: ``(account_id, anchor_balance)`` differ only in words.
+_ANCHOR_UNIQUE_INDEX_SQL = """
+    SELECT c.relname AS tablename,
+           i.relname AS indexname,
+           array_agg(a.attname) AS columns
+    FROM pg_index x
+    JOIN pg_class c ON c.oid = x.indrelid
+    JOIN pg_class i ON i.oid = x.indexrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(x.indkey)
+    WHERE n.nspname = 'budget'
+      AND c.relname IN ('account_anchor_history', 'loan_anchor_events')
+      AND x.indisunique
+      AND NOT x.indisprimary
+    GROUP BY c.relname, i.relname
+"""
+
+
+def _content_keys_on_anchor_tables(session):
+    """Return the anchor tables' unique indexes that key on VALUES.
+
+    Ruling **R-EQ**'s predicate, and the whole of it: an index that OMITS the
+    primary key can refuse an INSERT whose values match a row already there --
+    which is what a transport retry and a deliberate re-assertion look like to
+    each other.  One that CONTAINS the primary key cannot refuse anything, so it
+    is not a guard whatever else it is; the clearing links' target
+    ``uq_anchor_history_account_id`` is that shape.
+
+    Args:
+        session: The test session, inside an app context.
+
+    Returns:
+        ``{(tablename, indexname), ...}`` for every offending index -- empty
+        when the schema holds R-EQ.
+    """
+    return {
+        (row.tablename, row.indexname)
+        for row in session.execute(sa.text(_ANCHOR_UNIQUE_INDEX_SQL))
+        if "id" not in row.columns
+    }
+
+
 class TestApplyAnchorTrueUpModuleContract:
     """Pins the public surface of the module so renames are caught."""
 
@@ -1104,29 +1151,72 @@ class TestApplyAnchorTrueUpModuleContract:
         compare would pass, the INSERT would collide, and the caller would see
         an ``IntegrityError`` on a legitimate correction.
 
-        Asserted against ``pg_indexes`` rather than ``__table_args__`` because
+        Asserted against the LIVE catalog rather than ``__table_args__`` because
         the model and the database can disagree: a model-only assertion passes
         on a database whose index was never dropped, which is the exact state
         migration ``a3f6c1d84b90`` exists to leave behind.
+
+        **It grades a CONTENT key rather than "any unique index", and that
+        narrowing is plan step X-f3a-1's** (developer, 2026-08-14).  This
+        asserted the EMPTY SET until ``uq_anchor_history_account_id`` -- the
+        ``(account_id, id)`` superkey the clearing links' composite foreign keys
+        must target -- and the blanket form would have refused it while R-EQ has
+        nothing to say about it: an index containing the primary key can reject
+        NO row, so it cannot refuse a re-assertion.  What R-EQ forbids is a key
+        over values a transport retry and a deliberate correction SHARE, which
+        is exactly a key that OMITS the primary key.
+        :func:`_content_keys_on_anchor_tables` is that predicate, and the test
+        below plants the deleted index to show it still fires.
         """
         with app.app_context():
-            unique_indexes = {
-                (row.tablename, row.indexname)
-                for row in db.session.execute(sa.text(
-                    "SELECT tablename, indexname, indexdef FROM pg_indexes "
-                    "WHERE schemaname = 'budget' AND tablename IN "
-                    "('account_anchor_history', 'loan_anchor_events') "
-                    "AND indexdef LIKE 'CREATE UNIQUE%' "
-                    "AND indexname NOT LIKE '%_pkey'"
-                ))
-            }
-            assert unique_indexes == set(), (
+            offenders = _content_keys_on_anchor_tables(db.session)
+            assert offenders == set(), (
                 f"An anchor table has regrown a uniqueness guard: "
-                f"{sorted(unique_indexes)}.  Ruling R-EQ puts the duplicate "
+                f"{sorted(offenders)}.  Ruling R-EQ puts the duplicate "
                 f"rule at the write door, which can compare against what "
                 f"governs; an index over the row's values cannot, and refuses "
                 f"a legitimate re-assertion."
             )
+
+    def test_the_content_key_predicate_fires_on_the_index_r_eq_deleted(
+        self, app, db,
+    ):
+        """Plant the index R-EQ deleted; see the predicate report it.
+
+        The firing control for the test above.  A predicate that answers "no
+        content key" is worth exactly what its ability to FIND one is worth, and
+        the sharpened form deliberately admits superkeys -- so the case that
+        matters is whether the index ruling R-EQ actually deleted would still be
+        caught.
+
+        The planted key is that index's shape:
+        ``(account_id, anchor_balance, observed_on)``, the three values a
+        network retry and a deliberate re-assertion of an earlier figure share
+        by construction.  Dropped in a ``finally`` so the per-test database is
+        handed back unchanged whatever the assertion does.
+        """
+        with app.app_context():
+            db.session.execute(sa.text(
+                "CREATE UNIQUE INDEX uq_anchor_history_content_key_probe "
+                "ON budget.account_anchor_history "
+                "(account_id, anchor_balance, observed_on)"
+            ))
+            try:
+                offenders = _content_keys_on_anchor_tables(db.session)
+                assert (
+                    "account_anchor_history",
+                    "uq_anchor_history_content_key_probe",
+                ) in offenders, (
+                    "The content-key predicate did not report a planted key "
+                    "over (account_id, anchor_balance, observed_on) -- the "
+                    "exact index ruling R-EQ deleted.  A green "
+                    "test_neither_anchor_table_carries_a_uniqueness_guard "
+                    "would then be worth nothing."
+                )
+            finally:
+                db.session.execute(sa.text(
+                    "DROP INDEX budget.uq_anchor_history_content_key_probe"
+                ))
 
 
 # ── Loan Anchor Trueup ────────────────────────────────────────────────

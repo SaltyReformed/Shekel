@@ -199,10 +199,10 @@ class TestTheSubtotalsCountEveryAttributedRow:
         # handed, so the figure is unchanged.
         # The basis is REQUIRED (plan step S1-c), so the reference states the
         # one the producer itself would build for this account: no live
-        # override candidate, and the account's own latest asserted day as the
-        # reconciled-through bound.  The $75.00 bill carries no entries, so
-        # neither field can move the figure -- which is why the basis is built
-        # honestly rather than zeroed to make the call compile.
+        # override candidate, and the account's own clearing rule.  The $75.00
+        # bill carries no entries, so neither field can move the figure --
+        # which is why the basis is built honestly rather than zeroed to make
+        # the call compile.
         period_rows = [
             row for row in cash_ledger.planned_cash_rows(
                 account.id, scenario.id,
@@ -213,7 +213,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
             amounts=cash_ledger.amount_basis(
                 account.user_id, scenario.id, period_rows,
             ),
-            reconciled_through=cash_ledger.reconciled_through(account.id),
+            coverage=cash_ledger.coverage_for(account.id),
         )
         _, unpaid_only_expense = cash_ledger.sum_projected(period_rows, basis)
         assert unpaid_only_expense == Decimal("75.00")
@@ -244,7 +244,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
             (Decimal("120.00"), False), (Decimal("80.00"), True),
         ):
             db.session.add(TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=amount,
                 description="purchase",
@@ -288,7 +288,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
             settled_on=date(2026, 2, 5), name="Groceries",
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=Decimal("80.00"),
             description="credit purchase",

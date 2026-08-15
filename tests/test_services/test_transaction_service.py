@@ -51,6 +51,10 @@ def _make_entry(txn_id, user_id, amount, description, *,
     """
     entry = TransactionEntry(
         transaction_id=txn_id,
+        # The parent's account, resolved from the id this helper takes: an
+        # entry's account IS its parent's, and the schema refuses any other
+        # value (``fk_transaction_entries_parent_account``).
+        account_id=db.session.get(Transaction, txn_id).account_id,
         user_id=user_id,
         amount=Decimal(amount),
         description=description,

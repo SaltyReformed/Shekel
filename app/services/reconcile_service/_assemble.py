@@ -52,6 +52,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.services.cash_ledger import AnchorPoint
 
 from . import _purchases, _rows, _transactions, _transfers
 from ._offers import (
@@ -208,7 +209,7 @@ def _tally(
 
 
 def outstanding_set(
-    owner_id: int, account_id: int, observed_on: date,
+    owner_id: int, account_id: int, anchor: AnchorPoint,
 ) -> OutstandingSet:
     """Return what this account has not been seen to have paid for, grouped.
 
@@ -239,8 +240,14 @@ def outstanding_set(
     Args:
         owner_id: The user_id whose offers to list.
         account_id: The cash account whose balance was asserted.
-        observed_on: The civil day that balance was true for -- nothing dated
-            after it can be inside it, and neither arm offers one.
+        anchor: The governing assertion -- the STATEMENT being reconciled
+            against.  Nothing dated after its ``observed_on`` can be inside it,
+            and no arm offers one.  The READ takes the whole assertion rather
+            than its day because the arms build a
+            :class:`~app.services.reconcile_service._rows.Statement` from it and
+            the WRITE half stamps its id (ruling **R-FL**); one value threaded
+            through both halves is what stops the offer set and the tick
+            describing different statements.
 
     Returns:
         The :class:`~app.services.reconcile_service.OutstandingSet`, its
@@ -257,17 +264,17 @@ def outstanding_set(
         Finding **N-227** owns that bound.
     """
     blocks = _purchases.outstanding_purchases(
-        owner_id, account_id, observed_on,
+        owner_id, account_id, anchor.observed_on,
     )
     # The two source-row arms union into ONE map, and they can: their scopes
     # are complements (``transfer_id IS NULL`` against ``IS NOT NULL``), so no
     # id is in both and the merge cannot silently drop one arm's offer.
     settles = {
         **_transactions.outstanding_transactions(
-            owner_id, account_id, observed_on,
+            owner_id, account_id, anchor,
         ),
         **_transfers.outstanding_transfers(
-            owner_id, account_id, observed_on,
+            owner_id, account_id, anchor,
         ),
     }
     parents = set(blocks) | set(settles)
@@ -370,10 +377,10 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
     """
     purchases = _purchases.record_settled_days(
         submission.owner_id, submission.account_id,
-        submission.entry_ids, submission.observed_on,
+        submission.entry_ids, submission.anchor,
     )
     statement = _rows.Statement(
-        submission.owner_id, submission.account_id, submission.observed_on,
+        submission.owner_id, submission.account_id, submission.anchor,
     )
     source_rows = sum(
         _rows.record_settled(

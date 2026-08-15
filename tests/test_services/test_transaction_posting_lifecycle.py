@@ -143,7 +143,7 @@ def _add_purchase(seed_user, txn, amount, *, is_credit=False):
     the entry-mutation hook call ``entry_service`` explicitly instead.
     """
     entry = TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description="purchase",

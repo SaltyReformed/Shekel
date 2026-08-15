@@ -95,6 +95,7 @@ from app.utils.balance_predicates import settled_day, settled_status_ids
 from app.utils.dates import utc_instant
 
 from ._amounts import ReconciledThrough, settled_cash_leg
+from ._clearing import StatementCoverage, statement_coverage
 from ._facts import _unwindowed_contributing_rows
 
 
@@ -132,6 +133,12 @@ class CashAnchorFact:
     (:meth:`app.services.pay_calendar.PayCalendar.filing_period`).
 
     Attributes:
+        anchor_id: The ``budget.account_anchor_history`` row's own id -- the
+            value a cleared line NAMES (``reconciled_by_id``, ruling **R-FL**),
+            so :class:`~._clearing.StatementCoverage` can say WHICH assertion
+            cleared a movement rather than only that one did.  It is the row's
+            identity and nothing more: no rule reads it as an ordering, which is
+            :attr:`observed_on`'s job with :attr:`asserted_at` breaking a tie.
         account_id: The ``budget.accounts`` id the assertion belongs to.
         anchor_balance: The asserted balance, LEDGER-NATIVE sign: an
             owed-as-negative liability anchor stays negative.  The walk never
@@ -171,6 +178,7 @@ class CashAnchorFact:
             ``$2,057.42`` of period 0's remainder while it was.
     """
 
+    anchor_id: int
     account_id: int
     anchor_balance: Decimal
     observed_on: date
@@ -277,6 +285,14 @@ class CashSourceFact:
             no figure and every row keeps the day the engine already gave it.
             The partition now compares two real-world dates and guesses at
             neither.
+        reconciled_by_id: WHICH statement was recorded as showing this row --
+            the ``account_anchor_history`` id its ``reconciled_by_id`` names, or
+            ``None`` when none has been (ruling **R-FL**).  It sits beside
+            :attr:`settled_on` rather than replacing it because the two are
+            different facts: one is when the money moved, the other is which
+            statement was seen to show it, and a statement legitimately shows a
+            line that moved days earlier.  What the walk does with the pair is
+            :class:`~._clearing.StatementCoverage`'s rule and not this record's.
         delta: The signed confirmed cash effect
             (:func:`app.services.cash_ledger.settled_cash_leg`): positive for
             income, negative for an expense, and ``0.00`` for a row whose entries
@@ -298,6 +314,7 @@ class CashSourceFact:
     pay_period_id: int
     is_income: bool
     settled_on: date
+    reconciled_by_id: "int | None"
     delta: Decimal
 
 
@@ -357,6 +374,7 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
     )
     return [
         CashAnchorFact(
+            anchor_id=row.id,
             account_id=account_id,
             anchor_balance=Decimal(str(row.anchor_balance)),
             # The business date the partition turns on, READ rather than
@@ -371,6 +389,43 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
         )
         for index, row in enumerate(rows)
     ]
+
+
+def coverage_for(account_id: int) -> StatementCoverage:
+    """Return *account_id*'s clearing rule, loading its assertions.
+
+    The DATABASE twin of :func:`~._clearing.statement_coverage`, for the callers
+    that do not already hold an account's facts -- the entry list's indicator,
+    reached from the grid (``entry_service.build_entry_lists_dict``) and from
+    the HTMX refresh (``routes/entries.py``).  The entry RESERVATION is not one
+    of them: it takes ``walk.coverage`` off the read pass's own walk
+    (``balance_at._cash_fold``), and the reconcile panel takes the governing
+    assertion itself (``cash_ledger.governing_anchor``).  It exists for the
+    reason :func:`~._facts.reconciled_through` exists beside
+    :attr:`~._walk.CashLedgerWalk.reconciled_through` -- a caller holding the
+    walk must not pay a query, and a caller rendering one template row must not
+    walk an account -- and it is a WRAPPER rather than a second rule, so the two
+    cannot come to disagree.
+
+    **It loads ROWS where the boundary it replaces was one ``MAX``**, and that
+    cost belongs to the fact rather than to this function: which statement
+    cleared a line is a question about a PARTICULAR assertion, so an aggregate
+    over the day column cannot answer it.  It is one indexed read per ACCOUNT
+    (``idx_anchor_history_account`` leads on ``account_id``) and every caller
+    already memoises per account -- ``entry_service.build_entry_lists_dict``
+    because a grid render passes ~60 envelopes across ~6 accounts, and the
+    reservation because its basis is built once per account per read pass.
+
+    Args:
+        account_id: The account whose clearing rule to build.
+
+    Returns:
+        Its :class:`~._clearing.StatementCoverage`.  An account with no
+        assertion history yields one that clears nothing -- the same honest
+        emptiness :func:`~._facts.reconciled_through` answers with a ``None``
+        day.
+    """
+    return statement_coverage(cash_anchor_facts(account_id))
 
 
 def settled_cash_facts(
@@ -440,6 +495,7 @@ def settled_cash_facts(
             pay_period_id=txn.pay_period_id,
             is_income=txn.is_income,
             settled_on=settled_day(txn.id, txn.settled_on),
+            reconciled_by_id=txn.reconciled_by_id,
             delta=settled_cash_leg(txn),
         )
         for txn in rows

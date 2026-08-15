@@ -508,7 +508,7 @@ class TestEntryEagerLoading:
             name="Groceries", amount=Decimal("500.00"),
         )
         entry = TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=Decimal("42.50"),
             description="Kroger",
@@ -554,12 +554,12 @@ class TestEntryDataComputation:
             name="Groceries", amount=Decimal("500.00"),
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("100.00"), description="Kroger",
             purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="Walmart",
             purchased_on=date(2026, 1, 6),
         ))
@@ -597,12 +597,12 @@ class TestEntryDataComputation:
             name="Gas", amount=Decimal("100.00"),
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("70.00"), description="Shell",
             purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="BP",
             purchased_on=date(2026, 1, 6),
         ))

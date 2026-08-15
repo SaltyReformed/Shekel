@@ -86,22 +86,34 @@ from ._amount_source import (
     amount_basis,
     resolve_transaction_amount,
 )
+from ._clearing import StatementCoverage
 
 
 @dataclass(frozen=True)
 class ReconciledThrough:
     """The day through which an account's movements are inside a declared balance.
 
-    **The ONE statement of the question this whole arc turns on** -- *is this
-    movement already reflected in the balance the user declared?* -- and ruling
-    R-DH (a)'s answer to it: an assertion is the CLOSING balance for its civil
-    day, so a movement dated at or before that day is inside it by definition.
-    :meth:`covers` is that rule, and it is the only implementation of it in the
-    codebase -- including the MODELLED side, where an adversarial review found
-    a seventh statement of it hiding behind a loose date
-    (``balance_at._asset_contributions``: a payroll contribution on a payday
-    the assertion already covers is money the asserted balance contains, and
-    modelling it again double counts).
+    Ruling R-DH (a): an assertion is the CLOSING balance for its civil day, so
+    a movement dated at or before that day is inside it by definition.
+
+    **It answers for the MODELLED side now, and that narrowing is plan step
+    X-f3a-1's** (ruling **R-FL**).  This was "the ONE statement of the question
+    this whole arc turns on", and for a CASH line it no longer is: whether the
+    bank showed a transaction or a purchase is a RECORDED fact, asked through
+    :class:`~._clearing.StatementCoverage`, because the developer's own bank
+    exports measured the date comparison wrong on 70% of matched movements.
+    What is left here is the case R-FL calls not an exception -- a payroll
+    contribution (R-Z) and a modelled accrual (R-L / R-Y) are not lines anyone
+    can tick, so the assertion legitimately outranks the model and the question
+    really is "is this payday after the latest assertion" -- plus the posted
+    self-heal's cost guard, which grades journal-entry DATES rather than lines
+    and says so at its own site.
+
+    An adversarial review once found a seventh statement of the rule hiding
+    behind a loose date (``balance_at._asset_contributions``: a payroll
+    contribution on a payday the assertion already covers is money the asserted
+    balance contains, and modelling it again double counts); that consumer is
+    one of the two this type now exists for.
 
     **What is NOT fenced, stated because a fence whose limits are unstated
     reads as stronger than it is.**  :attr:`~._events.CashAnchorFact.observed_on`
@@ -190,20 +202,13 @@ class ReconciledThrough:
         ``None`` :attr:`observed_day` is an account that has never had a
         balance declared, so there is nothing for anything to be inside of.
 
-        **Totality means something different to the two caller shapes, and the
-        absorb loops rely on an invariant rather than on this arm.**  For the
-        entry reservation a ``None`` day means "this purchase is outstanding",
-        which is the answer wanted.  Inside the two walks' ``while`` loops a
-        False HALTS absorption for that assertion and every later one, so a
-        ``None`` day there would silently short the ledger where the bare
-        ``<=`` it replaced would have raised.  It cannot arise:
-        :attr:`~app.services.cash_ledger.CashSourceFact.settled_on` is typed
-        non-optional and is the STORED ``transactions.settled_on``, read
-        through :func:`app.utils.balance_predicates.settled_day`, which REFUSES
-        a missing day rather than returning one; the posting walk's source
-        loaders resolve their days through the same accessor.  Stated because a
-        fail-open substitution in a money path is not something a reader should
-        have to re-derive.
+        **Totality is what the remaining callers need, and the paragraph that
+        used to be here described callers this type no longer has.**  It
+        explained how a ``False`` behaved inside the two walks' ``while`` loops
+        -- loops plan step X-f3a-1 deleted, along with every cash caller of this
+        method.  What asks it now is the modelled contribution feed (R-Z), for
+        which a ``None`` on either side means "not inside any declared balance",
+        which is the answer wanted and needs no precondition remembered.
 
         Args:
             event_day: The civil day the money moved -- a settled row's or a
@@ -232,12 +237,12 @@ class ProjectedBasis:
     omission, which is exactly the ``selectinload`` seam CRIT-01 / F-009 closed
     one field over.
 
-    Neither field is a clock.  ``reconciled_through`` is a fact about the
-    ACCOUNT (the latest day its owner asserted a balance for it), so what a row
-    is worth stays a function of the row and its account -- ruling R-M's
-    "the reader's clock decides WHEN a row lands, never what it is worth",
-    which is why plan step X-c2c1 could delete the reservation's ``as_of``
-    window and why nothing here brings one back.
+    Neither field is a clock.  ``coverage`` is a fact about the ACCOUNT (which
+    statements its owner has declared a balance for, and what each one was
+    recorded as showing), so what a row is worth stays a function of the row and
+    its account -- ruling R-M's "the reader's clock decides WHEN a row lands,
+    never what it is worth", which is why plan step X-c2c1 could delete the
+    reservation's ``as_of`` window and why nothing here brings one back.
 
     **It carries the resolver's own basis rather than a map flattened from it**
     (plan step X-au-c2).  It held ``amount_overrides``, the merge of the two live
@@ -251,15 +256,19 @@ class ProjectedBasis:
     Attributes:
         amounts: The account's :class:`~._amount_source.AmountBasis` -- the ids
             it was built over, and the two live producers' answers, kept apart.
-        reconciled_through: The account's :class:`ReconciledThrough` boundary
-            -- the day its owner last declared a balance for it.  A purchase
-            whose recorded posting day it ``covers`` is already inside that
+        coverage: The account's
+            :class:`~._clearing.StatementCoverage` -- which of its statements
+            cleared what.  A purchase some statement cleared is already inside a
             declared balance; every other purchase is still outstanding and its
-            envelope keeps holding the whole budget back.
+            envelope keeps holding the whole budget back.  It replaced a
+            :class:`ReconciledThrough` at plan step X-f3a-1 (ruling **R-FL**):
+            the day boundary answered by comparing two of the app's own dates,
+            and the bank's own record falsified that comparison on 70% of the
+            movements it was measured against.
     """
 
     amounts: AmountBasis
-    reconciled_through: ReconciledThrough
+    coverage: StatementCoverage
 
 
 def live_override(txn, basis: AmountBasis):
@@ -423,7 +432,7 @@ def contribution_of(txn, basis: AmountBasis) -> Decimal:
 
 def _entry_checking_impact(
     entries, estimated_amount: Decimal,
-    reconciled_through: ReconciledThrough,
+    coverage: StatementCoverage,
 ) -> Decimal:
     """Three-bucket checking reservation for a sequence of debit/credit entries.
 
@@ -458,21 +467,28 @@ def _entry_checking_impact(
     checking directly (it flows through a CC Payback sibling transaction), so it
     only reduces the reservation and its own dates are irrelevant.
 
-    **Which bucket a debit falls in is DERIVED, and that is ruling R-DH (d)**
-    (plan step S1-c).  It was a stored ``is_cleared`` boolean, written by a bulk
-    UPDATE at every anchor true-up over "every entry dated on or before the
-    SERVER's today" -- so a purchase recorded BEFORE the true-up was reconciled
-    and the identical purchase recorded after it never was, and the difference
-    was which button the user pressed first.  Now the purchase carries the day
-    the bank was SEEN to have taken it (``settled_on``) and the answer is the
-    account's own :class:`ReconciledThrough` boundary: the same rule, in the
-    same units, that the read replay and the posting walk apply to a settled
-    transaction.
+    **Which bucket a debit falls in is a RECORDED FACT, and that is ruling
+    R-FL** (plan step X-f3a-1).  Its history is the point.  It was a stored
+    ``is_cleared`` boolean, written by a bulk UPDATE at every anchor true-up
+    over "every entry dated on or before the SERVER's today" -- so a purchase
+    recorded BEFORE the true-up was reconciled and the identical purchase
+    recorded after it never was, and the difference was which button the user
+    pressed first.  Ruling R-DH (d) deleted the boolean as "a denormalized copy
+    of a derivable fact" and derived it instead, from ``settled_on`` against the
+    account's latest asserted day.  The developer's bank exports then falsified
+    the premise: clearing is not derivable, because only 33 of 110 matched
+    movements carry the day the bank posted them and only 17 of 55 assertions
+    are their day's closing balance.  So the answer is neither a copy nor a
+    derivation but an OBSERVATION -- which statement was seen to show this
+    purchase -- asked through the one rule
+    (:meth:`~._clearing.StatementCoverage.is_cleared`), the same rule the read
+    replay and the posting walk apply to a settled transaction.
 
-    A purchase whose ``settled_on`` is NULL has never been observed on a
-    statement and is OUTSTANDING, which is the conservative arm: the envelope
-    keeps holding its whole budget back until the user confirms the money has
-    actually left.  Nothing here guesses a posting day on the user's behalf.
+    A purchase no statement has been recorded as showing, and whose
+    ``settled_on`` no assertion covers, is OUTSTANDING -- which is the
+    conservative arm: the envelope keeps holding its whole budget back until the
+    user confirms the money has actually left.  Nothing here guesses a posting
+    day on the user's behalf.
 
     This function sees whatever entry set it is handed and applies the
     bucketing to all of it.  Short-circuiting an empty set belongs to the
@@ -480,14 +496,15 @@ def _entry_checking_impact(
     kept in step across two paths.
 
     Args:
-        entries: An iterable of entry rows, each exposing ``amount``
-            (Decimal), ``is_credit`` (bool), and ``settled_on``
-            (``date | None``).  The caller is responsible for short-circuiting
-            an empty sequence before calling.
+        entries: An iterable of entry rows, each a
+            :class:`~._clearing.ClearableLine` (``settled_on`` and
+            ``reconciled_by_id``) also exposing ``amount`` (Decimal) and
+            ``is_credit`` (bool).  The caller is responsible for
+            short-circuiting an empty sequence before calling.
         estimated_amount: Decimal -- the transaction's budgeted amount,
             the reservation ceiling before debits and credits reduce it.
-        reconciled_through: The account's :class:`ReconciledThrough` boundary.
-            A debit whose ``settled_on`` it ``covers`` is inside that balance.
+        coverage: The account's :class:`~._clearing.StatementCoverage`.  A debit
+            it reports ``is_cleared`` is inside a declared balance.
 
     Returns:
         Decimal -- the amount this transaction's entries hold back from
@@ -499,7 +516,7 @@ def _entry_checking_impact(
     for entry in entries:
         if entry.is_credit:
             sum_credit += entry.amount
-        elif reconciled_through.covers(entry.settled_on):
+        elif coverage.is_cleared(entry):
             settled_debit += entry.amount
         else:
             outstanding_debit += entry.amount
@@ -639,8 +656,9 @@ def _entry_aware_amount(txn, basis: "ProjectedBasis") -> Decimal:
             (transitional caller; lazy-loads on demand), or absent
             (test fake).
         basis: The account's :class:`ProjectedBasis` -- its
-            :class:`ReconciledThrough` boundary, consulted only for a projected
-            row carrying entries, and the amount basis every arm prices through.
+            :class:`~._clearing.StatementCoverage`, consulted only for a
+            projected row carrying entries, and the amount basis every arm
+            prices through.
 
     Returns:
         Decimal -- the amount this transaction contributes to checking
@@ -676,7 +694,7 @@ def _entry_aware_amount(txn, basis: "ProjectedBasis") -> Decimal:
     return _entry_checking_impact(
         entries,
         resolve_transaction_amount(txn, basis.amounts),
-        basis.reconciled_through,
+        basis.coverage,
     )
 
 

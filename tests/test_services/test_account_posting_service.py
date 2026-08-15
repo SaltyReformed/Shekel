@@ -456,6 +456,75 @@ class TestWalkAccountLedger:
                 )
             assert str(txn.id) in str(exc.value)
 
+    def test_a_transfers_clearing_link_is_read_off_THIS_accounts_leg(
+        self, app, db, seed_user,
+    ):
+        """Walking one account reads its OWN shadow's link, not the other's.
+
+        **The defect this closes was not in ruling R-FL's own amendment**; it
+        was found tracing the loader at plan step X-f3a-1.
+        ``_transfer_source_days`` resolved the transfer's INCOME shadow whatever
+        account was being walked, which is harmless for the DAY -- Transfer
+        Invariant 3 mirrors ``settled_on`` onto both legs -- and wrong for the
+        LINK, because clearing is deliberately NOT mirrored: a transfer leaves
+        one bank and arrives at another, and each statement reports its own leg.
+
+        The fixture makes the two answers differ.  A $200.00 Checking ->
+        Savings transfer settles the day AFTER Savings' origination.  The
+        SAVINGS (income) leg then names a LATER Savings assertion -- exactly
+        what ticking it on the next Savings statement writes.  Walking CHECKING
+        must be unmoved by that: the Checking leg names nothing, so Checking's
+        own date rule decides and the transfer is inside the Checking assertion
+        that closes after it.
+
+        Hand-computed on Checking, whose own opening asserts $1,000.00 long
+        before the transfer:
+
+            opening: ledger_before      0.00, resets the walk to 1000.00
+            true-up: ledger_before   1000.00 - 200.00 = 800.00
+
+        Read off the income leg instead, Checking's walk would file its own
+        outgoing money under an assertion belonging to another ACCOUNT -- an id
+        Checking's ``StatementCoverage`` does not contain -- so the transfer
+        would be cleared by no assertion of Checking's at all, ride on top of
+        every one of them, and the true-up's ``ledger_before`` would read the
+        bare ``$1,000.00`` reset.
+        """
+        with app.app_context():
+            savings = _make_account(seed_user, "500.00")
+            checking = seed_user["account"]
+            origin = _origin_day(savings)
+            create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("200.00"),
+                settled_on=origin + timedelta(days=1),
+            )
+            # A Checking assertion closing AFTER the transfer, so Checking's own
+            # date rule has something to put it inside of.
+            _add_assertion(
+                checking, "1000.00", _PINNED_OPENING_AT + timedelta(days=40),
+            )
+            income_leg = (
+                _db.session.query(Transaction)
+                .filter(
+                    Transaction.account_id == savings.id,
+                    Transaction.transfer_id.isnot(None),
+                )
+                .one()
+            )
+            later_savings = _add_assertion(
+                savings, "900.00", _PINNED_OPENING_AT + timedelta(days=50),
+            )
+            income_leg.reconciled_by_id = later_savings.id
+            _db.session.commit()
+
+            checking_corrections = (
+                account_posting_service.walk_account_ledger(
+                    checking.id, seed_user["scenario"].id,
+                )
+            )
+            assert checking_corrections[-1].ledger_before == Decimal("800.00")
+
     def test_transfer_attribution_uses_income_shadow_day(
         self, app, db, seed_user,
     ):

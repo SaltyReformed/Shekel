@@ -66,7 +66,7 @@ from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.routes.accounts.history import balance_history_context
 from app.routes.accounts.reconcile import (
-    observed_day,
+    governing_statement,
     panel_id,
     reconcile_context,
 )
@@ -396,7 +396,7 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
         # The asserted day is resolved once and handed in (finding N-222).
         **reconcile_context(
             account, panel=panel_id(account.id),
-            observed_on=observed_day(account),
+            statement=governing_statement(account),
         ),
     }
 

@@ -133,7 +133,7 @@ def _add_entry(
 ):
     """Add a purchase entry to a transaction (dated inside the period)."""
     entry = TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=amount,
         description=description,

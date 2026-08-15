@@ -380,3 +380,39 @@ def settle(
             frozen_amount=str(frozen),
         )
     return correction is not None
+
+
+def record_clearing(shadow: Transaction, anchor_id: int) -> None:
+    """Record WHICH statement showed one leg of a transfer (ruling **R-FL**).
+
+    **The one column of a shadow that is deliberately NOT mirrored**, and the
+    reason a shadow mutation lives here rather than at the reconcile panel that
+    calls it.  ``CLAUDE.md``'s transfer invariant 4 says no code path mutates a
+    shadow directly; invariant 3 says the amounts, statuses and periods of the
+    three rows always match.  Clearing is neither: a transfer LEAVES one bank
+    and ARRIVES at another, so the asserted account's statement showed its own
+    leg and the other account's statement is a document nobody read in that
+    act.  Mirroring it would record an observation nobody made, on an account
+    whose balance the user has not looked at.
+
+    So the fact is per-leg and the DOOR is still the transfer service -- which
+    is what keeps invariant 4 true as written, and what gives the asymmetry one
+    place to be explained rather than a comment at a caller.
+
+    **It writes the link and nothing else.**  The settle itself -- the status,
+    the pair's day, the loan freeze, the correction rule -- is
+    :func:`settle`'s, and the caller runs that first; a clearing recorded
+    against a leg that has not settled would violate
+    ``ck_transactions_cleared_needs_settle_day``, which pairs this column with
+    the settle day the seam writes.
+
+    Flushes nothing and commits nothing -- the caller owns the session boundary.
+
+    Args:
+        shadow: The leg on the account whose statement was read.  The caller
+            resolved it through that account's own offer scope
+            (:func:`app.services.reconcile_service._rows.outstanding_rows`), so
+            it is this owner's and on this account by construction.
+        anchor_id: The ``budget.account_anchor_history`` row the statement is.
+    """
+    shadow.reconciled_by_id = anchor_id

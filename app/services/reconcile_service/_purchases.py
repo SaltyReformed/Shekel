@@ -30,6 +30,7 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services.cash_ledger import AnchorPoint
 from app.services.reconcile_service._offers import OutstandingPurchase
 from app.utils.balance_predicates import (
     balance_contributing_clause,
@@ -201,17 +202,22 @@ def record_settled_days(
     owner_id: int,
     account_id: int,
     entry_ids: "set[int]",
-    observed_on: date,
+    anchor: AnchorPoint,
 ) -> int:
-    """Record that the bank had taken *entry_ids* by *observed_on*.
+    """Record that *anchor*'s statement showed *entry_ids*.
 
     This arm's writer: the user ticked these purchases off a statement, so each
-    one's ``settled_on`` becomes the day that statement's balance was true for.
-    The stored date is an UPPER BOUND on the true posting day -- the purchase
-    may have cleared a day or two earlier -- and it is the only bound the
-    reconciliation predicate consumes (``settled_on <= observed_on``), so no
-    answer changes by sharpening it.  A user who wants the exact day off their
-    statement edits the entry.
+    one records WHICH statement showed it (``reconciled_by_id``, ruling
+    **R-FL**) and takes that statement's day as its ``settled_on``.
+
+    **Two columns, two facts, and the second is why this step exists.**
+    ``settled_on`` is an UPPER BOUND on the true posting day -- the purchase may
+    have cleared a day or two earlier, and a user who wants the exact day edits
+    the entry.  ``reconciled_by_id`` is not a bound at all: it is the
+    observation, and it is what the clearing rule reads first.  The day alone
+    could not carry it -- production holds three days on which Checking has more
+    than one assertion, so no rule over ``settled_on`` can name which statement
+    a tick was made against.
 
     **Every id is re-scoped through :func:`_outstanding_scope` rather than
     trusted.**  The ids arrive from a form, so an id belonging to another
@@ -227,14 +233,16 @@ def record_settled_days(
         owner_id: The user_id whose purchases these must be.
         account_id: The cash account the balance was asserted for.
         entry_ids: The entry ids the user ticked.  An empty set is a no-op.
-        observed_on: The civil day the asserted balance was true for, and the
-            day each ticked purchase is recorded as having settled by.
+        anchor: The governing assertion -- the STATEMENT being reconciled.  Its
+            id is what each ticked purchase records, and its ``observed_on`` is
+            the day each is recorded as having settled by.
 
     Returns:
         The number of entries actually stamped.
     """
     if not entry_ids:
         return 0
+    observed_on = anchor.observed_on
 
     # ``synchronize_session=False``, which CLOSES finding **N-223**, and the
     # reasoning that briefly argued the other way is recorded because it was
@@ -262,7 +270,10 @@ def record_settled_days(
             *_outstanding_scope(owner_id, account_id, observed_on),
         )
         .update(
-            {TransactionEntry.settled_on: observed_on},
+            {
+                TransactionEntry.settled_on: observed_on,
+                TransactionEntry.reconciled_by_id: anchor.anchor_id,
+            },
             synchronize_session=False,
         )
     )

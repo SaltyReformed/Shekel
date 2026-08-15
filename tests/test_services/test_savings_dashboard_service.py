@@ -2766,7 +2766,7 @@ def _add_entry(
     from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
 
     db_session.add(TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=user_id,
         amount=amount,
         description=description,

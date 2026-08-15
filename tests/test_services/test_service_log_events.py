@@ -24,6 +24,8 @@ from decimal import Decimal
 
 import pytest
 
+from dataclasses import replace
+
 from app.extensions import db
 from app.utils.dates import display_today
 from app.enums import StatusEnum
@@ -35,6 +37,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.services import (
     carry_forward_service,
+    cash_ledger,
     credit_workflow,
     entry_credit_workflow,
     entry_service,
@@ -559,10 +562,18 @@ class TestReconcileServiceLogging:
             )
             db.session.commit()
             observed_on = date(2026, 1, 5)
+            # The account's REAL governing assertion, presented for the test's
+            # statement day: the writer stamps its id, and the composite key
+            # ``fk_transaction_entries_reconciled_by`` refuses a fabricated one
+            # (plan step X-f3a-1, ruling **R-FL**).
+            statement = replace(
+                cash_ledger.governing_anchor(seed_user["account"].id),
+                observed_on=observed_on,
+            )
             with _LogCapture("app.services.reconcile_service") as cap:
                 count = reconcile_service.record_settled_days(
                     seed_user["user"].id, seed_user["account"].id,
-                    {entry.id}, observed_on,
+                    {entry.id}, statement,
                 )
 
         assert count == 1
@@ -596,10 +607,14 @@ class TestReconcileServiceLogging:
                 ),
             )
             db.session.commit()
+            statement = replace(
+                cash_ledger.governing_anchor(seed_user["account"].id),
+                observed_on=date(2026, 1, 5),
+            )
             with _LogCapture("app.services.reconcile_service") as cap:
                 count = reconcile_service.record_settled_days(
                     seed_user["user"].id, seed_user["account"].id,
-                    {entry.id}, date(2026, 1, 5),
+                    {entry.id}, statement,
                 )
 
         assert count == 0

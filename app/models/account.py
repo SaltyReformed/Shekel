@@ -237,6 +237,22 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
             "account_id",
             "created_at",
         ),
+        # **The SUPERKEY the clearing links target, and it does NOT revive
+        # R-EQ** (plan step X-f3a-1, ruling **R-FL**).  A transaction and a
+        # purchase each name the assertion whose statement showed them, through
+        # a COMPOSITE foreign key over ``(account_id, id)`` so a link to another
+        # account's statement is unrepresentable; PostgreSQL requires a UNIQUE
+        # over exactly those columns before such a key may target them.
+        #
+        # It can reject NO row: ``id`` is the primary key, so every pair
+        # containing it is already distinct.  That is the whole difference from
+        # the CONTENT key R-EQ deleted -- that one keyed
+        # ``(account_id, anchor_balance, observed_on)``, values a transport retry
+        # and a deliberate re-assertion share by construction, so it had to
+        # mis-classify one of them and it mis-classified the correction.
+        db.UniqueConstraint(
+            "account_id", "id", name="uq_anchor_history_account_id",
+        ),
         {"schema": "budget"},
     )
 

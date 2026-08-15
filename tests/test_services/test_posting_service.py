@@ -209,7 +209,7 @@ def _add_txn_entry(seed_user, txn, amount, *, is_credit):
     ``effective - Sigma(credit)`` formula, so this sets it directly.
     """
     entry = TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description="purchase",

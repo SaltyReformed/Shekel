@@ -41,36 +41,56 @@ correction is recorded at the step.
 The reservation formula under test::
 
     settled_debit     = sum(amount where not is_credit
-                            and settled_on <= reconciled_through)
+                            and coverage.is_cleared(entry))
     outstanding_debit = sum(amount where not is_credit and every other case)
     sum_credit        = sum(amount where is_credit)
 
     impact = max(estimated - settled_debit - sum_credit, outstanding_debit)
 
-**Which bucket a debit falls in is DERIVED from a DATE** (plan step S1-c, ruling
-R-DH (d)).  It was a stored ``is_cleared`` boolean, and every fixture below
-carried it as a third bool in a triple.  The boolean was an unconditional claim
-that a purchase was inside the anchor -- a claim its own account could not
-always support -- so the triples now carry the day the bank was SEEN to take the
-money, and the bucket is ``settled_on <= reconciled_through`` evaluated here.
-Three consequences are new test cases rather than renames: a NULL posting day is
-OUTSTANDING, a posting day AFTER the day the balance was read is OUTSTANDING,
-and an account that has never asserted a balance reconciles nothing.  None of
-the three was expressible while the answer was a flag.
+**Which bucket a debit falls in is a RECORDED FACT** (plan step X-f3a-1, ruling
+**R-FL**), and its history is three answers deep.  It was a stored
+``is_cleared`` boolean, and every fixture below carried it as a third bool in a
+triple -- an unconditional claim that a purchase was inside the anchor, which
+its own account could not always support.  Ruling R-DH (d) replaced it with a
+DATE comparison, and the triples took the day the bank was seen to take the
+money.  The developer's own bank exports then falsified that comparison (33 of
+110 matched movements carry the day the bank posted them), so the bucket is now
+:meth:`~app.services.cash_ledger.StatementCoverage.is_cleared` -- which
+statement was RECORDED as showing this purchase, falling back to the date rule
+only where none was.  Every fixture below leaves the link unset, so every case
+here exercises that fallback and answers exactly what it answered before.
+
+**The link arm answers the SAME as the fallback, always, and that is a bound
+rather than an oversight**: a link may not contradict the posting day while an
+assertion resets the ledger, so the only freedom it has -- choosing between two
+assertions that share a civil day -- is invisible to a bool.
+``TestALinkMayNotContradictThePostingDay`` grades both the refusal and the
+admitted case.
+
+Three consequences of the date era are still test cases rather than renames: a
+NULL posting day is OUTSTANDING, a posting day AFTER the day the balance was
+read is OUTSTANDING, and an account that has never asserted a balance
+reconciles nothing.  None of the three was expressible while the answer was a
+flag.
 """
 
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+import sqlalchemy.exc
+
 from app.services.cash_ledger._amount_source import AmountBasis
 from app.services.cash_ledger._amounts import (
     ProjectedBasis,
-    ReconciledThrough,
     _entry_aware_amount,
     _expense_amount,
     income_amount,
 )
+from app.services.cash_ledger._clearing import StatementCoverage
+from app.extensions import db
+from app.models.account import AccountAnchorHistory
 from tests._test_helpers import add_entry, add_txn, create_envelope_txn
 
 
@@ -81,14 +101,23 @@ from tests._test_helpers import add_entry, add_txn, create_envelope_txn
 _PURCHASED_ON = date(2026, 1, 20)
 _POSTED_ON = date(2026, 1, 21)
 _STATEMENT_DAY = date(2026, 1, 22)
-# The BOUNDARY that day establishes.  It is a type and not a date so that
-# `settled_on <= reconciled_through` cannot be written anywhere but inside
-# `ReconciledThrough.covers` -- see that class for what the fifth spelling
-# of this rule cost production.
-_ASSERTED_THROUGH = ReconciledThrough(_STATEMENT_DAY)
+# The assertion that statement day belongs to, as the account's whole clearing
+# rule.  It is a TYPE and not a date so that `settled_on <= statement day`
+# cannot be written anywhere but inside the rule itself -- see
+# `ReconciledThrough` for what the fifth spelling of that comparison cost
+# production, and `StatementCoverage` for why the comparison is now only the
+# fallback.
+#
+# The id is arbitrary and is never dereferenced: nothing here loads the
+# assertion row, and a purchase reaches the LINK arm only by naming this id,
+# which is what `TestALinkOutranksTheDate` does deliberately.
+_STATEMENT_ID = 4001
+_ASSERTED_COVERAGE = StatementCoverage(
+    anchor_ids=(_STATEMENT_ID,), observed_days=(_STATEMENT_DAY,),
+)
 
 
-def _basis(*rows, overrides=None, reconciled_through=_ASSERTED_THROUGH):
+def _basis(*rows, overrides=None, coverage=_ASSERTED_COVERAGE):
     """The :class:`ProjectedBasis` a producer would hand these rows.
 
     Built HONESTLY rather than zeroed: ``priced_ids`` covers exactly the rows
@@ -104,7 +133,7 @@ def _basis(*rows, overrides=None, reconciled_through=_ASSERTED_THROUGH):
             salary_net=dict(overrides or {}),
             loan_cash={},
         ),
-        reconciled_through=reconciled_through,
+        coverage=coverage,
     )
 _POSTED_AFTER_THE_STATEMENT = date(2026, 1, 23)
 
@@ -348,10 +377,14 @@ class TestTheRecordedPostingDay:
     (ruling R-DH (d)).  The flag was written by a bulk UPDATE at every anchor
     true-up over "every entry dated on or before the SERVER's today", so which
     bucket a purchase fell in was decided by the order two buttons were
-    pressed.  The bucket is now
-    ``reconciled_through.covers(entry.settled_on)``, evaluated at read time --
-    the same rule, in the same units, the read replay and the posting walk
-    apply to a settled transaction.
+    pressed.  The bucket is now ``coverage.is_cleared(entry)``, evaluated at
+    read time -- the same rule, in the same units, the read replay and the
+    posting walk apply to a settled transaction.
+
+    **No purchase here names a statement**, so every case exercises that rule's
+    DATE fallback and answers exactly what it answered under R-DH (d).  That is
+    the point of these cases surviving X-f3a-1 unchanged: the recording step
+    moves no figure.  ``TestALinkOutranksTheDate`` grades the arm that is new.
 
     Three of the cases below could not be WRITTEN against a flag, and they are
     the ones that matter: an unobserved purchase (NULL), a purchase the bank
@@ -534,20 +567,20 @@ class TestTheRecordedPostingDay:
     def test_an_account_that_has_never_asserted_reconciles_nothing(
         self, app, db, seed_user, seed_periods,
     ):
-        """A boundary that declares nothing puts every purchase on the floor.
+        """A rule with no statements in it puts every purchase on the floor.
 
-        A ``$200.00`` purchase the bank was seen to take on 01-21, priced on a
-        boundary whose ``observed_day`` is ``None`` -- what
-        ``cash_ledger.reconciled_through`` returns for an account that has
-        never asserted a balance.  There is nothing for the purchase to be
-        inside of, so it is outstanding and the reservation stays at
-        max(500 - 0 - 0, 200) = 500.
+        A ``$200.00`` purchase the bank was seen to take on 01-21, priced on an
+        EMPTY coverage -- what ``cash_ledger.coverage_for`` returns for an
+        account that has never asserted a balance.  There is nothing for the
+        purchase to be inside of, so it is outstanding and the reservation stays
+        at max(500 - 0 - 0, 200) = 500.
 
-        ``ReconciledThrough.covers`` is TOTAL in both the argument and the
-        boundary for exactly this reason -- both absences mean "not inside" --
-        so no caller has to remember a precondition.  A rule that treated a missing assertion as
-        "everything is reconciled" would empty every envelope on an account the
-        user had never trued up.
+        :meth:`~app.services.cash_ledger.StatementCoverage.clearing_anchor_id`
+        is TOTAL in both the line and the assertion set for exactly this reason
+        -- every absence means "not inside" -- so no caller has to remember a
+        precondition.  A rule that treated a missing assertion as "everything is
+        reconciled" would empty every envelope on an account the user had never
+        trued up.
         """
         with app.app_context():
             txn = _envelope(
@@ -556,8 +589,170 @@ class TestTheRecordedPostingDay:
             )
 
             assert _entry_aware_amount(
-                txn, _basis(txn, reconciled_through=ReconciledThrough(None)),
+                txn,
+                _basis(txn, coverage=StatementCoverage((), ())),
             ) == Decimal("500.00")
+
+
+def _real_statement(account_id):
+    """Return ``(assertion id, coverage)`` for an account that really has one.
+
+    The LINK tests cannot use :data:`_ASSERTED_COVERAGE`'s fabricated id:
+    ``fk_transaction_entries_reconciled_by`` refuses a link to a statement that
+    does not exist, which is the whole point of the composite key and is the
+    first thing this helper proved when it was not here.
+
+    So the id is the account's REAL opening assertion and the day is this
+    module's ``_STATEMENT_DAY``.  The two need not agree, and nothing checks
+    that they do: a :class:`StatementCoverage` is a VALUE describing what an
+    account's owner has declared, and these tests declare one statement on the
+    day the whole module turns on.  Building the coverage from the seeded row's
+    own 2024 day instead would put every purchase after the statement and grade
+    nothing.
+
+    Args:
+        account_id: The account whose assertion to borrow.
+
+    Returns:
+        ``(anchor_id, StatementCoverage)``.
+    """
+    anchor_id = (
+        db.session.query(AccountAnchorHistory.id)
+        .filter_by(account_id=account_id)
+        .order_by(AccountAnchorHistory.observed_on, AccountAnchorHistory.id)
+        .scalar()
+    )
+    return anchor_id, StatementCoverage(
+        anchor_ids=(anchor_id,), observed_days=(_STATEMENT_DAY,),
+    )
+
+
+class TestALinkMayNotContradictThePostingDay:
+    """A recorded statement and a posting day must agree about which closed over it.
+
+    Ruling **R-FL** records which statement showed a purchase.  Ruling R-S and
+    the fold's own construction then bound how far that record may travel: a
+    line cleared by a statement whose day is not the one the date rule picks is
+    UNRENDERABLE while an assertion RESETS the ledger, and
+    ``StatementCoverage._recorded_anchor_id`` carries the theorem and the
+    production measurement; where the record cannot decide, the date rule
+    answers and no balance moves.
+
+    **So the reservation's answer is UNCHANGED by this step, and that is the
+    finding rather than a disappointment.**  A first implementation let the link
+    outrank the day here too, and an adversarial review found what it bought: a
+    purchase ticked on a statement and then dated FORWARD would read as cleared,
+    releasing its envelope's reservation and putting already-spent money back in
+    the projection -- the exact failure ``status_seam.reject_future_settle_day``
+    exists to prevent, arriving through the one door that deliberately admits a
+    future day.  The date rule answers instead, and
+    ``entry_service.update_entry`` releases the link on any day move, so the
+    contradictory row is transient rather than a state the app keeps.
+
+    What the link IS for in this leaf is the record itself -- which statement
+    was walked -- which plan steps X-f3b, X-f3c and X-f6a all need and none of
+    which can be derived later.
+    """
+
+    def test_a_link_cannot_release_a_purchase_posted_after_the_statement(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A purchase posted AFTER the statement stays reserved, link or no link.
+
+        The two facts contradict -- a statement of the 22nd cannot have shown
+        money the bank took on the 23rd -- and the date rule wins, so the whole
+        `$500.00` stays held back.
+
+        **This is what keeps ``status_seam.reject_future_settle_day``'s stated
+        exemption true.**  That refusal explains why a FUTURE
+        ``TransactionEntry.settled_on`` is deliberately permitted where a
+        transaction's is refused: it is the CONSERVATIVE direction, because no
+        assertion closes over it and the debit stays reserved.  Had the link
+        been allowed to override, ticking a purchase and then dating it forward
+        would drop the reservation to `$300.00` and hand `$200.00` the bank has
+        not taken back to the projection -- the exact failure that refusal
+        exists to prevent, arriving through the one door that admits a future
+        day.
+        """
+        with app.app_context():
+            txn = _envelope(
+                db.session, seed_user, seed_periods[1], "500.00",
+                [("200.00", False, _POSTED_AFTER_THE_STATEMENT)],
+            )
+            anchor_id, coverage = _real_statement(txn.account_id)
+
+            assert _entry_aware_amount(
+                txn, _basis(txn, coverage=coverage),
+            ) == Decimal("500.00"), (
+                "Unlinked, the date rule calls a purchase posted after the "
+                "statement outstanding -- max(500 - 0 - 0, 200)."
+            )
+
+            txn.entries[0].reconciled_by_id = anchor_id
+            db.session.flush()
+
+            assert _entry_aware_amount(
+                txn, _basis(txn, coverage=coverage),
+            ) == Decimal("500.00")
+            db.session.rollback()
+
+    def test_a_purchase_may_not_name_a_statement_with_no_posting_day(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The same contradiction at the database tier, one column earlier.
+
+        ``settled_on`` NULL is the state every fresh purchase is in.  A link on
+        one asserts both that a statement showed the money and that nothing has
+        been observed to leave the account, and
+        ``ck_transaction_entries_cleared_needs_settle_day`` refuses the pair
+        before any rule is asked.
+        """
+        with app.app_context():
+            txn = _envelope(
+                db.session, seed_user, seed_periods[1], "500.00",
+                [("200.00", False, None)],
+            )
+            anchor_id, _coverage = _real_statement(txn.account_id)
+
+            txn.entries[0].reconciled_by_id = anchor_id
+            with pytest.raises(
+                sqlalchemy.exc.IntegrityError,
+                match="ck_transaction_entries_cleared_needs_settle_day",
+            ):
+                db.session.flush()
+            db.session.rollback()
+
+    def test_a_link_that_AGREES_with_the_day_answers_what_the_day_answers(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The admitted case, and it moves nothing -- which is the point.
+
+        A purchase the bank took on the 21st, named by the statement of the
+        22nd: the date rule already puts it inside that statement, so the record
+        confirms rather than overrides.  The reservation reads
+        max(500 - 200 - 0, 0) = 300 with the link and without it.
+
+        Without this the suite could not tell a rule that admits a coherent link
+        from one that refuses every link.
+        """
+        with app.app_context():
+            txn = _envelope(
+                db.session, seed_user, seed_periods[1], "500.00",
+                [("200.00", False, _POSTED_ON)],
+            )
+            anchor_id, coverage = _real_statement(txn.account_id)
+
+            assert _entry_aware_amount(
+                txn, _basis(txn, coverage=coverage),
+            ) == Decimal("300.00")
+
+            txn.entries[0].reconciled_by_id = anchor_id
+            db.session.flush()
+
+            assert _entry_aware_amount(
+                txn, _basis(txn, coverage=coverage),
+            ) == Decimal("300.00")
+            db.session.rollback()
 
 
 class TestTheEntriesRelationshipIsNotASeam:

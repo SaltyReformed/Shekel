@@ -486,14 +486,14 @@ def _cash_plan(
     were attributed to -- and re-loading them for that would be two answers to
     "what is in this account's plan" a day apart from each other.
 
-    **The reconciled-through day comes off the WALK, not off a second query**
-    (plan step S1-c).  A projected envelope's reservation must know which of
-    its purchases the account's latest asserted balance already contains, and
-    that boundary is :attr:`~app.services.cash_ledger.CashLedgerWalk.reconciled_through`
-    -- read off the facts :func:`assemble` has already loaded.  Taking it from
-    the walk rather than resolving the anchor again is the same
-    one-assembly discipline ``_asset_fold`` follows for its accrual window: two
-    lookups of "the account's latest assertion" is two things that can come to
+    **The clearing rule comes off the WALK, not off a second query** (plan step
+    S1-c, re-pointed at X-f3a-1).  A projected envelope's reservation must know
+    which of its purchases a declared balance already contains, and that is
+    :attr:`~app.services.cash_ledger.CashLedgerWalk.coverage` -- built from the
+    facts :func:`assemble` has already loaded.  Taking it from the walk rather
+    than resolving the account's assertions again is the same one-assembly
+    discipline ``_asset_fold`` follows for its accrual window: two lookups of
+    "what has this account's owner declared" is two things that can come to
     disagree, and plan step 2 made ``observed_on`` user-supplied, which is
     exactly when they would.
 
@@ -504,23 +504,25 @@ def _cash_plan(
         as_of: The reader's NOW -- the floor ruling R-G clamps a landing day up
             to.
         walk: The account's :class:`~app.services.cash_ledger.CashLedgerWalk`,
-            already assembled -- the source of the reconciled-through day.
+            already assembled -- the source of the clearing rule.
 
     Returns:
         The account's :class:`_CashPlan`; its ``rows`` and ``by_day`` are empty
         for an account with no plan, and its ``basis`` still carries the
-        account's reconciled-through day so the record is self-describing
+        account's clearing rule so the record is self-describing
         either way.
     """
-    reconciled_through = walk.reconciled_through
     rows = planned_cash_rows(account.id, scenario_id)
     # Built over the plan whether or not it is empty: both live producers filter
     # their candidates in Python first, so an empty row set costs two list
     # comprehensions and no query -- which is cheaper than a second construction
-    # of the same record for the empty branch.
+    # of the same record for the empty branch.  The clearing rule comes off the
+    # WALK this function was handed, so the reservation pays no query for it
+    # (ruling R-FL; ``cash_ledger.coverage_for`` is the twin for a caller that
+    # holds no walk).
     basis = ProjectedBasis(
         amounts=amount_basis(account.user_id, scenario_id, rows),
-        reconciled_through=reconciled_through,
+        coverage=walk.coverage,
     )
     if not rows:
         return _CashPlan(rows=[], by_day={}, basis=basis)
