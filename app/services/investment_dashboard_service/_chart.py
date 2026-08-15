@@ -24,14 +24,13 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from app.models.account import Account
-from app.services import balance_at, growth_engine, pay_period_service
+from app.services import balance_at, growth_engine
 from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
 from ._context import (
     _ProjectionContext,
     _load_investment_params,
-    _load_planned_retirement_date,
     _load_projection_context,
 )
 
@@ -173,7 +172,7 @@ def _assemble_chart_context(
     chart_context = _growth_chart_context(ctx, periods, projection, what_if_raw)
     history = _build_history_series(account, ctx)
     markers = _build_chart_markers(
-        account.user_id, len(history["history_balances"]), periods,
+        ctx, len(history["history_balances"]), periods,
     )
     return {**chart_context, **history, **markers}
 
@@ -197,10 +196,10 @@ def _build_history_series(account: Account, ctx: _ProjectionContext) -> dict:
     balances = balance_at.balance_map(account, bctx)
     labels: list[str] = []
     values: list[str] = []
-    for period in ctx.all_periods:
+    for period in bctx.reported_periods():
         if period.period_index > ctx.current_period.period_index:
             continue
-        balance = balances.get(period.id)
+        balance = balances.get(period.period_id)
         if balance is None:
             continue
         labels.append(period.start_date.strftime("%b %Y"))
@@ -209,7 +208,9 @@ def _build_history_series(account: Account, ctx: _ProjectionContext) -> dict:
 
 
 def _build_chart_markers(
-    user_id: int, history_len: int, projection_periods: PeriodWindow,
+    ctx: _ProjectionContext,
+    history_len: int,
+    projection_periods: PeriodWindow,
 ) -> dict:
     """Return the Today-boundary and retirement-year chart markers (C2).
 
@@ -217,21 +218,50 @@ def _build_chart_markers(
     the dashed projection; ``retirement_marker_index`` / ``retirement_year``
     mark the projection period holding the planned retirement date, else
     ``None`` (unset or beyond the horizon).
+
+    **The marker's position is the WINDOW's own containment answer** (plan step
+    C2-f2c, ledger row **P48**).  This walked the window period by period
+    testing ``start_date <= retirement_date <= end_date``, which is
+    :meth:`~app.services.pay_calendar.PeriodWindow.containing`'s predicate
+    written a second time -- the last live member of ledger row **P6**'s census
+    of "which pay period contains this date" implementations.  The two agree
+    over a tiling window, so this retired a DUPLICATE rather than a
+    divergence; what it buys is that the answer now comes from the same bisect
+    the rest of the application places a date with, and cannot drift from it.
+
+    The window's index is what the chart needs rather than the period itself:
+    Chart.js marks a POSITION in the plotted series, which runs history first
+    and then one point per projected period, so the marker sits at
+    ``history_len`` plus the period's offset WITHIN this window.
+
+    **``retirement_date`` comes off the shared feed** rather than from this
+    module's own ``user_settings`` query, which was the second of two per
+    dashboard render for one value.
+
+    Args:
+        ctx: The shared per-request projection feed.
+        history_len: How many points the solid history series holds.
+        projection_periods: The axis the dashed projection is plotted over.
+
+    Returns:
+        The three marker keys.  ``retirement_marker_index`` is ``None`` when no
+        retirement date is set, and when the one set falls outside this axis --
+        before it opens or past its horizon.
     """
-    retirement_date = _load_planned_retirement_date(user_id)
-    retirement_year = (
-        retirement_date.year if retirement_date is not None else None
-    )
-    retirement_marker_index = None
-    if retirement_date is not None:
-        for offset, period in enumerate(projection_periods):
-            if period.start_date <= retirement_date <= period.end_date:
-                retirement_marker_index = history_len + offset
-                break
+    retirement_date = ctx.planned_retirement_date
+    if retirement_date is None:
+        return {
+            "today_boundary_index": history_len,
+            "retirement_year": None,
+            "retirement_marker_index": None,
+        }
+    offset = projection_periods.containing_index(retirement_date)
     return {
         "today_boundary_index": history_len,
-        "retirement_year": retirement_year,
-        "retirement_marker_index": retirement_marker_index,
+        "retirement_year": retirement_date.year,
+        "retirement_marker_index": (
+            None if offset is None else history_len + offset
+        ),
     }
 
 
@@ -368,9 +398,5 @@ def compute_growth_chart_data(
     params = _load_investment_params(account.id)
     if not params:
         return _empty_chart_context()
-    all_periods = pay_period_service.get_all_periods(user_id)
-    current_period = pay_period_service.get_current_period(user_id)
-    ctx = _load_projection_context(
-        user_id, account, params, all_periods, current_period,
-    )
+    ctx = _load_projection_context(user_id, account, params)
     return _assemble_chart_context(account, ctx, horizon_years, what_if_raw)
