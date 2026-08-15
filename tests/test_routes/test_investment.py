@@ -2478,14 +2478,16 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
         in that state, so both arms returned the same figure -- a branch that
         cannot change the answer, which CLAUDE.md rule 1 forbids shipping.  This
         pins the fact the deletion rests on, in the module that owns it.
+
+        The two totals became ONE function over an ``inclusive`` flag at plan
+        step C2-f2c, which is what they always were; the fact this test rests
+        on is unchanged, and the no-current-period arm is the branch that
+        answers ZERO before either bound is consulted.
         """
         # pylint: disable=import-outside-toplevel
-        from app.services.investment_projection import (
-            _ytd_contributions,
-            _ytd_contributions_seed,
-        )
-        assert _ytd_contributions([], [], None) == Decimal("0")
-        assert _ytd_contributions_seed([], [], None) == Decimal("0")
+        from app.services.investment_projection import _ytd_contributions
+        assert _ytd_contributions([], None, inclusive=True) == Decimal("0")
+        assert _ytd_contributions([], None, inclusive=False) == Decimal("0")
 
     def test_the_chart_reads_the_resolved_ytd(
         self, auth_client, seed_user, db, seed_periods_today,

@@ -402,12 +402,13 @@ def _load_projection_context(
     projection_seed = _resolve_seed_balance(account, balance_ctx)
     inputs = build_investment_projection_inputs(
         params, adapted_deductions, acct_contributions,
-        all_periods, current_period, salary_gross_biweekly,
+        current_period, salary_gross_biweekly,
     )
     contributions = build_contribution_timeline(
         deductions=adapted_deductions,
         contribution_transactions=acct_contributions,
         periods=all_periods,
+        as_of=balance_ctx.as_of,
     )
     return _ProjectionContext(
         params=params,
