@@ -468,22 +468,34 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     X-au-c2b).  A basis holds DERIVATIONS pinned to an owner and a scenario, not
     answers pinned to a row set, so every row of that owner and scenario is
     resolvable against it and the membership refusal this used to raise has no
-    state left to describe.  What the caller still owns is the PINS: resolving a
-    row against another owner's or another scenario's basis prices it from the
-    wrong profiles and the wrong loans, exactly as passing the wrong ids to
-    :func:`amount_basis` always did.
+    state left to describe.
+
+    **What it asks INSTEAD is the pin the caller can still get wrong**, and the
+    substitution is the point rather than a smaller guard.  ``priced_ids``
+    caught "this row was not in the set I built over"; it could not catch "this
+    basis belongs to another scenario", which is the mistake that actually
+    changes a figure -- ``LoanPricing`` resolves a loan against ITS scenario's
+    payment history, so a foreign basis answers a different ``monthly_payment``
+    with no error at all.  A row states its own ``scenario_id`` in a column, so
+    the check is free and TOTAL where the membership set was neither.
+
+    An adversarial review of this step's own build is what put it here: the
+    control that replaced the deleted membership test proved the SAFE direction
+    (a basis answers for a row it was not built over) and left the unsafe one --
+    a silently different number -- with nothing asserting it.
 
     Args:
         txn: The :class:`~app.models.transaction.Transaction` to price.  It must
-            belong to *basis*'s owner and scenario.
+            belong to *basis*'s scenario.
         basis: The read pass's :class:`AmountBasis` (:func:`amount_basis`).
 
     Returns:
         The row's amount as a ``Decimal``.
 
     Raises:
-        AmountUnresolvable: When the rule that owns this row cannot answer for
-            it.  See the module docstring: a refusal is never a fallback.
+        AmountUnresolvable: When *txn* belongs to another scenario than *basis*,
+            or when the rule that owns this row cannot answer for it.  See the
+            module docstring: a refusal is never a fallback.
         UndatedSettleError: Propagated from the DERIVE-mode loan arm, whose
             producer loads the loan's payment history and refuses a settled
             payment carrying no settle day
@@ -491,6 +503,14 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
             catching only :class:`~app.exceptions.AmountUnresolvable` would
             otherwise meet it unannounced.
     """
+    if txn.scenario_id != basis.scenario_id:
+        raise AmountUnresolvable(
+            f"Transaction {txn.id} is in scenario {txn.scenario_id} and this "
+            f"AmountBasis prices scenario {basis.scenario_id}. Resolving it "
+            "here would price it from another scenario's salary profiles and "
+            "another scenario's loans -- a different figure, with nothing to "
+            "say so. Build the basis for the scenario you are pricing."
+        )
     return _RULE_ANSWERS[amount_rule(txn)](txn, basis)
 
 

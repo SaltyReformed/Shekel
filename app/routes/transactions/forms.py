@@ -64,7 +64,14 @@ def get_quick_edit(txn_id):
         # they never saw.  Priming it with the resolved amount also makes the
         # save honest -- typing the same number back is a no-op, where
         # accepting a blank would not be.
-        budget=fragment_budgets(txn)[txn.id],
+        #
+        # A MAP the template indexes, not the scalar this first published: an
+        # adversarial review measured that a missing scalar renders
+        # ``value=""`` in SILENCE while a missing map raises, and these two
+        # forms are the surfaces where an empty figure is POSTED BACK.  A
+        # fallback that ships a blank into a save is the shape this whole step
+        # exists to delete, so it may not survive on the edit doors.
+        budgets=fragment_budgets(txn),
     )
 
 
@@ -133,8 +140,8 @@ def get_full_edit(txn_id):
         "grid/_transaction_full_edit.html",
         txn=txn,
         # See ``get_quick_edit`` for why the Estimated field is primed with the
-        # RESOLVED amount rather than the column.
-        budget=fragment_budgets(txn)[txn.id],
+        # RESOLVED amount rather than the column, and why it is a MAP.
+        budgets=fragment_budgets(txn),
         statuses=statuses,
         periods=periods,
         # The settle-day correction's bounds (rulings R-EJ / R-EL) -- see the

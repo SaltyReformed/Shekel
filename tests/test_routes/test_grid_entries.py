@@ -44,7 +44,10 @@ def _sums(rows):
     Returns:
         The ``{txn_id: sums}`` mapping.
     """
-    return build_entry_sums_dict(rows, fragment_budgets(*rows))
+    budgets = {}
+    for row in rows:
+        budgets.update(fragment_budgets(row))
+    return build_entry_sums_dict(rows, budgets)
 
 
 def _lists(rows):
@@ -56,7 +59,10 @@ def _lists(rows):
     Returns:
         The ``{txn_id: entry_list_view}`` mapping.
     """
-    return build_entry_lists_dict(rows, fragment_budgets(*rows))
+    budgets = {}
+    for row in rows:
+        budgets.update(fragment_budgets(row))
+    return build_entry_lists_dict(rows, budgets)
 
 def _create_tracked_txn(seed_user, seed_periods_today, period_index=0,
                          estimated=Decimal("500.00")):
@@ -827,12 +833,20 @@ class TestTheAmountFenceIsGone:
     the posted-purchase bug and which no single render test caught.
     """
 
+    # The EDIT forms are in this census, and an adversarial review is why.
+    # They were routed off the column in the same commit but onto a SCALAR
+    # ``budget``, which renders ``value=""`` in silence when unpublished where a
+    # map raises -- on the two surfaces where an empty figure is POSTED BACK.
+    # A census that stopped at the display templates said the fence was gone
+    # while the doors that matter most still had it.
     _CELL_TEMPLATES = (
         "grid/_transaction_cell.html",
         "grid/_grid_row_macros.html",
         "grid/_mobile_this_period.html",
         "grid/_mobile_plan.html",
         "grid/_mobile_card_single.html",
+        "grid/_transaction_quick_edit.html",
+        "grid/_transaction_full_edit.html",
     )
 
     @staticmethod
@@ -874,9 +888,13 @@ class TestTheAmountFenceIsGone:
             for line in self._source(app, name).splitlines():
                 if "estimated_amount" not in line:
                     continue
-                assert 'name="estimated_amount"' in line or "``" in line, (
-                    f"{name} still reads the amount column: {line!r}"
-                )
+                assert (
+                    'name="estimated_amount"' in line
+                    or "``" in line
+                    or "{#" in line
+                    or "#}" in line
+                    or not ("{{" in line or "{%" in line)
+                ), f"{name} still reads the amount column: {line!r}"
 
     def test_a_render_without_the_map_FAILS_rather_than_falling_back(self, app):
         """The replacement for the fence: a missing map is an error, not a shrug.
@@ -900,5 +918,43 @@ class TestTheAmountFenceIsGone:
         )
         template = app.jinja_env.get_template("grid/_transaction_cell.html")
         with app.test_request_context("/"):
-            with pytest.raises(jinja2.exceptions.UndefinedError):
+            with pytest.raises(
+                jinja2.exceptions.UndefinedError, match="budgets",
+            ):
                 template.render(txn=txn)
+
+    def test_an_EDIT_form_without_the_map_fails_too(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """The door a figure is POSTED BACK from raises like the display ones.
+
+        The one that matters most: a display template rendering an empty amount
+        is visible, where an edit box opening blank invites a save that books
+        whatever is typed over a figure the user never saw.  It was a scalar
+        ``budget`` for one commit, which renders ``value=""`` and says nothing.
+
+        A REAL row rather than a stand-in, so ``budgets`` is the only name the
+        render can be missing -- which is what lets the ``match`` be specific
+        rather than accepting any ``UndefinedError`` the template happens to
+        raise first.
+        """
+        import jinja2  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
+            db.session.commit()
+            template = app.jinja_env.get_template(
+                "grid/_transaction_quick_edit.html",
+            )
+            with app.test_request_context("/"):
+                with pytest.raises(
+                    jinja2.exceptions.UndefinedError, match="budgets",
+                ):
+                    template.render(txn=txn, locked=False)
+                # And it RENDERS the resolved figure when the map is published,
+                # so the raise above is the missing map rather than the
+                # template being unrenderable.
+                html = template.render(
+                    txn=txn, locked=False, budgets=fragment_budgets(txn),
+                )
+                assert f'value="{txn.estimated_amount}"' in html

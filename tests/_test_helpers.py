@@ -5010,12 +5010,11 @@ class PlantedPricing:
     reduction return") need to plant an answer without seeding a salary profile
     or a loan, and this is what they plant it with.
 
-    It satisfies both halves of the seam: :attr:`net_by_template_period` is what
-    ``income_service.live_projected_net`` reads, and :meth:`live_cash` is what
+    It satisfies both halves of the seam: :meth:`net_for` is what
+    ``income_service.salary_net_for`` asks, and :meth:`live_cash` is what
     ``loan_payment_service.LoanPricing`` answers with.  Planting by
     TRANSACTION id therefore lands on the loan half, which
-    ``cash_ledger.live_override`` asks first -- the same precedence the real
-    pair has.
+    ``cash_ledger.live_override`` asks first.
 
     Use it ONLY where the derivation is an input to the rule under test.  A test
     OF the amount model builds a real basis (``amount_basis``) and seeds the
@@ -5031,7 +5030,19 @@ class PlantedPricing:
                 what a row set with no salary row and no loan payment gets.
         """
         self._overrides = dict(overrides or {})
-        self.net_by_template_period = {}
+
+    def net_for(self, template_id, pay_period_id):
+        """Answer nothing: a planted figure lands on the LOAN half.
+
+        Args:
+            template_id: Ignored.
+            pay_period_id: Ignored.
+
+        Returns:
+            ``None`` always -- a test that needs a real paycheck seeds a
+            profile and builds a real basis.
+        """
+        return None
 
     def live_cash(self, txn):
         """Return the planted figure for *txn*, or ``None``.
@@ -5054,10 +5065,12 @@ def planted_basis(*rows, overrides=None):
     needs a salary profile or a configured loan to reach the override seam.
 
     Args:
-        rows: Accepted and ignored.  A basis was built over a ROW SET until plan
-            step X-au-c2b and every call site named its rows; keeping the
-            parameter keeps those call sites reading as the record of what each
-            test was valuing.
+        rows: The rows this basis will price.  A basis was built OVER a row set
+            until plan step X-au-c2b, and every call site named its rows; they
+            are kept because the first row still decides one thing -- the
+            SCENARIO the basis declares.  ``resolve_transaction_amount`` refuses
+            a row from another scenario, so a double that named the wrong one
+            would grade that refusal instead of the rule under test.
         overrides: ``{transaction_id: Decimal}`` live figures to plant.
 
     Returns:
@@ -5069,7 +5082,10 @@ def planted_basis(*rows, overrides=None):
 
     planted = PlantedPricing(overrides)
     return AmountBasis(
-        user_id=0, scenario_id=0, salary=planted, loans=planted,
+        user_id=0,
+        scenario_id=getattr(rows[0], "scenario_id", 0) if rows else 0,
+        salary=planted,
+        loans=planted,
     )
 
 

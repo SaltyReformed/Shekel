@@ -357,6 +357,13 @@ _FENCED_MODULE_RULINGS = {
         # function is DEFINED.
         "live_override",
         "live_amounts",
+        # The COMPOSITION of the two questions a screen asks -- what a row's
+        # amount resolves to, superseded by a live recompute (plan step
+        # X-au-c2b).  A non-producer on the same ground both of its terms are:
+        # a dict keyed by ROW ID, nothing per account, nothing folded or dated.
+        # It exists because an adversarial review found that composition
+        # written twice and differently across the grid and the fragments.
+        "display_amounts_by_id",
         "contributed_amount",
         "contribution_of",
         "contributions_by_id",

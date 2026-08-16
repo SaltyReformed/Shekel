@@ -147,9 +147,8 @@ def _render_entry_list(
     # posted-purchase indicator -- so every initial render showed already-posted
     # purchases as outstanding while the projection had released them.  A
     # caller that cannot name the keys cannot forget one.
-    view = entry_service.entry_list_view(
-        txn, entries, fragment_budgets(txn)[txn.id],
-    )
+    budgets = fragment_budgets(txn)
+    view = entry_service.entry_list_view(txn, entries, budgets[txn.id])
     return render_template(
         "grid/_transaction_entries.html",
         txn=txn,

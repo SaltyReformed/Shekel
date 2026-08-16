@@ -47,8 +47,8 @@ from app.enums import RoleEnum
 from app.extensions import db
 from app.models.category import Category
 from app.services import companion_service, grid_view_service
-from app.services.balance_at import BalanceContext
-from app.services.cash_ledger import amounts_by_id
+from app.services.cash_ledger import amount_basis, display_amounts_by_id
+from app.services.scenario_resolver import require_baseline_scenario
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError
@@ -124,8 +124,16 @@ def _build_partial_context(
     # these rows are the owner's (plan step X-au-c2b).  One basis for the whole
     # page, and both builders below read the same map, so a card's amount and
     # its progress numerator cannot come from two derivations.
-    budgets = amounts_by_id(
-        transactions, BalanceContext.build(owner_id).amounts(),
+    #
+    # It resolves the SAME scenario ``get_visible_transactions`` scoped its
+    # query to -- the owner's baseline -- which is what makes the pins right
+    # rather than merely present.  Both go through ``require_baseline_scenario``,
+    # so an owner with no baseline meets the application's ONE designed answer
+    # (ruling R-BW) instead of two surfaces disagreeing about whether they can
+    # price anything.
+    budgets = display_amounts_by_id(
+        transactions,
+        amount_basis(owner_id, require_baseline_scenario(owner_id).id),
     )
     entry_sums = build_entry_sums_dict(transactions, budgets)
     # Pre-render context for the inline envelope entries list -- see

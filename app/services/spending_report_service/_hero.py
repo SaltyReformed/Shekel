@@ -18,6 +18,10 @@ from ._types import HeroFigures, Comparison, SeriesPoint
 from ._window import _spent_total
 
 # Number of prior same-type windows averaged for the hero's vs-average chip.
+# It must stay BELOW ``_window._CHART_WINDOW_COUNT`` so this baseline derives
+# from the same series the chart draws -- an invariant that spans two modules
+# since the package split, and is therefore stated at both ends rather than
+# only at the one that happens to be read first.
 _TRAILING_WINDOW_COUNT = 6
 
 

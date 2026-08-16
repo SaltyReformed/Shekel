@@ -151,15 +151,26 @@ def flash_retained_notice(conflict) -> None:
     )
 
 
-def _build_conflict_choices(conflict, model, amount_attr) -> list[ConflictChoice]:
+def _build_conflict_choices(conflict, model, resolve_amount) -> list[ConflictChoice]:
     """Load the conflicted rows and shape them for the chooser.
 
     ``conflict.overridden`` / ``conflict.deleted`` are ids of ``model`` (a
-    Transaction or Transfer); ``amount_attr`` names the row's amount column
-    (``"estimated_amount"`` for transactions, ``"amount"`` for transfers).
+    Transaction or Transfer).
     Rows are returned chronologically (undated last) so the chooser reads
     top-to-bottom in time order.  A vanished id (deleted between the raise
     and this load) is skipped.
+
+    **The "Keep $X" figure is RESOLVED, not read off the amount column** (plan
+    step X-au-c2b, added when an adversarial review found this reader).  It read
+    ``getattr(row, amount_attr)`` -- the very column a derived row does not
+    carry -- and rendered it through ``money()`` on a live screen, so the
+    chooser would have offered "Keep $" with nothing after it at the first
+    per-kind cutover.  The two kinds resolve through their own rule
+    (:func:`~app.services.cash_ledger.resolve_transaction_amount` for a
+    transaction, :func:`~app.services.cash_ledger.resolve_transfer_amount` for a
+    transfer), which is why ``amount_attr`` is gone: the column NAME was only
+    ever a way to spell "ask this kind what it is worth", and the amount model
+    answers that question per kind already.
     """
     choices = []
     for ids, is_deleted_conflict in (
@@ -175,7 +186,7 @@ def _build_conflict_choices(conflict, model, amount_attr) -> list[ConflictChoice
                 row_id=row_id,
                 due_date=row.due_date,
                 period_label=period.label if period else "",
-                your_amount=getattr(row, amount_attr),
+                your_amount=resolve_amount(row),
                 is_deleted_conflict=is_deleted_conflict,
             ))
     choices.sort(key=lambda choice: (choice.due_date is None, choice.due_date or date.min))
@@ -195,8 +206,10 @@ class RecurrenceConflictKind:
     Attributes:
         model: The instance row model (Transaction / Transfer) whose ids the
             conflict carries.
-        amount_attr: The row's amount column name (``"estimated_amount"`` /
-            ``"amount"``).
+        resolve_amount: The kind's amount rule -- a one-argument callable
+            answering what one row's amount RESOLVES to.  It was the row's
+            amount COLUMN NAME until plan step X-au-c2b; a derived row does not
+            carry that column, and the chooser renders the figure as money.
         regenerate_fn: The kind's ``regenerate_for_template(template,
             schedule, scenario_id, effective_from=...)`` callable, where
             ``schedule`` is a
@@ -211,7 +224,7 @@ class RecurrenceConflictKind:
     """
 
     model: Any
-    amount_attr: str
+    resolve_amount: object
     regenerate_fn: Any
     resolve_fn: Any
     update_endpoint: str
@@ -267,7 +280,9 @@ def render_recurrence_conflict_chooser(ctx: ConflictChooserContext, form) -> str
     echo.pop("csrf_token", None)
     return render_template(
         "recurrence_conflict_chooser.html",
-        choices=_build_conflict_choices(ctx.conflict, ctx.kind.model, ctx.kind.amount_attr),
+        choices=_build_conflict_choices(
+            ctx.conflict, ctx.kind.model, ctx.kind.resolve_amount,
+        ),
         template_name=ctx.template_name,
         new_amount=ctx.new_amount,
         effective_from=ctx.effective_from,

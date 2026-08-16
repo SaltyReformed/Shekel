@@ -244,7 +244,7 @@ class Surprises:
 
     Attributes:
         rows: The surprises sorted by ``abs(delta)`` descending and capped at
-            :data:`_MAX_SURPRISES`.
+            :data:`._surprises._MAX_SURPRISES`.
         net: The signed sum of EVERY surprise's delta (not just the capped
             rows) -- the window's net over/under estimate.
     """
@@ -281,7 +281,7 @@ class SpendingReport:
         scope: The account / basis / window page context.
         hero: The hero band (spent, vs-prior, vs-average, payment timing).
         series: The trailing same-type window series, oldest first, with
-            the chosen window last (:data:`_CHART_WINDOW_COUNT` points).
+            the chosen window last (:data:`._window._CHART_WINDOW_COUNT` points).
         breakdown: The 'Where It Went' group rows, amount-descending.
         changes: The By-change lens rows, delta-magnitude-descending.
         surprises: The capped estimate-surprises list and its net.

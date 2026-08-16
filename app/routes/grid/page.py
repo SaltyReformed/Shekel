@@ -30,7 +30,7 @@ from app.services import (
 )
 from app.services.account_resolver import resolve_grid_account
 from app.services.balance_at import BalanceContext
-from app.services.cash_ledger import amounts_by_id
+from app.services.cash_ledger import display_amounts_by_id
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
@@ -449,14 +449,17 @@ def index():
         ctx.account, ctx.balance_ctx, ctx.all_periods,
     )
     grid_view, anchor = _build_grid_view(ctx.account, ctx.balance_ctx)
-    # The ONE map every cell on this page reads its amount from, and the
-    # LIVE-override precedence that map carries is ruling R-Q's: the seam
-    # already priced every still-projected row for its own projection
-    # (``grid_view.amount_overrides``), so a cell and the balance row beside it
-    # answer from the same object rather than from two derivations that agree
-    # by argument.  What the seam did NOT price is every other status -- its
-    # plan is projected-only -- and those rows fall through to what their
-    # amount RESOLVES to.
+    # The ONE map every cell on this page reads its amount from, built by the
+    # ONE rule every OTHER surface reads it by (``display_amounts_by_id``):
+    # what the row's amount resolves to, superseded by a live recompute where
+    # one exists (ruling R-Q).  It composed those two terms inline here until
+    # an adversarial review found the composition written twice and differently
+    # -- the fragments and the companion published the resolved map ALONE under
+    # the same context key, so the grid showed a drifted salary row its live
+    # net and the quick-edit box the same click opened showed the stale column.
+    # It reads the pass's own basis, which is the object the seam's own
+    # override map was built from, so the cell and the balance row beside it
+    # still cannot price one row two ways.
     #
     # **That fall-through was ``txn.estimated_amount`` until plan step
     # X-au-c2b**, annotated onto each row as a transient
@@ -467,8 +470,9 @@ def index():
     # silently, so a render path that forgot to set the attribute showed the
     # stale column with nothing to say it had.  A published MAP is what a
     # template cannot read half of.
-    budgets = amounts_by_id(all_transactions, ctx.balance_ctx.amounts())
-    budgets.update(grid_view.amount_overrides)
+    budgets = display_amounts_by_id(
+        all_transactions, ctx.balance_ctx.amounts(),
+    )
 
     # Load ALL categories (including archived) for row-key building so
     # transactions with archived categories still render correctly;

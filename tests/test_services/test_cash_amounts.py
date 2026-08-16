@@ -741,6 +741,10 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
         # facts.  ``None`` / ``False`` throughout, so neither derivation is
         # reached and the fall-through under test is what runs.
         self.transfer_id = None
+        # The scenario the basis this row is priced against declares.  Zero on
+        # both sides, matching ``planted_basis``'s default: a mismatch is what
+        # ``resolve_transaction_amount`` refuses (plan step X-au-c2b).
+        self.scenario_id = 0
         self.is_override = False
         self.is_income = False
         self.template_id = None

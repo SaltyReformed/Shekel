@@ -348,6 +348,17 @@ def load_shadow_income_contributions_for_accounts(
             Transaction.transfer_id.isnot(None),
             Transaction.transaction_type_id == income_type_id,
             Transaction.pay_period_id.in_(period_ids),
+            # The BASIS's scenario, and closing finding **N-271** is what this
+            # line is (plan step X-au-c2b, after an adversarial review).  The
+            # query scoped by account, transfer, income type, period and soft
+            # delete only, so one batch could straddle scenarios while every
+            # row in it was priced against a single baseline basis.  That was
+            # `$0.00` while every row is OWN and becomes a wrong figure at the
+            # first cutover that makes a contribution shadow derived.  Scoping
+            # the query is the remedy the row named, and it is the one that
+            # keeps this batch's rows and its pricing in agreement by
+            # construction rather than by the caller's care.
+            Transaction.scenario_id == basis.scenario_id,
             Transaction.is_deleted.is_(False),
         )
         .all()

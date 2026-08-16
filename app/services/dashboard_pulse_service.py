@@ -211,8 +211,11 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # both price the SAME rows, and two valuations of one row are how two
     # figures on one screen come to disagree.  Built here rather than per row
     # because the salary producer runs the paycheck engine over the owner's
-    # whole pay-period set (finding **N-228**) -- though on this set it makes
-    # no query at all, every row being an expense.
+    # whole pay-period set (finding **N-228**).  The line that used to sit here
+    # claimed this set "makes no query at all, every row being an expense": the
+    # salary half indeed answers nothing, but the row set carries transfer-out
+    # shadows by design (see the query's own docstring), so the LOAN half is
+    # asked and resolves its config map.
     contributions = cash_ledger.contributions_by_id(
         unpaid_rows, balance_ctx.amounts(),
     )

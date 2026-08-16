@@ -96,7 +96,11 @@ from app.services.row_valuation import (  # pylint: disable=unused-import
 )
 from app.utils.balance_predicates import is_balance_contributing, is_projected
 
-from ._amount_source import AmountBasis, resolve_transaction_amount
+from ._amount_source import (
+    AmountBasis,
+    amounts_by_id,
+    resolve_transaction_amount,
+)
 
 
 @dataclass(frozen=True)
@@ -253,22 +257,23 @@ def live_override(txn, basis: AmountBasis):
     and outranks everything below it, because moving it would change what a
     balance says before the schema change that makes the new answer structural.
 
-    The two maps are merged HERE rather than in the basis: which rule prices a
-    row is a fact about the row, never about which map its id turned up in
-    (ruling R-FI's refuted discriminator).  The loan half still wins a collision,
-    as the flattened ``{**salary_net, **loan_cash}`` it replaced did.  The key
-    sets are disjoint in practice -- salary income rows against loan-payment
-    transfer shadows -- but that rests on a convention rather than a constraint,
-    which is why the precedence is preserved rather than declared impossible.
+    The two halves are asked HERE rather than merged in the basis: which rule
+    prices a row is a fact about the row, never about which map its id turned up
+    in (ruling R-FI's refuted discriminator).
 
-    **It asks each derivation directly since plan step X-au-c2b**, where it
-    used to index a map :func:`live_amounts` had built for a whole row set.  The
-    order is the merge rule and the LOAN half still wins a collision, exactly as
-    the ``{**salary_net, **loan_cash}`` flattening it replaced did.  The two
-    candidate sets are disjoint in practice -- salary income rows against
-    loan-payment transfer shadows -- but that rests on a convention rather than
-    a constraint, which is why the precedence is preserved rather than declared
-    impossible.
+    **It asks each derivation directly since plan step X-au-c2b**, where it used
+    to index a map :func:`live_amounts` had built for a whole row set.  The LOAN
+    half is asked first, preserving the precedence the flattened
+    ``{**salary_net, **loan_cash}`` had -- **and that precedence is now
+    UNREACHABLE, which an adversarial review of this step established.**  The
+    loan half needs a ``transfer_id`` and the salary half a ``template_id``, and
+    ``ck_transactions_one_pricing_link`` admits at most ONE of the three pricing
+    links per row (plan step X-au-c1, measured at 0 violations over 997 rows).
+    So the two candidate sets are disjoint by CONSTRAINT, where the paragraph
+    this replaces said they rested on a convention.  The order is kept because
+    an unreachable branch written in the safe order costs nothing and stating it
+    is how the next reader learns the constraint is what makes it unreachable --
+    but no test can construct the collision, and none pretends to.
 
     Each half answers ``None`` from the row's own columns before it touches its
     derivation, so a row set holding neither kind resolves nothing and issues no
@@ -324,6 +329,48 @@ def live_amounts(basis: AmountBasis, rows) -> dict[int, Decimal]:
         if live is not None:
             answers[txn.id] = live
     return answers
+
+
+def display_amounts_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
+    """Return ``{transaction_id: the figure a SCREEN shows}`` for *rows*.
+
+    **The ONE rule for what a row's amount displays as** (plan step X-au-c2b):
+    what its amount RESOLVES to (:func:`~._amount_source.amounts_by_id`),
+    superseded by a live recompute where one exists (:func:`live_amounts`).
+    Two questions in one answer, and the composition is the answer -- which is
+    why it is a function rather than two lines each caller writes.
+
+    **It exists because an adversarial review found the two lines written
+    twice, differently.**  The grid published the resolved map with the seam's
+    override map laid over it; every HTMX fragment and the companion view
+    published the resolved map ALONE, under the same context key.  So a
+    projected salary row whose profile had moved past its cached column showed
+    the live net on the grid and the stale column in the quick-edit box the same
+    click opened -- and that box is the one a save posts back from.  Three
+    surfaces, three answers, which is finding **N-224**'s shape reproduced by
+    the very step that set out to give a row ONE figure.
+
+    **The override half is TRANSITIONAL and dies with the cutovers.**  Ruling
+    R-FI deletes the read-time repair: once X-au-d and X-au-g declare their rows
+    DERIVED the resolver answers them from the same producers, :func:`live_amounts`
+    finds nothing, and this collapses into :func:`~._amount_source.amounts_by_id`
+    on its own.  Until then a screen must show the repaired figure, because that
+    is what every balance surface already folds (ruling **R-Q**).
+
+    Args:
+        rows: The rows a surface is about to render.
+        basis: The read pass's :class:`~._amount_source.AmountBasis`.
+
+    Returns:
+        ``{transaction_id: Decimal}`` covering every row.
+
+    Raises:
+        AmountUnresolvable: From the resolver, for a row whose rule cannot
+            answer.  A refusal is never a fallback.
+    """
+    displayed = amounts_by_id(rows, basis)
+    displayed.update(live_amounts(basis, rows))
+    return displayed
 
 
 def contributed_amount(txn, resolved: Decimal) -> Decimal:

@@ -139,7 +139,7 @@ def get_current_gross_biweekly(
 
 
 class SalaryPricing:
-    """What the owner's active salary profiles pay, per template and period.
+    """What the owner's active salary profiles pay, resolved per profile ASKED.
 
     **The DERIVATION half of the salary amount rule, split from its per-row
     lookup at plan step X-au-c2b.**  Everything expensive behind a paycheck's
@@ -160,11 +160,24 @@ class SalaryPricing:
     period instead, there is no membership question left to get wrong: the pair
     IS the paycheck's identity.
 
-    **The derivation is LAZY**, so a read pass whose rows hold no paycheck pays
-    nothing: :func:`salary_net_for` answers ``None`` from the row's own columns
-    before it touches :attr:`net_by_template_period`.  That is the "no query
-    when there are no candidates" property the row-set producer had, kept rather
-    than traded away for the sharing.
+    **Laziness is in TWO stages, and an adversarial review of this step's own
+    build is why.**  The first draft resolved one map for every active profile
+    on first read, gated only by ``is_income and template_id is not None`` -- a
+    test that cannot tell a paycheck template from any other recurring income.
+    Both halves of that were a regression against the row-set producer it
+    replaced, which filtered its profile query by the CANDIDATE rows' templates
+    and returned ``{}`` without projecting anything:
+
+      * a recurring *Interest* or *Dividend* income row -- templated, projected,
+        not a paycheck -- forced the whole paycheck engine, where the old path
+        paid one indexed query and stopped; and
+      * an owner with TWO active profiles paid ``project_salary`` twice on a
+        pass whose rows named one of them.
+
+    So the PROFILE LOOKUP is memoized separately from the PROJECTIONS: asking
+    about a template no profile names costs one indexed query and no engine run,
+    and a profile is projected only when a row actually asks about it.  Both
+    memos live for the pass, so the sharing this class exists for is unchanged.
     """
 
     def __init__(self, user_id: int, scenario_id: int) -> None:
@@ -176,20 +189,98 @@ class SalaryPricing:
         """
         self._user_id = user_id
         self._scenario_id = scenario_id
-        self._net: "dict[tuple[int, int], Decimal] | None" = None
+        self._profiles: "dict[int, SalaryProfile] | None" = None
+        self._periods: list | None = None
+        self._net_by_profile: "dict[int, dict[int, Decimal]]" = {}
 
-    @property
-    def net_by_template_period(self) -> dict[tuple[int, int], Decimal]:
-        """``{(template_id, pay_period_id): net pay}``, resolved on first read.
+    def net_for(
+        self, template_id: int, pay_period_id: int,
+    ) -> "Decimal | None":
+        """Return what the profile driving *template_id* pays for that period.
 
-        Covers every period each active profile's projection reaches.  A
-        template named by no active profile in this scenario is absent, and so
-        is a period the projection does not cover -- both are the refusals rule
-        2 raises rather than substituting a stored figure.
+        Args:
+            template_id: The recurring definition the row was generated from.
+            pay_period_id: The period the row is funded in.
+
+        Returns:
+            The live net pay, or ``None`` when no ACTIVE profile in this
+            scenario names that template, or when the profile's projection does
+            not reach that period.  Both are the refusals amount rule 2 raises
+            rather than substituting a stored figure.
         """
-        if self._net is None:
-            self._net = _resolve_salary_net(self._user_id, self._scenario_id)
-        return self._net
+        profile = self._profile_by_template().get(template_id)
+        if profile is None:
+            return None
+        return self._net_by_period(profile).get(pay_period_id)
+
+    def _profile_by_template(self) -> "dict[int, SalaryProfile]":
+        """Return ``{template_id: profile}`` for this owner and scenario.
+
+        One indexed query, memoized -- the CHEAP stage, so a row on a template
+        no profile names is answered without projecting anything.
+
+        **The query is ORDERED, and it was not before.**  Two active profiles
+        naming ONE template in one scenario is expressible (nothing constrains
+        it) and this map keeps the last writer.  Unordered, that was whichever
+        row the planner reached first, so one owner could be priced two ways
+        across two requests; ordering by id makes the collision resolve the same
+        way every time.  The collision itself is finding **N-294**, reported
+        rather than fixed here: which profile SHOULD win is a question for the
+        salary arc, and answering it inside a reader refactor would be an
+        unreviewed ruling.
+
+        Returns:
+            ``{template_id: SalaryProfile}``; empty for an owner with no active
+            profile in this scenario.
+        """
+        if self._profiles is None:
+            profiles = (
+                db.session.query(SalaryProfile)
+                .filter(
+                    SalaryProfile.user_id == self._user_id,
+                    SalaryProfile.scenario_id == self._scenario_id,
+                    SalaryProfile.is_active.is_(True),
+                )
+                .order_by(SalaryProfile.id)
+                .all()
+            )
+            self._profiles = {p.template_id: p for p in profiles}
+        return self._profiles
+
+    def _net_by_period(self, profile) -> dict[int, Decimal]:
+        """Return ``{pay_period_id: net pay}`` for one profile, projecting once.
+
+        The EXPENSIVE stage, memoized per profile.  Runs
+        :func:`paycheck_calculator.project_salary` over the owner's full
+        pay-period set -- required, not an optimisation: the biweekly residue
+        reconciliation anchors against the complete annual figure, exactly as
+        the salary projection page does.  Tax configs resolve PER period year
+        (DH-#30), the same per-year resolution the recurrence engine uses to
+        GENERATE the stored amount, so the live figure and the generated one
+        cannot disagree for want of a bracket set.
+
+        Args:
+            profile: The active :class:`SalaryProfile` to project.
+
+        Returns:
+            ``{pay_period_id: net pay}`` for every period the projection covers.
+        """
+        if profile.id not in self._net_by_profile:
+            if self._periods is None:
+                self._periods = pay_period_service.get_all_periods(
+                    self._user_id,
+                )
+            configs_by_year = load_tax_configs_for_periods(
+                self._user_id, profile, self._periods,
+            )
+            breakdowns = paycheck_calculator.project_salary(
+                profile, self._periods, configs_by_year=configs_by_year,
+                calibration=profile.calibration,
+            )
+            self._net_by_profile[profile.id] = {
+                bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
+            }
+        return self._net_by_profile[profile.id]
 
 
 def salary_pricing(user_id: int, scenario_id: int) -> SalaryPricing:
@@ -197,7 +288,7 @@ def salary_pricing(user_id: int, scenario_id: int) -> SalaryPricing:
 
     The named constructor the amount model calls, so no caller reaches for the
     class directly and the two pins are always supplied together.  Resolves
-    nothing: the projection behind it is lazy, so a pass that prices no paycheck
+    nothing: both stages behind it are lazy, so a pass that prices no paycheck
     issues no query.
 
     Args:
@@ -208,77 +299,6 @@ def salary_pricing(user_id: int, scenario_id: int) -> SalaryPricing:
         The unresolved :class:`SalaryPricing` handle.
     """
     return SalaryPricing(user_id, scenario_id)
-
-
-def _resolve_salary_net(
-    user_id: int, scenario_id: int,
-) -> dict[tuple[int, int], Decimal]:
-    """Resolve what every active salary profile pays, per template and period.
-
-    The owner-and-scenario-scoped derivation behind
-    :func:`salary_net_for` and :func:`live_projected_net`.  Runs
-    :func:`paycheck_calculator.project_salary` once per active profile over the
-    owner's full pay-period set -- required, not an optimisation: the biweekly
-    residue reconciliation anchors against the complete annual figure, exactly as
-    the salary projection page does.  Tax configs resolve PER period year
-    (DH-#30), the same per-year resolution the recurrence engine uses to GENERATE
-    the stored amount, so the live figure and the generated one cannot disagree
-    for want of a bracket set.
-
-    **It loads every active profile rather than only those a caller's rows
-    name**, which is the row-set independence this split exists for.  The
-    figures are identical either way -- ``project_salary`` never reads the
-    caller's rows -- so the only difference is that a second row set in the same
-    read pass now costs nothing.
-
-    **The profile query is ORDERED, and it was not before.**  Two active profiles
-    naming ONE template in one scenario is expressible (nothing constrains it),
-    and the map this builds keeps the last writer.  Unordered, that was whichever
-    row the planner reached first, so one owner could be priced two ways across
-    two requests; ordering by id makes the collision resolve the same way every
-    time.  The collision itself is finding **N-294**, reported rather than fixed
-    here: which profile SHOULD win is a question for the salary arc, and
-    answering it inside a reader refactor would be an unreviewed ruling.
-
-    Args:
-        user_id: The owner whose profiles to resolve; also scopes the
-            pay-period set the projection runs over.
-        scenario_id: The scenario to resolve profiles against -- a profile
-            drives income only within its own scenario.
-
-    Returns:
-        ``{(template_id, pay_period_id): net pay}``.  Empty when the owner has
-        no active profile in the scenario, which costs one indexed query and no
-        projection.
-    """
-    profiles = (
-        db.session.query(SalaryProfile)
-        .filter(
-            SalaryProfile.user_id == user_id,
-            SalaryProfile.scenario_id == scenario_id,
-            SalaryProfile.is_active.is_(True),
-        )
-        .order_by(SalaryProfile.id)
-        .all()
-    )
-    if not profiles:
-        return {}
-
-    all_periods = pay_period_service.get_all_periods(user_id)
-    net_by_template_period: dict[tuple[int, int], Decimal] = {}
-    for profile in profiles:
-        configs_by_year = load_tax_configs_for_periods(
-            user_id, profile, all_periods,
-        )
-        breakdowns = paycheck_calculator.project_salary(
-            profile, all_periods, configs_by_year=configs_by_year,
-            calibration=profile.calibration,
-        )
-        for breakdown in breakdowns:
-            net_by_template_period[
-                (profile.template_id, breakdown.period.period_id)
-            ] = breakdown.earnings.net_pay
-    return net_by_template_period
 
 
 def salary_net_for(txn, pricing: SalaryPricing) -> "Decimal | None":
@@ -311,9 +331,7 @@ def salary_net_for(txn, pricing: SalaryPricing) -> "Decimal | None":
     """
     if not txn.is_income or txn.template_id is None:
         return None
-    return pricing.net_by_template_period.get(
-        (txn.template_id, txn.pay_period_id),
-    )
+    return pricing.net_for(txn.template_id, txn.pay_period_id)
 
 
 def live_projected_net(txn, pricing: SalaryPricing) -> "Decimal | None":

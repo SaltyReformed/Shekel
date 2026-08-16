@@ -17,11 +17,11 @@ from typing import Any
 from flask import render_template
 
 from app.models.transaction import Transaction
-from app.services.cash_ledger import amount_basis, amounts_by_id
+from app.services.cash_ledger import amount_basis, display_amounts_by_id
 from app.services.entry_service import build_entry_sums_dict
 
 
-def fragment_budgets(*rows: Transaction) -> dict[int, Decimal]:
+def fragment_budgets(txn: Transaction) -> dict[int, Decimal]:
     """Return ``{transaction_id: resolved amount}`` for ONE fragment's rows.
 
     The single-row door onto the amount model (plan step X-au-c2b), for the HTMX
@@ -30,27 +30,31 @@ def fragment_budgets(*rows: Transaction) -> dict[int, Decimal]:
     under the amount model a derived row stores nothing in that column and the
     cell would render an empty string where a figure belongs.
 
-    **The pins come off the first row, and that is safe HERE and nowhere else**:
-    a fragment renders rows the request already scoped to one owner and one
-    scenario, so the basis it builds is theirs.  A cross-owner or cross-scenario
-    set would price rows against the wrong salary profile and the wrong loan --
-    which is why the batch surfaces (the grid, the companion view, the pulse)
-    take the READ PASS's basis
-    (:meth:`~app.services.balance_at.BalanceContext.amounts`) instead of calling
-    this, and why this one is named for the fragment it serves.
+    **It answers by the same rule the pages do** --
+    :func:`~app.services.cash_ledger.display_amounts_by_id`, the resolved amount
+    superseded by a live recompute.  An adversarial review found that rule
+    written twice and differently: the grid merged the seam's override map over
+    its resolved one while every fragment published the resolved map ALONE under
+    the same context key, so a drifted salary row showed its live net on the
+    grid and its stale column in the quick-edit box the same click opened -- and
+    that box is what a save posts back from.
+
+    **It takes ONE row, and the signature is the guard.**  It took ``*rows`` and
+    pinned the basis off ``rows[0]``, which needed a paragraph about cross-owner
+    sets to be safe; every fragment renders exactly one row, so taking one row
+    deletes the question rather than documenting it.  A batch surface takes the
+    READ PASS's basis instead
+    (:meth:`~app.services.balance_at.BalanceContext.amounts`).
 
     Args:
-        rows: The rows the fragment renders.  All must belong to one owner and
-            one scenario.
+        txn: The row the fragment renders.
 
     Returns:
-        ``{transaction_id: Decimal}`` covering every row; ``{}`` for none.
+        ``{transaction_id: Decimal}`` -- one entry, keyed for the templates and
+        the entry builders, which all index a map.
     """
-    if not rows:
-        return {}
-    first = rows[0]
-    return amounts_by_id(
-        rows, amount_basis(first.account.user_id, first.scenario_id),
+    return display_amounts_by_id(
+        [txn], amount_basis(txn.account.user_id, txn.scenario_id),
     )
 
 

@@ -505,7 +505,8 @@ def _freshest_amount(txn: Transaction, basis) -> Decimal | None:
             caller that also needs the row's contribution
             (:func:`settle_amount`) pays for ONE basis rather than two -- the
             same build-once-and-thread discipline the fold uses over a whole
-            plan.
+            plan.  It is pinned to the row's OWNER and SCENARIO since plan step
+            X-au-c2b, not built over this one row.
 
     Returns:
         The live amount when one exists and disagrees with the cache, else
