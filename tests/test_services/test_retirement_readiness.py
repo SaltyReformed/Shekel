@@ -30,12 +30,7 @@ from app.services.retirement_gap_calculator import (
     funded_ratio_state,
 )
 from app.services.pension_calculator import PensionBenefit
-from app.services.retirement_plan import (
-    STORED_PLAN,
-    PlanPoint,
-    load_retirement_inputs,
-    picture_at,
-)
+from app.services.retirement_plan import load_retirement_inputs, picture_at
 from app.services.retirement_readiness import (
     _build_countdown,
     _build_income_meter,
@@ -49,7 +44,7 @@ from app.utils.dates import add_months
 from tests._test_helpers import derived_window
 
 
-def _readiness(user_id, point=STORED_PLAN):
+def _readiness(user_id, **whatif):
     """The readiness dict a /retirement render publishes at *point*.
 
     The route's own three steps, in one place: build the render's inputs from
@@ -60,13 +55,15 @@ def _readiness(user_id, point=STORED_PLAN):
 
     Args:
         user_id: The owner to render for.
-        point: The plan point to picture (default: the stored plan).
+        whatif: Any what-if overrides, resolved through ``plan_with`` exactly
+            as the route resolves them.
 
     Returns:
         The readiness dict.
     """
+    inputs = load_retirement_inputs(BalanceContext.build(user_id))
     return retirement_readiness.readiness_from_picture(
-        picture_at(load_retirement_inputs(BalanceContext.build(user_id)), point),
+        picture_at(inputs, inputs.plan_with(**whatif)),
     )
 
 
@@ -480,11 +477,11 @@ class TestComputeReadinessWhatif:
         """
         with app.app_context():
             _build_scenario(db, seed_user)
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
             result = retirement_readiness.compute_readiness_whatif(
-                load_retirement_inputs(
-                    BalanceContext.build(seed_user["user"].id),
-                ),
-                PlanPoint(swr_override=Decimal("0.02")),
+                inputs, inputs.plan_with(swr_override=Decimal("0.02")),
             )
             baseline = result["baseline"]
             override = result["readiness"]
@@ -537,11 +534,11 @@ class TestComputeReadinessWhatif:
             ))
             db.session.commit()
 
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
             result = retirement_readiness.compute_readiness_whatif(
-                load_retirement_inputs(
-                    BalanceContext.build(seed_user["user"].id),
-                ),
-                PlanPoint(merit_horizon_override=0),
+                inputs, inputs.plan_with(merit_horizon_override=0),
             )
             baseline = result["baseline"]
             override = result["readiness"]

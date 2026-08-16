@@ -341,7 +341,7 @@ class TestOneLoadPerRender:
             )
             with counting_calls(_PER_PLAN) as counts:
                 picture = retirement_plan.picture_at(
-                    inputs, retirement_plan.STORED_PLAN,
+                    inputs, inputs.stored_plan,
                 )
                 retirement_readiness.readiness_from_picture(picture)
                 retirement_levers.compute_lever_data(inputs)
@@ -354,7 +354,7 @@ class TestOneLoadPerRender:
         )
         # And the readiness hero's plan is ONE of them, not a private extra:
         # the lever card's month-0 probe is that same object.
-        assert inputs.picture_memo[retirement_plan.STORED_PLAN] is picture
+        assert inputs.picture_memo[inputs.stored_plan] is picture
 
     def test_the_load_counter_sees_a_second_load(
         self, app, db, auth_client, seed_user, seed_periods_today,

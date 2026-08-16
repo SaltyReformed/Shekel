@@ -477,7 +477,6 @@ def resolve_planned_retirement_date(
     return resolve_retirement_date_provenance(pensions, settings)["date"]
 
 
-
 def compute_gap_net_biweekly(
     salary_profiles: list[SalaryProfile],
     planned_retirement_date: date | None,

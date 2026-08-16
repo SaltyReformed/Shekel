@@ -44,7 +44,7 @@ from decimal import Decimal
 from app.services import growth_engine
 from app.services.pay_calendar import PayCadence
 from app.services.retirement_gap_calculator import funded_ratio_for
-from app.services.retirement_plan import STORED_PLAN, picture_at
+from app.services.retirement_plan import picture_at
 from app.utils.money import ZERO, round_money
 
 # Retire-later search cap: the largest month offset the P2b binary search
@@ -54,8 +54,7 @@ _MAX_DELAY_MONTHS = 180
 
 
 def compute_lever_data(
-    inputs, point=STORED_PLAN,
-    contribution_override=None, months_override=None,
+    inputs, point=None, contribution_override=None, months_override=None,
 ):
     """Compute both levers' solved defaults and stepper outcomes (P2a/P2b).
 
@@ -72,12 +71,12 @@ def compute_lever_data(
             :class:`~app.services.retirement_plan.RetirementInputs`, built once
             by the route.
         point: The :class:`~app.services.retirement_plan.PlanPoint` these
-            levers solve FROM -- the assumptions the page is currently showing.
-            Its ``month_offset`` is REPLACED per probe -- the retire-later
-            lever owns that axis -- while the three what-if overrides ride
-            through unchanged, so a lever solved while a slider is held is
-            solved against the picture beside it rather than against the
-            stored one.
+            levers solve FROM -- the assumptions the page is currently showing;
+            ``None`` for the owner's stored plan.  Its ``month_offset`` is
+            REPLACED per probe (the retire-later lever owns that axis) while
+            the assumptions ride through unchanged, so a lever solved while a
+            slider is held is solved against the picture beside it rather than
+            against the stored one.
         contribution_override: Optional Decimal per-period extra
             contribution from the stepper; ``None`` displays the solved
             default.
@@ -91,6 +90,7 @@ def compute_lever_data(
         dicts (see :func:`_contribution_lever` /
         :func:`_retire_later_lever`).
     """
+    point = inputs.stored_plan if point is None else point
     if inputs.base_date is None:
         # No pension date and no settings date: there is no horizon to
         # solve against.  P3 renders this as the page's empty state.  The
@@ -270,10 +270,21 @@ def _contribution_lever(baseline, contribution_override):
         dict with ``state`` (``solved`` / ``already_funded`` /
         ``past_horizon``), ``solved_amount`` (``None`` for
         ``past_horizon`` -- no per-period solution exists), ``amount``
-        (the displayed stepper value; ``None`` only in the unsolvable
-        no-override case), the outcome facts at that amount,
+        (the amount the outcome facts describe: the override when one was
+        submitted, else the solved default), ``entered`` (the OWNER's
+        submitted amount alone, or ``None``), the outcome facts at ``amount``,
         ``headroom_per_period`` (``None`` = unbounded), and
         ``exceeds_headroom``.
+
+        **``entered`` is published apart from ``amount`` because the stepper
+        input may carry only the first** (plan step C2-f2d-4).  A field
+        pre-filled with the solved default is indistinguishable over HTTP from
+        one the owner typed, so the next what-if refresh submits it back as an
+        override and the card states the stale figure in its outcome line
+        while its headline states the newly solved one -- two per-paycheck
+        contributions for one plan, which is the defect this step exists to
+        remove.  The assumptions rail's own "Assumed return" row starts empty
+        for exactly this reason and says so; these steppers now follow it.
     """
     # The annuity factor folds over exactly the window this picture projected
     # over, at exactly the return it grew at -- both read off the picture
@@ -312,6 +323,7 @@ def _contribution_lever(baseline, contribution_override):
         "state": state,
         "solved_amount": solved_amount,
         "amount": amount,
+        "entered": contribution_override,
         # A None amount (past_horizon, no override) evaluates the outcome
         # at $0 extra: with no periods the annuity factor is zero anyway,
         # so the facts are the baseline picture.
@@ -355,11 +367,12 @@ def _retire_later_lever(probe_at, months_override):
 
     Returns:
         dict with ``state`` (``solved`` / ``already_funded`` /
-        ``not_within_cap``), ``solved_months`` (``None`` when
-        unsolvable), ``months`` (the displayed offset, ``None`` only in
-        the unsolvable no-override case), ``retirement_date``, and the
-        funded / required / projected / surplus facts at the displayed
-        offset.
+        ``not_within_cap``), ``solved_months`` (``None`` when unsolvable),
+        ``months`` (the offset the facts below describe), ``entered`` (the
+        OWNER's submitted offset alone, or ``None`` -- see
+        :func:`_contribution_lever` for why the two are published apart),
+        ``retirement_date``, and the funded / required / projected / surplus
+        facts at ``months``.
     """
     if probe_at(0).is_funded:
         state, solved_months = "already_funded", 0
@@ -387,6 +400,7 @@ def _retire_later_lever(probe_at, months_override):
         "state": state,
         "solved_months": solved_months,
         "months": months,
+        "entered": months_override,
         "retirement_date": outcome.retirement_date,
         "funded_ratio": funded_ratio,
         "no_savings_needed": no_savings_needed,

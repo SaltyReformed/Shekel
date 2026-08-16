@@ -7,12 +7,15 @@
  *   1. What-if debounce: edits to ``.js-whatif-input`` fields (SWR /
  *      assumed return / merit horizon) dispatch a debounced
  *      ``shekel:readiness-whatif`` event; edits to ``.js-lever-input``
- *      stepper fields dispatch ``shekel:lever-refresh``.  Two hidden
- *      trigger elements in dashboard.html listen (``from:body``) and
- *      fire ONE readiness GET each with the matching hx-include set --
+ *      stepper fields dispatch ``shekel:lever-refresh``.  ONE hidden
+ *      trigger element in dashboard.html listens for both (``from:body``)
+ *      and fires a readiness GET carrying both include sets --
  *      delegation through body events survives HTMX swaps, where an
  *      ``hx-trigger="input from:.selector"`` binding would die with the
- *      swapped element.
+ *      swapped element.  The two events remain distinct because they are
+ *      debounced separately; they stopped needing separate triggers at
+ *      plan step C2-f2d-4, when the levers began solving against the
+ *      what-if assumptions and therefore needed the same payload.
  *   2. Name mirroring: the SWR row's save field posts
  *      ``safe_withdrawal_rate`` while the readiness what-if GET expects
  *      ``swr``; inputs with ``data-mirror`` copy their value into the
@@ -21,9 +24,10 @@
  *      adjust their number input within its min/max and dispatch an
  *      ``input`` event so the debounce path sees the change (programmatic
  *      value writes fire no events on their own).
- *   4. Post-save coherence: a saved assumption changes the verdict, the
+ *   4. Post-save coherence: a SAVED assumption changes the verdict, the
  *      chart, the income meter, both levers, the account projections,
- *      AND the pension footer -- every figure on the page.  After a
+ *      AND the pension footer -- every figure on the page, including the
+ *      accounts table the fragment response does not carry.  After a
  *      successful (2xx) assumptions-panel swap the page reloads so all
  *      of them re-derive server-side; the 422 path stays inline (field
  *      errors echo in place, no reload).

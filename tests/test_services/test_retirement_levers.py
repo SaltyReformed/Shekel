@@ -11,6 +11,7 @@ which plan step R7a-2a made an explicit input to the headroom division where it
 was a hardcoded 26.
 """
 
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -31,12 +32,7 @@ from app.services.retirement_levers import (
     _contribution_outcome,
     _headroom_per_period,
 )
-from app.services.retirement_plan import (
-    STORED_PLAN,
-    PlanPoint,
-    load_retirement_inputs,
-    picture_at,
-)
+from app.services.retirement_plan import load_retirement_inputs, picture_at
 from app.utils.dates import add_months
 from app.utils.money import round_money
 
@@ -45,6 +41,24 @@ from tests._test_helpers import biweekly_window
 #: 14 days between paydays, 26 a year -- the cadence the seeded scenarios
 #: build and every hand-computed figure here assumes.
 _BIWEEKLY = PayCadence(cadence_days=14)
+
+
+def _delayed(inputs, months):
+    """The picture at the owner's stored plan, delayed *months* whole months.
+
+    What the retire-later lever's own ``probe_at`` does, spelled once here so a
+    case grades the solver rather than a second spelling of its search axis.
+
+    Args:
+        inputs: The render's ``RetirementInputs``.
+        months: The delay in whole months.
+
+    Returns:
+        The ``RetirementPicture`` at that delay.
+    """
+    return picture_at(
+        inputs, replace(inputs.stored_plan, month_offset=months),
+    )
 
 
 # ── Fakes ────────────────────────────────────────────────────────
@@ -378,11 +392,11 @@ class TestComputeLeverData:
             # ``TestOnePicturePerPlan`` below asserts the identity that makes it
             # so -- the check with teeth -- and this stays as the statement of
             # what the page shows.
+            page_inputs = load_retirement_inputs(
+                BalanceContext.build(user_id),
+            )
             readiness = retirement_readiness.readiness_from_picture(
-                picture_at(
-                    load_retirement_inputs(BalanceContext.build(user_id)),
-                    STORED_PLAN,
-                ),
+                picture_at(page_inputs, page_inputs.stored_plan),
             )
             assert baseline["funded_ratio"] == readiness["funded_ratio"]
             assert baseline["required_savings"] == readiness["required_savings"]
@@ -414,12 +428,8 @@ class TestComputeLeverData:
             assert retire_later["months"] == solved_months
             assert retire_later["funded_ratio"] >= Decimal("1")
             inputs = load_retirement_inputs(BalanceContext.build(user_id))
-            assert picture_at(
-                inputs, PlanPoint(month_offset=solved_months),
-            ).is_funded
-            assert not picture_at(
-                inputs, PlanPoint(month_offset=solved_months - 1),
-            ).is_funded
+            assert _delayed(inputs, solved_months).is_funded
+            assert not _delayed(inputs, solved_months - 1).is_funded
             # The displayed date is the stored plan shifted by the offset.
             assert retire_later["retirement_date"] == add_months(
                 inputs.base_date, solved_months,
@@ -457,7 +467,7 @@ class TestComputeLeverData:
 
             retire_later = data["retire_later"]
             assert retire_later["months"] == 24
-            probe_24 = picture_at(inputs, PlanPoint(month_offset=24))
+            probe_24 = _delayed(inputs, 24)
             assert retire_later["funded_ratio"] == probe_24.funded_state[0]
             assert retire_later["retirement_date"] == probe_24.retirement_date
 

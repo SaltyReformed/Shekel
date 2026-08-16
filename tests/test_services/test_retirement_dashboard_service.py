@@ -32,7 +32,6 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
 from app.services.balance_at import BalanceContext
-from app.services.retirement_gap_calculator import funded_ratio_state
 from app.services import (
     account_service,
     balance_at,
@@ -43,15 +42,11 @@ from app.services import (
     retirement_dashboard_service,
     retirement_plan,
 )
-from app.services.retirement_plan import (
-    STORED_PLAN,
-    load_retirement_inputs,
-    picture_at,
-)
+from app.services.retirement_plan import load_retirement_inputs, picture_at
 from tests._test_helpers import make_investment_account, mark_purchase_settled
 
 
-def _picture(user_id, point=STORED_PLAN):
+def _picture(user_id):
     """The retirement picture a /retirement render derives at *point*.
 
     The route's own two steps, in one place: build the render's inputs from its
@@ -61,12 +56,12 @@ def _picture(user_id, point=STORED_PLAN):
 
     Args:
         user_id: The owner to render for.
-        point: The plan point to picture (default: the stored plan).
 
     Returns:
         The :class:`~app.services.retirement_plan.RetirementPicture`.
     """
-    return picture_at(load_retirement_inputs(BalanceContext.build(user_id)), point)
+    inputs = load_retirement_inputs(BalanceContext.build(user_id))
+    return picture_at(inputs, inputs.stored_plan)
 
 
 class TestThePicturesPublishedSurface:
@@ -88,7 +83,7 @@ class TestThePicturesPublishedSurface:
         with app.app_context():
             picture = _picture(seed_user["user"].id)
             # Point-dependent: derived per plan.
-            assert picture.point is STORED_PLAN
+            assert picture.point == picture.inputs.stored_plan
             assert picture.net is not None
             assert picture.pension is not None
             assert picture.axis is not None
@@ -99,7 +94,19 @@ class TestThePicturesPublishedSurface:
             assert picture.safe_withdrawal_rate is (
                 picture.net.safe_withdrawal_rate
             )
-            assert picture.funded_state == funded_ratio_state(picture.net)
+            # NOT asserted against ``funded_ratio_state(picture.net)``: the
+            # property IS that call, so the comparison would be a tautology.
+            # Assert the RELATIONSHIP instead -- the ratio the picture reports
+            # is its own projected over its own required.
+            ratio, no_savings_needed = picture.funded_state
+            if picture.net.required_retirement_savings == Decimal("0"):
+                assert (ratio, no_savings_needed) == (None, True)
+            else:
+                assert no_savings_needed is False
+                assert ratio == (
+                    picture.net.after_tax_projected_savings
+                    / picture.net.required_retirement_savings
+                ).quantize(Decimal("0.0001"))
             # Point-INDEPENDENT: on the inputs, shared by every point.
             assert picture.as_of == picture.inputs.balance_ctx.as_of
             assert picture.pay_cadence is picture.inputs.gap.pay_cadence
@@ -260,7 +267,7 @@ class TestComputeGapNetBiweekly:
         assert result == Decimal("1500.00")
 
 
-class TestComputeSliderDefaults:
+class TestTheDisplayedRates:
     """Tests for the slider default computation.
 
     Post-C-45 (F-100 / F-101): the returned ``current_swr`` and
@@ -856,10 +863,10 @@ class TestSwrResolverConsistency:
                 "(CRIT-04 / F-042)."
             )
 
-    def test_none_swr_uses_default_on_both_surfaces(
+    def test_none_swr_uses_the_documented_default(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """C20-2: ``None`` SWR -> default applies to slider AND gap.
+        """C20-2: a ``None`` SWR falls back to the documented default.
 
         Splices ``safe_withdrawal_rate = None`` (the column is
         nullable; NULL is the documented "use default" sentinel,

@@ -20,6 +20,7 @@ there were two, and the two claims that carries are graded here:
   lines).
 """
 
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -29,9 +30,8 @@ from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import retirement_levers, retirement_readiness
 from app.services.balance_at import BalanceContext
+from app.services import retirement_plan
 from app.services.retirement_plan import (
-    STORED_PLAN,
-    PlanPoint,
     _stored_blend_percent,
     load_retirement_inputs,
     picture_at,
@@ -265,10 +265,9 @@ class TestOnePicturePerPlan:
             inputs = load_retirement_inputs(
                 BalanceContext.build(seed_user["user"].id),
             )
-            assert picture_at(inputs, STORED_PLAN) is picture_at(
-                inputs, STORED_PLAN,
-            )
-            delayed = PlanPoint(month_offset=24)
+            stored = inputs.stored_plan
+            assert picture_at(inputs, stored) is picture_at(inputs, stored)
+            delayed = replace(stored, month_offset=24)
             assert picture_at(inputs, delayed) is picture_at(inputs, delayed)
 
     def test_different_points_are_different_pictures(
@@ -291,14 +290,14 @@ class TestOnePicturePerPlan:
             inputs = load_retirement_inputs(
                 BalanceContext.build(seed_user["user"].id),
             )
-            stored = picture_at(inputs, STORED_PLAN)
+            stored_picture = picture_at(inputs, inputs.stored_plan)
             for varied in (
-                PlanPoint(month_offset=24),
-                PlanPoint(swr_override=Decimal("0.0300")),
-                PlanPoint(return_rate_override=Decimal("0.02000")),
-                PlanPoint(merit_horizon_override=1),
+                replace(inputs.stored_plan, month_offset=24),
+                inputs.plan_with(swr_override=Decimal("0.0300")),
+                inputs.plan_with(return_rate_override=Decimal("0.02000")),
+                inputs.plan_with(merit_horizon_override=1),
             ):
-                assert picture_at(inputs, varied) is not stored
+                assert picture_at(inputs, varied) is not stored_picture
 
     def test_the_lever_baseline_is_the_readiness_picture(
         self, app, db, seed_user, seed_periods_today,
@@ -320,10 +319,27 @@ class TestOnePicturePerPlan:
             inputs = load_retirement_inputs(
                 BalanceContext.build(seed_user["user"].id),
             )
-            page_picture = picture_at(inputs, STORED_PLAN)
+            page_picture = picture_at(inputs, inputs.stored_plan)
             retirement_readiness.readiness_from_picture(page_picture)
-            retirement_levers.compute_lever_data(inputs)
-            assert inputs.picture_memo[STORED_PLAN] is page_picture
+            # COUNT the derivations rather than inspect the memo afterwards.
+            # Reading `inputs.picture_memo[stored] is page_picture` proves
+            # nothing: the line above wrote that entry and `picture_at` never
+            # overwrites a key, so the assertion holds even if the solver
+            # derived its own picture and threw it away (adversarial code
+            # review, 2026-08-16).
+            derived = []
+            real = retirement_plan._derive_picture
+            retirement_plan._derive_picture = (
+                lambda i, pt: derived.append(pt) or real(i, pt)
+            )
+            try:
+                retirement_levers.compute_lever_data(inputs)
+            finally:
+                retirement_plan._derive_picture = real
+            assert inputs.stored_plan not in derived, (
+                "the lever solver derived the stored plan again instead of "
+                "taking the picture the page had already computed"
+            )
 
     def test_a_uniform_return_override_is_the_blend(
         self, app, db, seed_user, seed_periods_today,
@@ -345,10 +361,78 @@ class TestOnePicturePerPlan:
             inputs = load_retirement_inputs(
                 BalanceContext.build(seed_user["user"].id),
             )
-            assert picture_at(inputs, STORED_PLAN).blended_return == Decimal(
-                "0.105",
-            )
+            assert picture_at(
+                inputs, inputs.stored_plan,
+            ).blended_return == Decimal("0.105")
             override = Decimal("0.02000")
             assert picture_at(
-                inputs, PlanPoint(return_rate_override=override),
+                inputs, inputs.plan_with(return_rate_override=override),
             ).blended_return == override
+
+
+class TestTheBatchIsHorizonIndependent:
+    """ONE batch serves every candidate plan -- pinned, not asserted in prose.
+
+    :class:`~app.services.retirement_plan.RetirementInputs` loads the
+    projection batch once and every point re-projects it.  That is safe only
+    because
+    :func:`~app.services.retirement_projection.load_projection_batch` reads
+    none of the context fields a point replaces -- the horizon, the return
+    override, the employer salary basis.  Nothing structural enforces it: the
+    day a horizon-aware prefetch is added to that loader, every plan in a
+    render silently gets the STORED plan's batch and the call-counting
+    architecture gate stays green, because the call count would not change.
+
+    So the property is measured: a batch built at one horizon must project a
+    second horizon to the same figures as a batch built at that second horizon.
+    """
+
+    def test_a_batch_built_at_one_horizon_projects_another_identically(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Same figures whichever horizon the batch was loaded at."""
+        # pylint: disable=import-outside-toplevel
+        from app.services import retirement_projection
+
+        with app.app_context():
+            _seed_plan(
+                db, seed_user,
+                balance=Decimal("100000.00"),
+                annual_return=Decimal("0.10500"),
+            )
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            far = replace(inputs.stored_plan, month_offset=120)
+            far_ctx = replace(
+                inputs.base_ctx,
+                planned_retirement_date=add_months(inputs.base_date, 120),
+                employer_salary_basis=None,
+            )
+            axis = retirement_projection.resolve_projection_axis(far_ctx)
+
+            # The batch the render SHARES, loaded at the stored horizon ...
+            shared = retirement_projection.project_accounts_with_batch(
+                far_ctx, inputs.batch, axis,
+            )
+            # ... against one loaded at the far horizon itself.
+            own = retirement_projection.project_accounts_with_batch(
+                far_ctx,
+                retirement_projection.load_projection_batch(far_ctx),
+                axis,
+            )
+            assert [p["projected_balance"] for p in shared] == [
+                p["projected_balance"] for p in own
+            ], (
+                "load_projection_batch has become horizon-dependent, so the "
+                "one batch a render shares is the STORED plan's and every "
+                "other plan is projected from the wrong inputs"
+            )
+            assert [p["current_balance"] for p in shared] == [
+                p["current_balance"] for p in own
+            ]
+            # And the picture at that far point agrees with the direct walk,
+            # which is the path production actually takes.
+            assert [
+                p["projected_balance"] for p in picture_at(inputs, far).projections
+            ] == [p["projected_balance"] for p in own]

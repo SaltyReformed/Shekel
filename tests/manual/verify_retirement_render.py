@@ -342,7 +342,7 @@ def _figures_after(source):
         picture, failed = inputs, True
     else:
         picture = _guard("picture", lambda: retirement_plan.picture_at(
-            inputs, retirement_plan.STORED_PLAN,
+            inputs, inputs.stored_plan,
         ))
         failed = isinstance(picture, dict) and "RAISED" in picture
     return {
@@ -364,18 +364,57 @@ def _figures_after(source):
         "levers": _plain(_guard("levers", lambda: (
             retirement_levers.compute_lever_data(source())
         ))),
+        # The levers AT THE WHAT-IF, which is what the fragment renders since
+        # plan step C2-f2d-4 and what nothing else in this file captures: a
+        # harness that only ever solved the stored plan would report "nothing
+        # moved" over that step's entire subject.
+        "levers_at_whatif": _plain(_guard("levers_at_whatif", lambda: (
+            _levers_at_whatif(source())
+        ))),
         "whatif_baseline": _plain(_guard("whatif_baseline", lambda: (
             retirement_readiness.compute_readiness_whatif(source())
         ))),
         "whatif_override": _plain(_guard("whatif_override", lambda: (
-            retirement_readiness.compute_readiness_whatif(
-                source(),
-                retirement_plan.PlanPoint(
-                    merit_horizon_override=_MERIT_HORIZON_WHATIF,
-                ),
-            )
+            _whatif_override(source())
         ))),
     }
+
+
+def _whatif_at(inputs):
+    """The merit-horizon what-if point, on whichever tree is in front of us.
+
+    The C2-f2d-2 tree took three keyword overrides; C2-f2d-4 resolves them
+    against the owner's settings through ``plan_with``, so the point is built
+    where the settings are.
+
+    Args:
+        inputs: The render's ``RetirementInputs``.
+
+    Returns:
+        The ``PlanPoint``, or ``None`` on a tree with no ``plan_with``.
+    """
+    builder = getattr(inputs, "plan_with", None)
+    if builder is None:
+        return None
+    return builder(merit_horizon_override=_MERIT_HORIZON_WHATIF)
+
+
+def _whatif_override(inputs):
+    """The readiness what-if, called the way this tree's signature takes it."""
+    point = _whatif_at(inputs)
+    if point is None:
+        return retirement_readiness.compute_readiness_whatif(
+            inputs, retirement_plan.PlanPoint(**_HEAD_WHATIF_KWARGS),
+        )
+    return retirement_readiness.compute_readiness_whatif(inputs, point)
+
+
+def _levers_at_whatif(inputs):
+    """The lever card solved AT the what-if, where the tree supports it."""
+    point = _whatif_at(inputs)
+    if point is None:
+        return {"UNSUPPORTED": "this tree solves the levers at the stored plan"}
+    return retirement_levers.compute_lever_data(inputs, point)
 
 
 def _retirement_figures(user_id, share):
@@ -477,7 +516,7 @@ def _render_page(user_id):
     inputs = retirement_plan.load_retirement_inputs(
         BalanceContext.build(user_id),
     )
-    picture = retirement_plan.picture_at(inputs, retirement_plan.STORED_PLAN)
+    picture = retirement_plan.picture_at(inputs, inputs.stored_plan)
     retirement_readiness.readiness_from_picture(picture)
     retirement_levers.compute_lever_data(inputs)
 
@@ -495,16 +534,17 @@ def _render_fragment(user_id):
         )
         retirement_levers.compute_lever_data(pass_, months_override=12)
         return
+    # THE ROUTE'S OWN SEQUENCE.  Since plan step C2-f2d-4 the fragment solves
+    # the levers AT the what-if point and computes them on every refresh, so a
+    # harness still calling them at the stored plan would measure a render the
+    # app no longer performs -- which is the drift this function exists to
+    # prevent, stated in its own docstring.
     inputs = retirement_plan.load_retirement_inputs(
         BalanceContext.build(user_id),
     )
-    retirement_readiness.compute_readiness_whatif(
-        inputs,
-        retirement_plan.PlanPoint(
-            merit_horizon_override=_MERIT_HORIZON_WHATIF,
-        ),
-    )
-    retirement_levers.compute_lever_data(inputs, months_override=12)
+    point = _whatif_at(inputs)
+    retirement_readiness.compute_readiness_whatif(inputs, point)
+    retirement_levers.compute_lever_data(inputs, point, months_override=12)
 
 
 def _passes_below_route(user_id, render):

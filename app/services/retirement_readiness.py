@@ -8,15 +8,23 @@ after-tax frame so the chart never disagrees with the after-tax verdict
 beside it -- Gate A ruling 2), the countdown facts, and the per-account
 contribution facts.
 
-**It COMPUTES nothing about the plan, since plan step C2-f2d-2.**  Every
-figure below is shaped from one
+**It re-derives no figure the picture already carries, since plan step
+C2-f2d-2.**  Everything below is shaped from one
 :class:`~app.services.retirement_plan.RetirementPicture` -- the page's one
-producer -- so this module holds only display shaping: rounding, meter widths,
-chart downsampling and the pension footer lines.  It used to re-run the gap in
-the net frame from a fourteen-key dict it read by string key across a module
-boundary (``_net_frame``), which was a second call to ``calculate_gap`` over
-inputs the picture already carried; the picture carries the net analysis
-itself now, so there is nothing left here to get wrong.
+producer.  It used to re-run the gap in the net frame from a fourteen-key dict
+it read by string key across a module boundary (``_net_frame``), which was a
+second call to ``calculate_gap`` over inputs that call had already been given;
+the picture carries the net analysis itself now.
+
+**It does still COMPUTE**, and saying otherwise would be an overclaim
+(adversarial design review, 2026-08-16): the "needed path" runs a full
+:func:`~app.services.growth_engine.reverse_project_balance`, the income meter
+derives the monthly withdrawal income at the SWR, the footer nets each
+pension's benefit, and "your path" folds the after-tax portfolio per period.
+What is true is narrower and is the property that matters: every one of those
+reads the picture's own figures, so none of them can disagree with the verdict
+they are rendered beside.  ``_build_needed_path``'s frame note records a known
+approximation in one of them.
 
 Split out of :mod:`app.services.retirement_dashboard_service` (which stayed at
 the 1000-line ceiling before this rebuild) so the readiness feature is one
@@ -29,11 +37,7 @@ No Flask imports.
 from decimal import ROUND_HALF_UP, Decimal
 
 from app.services import growth_engine
-from app.services.retirement_dashboard_service import (
-    resolve_retirement_date_provenance,
-)
 from app.services.retirement_plan import (
-    STORED_PLAN,
     PlanPoint,
     RetirementInputs,
     RetirementPicture,
@@ -113,9 +117,7 @@ def readiness_from_picture(picture: RetirementPicture) -> dict:
         # pension-owned date makes the assumptions rail's date row
         # read-only with provenance (a settings save cannot move the
         # horizon while a pension date exists).
-        "date_provenance": resolve_retirement_date_provenance(
-            picture.inputs.gap.pensions, picture.inputs.gap.settings,
-        ),
+        "date_provenance": picture.inputs.date_provenance,
         "chart": _build_readiness_chart(picture, effective_tax_rate),
         "income_meter": _build_income_meter(net, picture.safe_withdrawal_rate),
         "pension_lines": _build_pension_lines(
@@ -137,7 +139,7 @@ def readiness_from_picture(picture: RetirementPicture) -> dict:
 
 
 def compute_readiness_whatif(
-    inputs: RetirementInputs, point: PlanPoint = STORED_PLAN,
+    inputs: RetirementInputs, point: PlanPoint | None = None,
 ) -> dict:
     """Readiness at the stored settings plus the what-if deltas (P3a).
 
@@ -145,8 +147,12 @@ def compute_readiness_whatif(
     always the baseline; when *point* differs from it the picture is recomputed
     at *point* and the panel's delta facts are derived (:func:`_whatif_deltas`
     -- funded-ratio delta in percentage points, shortfall delta in dollars).
-    At :data:`~app.services.retirement_plan.STORED_PLAN` the displayed state IS
-    the baseline and ``deltas`` is ``None`` (no delta chips render).
+    At the owner's stored plan the displayed state IS the baseline and
+    ``deltas`` is ``None`` (no delta chips render).  **That comparison is by
+    VALUE and it is why the point is resolved**: the merit-horizon input
+    submits the stored value on every request, so a point built from overrides
+    would never equal the baseline and the panel would derive one plan twice
+    and report a delta of zero.
 
     **Both pictures come from ONE loader and ONE producer** (plan step
     C2-f2d-2, and C2-f2d-1 before it for the read pass).  The two computations
@@ -164,7 +170,7 @@ def compute_readiness_whatif(
             :class:`~app.services.retirement_plan.RetirementInputs`, built once
             by the route.
         point: The :class:`~app.services.retirement_plan.PlanPoint` the panel
-            is displaying.  Defaults to the stored plan, in which case the
+            is displaying; ``None`` for the stored plan, in which case the
             baseline is the displayed state and no picture is derived twice --
             the memo answers the second ask.
 
@@ -173,9 +179,9 @@ def compute_readiness_whatif(
         ``baseline`` (always the stored-settings state), and ``deltas``
         (``None`` when *point* is the stored plan).
     """
-    baseline_picture = picture_at(inputs, STORED_PLAN)
-    baseline = readiness_from_picture(baseline_picture)
-    if point == STORED_PLAN:
+    stored = inputs.stored_plan
+    baseline = readiness_from_picture(picture_at(inputs, stored))
+    if point is None or point == stored:
         return {"readiness": baseline, "baseline": baseline, "deltas": None}
     override = readiness_from_picture(picture_at(inputs, point))
     return {

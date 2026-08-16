@@ -7,7 +7,6 @@ and retirement planning settings.
 
 import logging
 from datetime import date
-from decimal import Decimal
 
 from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -37,11 +36,6 @@ from app.services import (
 from app.services.balance_at import BalanceContext
 
 logger = logging.getLogger(__name__)
-
-# Percentage scaler: the blended return is carried as a fraction (the form the
-# annuity factor and the growth engine take) and the assumptions rail formats
-# it as a percent.  One conversion, at the display boundary.
-_PCT_SCALE = Decimal("100")
 
 # Field allowlists for the retirement update routes: which submitted form
 # fields may be written back to each model via setattr.
@@ -111,14 +105,14 @@ def dashboard():
     inputs = retirement_plan.load_retirement_inputs(
         BalanceContext.build(current_user.id),
     )
-    picture = retirement_plan.picture_at(inputs, retirement_plan.STORED_PLAN)
+    picture = retirement_plan.picture_at(inputs, inputs.stored_plan)
     readiness = retirement_readiness.readiness_from_picture(picture)
     return render_template(
         "retirement/dashboard.html",
         # The rail's "Assumed return" row: the rate this page's own projection
         # actually grew at, scaled to the percent the template formats.  It was
         # a third derivation of that rate until plan step C2-f2d-2.
-        current_return=picture.blended_return * _PCT_SCALE,
+        current_return=picture.blended_return * retirement_plan.PCT_SCALE,
         readiness=readiness,
         levers=retirement_levers.compute_lever_data(inputs),
         retirement_account_projections=picture.projections,
@@ -418,10 +412,18 @@ def readiness_fragment():
     query parameters recompute the readiness picture as a what-if against
     the stored-settings baseline and return the panel's delta facts
     (funded-ratio delta in points, shortfall delta in dollars); optional
-    ``months`` / ``contribution`` additionally recompute the lever
-    outcome lines.  All validated through
-    :class:`RetirementReadinessQuerySchema` (bounds -> 422 on garbage).
-    Renders the minimal ``_readiness.html`` stub P3b restyles.
+    ``months`` / ``contribution`` set where the two lever steppers sit.  All
+    validated through :class:`RetirementReadinessQuerySchema` (bounds -> 422
+    on garbage).  Renders the minimal ``_readiness.html`` stub P3b restyles,
+    with the income panel and the lever card as out-of-band siblings so every
+    figure the request moved updates in one round trip.
+
+    **ONE set of assumptions per response, since plan step C2-f2d-4.**  The
+    verdict, the chart, the income meter and both levers are computed at the
+    SAME :class:`~app.services.retirement_plan.PlanPoint`.  The panel's
+    ``baseline`` is deliberately the STORED plan beside them -- stating the
+    delta is its whole product -- and it is the one figure here that is not at
+    *point*.
 
     **One read pass and one LOADER for the fragment** (plan steps C2-f2d-1 and
     C2-f2d-2), built here and shared by the what-if's two pictures and by the
@@ -443,30 +445,34 @@ def readiness_fragment():
     inputs = retirement_plan.load_retirement_inputs(
         BalanceContext.build(current_user.id),
     )
-    point = retirement_plan.PlanPoint(
+    # RESOLVED against the owner's settings, not carried as overrides: the
+    # merit-horizon input is pre-filled with the stored value and so submits it
+    # on every request, and an override that equals the stored value is the
+    # stored plan.  ``plan_with`` is the door that makes those one key.
+    point = inputs.plan_with(
         swr_override=query_data.get("swr"),
         return_rate_override=query_data.get("return_rate"),
         merit_horizon_override=query_data.get("merit_raise_horizon_years"),
     )
     whatif = retirement_readiness.compute_readiness_whatif(inputs, point)
-    lever_data = None
-    if (query_data.get("months") is not None
-            or query_data.get("contribution") is not None):
-        # The levers still solve against the STORED plan, not *point*: the
-        # what-if sliders move the hero above them and not this card.  That
-        # asymmetry is ledger row **P59** and plan step C2-f2d-4's subject; it
-        # is preserved here so this step's numbers are provably unchanged.
-        lever_data = retirement_levers.compute_lever_data(
-            inputs,
-            contribution_override=query_data.get("contribution"),
-            months_override=query_data.get("months"),
-        )
     return render_template(
         "retirement/_readiness.html",
         readiness=whatif["readiness"],
         baseline=whatif["baseline"],
         deltas=whatif["deltas"],
-        levers=lever_data,
+        # SOLVED AGAINST *point*, and computed on EVERY refresh (plan step
+        # C2-f2d-4, ledger row P59).  Both halves of that changed together and
+        # neither works alone: the levers used to ignore the what-if sliders
+        # entirely, so this card stated the stored-settings plan beside a hero
+        # stating the what-if -- two funded ratios on one screen, measured
+        # differently, with no caption saying so.  And they used to be computed
+        # only when a STEPPER moved, so refreshing them on a slider move is
+        # what stops the card going stale in the newly-visible way.
+        levers=retirement_levers.compute_lever_data(
+            inputs, point,
+            contribution_override=query_data.get("contribution"),
+            months_override=query_data.get("months"),
+        ),
     )
 
 

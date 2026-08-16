@@ -3,23 +3,23 @@
 ## Where this stands
 
 **Built:** **C1**, **C2-a**, **C2-b** (both leaves, which also ticked **C5a** and the recurrence
-arc's **R-F10**), **C2-c**, **C2-d**, **C2-e**, **C2-f1**, **C2-f2a**-**C2-f2c**, **C2-f2d-1** and
-**C3** (both leaves) -- section 4 carries each one's commit. What reached `main` and production is a
-MEASUREMENT (`git log --oneline origin/main..dev`, `docker inspect shekel-prod-app`).
+arc's **R-F10**), **C2-c**, **C2-d**, **C2-e**, **C2-f1**, **C2-f2a**-**C2-f2c**, **C2-f2d-1**,
+**C2-f2d-2** and **C3** (both leaves) -- section 4 carries each one's commit. What reached `main`
+and production is a MEASUREMENT (`git log --oneline origin/main..dev`, `docker inspect`).
 
 **Both engines, every forward PROJECTION, the WHOLE balance seam, the GRID and `/investment` read
-the DERIVED calendar.** **C2-f DECOMPOSED into three leaves 2026-08-14** (developer),
-**`C2-f2` into five the same day**, and **`C2-f2d` into three on 2026-08-16**; `C2-f2d-2`,
-`C2-f2d-3`, `C2-f2e` and `C2-f3` carry the **34** `app/` call sites left of the 60 it opened with.
+the DERIVED calendar.** **C2-f DECOMPOSED into three leaves 2026-08-14**,
+**`C2-f2` into five the same day**, **`C2-f2d` into three on 2026-08-16** plus a FOURTH when
+C2-f2d-2 made row **P59** visible; its four open leaves carry the **34** `app/` call sites left of
+the 60 it opened with.
 
-**`/retirement` and `/savings` each run on ONE read pass** since `C2-f2d-1`, and the route is the
-door -- but a pass is not a clock: six bare `date.today()` reads survive on those two pages (row
-**P55**) and eight service modules still open passes of their own (row **P56**). Where a stored
-column disagrees with the derivation every consumer believes the derivation; those shapes are named
-in `recurrence/_occurrence.py` and section 3, all owned by **C4**. **The writer is ONE module**
-(`pay_period_write`), so C4 changes one file plus those readers, and **P33** is open beside the
-forward-only floor. **A cold session starts at section 4**; the shared registries are `ledger.md`,
-`steps.md`, `conventions.md` and `verification.md`.
+**`/retirement` and `/savings` each run on ONE read pass** since `C2-f2d-1`, and `/retirement` loads
+its inputs and derives each plan once since `C2-f2d-2`. A pass is not a clock: six bare
+`date.today()` reads survive there (row **P55**) and eight modules still open their own (**P56**).
+Where a stored column disagrees with the derivation every consumer believes the derivation -- those
+shapes are in `recurrence/_occurrence.py` and section 3, all owned by **C4**, which changes ONE
+writer (`pay_period_write`) plus its readers. **A cold session starts at section 4**; the shared
+registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 
 ## Rulings
 
@@ -302,8 +302,9 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       signatures without moving `/retirement`. Proof: `verify_investment_cutover`'s docstring.
 
 - [ ] **C2-f2d -- `/savings` and `/retirement`** -- the DECOMPOSED parent, split into three leaves
-      2026-08-16 (developer) exactly as its own bullet predicted. Ten modules, **99** downstream
-      `all_periods` / `current_period` references and a type change on two bundle dataclasses in
+      2026-08-16 (developer) exactly as its own bullet predicted, and into a FOURTH when C2-f2d-2
+      made row **P59** visible. Ten modules, **99** downstream `all_periods` / `current_period`
+      references and a type change on two bundle dataclasses in
       `savings_dashboard_service/_types.py` is a multi-session step by `lessons.md`'s own rule. The
       split is the one that bullet named: the read pass first, then `/retirement`, then `/savings`.
       Ticks with its last leaf.
@@ -315,17 +316,19 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       `test_one_read_pass_per_render`, which fails on `dev` at 2 / 2 / 3.
       **A later step must not undo the required parameter** (see the ruling).
 
-- [ ] **C2-f2d-2 -- `/retirement` computes its projection ONCE.** `compute_gap_data` loads the gap
-      inputs and projects every account (89 queries) and `compute_lever_data` independently loads
-      the same inputs, the same batch, and re-projects the same accounts to the same date (92) --
-      identical BY CONSTRUCTION on the default page load, verified agreeing at funded ratio `0.7463`
-      / required `$1,120,707.00` / projected `$836,398.65`, so latent rather than live. `GapInputs`,
-      the account set and the whole `_ProjectionBatch` are override- and date-INDEPENDENT, so the
-      shape is `_ProbeInputs` hoisted to be the PAGE's loader.
-      **They are NOT identical on the fragment path** -- `compute_gap_data` builds its employer
-      salary basis at the possibly-overridden merit horizon while `_load_probe_inputs` uses the
-      stored one -- so the collapse is scoped to the default load and the fragment's divergence is
-      pinned by a test. Closes **P57**; carries **P55**'s `/retirement` half.
+- [x] **C2-f2d-2 -- the retirement picture has ONE producer.** `9e479ca5`. Closed **P57**; opened
+      **P59**, **P60**. `retirement_plan.py` replaced the SECOND implementation of "the picture at a
+      candidate plan": a `PlanPoint` says which plan, a `RetirementInputs` is what a render loads
+      once, and a memoized `picture_at` derives it, so the lever baseline IS the hero's object.
+      Byte-identical -- the rendered HTML matches apart from CSRF nonces; 179 -> 87 queries a
+      render. Proof: `verify_retirement_render`'s docstring, and `TestOneLoadPerRender`.
+
+- [ ] **C2-f2d-4 -- the levers solve at the assumptions the page SHOWS.** The what-if sliders moved
+      the readiness hero and not the lever card beside it, so a page reading "65.3% funded" at a
+      3.5% withdrawal rate told the owner to contribute the amount that closes the gap at 4%
+      (`$174.76` where `$273.17` closes it). Both figures correct, answers to different questions,
+      presented as one plan. **MOVES DISPLAYED MONEY.** Ruled by the developer 2026-08-16 when
+      C2-f2d-2's collapse made the asymmetry expressible. Closes **P59**.
 
 - [ ] **C2-f2d-3 -- `/savings`'s readers and its four signatures.** The `all_periods` /
       `current_period` cutover for `savings_dashboard_service`, whose two bundle dataclasses change
