@@ -63,18 +63,33 @@ class _RetirementProjectionContext:  # pylint: disable=too-many-instance-attribu
     parameter instead of eight.  All fields are inputs (no derived
     state); the once-loaded batch data lives in :class:`_ProjectionBatch`.
 
+    **The read pass is the FIRST of those inputs, and it replaced the bare
+    ``user_id`` this bundle used to carry** (plan step C2-f2d-1, ledger row
+    **P43**; what the two-pass render cost is stated once, in
+    ``tests/test_arch/test_one_read_pass_per_render.py``).  A producer holding
+    an id could build its own
+    :class:`~app.services.balance_at.BalanceContext`, and this module did.
+    Carrying the pass rather than the id also removes the id as a second
+    spelling of the owner: it is ``balance_ctx.user_id`` everywhere, so a caller
+    cannot hand this bundle a pass for one owner while its queries scope to
+    another.
+
     Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because
     this is a cohesive read-only input bundle whose whole purpose is to
     collapse eight independent projection inputs into one parameter (the
     alternative is threading all eight through every projection helper).
-    Every field is a distinct input -- identity, the account set, the two
+    Every field is a distinct input -- the read pass, the account set, the two
     parts of the period calendar, the horizon, the pre-tax type set, the
     slider override, and the P1b employer-base resolver -- so splitting the
     bundle would fragment one concept for no design gain, mirroring the
     ``growth_engine.ProjectedBalance`` value-record precedent.
 
     Attributes:
-        user_id: The authenticated user's ID.
+        balance_ctx: The read pass this projection runs in -- the owner, the
+            baseline scenario, the pinned ``as_of``, and the memos that resolve
+            each loan and derive the pay calendar exactly ONCE for the whole
+            render.  Supplied by the caller (ultimately by the route); this
+            module builds none, which is what keeps a render to one pass.
         accounts: The active retirement / investment accounts to project.
         all_periods: Every pay period for the user.
         current_period: The current pay period, or ``None``.
@@ -93,7 +108,7 @@ class _RetirementProjectionContext:  # pylint: disable=too-many-instance-attribu
             salary profile or no horizon (constant-base fallback).
     """
 
-    user_id: int
+    balance_ctx: BalanceContext
     accounts: list[Account]
     all_periods: list[PayPeriod]
     current_period: PayPeriod | None
@@ -134,15 +149,17 @@ class _ProjectionBatch:
             with the /savings net-worth tile and the /investment dashboard
             (an account anchored in the past shows its modeled market
             value, not the flat cash-basis contribution total).
-        balance_ctx: The read pass's
-            :class:`~app.services.balance_at.BalanceContext`.  It is HERE
-            rather than rebuilt per projection because it memoizes each loan's
-            resolution and each account's walk for the pass, and the P2b
-            retire-later probes call :func:`project_accounts_with_batch` once
-            per candidate horizon: rebuilding it there would throw those memos
-            away on every probe.  It is date-independent in the sense this
-            bundle means -- its ``as_of`` is the request's today, which no
-            candidate horizon changes.
+
+    **The READ PASS is deliberately not here, since plan step C2-f2d-1.**  It
+    was, on the ground that rebuilding it per probe would throw the
+    loan-resolution memos away -- which is true, and which needs no field here
+    to satisfy: the pass is an INPUT, so it rides on the input bundle
+    (:class:`_RetirementProjectionContext`) that every function taking this one
+    already takes beside it, and the P2b probes reuse ``ctx`` exactly as they
+    reuse this batch.  Holding it in both places would be one fact under two
+    keys, which is the shape ruling R-AZ deletes -- and the two could not even
+    be checked against each other, because a batch built for one pass is
+    indistinguishable from a batch built for another.
 
     **The forward projection's SEED is deliberately NOT here** (plan step
     X-g2b, rulings R-AB / R-AE).  It is read the day BEFORE the projection
@@ -158,8 +175,11 @@ class _ProjectionBatch:
     params_by_account: dict[int, InvestmentParams]
     salary_gross_biweekly: Decimal
     balance_map: dict[int, Decimal]
-    balance_ctx: BalanceContext
-    seed_memo: "dict[tuple[date, tuple[int, ...]], dict[int, Decimal]]" = (
+    seed_memo: (
+        "dict["
+        "tuple[date, tuple[int, ...], int, int | None, date], "
+        "dict[int, Decimal]]"
+    ) = (
         field(default_factory=dict, repr=False, compare=False)
     )
 
@@ -254,7 +274,7 @@ def build_employer_salary_basis(
 
 
 def build_projection_context(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    user_id: int,
+    balance_ctx: BalanceContext,
     all_periods: list[PayPeriod],
     current_period: PayPeriod | None,
     planned_retirement_date: date | None,
@@ -263,14 +283,20 @@ def build_projection_context(  # pylint: disable=too-many-arguments,too-many-pos
 ) -> _RetirementProjectionContext:
     """Load the retirement accounts and assemble the projection context.
 
-    Queries the user's active retirement / investment accounts and the
+    Queries the pass owner's active retirement / investment accounts and the
     pre-tax (traditional) account-type IDs, then bundles them with the
     pay-period and horizon inputs into the read-only context the
     projection helpers consume.
 
+    **The owner comes off the read pass** (plan step C2-f2d-1).  This took a
+    bare ``user_id`` and the module then built its own pass from it, which is
+    how ``/retirement`` came to hold two; taking the pass instead means the
+    owner is stated once for the whole projection and a caller cannot pair one
+    owner's pass with another's account query.
+
     Pylint: ``too-many-arguments`` (6/5) / ``too-many-positional-arguments``
     (6/5) -- suppressed because these six are heterogeneous, independently
-    varying projection inputs (identity, the period calendar's two parts,
+    varying projection inputs (the read pass, the period calendar's two parts,
     the horizon, the slider override, the employer-base resolver), not a
     cohesive concept.  Bundling the period calendar back into a ``_CurrentPay``
     snapshot here would reintroduce a cross-module import cycle with
@@ -278,7 +304,9 @@ def build_projection_context(  # pylint: disable=too-many-arguments,too-many-pos
     two period fields directly keeps this module a projection leaf.
 
     Args:
-        user_id: The authenticated user's ID.
+        balance_ctx: The read pass this projection runs in -- its ``user_id``
+            scopes the account query, and every producer below shares its
+            scenario, its clock and its memos.
         all_periods: Every pay period for the user.
         current_period: The current pay period, or ``None``.
         planned_retirement_date: The projection horizon, or ``None``.
@@ -301,14 +329,14 @@ def build_projection_context(  # pylint: disable=too-many-arguments,too-many-pos
     accounts = (
         db.session.query(Account)
         .filter(
-            Account.user_id == user_id,
+            Account.user_id == balance_ctx.user_id,
             Account.account_type_id.in_(retirement_type_ids),
             Account.is_active.is_(True),
         )
         .all()
     )
     return _RetirementProjectionContext(
-        user_id=user_id,
+        balance_ctx=balance_ctx,
         accounts=accounts,
         all_periods=all_periods,
         current_period=current_period,
@@ -372,11 +400,11 @@ def project_retirement_accounts(
         together with the axis and the clock they were computed against.
     """
     batch = load_projection_batch(ctx)
-    axis = resolve_projection_axis(ctx, batch.balance_ctx)
+    axis = resolve_projection_axis(ctx)
     return HorizonProjection(
         projections=project_accounts_with_batch(ctx, batch, axis),
         axis=axis,
-        as_of=batch.balance_ctx.as_of,
+        as_of=ctx.balance_ctx.as_of,
     )
 
 
@@ -411,7 +439,7 @@ def project_accounts_with_batch(
 
 
 def resolve_projection_axis(
-    ctx: _RetirementProjectionContext, balance_ctx: BalanceContext,
+    ctx: _RetirementProjectionContext,
 ) -> PeriodWindow:
     """Resolve the period axis this context's projection runs over.
 
@@ -435,13 +463,14 @@ def resolve_projection_axis(
     ``date.today()`` called here, while the seed each account projects from is
     read at this axis's own opening day -- so a pass that crossed midnight
     between the two reads valued the seed against a window that had moved.
-    ``balance_ctx.as_of`` is the one clock for the whole pass.
+    ``ctx.balance_ctx.as_of`` is the one clock for the whole pass, and since
+    plan step C2-f2d-1 the pass arrives on ``ctx`` rather than as a second
+    parameter this function could be handed a different one through.
 
     Args:
-        ctx: The read-only projection context.
-        balance_ctx: The read pass's :class:`BalanceContext` -- its ``as_of``
-            opens the window and its memoized calendar supplies the paydays,
-            so no query is issued here.
+        ctx: The read-only projection context.  Its ``balance_ctx`` is the
+            read pass: that pass's ``as_of`` opens the window and its memoized
+            calendar supplies the paydays, so no query is issued here.
 
     Returns:
         The :class:`~app.services.pay_calendar.PeriodWindow` to project over.
@@ -450,7 +479,7 @@ def resolve_projection_axis(
         the past, which the lever page reports as its ``past_horizon`` state
         rather than solving for.
     """
-    calendar = balance_ctx.calendar()
+    calendar = ctx.balance_ctx.calendar()
     last_day = (
         ctx.planned_retirement_date
         if ctx.planned_retirement_date
@@ -464,9 +493,9 @@ def resolve_projection_axis(
     # code review, 2026-08-14, caught it being folded into the empty answer),
     # and folding a caller's defect into a legitimate empty answer is the hole
     # ``overlapping`` refuses to leave open one level down.
-    if last_day is None or last_day < balance_ctx.as_of:
+    if last_day is None or last_day < ctx.balance_ctx.as_of:
         return PeriodWindow(periods=())
-    return calendar.projection_axis(balance_ctx.as_of, last_day)
+    return calendar.projection_axis(ctx.balance_ctx.as_of, last_day)
 
 
 def load_projection_batch(
@@ -480,12 +509,23 @@ def load_projection_batch(
     I/O.  Everything loaded here is date-independent, so the P2b probes
     reuse one batch across every candidate retirement date.
 
+    **It opens no read pass, since plan step C2-f2d-1** (ledger row **P43**).
+    This function called ``BalanceContext.build`` -- a LEAF manufacturing the
+    object that is supposed to be pinned once at the door -- which is what put
+    a second pass, with a second reading of the clock, inside every
+    ``/retirement`` and ``/savings`` render.  The pass now arrives on ``ctx``
+    and there is no default to fall through to, so a second one cannot be
+    opened here by omission.
+
     Args:
-        ctx: The read-only projection context.
+        ctx: The read-only projection context, carrying the read pass whose
+            scenario scopes the contribution pricing and whose memos the
+            balance read shares.
 
     Returns:
         A :class:`_ProjectionBatch` with all shared inputs.
     """
+    user_id = ctx.balance_ctx.user_id
     account_ids = [a.id for a in ctx.accounts]
     period_ids = [p.id for p in ctx.all_periods]
 
@@ -493,15 +533,14 @@ def load_projection_batch(
     # duplicate that previously lived inline here and in
     # savings_dashboard_service / year_end_summary_service.
     deductions_by_account = load_active_deductions_for_accounts(
-        ctx.user_id, account_ids,
+        user_id, account_ids,
     )
-    # Resolved BEFORE the contributions rather than beside the balance read
-    # below, because pricing a contribution needs the scenario its amount
-    # resolves under (plan step X-au-c2).  One baseline scenario for the whole
-    # pass either way -- this only moves where it is asked for.
-    balance_ctx = BalanceContext.build(ctx.user_id)
+    # Pricing a contribution needs the scenario its amount resolves under
+    # (plan step X-au-c2), and that scenario is the PASS's -- resolved once at
+    # the door and shared by every producer in the render, rather than looked
+    # up again here as it was until plan step C2-f2d-1.
     contributions = load_shadow_income_contributions_for_accounts(
-        ctx.user_id, balance_ctx.scenario_id, account_ids, period_ids,
+        user_id, ctx.balance_ctx.scenario_id, account_ids, period_ids,
     )
 
     # One IN query for the params rows (P2: replaces the per-account
@@ -520,28 +559,27 @@ def load_projection_batch(
     # off-engine ``annual_salary / pay_periods_per_year`` recompute that
     # dropped any applicable SalaryRaise); feeds the employer-match cap.
     salary_gross_biweekly = income_service.get_current_gross_biweekly(
-        ctx.user_id,
+        user_id,
     )
 
     # The displayed per-account balance is the model-from-anchor value at the
     # current period's end (so it agrees with /savings and the /investment
     # dashboard).  The forward projection seeds from the same curve, read a day
     # before its own AXIS opens, which is why the seed is not a field of this
-    # bundle -- see :class:`_ProjectionBatch`.  Both read the one baseline
-    # scenario, resolved once above and shared for the whole pass.
-    balance_map = _resolve_displayed_balances(ctx, balance_ctx)
+    # bundle -- see :class:`_ProjectionBatch`.  Both read the pass's one
+    # baseline scenario.
+    balance_map = _resolve_displayed_balances(ctx)
     return _ProjectionBatch(
         deductions_by_account=deductions_by_account,
         contributions=contributions,
         params_by_account=params_by_account,
         salary_gross_biweekly=salary_gross_biweekly,
         balance_map=balance_map,
-        balance_ctx=balance_ctx,
     )
 
 
 def _resolve_displayed_balances(
-    ctx: _RetirementProjectionContext, balance_ctx: BalanceContext,
+    ctx: _RetirementProjectionContext,
 ) -> dict[int, Decimal]:
     """Resolve each account's DISPLAYED current balance.
 
@@ -562,9 +600,8 @@ def _resolve_displayed_balances(
     to its anchor balance in :func:`_project_one_account`).
 
     Args:
-        ctx: The read-only projection context.
-        balance_ctx: The read pass's
-            :class:`~app.services.balance_at.BalanceContext`.
+        ctx: The read-only projection context, carrying the read pass this
+            reads the seam through.
 
     Returns:
         ``{account_id: displayed balance}``; empty with no pay periods, in
@@ -577,8 +614,7 @@ def _resolve_displayed_balances(
         return {}
     return _pick_current_period_balances(
         ctx,
-        balance_ctx,
-        balance_at.build_maps(ctx.accounts, balance_ctx),
+        balance_at.build_maps(ctx.accounts, ctx.balance_ctx),
     )
 
 
@@ -612,19 +648,34 @@ def _resolve_seed_balances(
     ``$0.00`` on both real databases -- all three investment accounts hold zero
     transaction rows (ruling R-R's measurement).
 
-    **Memoized on the batch by (SEED DATE, account set).**  The P2b retire-later probes call
-    :func:`project_accounts_with_batch` once per candidate horizon and every one
-    of those axes opens on the same payday -- the one covering the pass's
-    ``as_of`` -- so without the memo each account is re-folded
-    once per probe: measured when this was written, the /retirement lever page
-    went 377 ms -> 682 ms without it.  The key is the DATE rather than a flag,
-    so an axis that genuinely opens somewhere else still gets its own seed.
+    **Memoized on the batch by (SEED DATE, account set, READ PASS).**  The P2b
+    retire-later probes call :func:`project_accounts_with_batch` once per
+    candidate horizon and every one of those axes opens on the same payday --
+    the one covering the pass's ``as_of`` -- so without the memo each account is
+    re-folded once per probe: measured when this was written, the /retirement
+    lever page went 377 ms -> 682 ms without it.  The date is a DATE rather than
+    a flag, so an axis that genuinely opens somewhere else still gets its own
+    seed.
+
+    **Every term of that key is a term of the VALUE**, and the third was added
+    at plan step C2-f2d-1 when the pass moved off this batch onto ``ctx``.
+    Before that move the seed was folded through ``batch.balance_ctx`` -- a
+    field of the very object holding the cache, so key and value could not
+    disagree by construction.  The pass now arrives SEPARATELY, and
+    :func:`balance_at.balance_at` is a function of it: its scenario scopes the
+    row set and its ``as_of`` clamps every still-projected row forward (ruling
+    R-G, ``_cash_fold.assemble``).  A batch shared across two passes would
+    otherwise hand the second one the first one's seeds, silently.  Keyed on the
+    pass's VALUES rather than its identity, so two passes pinned alike share a
+    seed -- which is the answer being memoized.  The account-set term is here
+    for the identical reason and its comment below states it; that one was
+    widened before it was reachable too.
 
     Args:
-        ctx: The read-only projection context.
-        batch: The per-request bundle -- its ``balance_ctx`` scopes the read and
-            memoizes the pass's loan resolutions, its ``seed_memo`` holds one
-            map per distinct seed date.
+        ctx: The read-only projection context -- its ``balance_ctx`` scopes the
+            read and memoizes the pass's loan resolutions.
+        batch: The per-request bundle; its ``seed_memo`` holds one map per
+            distinct (seed date, account set, pass).
         projection_periods: The axis about to be projected.  Its FIRST period's
             ``start_date`` is when the window opens.
 
@@ -642,10 +693,16 @@ def _resolve_seed_balances(
     # every account the second set added.  Not reachable in-tree today (the P2b
     # probes rebuild the context with ``replace``, which preserves ``accounts``)
     # -- which is exactly why the key is widened rather than the invariant
-    # documented.
+    # documented.  The PASS term joins it on that same rule: the next leaf
+    # shares one batch between two producers, which is where a second pass
+    # first becomes expressible.
+    seed_date = projection_periods[0].start_date - timedelta(days=1)
     key = (
-        projection_periods[0].start_date - timedelta(days=1),
+        seed_date,
         tuple(acct.id for acct in ctx.accounts),
+        ctx.balance_ctx.user_id,
+        ctx.balance_ctx.scenario_id_or_none,
+        ctx.balance_ctx.as_of,
     )
     if key not in batch.seed_memo:
         # TOTAL over ``ctx.accounts``.  It used to skip an account with
@@ -654,7 +711,7 @@ def _resolve_seed_balances(
         # X-f1c3a), so the filter admitted nothing and only made the map look
         # partial to its consumers.
         batch.seed_memo[key] = {
-            acct.id: balance_at.balance_at(acct, batch.balance_ctx, key[0])
+            acct.id: balance_at.balance_at(acct, ctx.balance_ctx, seed_date)
             for acct in ctx.accounts
         }
     return batch.seed_memo[key]
@@ -662,7 +719,6 @@ def _resolve_seed_balances(
 
 def _pick_current_period_balances(
     ctx: _RetirementProjectionContext,
-    balance_ctx: BalanceContext,
     maps_by_account: dict[int, dict[int, Decimal]],
 ) -> dict[int, Decimal]:
     """Pick each account's current-period balance from its per-period map.
@@ -684,9 +740,7 @@ def _pick_current_period_balances(
     and the period was only ever a way of supplying one.
 
     Args:
-        ctx: The read-only projection context.
-        balance_ctx: The read pass's
-            :class:`~app.services.balance_at.BalanceContext` -- its ``as_of`` is
+        ctx: The read-only projection context -- its ``balance_ctx.as_of`` is
             the valuation date when no period contains today.
         maps_by_account: ``{account_id: period_id -> Decimal}``, total over
             ``ctx.accounts``.
@@ -696,7 +750,9 @@ def _pick_current_period_balances(
     """
     if ctx.current_period is None:
         return {
-            acct.id: balance_at.balance_at(acct, balance_ctx, balance_ctx.as_of)
+            acct.id: balance_at.balance_at(
+                acct, ctx.balance_ctx, ctx.balance_ctx.as_of,
+            )
             for acct in ctx.accounts
         }
     return {

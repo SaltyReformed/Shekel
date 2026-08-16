@@ -192,7 +192,9 @@ def _gap(user_id):
     reader inferring the cause.
     """
     def build():
-        data = retirement_dashboard_service.compute_gap_data(user_id)
+        data = retirement_dashboard_service.compute_gap_data(
+            BalanceContext.build(user_id),
+        )
         axis = data.get("projection_axis")
         return {
             # Absent on the HEAD side -- the key is new here.  Its absence in
@@ -245,14 +247,18 @@ def _readiness(user_id):
     """The readiness verdict, its two chart series and its countdown."""
     return _plain(_guard(
         "readiness",
-        lambda: retirement_readiness.compute_readiness_data(user_id),
+        lambda: retirement_readiness.compute_readiness_data(
+            BalanceContext.build(user_id),
+        ),
     ))
 
 
 def _levers(user_id):
     """Both lever solvers -- the contribution annuity and the retire-later bisect."""
     return _plain(_guard(
-        "levers", lambda: retirement_levers.compute_lever_data(user_id),
+        "levers", lambda: retirement_levers.compute_lever_data(
+            BalanceContext.build(user_id),
+        ),
     ))
 
 

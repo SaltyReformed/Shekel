@@ -4073,7 +4073,7 @@ class TestNetWorthHorizon:
                 balance_ctx=BalanceContext.build(seed_user["user"].id),
                 all_periods=[], current_period=None,
             )
-            assert build_horizon(seed_user["user"].id, core, []) is None
+            assert build_horizon(core, []) is None
 
     def test_the_narrow_producers_do_not_need_a_cadence_they_never_use(
         self, app, db, bare_user,
@@ -4446,7 +4446,8 @@ class TestNetWorthHorizon:
             # The domain end is the last annual sample (plan step X-q2 deleted
             # the second key that restated it).
             ctx = retirement_projection.build_projection_context(
-                uid, all_periods, current, horizon["dates"][-1], None, None,
+                BalanceContext.build(uid), all_periods, current,
+                horizon["dates"][-1], None, None,
             )
             projected = retirement_projection.project_retirement_accounts(ctx)
             expected = sum(

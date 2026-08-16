@@ -9,8 +9,8 @@ and assembles the results into template-ready data structures.
 Extracted from the route handler (L-06) so the route contains only
 Flask request handling and template rendering.
 
-All functions accept plain data (user_id, optional overrides) and
-return plain dicts.  No Flask imports.
+All functions accept plain data (the render's read pass, optional
+overrides) and return plain dicts.  No Flask imports.
 """
 
 from dataclasses import dataclass, field
@@ -178,11 +178,17 @@ class GapInputs:
     pay_cadence: PayCadence
 
 
-def load_gap_inputs(user_id):
+def load_gap_inputs(balance_ctx):
     """Load the gap analysis's per-request inputs in one place.
 
+    **The owner comes off the READ PASS** (plan step C2-f2d-1): the caller
+    holds one for the whole render, and taking a bare ``user_id`` beside it is
+    what let this producer and the lever solver each open a pass of their own.
+
     Args:
-        user_id: The user's integer ID.
+        balance_ctx: The render's
+            :class:`~app.services.balance_at.BalanceContext` -- the owner, the
+            baseline scenario and the day, pinned once by the route.
 
     Returns:
         A :class:`GapInputs` bundle (settings, active pensions, active
@@ -196,6 +202,7 @@ def load_gap_inputs(user_id):
             month, so there is no honest figure without it (plan step
             R7a-2a; see :func:`app.services.pay_calendar.cadence_for`).
     """
+    user_id = balance_ctx.user_id
     settings = (
         db.session.query(UserSettings).filter_by(user_id=user_id).first()
     )
@@ -280,7 +287,7 @@ def _resolve_merit_horizon(settings):
 
 
 def compute_gap_data(
-    user_id,
+    balance_ctx,
     swr_override=None,
     return_rate_override=None,
     merit_horizon_override=None,
@@ -291,8 +298,20 @@ def compute_gap_data(
     accounts, then projects balances forward to the planned retirement
     date and computes the income gap via retirement_gap_calculator.
 
+    **It runs in the caller's READ PASS and opens none of its own** (plan step
+    C2-f2d-1, ledger row **P43**).  It took a ``user_id`` and the projection
+    below it built a :class:`~app.services.balance_at.BalanceContext` from that
+    id, while ``retirement_levers.compute_lever_data`` -- which the
+    ``/retirement`` route calls in the SAME request -- built a second one, so
+    two cards on one screen could be computed against two days.  What that cost
+    is stated ONCE, in
+    ``tests/test_arch/test_one_read_pass_per_render.py``'s module docstring,
+    which is also the gate for it.
+
     Args:
-        user_id: The user's integer ID.
+        balance_ctx: The render's
+            :class:`~app.services.balance_at.BalanceContext`, pinned once by
+            the route and shared with every other producer on the page.
         swr_override: Optional Decimal safe withdrawal rate from slider.
         return_rate_override: Optional Decimal annual return rate from slider.
         merit_horizon_override: Optional int merit-raise horizon (years)
@@ -316,7 +335,7 @@ def compute_gap_data(
         PayCalendarError: The owner has no resolvable pay cadence; see
             :func:`load_gap_inputs`.
     """
-    inputs = load_gap_inputs(user_id)
+    inputs = load_gap_inputs(balance_ctx)
     salary_profiles = inputs.salary_profiles
     pay = inputs.pay
     merit_horizon = (
@@ -339,7 +358,7 @@ def compute_gap_data(
     # local-variable budget.
     projected = project_retirement_accounts(
         build_projection_context(
-            user_id,
+            balance_ctx,
             pay.all_periods,
             pay.current_period,
             planned_retirement_date,

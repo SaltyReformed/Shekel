@@ -148,11 +148,23 @@ class _ProbeResult:
     axis: PeriodWindow
 
 
-def compute_lever_data(user_id, contribution_override=None, months_override=None):
+def compute_lever_data(
+    balance_ctx, contribution_override=None, months_override=None,
+):
     """Compute both levers' solved defaults and stepper outcomes (P2a/P2b).
 
+    **It runs in the caller's READ PASS** (plan step C2-f2d-1, ledger row
+    **P43**).  The ``/retirement`` route renders this beside
+    ``retirement_dashboard_service.compute_gap_data``, and each used to open a
+    pass of its own, so the verdict card and the lever card below it could be
+    computed against different days.  What that cost, and what sharing the pass
+    does and does not fix, is stated once in
+    ``tests/test_arch/test_one_read_pass_per_render.py``.
+
     Args:
-        user_id: The user's integer ID.
+        balance_ctx: The render's
+            :class:`~app.services.balance_at.BalanceContext`, pinned once by
+            the route.
         contribution_override: Optional Decimal per-period extra
             contribution from the stepper; ``None`` displays the solved
             default.
@@ -166,7 +178,7 @@ def compute_lever_data(user_id, contribution_override=None, months_override=None
         dicts (see :func:`_contribution_lever` /
         :func:`_retire_later_lever`).
     """
-    inputs = _load_probe_inputs(user_id)
+    inputs = _load_probe_inputs(balance_ctx)
     if inputs.base_date is None:
         # No pension date and no settings date: there is no horizon to
         # solve against.  P3 renders this as the page's empty state.
@@ -204,21 +216,27 @@ def compute_lever_data(user_id, contribution_override=None, months_override=None
 # ── Loading and probing ──────────────────────────────────────────
 
 
-def _load_probe_inputs(user_id):
+def _load_probe_inputs(balance_ctx):
     """Load every date-independent lever input exactly once.
 
     Args:
-        user_id: The user's integer ID.
+        balance_ctx: The render's
+            :class:`~app.services.balance_at.BalanceContext`.  Every probe
+            already shared ONE pass before plan step C2-f2d-1 -- the one this
+            function's own ``load_projection_batch`` call built -- so the
+            180-month search has always resolved each loan once; what changed
+            is WHOSE pass it is, and it is now the render's rather than a
+            second one opened here.
 
     Returns:
         A :class:`_ProbeInputs` bundle.  ``ctx`` / ``batch`` are built at
         the stored plan's resolved date; probes shift the context per
         candidate date without re-querying.
     """
-    gap = load_gap_inputs(user_id)
+    gap = load_gap_inputs(balance_ctx)
     base_date = resolve_planned_retirement_date(gap.pensions, gap.settings)
     ctx = build_projection_context(
-        user_id,
+        balance_ctx,
         gap.pay.all_periods,
         gap.pay.current_period,
         base_date,
@@ -272,7 +290,7 @@ def _probe(inputs, month_offset):
             inputs.gap.merit_horizon_years,
         ),
     )
-    axis = resolve_projection_axis(ctx_m, inputs.batch.balance_ctx)
+    axis = resolve_projection_axis(ctx_m)
     projections = project_accounts_with_batch(ctx_m, inputs.batch, axis)
     net = retirement_gap_calculator.calculate_gap(
         net_biweekly_pay=compute_gap_net_biweekly(

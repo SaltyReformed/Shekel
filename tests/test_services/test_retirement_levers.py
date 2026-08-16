@@ -22,6 +22,7 @@ from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import account_service, retirement_levers, retirement_readiness
+from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCadence, PeriodWindow
 from app.services.growth_engine import project_balance
 from app.services.retirement_levers import (
@@ -325,7 +326,9 @@ class TestComputeLeverData:
     def test_no_horizon_state(self, app, db, seed_user, seed_periods_today):
         """No pension date and no settings date -> the no_horizon state."""
         with app.app_context():
-            data = retirement_levers.compute_lever_data(seed_user["user"].id)
+            data = retirement_levers.compute_lever_data(
+                BalanceContext.build(seed_user["user"].id),
+            )
             assert data["no_horizon"] is True
             assert "contribution" not in data
 
@@ -348,7 +351,9 @@ class TestComputeLeverData:
                 balance=Decimal("100000.00"),
                 annual_return=Decimal("0.10500"),
             )
-            data = retirement_levers.compute_lever_data(user_id)
+            data = retirement_levers.compute_lever_data(
+                BalanceContext.build(user_id),
+            )
             assert data["no_horizon"] is False
 
             baseline = data["baseline"]
@@ -358,7 +363,9 @@ class TestComputeLeverData:
             assert baseline["funded_ratio"] < Decimal("1")
 
             # Baseline == the readiness picture (probe(0) consistency).
-            readiness = retirement_readiness.compute_readiness_data(user_id)
+            readiness = retirement_readiness.compute_readiness_data(
+                BalanceContext.build(user_id),
+            )
             assert baseline["funded_ratio"] == readiness["funded_ratio"]
             assert baseline["required_savings"] == readiness["required_savings"]
             assert baseline["projected_after_tax"] == (
@@ -388,7 +395,7 @@ class TestComputeLeverData:
             assert 1 <= solved_months <= 180
             assert retire_later["months"] == solved_months
             assert retire_later["funded_ratio"] >= Decimal("1")
-            inputs = _load_probe_inputs(user_id)
+            inputs = _load_probe_inputs(BalanceContext.build(user_id))
             assert _is_funded(_probe(inputs, solved_months))
             assert not _is_funded(_probe(inputs, solved_months - 1))
             # The displayed date is the stored plan shifted by the offset.
@@ -411,7 +418,7 @@ class TestComputeLeverData:
                 annual_return=Decimal("0.10500"),
             )
             data = retirement_levers.compute_lever_data(
-                user_id,
+                BalanceContext.build(user_id),
                 contribution_override=Decimal("0"),
                 months_override=24,
             )
@@ -427,7 +434,7 @@ class TestComputeLeverData:
 
             retire_later = data["retire_later"]
             assert retire_later["months"] == 24
-            inputs = _load_probe_inputs(user_id)
+            inputs = _load_probe_inputs(BalanceContext.build(user_id))
             probe_24 = _probe(inputs, 24)
             assert retire_later["funded_ratio"] == probe_24.funded_ratio
             assert retire_later["retirement_date"] == probe_24.retirement_date
@@ -448,7 +455,9 @@ class TestComputeLeverData:
                 balance=Decimal("5000000.00"),
                 annual_return=Decimal("0.10500"),
             )
-            data = retirement_levers.compute_lever_data(user_id)
+            data = retirement_levers.compute_lever_data(
+                BalanceContext.build(user_id),
+            )
             assert data["baseline"]["funded_ratio"] >= Decimal("1")
             assert data["contribution"]["state"] == "already_funded"
             assert data["contribution"]["solved_amount"] == Decimal("0.00")
@@ -475,7 +484,9 @@ class TestComputeLeverData:
                 annual_return=Decimal("0.00500"),
                 pension_multiplier=Decimal("0.00100"),
             )
-            data = retirement_levers.compute_lever_data(user_id)
+            data = retirement_levers.compute_lever_data(
+                BalanceContext.build(user_id),
+            )
             retire_later = data["retire_later"]
             assert retire_later["state"] == "not_within_cap"
             assert retire_later["solved_months"] is None
@@ -523,7 +534,9 @@ class TestPastHorizon:
             )
             db.session.commit()
 
-            data = retirement_levers.compute_lever_data(user_id)
+            data = retirement_levers.compute_lever_data(
+                BalanceContext.build(user_id),
+            )
             assert data["no_horizon"] is False
             # The hero side: still a shortfall.
             assert data["baseline"]["funded_ratio"] < Decimal("1")

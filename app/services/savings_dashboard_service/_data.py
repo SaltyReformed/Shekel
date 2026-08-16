@@ -19,7 +19,6 @@ from app.services import cash_ledger, pay_period_service
 from app.services.projection_inputs import (
     load_investment_params_for_accounts,
 )
-from app.services.balance_at import BalanceContext
 from app.services.savings_dashboard_service._types import (
     ArchivedAccount,
     _AccountParams,
@@ -27,30 +26,34 @@ from app.services.savings_dashboard_service._types import (
 )
 
 
-def _load_dashboard_core_data(user_id, balance_ctx=None):
-    """Load the accounts, balance context, and periods for the dashboard.
+def _load_dashboard_core_data(balance_ctx):
+    """Load the accounts and periods for the dashboard, in *balance_ctx*'s pass.
 
     Per-account balances are produced by the
     :mod:`app.services.balance_at` seam, which loads its own scenario-scoped
     transactions, so this loader no longer pre-fetches a transaction set.
 
-    It builds the read pass's
-    :class:`~app.services.balance_at.BalanceContext` (resolving the
-    baseline scenario once) unless the caller supplies one.  Every producer in
-    the build then shares it, so each loan is resolved exactly once for the whole
-    render rather than once per surface that asks.
+    **The owner is the PASS's, and there is no second way to say it** (plan step
+    C2-f2d-1).  This took a ``user_id`` AND an optional context, and built a
+    context from the id when none arrived -- so one call could scope its account
+    and period queries to one owner while every seam read and the memoized pay
+    calendar answered for another, with nothing comparing them.  Unreachable in
+    tree (both external callers build the pass from the same id they pass), and
+    widened out of existence rather than documented, for the reason
+    ``retirement_projection._resolve_seed_balances`` widens its memo key.
+    **Building the pass moved OUT** with the id: a loader that manufactures a
+    read pass is the shape ledger row **P43** records, one layer down.
+
+    Sharing the CONTEXT is still not sharing the LOADS -- each producer calls
+    this function and re-runs these queries, which is finding **N-115**.
 
     Args:
-        user_id: Integer ID of the current user.
-        balance_ctx: An existing
-            :class:`~app.services.balance_at.BalanceContext` to reuse, or
-            ``None`` to build one for this pass.  A caller that has already
-            started a read pass (the budget dashboard's tracks section runs TWO
-            savings producers back to back -- it ran three until plan step X-u
-            deleted the second debt one) passes its own so all of them share
-            ONE set of loan resolutions.  Sharing the CONTEXT is not sharing the
-            LOADS: each producer still calls this function, which is finding
-            N-115.
+        balance_ctx: The render's
+            :class:`~app.services.balance_at.BalanceContext` -- its ``user_id``
+            scopes every query here, and its scenario, clock and memos serve
+            every producer downstream.  The budget dashboard's tracks section
+            runs TWO savings producers back to back and hands both the same one,
+            so each loan resolves once for the pair.
 
     Returns:
         A :class:`_DashboardCoreData` with active accounts (ordered for
@@ -59,6 +62,7 @@ def _load_dashboard_core_data(user_id, balance_ctx=None):
         for why a loader every narrow producer runs must not resolve a fact
         those producers may return before using.
     """
+    user_id = balance_ctx.user_id
     accounts = (
         db.session.query(Account)
         .filter_by(user_id=user_id, is_active=True)
@@ -68,10 +72,7 @@ def _load_dashboard_core_data(user_id, balance_ctx=None):
 
     return _DashboardCoreData(
         accounts=accounts,
-        balance_ctx=(
-            balance_ctx if balance_ctx is not None
-            else BalanceContext.build(user_id)
-        ),
+        balance_ctx=balance_ctx,
         all_periods=pay_period_service.get_all_periods(user_id),
         current_period=pay_period_service.get_current_period(user_id),
     )

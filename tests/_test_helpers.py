@@ -4997,3 +4997,82 @@ def period_window(periods):
             if period.period_id in wanted
         ),
     )
+
+
+def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
+    """Return a :class:`BalanceContext` whose pay calendar is *paydays*.
+
+    **The ONE place a test seeds the read pass's pay-calendar memo**, and that
+    is the whole point of it existing (plan finding **P54**, ruled by the
+    developer 2026-08-16).
+
+    :class:`~app.services.balance_at.BalanceContext` derives the owner's
+    calendar lazily into a field its own module docstring declares PRIVATE,
+    because that module owns the derivation.  A unit test with no database
+    cannot let it derive -- ``calendar_for`` would query -- so it must seed the
+    memo, which means naming that private field.  Three sites wanted to by plan
+    step ``C2-f2d``, and N sites reaching into one private field is how a memo
+    becomes a de-facto public seam.
+
+    **The two alternatives were weighed and refused.**  A named constructor on
+    the seam (``BalanceContext.for_test(calendar=...)``) ships a production
+    entry point whose only caller is this suite, which is ``CLAUDE.md`` rule
+    13's speculative shape.  An optional ``calendar=`` on the real
+    :meth:`~app.services.balance_at.BalanceContext.build` hands EVERY
+    production caller a way to supply a calendar the module did not derive,
+    with nothing checking it even belongs to that owner -- a new way to hold
+    contradictory state, to solve a test-ergonomics problem.  Making the
+    calendar EAGER on the pass was refused on measurement: deriving one can
+    raise for an owner with no pay schedule, so every render would begin
+    failing over a fact most of them never read.
+
+    **Every type here is the real one** -- a real
+    :class:`~app.services.pay_calendar.PayCalendar` derived from real paydays
+    (:func:`derived_window`'s own discipline: the ends and ordinals are the
+    derivation's, so a test cannot express a schedule production could not),
+    and a real frozen :class:`BalanceContext`.  It cannot fail silently either:
+    rename the memo field and the seed misses, the pass falls through to
+    ``calendar_for``, and the query raises outside an app context.
+
+    Args:
+        paydays: The paydays opening each period, in any order.
+        cadence_days: Days between paydays, 1..365.  It sets the LAST period's
+            end and nothing else.
+        as_of: The day this read pass is pinned to.
+        user_id: The owning user (default ``1``).  The calendar is derived for
+            the SAME id the pass carries, so the two cannot disagree -- which
+            is the pairing the seeded memo could otherwise express.
+
+    Returns:
+        A :class:`~app.services.balance_at.BalanceContext` with no baseline
+        scenario and its calendar memo pre-filled.  ``scenario`` is ``None``
+        because a pure unit case has no database to resolve one from; a test
+        that reaches a scenario-scoped seam entry will get that entry's own
+        named refusal rather than a fake.
+
+    Raises:
+        PayCalendarError: Anything the derivation refuses -- a duplicate
+            payday, a cadence outside 1..365, a payday that is not a plain
+            ``date``.
+    """
+    from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
+        BalanceContext,
+    )
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PayCalendar,
+    )
+
+    calendar = PayCalendar.from_paydays(
+        [
+            (index + 1, payday)
+            for index, payday in enumerate(sorted(paydays))
+        ],
+        cadence_days,
+        user_id=user_id,
+    )
+    return BalanceContext(
+        user_id=user_id,
+        scenario=None,
+        as_of=as_of,
+        _calendars={user_id: calendar},
+    )

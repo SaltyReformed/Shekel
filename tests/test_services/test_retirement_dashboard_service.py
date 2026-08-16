@@ -54,7 +54,7 @@ class TestComputeGapData:
         """
         with app.app_context():
             result = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
             expected_keys = {
                 "gap_analysis", "pension_benefits",
@@ -84,7 +84,7 @@ class TestComputeGapData:
         """User with no retirement accounts gets zero projections."""
         with app.app_context():
             result = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
             assert result["retirement_account_projections"] == []
             # No qualifying pension -> no per-pension derivation entries.
@@ -94,7 +94,7 @@ class TestComputeGapData:
         """User with no salary profile still returns valid structure."""
         with app.app_context():
             result = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
             assert result["gap_analysis"] is not None
             assert result["salary_profiles"] == []
@@ -130,7 +130,7 @@ class TestComputeGapData:
             db.session.commit()
 
             result = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
             assert len(result["pensions"]) == 1
             # One qualifying pension -> one per-pension derivation entry
@@ -263,7 +263,7 @@ class TestComputeSliderDefaults:
         """
         with app.app_context():
             data = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
             slider = retirement_dashboard_service.compute_slider_defaults(data)
             assert isinstance(slider["current_swr"], Decimal)
@@ -281,7 +281,7 @@ class TestComputeSliderDefaults:
         """
         with app.app_context():
             data = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
             slider = retirement_dashboard_service.compute_slider_defaults(data)
             assert isinstance(slider["current_return"], Decimal)
@@ -301,7 +301,7 @@ class TestComputeSliderDefaults:
         """
         with app.app_context():
             data = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
             data["settings"] = None
             slider = retirement_dashboard_service.compute_slider_defaults(data)
@@ -331,7 +331,7 @@ class TestComputeSliderDefaults:
             db.session.commit()
 
             data = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
             slider = retirement_dashboard_service.compute_slider_defaults(data)
             assert isinstance(slider["current_swr"], Decimal)
@@ -552,7 +552,9 @@ class TestRetirementProjectionEntryAware:
             # Pre-Commit-8 this was 49,500.00.
             assert basis[current_period.id] == Decimal("49545.71")
 
-            result = retirement_dashboard_service.compute_gap_data(user.id)
+            result = retirement_dashboard_service.compute_gap_data(
+                BalanceContext.build(user.id),
+            )
             projections = result["retirement_account_projections"]
             target = next(
                 p for p in projections if p["account"].id == acct.id
@@ -688,7 +690,9 @@ class TestRetirementAnchorInPastModeledHeadlineDatedSeed:
             )
             assert expected_cash < expected_dated < expected_end
 
-            result = retirement_dashboard_service.compute_gap_data(user.id)
+            result = retirement_dashboard_service.compute_gap_data(
+                BalanceContext.build(user.id),
+            )
             target = next(
                 p for p in result["retirement_account_projections"]
                 if p["account"].id == acct.id
@@ -830,7 +834,9 @@ class TestSwrResolverConsistency:
             )
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
+            data = retirement_dashboard_service.compute_gap_data(
+                BalanceContext.build(user.id),
+            )
             slider = retirement_dashboard_service.compute_slider_defaults(data)
 
             assert data["gap_analysis"].safe_withdrawal_rate == Decimal("0"), (
@@ -881,7 +887,9 @@ class TestSwrResolverConsistency:
             settings.safe_withdrawal_rate = None
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
+            data = retirement_dashboard_service.compute_gap_data(
+                BalanceContext.build(user.id),
+            )
             slider = retirement_dashboard_service.compute_slider_defaults(data)
 
             assert data["gap_analysis"].safe_withdrawal_rate == Decimal("0.04")
@@ -944,7 +952,9 @@ class TestWeightedReturnZeroIsAValue:
             ))
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
+            data = retirement_dashboard_service.compute_gap_data(
+                BalanceContext.build(user.id),
+            )
             slider = retirement_dashboard_service.compute_slider_defaults(data)
 
             # 100,000*0 + 100,000*0.07 = 7,000; 7,000 / 200,000 * 100 = 3.50.
@@ -1015,7 +1025,9 @@ class TestWeightedReturnZeroIsAValue:
             ))
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
+            data = retirement_dashboard_service.compute_gap_data(
+                BalanceContext.build(user.id),
+            )
             slider = retirement_dashboard_service.compute_slider_defaults(data)
 
             # (0*0.07 + 100,000*0.05) / (0 + 100,000) * 100 = 5.00.
@@ -1056,7 +1068,9 @@ class TestWeightedReturnZeroIsAValue:
             ))
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
+            data = retirement_dashboard_service.compute_gap_data(
+                BalanceContext.build(user.id),
+            )
             projections = data["retirement_account_projections"]
             target = next(
                 p for p in projections if p["account"].id == acct_zero.id
@@ -1109,7 +1123,9 @@ class TestWeightedReturnZeroIsAValue:
             ))
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
+            data = retirement_dashboard_service.compute_gap_data(
+                BalanceContext.build(user.id),
+            )
             slider = retirement_dashboard_service.compute_slider_defaults(data)
 
             # B's explicit zero contributes; A's missing params is
@@ -1208,16 +1224,14 @@ class TestTheProjectionAxisIsTheOwnersOwnCalendar:
         # pylint: disable=import-outside-toplevel
         from app.services import retirement_projection
         ctx = retirement_projection.build_projection_context(
-            user_id,
+            BalanceContext.build(user_id),
             pay_period_service.get_all_periods(user_id),
             pay_period_service.get_current_period(user_id),
             horizon,
             None,
             None,
         )
-        return retirement_projection.resolve_projection_axis(
-            ctx, BalanceContext.build(user_id),
-        )
+        return retirement_projection.resolve_projection_axis(ctx)
 
     def test_a_monthly_owner_gets_monthly_paychecks_not_biweekly_ones(
         self, app, db, seed_user,

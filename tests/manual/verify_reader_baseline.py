@@ -315,7 +315,8 @@ def _retirement(user_id):
         "retirement",
         lambda: retirement_projection.project_retirement_accounts(
             retirement_projection.build_projection_context(
-                user_id, periods, current, None, None, None,
+                BalanceContext.build(user_id), periods, current,
+                None, None, None,
             ),
         ).projections,
     )

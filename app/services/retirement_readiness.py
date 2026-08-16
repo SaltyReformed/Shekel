@@ -61,7 +61,7 @@ _METER_PCT_QUANTUM = Decimal("0.1")
 
 
 def compute_readiness_data(
-    user_id,
+    balance_ctx,
     swr_override=None,
     return_rate_override=None,
     merit_horizon_override=None,
@@ -83,7 +83,11 @@ def compute_readiness_data(
     never skipping the after-tax block.
 
     Args:
-        user_id: The user's integer ID.
+        balance_ctx: The render's
+            :class:`~app.services.balance_at.BalanceContext` -- the one read
+            pass the whole page runs in (plan step C2-f2d-1).  A what-if
+            recompute shares it with the baseline it is compared against, so
+            the two pictures cannot be measured against different days.
         swr_override: Optional Decimal fractional SWR what-if replacing
             the stored rate (P3a assumptions panel).
         return_rate_override: Optional Decimal fractional annual-return
@@ -105,7 +109,7 @@ def compute_readiness_data(
     """
     return readiness_from_gap_data(
         compute_gap_data(
-            user_id,
+            balance_ctx,
             swr_override=swr_override,
             return_rate_override=return_rate_override,
             merit_horizon_override=merit_horizon_override,
@@ -189,7 +193,7 @@ def readiness_from_gap_data(data, return_rate_override=None):
 
 
 def compute_readiness_whatif(
-    user_id,
+    balance_ctx,
     *,
     swr_override=None,
     return_rate_override=None,
@@ -204,8 +208,25 @@ def compute_readiness_whatif(
     shortfall delta in dollars).  With no overrides the displayed state IS
     the baseline and ``deltas`` is ``None`` (no delta chips render).
 
+    **Both pictures run in ONE read pass** (plan step C2-f2d-1).  The two
+    computations below are legitimately different -- that is what a what-if is
+    -- but the delta between them must be the OVERRIDE's effect and nothing
+    else, and until this leaf each half opened a pass of its own.  A panel
+    rendered across midnight reported a day's drift as a what-if delta.
+
+    **Sharing the pass does not finish that job**, and an earlier draft of this
+    paragraph claimed it did (adversarial design review, 2026-08-16).  Both
+    halves still reach ``date.today().year`` three times each through
+    ``compute_pension_summary``, ``compute_gap_net_biweekly`` and
+    ``build_employer_salary_basis``, so a panel rendered across a NEW YEAR can
+    still report a salary-path shift as a what-if delta.  Ledger row **P55**
+    owns those reads; what this leaf closed is the pass.
+
     Args:
-        user_id: The user's integer ID.
+        balance_ctx: The render's
+            :class:`~app.services.balance_at.BalanceContext`, shared by both
+            halves so the override is the only input that differs THROUGH the
+            pass.
         swr_override: Optional Decimal fractional SWR what-if.
         return_rate_override: Optional Decimal fractional return what-if.
         merit_horizon_override: Optional int merit-horizon what-if.
@@ -215,7 +236,7 @@ def compute_readiness_whatif(
         state), ``baseline`` (always the stored-settings state), and
         ``deltas`` (``None`` when no override is present).
     """
-    baseline = compute_readiness_data(user_id)
+    baseline = compute_readiness_data(balance_ctx)
     overrides_present = any(
         value is not None
         for value in (swr_override, return_rate_override,
@@ -224,7 +245,7 @@ def compute_readiness_whatif(
     if not overrides_present:
         return {"readiness": baseline, "baseline": baseline, "deltas": None}
     override = compute_readiness_data(
-        user_id,
+        balance_ctx,
         swr_override=swr_override,
         return_rate_override=return_rate_override,
         merit_horizon_override=merit_horizon_override,

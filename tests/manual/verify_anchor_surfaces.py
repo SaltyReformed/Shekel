@@ -78,6 +78,7 @@ from app.services import (
     retirement_dashboard_service,
     savings_dashboard_service,
 )
+from app.services.balance_at import BalanceContext
 
 
 def _plain(value):
@@ -198,7 +199,9 @@ def _user_surfaces(user_id):
         ),
         "retirement_gap": _guarded(
             "retirement_gap",
-            lambda: retirement_dashboard_service.compute_gap_data(user_id),
+            lambda: retirement_dashboard_service.compute_gap_data(
+                BalanceContext.build(user_id),
+            ),
         ),
     }
 

@@ -19,6 +19,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.user import UserSettings
 from app.services import account_service, retirement_readiness
+from app.services.balance_at import BalanceContext
 from app.services.retirement_gap_calculator import RetirementGapAnalysis
 from app.services.pension_calculator import PensionBenefit
 from app.services.retirement_readiness import (
@@ -242,7 +243,7 @@ class TestComputeReadinessData:
         with app.app_context():
             acct = _build_scenario(db, seed_user)
             data = retirement_readiness.compute_readiness_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
 
             # F1: missing rate is an explicit 0% with the surfaced flag.
@@ -334,7 +335,7 @@ class TestComputeReadinessData:
             db.session.commit()
 
             data = retirement_readiness.compute_readiness_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
 
             fact = next(
@@ -361,7 +362,7 @@ class TestComputeReadinessData:
         with app.app_context():
             _build_scenario(db, seed_user, tax_rate=Decimal("0.2000"))
             data = retirement_readiness.compute_readiness_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
 
             assert data["tax_rate_missing"] is False
@@ -409,7 +410,7 @@ class TestExplicitZeroTaxRate:
         with app.app_context():
             _build_scenario(db, seed_user, tax_rate=Decimal("0.0000"))
             data = retirement_readiness.compute_readiness_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
             assert data["tax_rate_missing"] is False
             assert data["estimated_tax_rate"] == Decimal("0.0000")
@@ -431,7 +432,7 @@ class TestComputeReadinessWhatif:
         with app.app_context():
             _build_scenario(db, seed_user)
             result = retirement_readiness.compute_readiness_whatif(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             assert result["deltas"] is None
             assert result["readiness"] is result["baseline"]
@@ -452,7 +453,8 @@ class TestComputeReadinessWhatif:
         with app.app_context():
             _build_scenario(db, seed_user)
             result = retirement_readiness.compute_readiness_whatif(
-                seed_user["user"].id, swr_override=Decimal("0.02"),
+                BalanceContext.build(seed_user["user"].id),
+                swr_override=Decimal("0.02"),
             )
             baseline = result["baseline"]
             override = result["readiness"]
@@ -506,7 +508,8 @@ class TestComputeReadinessWhatif:
             db.session.commit()
 
             result = retirement_readiness.compute_readiness_whatif(
-                seed_user["user"].id, merit_horizon_override=0,
+                BalanceContext.build(seed_user["user"].id),
+                merit_horizon_override=0,
             )
             baseline = result["baseline"]
             override = result["readiness"]
@@ -616,7 +619,7 @@ class TestBuildIncomeMeter:
         with app.app_context():
             _build_scenario(db, seed_user, with_pension=False)
             data = retirement_readiness.compute_readiness_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
             meter = data["income_meter"]
             assert data["pension_net_monthly"] == Decimal("0.00")
@@ -726,7 +729,7 @@ class TestBuildPensionLines:
             db.session.commit()
 
             data = retirement_readiness.compute_readiness_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id)
             )
             lines = data["pension_lines"]
             assert len(lines) == 2

@@ -32,6 +32,7 @@ from app.services import (
     retirement_levers,
     retirement_readiness,
 )
+from app.services.balance_at import BalanceContext
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +82,27 @@ def dashboard():
     merit horizon showing the template literal 5).  The legacy gap-table
     context (gap analysis, chart data, SWR slider default) retired with
     the old page (P3c).
+
+    **This route opens the render's ONE read pass** (plan step C2-f2d-1,
+    ledger row **P43**).  Both producers below are handed it: the gap and the
+    levers are two views of one retirement picture and they belong to one
+    owner, one baseline scenario and one day.  Each built a pass of its own
+    until this leaf, so the two cards could be computed against different days
+    -- reproduced on a production clone at ``$4.18`` of after-tax projected
+    savings and one paycheck of countdown across a midnight-into-payday render.
+
+    **What that buys, stated exactly.**  Every figure resolved THROUGH the pass
+    now shares one clock, and a producer below cannot be reached without being
+    handed one, because the parameter has no default to fall through to.  It
+    does not make a second pass unconstructible -- nothing stops a service from
+    calling ``BalanceContext.build`` -- and it does not make this render
+    single-clock: ``compute_pension_summary`` and ``compute_gap_net_biweekly``
+    still read ``date.today().year`` for themselves, once per gap and once per
+    lever probe.  Ledger row **P55** owns that remainder.  The gate for what IS
+    claimed here is ``tests/test_arch/test_one_read_pass_per_render.py``.
     """
-    data = retirement_dashboard_service.compute_gap_data(current_user.id)
+    balance_ctx = BalanceContext.build(current_user.id)
+    data = retirement_dashboard_service.compute_gap_data(balance_ctx)
     readiness = retirement_readiness.readiness_from_gap_data(data)
     return render_template(
         "retirement/dashboard.html",
@@ -92,7 +112,7 @@ def dashboard():
             )["current_return"]
         ),
         readiness=readiness,
-        levers=retirement_levers.compute_lever_data(current_user.id),
+        levers=retirement_levers.compute_lever_data(balance_ctx),
         retirement_account_projections=(
             data["retirement_account_projections"]
         ),
@@ -396,6 +416,14 @@ def readiness_fragment():
     outcome lines.  All validated through
     :class:`RetirementReadinessQuerySchema` (bounds -> 422 on garbage).
     Renders the minimal ``_readiness.html`` stub P3b restyles.
+
+    **One read pass for the fragment** (plan step C2-f2d-1), built here and
+    shared by the what-if's two computations and by the levers beside them.
+    This request published up to THREE pictures from three passes: the
+    stored-settings baseline, the override, and the lever outcome -- and the
+    panel's whole purpose is to state the DELTA between the first two, so every
+    input the two halves share had better BE shared.  The pass is; the bare
+    ``date.today()`` reads ledger row **P55** names are not yet.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("retirement.dashboard"))
@@ -405,8 +433,9 @@ def readiness_fragment():
     except ValidationError as exc:
         return jsonify(errors=exc.messages), 422
 
+    balance_ctx = BalanceContext.build(current_user.id)
     whatif = retirement_readiness.compute_readiness_whatif(
-        current_user.id,
+        balance_ctx,
         swr_override=query_data.get("swr"),
         return_rate_override=query_data.get("return_rate"),
         merit_horizon_override=query_data.get("merit_raise_horizon_years"),
@@ -415,7 +444,7 @@ def readiness_fragment():
     if (query_data.get("months") is not None
             or query_data.get("contribution") is not None):
         lever_data = retirement_levers.compute_lever_data(
-            current_user.id,
+            balance_ctx,
             contribution_override=query_data.get("contribution"),
             months_override=query_data.get("months"),
         )

@@ -19,6 +19,7 @@ from app.models.user import UserSettings
 from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.services import account_service
+from app.services.balance_at import BalanceContext
 from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
     RecurrencePattern, TransactionType,
@@ -910,7 +911,7 @@ class TestRetirementProjections:
         from app.services import retirement_readiness
 
         readiness = retirement_readiness.compute_readiness_data(
-            seed_user["user"].id
+            BalanceContext.build(seed_user["user"].id)
         )
         target = readiness["income_target_net_monthly"]
         assert target > 0
@@ -1692,7 +1693,7 @@ class TestReturnRateClarity:
             ))
             db.session.commit()
 
-            data = compute_gap_data(seed_user["user"].id)
+            data = compute_gap_data(BalanceContext.build(seed_user["user"].id))
             projections = data["retirement_account_projections"]
             proj = next(p for p in projections if p["account"].id == acct.id)
             assert proj["is_traditional"] is True
@@ -1741,7 +1742,7 @@ class TestReturnRateClarity:
             ))
             db.session.commit()
 
-            data = compute_gap_data(seed_user["user"].id)
+            data = compute_gap_data(BalanceContext.build(seed_user["user"].id))
             projections = data["retirement_account_projections"]
             proj = next(p for p in projections if p["account"].id == acct.id)
             assert proj["is_traditional"] is False
@@ -1753,7 +1754,7 @@ class TestReturnRateClarity:
         from app.services.retirement_dashboard_service import compute_gap_data
 
         with app.app_context():
-            data = compute_gap_data(seed_user["user"].id)
+            data = compute_gap_data(BalanceContext.build(seed_user["user"].id))
             assert data["retirement_account_projections"] == []
 
 
