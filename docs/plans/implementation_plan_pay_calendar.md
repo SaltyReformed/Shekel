@@ -3,15 +3,15 @@
 ## Where this stands
 
 **Built:** **C1**, **C2-a**, **C2-b** (both leaves, which also ticked **C5a** and the recurrence
-arc's **R-F10**), **C2-c**, **C2-d**, **C2-e**, **C2-f1**, **C2-f2a**-**C2-f2c**, **C2-f2d-1**,
-**C2-f2d-2** and **C3** (both leaves) -- section 4 carries each one's commit. What reached `main`
-and production is a MEASUREMENT (`git log --oneline origin/main..dev`, `docker inspect`).
+arc's **R-F10**), **C2-c**-**C2-e**, **C2-f1**, **C2-f2a**-**C2-f2c**, **C2-f2d-1**, **C2-f2d-2**,
+**C2-f2d-4** and **C3** -- section 4 carries each one's commit, and what reached `main` is a
+MEASUREMENT (`git log --oneline origin/main..dev`).
 
 **Both engines, every forward PROJECTION, the WHOLE balance seam, the GRID and `/investment` read
 the DERIVED calendar.** **C2-f DECOMPOSED into three leaves 2026-08-14**,
 **`C2-f2` into five the same day**, **`C2-f2d` into three on 2026-08-16** plus a FOURTH when
-C2-f2d-2 made row **P59** visible; its four open leaves carry the **34** `app/` call sites left of
-the 60 it opened with.
+C2-f2d-2 made row **P59** visible; `C2-f2d-3`, `C2-f2e` and `C2-f3` carry the **34** `app/` call
+sites left of the 60 it opened with.
 
 **`/retirement` and `/savings` each run on ONE read pass** since `C2-f2d-1`, and `/retirement` loads
 its inputs and derives each plan once since `C2-f2d-2`. A pass is not a clock: six bare
@@ -323,12 +323,12 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       Byte-identical -- the rendered HTML matches apart from CSRF nonces; 179 -> 87 queries a
       render. Proof: `verify_retirement_render`'s docstring, and `TestOneLoadPerRender`.
 
-- [ ] **C2-f2d-4 -- the levers solve at the assumptions the page SHOWS.** The what-if sliders moved
-      the readiness hero and not the lever card beside it, so a page reading "65.3% funded" at a
-      3.5% withdrawal rate told the owner to contribute the amount that closes the gap at 4%
-      (`$174.76` where `$273.17` closes it). Both figures correct, answers to different questions,
-      presented as one plan. **MOVES DISPLAYED MONEY.** Ruled by the developer 2026-08-16 when
-      C2-f2d-2's collapse made the asymmetry expressible. Closes **P59**.
+- [x] **C2-f2d-4 -- the levers solve at the assumptions the page SHOWS.** `b84dada4`. Closed
+      **P59**; opened **P60**. The what-if sliders moved the hero and not the lever card, so a page
+      reading "65.3% funded" at a 3.5% withdrawal rate told the owner `$174.76`/paycheck closes the
+      gap when `$273.17` does. Each stepper now carries the OWNER's override alone -- a pre-filled
+      one laundered the previous solved default back as an entry -- and `PlanPoint` became RESOLVED,
+      which is what stops one plan holding two memo keys. Proof: `TestReadinessFragment`.
 
 - [ ] **C2-f2d-3 -- `/savings`'s readers and its four signatures.** The `all_periods` /
       `current_period` cutover for `savings_dashboard_service`, whose two bundle dataclasses change
