@@ -44,6 +44,12 @@ Module map:
   beside what its records produced just before each one.  A third subject
   beside ``detail``'s page and ``anchor``'s write door, split for the reason
   ``reconcile`` was.
+* :mod:`app.routes.accounts.statements` -- What the BANK said (plan step
+  ``bank_import:X-f6a-1``, ruling R-FP): the statement import page and its
+  write door.  A fourth subject beside ``anchor``'s assertion, ``reconcile``'s
+  outstanding set and ``history``'s record of past assertions -- and the only
+  one of them sourced from outside the app.  It RECORDS and does not
+  reconcile; matching a recorded line to the app's own rows is ``X-f6a-2``.
 * :mod:`app.routes.accounts.types` -- Account-type CRUD for the
   per-user custom catalogue (commit C-28 / F-044).
 * :mod:`app.routes.accounts.detail` -- Per-account detail pages.  The
@@ -82,6 +88,7 @@ from app.routes.accounts import anchor  # noqa: F401, E402
 from app.routes.accounts import difference  # noqa: F401, E402
 from app.routes.accounts import types  # noqa: F401, E402
 from app.routes.accounts import detail  # noqa: F401, E402
+from app.routes.accounts import statements  # noqa: F401, E402
 
 
 __all__ = ["accounts_bp"]

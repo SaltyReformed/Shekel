@@ -703,3 +703,15 @@ a.acct-cell__link:focus-visible {
 .reconcile-amount {
   max-width: 8.5rem;
 }
+
+/* The statement import page's file-name cell (plan step bank_import:X-f6a-1).
+   An uploaded file name is arbitrary length and shares a row with four numeric
+   columns, so it truncates rather than pushing them off the page.  A class
+   rather than an inline style for the reason `.reconcile-amount` above is one,
+   and for a second reason measured in a browser: this app's CSP is
+   `style-src 'self'` with no `unsafe-inline`, so a `style="..."` attribute is
+   BLOCKED outright -- the truncation would silently not apply, which is how
+   this started life. */
+.stmt-file-name {
+  max-width: 16rem;
+}

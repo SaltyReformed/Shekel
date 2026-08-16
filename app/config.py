@@ -195,6 +195,28 @@ class BaseConfig:
         days=int(os.getenv("REMEMBER_COOKIE_DURATION_DAYS", "7"))
     )
 
+    # Largest request body the app will read, in bytes.  Set because plan
+    # step ``bank_import:X-f6a`` gives the app its FIRST file upload (a bank
+    # statement), and Werkzeug's default is unlimited: without a ceiling, one
+    # authenticated POST can be made to consume as much memory as the sender
+    # is willing to send.  Werkzeug raises ``RequestEntityTooLarge`` (413)
+    # above it; ``app.error_handlers`` turns that into a sentence.
+    #
+    # **512 KB against a measured need of 59 KB, and the number is small on
+    # purpose.**  An adversarial review measured what a CSV parse costs: a
+    # payload of many one-cell rows expands ~52x in list overhead while it is
+    # being read (5.24 MB of input -> 273 MB resident).  The app container is
+    # capped at 1 GB with two Gunicorn workers and a ~250 MB baseline, so a
+    # multi-megabyte ceiling put an OOM kill within reach of two concurrent
+    # uploads.  512 KB is ~9x the developer's own full year-to-date export and
+    # bounds the worst case to tens of megabytes.  Nginx caps the body at 5 MB
+    # independently (``deploy/nginx-*``), so this is the binding limit.
+    #
+    # It bounds EVERY request body, not only uploads.  No other route in the
+    # app posts anything near it (the largest form is the recurrence editor at
+    # a few kilobytes).
+    MAX_CONTENT_LENGTH = 512 * 1024
+
     # Budget defaults
     DEFAULT_PAY_PERIOD_HORIZON = 52  # ~2 years of biweekly periods
     DEFAULT_PAY_CADENCE_DAYS = 14  # biweekly

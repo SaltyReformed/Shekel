@@ -42,6 +42,14 @@ class Account(
     __tablename__ = "accounts"
     __table_args__ = (
         db.UniqueConstraint("user_id", "name", name="uq_accounts_user_name"),
+        # The SUPERKEY ``account_external_identities`` names to prove its own
+        # ``user_id`` is this account's owner (plan step
+        # ``bank_import:X-f6a-1``).  It constrains nothing -- ``id`` is already
+        # the primary key, so this key can reject no row -- and exists only
+        # because PostgreSQL requires a UNIQUE over exactly the referenced
+        # columns before a composite foreign key may target them.  The same
+        # construction, for the same reason, as ``uq_transactions_id_account``.
+        db.UniqueConstraint("id", "user_id", name="uq_accounts_id_user"),
         db.CheckConstraint(
             "version_id > 0",
             name="ck_accounts_version_id_positive",

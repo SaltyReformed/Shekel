@@ -696,3 +696,42 @@ class AmountSource(db.Model):
 
     def __repr__(self):
         return f"<AmountSource {self.name}>"
+
+
+class StatementSource(db.Model):
+    """WHERE a recorded statement line came from (ruling **R-FP**, X-f6a).
+
+    The catalogue behind ``budget.statement_imports.source_id``,
+    ``budget.bank_statement_lines`` (through its import) and
+    ``budget.account_external_identities.source_id``.  One row per source
+    ADAPTER: a format at an institution, because one bank publishes one
+    statement several ways and the ways carry different facts.
+
+    One value today, ``secu_checking_csv``.  Later adapters -- SECU's OFX, the
+    Capital One card, and ``X-f6b``'s automated SimpleFIN feed -- INSERT a row
+    here, because a new source is data and never schema.
+
+    Why the member names a format rather than an institution, and why an
+    adapter without an external transaction id loses nothing, are both measured
+    on :class:`app.enums.StatementSourceEnum`.
+
+    Application code resolves these via ``ref_cache.statement_source_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+    """
+
+    __tablename__ = "statement_sources"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(40), unique=True, nullable=False)
+    #: What a human sees.  A source is chosen on an upload form, so unlike most
+    #: ref rows this one is READ for display as well as joined -- and the label
+    #: is a column rather than a template-side mapping for the reason the
+    #: project keeps ref labels in ref: a second spelling in Jinja is a second
+    #: place for a new adapter's name to be forgotten.
+    display_name = db.Column(db.String(80), nullable=False)
+
+    def __repr__(self):
+        return f"<StatementSource {self.name}>"

@@ -102,6 +102,7 @@ from app.enums import (
     PostingSourceEnum,
     RecurrencePatternEnum,
     RecurrenceUnitEnum,
+    StatementSourceEnum,
 )
 from app.ref_seeds import _REF_TABLE_SEEDS
 
@@ -125,6 +126,7 @@ _INLINE_SEEDED_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (PeriodPlacementEnum, "ref.period_placements"),
     (BusinessDayShiftEnum, "ref.business_day_shifts"),
     (AmountSourceEnum, "ref.amount_sources"),
+    (StatementSourceEnum, "ref.statement_sources"),
 )
 
 
@@ -141,6 +143,7 @@ _SEED_LIST_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (PeriodPlacementEnum, "PeriodPlacement"),
     (BusinessDayShiftEnum, "BusinessDayShift"),
     (AmountSourceEnum, "AmountSource"),
+    (StatementSourceEnum, "StatementSource"),
 )
 
 

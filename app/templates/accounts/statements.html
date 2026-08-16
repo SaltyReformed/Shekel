@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% from "_acct_macros.html" import acct_glyph %}
+{% from "_money_macros.html" import money %}
+{% from "_nav_macros.html" import back_link %}
+{% block title %}{{ account.name }} -- Bank statements -- Shekel{% endblock title %}
+
+{# What the BANK said about this account -- plan step bank_import:X-f6a-1,
+   ruling R-FP.
+
+   The page RECORDS and does not reconcile, and it says so above the fold
+   rather than in a caption.  An import screen that looked like it reconciled
+   would be read as having reconciled, and the whole reason this leaf is
+   separable is that no figure the app publishes moves when it runs.  Matching
+   a recorded line to the app's own rows -- and correcting a settle date from
+   it -- is the next leaf (X-f6a-2).
+
+   Context (accounts.statements): account, sources (the adapters with a
+   parser), span (RecordedSpan), imports (StatementImport, newest first),
+   lines (BankStatementLine, newest posted day first). #}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
+  <div class="d-flex align-items-center gap-2">
+    <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
+    <span class="acctd-type-tag">Bank statements</span>
+  </div>
+  {{ back_link(url_for('accounts.cash_detail', account_id=account.id), 'Account') }}
+</div>
+
+<div class="alert alert-info d-flex gap-2 align-items-start" role="alert">
+  <i class="bi bi-info-circle mt-1"></i>
+  <div>
+    <strong>This records what your bank said. It changes no balance.</strong>
+    Importing a statement stores the bank's own lines so the app has a record
+    of when money actually moved. Nothing is marked paid, no settle date is
+    corrected and no projection changes until you review matches -- which is a
+    later step.
+  </div>
+</div>
+
+<div class="row g-3">
+  {# ── Import a statement ──────────────────────────────────────────── #}
+  <div class="col-12 col-lg-5">
+    <div class="card h-100">
+      <div class="card-header"><i class="bi bi-upload"></i> Import a statement</div>
+      <div class="card-body">
+        <form method="post"
+              action="{{ url_for('accounts.import_statement', account_id=account.id) }}"
+              enctype="multipart/form-data">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+          <div class="mb-3">
+            <label for="source" class="form-label">Export kind</label>
+            <select class="form-select" id="source" name="source" required>
+              {% for source in sources %}
+              <option value="{{ source.value }}">{{ source.label }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">
+              Export your transactions as CSV <strong>with the running-balance
+              column included</strong>. The running balance is what lets the
+              import check the file against itself; without it a missing line
+              cannot be detected.
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label for="statement_file" class="form-label">Statement file</label>
+            <input class="form-control" type="file" id="statement_file"
+                   name="statement_file" accept=".csv,text/csv" required>
+          </div>
+
+          <button type="submit" class="btn btn-primary">
+            <i class="bi bi-upload"></i> Import
+          </button>
+        </form>
+
+        <hr>
+        <p class="text-muted small mb-0">
+          Re-importing an overlapping span is safe: a line already recorded is
+          recognised and left alone, and the import reports how many it already
+          knew.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  {# ── What is recorded ────────────────────────────────────────────── #}
+  <div class="col-12 col-lg-7">
+    <div class="card h-100">
+      <div class="card-header"><i class="bi bi-bank"></i> What the bank has told us</div>
+      <div class="card-body">
+        {% if span.line_count %}
+        <div class="row text-center g-2 mb-3">
+          <div class="col-4">
+            <div class="fs-4 font-mono">{{ span.line_count }}</div>
+            <div class="text-muted small">lines recorded</div>
+          </div>
+          <div class="col-4">
+            <div class="fs-6 font-mono">{{ span.first_day }} <span class="text-muted">to</span></div>
+            <div class="fs-6 font-mono">{{ span.last_day }}</div>
+            <div class="text-muted small">covering</div>
+          </div>
+          <div class="col-4">
+            <div class="fs-4 font-mono">{{ money(span.net_amount) }}</div>
+            <div class="text-muted small">net over that span</div>
+          </div>
+        </div>
+        {% else %}
+        <p class="text-muted mb-0">
+          Nothing recorded yet. Import a statement to give this account its
+          first record of what the bank actually did.
+        </p>
+        {% endif %}
+
+        {% if imports %}
+        <h6 class="text-muted text-uppercase small mt-3">Imports</h6>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th scope="col">When</th>
+                <th scope="col">File</th>
+                <th scope="col">Covers</th>
+                <th scope="col" class="text-end">New</th>
+                <th scope="col" class="text-end">In file</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in imports %}
+              <tr>
+                <td class="text-nowrap">{{ row.created_at | local_datetime }}</td>
+                <td class="text-truncate stmt-file-name">{{ row.file_name }}</td>
+                <td class="text-nowrap font-mono small">{{ row.period_start }} .. {{ row.period_end }}</td>
+                <td class="text-end font-mono">{{ row.recorded_count }}</td>
+                <td class="text-end font-mono text-muted">{{ row.line_count }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── The lines themselves ──────────────────────────────────────────── #}
+{% if lines %}
+<div class="card mt-3">
+  <div class="card-header">
+    <i class="bi bi-list-ul"></i> Most recent lines
+    <span class="text-muted small">-- newest first, as the bank stated them</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead>
+        <tr>
+          <th scope="col">Posted</th>
+          <th scope="col">Description</th>
+          <th scope="col">Bank's category</th>
+          <th scope="col" class="text-end">Amount</th>
+          <th scope="col" class="text-end">Balance after</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in lines %}
+        <tr>
+          <td class="text-nowrap font-mono small">{{ line.posted_on }}</td>
+          <td class="small">{{ line.description }}</td>
+          <td class="text-muted small">{{ line.source_category or '--' }}</td>
+          <td class="text-end font-mono">{{ money(line.amount) }}</td>
+          <td class="text-end font-mono text-muted">
+            {%- if line.running_balance is none %}--{% else %}{{ money(line.running_balance) }}{% endif -%}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock content %}

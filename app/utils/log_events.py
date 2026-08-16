@@ -457,6 +457,19 @@ EVT_TRANSACTION_SETTLED_FROM_ENTRIES = _register(
 )
 
 
+# ── Business events: statement import (bank_import:X-f6a) ──────────
+
+EVT_STATEMENT_IMPORTED = _register(
+    "statement_imported", BUSINESS,
+    "A bank statement was parsed, verified and recorded against an account.",
+)
+
+EVT_STATEMENT_IDENTITY_RECORDED = _register(
+    "statement_identity_recorded", BUSINESS,
+    "A first import recorded what a source calls one of the user's accounts.",
+)
+
+
 # ── Performance events (request lifecycle) ─────────────────────────
 
 EVT_REQUEST_COMPLETE = _register(

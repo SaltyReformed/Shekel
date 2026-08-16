@@ -441,3 +441,118 @@ class PayPeriodResetBlocked(ShekelError):
             f"only for first-time setup before any paychecks have settled.  "
             f"Use Regenerate to rebuild your future schedule instead."
         )
+
+
+class StatementImportError(ShekelError):
+    """A statement import was refused.  The base every refusal shares.
+
+    Every subclass below REFUSES THE WHOLE IMPORT and writes nothing: the
+    import door runs inside one unit of work, so a file that is wrong in one
+    line leaves the database exactly as it was.  That is deliberate rather than
+    convenient -- a half-recorded statement is a statement whose running-balance
+    chain no longer closes, and the chain is the only self-check the app has
+    over a record it did not author.
+
+    Routes catch THIS and render the message; the subclasses exist so that a
+    raise site says which refusal it is, and so a caller that wants to tell
+    "not this account" from "the file contradicts itself" can.
+    """
+
+
+class StatementParseError(StatementImportError):
+    """The uploaded file is not the shape its chosen adapter reads.
+
+    A wrong file, a wrong source, or an export the institution has changed.
+    Raised before anything is looked up, so it says nothing about the account.
+    """
+
+
+class StatementIntegrityError(StatementImportError):
+    """The file contradicts ITSELF: its running-balance chain does not close.
+
+    A source carrying a per-line running balance states the same account twice
+    -- once as a sequence of amounts and once as a sequence of balances -- and
+    the two must agree (``previous balance + this amount = this balance``).
+    When they do not, one of three things is true: the export is missing lines,
+    the adapter has ordered them wrongly, or the file has been edited.  All
+    three make the record untrustworthy, and this is the one moment the app can
+    tell.
+
+    Attributes:
+        break_count: How many consecutive pairs failed.
+        first_break: A human-readable description of the earliest one.
+    """
+
+    def __init__(self, break_count, first_break):
+        self.break_count = break_count
+        self.first_break = first_break
+        super().__init__(
+            f"This statement does not add up: {break_count} place(s) where "
+            f"the running balance does not follow from the line before it.  "
+            f"The first is {first_break}.  Nothing was imported.  Re-export "
+            f"the full span from your bank rather than a partial one."
+        )
+
+
+class StatementAccountMismatch(StatementImportError):
+    """The file names an account other than the one it is being imported into.
+
+    Ruling **R-FP** makes the source-account mapping a FACT rather than a
+    guess: the first import for an account records what its source calls that
+    account, and every import after it is checked against the record.  This is
+    that check failing -- importing the card's export into Checking, or one
+    person's export into another's account.
+
+    Attributes:
+        recorded: What the source called this account when the mapping was
+            first recorded.
+        submitted: What the uploaded file calls its account.
+    """
+
+    def __init__(self, recorded, submitted):
+        self.recorded = recorded
+        self.submitted = submitted
+        super().__init__(
+            f"This file is for account '{submitted}', but this Shekel account "
+            f"has been imported from '{recorded}' before.  Nothing was "
+            f"imported.  Choose the matching account, or check that you "
+            f"exported the right one."
+        )
+
+
+class StatementLineConflict(StatementImportError):
+    """A line already recorded now states something DIFFERENT.
+
+    A line's identity is ``(account, posted_on, amount, sequence)``.  When a
+    later import produces that same identity carrying a different description
+    or a different running balance, the bank has restated a line the app has
+    already recorded as an observation -- and an observation quietly rewritten
+    is exactly what ruling **R-FL** exists to prevent.
+
+    **It refuses rather than overwriting, and refuses rather than ignoring**,
+    which is a deliberate choice between three bad options on an event that has
+    never been observed: comparing the developer's 2026-08-04 and 2026-08-16
+    exports over their 342 shared lines gave 0 restatements.  Overwriting would
+    destroy the original observation with no record; ignoring would leave the
+    app holding a line the bank no longer states.  Refusing puts a human in
+    front of the only case where those differ, at the cost of a manual step on
+    an event measured never to happen.
+
+    Attributes:
+        posted_on: The day the conflicting line posted.
+        amount: Its signed amount.
+        recorded: What the app already holds.
+        submitted: What the file now says.
+    """
+
+    def __init__(self, posted_on, amount, recorded, submitted):
+        self.posted_on = posted_on
+        self.amount = amount
+        self.recorded = recorded
+        self.submitted = submitted
+        super().__init__(
+            f"The line on {posted_on} for {amount} was already recorded as "
+            f"'{recorded}' and this file states '{submitted}'.  Nothing was "
+            f"imported.  A statement line is a record of what your bank "
+            f"showed, so this needs a human before anything overwrites it."
+        )

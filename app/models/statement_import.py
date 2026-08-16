@@ -1,0 +1,390 @@
+"""
+Shekel Budget App -- Statement Import Models (budget schema)
+
+What a BANK said, recorded as fact.  Three tables, one subject (plan step
+``bank_import:X-f6a``, ruling **R-FP**):
+
+  * :class:`AccountExternalIdentity` -- which account at a SOURCE is which
+    account here.  The one-time mapping R-FP calls "a fact, not a guess".
+  * :class:`StatementImport` -- one act of importing, and what it did.
+  * :class:`BankStatementLine` -- one line the bank showed.
+
+**None of them moves a figure, and that is the leaf boundary rather than a
+coincidence.**  Recording what a statement said is separable from deciding
+which of the app's own rows it explains, so this leaf lands with no matcher, no
+``settled_on`` correction and no clearing link -- the same discipline that made
+``X-au-c1`` and ``X-f3a-1`` provably balance-neutral.  What the recorded lines
+are FOR is the leaves after it: the match and its review (``X-f6a-2``), the
+purchase a bank line becomes (``X-f6a-3``), the walked-statement silence that
+makes an unshown line NOT CLEARED (``balance:X-f3a-2``), and the re-openable
+recorded difference at the cutover (``balance:X-f3c``).
+
+Sign convention, stated once: :attr:`BankStatementLine.amount` is SIGNED and
+positive means money ENTERING the account, matching
+``cash_ledger.settled_cash_leg`` exactly so a later match compares two figures
+that already agree about direction.  Both of the developer's sources use that
+convention natively (OFX ``TRNAMT``, and the CSV's Credit / Debit pair), so no
+adapter has to invert anything.
+"""
+
+from app.extensions import db
+from app.models.mixins import (
+    AccountScopedMixin,
+    CreatedAtMixin,
+    UserScopedMixin,
+)
+
+
+class AccountExternalIdentity(AccountScopedMixin, UserScopedMixin,
+                              CreatedAtMixin, db.Model):
+    """Which account at a SOURCE is this Shekel account.
+
+    Ruling **R-FP**: the importer "needs a one-time account mapping -- the
+    export's ``ACCTID`` to the Shekel account -- and that mapping is a fact, not
+    a guess."  This is where the fact lives.
+
+    **It is RECORDED by the user's own choice and then CHECKED, never
+    inferred.**  On the first import the user says which account a file is for
+    and the file's own identity is written here; on every import after it, the
+    file's identity is compared against the recorded one and a disagreement
+    REFUSES the import.  Inferring the account from the file instead would make
+    a mis-typed export silently post one account's statement onto another --
+    and the two sources cannot even be compared for equality, because SECU's
+    CSV masks the account number (``******3820``) where its OFX spells it out
+    (``40943820``).
+
+    Columns:
+        account_id  -- the Shekel account (from :class:`AccountScopedMixin`).
+        user_id     -- its owner (from :class:`UserScopedMixin`), held equal to
+                       the account's by ``fk_account_external_identities_owner``
+                       so it is a co-located key rather than a copy.  It exists
+                       because UNIQUENESS IS PER OWNER: see below.
+        source_id   -- the adapter the identity was read by
+                       (``ref.statement_sources``).
+        external_account_id -- what that source calls the account.
+
+    **The key is per SOURCE, not per institution, and that is deliberate
+    honesty rather than a limitation accepted.**  SECU's CSV and its OFX are
+    two adapters over one real account, and they would produce two rows here.
+    Keying on the institution instead would require deciding that
+    ``******3820`` and ``40943820`` name the same account -- which is a guess,
+    which is exactly what this table exists not to make.  Two rows pointing at
+    one ``account_id`` is the truthful record: each says what its own source
+    calls this account.
+    """
+
+    __tablename__ = "account_external_identities"
+    __table_args__ = (
+        # One external account maps to at most ONE of THIS OWNER'S accounts.
+        # The arm that makes importing the card's export into Checking
+        # refusable by the DATABASE rather than by a reviewer noticing.
+        #
+        # **Scoped by owner, and that is not decoration.**  A GLOBAL key over
+        # ``(source_id, external_account_id)`` is wrong on a low-entropy value:
+        # this adapter's identifier is SECU's MASK (``******3820``), so two
+        # owners at one credit union collide on the last four digits with
+        # probability 1/10,000 per pair -- and the loser could never import
+        # their own statements, while the refusal would disclose that some
+        # other account in the system had claimed their number.  Per owner, the
+        # only row you can collide with is your own, which is a fact you are
+        # entitled to be told about.
+        db.UniqueConstraint(
+            "user_id", "source_id", "external_account_id",
+            name="uq_account_external_identities_owner_source_account",
+        ),
+        # ...and one Shekel account has at most one identity per source, so
+        # "what does this source call this account" has exactly one answer.
+        db.UniqueConstraint(
+            "account_id", "source_id",
+            name="uq_account_external_identities_account_source",
+        ),
+        # This row's owner IS its account's, guaranteed rather than maintained
+        # -- the construction ``fk_transaction_entries_parent_account`` uses,
+        # keyed onto ``uq_accounts_id_user``.  Without it ``user_id`` would be
+        # a copy some writer has to keep in step, and the uniqueness above
+        # would be scoped by a column that could be set wrong.
+        db.ForeignKeyConstraint(
+            ["account_id", "user_id"],
+            ["budget.accounts.id", "budget.accounts.user_id"],
+            name="fk_account_external_identities_owner",
+            ondelete="CASCADE",
+        ),
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    source_id = db.Column(
+        db.Integer,
+        db.ForeignKey("ref.statement_sources.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    external_account_id = db.Column(db.String(64), nullable=False)
+
+    source = db.relationship("StatementSource", lazy="joined")
+
+    def __repr__(self):
+        return (
+            f"<AccountExternalIdentity account={self.account_id} "
+            f"external={self.external_account_id}>"
+        )
+
+
+class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
+                      db.Model):
+    """One act of importing a statement, and what that act did.
+
+    The provenance every recorded line points back to: who imported what, when,
+    from which file, and how much of it was new.  A line names the import that
+    FIRST recorded it, so re-importing an overlapping span leaves the original
+    provenance intact and records a second import that added nothing -- which
+    is what "re-importing a file cannot duplicate" looks like from this side.
+
+    Columns:
+        account_id   -- the account the statement is for
+                        (:class:`AccountScopedMixin`).
+        user_id      -- who performed the import (:class:`UserScopedMixin`).
+        source_id    -- the adapter that parsed the file.
+        file_name    -- the uploaded file's own name, for the user to recognise
+                        the import by.  Provenance only; nothing keys on it.
+        file_digest  -- SHA-256 of the uploaded BYTES.  Also provenance: it
+                        answers "is this the same file I imported before"
+                        exactly, where the name cannot.  Deliberately NOT
+                        unique -- re-uploading an identical file is a legal and
+                        harmless act that records 0 new lines, and refusing it
+                        would trade a truthful no-op for an error message.
+        period_start / period_end -- the span the file covers, taken from the
+                        lines themselves rather than from any header, because a
+                        header that disagrees with its own contents is a thing
+                        that happens and the lines are what was recorded.
+        line_count   -- lines the file contained.
+        recorded_count -- lines this import actually wrote.  The difference
+                        between the two is the overlap with what was already
+                        known, and showing it is what makes idempotency
+                        VISIBLE rather than merely true.
+        opening_balance / closing_balance -- the running balance before the
+                        first line and after the last, where the source carries
+                        one at all (NULLABLE for a source that does not).
+
+    **``closing_balance`` is derived from the line CHAIN, never from the file's
+    own balance header, and that is a measured trap rather than a preference.**
+    SECU's OFX reports ``LEDGERBAL`` as of the export instant, and on the
+    2026-08-16 export that figure (``$4,747.63``) was 2026-08-13's closing
+    balance while the same file listed two 2026-08-14 lines worth
+    ``-$1,006.72``.  An importer that had anchored a running balance on the
+    header would have been wrong by exactly the unposted tail, on every day.
+    """
+
+    __tablename__ = "statement_imports"
+    __table_args__ = (
+        # The superkey a composite foreign key needs as its target, so
+        # ``fk_bank_statement_lines_import_account`` below can hold a line's
+        # account equal to its import's.  It constrains nothing on its own
+        # (``id`` is already the primary key).
+        db.UniqueConstraint(
+            "id", "account_id", name="uq_statement_imports_id_account",
+        ),
+        db.CheckConstraint(
+            "period_end >= period_start",
+            name="ck_statement_imports_period_ordered",
+        ),
+        # A file with no lines is not an import, it is a parse that found
+        # nothing, and the door refuses it before a row is written.  Stated
+        # here too so no future writer can record one.
+        db.CheckConstraint(
+            "line_count > 0",
+            name="ck_statement_imports_line_count_positive",
+        ),
+        # What was recorded is a SUBSET of what the file held.  Both arms
+        # matter: a negative count is nonsense, and a count above
+        # ``line_count`` would mean the import wrote lines the file did not
+        # contain.
+        db.CheckConstraint(
+            "recorded_count >= 0 AND recorded_count <= line_count",
+            name="ck_statement_imports_recorded_within_file",
+        ),
+        db.Index("idx_statement_imports_account", "account_id"),
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    source_id = db.Column(
+        db.Integer,
+        db.ForeignKey("ref.statement_sources.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    file_name = db.Column(db.String(255), nullable=False)
+    file_digest = db.Column(db.String(64), nullable=False)
+    period_start = db.Column(db.Date, nullable=False)
+    period_end = db.Column(db.Date, nullable=False)
+    line_count = db.Column(db.Integer, nullable=False)
+    recorded_count = db.Column(db.Integer, nullable=False)
+    opening_balance = db.Column(db.Numeric(12, 2))
+    closing_balance = db.Column(db.Numeric(12, 2))
+
+    source = db.relationship("StatementSource", lazy="joined")
+    lines = db.relationship(
+        "BankStatementLine", back_populates="statement_import",
+        cascade="all, delete-orphan", passive_deletes=True,
+    )
+
+    def __repr__(self):
+        return (
+            f"<StatementImport account={self.account_id} "
+            f"{self.period_start}..{self.period_end} "
+            f"{self.recorded_count}/{self.line_count} new>"
+        )
+
+
+class BankStatementLine(db.Model):
+    """One line a bank showed, recorded as the bank stated it.
+
+    The app's own record of a line it did not author.  Nothing here is derived
+    from a Shekel row and nothing here is edited afterwards: a statement line is
+    an OBSERVATION, and the whole point of ruling **R-FL** was that an
+    observation is what the app was missing.
+
+    Columns:
+        account_id   -- the account the line belongs to.  Held equal to its
+                        import's account by
+                        ``fk_bank_statement_lines_import_account``, so it is a
+                        co-located key rather than a copy a writer maintains --
+                        the same shape ``transaction_entries.account_id`` takes
+                        against its parent transaction.
+        import_id    -- the import that FIRST recorded this line.
+        posted_on    -- the day the bank posted it.  **This is the fact the
+                        whole arc exists to obtain**: measured against the
+                        developer's export, only 33 of 110 matched movements
+                        carried the day the bank posted them (finding
+                        **N-173**).
+        transaction_on -- the day the transaction itself happened, where the
+                        source distinguishes the two.  Equal to
+                        :attr:`posted_on` where it does not.
+        amount       -- signed, positive INTO the account (see the module
+                        docstring).
+        description  -- what the bank called it, verbatim.
+        source_category -- the bank's OWN category string, kept as provenance
+                        and never read as logic.  It is the bank's opinion
+                        about a merchant, not a Shekel category, and treating
+                        it as one would be a reference value that no
+                        ``ref`` table governs.
+        external_id  -- the source's own id for the line (OFX ``FITID``) where
+                        it has one.  CORROBORATION, not identity -- see below.
+        sequence_in_group -- the ordinal that completes the identity key.
+        running_balance -- the balance after this line, where the source
+                        carries one.  Recorded because it is what lets an
+                        import VERIFY itself (see
+                        ``statement_import.verify_running_balance``).
+
+    **A line's IDENTITY is ``(account_id, posted_on, amount,
+    sequence_in_group)``**, and the ordinal is what makes that key total.  Two
+    genuinely distinct charges can share a day and an amount -- the same coffee
+    twice -- and a key without the ordinal would reject the second as a
+    duplicate, which is silent money loss on exactly the shape a duplicate
+    detector is supposed to protect.  The ordinal is assigned in the source's
+    own order within its group.
+
+    **``external_id`` is corroboration rather than identity, and that is
+    measured.**  Across two SECU exports twelve days apart the positional key
+    above reproduced the ``FITID`` key exactly -- 0 keys in only one export, 0
+    disagreeing ids, over 342 shared lines -- so identity costs nothing by not
+    depending on it, while a source that HAS one still cannot write two lines
+    claiming it (``uq_bank_statement_lines_external_id``).  One identity rule
+    serves every adapter, including ``X-f6b``'s, instead of one rule per format.
+
+    **There is deliberately no ``transaction_on <= posted_on`` CHECK.**  The
+    obvious constraint is false on real data: 2 of 361 lines in the developer's
+    own SECU export carry an OFX ``DTUSER`` one day AFTER their ``DTPOSTED``
+    (both ACH deposits, 2026-02-24 and 2026-03-18).  A constraint that a real
+    statement violates would make the truth unimportable.
+    """
+
+    __tablename__ = "bank_statement_lines"
+    __table_args__ = (
+        # THE IDENTITY.  Re-importing an overlapping span cannot duplicate a
+        # line, structurally rather than by the importer remembering to check.
+        db.UniqueConstraint(
+            "account_id", "posted_on", "amount", "sequence_in_group",
+            name="uq_bank_statement_lines_identity",
+        ),
+        # A source that HAS its own id may not claim one twice.  Partial,
+        # because most adapters carry no external id and a NULL is not a claim.
+        db.Index(
+            "uq_bank_statement_lines_external_id",
+            "account_id", "external_id",
+            unique=True,
+            postgresql_where=db.text("external_id IS NOT NULL"),
+        ),
+        # This line's account IS its import's, guaranteed rather than
+        # maintained -- the same construction
+        # ``fk_transaction_entries_parent_account`` uses.  CASCADE so that
+        # deleting an account takes its imports and their lines with it; there
+        # is no door in ``app/`` that deletes an import on its own.
+        db.ForeignKeyConstraint(
+            ["import_id", "account_id"],
+            ["budget.statement_imports.id",
+             "budget.statement_imports.account_id"],
+            name="fk_bank_statement_lines_import_account",
+            ondelete="CASCADE",
+        ),
+        db.CheckConstraint(
+            "sequence_in_group >= 0",
+            name="ck_bank_statement_lines_sequence_non_negative",
+        ),
+        # A statement line MOVES money, and its figures are REAL numbers.
+        # ``docs/coding-standards.md`` requires a CHECK on every financial
+        # column; the adapter's refusal of a line stating no amount is the
+        # Python half of the same rule.
+        #
+        # **The ``< 'NaN'`` term is the part that is not obvious, and a first
+        # draft of this constraint got it wrong.**  PostgreSQL's ``numeric``
+        # accepts ``NaN`` and orders it ABOVE every real number, so
+        # ``NaN <> 0`` is TRUE and ``NaN = NaN`` is TRUE -- a plain non-zero
+        # test admits it.  Since NaN sorts greatest, ``x < 'NaN'`` is true for
+        # every real value and false for NaN itself, which is what makes a NaN
+        # amount unrepresentable rather than merely unreached.  It matters
+        # because a NaN amount compares equal to nothing (invisible to every
+        # matcher), poisons ``SUM()`` over the account, and raises inside the
+        # money display macro -- so the page 500s on every later load.
+        db.CheckConstraint(
+            "amount <> 0 AND amount < 'NaN'::numeric "
+            "AND (running_balance IS NULL "
+            "OR running_balance < 'NaN'::numeric)",
+            name="ck_bank_statement_lines_amount_real_nonzero",
+        ),
+        # The walk reads a whole account in posted-day order.
+        db.Index(
+            "idx_bank_statement_lines_account_day",
+            "account_id", "posted_on",
+        ),
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    # No direct FK: the composite key above reaches ``budget.accounts`` through
+    # the import, which is what holds the two accounts equal.  Same shape, same
+    # reason, as ``transaction_entries.account_id``.
+    account_id = db.Column(db.Integer, nullable=False)
+    import_id = db.Column(db.Integer, nullable=False)
+    posted_on = db.Column(db.Date, nullable=False)
+    transaction_on = db.Column(db.Date, nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    description = db.Column(db.String(200), nullable=False)
+    source_category = db.Column(db.String(100))
+    external_id = db.Column(db.String(64))
+    # NO server default, deliberately.  The table is new and empty, so there
+    # is no backfill to serve -- and a default on a component of the IDENTITY
+    # key would let a future writer that forgets to compute the ordinal write a
+    # plausible row instead of failing.
+    sequence_in_group = db.Column(db.SmallInteger, nullable=False)
+    running_balance = db.Column(db.Numeric(12, 2))
+
+    statement_import = db.relationship(
+        "StatementImport", back_populates="lines",
+        foreign_keys=[import_id, account_id],
+    )
+
+    def __repr__(self):
+        return (
+            f"<BankStatementLine {self.posted_on} {self.amount} "
+            f"'{self.description[:24]}' ({self.id})>"
+        )
