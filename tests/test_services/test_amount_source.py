@@ -58,7 +58,10 @@ from app.services.cash_ledger import (
     AmountRule,
     amount_basis,
     amount_rule,
+    amounts_by_id,
+    contributions_by_id,
     live_amounts,
+    owned_amount,
     resolve_transaction_amount,
     resolve_transfer_amount,
 )
@@ -1448,3 +1451,74 @@ class TestTheBasisIsOneDerivationPerReadPass:
         ctx = BalanceContext.build(seed_user["user"].id)
 
         assert ctx.amounts() is ctx.amounts()
+
+
+class TestABudgetIsNotAContribution:
+    """Ruling E-21's base, and the two accessors that answer it.
+
+    A row's BUDGET and what it CONTRIBUTES are different questions, and plan
+    step X-au-c2b's reader routing turns on their being different: an
+    entry-tracked row's remaining, its over-budget flag and its amount cell all
+    answer on the budget, which E-21 fixes on the row's own amount
+    unconditionally -- never the entered actual, never status-dependent.  A
+    reader handed a contribution instead would answer ``$0.00`` for a Cancelled
+    envelope whose budget is still its budget, and would re-base a settled row's
+    variance on the very number it is being compared against.
+    """
+
+    def test_a_cancelled_envelopes_budget_is_still_its_budget(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The batch answers the amount; the contribution answers zero.
+
+        Both are correct answers to their own question, which is why the reader
+        has to pick.  ``$0.00`` on a Cancelled row is what a balance should
+        count it as; it is not what the envelope was budgeted.
+        """
+        txn = add_txn(
+            db.session, seed_user, seed_periods[0], "Groceries", "400.00",
+        )
+        txn.status_id = ref_cache.status_id(StatusEnum.CANCELLED)
+        db.session.flush()
+        basis = _basis_for(seed_user)
+
+        assert amounts_by_id([txn], basis) == {txn.id: Decimal("400.00")}
+        assert contributions_by_id([txn], basis) == {txn.id: Decimal("0")}
+
+    def test_an_entered_actual_does_not_move_the_budget(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A human's figure is what the row COST, never what it was budgeted.
+
+        The control on the surprises list: its two terms are the estimate and
+        the actual, so an estimate accessor that answered the actual would make
+        every delta zero and the list empty.  ``owned_amount`` and
+        ``owned_contribution`` are the pair, and this is the row that separates
+        them.
+        """
+        txn = add_txn(
+            db.session, seed_user, seed_periods[0], "Fuel", "60.00",
+        )
+        txn.actual_amount = Decimal("81.40")
+        db.session.flush()
+
+        assert owned_amount(txn) == Decimal("60.00")
+        assert owned_contribution(txn) == Decimal("81.40")
+        assert amounts_by_id(
+            [txn], _basis_for(seed_user),
+        ) == {txn.id: Decimal("60.00")}
+
+    def test_the_batch_refuses_rather_than_skipping_a_derived_row(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``owned_amount`` raises where the column it replaced answered ``None``.
+
+        The reason every settled-only reader takes the accessor rather than the
+        column: on the day a cutover points a derived row at one of them, the
+        failure is named and loud instead of a ``None`` reaching a subtraction.
+        """
+        template = _priced_template(seed_user)
+        txn = _template_row(seed_user, seed_periods[0], template)
+
+        with pytest.raises(AmountUnresolvable, match="owns its amount"):
+            owned_amount(txn)

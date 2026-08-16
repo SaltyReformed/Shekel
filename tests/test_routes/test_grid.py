@@ -12,6 +12,7 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
+from app.routes._render_helpers import fragment_budgets
 from app.models.account import Account
 from app.models.category import Category
 from app.models.scenario import Scenario
@@ -6876,23 +6877,29 @@ class TestMobileCardActionBar:
                 ): [txn],
             }
 
+            # The card reads its amount off a published ``budgets`` map
+            # since plan step X-au-c2b, where it read a transient
+            # ``txn.live_estimated_amount`` behind an ``is defined`` guard.
+            # Resolved through the app's own door so the figure rendered here
+            # is the one the grid would show.
+            budgets = fragment_budgets(txn)
             tmpl = app.jinja_env.from_string(
                 "{% from 'grid/_grid_row_macros.html'"
                 " import render_row_card %}"
-                "{{ render_row_card(rk, period, matched, {},"
+                "{{ render_row_card(rk, period, matched, {}, budgets,"
                 " can_edit, prefix) }}",
             )
             with app.test_request_context("/"):
                 no_prefix = tmpl.render(
-                    rk=rk, period=period, matched=matched,
+                    rk=rk, period=period, matched=matched, budgets=budgets,
                     can_edit=True, prefix="",
                 )
                 tp_prefix = tmpl.render(
-                    rk=rk, period=period, matched=matched,
+                    rk=rk, period=period, matched=matched, budgets=budgets,
                     can_edit=True, prefix="tp",
                 )
                 plan_prefix = tmpl.render(
-                    rk=rk, period=period, matched=matched,
+                    rk=rk, period=period, matched=matched, budgets=budgets,
                     can_edit=True, prefix="plan",
                 )
 
@@ -7396,6 +7403,14 @@ class TestMobilePlanTab:
                     (rk_exp.category_id, rk_exp.template_id,
                      rk_exp.txn_name, period.period_id): [txn_exp],
                 },
+                # The Plan row reads its amount off a published map since
+                # plan step X-au-c2b (it read a transient
+                # ``txn.live_estimated_amount`` behind an ``is defined``
+                # guard).  A literal here rather than a resolve: these rows are
+                # ``SimpleNamespace`` stand-ins and the assertions below are
+                # STRUCTURAL -- which sections render, how many rows -- so what
+                # the map contains is not the subject.
+                budgets={txn_exp.id: txn_exp.estimated_amount},
                 plan_columns={
                     period.period_id: balance_at.GridColumn(
                         balance=Decimal("3000.00"),
@@ -7459,6 +7474,14 @@ class TestMobilePlanTab:
                     (rk_inc.category_id, rk_inc.template_id,
                      rk_inc.txn_name, period.period_id): [txn_inc],
                 },
+                # The Plan row reads its amount off a published map since
+                # plan step X-au-c2b (it read a transient
+                # ``txn.live_estimated_amount`` behind an ``is defined``
+                # guard).  A literal here rather than a resolve: these rows are
+                # ``SimpleNamespace`` stand-ins and the assertions below are
+                # STRUCTURAL -- which sections render, how many rows -- so what
+                # the map contains is not the subject.
+                budgets={txn_inc.id: txn_inc.estimated_amount},
                 plan_columns={
                     period.period_id: balance_at.GridColumn(
                         balance=Decimal("3000.00"),
@@ -7529,6 +7552,17 @@ class TestMobilePlanTab:
                 plan_matched_by_row_period={
                     (rk.category_id, rk.template_id,
                      rk.txn_name, period.period_id): [txn_a, txn_b],
+                },
+                # The Plan row reads its amount off a published map since
+                # plan step X-au-c2b (it read a transient
+                # ``txn.live_estimated_amount`` behind an ``is defined``
+                # guard).  A literal here rather than a resolve: these rows are
+                # ``SimpleNamespace`` stand-ins and the assertions below are
+                # STRUCTURAL -- which sections render, how many rows -- so what
+                # the map contains is not the subject.
+                budgets={
+                    txn_a.id: txn_a.estimated_amount,
+                    txn_b.id: txn_b.estimated_amount,
                 },
                 plan_columns={
                     period.period_id: balance_at.GridColumn(

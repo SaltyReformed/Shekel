@@ -132,7 +132,7 @@ from app import ref_cache
 from app.enums import AmountSourceEnum
 from app.exceptions import AmountUnresolvable
 from app.services import template_amount_service
-from app.services.row_valuation import own_figure
+from app.services.row_valuation import own_figure, owned_amount
 from app.utils.money import round_money
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -494,6 +494,58 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     return _RULE_ANSWERS[amount_rule(txn)](txn, basis)
 
 
+def amounts_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
+    """Return ``{transaction_id: what the row's amount IS}`` for *rows*.
+
+    **The batch every reader that takes a row's BUDGET uses** (plan step
+    X-au-c2b), and the sibling of
+    :func:`~._amounts.contributions_by_id` rather than a second spelling of it.
+    The two answer different questions and a reader wants one or the other:
+
+      * a CONTRIBUTION is what the row is worth to a balance -- ``0`` for an
+        excluded row, the entered ``actual_amount`` when a human read one off a
+        statement, else the resolved amount;
+      * an AMOUNT is what the row's budget IS, unconditionally.
+
+    **Ruling E-21 is why the second exists.**  An entry-tracked bill row's
+    budget base is ``estimated_amount`` -- never ``actual_amount``, never
+    status-dependent -- so the row's three figures (the amount cell, the
+    remaining, the over-budget flag) all answer one question.  A contribution
+    would break both halves of that: it answers ``$0.00`` for a Cancelled
+    envelope, whose budget is still its budget, and it answers the entered
+    actual for a settled one, which would silently re-base a variance on the
+    number it is being compared against.
+
+    **There is deliberately NO status gate above the resolve**, which is the one
+    place this differs in shape from ``contributions_by_id``.  That batch gates
+    first because an excluded row is worth ``$0.00`` and has no producer to
+    answer it; here the excluded row's budget is exactly what is being asked
+    for, so the resolver is asked for every row.  A per-kind cutover
+    (X-au-d..X-au-i) that declares a row derived owes that row a producer that
+    answers whatever its status -- and rule 2 and rule 4 stopped reading status
+    at this same step precisely so they can.
+
+    Every id in *rows* appears in the result, so a caller indexes it with ``[]``
+    and a row it forgot to price raises a ``KeyError`` where it is read.  There
+    is deliberately no ``.get(id, default)`` shape: a default here is a
+    fabricated figure in a money path.
+
+    Args:
+        rows: The loaded rows to price.  They may span accounts -- the basis is
+            keyed on the owner, not on one account -- but every one must belong
+            to *basis*'s owner and scenario.
+        basis: The read pass's :class:`AmountBasis`.
+
+    Returns:
+        ``{transaction_id: Decimal}`` covering every row.
+
+    Raises:
+        AmountUnresolvable: From the resolver, for a row whose rule cannot
+            answer.  A refusal is never a fallback (see the module docstring).
+    """
+    return {row.id: resolve_transaction_amount(row, basis) for row in rows}
+
+
 def resolve_transfer_amount(xfer) -> Decimal:
     """Return what a parent TRANSFER's amount is.
 
@@ -670,7 +722,7 @@ def _own_answer(txn, _basis: AmountBasis) -> Decimal:
     Returns:
         The row's stored ``estimated_amount``.
     """
-    return own_figure(txn.estimated_amount, "transaction", txn.id)
+    return owned_amount(txn)
 
 
 def _salary_answer(txn, basis: AmountBasis) -> Decimal:

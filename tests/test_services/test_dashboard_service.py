@@ -111,13 +111,18 @@ class TestBillRowSingleBase:
         calls rather than passing a literal, so the non-entry-tracked
         assertions below still grade what the row is actually worth instead of
         a number the test handed itself.
+
+        The BUDGET is resolved the same way and off the SAME basis (plan step
+        X-au-c2b): an entry-tracked row answers on ruling E-21's base rather
+        than on its contribution, and the producer takes both.
         """
-        contributions = cash_ledger.contributions_by_id(
-            [txn],
-            cash_ledger.amount_basis(seed_user["user"].id, txn.scenario_id),
+        basis = cash_ledger.amount_basis(
+            seed_user["user"].id, txn.scenario_id,
         )
+        contributions = cash_ledger.contributions_by_id([txn], basis)
+        budgets = cash_ledger.amounts_by_id([txn], basis)
         return dashboard_service.txn_to_bill_dict(
-            txn, today, contributions[txn.id],
+            txn, today, contributions[txn.id], budgets[txn.id],
         )
 
     def _add_entries(self, db, seed_user, txn, *amounts):

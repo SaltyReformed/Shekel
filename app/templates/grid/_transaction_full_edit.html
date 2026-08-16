@@ -131,7 +131,7 @@
       <div class="col">
         <label class="form-label mb-0 small">Estimated</label>
         <input type="number" step="0.01" inputmode="decimal" name="estimated_amount"
-               value="{{ txn.estimated_amount }}"
+               value="{{ budget }}"
                class="form-control form-control-sm"
                placeholder="Estimated amount"
                {{ 'disabled' if locked else '' }}>

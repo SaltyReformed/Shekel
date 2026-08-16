@@ -22,9 +22,41 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transaction_entry import TransactionEntry
 from app.models.ref import Status, TransactionType
+from app.routes._render_helpers import fragment_budgets
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services import pay_period_service
 
+
+def _sums(rows):
+    """``build_entry_sums_dict`` with the budget map its caller must supply.
+
+    The builder takes ``{transaction_id: resolved amount}`` since plan step
+    X-au-c2b -- it read ``txn.estimated_amount``, the COLUMN a derived row does
+    not carry -- so every route that renders a cell resolves its rows once and
+    hands the map down.  These tests resolve through the app's own single-set
+    door (:func:`~app.routes._render_helpers.fragment_budgets`) rather than
+    passing a literal, so the figures they assert are the ones the app would
+    show.
+
+    Args:
+        rows: The rows to aggregate.
+
+    Returns:
+        The ``{txn_id: sums}`` mapping.
+    """
+    return build_entry_sums_dict(rows, fragment_budgets(*rows))
+
+
+def _lists(rows):
+    """``build_entry_lists_dict`` with the same budget map (see :func:`_sums`).
+
+    Args:
+        rows: The rows to build entry-list contexts for.
+
+    Returns:
+        The ``{txn_id: entry_list_view}`` mapping.
+    """
+    return build_entry_lists_dict(rows, fragment_budgets(*rows))
 
 def _create_tracked_txn(seed_user, seed_periods_today, period_index=0,
                          estimated=Decimal("500.00")):
@@ -113,7 +145,7 @@ class TestBuildEntrySumsDict:
             _add_entry(txn, seed_user, Decimal("50.00"))
             db.session.commit()
 
-            result = build_entry_sums_dict([txn])
+            result = _sums([txn])
 
             assert txn.id in result
             sums = result[txn.id]
@@ -131,7 +163,7 @@ class TestBuildEntrySumsDict:
             _add_entry(txn, seed_user, Decimal("75.00"), is_credit=True)
             db.session.commit()
 
-            result = build_entry_sums_dict([txn])
+            result = _sums([txn])
 
             sums = result[txn.id]
             assert sums["debit"] == Decimal("0")
@@ -149,7 +181,7 @@ class TestBuildEntrySumsDict:
             _add_entry(txn, seed_user, Decimal("100.00"), is_credit=True)
             db.session.commit()
 
-            result = build_entry_sums_dict([txn])
+            result = _sums([txn])
 
             sums = result[txn.id]
             # 150 + 80 = 230 debit, 100 credit, 330 total
@@ -164,7 +196,7 @@ class TestBuildEntrySumsDict:
             txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
             db.session.commit()
 
-            result = build_entry_sums_dict([txn])
+            result = _sums([txn])
 
             assert txn.id not in result
 
@@ -174,7 +206,7 @@ class TestBuildEntrySumsDict:
             txn = _create_plain_txn(seed_user, seed_periods_today)
             db.session.commit()
 
-            result = build_entry_sums_dict([txn])
+            result = _sums([txn])
 
             assert txn.id not in result
 
@@ -194,7 +226,7 @@ class TestBuildEntrySumsDict:
             _add_entry(txn2, seed_user, Decimal("50.00"), is_credit=True)
             db.session.commit()
 
-            result = build_entry_sums_dict([txn1, txn2])
+            result = _sums([txn1, txn2])
 
             assert result[txn1.id]["total"] == Decimal("100.00")
             assert result[txn1.id]["count"] == 1
@@ -204,7 +236,7 @@ class TestBuildEntrySumsDict:
     def test_empty_list_returns_empty_dict(self, app):
         """Empty transaction list returns empty dict."""
         with app.app_context():
-            result = build_entry_sums_dict([])
+            result = _sums([])
             assert result == {}
 
     def test_c31_4_remaining_server_computed(
@@ -226,7 +258,7 @@ class TestBuildEntrySumsDict:
             _add_entry(txn, seed_user, Decimal("80.00"))
             db.session.commit()
 
-            sums = build_entry_sums_dict([txn])[txn.id]
+            sums = _sums([txn])[txn.id]
             assert sums["remaining"] == Decimal("270.00")
             assert sums["over_budget"] is False
             assert isinstance(sums["remaining"], Decimal)
@@ -245,7 +277,7 @@ class TestBuildEntrySumsDict:
             _add_entry(txn, seed_user, Decimal("600.00"))
             db.session.commit()
 
-            sums = build_entry_sums_dict([txn])[txn.id]
+            sums = _sums([txn])[txn.id]
             assert sums["remaining"] == Decimal("-100.00")
             assert sums["over_budget"] is True
 
@@ -276,7 +308,7 @@ class TestBuildEntryListsDict:
             _add_entry(txn, seed_user, Decimal("80.00"))
             db.session.commit()
 
-            result = build_entry_lists_dict([txn])
+            result = _lists([txn])
 
             assert txn.id in result
             data = result[txn.id]
@@ -304,7 +336,7 @@ class TestBuildEntryListsDict:
             txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
             db.session.commit()
 
-            result = build_entry_lists_dict([txn])
+            result = _lists([txn])
 
             assert txn.id in result
             data = result[txn.id]
@@ -326,7 +358,7 @@ class TestBuildEntryListsDict:
             txn = _create_plain_txn(seed_user, seed_periods_today)
             db.session.commit()
 
-            result = build_entry_lists_dict([txn])
+            result = _lists([txn])
 
             assert txn.id not in result
 
@@ -372,7 +404,7 @@ class TestBuildEntryListsDict:
             db.session.add(txn)
             db.session.commit()
 
-            result = build_entry_lists_dict([txn])
+            result = _lists([txn])
 
             assert txn.id not in result
 
@@ -398,7 +430,7 @@ class TestBuildEntryListsDict:
             _add_entry(txn2, seed_user, Decimal("250.00"))
             db.session.commit()
 
-            result = build_entry_lists_dict([txn1, txn2])
+            result = _lists([txn1, txn2])
 
             assert result[txn1.id]["remaining"] == Decimal("400.00")
             assert len(result[txn1.id]["entries"]) == 1
@@ -408,7 +440,7 @@ class TestBuildEntryListsDict:
     def test_empty_list_returns_empty_dict(self, app):
         """Empty transaction list returns empty dict, no errors."""
         with app.app_context():
-            result = build_entry_lists_dict([])
+            result = _lists([])
             assert result == {}
 
 
@@ -736,7 +768,7 @@ class TestTheEntryListContextHasOneProducer:
             )
             db.session.commit()
 
-            data = build_entry_lists_dict([txn])[txn.id]
+            data = _lists([txn])[txn.id]
             unobserved_id = unobserved.id
 
         assert data["posted_ids"] == {inside.id, outside.id}, (
@@ -761,7 +793,7 @@ class TestTheEntryListContextHasOneProducer:
             txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
             _add_entry(txn, seed_user, Decimal("150.00"))
             db.session.commit()
-            produced = set(build_entry_lists_dict([txn])[txn.id])
+            produced = set(_lists([txn])[txn.id])
 
         macro = Path(app.root_path) / "templates/grid/_grid_row_macros.html"
         source = macro.read_text(encoding="utf-8")
@@ -775,3 +807,98 @@ class TestTheEntryListContextHasOneProducer:
             "Undefined as False SILENTLY -- so the partial would render the "
             "wrong arm rather than raising"
         )
+
+
+class TestTheAmountFenceIsGone:
+    """No cell template still reads the amount COLUMN, or a silent fallback.
+
+    Plan step X-au-c2b replaced a transient ``txn.live_estimated_amount`` --
+    annotated onto each row by ONE route and read everywhere behind
+    ``if ... is defined else txn.estimated_amount`` -- with a ``budgets`` map
+    every render path publishes.  Both halves had to go together, and the
+    reason is the shape ``TestTheEntryListContextHasOneProducer`` above records:
+    a Jinja ``Undefined`` answers silently, so a render path that forgot to set
+    the attribute showed the stale column with nothing on screen to say so.
+
+    These are SOURCE assertions rather than render assertions, deliberately.
+    What is being asserted is that the fence has no way back -- a future edit
+    reintroducing either spelling would render correctly on the one path that
+    sets it and wrongly everywhere else, which is exactly the state that shipped
+    the posted-purchase bug and which no single render test caught.
+    """
+
+    _CELL_TEMPLATES = (
+        "grid/_transaction_cell.html",
+        "grid/_grid_row_macros.html",
+        "grid/_mobile_this_period.html",
+        "grid/_mobile_plan.html",
+        "grid/_mobile_card_single.html",
+    )
+
+    @staticmethod
+    def _source(app, name):
+        """Return a template's SOURCE text (not its render).
+
+        Args:
+            app: The Flask app, for its Jinja loader.
+            name: The template's loader name.
+
+        Returns:
+            The template file's text.
+        """
+        source, _path, _uptodate = app.jinja_env.loader.get_source(
+            app.jinja_env, name,
+        )
+        return source
+
+    def test_no_cell_template_reads_the_transient_attribute(self, app):
+        """``live_estimated_amount`` exists nowhere but in prose about it."""
+        for name in self._CELL_TEMPLATES:
+            for line in self._source(app, name).splitlines():
+                if "live_estimated_amount" not in line:
+                    continue
+                assert line.lstrip().startswith(("{#", "#", "-#", "{%-")) or (
+                    "``" in line
+                ), (
+                    f"{name} still READS the transient attribute: {line!r}"
+                )
+
+    def test_no_cell_template_reads_the_amount_column_for_display(self, app):
+        """``estimated_amount`` survives only as a form FIELD NAME and in prose.
+
+        The distinction is the point: ``name="estimated_amount"`` is the column
+        an edit POSTS to, which is correct and unchanged; ``{{ txn.estimated_amount }}``
+        is a READ of a column a derived row does not carry.
+        """
+        for name in self._CELL_TEMPLATES:
+            for line in self._source(app, name).splitlines():
+                if "estimated_amount" not in line:
+                    continue
+                assert 'name="estimated_amount"' in line or "``" in line, (
+                    f"{name} still reads the amount column: {line!r}"
+                )
+
+    def test_a_render_without_the_map_FAILS_rather_than_falling_back(self, app):
+        """The replacement for the fence: a missing map is an error, not a shrug.
+
+        ``budgets[t.id]`` on an absent map raises ``UndefinedError`` where
+        ``t.live_estimated_amount if ... is defined`` rendered the stale column.
+        That difference IS the fix -- a render path that forgets to publish the
+        map now cannot ship a wrong figure -- so it is asserted rather than left
+        as a property of Jinja nobody wrote down.
+        """
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+
+        import jinja2  # pylint: disable=import-outside-toplevel
+
+        txn = SimpleNamespace(
+            id=1, name="Rent", actual_amount=None,
+            estimated_amount=Decimal("1200.00"),
+            status=SimpleNamespace(is_settled=False, name="Projected"),
+            status_id=99, transfer_id=None, credit_payback_for_id=None,
+            is_expense=True, tracks_purchases=False, notes=None,
+        )
+        template = app.jinja_env.get_template("grid/_transaction_cell.html")
+        with app.test_request_context("/"):
+            with pytest.raises(jinja2.exceptions.UndefinedError):
+                template.render(txn=txn)

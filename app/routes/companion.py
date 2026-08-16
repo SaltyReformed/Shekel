@@ -47,6 +47,8 @@ from app.enums import RoleEnum
 from app.extensions import db
 from app.models.category import Category
 from app.services import companion_service, grid_view_service
+from app.services.balance_at import BalanceContext
+from app.services.cash_ledger import amounts_by_id
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError
@@ -117,19 +119,28 @@ def _build_partial_context(
     matched_by_row_period = grid_view_service.build_matched_by_row_period(
         income_row_keys, expense_row_keys, [view.period], transactions,
     )
-    entry_sums = build_entry_sums_dict(transactions)
+    # The read pass's OWN basis, built for the LINKED OWNER: the companion is
+    # looking at their schedule, so the salary profiles and loans that price
+    # these rows are the owner's (plan step X-au-c2b).  One basis for the whole
+    # page, and both builders below read the same map, so a card's amount and
+    # its progress numerator cannot come from two derivations.
+    budgets = amounts_by_id(
+        transactions, BalanceContext.build(owner_id).amounts(),
+    )
+    entry_sums = build_entry_sums_dict(transactions, budgets)
     # Pre-render context for the inline envelope entries list -- see
     # the matching comment in app/routes/grid/page.py::_build_grid_row_data
     # for the rate-limit rationale.  Companion shares the macro with
     # owner mobile (mobile-first v3 plan Commit 13), so it needs the
     # same context shape.
-    entry_lists = build_entry_lists_dict(transactions)
+    entry_lists = build_entry_lists_dict(transactions, budgets)
     return {
         "periods": [view.period],
         "current_period": view.period,
         "income_row_keys": income_row_keys,
         "expense_row_keys": expense_row_keys,
         "matched_by_row_period": matched_by_row_period,
+        "budgets": budgets,
         "entry_sums": entry_sums,
         "entry_lists": entry_lists,
         # The USER's civil day, never the process's.  This reaches

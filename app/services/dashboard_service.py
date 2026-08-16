@@ -224,7 +224,7 @@ def _is_entry_tracked(txn: Transaction) -> bool:
 
     Per E-21 (MED-03 / F-028 / F-056) entry-tracked bill rows anchor
     every visible figure (amount cell, remaining, over-budget flag) on
-    ``estimated_amount`` -- the declared budget base -- so the row's
+    the row's RESOLVED amount -- the declared budget base -- so the row's
     three numbers always answer the same question.  Centralising the
     "is this row entry-tracked" check here keeps :func:`txn_to_bill_dict`
     and :func:`_entry_progress_fields` from re-deriving it inline (and
@@ -243,7 +243,7 @@ def _is_entry_tracked(txn: Transaction) -> bool:
 
 
 def txn_to_bill_dict(
-    txn: Transaction, today: date, contribution: Decimal,
+    txn: Transaction, today: date, contribution: Decimal, budget: Decimal,
 ) -> dict:
     """Build a bill dict for the dashboard bills template from a Transaction.
 
@@ -255,9 +255,9 @@ def txn_to_bill_dict(
     /joinedload to avoid N+1 queries.
 
     E-21 / MED-03 / F-028 / F-056: for entry-tracked (envelope) bills
-    the ``amount`` field is set from ``estimated_amount`` so it shares
+    the ``amount`` field is set from the row's resolved BUDGET so it shares
     the same declared base as ``entry_remaining`` and
-    ``entry_over_budget`` (also derived from ``estimated_amount`` in
+    ``entry_over_budget`` (built from the same figure in
     :func:`_entry_progress_fields`).  ``amount_base`` carries the
     label the template surfaces to the user ("budget") so the base is
     disclosed in the UI, not implicit.  Non-entry-tracked rows show what
@@ -282,6 +282,13 @@ def txn_to_bill_dict(
             ``actual_amount`` where there is one, else the row's resolved
             amount.  Read only for a non-entry-tracked row; an envelope
             answers on its E-21 budget base instead.
+        budget: What the row's amount RESOLVES to, from the caller's
+            :func:`~app.services.cash_ledger.amounts_by_id` map -- the E-21
+            declared base.  An ARGUMENT rather than a read of
+            ``txn.estimated_amount`` since plan step X-au-c2b, for the reason
+            the contribution beside it is one: under the amount model a derived
+            row stores no figure in that column, and this is the second of the
+            two questions a caller must resolve for a whole row set at once.
 
     Returns:
         Dict matching the bills template contract, including the
@@ -292,7 +299,7 @@ def txn_to_bill_dict(
     days_until = (txn.due_date - today).days if txn.due_date else None
     is_entry_tracked = _is_entry_tracked(txn)
     if is_entry_tracked:
-        amount = txn.estimated_amount
+        amount = budget
         amount_base = "budget"
     else:
         amount = contribution
@@ -309,11 +316,11 @@ def txn_to_bill_dict(
         "is_transfer": txn.transfer_id is not None,
         "days_until_due": days_until,
     }
-    bill.update(_entry_progress_fields(txn))
+    bill.update(_entry_progress_fields(txn, budget))
     return bill
 
 
-def _entry_progress_fields(txn: Transaction) -> dict:
+def _entry_progress_fields(txn: Transaction, budget: Decimal) -> dict:
     """Build entry progress fields for a bill dict from a Transaction.
 
     Returns a dict with keys is_tracked, entry_total, entry_count,
@@ -326,17 +333,21 @@ def _entry_progress_fields(txn: Transaction) -> dict:
     amount.
 
     Per E-21 / MED-03 / F-028 / F-056 the remaining and over-budget
-    figures are computed against ``txn.estimated_amount`` -- the
+    figures are computed against the row's RESOLVED amount -- the
     declared E-21 budget base -- so the row's three numbers (amount,
     remaining, over-budget) all share one base.  ``txn_to_bill_dict``
-    anchors the amount cell on the same base; the template surfaces
-    ``bill.amount_base`` to disclose it.
+    anchors the amount cell on the same base and passes it in; the template
+    surfaces ``bill.amount_base`` to disclose it.
 
     Expects txn.template and txn.entries to already be loaded on the
     transaction object (eager-loaded by the caller).
 
     Args:
         txn: The Transaction to inspect.
+        budget: The row's resolved amount -- the E-21 base, resolved once for
+            the whole row set by the caller (plan step X-au-c2b).  It was read
+            here as ``txn.estimated_amount``, the COLUMN a derived row does not
+            carry.
 
     Returns:
         Dict with the five entry progress fields.
@@ -354,17 +365,15 @@ def _entry_progress_fields(txn: Transaction) -> dict:
 
     debit, credit = compute_entry_sums(txn.entries)
     total = debit + credit
-    remaining = compute_remaining(txn.estimated_amount, txn.entries)
-    over_budget = total > txn.estimated_amount
+    remaining = compute_remaining(budget, txn.entries)
+    over_budget = total > budget
     # Templates display, never compute (coding-standards): the
     # over-budget overage is the positive dollar amount by which the
     # entries exceed the declared budget base.  Computing it here keeps
     # the ``|abs`` arithmetic out of the bill-row template, where it
     # previously lived.  ``None`` when the row is not over budget so the
     # template renders the "remaining" branch instead.
-    over_budget_amount = (
-        total - txn.estimated_amount if over_budget else None
-    )
+    over_budget_amount = total - budget if over_budget else None
     return {
         "is_tracked": True,
         "entry_total": total,

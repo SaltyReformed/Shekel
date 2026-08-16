@@ -16,6 +16,7 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import posting_service, transfer_service
+from app.services.cash_ledger import resolve_transaction_amount
 from app.services.entry_service import compute_actual_from_entries
 from app.utils.balance_predicates import is_projected_clause
 from app.utils.log_events import BUSINESS, EVT_CARRY_FORWARD, log_event
@@ -195,7 +196,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
         # session for batch atomicity.
         for txn in ctx.envelope_txns:
             _settle_source_and_roll_leftover(
-                txn, ctx.target_period, scenario_id, ctx.schedule,
+                txn, ctx.target_period, ctx.basis, ctx.schedule,
             )
             count += 1
 
@@ -265,7 +266,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
     return count
 
 
-def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id,
+def _settle_source_and_roll_leftover(source_txn, target_period, basis,
                                     schedule):
     """Settle an envelope source row and roll its leftover into the target.
 
@@ -275,8 +276,8 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id,
       1. Compute ``entries_sum`` as ``sum(e.amount for e in
          source.entries)``.  Empty entries -> ``Decimal("0")`` so the
          full estimated amount rolls forward.
-      2. Compute ``leftover = max(Decimal("0"), source.estimated_amount
-         - entries_sum)``.  Overspend (``entries_sum > estimated``)
+      2. Compute ``leftover = max(Decimal("0"), <the source's RESOLVED
+         amount> - entries_sum)``.  Overspend (``entries_sum > budget``)
          clamps to zero -- the actual overspend is recorded on the
          settled source row's ``actual_amount`` and on its entries.
       3. If ``leftover > 0``, resolve the destination row via
@@ -288,8 +289,12 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id,
          or (c) creates a fresh ``is_override`` row carrying the leftover
          when neither applies (an inactive template, or a destination
          whose only row is finalised or soft-deleted).
-         Then bump the resolved row: ``estimated_amount += leftover`` and
-         flip ``is_override = True``.  The flip blocks future
+         Then bump the resolved row: its own resolved amount plus the
+         leftover is written to ``estimated_amount``, its ``amount_source_id``
+         is CLEARED (a topped-up row states its own figure from then on --
+         ``ck_transactions_amount_ownership`` pairs the two, so writing one
+         without the other is an ``IntegrityError``), and ``is_override``
+         flips ``True``.  The flip blocks future
          recurrence-engine passes from regenerating the row (verified by
          the ``is_override`` skip clause in
          ``app/services/recurrence_engine.py``).  A freshly created row
@@ -321,9 +326,10 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id,
             (``ctx.schedule``), passed through to the target-row resolution.
             Passed pre-fetched to avoid a redundant lookup; the
             caller already validated ownership.
-        scenario_id: The scenario the source row belongs to.  Used in
-            the target-row lookup and the recurrence-engine call so
-            cross-scenario data is never touched.
+        basis: The request's :class:`~app.services.cash_ledger.AmountBasis`
+            (``ctx.basis``).  Its ``scenario_id`` scopes the target-row lookup
+            and the recurrence-engine call so cross-scenario data is never
+            touched, and it prices both ends of the rollover.
 
     Raises:
         ValidationError: Only on the ``AMBIGUOUS`` guard -- more than one
@@ -350,7 +356,13 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id,
     # lazy-load SELECT inside no_autoflush, which is safe because
     # this function never mutates entries.
     entries_sum = compute_actual_from_entries(source_txn.entries)
-    leftover = max(Decimal("0"), source_txn.estimated_amount - entries_sum)
+    # The source's BUDGET, resolved rather than read off the column (plan step
+    # X-au-c2b): ruling E-21 fixes an envelope's base on its own amount
+    # unconditionally, and a derived row stores none.
+    leftover = max(
+        Decimal("0"),
+        resolve_transaction_amount(source_txn, basis) - entries_sum,
+    )
 
     # Bump the target only when there is unspent leftover.  Overspend
     # and exact-spend cases (leftover == 0) settle the source without
@@ -360,19 +372,29 @@ def _settle_source_and_roll_leftover(source_txn, target_period, scenario_id,
     # user does not need to mutate.
     if leftover > 0:
         target_row = _resolve_or_create_target_row(
-            source_txn, target_period, scenario_id, recurrence_engine,
+            source_txn, target_period, basis, recurrence_engine,
             schedule,
         )
+        # Resolve BEFORE writing, and clear the source in the same act: a
+        # topped-up row states its own figure from then on, which is what
+        # ``ck_transactions_amount_ownership`` pairs with a non-NULL amount
+        # (plan step X-au-c1).  Writing the column while a relation still
+        # claimed the row would be an ``IntegrityError``, and reading the
+        # column instead of resolving it would meet a ``None`` on a derived
+        # target.  It is a no-op on today's data -- nothing is declared -- and
+        # the reason it is written now is that the read above is incoherent
+        # without it.
         target_row.estimated_amount = (
-            target_row.estimated_amount + leftover
+            resolve_transaction_amount(target_row, basis) + leftover
         )
+        target_row.amount_source_id = None
         target_row.is_override = True
 
     transaction_service.settle_from_entries(source_txn)
 
 
 def _resolve_or_create_target_row(source_txn, target_period,
-                                  scenario_id, recurrence_engine, schedule):
+                                  basis, recurrence_engine, schedule):
     """Return the destination row that receives *source_txn*'s leftover.
 
     Thin switch over ``_classify_leftover_target`` (the single source of
@@ -394,14 +416,15 @@ def _resolve_or_create_target_row(source_txn, target_period,
         credit.  The route catches the ``ValidationError`` and rolls the
         whole batch back.
 
-    The returned row is the caller's to bump
-    (``estimated_amount += leftover``); a freshly created row starts at
-    ``Decimal("0")`` so the bump lands it on exactly the leftover.
+    The returned row is the caller's to bump (its resolved amount plus the
+    leftover, with its ``amount_source_id`` cleared); a freshly created row
+    starts at ``Decimal("0")`` so the bump lands it on exactly the leftover.
 
     Args:
         source_txn: The envelope source row being carried forward.
         target_period: The destination PayPeriod.
-        scenario_id: Scenario the rollover stays within.
+        basis: The request's amount basis; its ``scenario_id`` is the scenario
+            the rollover stays within.
         recurrence_engine: The recurrence-engine module (passed in to
             avoid a circular import at module top), used for the
             ``GENERATE`` branch's ``generate_for_template`` call.
@@ -418,7 +441,7 @@ def _resolve_or_create_target_row(source_txn, target_period,
         ValidationError: On the ``AMBIGUOUS`` corrupt-state guard.
     """
     resolution = _classify_leftover_target(
-        source_txn, target_period, scenario_id, schedule,
+        source_txn, target_period, basis, schedule,
     )
 
     if resolution.kind is _TargetKind.AMBIGUOUS:
@@ -441,7 +464,7 @@ def _resolve_or_create_target_row(source_txn, target_period,
         # "fires here" for any period at all, so the row this branch created
         # was a duplicate the correct engine never names.
         created = recurrence_engine.generate_for_template(
-            source_txn.template, schedule, scenario_id,
+            source_txn.template, schedule, basis.scenario_id,
         )
         generated = next(
             (t for t in created if t.pay_period_id == target_period.id),
@@ -453,7 +476,7 @@ def _resolve_or_create_target_row(source_txn, target_period,
     # CREATE (or a GENERATE race that produced nothing): build a fresh
     # override row carrying the leftover.
     return _create_target_override_row(
-        source_txn, target_period, scenario_id,
+        source_txn, target_period, basis.scenario_id,
     )
 
 

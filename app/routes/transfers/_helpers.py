@@ -22,7 +22,7 @@ from app.schemas.validation import (
     TransferUpdateSchema,
 )
 from app.services.account_resolver import resolve_grid_account
-from app.services.entry_service import build_entry_sums_dict
+from app.routes._render_helpers import render_transaction_cell
 from app.utils.digit_strings import parse_row_id
 from app.utils.error_fragments import designed_error
 
@@ -181,12 +181,7 @@ def _stale_transfer_response(xfer_id):
     shadow = _resolve_shadow_context(xfer)
     if shadow is not None:
         db.session.refresh(shadow)
-        return render_template(
-            "grid/_transaction_cell.html",
-            txn=shadow,
-            entry_sums=build_entry_sums_dict([shadow]),
-            conflict=True,
-        )
+        return render_transaction_cell(shadow, conflict=True)
 
     account = resolve_grid_account(current_user.id, current_user.settings)
     return render_template(
@@ -230,12 +225,7 @@ def _error_transfer_response(xfer_id, message, status=400):
     if shadow is not None:
         db.session.refresh(shadow)
         return designed_error(
-            render_template(
-                "grid/_transaction_cell.html",
-                txn=shadow,
-                entry_sums=build_entry_sums_dict([shadow]),
-                error=message,
-            ),
+            render_transaction_cell(shadow, error=message),
             status,
         )
 
@@ -273,11 +263,7 @@ def _render_post_mutation_cell(xfer, *, shadow_trigger, cell_trigger):
     shadow = _resolve_shadow_context(xfer)
     if shadow is not None:
         db.session.refresh(shadow)
-        response = render_template(
-            "grid/_transaction_cell.html",
-            txn=shadow,
-            entry_sums=build_entry_sums_dict([shadow]),
-        )
+        response = render_transaction_cell(shadow)
         return response, 200, {"HX-Trigger": shadow_trigger}
 
     account = resolve_grid_account(current_user.id, current_user.settings)

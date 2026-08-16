@@ -145,15 +145,15 @@
                           Settle source at
                           <strong>{{ money(plan.entries_sum) }}</strong>;
                           no leftover to roll forward
-                          (estimate {{ money(plan.transaction.estimated_amount) }}).
+                          (estimate {{ money(plan.budget) }}).
                         {% endif %}
                       {% elif plan.kind == "discrete" %}
                         Defer entire row
-                        ({{ money(plan.transaction.estimated_amount) }})
+                        ({{ money(plan.budget) }})
                         to {{ current_period.label }}.
                       {% elif plan.kind == "transfer" %}
                         Move transfer
-                        ({{ money(plan.transaction.estimated_amount) }})
+                        ({{ money(plan.budget) }})
                         and both linked shadow rows to {{ current_period.label }}.
                       {% endif %}
                     </div>

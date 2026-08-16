@@ -24,7 +24,10 @@ from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
 from app.routes._period_options import period_move_options
-from app.routes._render_helpers import render_transaction_cell
+from app.routes._render_helpers import (
+    fragment_budgets,
+    render_transaction_cell,
+)
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._helpers import (
     _get_owned_transaction,
@@ -51,7 +54,18 @@ def get_quick_edit(txn_id):
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
-    return render_template("grid/_transaction_quick_edit.html", txn=txn)
+    return render_template(
+        "grid/_transaction_quick_edit.html",
+        txn=txn,
+        # What the row is worth NOW, which is what the field must be primed
+        # with (plan step X-au-c2b).  It read ``txn.estimated_amount``, the
+        # COLUMN: on a derived row that is empty, so the field would open
+        # BLANK and a save would book whatever the user typed over a figure
+        # they never saw.  Priming it with the resolved amount also makes the
+        # save honest -- typing the same number back is a no-op, where
+        # accepting a blank would not be.
+        budget=fragment_budgets(txn)[txn.id],
+    )
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/full-edit", methods=["GET"])
@@ -118,6 +132,9 @@ def get_full_edit(txn_id):
     return render_template(
         "grid/_transaction_full_edit.html",
         txn=txn,
+        # See ``get_quick_edit`` for why the Estimated field is primed with the
+        # RESOLVED amount rather than the column.
+        budget=fragment_budgets(txn)[txn.id],
         statuses=statuses,
         periods=periods,
         # The settle-day correction's bounds (rulings R-EJ / R-EL) -- see the
