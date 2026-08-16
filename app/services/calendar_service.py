@@ -571,7 +571,7 @@ def _assign_transactions_to_days(
     has exactly one caller, and every one of those settings is a field of the
     context that caller is holding.  Taking it directly is what stops the rows
     and their valuation from arriving as two arguments a caller could mismatch,
-    which is the hazard :class:`~app.services.cash_ledger.ProjectedBasis`
+    which is the hazard :class:`~app.services.cash_ledger.AmountBasis`
     states one tier down.
 
     Args:
@@ -679,7 +679,7 @@ class _MonthBuildContext:  # pylint: disable=too-many-instance-attributes
     the paycheck engine over the owner's entire pay-period set (finding
     **N-228**) -- so a per-month valuation would run it twelve times for one
     answer.  It is a field of this context rather than a second argument for
-    the reason :class:`~app.services.cash_ledger.ProjectedBasis` gives one tier
+    the reason :class:`~app.services.cash_ledger.AmountBasis` gives one tier
     down: the rows and their prices are one fact, and two arguments are two
     things a caller can mismatch.
 

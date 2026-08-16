@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from app.services import recurrence_engine
+from app.services.recurrence_engine import _plan
 from app.services.recurrence import _reading
 from tests.oracles import recurrence_baseline
 
@@ -202,20 +203,33 @@ class TestBaselineFiringControls:
     Verification standard: "every guard gets a negative control that is shown
     to fire" and "ask of every harness: can it SEE the code under test?"
     (``docs/audits/balance_architecture/README.md`` Section 7.2).  Both
-    controls patch the SOURCE module, which is the only patch target that
-    proves the harness resolves the engine at call time rather than having
-    bound it at import.
+    controls patch the module the PRODUCTION PATH resolves the name through --
+    never a re-export the oracle happens to share -- which is the only target
+    that proves the harness sees the engine rather than proving it can read its
+    own alias.
     """
 
     def test_a_changed_due_date_moves_the_blob(self, monkeypatch):
-        """Shifting every due date by a day changes the capture."""
+        """Shifting every due date by a day changes the capture.
+
+        **Patches the DEFINITION site, matching the sibling control below**
+        (adversarial review of plan step R10-a).  Until that step
+        ``recurrence_engine`` was a flat module, so
+        ``recurrence_engine.compute_due_date`` WAS the definition and this
+        control obeyed the rule by accident.  The split made it a re-export,
+        which left the control patching an alias the oracle happens to share --
+        proving only that the oracle can read its own attribute, the exact
+        failure the sibling control was written to avoid.  The oracle now
+        reaches ``compute_due_date`` through ``_plan`` for the same reason it
+        reaches ``rule_occurrences`` through ``_reading``.
+        """
         before = recurrence_baseline.capture_baseline()
-        real_compute = recurrence_engine.compute_due_date
+        real_compute = _plan.compute_due_date
 
         def shifted(rule, period):
             return real_compute(rule, period) + timedelta(days=1)
 
-        monkeypatch.setattr(recurrence_engine, "compute_due_date", shifted)
+        monkeypatch.setattr(_plan, "compute_due_date", shifted)
         after = recurrence_baseline.capture_baseline()
 
         assert after != before, (

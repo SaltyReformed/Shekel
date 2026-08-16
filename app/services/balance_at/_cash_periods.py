@@ -266,7 +266,7 @@ def period_view_of(
             _cash_sums(folded.walk, folded.day_nets, window),
             _assertion_sums(folded.walk, window),
         ),
-        amount_overrides=live_amounts(folded.plan.basis.amounts),
+        amount_overrides=live_amounts(folded.plan.basis),
     )
 
 
@@ -337,8 +337,18 @@ def _budget_legs(
     still-projected rows at the shared ``sum_projected`` reduction -- the same
     engine :func:`~._cash_fold._planned_day_nets` reduces the same rows through
     on the other clock, through the same
-    :class:`~app.services.cash_ledger.ProjectedBasis`, which is why the two
+    :class:`~app.services.cash_ledger.AmountBasis`, which is why the two
     groupings reconcile to the cent.
+
+    **A partially-spent envelope therefore counts on BOTH sides of the split,
+    and their sum is what the period costs** (ruling **R-FM**, plan step
+    X-f3b).  Its posted purchases are settled facts here, at the parent's own
+    budget column; the reservation
+    (:func:`~app.services.cash_ledger._amounts._entry_checking_impact`) holds
+    the rest.  Before X-f3b a purchase was no fact at all, so an envelope
+    budgeted ``$100.00`` with ``$45.85`` already taken by the bank contributed
+    only its ``$54.15`` reservation to this column -- the spend was inside the
+    owner's asserted balance and nowhere in these subtotals.
 
     The income / expense split follows the transaction TYPE
     (:attr:`~app.services.cash_ledger.CashSourceFact.is_income`), never the sign

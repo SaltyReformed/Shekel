@@ -2,15 +2,18 @@
 > may be out of date.** The live plan is `docs/plans/steps.md`; the code as
 > committed is the source of truth for what the app does.
 
-# Recurrence findings-steps, as built (2026-08-15)
+# Recurrence R7c-b, as built, and the spans it archived (2026-08-15)
 
 **Read-only history. Nothing here governs anything.** The live document is
 `docs/plans/implementation_plan_recurrence_redesign.md`; this record exists so
 that document's "Carried steps" section can hold POINTERS to what shipped
 rather than the accounts themselves (`conventions.md` rule 5).
 
-Archived at plan step **R7c-b**, when three new steps (**R7d**, **R7e**,
-**R7f**) took the arc document past its line cap. Rule 4 is explicit that a cap
+Archived at plan step **R7c-b**: its own account, the spans three new steps
+(**R7d**, **R7e**, **R7f**) displaced from the arc document's line cap, and
+the five ledger rows it closed. The five shipped `R-F*` accounts this file
+first carried live in `recurrence_as_built_2026-08-15.md` instead -- `dev`
+archived them the same day, and one account has one home. Rule 4 is explicit that a cap
 is a forcing function rather than a ceiling sized to fit, and rule 5 that the
 way back under one is to archive COMPLETED work -- never to trim a live step's
 specification.
@@ -24,46 +27,12 @@ Each entry below is exactly what the live document carried, verbatim.
       Measured $0.00 on the dev clone: the total is 11,066.16 before and after and no template
       changes inclusion. **D33 closes.**
 
-- [x] **R-F1 -- the lagging `ref` identity sequences are in step (F-1).** `44b25ad3`, migration
-      `c7f3a9d1e864`, on `dev`. A census of every serial sequence in all five application schemas
-      found exactly the five. **Two corrections to the spec it replaced**: the drafted
-      `GREATEST(max(id), 1)` takes the greatest against a literal floor rather than the sequence's
-      own position, so it would LOWER a sequence sitting ahead of its data; and the repair cannot
-      live in `ref_seeds` -- `setval` needs UPDATE, which the app role measurably lacks.
-
 - [x] **R-F8 -- the deploy's safety net stops lying (F-8, F-14, R-R14).** `2e63e4f9`, `8aeae48e`,
       `398c332c`. The pre-flight asks whether an image can resolve the revision the database is
       STAMPED at; "does the release add migrations" was directional and read a DOWNGRADE as safe,
       reproducing F-8. Dump-first, full-decode readback, behavioural gate. The symlink is installed,
       so the repo copy IS the live deploy path; the pre-fix hand-copy is kept at
       `/opt/docker/scripts/shekel-deploy.sh.prefix-2026-08-08.bak`.
-
-- [x] **R-F2 -- the ref-seed parity scan ends a statement where the SQL does (F-2).** `672c18b1`.
-      Not another keyword: a statement lives inside a Python STRING LITERAL, so the literal is the
-      outer bound and the keyword list stays as the inner one. Census: all 78 `INSERT INTO`
-      occurrences in 38 migrations sit inside a string constant, 2 constants carry more than one.
-      Controls SHOWN to fire against the old reader -- a literal below the seed read as seeded, and
-      a docstring-only INSERT counted as one.
-
-- [x] **R-F3 -- a `ref` table's generated PK/UNIQUE names ARE the rule (F-3).** `e37b736c`. Ruled
-      2026-08-14 as recommended: the standard exempts the single-column `PRIMARY KEY (id)` and
-      `UNIQUE (name)` on a `ref` lookup table, stated in BOTH places the rule lives. Measured
-      against the live schema rather than the plan's estimate -- **24 of 24** carry `<table>_pkey`
-      and `<table>_name_key`, none a `uq_` name. Rejected: a rename migration across 24 tables, for
-      names nothing references.
-
-- [x] **R-F10 -- delete the gap machinery.** `fe365de1`. The same commit as `pay_calendar:C5a`,
-      ticked at that arc's **C2-b2**: a period's end is derived from the next payday, so a hole is
-      not a state a reader can see. Closed **F-10**. The LOSS survives the state -- an absorbed hole
-      leaves an over-long period, which is that arc's **P16** and its `C5b`. Deletion-only; the
-      430-shape baseline stayed byte-identical.
-
-- [x] **R-F13 -- a baseline REGENERATION run can no longer report success (F-13).** `b97ec1c3`. TWO
-      of its three holes no longer existed and were NOT rebuilt: `PlacementOutcome`, the
-      `OccurrencePlacement` invariant and the `SCHEDULE_GAP` / `BEYOND_THE_SCHEDULE` members died at
-      `pay_calendar:C2-b2` (`fe365de1`). The third survived: the 430-shape gate SKIPS while
-      `SHEKEL_UPDATE_RECURRENCE_BASELINE` is set, and a skip reads as a pass. Shown to fire --
-      switch on 1 failed / 7 passed / 1 skipped (was 8 passed, 1 skipped), switch off 9 passed.
 
 - [x] **R7a-1 -- the Recurrence cell is one function over `(interval, unit)`.** `6fed14af`, on
       `dev`. `describe()` words a RESOLVED recurrence, so `(2, MONTH)` and `(1, WEEK)` already read
@@ -224,3 +193,71 @@ destination, or say so in the help text.
   `$2,000.00` rent template created today wrote 5 backdated rows into pay periods that had already
   closed. `starts_on` being NOT NULL from this leaf is what makes the empty state unreachable rather
   than defended.
+
+## Four SHIPPED index rows, retired from `steps.md`
+
+Verbatim as the order table carried them. Each was already a pointer to an arc archive, so the index row was a pointer to a pointer; rule 5 retires it when the registry meets its cap.
+
+| arc | id | also | what this step does | order | commit | starts |
+|---|---|---|---|---|---|---|
+| recurrence | R-F7 | -- | `_first_of_month_anchor` loses two provably dead guards, one of which commented a case that cannot execute; the 430-shape baseline stayed byte-identical. Closed **D11**. | SHIPPED | `5ac7ab4d` | -- |
+| recurrence | R-F13 | -- | A baseline REGENERATION run can no longer report success, so a skip cannot read as a pass. Its other two holes no longer exist: `PlacementOutcome` and the `OccurrencePlacement` invariant died at `pay_calendar:C2-b2`. Closed **F-13**. | SHIPPED | `b97ec1c3` | -- |
+| recurrence | R1-R3 | -- | Oracle, vocabulary, subtypes, write door, `Once` retired, forward engine. Archived to `historical/recurrence_as_built_2026-08-05.md`. | SHIPPED | `4b5c577b` | -- |
+| recurrence | R4a | -- | The forward cutover, three commits, archived to `historical/recurrence_as_built_2026-08-08.md`. Closed **D3**, **D5**, **D22**, **D25**, **D7**. | SHIPPED | `1836a928` | -- |
+
+## The four specifications those index rows pointed at
+
+Retired with them, because rule 12 is symmetric: a specified step needs an index row. Each was already a pointer to an arc archive.
+
+- [x] **R1-R3 -- oracle, vocabulary, subtypes, write door, `Once` gone, forward engine.** `4b5c577b`
+      and the eight commits before it, archived under rule 5 to
+      `docs/plans/historical/recurrence_as_built_2026-08-05.md` with the rulings taken for them
+      (R-R4, R-R8, R-R10, R-R11). **Read it before R4b or R7c.**
+
+- [x] **R4a, R4b-1, R4b-2 -- the forward cutover.** `1836a928`, `b4538d25`, `75346625`, archived
+      under rule 5 to `docs/plans/historical/recurrence_as_built_2026-08-08.md`.
+      **D3, D5, D22, D25 and D7 closed; D2 narrowed to the FIELD; D10 re-pointed to R7c.**
+      **Read it before R5 or R7c.**
+
+- [x] **R-F13 -- a baseline REGENERATION run can no longer report success.** `b97ec1c3`. Closed
+      **F-13**. Account archived to `historical/recurrence_as_built_2026-08-15.md`.
+
+- [x] **R-F7 -- `_first_of_month_anchor` loses two dead guards (D11).** `5ac7ab4d`. Both were
+      re-derived from the code before deleting rather than taken from the archived proof: the scan's
+      `earliest is not None` asks about a period's OWN month, so that period is in the minimand
+      `pay_calendar/_searches.earliest_start_in_month` reduces; the fallback's re-ask could only be
+      taken when the loop had already returned. The R1 baseline stayed byte-identical and
+      `TestTotality` stayed green unchanged.
+
+## 4a. `PAY_PERIODS_PER_YEAR` (folded into R7a-2, SHIPPED)
+
+`003e3657` and `7c417b90`. The constant is deleted and `pay_calendar.PayCadence` derives
+`round(365.2425 / cadence_days)` per owner, which is what makes every monthly-equivalent figure
+correct on a non-biweekly schedule. Its full specification -- the derivation, the nine referencing
+files and the ruled read-vs-write disposition -- is archived under rule 5 to
+`historical/recurrence_findings_as_built_2026-08-15.md`.
+
+## 5. Findings ledger
+
+**Moved to `ledger.md`**, the one findings table for every arc. This arc's rows are the ones whose
+`arc` column reads `recurrence`; a row's owner names a step in `steps.md`, whose specification is
+section 4 of this document.
+
+They moved because a finding is not arc-local: `P2` / `F-10`, `P3` / `N-123` and `P6` / `F-12` were
+each one defect recorded in two ledgers, kept in step by hand, and one of those pairs went unnoticed
+for months. The rules the table is graded against are `conventions.md`.
+
+## 6. Alternatives considered and rejected
+
+**Archived to `historical/recurrence_evidence_2026-08-11.md`.** The measurements and the rejected
+options are a HISTORICAL RECORD: the rulings above state what was decided and the code states what
+was built. Cite the archive for how a decision came to be, never for what is true now.
+
+## 7. Document rules (GATED)
+
+**Moved to `conventions.md`**, one copy for every arc. They were near-identical in three documents
+and absent from the fourth.
+
+`tools/plan_gate/` grades this document against them through a pre-commit hook scoped to it and the
+CI step that runs the custom pylint checkers -- so EDITING THIS FILE is what runs the gate. This
+document's own caps live in the gate's constants beside the other arcs'.

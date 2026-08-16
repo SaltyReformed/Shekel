@@ -96,7 +96,15 @@ from app.services.recurrence import (
 # mode the balance arc's verification standard names (plan Section 7.2).
 # ``_reading`` is package-private to ``app/`` (the W9910 checker runs on
 # ``pylint app/``); a test naming it is naming the thing it is testing.
-from app.services import recurrence_engine
+#
+# **``compute_due_date`` follows the same rule since plan step R10-a**, and it
+# had to start doing so at that step: ``recurrence_engine`` was a flat module
+# until then, so the package attribute WAS the definition and this module
+# already obeyed the paragraph above by accident.  The split made it a
+# re-export, which silently turned the due-date firing control into the exact
+# thing this comment says to avoid -- a proof that the oracle can read its own
+# alias.  Caught by an adversarial review of that step.
+from app.services.recurrence_engine import _plan
 from app.services.recurrence import _reading
 from app.services.recurrence._months import clamped_day, month_ordinal
 
@@ -898,7 +906,7 @@ def capture_shape(
     return [
         f"{shape.label} idx={period.period_index:03d} "
         f"period={period.start_date.isoformat()}..{period.end_date.isoformat()} "
-        f"due={recurrence_engine.compute_due_date(rule, period).isoformat()}"
+        f"due={_plan.compute_due_date(rule, period).isoformat()}"
         for period in matched
     ]
 

@@ -46,6 +46,7 @@ Taken 2026-08-05 (developer):
 | **What `starts_on` MEANS** | **The rule's FIRST OCCURRENCE, ONE meaning for every unit: the first date a calendar cadence fires on, and the payday of the first paycheck a pay-period cadence bills in. Its position in the cycle IS the phase, so `day_of_month` and `month_of_year` are DROPPED rather than renamed. R-R16, ruled 2026-08-14; supersedes R-R13's "opening validity bound" reading and closes row D28** |
 | **Whether the YEAR unit survives** | **YES, and `(12k, MONTH)` is CANONICALISED to `(k, YEAR)` at the write door once the interval is free, so one cadence has one spelling. Dropping the unit would move the times-twelve encoding into the form, which is the second vocabulary R7b-1 removed. R-R17, ruled 2026-08-14** |
 | **How R7c ships** | **THREE leaves, expand / migrate / contract: `R7c-a` adds the columns and dual-writes them while nothing reads them, `R7c-b` moves every reader and the form onto them, `R7c-c` drops the closed set. The destructive DDL is last and no translation shim is written in any leaf. R-R18, ruled 2026-08-14** |
+| **What a REGENERATION does to the rows it already generated** | **It MAINTAINS them; it does not destroy and rebuild them. A row the rule still names is UPDATED in place, a period the rule names with no row gets one, and a row the rule no longer names is removed only when it carries nothing of the owner's. A row holding the owner's own records -- purchases, a note, a hand-entered actual -- is RETAINED and reported, in two shapes: the rule stopped naming its period, or the template's ACCOUNT moved, which drags every purchase onto the new account and invalidates the statement link that cleared it. The delete-and-recreate this replaces was safe only while a generated row was a pure projection of `(template, period)`; `transaction_entries` CASCADE from their parent, so it destroyed `$499.82` of recorded purchases on live data. R-R19, ruled 2026-08-15; shipped as R10-a (`5fc13cdb`), closing row N-292** |
 
 ---
 
@@ -310,16 +311,6 @@ disproved it -- the four `bounds.*` shapes that moved are on the BIWEEKLY schedu
 loan-payment rule carries the `end_date` that moved them. Against production it moves nothing: 46
 live rules, 866 generated rows, byte-identical under both engines. Half A = R1-R4, R7a-1 through
 R7c, R8 (+ the Half-A part of R9); Half B = R5, R6 (see section 0).
-
-- [x] **R1-R3 -- oracle, vocabulary, subtypes, write door, `Once` gone, forward engine.** `4b5c577b`
-      and the eight commits before it, archived under rule 5 to
-      `docs/plans/historical/recurrence_as_built_2026-08-05.md` with the rulings taken for them
-      (R-R4, R-R8, R-R10, R-R11). **Read it before R4b or R7c.**
-
-- [x] **R4a, R4b-1, R4b-2 -- the forward cutover.** `1836a928`, `b4538d25`, `75346625`, archived
-      under rule 5 to `docs/plans/historical/recurrence_as_built_2026-08-08.md`.
-      **D3, D5, D22, D25 and D7 closed; D2 narrowed to the FIELD; D10 re-pointed to R7c.**
-      **Read it before R5 or R7c.**
 
 - [ ] **R5 -- a generated row carries THREE dates, in three places.**
 
@@ -611,6 +602,32 @@ Derived simplifications that fall out and must be taken, not left behind:
 - `calendar_service._INFREQUENT_PATTERNS` (`:74-79`): enumerated -> derived.
 - The four `Once` guards: deleted.
 
+**R10 is the regeneration's own defect, found while X-f3b measured the ledger.** Its two leaves are
+below.
+
+- [x] **R10-a -- a regeneration MAINTAINS its rows.** `5fc13cdb`, ruling **R-R19**, closed **N-292**
+      (`$499.82` of purchases destroyed by a rename, measured; 0 after).
+      **Two things a later step must obey.** The repeat refusal takes a NARROWER blocking set on the
+      maintain path, because a maintain pass rewrites the rule's own row rather than adding beside
+      it. And `recurrence_engine` is a PACKAGE from here, with `DerivedRowFields` the ONE statement
+      of a generated row's derived columns -- a new one belongs there, not in a write path.
+
+- [ ] **R10-b -- the transfer engine onto the same shape.**
+
+`transfer_recurrence.regenerate_for_template` shares `partition_regeneration_rows` and still
+hard-deletes and recreates, taking each transfer's shadow pair with it via
+`transactions.transfer_id`'s CASCADE. No money RECORDS are at risk -- `entry_service.create_entry`
+refuses a transfer row, so a transfer holds no purchases -- which is why it was not in R10-a, and
+why it is not a ledger finding. What it shares is the identity churn and the divergence: two engines
+answering one question two ways is the drift `_recurrence_common` exists to prevent.
+
+The update door already exists and is the reason this leaf is small:
+`transfer_service.update_transfer` takes `amount`, `category_id`, `name`, `due_date`,
+`pay_period_id` and `is_override`, and propagates to both shadows atomically (Transfer Invariants
+3-5). The leaf is to give the transfer engine its own `DerivedRowFields` twin, route the maintain
+pass through that door, and lift whatever of R10-a's classifier is genuinely model-agnostic into
+`_recurrence_common` rather than copying it.
+
 ### Carried steps -- scheduled here so they are not merely remembered
 
 Section 5's ledger carries findings that no numbered step closes: some this arc surfaced elsewhere
@@ -625,7 +642,8 @@ is unreviewable.
       obligations total on different days. Closed **D33**.
 
 - [x] **R-F1 -- the lagging `ref` identity sequences are in step.** `44b25ad3`, migration
-      `c7f3a9d1e864`. Closed **F-1**.
+      `c7f3a9d1e864`. Closed **F-1**. Account archived to
+      `historical/recurrence_as_built_2026-08-15.md`.
 
 - [ ] **R-F6 -- Close the recurrence-rule leak, then delete what leaked** (finding F-6).
 
@@ -643,13 +661,13 @@ the `Review:` line and a downgrade that refuses with the literal SQL.
       **F-8**, **F-14**.
 
 - [x] **R-F2 -- the ref-seed parity scan ends a statement where the SQL does.** `672c18b1`. Closed
-      **F-2**.
+      **F-2**. Account archived to `historical/recurrence_as_built_2026-08-15.md`.
 
-- [x] **R-F3 -- a `ref` table's generated PK/UNIQUE names ARE the rule.** `e37b736c`. Measured 24 of
-      24 live tables. Closed **F-3**.
+- [x] **R-F3 -- a `ref` table's generated PK/UNIQUE names ARE the rule.** `e37b736c`. Closed
+      **F-3**. Account archived to `historical/recurrence_as_built_2026-08-15.md`.
 
-- [x] **R-F10 -- delete the gap machinery.** `fe365de1`, ticked at `pay_calendar:C2-b2`. Closed
-      **F-10**; the LOSS survives the state as that arc's **P16**.
+- [x] **R-F10 -- delete the gap machinery.** `fe365de1`. Closed **F-10**; the LOSS survives as
+      `pay_calendar:P16`. Account archived to `historical/recurrence_as_built_2026-08-15.md`.
 
 - [ ] **R-F12 -- One `PeriodCalendar`, not three period-containing searches** (finding F-12).
 
@@ -661,9 +679,6 @@ the exact mirror of the `period_starting_on_or_after` this arc's own `PeriodCale
 carries. **DELIVERED by the pay-calendar arc's C2**, now DECOMPOSED into `C2-a`..`C2-f`; `C2-b` is
 the leaf that retires `PeriodCalendar` and `SchedulePeriod` into it, and the arc's 430-shape
 baseline must stay byte-identical across it. **Tick this box with C2's LAST leaf.**
-
-- [x] **R-F13 -- a baseline REGENERATION run can no longer report success.** `b97ec1c3`. A skip read
-      as a pass; shown to fire. Closed **F-13**.
 
 - [ ] **R-F16 -- ONE producer for "how often am I paid"** (finding F-16).
 
@@ -709,43 +724,3 @@ money constant that step replaced.
 `period_projections`' offsets are a module-level tuple of `(label, offset)` pairs shared by several
 surfaces, so making them per-owner means deciding whether the LABEL or the OFFSET is the fixed thing
 -- and what a fractional period offset means when neither divides evenly. Small, and no migration.
-
-- [x] **R-F7 -- `_first_of_month_anchor` loses two dead guards (D11).** `5ac7ab4d`. Both were
-      re-derived from the code before deleting rather than taken from the archived proof: the scan's
-      `earliest is not None` asks about a period's OWN month, so that period is in the minimand
-      `pay_calendar/_searches.earliest_start_in_month` reduces; the fallback's re-ask could only be
-      taken when the loop had already returned. The R1 baseline stayed byte-identical and
-      `TestTotality` stayed green unchanged.
-
-## 4a. `PAY_PERIODS_PER_YEAR` (folded into R7a-2, SHIPPED)
-
-`003e3657` and `7c417b90`. The constant is deleted and `pay_calendar.PayCadence` derives
-`round(365.2425 / cadence_days)` per owner, which is what makes every monthly-equivalent figure
-correct on a non-biweekly schedule. Its full specification -- the derivation, the nine referencing
-files and the ruled read-vs-write disposition -- is archived under rule 5 to
-`historical/recurrence_findings_as_built_2026-08-15.md`.
-
-## 5. Findings ledger
-
-**Moved to `ledger.md`**, the one findings table for every arc. This arc's rows are the ones whose
-`arc` column reads `recurrence`; a row's owner names a step in `steps.md`, whose specification is
-section 4 of this document.
-
-They moved because a finding is not arc-local: `P2` / `F-10`, `P3` / `N-123` and `P6` / `F-12` were
-each one defect recorded in two ledgers, kept in step by hand, and one of those pairs went unnoticed
-for months. The rules the table is graded against are `conventions.md`.
-
-## 6. Alternatives considered and rejected
-
-**Archived to `historical/recurrence_evidence_2026-08-11.md`.** The measurements and the rejected
-options are a HISTORICAL RECORD: the rulings above state what was decided and the code states what
-was built. Cite the archive for how a decision came to be, never for what is true now.
-
-## 7. Document rules (GATED)
-
-**Moved to `conventions.md`**, one copy for every arc. They were near-identical in three documents
-and absent from the fourth.
-
-`tools/plan_gate/` grades this document against them through a pre-commit hook scoped to it and the
-CI step that runs the custom pylint checkers -- so EDITING THIS FILE is what runs the gate. This
-document's own caps live in the gate's constants beside the other arcs'.

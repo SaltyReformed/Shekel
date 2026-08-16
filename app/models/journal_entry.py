@@ -71,23 +71,27 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
     reconciliation oracle uses), the civil ``entry_date`` of the confirmed
     event, a ``source_kind_id`` naming the *kind* of source
     (``ref.posting_sources`` -- ``transfer`` in Step 2, ``transaction`` in
-    Step 3), an optional concrete ``transfer_id`` / ``transaction_id``
-    linking back to the source row, and a human ``description``.
+    Step 3), an optional concrete ``transfer_id`` / ``transaction_id`` /
+    ``transaction_entry_id`` linking back to the source row, and a human
+    ``description``.
 
     The source references are deliberately layered: ``source_kind_id``
     answers "what kind of event posted this?" (a non-removable ref
     invariant, RESTRICT) while each concrete nullable FK answers "which
     concrete source row?" (SET NULL, so the immutable posted fact survives a
-    source delete).  Step 2 added ``transfer_id``; Step 3 adds
+    source delete).  Step 2 added ``transfer_id``; Step 3 added
     ``transaction_id`` beside it for ordinary (non-transfer) settled
-    transactions.  ``source_kind_id`` disambiguates which is set: a
-    ``transfer`` entry carries ``transfer_id`` (``transaction_id`` NULL), a
-    ``transaction`` entry the reverse.  Later Build-Order steps add one
-    concrete nullable FK per new source kind beside these two.  (The
-    one-set-FK-per-entry rule is maintained by the posting builder, not a
-    storage CHECK -- a CHECK would have to grow with every future source
-    kind and reference ref-table IDs it cannot see; the reconciliation
-    oracle is the cross-source correctness gate.)
+    transactions; plan step X-f3b adds ``transaction_entry_id`` for a PURCHASE
+    that has cleared the bank (ruling **R-FM**).  ``source_kind_id``
+    disambiguates which is set: a ``transfer`` entry carries ``transfer_id``,
+    a ``transaction`` entry ``transaction_id``, a ``purchase`` entry
+    ``transaction_entry_id``, and each carries NULL in the other two.  Later
+    Build-Order steps add one concrete nullable FK per new source kind beside
+    these three.  (The one-set-FK-per-entry rule is maintained by the posting
+    builder, not a storage CHECK -- a CHECK would have to grow with every
+    future source kind and reference ref-table IDs it cannot see; the
+    reconciliation oracle is the cross-source correctness gate.  Plan step
+    X-ai-s replaces the convention with an exclusive arc.)
 
     Append-only: see the module docstring.  Disposal is the database-level
     CASCADE from a deleted user / scenario / pay period, which runs outside
@@ -123,6 +127,16 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
             "idx_journal_entries_transaction",
             "transaction_id",
             postgresql_where=db.text("transaction_id IS NOT NULL"),
+        ),
+        # The PURCHASE analog (plan step X-f3b, ruling **R-FM**): the
+        # per-purchase reconcile-to-target filter reads back what one
+        # ``budget.transaction_entries`` row has posted.  Partial for the same
+        # reason as its two siblings -- an entry of any other source kind
+        # carries NULL here and falls outside the index.
+        db.Index(
+            "idx_journal_entries_transaction_entry",
+            "transaction_entry_id",
+            postgresql_where=db.text("transaction_entry_id IS NOT NULL"),
         ),
         {"schema": "budget"},
     )
@@ -217,6 +231,25 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         nullable=True,
     )
+    # The concrete source PURCHASE (plan step X-f3b, ruling **R-FM**), or NULL
+    # once that purchase is deleted (and NULL on every entry of another source
+    # kind).  Verbatim shape of the two FKs above.
+    #
+    # **It is a source of its own rather than more legs on the parent's entry**
+    # because the posted walk reads a source's day and its clearing link off the
+    # SOURCE ROW: a purchase carries its own ``settled_on`` and its own
+    # ``reconciled_by_id``, and a still-projected envelope has no settle day at
+    # all -- so legs grouped under the parent's ``transaction_id`` could not be
+    # dated or attributed.
+    transaction_entry_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "budget.transaction_entries.id",
+            name="fk_journal_entries_transaction_entry_id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     # Human-readable label, e.g. "Transfer: Checking to Savings".  Display
     # only; never used for logic.
     description = db.Column(db.String(200), nullable=False)
@@ -241,7 +274,9 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
     def __repr__(self):
         return (
             f"<JournalEntry id={self.id} transfer_id={self.transfer_id} "
-            f"transaction_id={self.transaction_id} date={self.entry_date}>"
+            f"transaction_id={self.transaction_id} "
+            f"transaction_entry_id={self.transaction_entry_id} "
+            f"date={self.entry_date}>"
         )
 
 

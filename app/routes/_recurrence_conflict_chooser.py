@@ -34,7 +34,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from flask import Response, render_template, request, url_for
+from flask import Response, flash, render_template, request, url_for
 from flask_login import current_user
 
 from app.exceptions import RecurrenceConflict
@@ -116,6 +116,39 @@ def parse_conflict_decisions(form) -> dict[int, str] | None:
             continue
         decisions[row_id] = value
     return decisions
+
+
+def flash_retained_notice(conflict) -> None:
+    """Tell the owner which rows the pass left alone, and why.
+
+    ``RecurrenceConflict.retained`` names the rows a regeneration declined to
+    touch because the owner has records against them -- purchases, a note, or a
+    hand-entered actual -- and applying the definition change would have
+    destroyed or re-attributed those (plan step R10-a, finding **N-292**).
+
+    **It is a notice, not a prompt, and that asymmetry is deliberate.**  The
+    other two conflict kinds ask a question because either answer is a
+    reasonable outcome; here the pass has already taken the only safe one and
+    the row is untouched.  What the owner cannot be left without is KNOWING,
+    since the alternative is a rename that quietly does less than it says.
+    Acting on such a row is ordinary grid work -- move the purchases, or remove
+    the row -- and offering an "apply anyway" button here would be building a
+    destructive action nobody asked for.
+
+    Args:
+        conflict: The caught :class:`~app.exceptions.RecurrenceConflict`.
+    """
+    if not conflict.retained:
+        return
+    count = len(conflict.retained)
+    noun = "instance" if count == 1 else "instances"
+    flash(
+        f"{count} upcoming {noun} kept the value it already had, because you "
+        f"have purchases or notes recorded against it. Nothing was changed or "
+        f"removed there. Open the instance to move or clear those records if "
+        f"you want the new setting applied to it.",
+        "warning",
+    )
 
 
 def _build_conflict_choices(conflict, model, amount_attr) -> list[ConflictChoice]:
@@ -447,7 +480,18 @@ def regenerate_or_conflict_chooser(
                 user_id=current_user.id,
             )
         elif (
-            amount_drives_instances
+            # **A conflict is not automatically a QUESTION** (plan step R10-a,
+            # adversarial review).  The chooser asks one thing -- keep this
+            # instance's amount or move it to the template's -- and
+            # ``_build_conflict_choices`` builds its rows from ``overridden``
+            # and ``deleted`` alone.  A RETAINED row has no such question: the
+            # pass already left it untouched.  Without this arm a
+            # retained-only conflict rendered the chooser over an EMPTY list
+            # and then rolled the edit back below, so an ordinary amount
+            # change silently did nothing and said "some upcoming instances
+            # were hand-edited" over no instances.
+            (conflict.overridden or conflict.deleted)
+            and amount_drives_instances
             and template.recurrence_rule is not None
             and template.default_amount != before.amount
         ):
@@ -466,7 +510,12 @@ def regenerate_or_conflict_chooser(
                 request.form,
             )
             db.session.rollback()
+            # No retained notice on this path: the rollback above discards the
+            # whole pending edit, so telling the owner what a pass "kept" would
+            # describe a pass that no longer happened.  The notice fires on the
+            # two paths that reach the caller's commit, below.
             return chooser
+        flash_retained_notice(conflict)
     return None
 
 
@@ -478,6 +527,7 @@ __all__ = [
     "PreEditTemplateState",
     "RecurrenceConflictKind",
     "apply_conflict_decisions",
+    "flash_retained_notice",
     "parse_conflict_decisions",
     "regenerate_or_conflict_chooser",
     "render_recurrence_conflict_chooser",

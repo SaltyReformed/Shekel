@@ -50,12 +50,15 @@ gone -- is two of them, composing in one direction:
 What a row is worth once it has SETTLED -- money that really moved -- is the
 third, and it is deliberately none of the above:
 
-  * :func:`settled_cash_leg` is
-    ``owned_contribution - Sigma(credit entries)``, signed by transaction type.
-    Neither read-time adjustment above can reach a settled row (both filter to
-    ``is_projected``), and a reservation would be meaningless for cash already
-    gone.  It arrived here at plan step X-a from ``posting_service``, so the
-    ledger WRITER and the cash WALK price one row through the same function.
+  * :func:`settled_cash_leg` is ``owned_contribution - Sigma(credit entries) -
+    Sigma(posted purchases)``, signed by transaction type.  Neither read-time
+    adjustment above can reach a settled row (both filter to ``is_projected``),
+    and a reservation would be meaningless for cash already gone.  It arrived
+    here at plan step X-a from ``posting_service``, so the ledger WRITER and the
+    cash WALK price one row through the same function.  Its third term is ruling
+    **R-FM** (plan step X-f3b): a purchase whose bank posting day is recorded
+    books its own cash leg on its own day, so the envelope's close books only
+    what its purchases did not.
 
 **Why they are one module (plan step D1c).**  They were split across two: the
 override map's producer sat in the cash event sources while the four rules that
@@ -86,7 +89,6 @@ from ._amount_source import (
     amount_basis,
     resolve_transaction_amount,
 )
-from ._clearing import StatementCoverage
 
 
 @dataclass(frozen=True)
@@ -221,54 +223,6 @@ class ReconciledThrough:
         if event_day is None or self.observed_day is None:
             return False
         return event_day <= self.observed_day
-
-
-@dataclass(frozen=True)
-class ProjectedBasis:
-    """What a reader knows about ONE account that changes its plan's WORTH.
-
-    The two per-account facts every still-Projected valuation in this module
-    needs, bundled so they travel together and are built ONCE per account
-    rather than passed as two arguments a caller could mismatch (plan
-    Section 8: an argument a caller can get wrong is a defect, not a
-    contract).  It is REQUIRED rather than defaulted, deliberately: a
-    forgotten basis would silently make every purchase read as outstanding and
-    every envelope hold its whole budget back -- a wrong balance from an
-    omission, which is exactly the ``selectinload`` seam CRIT-01 / F-009 closed
-    one field over.
-
-    Neither field is a clock.  ``coverage`` is a fact about the ACCOUNT (which
-    statements its owner has declared a balance for, and what each one was
-    recorded as showing), so what a row is worth stays a function of the row and
-    its account -- ruling R-M's "the reader's clock decides WHEN a row lands,
-    never what it is worth", which is why plan step X-c2c1 could delete the
-    reservation's ``as_of`` window and why nothing here brings one back.
-
-    **It carries the resolver's own basis rather than a map flattened from it**
-    (plan step X-au-c2).  It held ``amount_overrides``, the merge of the two live
-    producers, while :func:`~._amount_source.resolve_transaction_amount` needed
-    the same two maps APART -- so a reader that wanted both was building the
-    basis twice, which is one producer call per read pass more than the arc
-    spent a whole finding (**N-228**) removing.  The merge itself now happens
-    where it is read, in :func:`live_override`, and ``live_amount_overrides``
-    is deleted.
-
-    Attributes:
-        amounts: The account's :class:`~._amount_source.AmountBasis` -- the ids
-            it was built over, and the two live producers' answers, kept apart.
-        coverage: The account's
-            :class:`~._clearing.StatementCoverage` -- which of its statements
-            cleared what.  A purchase some statement cleared is already inside a
-            declared balance; every other purchase is still outstanding and its
-            envelope keeps holding the whole budget back.  It replaced a
-            :class:`ReconciledThrough` at plan step X-f3a-1 (ruling **R-FL**):
-            the day boundary answered by comparing two of the app's own dates,
-            and the bank's own record falsified that comparison on 70% of the
-            movements it was measured against.
-    """
-
-    amounts: AmountBasis
-    coverage: StatementCoverage
 
 
 def live_override(txn, basis: AmountBasis):
@@ -430,10 +384,7 @@ def contribution_of(txn, basis: AmountBasis) -> Decimal:
     return resolve_transaction_amount(txn, basis)
 
 
-def _entry_checking_impact(
-    entries, estimated_amount: Decimal,
-    coverage: StatementCoverage,
-) -> Decimal:
+def _entry_checking_impact(entries, estimated_amount: Decimal) -> Decimal:
     """Three-bucket checking reservation for a sequence of debit/credit entries.
 
     The core of the entry-aware reduction, with exactly ONE caller:
@@ -453,39 +404,46 @@ def _entry_checking_impact(
     Partitions the supplied entries into three buckets and returns the portion
     of the budget still held back against checking:
 
-        settled_debit     = sum(debit amounts already inside the anchor)
-        outstanding_debit = sum(debit amounts the bank has not been seen to take)
-        sum_credit        = sum(amount where is_credit)
+        posted_debit   = sum(debit amounts the bank has been seen to take)
+        unposted_debit = sum(debit amounts it has not)
+        sum_credit     = sum(amount where is_credit)
 
-        impact = max(estimated_amount - settled_debit - sum_credit,
-                     outstanding_debit)
+        impact = max(estimated_amount - posted_debit - sum_credit,
+                     unposted_debit)
 
-    A SETTLED debit is already reflected in the checking anchor balance, so it
-    is subtracted from the reservation.  An OUTSTANDING debit acts as a floor --
-    the reservation can never be smaller than the checking hits the anchor does
-    not know about, which also handles overspend.  A credit entry never hits
-    checking directly (it flows through a CC Payback sibling transaction), so it
-    only reduces the reservation and its own dates are irrelevant.
+    A POSTED debit has already left the account and is already a cash movement
+    of its own in the ledger (ruling **R-FM**), so it is subtracted from the
+    reservation.  An UNPOSTED debit acts as a floor -- the reservation can never
+    be smaller than the checking hits nothing has recorded yet, which also
+    handles overspend.  A credit entry never hits checking directly (it flows
+    through a CC Payback sibling transaction), so it only reduces the
+    reservation and its own dates are irrelevant.
 
-    **Which bucket a debit falls in is a RECORDED FACT, and that is ruling
-    R-FL** (plan step X-f3a-1).  Its history is the point.  It was a stored
-    ``is_cleared`` boolean, written by a bulk UPDATE at every anchor true-up
-    over "every entry dated on or before the SERVER's today" -- so a purchase
-    recorded BEFORE the true-up was reconciled and the identical purchase
-    recorded after it never was, and the difference was which button the user
-    pressed first.  Ruling R-DH (d) deleted the boolean as "a denormalized copy
-    of a derivable fact" and derived it instead, from ``settled_on`` against the
-    account's latest asserted day.  The developer's bank exports then falsified
-    the premise: clearing is not derivable, because only 33 of 110 matched
-    movements carry the day the bank posted them and only 17 of 55 assertions
-    are their day's closing balance.  So the answer is neither a copy nor a
-    derivation but an OBSERVATION -- which statement was seen to show this
-    purchase -- asked through the one rule
-    (:meth:`~._clearing.StatementCoverage.is_cleared`), the same rule the read
-    replay and the posting walk apply to a settled transaction.
+    **Which bucket a debit falls in is whether it has POSTED, and that is
+    ruling R-FM** (plan step X-f3b).  Its history is the point, because this
+    bucket has been re-decided three times and each move was a narrowing.  It
+    was a stored ``is_cleared`` boolean, written by a bulk UPDATE at every
+    anchor true-up over "every entry dated on or before the SERVER's today" --
+    so a purchase recorded BEFORE the true-up was reconciled and the identical
+    purchase recorded after it never was, and the difference was which button
+    the user pressed first.  Ruling R-DH (d) deleted the boolean and derived it
+    from ``settled_on`` against the account's latest asserted day; ruling R-FL
+    replaced that derivation with the RECORDED fact of which statement showed
+    the line, because the developer's bank exports falsified the date compare on
+    70% of matched movements.
 
-    A purchase no statement has been recorded as showing, and whose
-    ``settled_on`` no assertion covers, is OUTSTANDING -- which is the
+    **R-FM ends the question here entirely**, and that is the simplification
+    rather than a fourth answer.  While a purchase was not a cash movement, the
+    reservation had to ask whether a declared balance already contained it --
+    because that was the only way its money could be in the book at all.  Now a
+    purchase carrying a posting day IS in the book, on its own day, and WHICH
+    statement cleared it is the walk's question about that movement
+    (:class:`~._clearing.StatementCoverage`) exactly as it is for a settled
+    transaction.  So this reduction asks one fact about the row in front of it
+    and no fact about the account, and it cannot come to disagree with the
+    clearing rule because it no longer states one.
+
+    A purchase whose posting day has never been recorded is UNPOSTED -- the
     conservative arm: the envelope keeps holding its whole budget back until the
     user confirms the money has actually left.  Nothing here guesses a posting
     day on the user's behalf.
@@ -496,71 +454,67 @@ def _entry_checking_impact(
     kept in step across two paths.
 
     Args:
-        entries: An iterable of entry rows, each a
-            :class:`~._clearing.ClearableLine` (``settled_on`` and
-            ``reconciled_by_id``) also exposing ``amount`` (Decimal) and
-            ``is_credit`` (bool).  The caller is responsible for
-            short-circuiting an empty sequence before calling.
+        entries: An iterable of entry rows, each exposing ``settled_on``
+            (``date | None``), ``amount`` (Decimal) and ``is_credit`` (bool).
+            The caller is responsible for short-circuiting an empty sequence
+            before calling.
         estimated_amount: Decimal -- the transaction's budgeted amount,
             the reservation ceiling before debits and credits reduce it.
-        coverage: The account's :class:`~._clearing.StatementCoverage`.  A debit
-            it reports ``is_cleared`` is inside a declared balance.
 
     Returns:
         Decimal -- the amount this transaction's entries hold back from
         the checking balance.
     """
-    settled_debit = Decimal("0")
-    outstanding_debit = Decimal("0")
+    posted_debit = Decimal("0")
+    unposted_debit = Decimal("0")
     sum_credit = Decimal("0")
     for entry in entries:
         if entry.is_credit:
             sum_credit += entry.amount
-        elif coverage.is_cleared(entry):
-            settled_debit += entry.amount
+        elif entry.settled_on is not None:
+            posted_debit += entry.amount
         else:
-            outstanding_debit += entry.amount
+            unposted_debit += entry.amount
 
     return max(
-        estimated_amount - settled_debit - sum_credit,
-        outstanding_debit,
+        estimated_amount - posted_debit - sum_credit,
+        unposted_debit,
     )
 
 
-def _entry_aware_amount(txn, basis: "ProjectedBasis") -> Decimal:
+def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     """Compute the checking-balance impact for a single expense transaction.
 
     For projected expenses with entries (loaded eagerly or
     lazy-loaded on demand), the formula partitions debit entries into
-    settled and outstanding buckets, then holds back only the portion
-    of the budget the anchor does not already account for:
+    posted and unposted buckets, then holds back only the portion
+    of the budget that has not already left the account:
 
-        settled_debit     = debits whose recorded posting day is inside the
-                            account's latest asserted balance
-        outstanding_debit = every other debit
-        sum_credit        = sum(entries where is_credit)
+        posted_debit   = debits carrying a recorded bank posting day
+        unposted_debit = every other debit
+        sum_credit     = sum(entries where is_credit)
 
         checking_impact = max(
-            estimated_amount - settled_debit - sum_credit,
-            outstanding_debit,
+            estimated_amount - posted_debit - sum_credit,
+            unposted_debit,
         )
 
     Semantics:
-      - A SETTLED debit is already reflected in the checking anchor
-        balance, so it should not come out of the projection again --
+      - A POSTED debit has already left the account and is already a cash
+        movement of its own in the ledger (ruling **R-FM**, plan step
+        X-f3b), so it must not come out of the projection a second time --
         we subtract it from the reservation.
-      - An OUTSTANDING debit may or may not have left the account, and
-        either way the anchor does not know about it, so the full
+      - An UNPOSTED debit has not been seen to leave, so the full
         estimated amount must still be held back (the max() floor
-        handles this and also handles overspend where outstanding
+        handles this and also handles overspend where unposted
         debits exceed the remaining reservation).
       - A credit entry never hits checking directly -- it flows through
         a CC Payback sibling transaction -- so it only reduces the
         reservation, whatever its dates say.
       - With every ``settled_on`` NULL (the state a fresh purchase is in,
         and the state migration ``d7c1f4a9e603`` left every existing row
-        in), settled_debit = 0 and the formula reduces to
-        max(estimated - sum_credit, outstanding_debit) -- the whole budget
+        in), posted_debit = 0 and the formula reduces to
+        max(estimated - sum_credit, unposted_debit) -- the whole budget
         held back, which is the conservative arm and matches the
         pre-cleared-flag behavior from scope doc section 4.2.
 
@@ -568,8 +522,18 @@ def _entry_aware_amount(txn, basis: "ProjectedBasis") -> Decimal:
       est = 500, three debit purchases summing to 462.34, all confirmed
       against a statement whose balance the user then entered.
       checking_impact = max(500 - 462.34 - 0, 0) = 37.66, which is the
-      remaining budget to hold back now that the anchor reflects the
-      first three purchases.
+      remaining budget to hold back now that the ledger carries the
+      first three purchases as movements of their own.
+
+    **The two halves always sum to what the row costs**, which is the
+    property ruling R-FM turns on: the posted debits are in the ledger at
+    their own days, this reservation holds the rest, and the envelope's
+    close books ``sum(entries) - credit - posted_debit``
+    (:func:`settled_cash_leg`).  So recording a purchase and truing the
+    anchor up by the same amount still cannot move the projected end
+    balance (ruling R-DH (c)) -- and it stops depending on the anchor RESET
+    dropping the balance by exactly what the reservation released, which is
+    what finding **N-274** measured and what the cutover (X-f3c) removes.
 
     Seam removed (Commit 5 / CRIT-01 / F-009 / E-25): the pre-Commit-5
     implementation guarded the entry formula behind an
@@ -631,14 +595,19 @@ def _entry_aware_amount(txn, basis: "ProjectedBasis") -> Decimal:
     clamped forward rather than the plan as it stood then -- so windowing their
     entries was a partial as-of purity inside a tier that has none.
 
-    **The R-M re-ruling of 2026-08-01 did not bring that window back, and could
-    not.**  ``settled_on`` -- the day the bank was seen to take the money -- MAY
-    now be after today, because "I bought this and my bank has not taken it yet"
-    is a true statement the app previously had no field to hold.  Such a
-    purchase is simply not inside any asserted balance, so it lands in the
-    OUTSTANDING bucket and raises the floor by exactly what it will cost.  That
-    is a function of the row and the account, not of the reader's clock, so this
-    rule stays clock-free.
+    **The R-M re-ruling of 2026-08-01 did not bring that window back, and plan
+    step X-f3b is what keeps it out.**  ``settled_on`` -- the day the bank was
+    seen to take the money -- was unbounded ABOVE while a purchase was not a
+    cash movement, because a future day was then the conservative direction: the
+    purchase stayed outstanding and the whole budget stayed reserved.  Ruling
+    **R-FM** inverts that, and the inversion is exactly the shape
+    ``status_seam.reject_future_settle_day`` refuses on a transaction: a future
+    posting day would release the reservation NOW and book the money later,
+    putting already-spent money back into today's projection.  So the bound
+    moved to the write door
+    (:func:`app.services.entry_service._reject_future_posting_day`) rather than
+    a clock arriving here.  A purchase the bank has not taken yet leaves the day
+    NULL, which is what that state has always meant.
 
     **The budget this holds back is the RESOLVED amount, not the stored column**
     (plan step X-au-c2).  ``estimated_amount`` is what an envelope's budget was
@@ -655,10 +624,12 @@ def _entry_aware_amount(txn, basis: "ProjectedBasis") -> Decimal:
             be eager-loaded (canonical producer), unloaded
             (transitional caller; lazy-loads on demand), or absent
             (test fake).
-        basis: The account's :class:`ProjectedBasis` -- its
-            :class:`~._clearing.StatementCoverage`, consulted only for a
-            projected row carrying entries, and the amount basis every arm
-            prices through.
+        basis: The account's :class:`~._amount_source.AmountBasis` -- the amount
+            basis every arm prices through.  It carried the account's
+            :class:`~._clearing.StatementCoverage` beside it until plan step
+            X-f3b, in a ``ProjectedBasis`` wrapper; the reservation is the
+            fact that needed it, and it no longer asks (see
+            :func:`_entry_checking_impact`), so the wrapper went with it.
 
     Returns:
         Decimal -- the amount this transaction contributes to checking
@@ -675,7 +646,7 @@ def _entry_aware_amount(txn, basis: "ProjectedBasis") -> Decimal:
     # through ``ref_cache`` and so raises on a non-ORM fake, which the
     # no-entries short-circuit above is documented to keep working.
     if not entries:
-        return contribution_of(txn, basis.amounts)
+        return contribution_of(txn, basis)
 
     # Only apply the entry formula to projected transactions.
     # Settled, cancelled, and credit statuses are already handled
@@ -686,15 +657,13 @@ def _entry_aware_amount(txn, basis: "ProjectedBasis") -> Decimal:
     # Projected-only filters in this package and in the balance
     # resolver.
     if not is_projected(txn):
-        return contribution_of(txn, basis.amounts)
+        return contribution_of(txn, basis)
 
-    # Partition the entries and hold back the unreconciled budget.  The
+    # Partition the entries and hold back the unposted budget.  The
     # bucketing rule and the reservation formula live once, in
     # ``_entry_checking_impact`` (E-27).
     return _entry_checking_impact(
-        entries,
-        resolve_transaction_amount(txn, basis.amounts),
-        basis.coverage,
+        entries, resolve_transaction_amount(txn, basis),
     )
 
 
@@ -729,21 +698,71 @@ def credit_entry_sum(txn: Transaction) -> Decimal:
     )
 
 
+def posted_purchase_sum(txn: Transaction) -> Decimal:
+    """Return the sum of a transaction's purchases that have ALREADY posted.
+
+    The ``Sigma(posted debit purchases)`` term ruling **R-FM** adds to the
+    confirmed cash effect (plan step X-f3b).  A purchase carrying a recorded
+    bank posting day books its OWN cash leg on its OWN day
+    (``posting_service.sync_purchase_postings``), so its envelope's close must
+    book only the remainder or the same dollars leave the account twice.
+
+    A DEBIT purchase only: a card purchase never touches checking at all, and
+    :func:`credit_entry_sum` is the term that removes it.  The two are disjoint
+    by construction (``is_credit`` partitions the entries), so subtracting both
+    subtracts nothing twice.  A plain transaction has no entries, so this is
+    ``Decimal("0")`` and the effect collapses to ``effective_amount``.
+
+    **PUBLIC for the same reason** :func:`credit_entry_sum` **is**: the reconcile
+    panel prints what the STATEMENT will show for a tick beside what the tick
+    BOOKS, and those differ by exactly these two terms.  It takes this one rather
+    than writing ``entry.settled_on is not None`` a second time, so a change to
+    what "already posted" means cannot leave the panel saying the old thing.
+
+    Args:
+        txn: The transaction whose posted purchases to sum.
+
+    Returns:
+        The sum of ``amount`` over the transaction's debit entries carrying a
+        ``settled_on``, as a ``Decimal`` (``Decimal("0")`` when there are none).
+    """
+    return sum(
+        (
+            entry.amount for entry in txn.entries
+            if not entry.is_credit and entry.settled_on is not None
+        ),
+        Decimal("0"),
+    )
+
+
 def settled_cash_leg(txn: Transaction) -> Decimal:
     """Return the confirmed cash effect of a SETTLED row: what really moved.
 
     The settled counterpart of the projected valuations beside it, and the ONE
-    statement of that rule: ``effective_amount - Sigma(credit entry amounts)``,
-    signed ``+`` for income (money entering the account) and ``-`` for an
-    expense (money leaving).  The sign follows the transaction TYPE, never the
-    account class, so the leg is correct whether the cash account is an asset
-    (Checking) or a liability (a direct charge on a Credit Card account).
+    statement of that rule: ``effective_amount - Sigma(credit entry amounts) -
+    Sigma(posted debit purchases)``, signed ``+`` for income (money entering the
+    account) and ``-`` for an expense (money leaving).  The sign follows the
+    transaction TYPE, never the account class, so the leg is correct whether the
+    cash account is an asset (Checking) or a liability (a direct charge on a
+    Credit Card account).
 
-    For a plain transaction the credit sum is zero and the effect collapses to
+    For a plain transaction both entry sums are zero and the effect collapses to
     ``+/-effective_amount``.  For an ENVELOPE at settle ``effective_amount``
     equals the sum of ALL its entries (``compute_actual_from_entries`` sets
-    ``actual_amount`` so), and subtracting the credit entries collapses the
-    result to the DEBIT-only outflow -- with no branch on "is this an envelope".
+    ``actual_amount`` so), and subtracting the two collapses the result to the
+    UNPOSTED debit outflow -- with no branch on "is this an envelope".
+
+    **The third term is ruling R-FM** (plan step X-f3b), and it is what makes
+    "an envelope's close books only what its purchases did not" one expression
+    rather than a second rule.  A purchase whose bank posting day is recorded is
+    a cash movement of its own, dated on its own day
+    (:func:`~._events.settled_cash_facts`, ``posting_service``'s purchase
+    sync); the close therefore books the rest.  The two always sum to the row's
+    whole debit total, so nothing is lost and nothing is counted twice --
+    measured on a production clone 2026-08-14: entry 89 (``$12.79``, taken by
+    the bank on 08-12, inside the ``$2,193.69`` the owner asserted for that day)
+    was being taken a SECOND time by its envelope's 08-13 close, which read the
+    whole of 08-13 ``$12.79`` low (finding **N-274**).
 
     **This is why the rule lives HERE (plan step X-a), not in the posting
     writer.**  It was ``posting_service._signed_cash_leg``, private to the
@@ -766,15 +785,20 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     **TOTAL: a non-contributing row is worth exactly zero.**  A soft-deleted or
     Credit / Cancelled row has an ``effective_amount`` of zero, but its ENTRIES
     survive on the row -- so without the guard below,
-    ``0 - Sigma(credit)`` negated for an expense returns a FABRICATED INFLOW: a
-    deleted grocery envelope carrying an $80.00 credit purchase valued at
-    ``+$80.00``, money the account never received.  Unreachable through today's
+    ``0 - Sigma(credit) - Sigma(posted)`` negated for an expense returns a
+    FABRICATED INFLOW: a deleted grocery envelope carrying an $80.00 credit
+    purchase valued at ``+$80.00``, money the account never received.
+    Unreachable through today's
     two callers (the walk pre-filters with
     :func:`~app.utils.balance_predicates.balance_contributing_clause`, and the
     writer resolves a target only on the settle side), which is exactly why it
     would have waited to be discovered by a third.  A function whose answer is
     correct only because every caller happens to pre-filter is a contract nobody
-    can see; this one is total instead.
+    can see; this one is total instead.  **The same gate governs the row's
+    PURCHASES** (ruling R-FM): a non-contributing row's purchases post nothing
+    either, in the walk (:func:`~._events.settled_cash_facts`) and in the ledger
+    (``posting_service``), so the zero here is the whole family's zero rather
+    than the parent leg's alone.
 
     Args:
         txn: The transaction whose confirmed cash effect to value.  A
@@ -786,11 +810,15 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     """
     if not is_balance_contributing(txn):
         return Decimal("0.00")
-    net = owned_contribution(txn) - credit_entry_sum(txn)
+    net = (
+        owned_contribution(txn)
+        - credit_entry_sum(txn)
+        - posted_purchase_sum(txn)
+    )
     return net if txn.is_income else -net
 
 
-def income_amount(txn, basis: ProjectedBasis):
+def income_amount(txn, basis: AmountBasis):
     """Return the income contribution for ``txn``, honoring a live override.
 
     Part of this module's public surface (no leading underscore): the seam's
@@ -816,29 +844,30 @@ def income_amount(txn, basis: ProjectedBasis):
     number before the schema change that makes the new answer structural, so
     this leaf preserves it and X-au-d deletes the arm outright.
 
-    It takes the whole :class:`ProjectedBasis` although it reads only one of
-    the two fields, and that is deliberate: the income and expense legs are
-    handed the SAME object by the same reduction, so there is no shape in which
-    one leg can be valued on a basis the other was not.  A signature that took
-    only what it happens to need today would let a future reader thread the two
-    facts separately, which is the "two producers that agree by coincidence"
-    shape this module exists to prevent.
+    **It takes the ``AmountBasis`` directly since plan step X-f3b**, where it
+    took a ``ProjectedBasis`` wrapper before.  That record bundled TWO
+    per-account facts so they could not be threaded apart -- the amount basis
+    and the account's clearing rule -- and ruling **R-FM** removed the second:
+    the reservation asked it, and a purchase's posted-ness is now a fact about
+    the purchase.  A one-field wrapper carries nothing a caller could get wrong,
+    so it went rather than surviving as a shape whose docstring named a field it
+    no longer had.
 
     Args:
         txn: An income Transaction.
-        basis: The account's :class:`ProjectedBasis`.
+        basis: The account's :class:`~._amount_source.AmountBasis`.
 
     Returns:
         Decimal -- the override amount when present, else the row's
         contribution against the basis.
     """
-    override = live_override(txn, basis.amounts)
+    override = live_override(txn, basis)
     if override is not None:
         return override
-    return contribution_of(txn, basis.amounts)
+    return contribution_of(txn, basis)
 
 
-def _expense_amount(txn, basis: ProjectedBasis):
+def _expense_amount(txn, basis: AmountBasis):
     """Return the expense contribution for ``txn``, honoring a live override.
 
     The expense-leg analogue of :func:`income_amount`.  When a live producer
@@ -854,13 +883,13 @@ def _expense_amount(txn, basis: ProjectedBasis):
 
     Args:
         txn: An expense Transaction.
-        basis: The account's :class:`ProjectedBasis`.
+        basis: The account's :class:`~._amount_source.AmountBasis`.
 
     Returns:
         Decimal -- the override amount when present, else
         :func:`_entry_aware_amount`.
     """
-    override = live_override(txn, basis.amounts)
+    override = live_override(txn, basis)
     if override is not None:
         return override
     return _entry_aware_amount(txn, basis)

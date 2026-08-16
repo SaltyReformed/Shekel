@@ -161,8 +161,16 @@ names why it is unsafe and gives the literal SQL to loosen the schema by hand.
 Reverting the DATA needs a restore.  Developer ruling, 2026-08-15.
 
 Revision ID: b6d41f0a9c27
-Revises: f2a94c7e1b60
+Revises: b7c3d9e1f204
 Create Date: 2026-08-15
+
+**Re-pointed off ``f2a94c7e1b60`` when this branch merged ``dev``**, which had
+landed ``b7c3d9e1f204`` (a purchase is a ledger source) from the same parent.
+Two heads, and the two touch different tables -- that one
+``budget.purchases``, this one ``budget.recurrence_rules`` -- so the chain
+LINEARISES rather than needing a merge revision. Safe because neither revision
+has run in production: the clone this was measured on stamps
+``c4e1a8b70f36``.
 """
 from alembic import op
 import sqlalchemy as sa
@@ -176,7 +184,7 @@ from migrations._recurrence_two_axis_backfill import (
 
 # revision identifiers, used by Alembic.
 revision = "b6d41f0a9c27"
-down_revision = "f2a94c7e1b60"
+down_revision = "b7c3d9e1f204"
 branch_labels = None
 depends_on = None
 

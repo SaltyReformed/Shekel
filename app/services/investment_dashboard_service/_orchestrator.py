@@ -12,7 +12,7 @@ hints these return.
 
 from app.models.account import Account
 from app.extensions import db
-from app.services import balance_at, pay_period_service
+from app.services import balance_at
 from app.services.balance_at import BalanceContext
 
 from ._cards import (
@@ -23,6 +23,7 @@ from ._cards import (
 )
 from ._chart import _assemble_chart_context, _empty_chart_context
 from ._context import (
+    _current_period,
     _load_investment_params,
     _load_projection_context,
     _resolve_anchor_as_of,
@@ -48,12 +49,8 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
         The template context plus the two route-side URL hints.
     """
     params = _load_investment_params(account.id)
-    all_periods = pay_period_service.get_all_periods(user_id)
-    current_period = pay_period_service.get_current_period(user_id)
-    ctx = _load_projection_context(
-        user_id, account, params, all_periods, current_period,
-    )
-    default_horizon = _compute_default_horizon(user_id, all_periods)
+    ctx = _load_projection_context(user_id, account, params)
+    default_horizon = _compute_default_horizon(ctx)
     # C2: initial chart at the default horizon on the fragment's own basis.
     chart_context = (
         _assemble_chart_context(account, ctx, default_horizon, None)
@@ -66,7 +63,7 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
     # raise plus one handler is the answer now.  ``None`` here still hides the
     # chip, and now means only what the producer means by it.
     growth = balance_at.investment_growth_since_anchor(
-        account, ctx.balance_ctx, current_period,
+        account, ctx.balance_ctx, ctx.current_period,
     )
 
     return {
@@ -105,14 +102,20 @@ def compute_balance_hero_cell(user_id: int, account_id: int) -> dict | None:
     and the period's end -- measured $22.59 / $9.65 / $26.05 on the three real
     accounts -- so cancelling the editor would have restored a figure the page
     was never showing.  One cell, one producer.
+
+    **The period it reads at comes off its own read pass** (plan step C2-f2c).
+    It was ``pay_period_service.get_current_period(user_id)`` -- a second query
+    on a second clock, beside a ``BalanceContext`` built one line above whose
+    calendar already answers it.  The two agreed; what they could not
+    guarantee is that they would, and this cell exists to restore the figure
+    the page beside it is showing.
     """
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != user_id or not account.is_active:
         return None
     balance_ctx = BalanceContext.build(user_id)
     balance = _resolve_current_balance(
-        account, balance_ctx,
-        pay_period_service.get_current_period(user_id),
+        account, balance_ctx, _current_period(balance_ctx),
     )
     return {
         "account": account,

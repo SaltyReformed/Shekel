@@ -10,7 +10,6 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, all money is
 :class:`~decimal.Decimal`.
 """
 
-from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
@@ -18,7 +17,6 @@ from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.pay_period import PayPeriod
 from app.services import growth_engine
 from app.services.account_projection import is_payroll_deduction_funded
 from app.services.investment_projection import InvestmentInputs
@@ -27,7 +25,7 @@ from app.services.recurring_transfer_query import (
 )
 from app.utils.money import percent_complete, round_money
 
-from ._context import _ProjectionContext, _load_planned_retirement_date
+from ._context import _ProjectionContext
 
 # The chart's horizon when the user has set no planned retirement date.
 _FALLBACK_HORIZON_YEARS = 20
@@ -98,28 +96,39 @@ def _compute_limit_info(
     }
 
 
-def _compute_default_horizon(user_id: int, all_periods: list) -> int:
+def _compute_default_horizon(ctx: _ProjectionContext) -> int:
     """Return the chart slider's default horizon in years.
 
     Order of preference: the user's planned retirement year if set,
-    else the last projection period's year, else the
+    else the last saved period's year, else the
     :data:`_FALLBACK_HORIZON_YEARS` constant.  Always >= 1.
+
+    **Every input comes off the read pass at plan step C2-f2c** -- the
+    retirement date resolved once on the shared feed rather than by a second
+    ``user_settings`` query, the periods off the pass's own calendar rather
+    than a ``pay_period_service.get_all_periods`` call, and the year counted
+    from ``ctx.balance_ctx.as_of`` rather than from ``date.today()``.
+    The clock matters on the FIRST arm only: the second reads a period end
+    derived from paydays and a cadence, which no clock takes part in.  A render
+    straddling New Year's Eve would otherwise size the retirement arm against
+    one civil year while every other figure on the page ran on the other.
+
+    Args:
+        ctx: The shared per-request projection feed.
+
+    Returns:
+        The default horizon in whole years, at least 1.
     """
-    retirement_date = _load_planned_retirement_date(user_id)
-    if retirement_date is not None:
-        return max(1, retirement_date.year - date.today().year)
-    if all_periods:
-        last_period = all_periods[-1]
-        return max(1, (last_period.end_date.year - date.today().year) + 1)
+    today = ctx.balance_ctx.as_of
+    if ctx.planned_retirement_date is not None:
+        return max(1, ctx.planned_retirement_date.year - today.year)
+    periods = ctx.balance_ctx.reported_periods()
+    if periods:
+        return max(1, (periods[-1].end_date.year - today.year) + 1)
     return _FALLBACK_HORIZON_YEARS
 
 
-def _compute_suggested_contribution(
-    investment_params: InvestmentParams,
-    ytd_contributions: Decimal,
-    all_periods: list,
-    current_period: PayPeriod | None,
-) -> Decimal:
+def _compute_suggested_contribution(ctx: _ProjectionContext) -> Decimal:
     """Return the per-period contribution suggestion under the annual limit.
 
     E-12 / HIGH-06 (Commit 24): same ``is not None`` convention as
@@ -132,32 +141,52 @@ def _compute_suggested_contribution(
 
     ``remaining_periods`` is anchored on ``current_period.start_date`` --
     the SAME boundary the subtracted ``ytd_contributions`` uses
-    (:func:`investment_projection._current_year_period_ids`: same
-    calendar year, ``<= current_period.start_date``).  So the current
+    (:func:`investment_projection._ytd_contributions`: same calendar year,
+    ``<= current_period.start_date``).  So the current
     period is counted once -- in YTD (already contributed) -- and the
     remaining limit is spread over the periods STRICTLY AFTER it.
-    Anchoring on ``date.today()`` instead double-counted the current
+    Anchoring on the clock instead double-counted the current
     period on the single calendar day a period begins
     (``today == period start``), where it landed in BOTH the YTD window
     and the remaining spread (deep-quality-hunt #59).  When there is no
-    current period (today falls outside every period, so YTD is zero)
-    the boundary falls back to today -- behaviour-identical there, since
+    current period (the clock falls outside every period, so YTD is zero)
+    the boundary falls back to the clock -- behaviour-identical there, since
     no period can start on a day no period covers.
+
+    **Both the periods and the fallback clock come off the read pass** since
+    plan step C2-f2c: the schedule is the pass's own calendar rather than a
+    ``pay_period_service.get_all_periods`` call, and the fallback is
+    ``ctx.balance_ctx.as_of`` rather than ``date.today()``, so the day this
+    spreads FROM and the day the YTD was summed THROUGH cannot be two
+    different days.
+
+    Args:
+        ctx: The shared per-request projection feed -- its ``params`` carry the
+            annual limit (callers guard ``ctx.params is not None``, the same
+            convention :func:`._chart._run_growth_projection` states), its
+            ``current_period`` is the boundary, its calendar the periods to
+            spread over, and its ``inputs.ytd_contributions`` what has already
+            been used.
+
+    Returns:
+        The suggested per-period contribution, rounded to cents.  Zero when the
+        account configures no annual limit -- a Brokerage-style account has no
+        IRS cap to spread over the remaining periods.
     """
-    if investment_params.annual_contribution_limit is None:
+    if ctx.params.annual_contribution_limit is None:
         return Decimal("0")
     boundary = (
-        current_period.start_date if current_period is not None
-        else date.today()
+        ctx.current_period.start_date if ctx.current_period is not None
+        else ctx.balance_ctx.as_of
     )
     remaining_periods = sum(
-        1 for p in all_periods
-        if p.start_date.year == boundary.year
-        and p.start_date > boundary
+        1 for period in ctx.balance_ctx.reported_periods()
+        if period.start_date.year == boundary.year
+        and period.start_date > boundary
     )
     remaining_limit = max(
-        investment_params.annual_contribution_limit
-        - (ytd_contributions or Decimal("0")),
+        ctx.params.annual_contribution_limit
+        - (ctx.inputs.ytd_contributions or Decimal("0")),
         Decimal("0"),
     )
     return round_money(remaining_limit / max(remaining_periods, 1))
@@ -282,10 +311,7 @@ def _compute_contribution_prompt(
 
     # Transfer-path: compute the suggested per-period amount and
     # load eligible source accounts.
-    result["suggested_amount"] = _compute_suggested_contribution(
-        ctx.params, ctx.inputs.ytd_contributions,
-        ctx.all_periods, ctx.current_period,
-    )
+    result["suggested_amount"] = _compute_suggested_contribution(ctx)
     result["source_accounts"], result["default_source_id"] = (
         _load_transfer_source_accounts(user_id, account.id)
     )

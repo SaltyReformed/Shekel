@@ -11,17 +11,14 @@
                           purchase date on (ruling R-M), or the form could
                           offer a value the service rejects.
      editing_id        -- int or None -- entry ID to show inline edit form
-     reconciled_ids    -- set of entry IDs the account's latest asserted
-                          balance already contains (ruling R-DH (d), derived in
-                          the route through the shared
-                          ``cash_ledger.ReconciledThrough.covers``).  Read-only: the
-                          user corrects reconciliation by correcting the
-                          purchase's POSTING DATE, which is the fact that was
-                          actually wrong.
-     reconciled_through -- the civil day of the account's latest balance
-                          assertion, or None -- named in the indicator's
-                          tooltip so the boundary is visible rather than
-                          implied.
+     posted_ids        -- set of entry IDs whose bank posting day is recorded,
+                          so their money has LEFT the account and the envelope
+                          is no longer holding their budget back (ruling
+                          **R-FM**, decided in
+                          ``entry_service.entry_list_view`` from the same fact
+                          the reservation buckets on).  Read-only: the user
+                          changes it by correcting the purchase's POSTING DATE,
+                          which is the fact itself.
      out_of_period_ids -- set of entry IDs with dates outside the pay period
      conflict          -- bool, optional -- when True, surface a warning
                           banner because a previous PATCH submission
@@ -160,23 +157,24 @@
       {% endif %}
       <span class="font-mono">{{ money(entry.amount) }}</span>
       {% if not entry.is_credit %}
-      {# Read-only reconciled indicator (ruling R-DH (d)).  A reconciled
-         purchase is already inside the balance the user last declared, so it
-         is subtracted from the budget reservation; an outstanding one keeps
-         the full reservation.  It is DERIVED at read time from the purchase's
-         own posting date, not a stored flag, and it is not clickable: the
+      {# Read-only POSTED indicator (ruling **R-FM**).  A purchase whose bank
+         posting day is recorded has left the account and is a cash movement of
+         its own, so it is subtracted from the budget reservation; one that has
+         not is still held back in full.  It reads the SAME fact the reservation
+         buckets on, decided once in ``entry_service.entry_list_view``, so the
+         icon and the number beside it cannot disagree.  Not clickable: the
          manual toggle it replaced let the indicator and the projection be set
-         against each other, and when reconciliation is wrong the fact that
-         was actually wrong is the POSTING DATE -- which the edit form above
-         carries.  Hidden for credit entries: those never touch checking (the
-         CC Payback workflow settles them) so the question does not apply. #}
-      {% set is_reconciled = entry.id in reconciled_ids %}
-      <span class="{% if is_reconciled %}text-success{% else %}text-muted{% endif %}"
-            title="{% if is_reconciled %}Posted {{ entry.settled_on.strftime('%b %-d') }} -- already inside your balance as of {{ reconciled_through.strftime('%b %-d') }}, so it is not held back again{% elif entry.settled_on %}Posts {{ entry.settled_on.strftime('%b %-d') }} -- after the balance you last entered, so the budget is still held back{% else %}Not yet seen on a statement, so the budget is still held back.  Confirm it at your next balance true-up.{% endif %}">
-        <i class="bi bi-{% if is_reconciled %}check-circle-fill{% else %}circle{% endif %}"
+         against each other, and the fact that is actually wrong when this is
+         wrong is the POSTING DATE -- which the edit form above carries.  Hidden
+         for credit entries: those never touch checking (the CC Payback workflow
+         settles them) so the question does not apply. #}
+      {% set has_posted = entry.id in posted_ids %}
+      <span class="{% if has_posted %}text-success{% else %}text-muted{% endif %}"
+            title="{% if has_posted %}Posted {{ entry.settled_on.strftime('%b %-d') }} -- this money has left your account, so its budget is not held back again{% else %}Not yet seen on a statement, so the budget is still held back.  Confirm it at your next balance true-up.{% endif %}">
+        <i class="bi bi-{% if has_posted %}check-circle-fill{% else %}circle{% endif %}"
            aria-hidden="true"></i>
         <span class="visually-hidden">
-          {%- if is_reconciled %}Already inside your last balance{% else %}Still outstanding{% endif -%}
+          {%- if has_posted %}Already left your account{% else %}Still outstanding{% endif -%}
         </span>
       </span>
       {% endif %}

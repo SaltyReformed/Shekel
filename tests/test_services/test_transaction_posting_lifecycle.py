@@ -56,6 +56,7 @@ from app.services import (
     posting_service,
 )
 from app.services.entry_service import EntryDetails
+from app.services.posting_reads import _ledger_account_for
 from tests._test_helpers import (
     add_txn,
     create_envelope_txn,
@@ -125,6 +126,41 @@ def _entries_for_transaction(transaction_id):
     )
 
 
+def _entries_for_purchase(entry_id):
+    """Return every journal entry linked to one PURCHASE, oldest first.
+
+    The purchase twin of :func:`_entries_for_transaction` (plan step X-f3b,
+    ruling **R-FM**): a purchase's own cash leg links by
+    ``transaction_entry_id`` and carries no ``transaction_id``, so the two
+    windows are disjoint and a test that means one cannot read the other.
+    """
+    return (
+        db.session.query(JournalEntry)
+        .filter_by(transaction_entry_id=entry_id)
+        .order_by(JournalEntry.id)
+        .all()
+    )
+
+
+def _category_nets(scenario_id):
+    """Return ``{ledger_account_id: net}`` over every posting in *scenario_id*.
+
+    The window the category-leg tests grade a re-category through: a MOVE shows
+    as the old account netting to zero while the new one carries the amount, and
+    only a whole-scenario view can see both at once.
+    """
+    rows = (
+        db.session.query(
+            Posting.ledger_account_id, db.func.sum(Posting.amount),
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(JournalEntry.scenario_id == scenario_id)
+        .group_by(Posting.ledger_account_id)
+        .all()
+    )
+    return {ledger_id: net for ledger_id, net in rows}
+
+
 def _legs_by_ledger(entry_id):
     """Return ``{ledger_account_id: amount}`` for one journal entry's legs."""
     return {
@@ -166,12 +202,28 @@ def _assert_reconciles(scenario_id, *accounts):
     is stamped at server-now, after the assertion instant, so the effects
     ride on top of the opening.  Asserted from independent producers so any
     divergence between the ledger and the source rows fails loudly.
+
+    **"Rides on top of the opening" is a PRECONDITION, not a claim**, and since
+    plan step X-f3b one test breaks it deliberately: a purchase's cash leg is
+    dated the day the BANK took the money, which may be on or before an
+    assertion, in which case that assertion's correction absorbs it and the
+    ledger lands on the asserted balance rather than on opening + effect.  That
+    test asserts the figure directly and says so at the call site.
+
+    **A THIRD term since plan step X-f3b** (ruling **R-FM**): a purchase whose
+    bank posting day is recorded books its own cash leg, and one on a
+    still-PROJECTED parent is money no settled row's ``effective`` figure
+    contains.  ``posted_purchase_effect`` is the term that covers exactly those
+    -- a purchase on a SETTLED parent is already inside
+    ``settled_transaction_effect``, whose ``effective - credit`` sum is what the
+    parent leg and its purchases' legs add up to.
     """
     for account in accounts:
         posted = posting_service.account_posting_total(account.id, scenario_id)
         effect = (
             posting_service.settled_transfer_effect(account.id, scenario_id)
             + posting_service.settled_transaction_effect(account.id, scenario_id)
+            + posting_service.posted_purchase_effect(account.id, scenario_id)
         )
         opening = Decimal(str(cash_ledger.resolve_anchor(account).balance))
         assert posted == opening + effect, (
@@ -618,27 +670,41 @@ class TestEnvelopePostingLifecycle:
             ) == Decimal("960.00")
             _assert_reconciles(seed_user["scenario"].id, checking)
 
-    def test_recording_a_posting_day_does_not_change_the_ledger(
+    def test_recording_a_posting_day_moves_the_leg_onto_its_own_day(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Recording when the bank took a purchase leaves the ledger untouched.
+        """Recording when the bank took a purchase RE-DATES its cash leg.
 
         Successor to the ``toggle_cleared`` control (plan step S1-c, ruling
         R-DH (d)): the flag and its toggle are deleted, and the fact they stood
-        in for is now the purchase's own ``settled_on``.  The PROPERTY is
-        unchanged and is why the test survives the rename -- a settled row's
-        confirmed cash effect is ``effective_amount - Sigma(credit entries)``,
-        which the posting day does not appear in, so recording one cannot move
-        a posted total.
+        in for is the purchase's own ``settled_on``.
 
-        It is a STRONGER control than the one it replaces.  ``toggle_cleared``
-        was documented as deliberately not a posting boundary and never called
-        the resync at all; ``update_entry`` calls
-        ``_resync_settled_envelope`` on every mutation of a settled
-        envelope's entries, so this exercises the resync and asserts it
-        reconciles to the SAME target: the single posted entry (-40 / +40)
-        stands, no second entry appears, and the checking total holds at
-        ``1000 - 40 = 960.00``.
+        **Its property is RE-RULED at plan step X-f3b (ruling R-FM), and this
+        fixture turns out to be finding N-274 itself.**  It asserted that
+        recording a posting day left the ledger untouched, because a settled
+        row's confirmed cash effect was ``effective - Sigma(credit)`` and the
+        posting day appeared nowhere in it.  That effect now nets the row's
+        already-posted purchases, so recording the day moves the ``$40.00`` OUT
+        of the envelope's close and INTO a leg of its own on the day the bank
+        took it.
+
+        Hand-computed.  The purchase's ``purchased_on`` is the period's start
+        (``_add_purchase``), which is the very day the fixture's opening
+        assertion declares ``$1,000.00`` for -- so recording that as the posting
+        day says *the bank had taken this $40.00 when I read that balance*:
+
+        * BEFORE: the envelope's whole ``$40.00`` was booked at its own settle
+          day, after the assertion, so the ledger read ``$960.00`` -- the
+          ``$40.00`` counted once inside the declared balance and once again on
+          the way out.  That double count is **N-274**;
+        * AFTER: the purchase's leg lands on the assertion's own day, the
+          opening correction absorbs it, and the ledger reads the ``$1,000.00``
+          the owner actually declared.
+
+        The envelope's own leg reverses to zero (a second transaction-linked
+        entry) and one purchase-linked entry appears.  Both halves are asserted:
+        a test checking only the total would pass against a build that recorded
+        the day and posted nothing.
 
         The parent is SETTLED, so ``record_settled_days`` is deliberately not
         the door used here -- its outstanding scope admits only projected
@@ -665,15 +731,229 @@ class TestEnvelopePostingLifecycle:
             )
             db.session.commit()
 
-            # The fact really was recorded -- otherwise "the ledger did not
-            # move" would be true of a no-op and prove nothing.
+            # The fact really was recorded -- otherwise "the total did not move"
+            # would be true of a no-op and prove nothing.
             assert updated.settled_on == purchased_on
-            # No new entry; the ledger is unchanged.
-            assert len(_entries_for_transaction(txn_id)) == 1
+            # The envelope's own leg reversed, and the purchase took it over on
+            # the day the bank was seen to take the money.
+            assert len(_entries_for_transaction(txn_id)) == 2
+            purchase_entries = _entries_for_purchase(entry_id)
+            assert len(purchase_entries) == 1
+            assert purchase_entries[0].entry_date == purchased_on
+            assert _legs_by_ledger(purchase_entries[0].id)[
+                _ledger_account_for(checking.id).id
+            ] == Decimal("-40.00")
+            # And the ledger now equals the balance the owner declared, rather
+            # than that balance minus a purchase it already contained.
             assert posting_service.account_posting_total(
                 checking.id, seed_user["scenario"].id,
-            ) == Decimal("960.00")
-            _assert_reconciles(seed_user["scenario"].id, checking)
+            ) == Decimal("1000.00")
+            # ``_assert_reconciles`` is deliberately NOT called here, and its
+            # own docstring says why: it grades ledger == opening + source
+            # effect, which holds only while every source RIDES ON TOP of the
+            # opening.  This test is the one case in the suite that breaks that
+            # precondition on purpose -- the purchase's leg lands on the
+            # assertion's own day, so the opening correction ABSORBS it and the
+            # ledger lands on the asserted balance instead.  Asserting the
+            # figure above is the stronger statement anyway: it is the number
+            # the owner typed.
+
+
+class TestAPurchaseIsAPostingSourceOfItsOwn:
+    """Ruling **R-FM** (plan step X-f3b): the PURCHASE half of a row's family.
+
+    A purchase whose bank posting day the owner has recorded books its own
+    balanced cash leg, on its own day, whatever its envelope's status is -- and
+    its envelope's close then books only what its purchases did not.  These
+    grade the three things that makes true which nothing else does: a
+    still-PROJECTED envelope can hold ledger legs; a re-category moves them; and
+    deleting either half reverses them rather than stranding them.
+    """
+
+    def test_a_projected_envelopes_purchase_posts_on_its_own_day(
+        self, app, seed_user, seed_periods,
+    ):
+        """The case that could not exist before: postings under a Projected row.
+
+        A ``$100.00`` envelope nobody has closed, carrying one ``$40.00``
+        purchase the bank took on the period's start day.  The envelope's own
+        leg is absent (it has not settled), and the purchase's is present:
+        cash ``-40.00`` against the category ``+40.00``, dated the day the money
+        moved.
+
+        Hand-computed and asserted in BOTH directions -- the leg's own two
+        amounts, and the account's total ``1000 - 40 = 960.00`` -- because a
+        posting that balanced against the wrong ledger account would satisfy
+        either alone.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            checking = seed_user["account"]
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods[0], "Food",
+                Decimal("100.00"),
+            )
+            entry = _add_purchase(seed_user, txn, "40.00", is_credit=False)
+            db.session.commit()
+            entry_id, txn_id = entry.id, txn.id
+
+            entry_service.update_entry(
+                entry_id, user_id, settled_on=seed_periods[0].start_date,
+            )
+            db.session.commit()
+
+            assert not _entries_for_transaction(txn_id), (
+                "the envelope has not settled, so it books nothing of its own"
+            )
+            posted, = _entries_for_purchase(entry_id)
+            assert posted.entry_date == seed_periods[0].start_date
+            legs = _legs_by_ledger(posted.id)
+            assert legs[_ledger_account_for(checking.id).id] == Decimal(
+                "-40.00",
+            )
+            assert sorted(legs.values()) == [
+                Decimal("-40.00"), Decimal("40.00"),
+            ]
+
+    def test_re_categorising_the_parent_moves_its_purchases_legs(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A purchase books to its ENVELOPE's category, so a re-category moves it.
+
+        The counter leg is the parent's category (ruling **R-FM**), which makes
+        a re-category of a still-PROJECTED envelope a ledger act -- a state that
+        did not exist before X-f3b, and one no door would have reconciled if the
+        purchase arm were not part of the transaction's own sync.
+
+        Asserted as a MOVE rather than as an addition: the old category's legs
+        must net to zero afterwards, or the expense would be counted in two
+        categories at once.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods[0], "Food",
+                Decimal("100.00"),
+            )
+            entry = _add_purchase(seed_user, txn, "40.00", is_credit=False)
+            db.session.commit()
+            entry_service.update_entry(
+                entry.id, user_id, settled_on=seed_periods[0].start_date,
+            )
+            db.session.commit()
+            old_category_ledger = ledger_account_service.\
+                get_or_create_category_ledger_account(
+                    user_id, txn.category_id, LedgerAccountClassEnum.EXPENSE,
+                ).id
+            txn_id = txn.id
+
+            resp = auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={"category_id": seed_user["categories"]["Car Payment"].id},
+            )
+            assert resp.status_code == 200
+
+            new_category_ledger = ledger_account_service.\
+                get_or_create_category_ledger_account(
+                    user_id, seed_user["categories"]["Car Payment"].id,
+                    LedgerAccountClassEnum.EXPENSE,
+                ).id
+            nets = _category_nets(seed_user["scenario"].id)
+            assert nets.get(old_category_ledger, Decimal("0")) == Decimal("0")
+            assert nets[new_category_ledger] == Decimal("40.00")
+
+    def test_moving_the_parent_between_periods_re_files_its_purchases_legs(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A posting carries its source row's BUDGET column, so a move re-files it.
+
+        The R2 attribution rule on the one row type that can now reach it: a
+        PROJECTED envelope holds ledger legs once a purchase's bank posting day
+        is recorded, and ``pay_period_id`` was NOT among the PATCH fields that
+        raise a reconcile -- justified by "a settled row's period cannot move
+        anyway", which was true while only a settled row held postings.
+
+        Asserted as a MOVE: the old period must hold NOTHING for this purchase
+        afterwards, or the same $40.00 would be attributed to two columns at
+        once.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods[0], "Food",
+                Decimal("100.00"),
+            )
+            entry = _add_purchase(seed_user, txn, "40.00", is_credit=False)
+            db.session.commit()
+            entry_id, txn_id = entry.id, txn.id
+            entry_service.update_entry(
+                entry_id, user_id, settled_on=seed_periods[0].start_date,
+            )
+            db.session.commit()
+            posted, = _entries_for_purchase(entry_id)
+            assert posted.pay_period_id == seed_periods[0].id
+
+            resp = auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={"pay_period_id": seed_periods[1].id},
+            )
+            assert resp.status_code == 200
+
+            by_period = {}
+            for journal in _entries_for_purchase(entry_id):
+                legs = _legs_by_ledger(journal.id)
+                by_period[journal.pay_period_id] = (
+                    by_period.get(journal.pay_period_id, Decimal("0"))
+                    + sum(legs.values(), Decimal("0"))
+                    + legs[_ledger_account_for(txn.account_id).id]
+                )
+            assert by_period[seed_periods[0].id] == Decimal("0.00"), (
+                "the period the row left must hold nothing for this purchase"
+            )
+            assert by_period[seed_periods[1].id] == Decimal("-40.00")
+
+    def test_deleting_a_purchase_reverses_its_leg_before_the_row_goes(
+        self, app, seed_user, seed_periods,
+    ):
+        """The reverse-before-delete discipline, on the purchase half.
+
+        ``journal_entries.transaction_entry_id`` is ON DELETE SET NULL, so a
+        purchase deleted without reversing leaves both of its legs stranded on
+        their ledger accounts with nothing to offset them -- residue the posted
+        walk can absorb but never explain.  After the delete the entries survive
+        as an immutable net-zero PAIR and the account is whole again.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            checking = seed_user["account"]
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods[0], "Food",
+                Decimal("100.00"),
+            )
+            entry = _add_purchase(seed_user, txn, "40.00", is_credit=False)
+            db.session.commit()
+            entry_id = entry.id
+            before = posting_service.account_posting_total(
+                checking.id, seed_user["scenario"].id,
+            )
+            entry_service.update_entry(
+                entry_id, user_id, settled_on=seed_periods[0].start_date,
+            )
+            db.session.commit()
+            assert _entries_for_purchase(entry_id), (
+                "the purchase must really have posted, or the reversal below "
+                "would be a no-op and prove nothing"
+            )
+
+            entry_service.delete_entry(entry_id, user_id)
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                checking.id, seed_user["scenario"].id,
+            ) == before
+            # The pair survives the delete with its links SET NULL, which is
+            # what keeps every ledger account netting correctly.
+            assert not _entries_for_purchase(entry_id)
 
 
 # ---------------------------------------------------------------------------
