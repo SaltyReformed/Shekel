@@ -26,6 +26,8 @@ no reconciler.
   answers until one is deleted.
 - **When two figures PARTITION a set, write both halves from ONE predicate**, or the boundary drifts
   and both halves look right.
+- **CENTRALISING one clock WIDENS the gap to every clock it did not centralise.** `C2-f2d-1` closed
+  a `$4.18` split and opened a `$2,173.38` one, an `as_of=None` default a whole producer away.
 - **When a rule is re-keyed, the complement must move with it**, or replay and projection stop being
   exact complements.
 - **When two sides of one problem have different SHAPES, the loose side is where the next hole is.**
@@ -128,6 +130,8 @@ no reconciler.
 - **AN INSTRUMENT MUST BE SHOWN TO HAVE REACHED ITS SUBJECT.** One that cannot authenticate reports
   no differences, loudly and wrongly. Assert the identity a result is attributed to, not just that a
   result came back.
+- **A HARNESS THAT ADAPTS TO BOTH SIDES CAN GRADE NEITHER'S CONFIGURATION.** `C2-f2d-1`'s ran a pass
+  per producer on both, so 37,295 identical lines said nothing about the SHARING that shipped.
 - **A GATE MUST BE EXERCISED AGAINST THE ARTIFACT IT GRADES, never read or tested only
   synthetically.** A pattern that matches the real file nowhere passes every synthetic control. Row
   **P52** is this lesson found live: a docstring-stated `grep` canary whose pattern is line-based
