@@ -20,6 +20,16 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.models.category import Category
 from app.models.transaction import Transaction
 from app.services import spending_report_service
+# The privates these tests exercise moved into the package's submodules at plan
+# step X-au-c2b, when finding **N-270**'s 1000-line ceiling forced the split;
+# they are imported from where they live rather than re-exported, so the test
+# names the module that owns each rule.
+from app.services.spending_report_service._surprises import _MAX_SURPRISES
+from app.services.spending_report_service._window import (
+    _CHART_WINDOW_COUNT,
+    _shift_month,
+    _shift_window,
+)
 from app.services.spending_report_service import (
     Comparison,
     SpendingWindow,
@@ -268,7 +278,7 @@ class TestSurprises:
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
             )
-            assert len(report.surprises.rows) == spending_report_service._MAX_SURPRISES
+            assert len(report.surprises.rows) == _MAX_SURPRISES
             assert report.surprises.rows[0].delta == Decimal("60.00")
             # Net includes the capped-off +10 surprise too.
             assert report.surprises.net == Decimal("210.00")
@@ -400,16 +410,16 @@ class TestPriorWindowArithmetic:
 
     def test_shift_month_january_rolls_to_prior_december(self):
         """One month before January 2026 is December 2025."""
-        assert spending_report_service._shift_month(2026, 1, 1) == (2025, 12)
+        assert _shift_month(2026, 1, 1) == (2025, 12)
         # Two months before March 2026 is January 2026.
-        assert spending_report_service._shift_month(2026, 3, 2) == (2026, 1)
+        assert _shift_month(2026, 3, 2) == (2026, 1)
         # Thirteen months before June 2026 is May 2025.
-        assert spending_report_service._shift_month(2026, 6, 13) == (2025, 5)
+        assert _shift_month(2026, 6, 13) == (2025, 5)
 
     def test_shift_year(self, app, seed_user, seed_periods, db):
         """A year window steps back to the prior calendar year."""
         with app.app_context():
-            prior = spending_report_service._shift_window(
+            prior = _shift_window(
                 seed_user["user"].id,
                 SpendingWindow(window_type="year", year=2026), 1,
             )
@@ -441,7 +451,7 @@ class TestSeries:
                 seed_user["user"].id, _pp_window(seed_periods[2]),
             )
             series = report.series
-            assert len(series) == spending_report_service._CHART_WINDOW_COUNT
+            assert len(series) == _CHART_WINDOW_COUNT
             assert series[-1].window.period_id == seed_periods[2].id
             assert series[-1].total == Decimal("300.00")
             assert series[-2].total == Decimal("200.00")
@@ -673,7 +683,7 @@ class TestScopeAndContracts:
             assert report.surprises.net == Decimal("0")
             assert report.hero.payment_timing is None
             assert len(report.series) == (
-                spending_report_service._CHART_WINDOW_COUNT
+                _CHART_WINDOW_COUNT
             )
             assert report.series[-1].total == Decimal("0")
 

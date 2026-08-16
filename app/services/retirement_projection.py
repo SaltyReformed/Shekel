@@ -538,12 +538,13 @@ def load_projection_batch(
     deductions_by_account = load_active_deductions_for_accounts(
         user_id, account_ids,
     )
-    # Pricing a contribution needs the scenario its amount resolves under
-    # (plan step X-au-c2), and that scenario is the PASS's -- resolved once at
-    # the door and shared by every producer in the render, rather than looked
-    # up again here as it was until plan step C2-f2d-1.
+    # Pricing a contribution needs the basis its amount resolves under -- the
+    # owner, the scenario, and the salary / loan derivations behind a live
+    # figure (plan steps X-au-c2 and X-au-c2b).  That basis is the PASS's,
+    # resolved once at the door and shared by every producer in the render,
+    # rather than a second one built here as it was until plan step C2-f2d-1.
     contributions = load_shadow_income_contributions_for_accounts(
-        user_id, ctx.balance_ctx.scenario_id, account_ids, period_ids,
+        ctx.balance_ctx.amounts(), account_ids, period_ids,
     )
 
     # One IN query for the params rows (P2: replaces the per-account

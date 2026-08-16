@@ -53,6 +53,7 @@ from app.routes._amount_version_actions import (
     AmountVersionAction,
     withdraw_amount_version,
 )
+from app.services.cash_ledger import resolve_transfer_amount
 from app.routes._recurrence_conflict_chooser import (
     PreEditTemplateState,
     RecurrenceConflictKind,
@@ -369,7 +370,10 @@ def edit_transfer_template(template_id):
 # Mutations route through transfer_recurrence (shadow-safe resolve).
 _TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
     model=Transfer,
-    amount_attr="amount",
+    # A transfer's amount rule (plan step X-au-c2b): rule 5's own entry, which
+    # needs no basis -- a parent transfer is priced by its own figure or by its
+    # definition's series, never by a live producer.
+    resolve_amount=resolve_transfer_amount,
     regenerate_fn=transfer_recurrence.regenerate_for_template,
     resolve_fn=transfer_recurrence.resolve_conflicts,
     update_endpoint="transfers.update_transfer_template",

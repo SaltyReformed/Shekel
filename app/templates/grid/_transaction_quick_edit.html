@@ -22,7 +22,7 @@
          step="0.01"
          inputmode="decimal"
          name="estimated_amount"
-         value="{{ txn.estimated_amount }}"
+         value="{{ budgets[txn.id] }}"
          class="form-control form-control-sm txn-quick-input flex-1-min-0"
          aria-label="Edit amount for {{ txn.name }}"
          {% if locked %}disabled{% else %}autofocus{% endif %}>

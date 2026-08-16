@@ -275,8 +275,8 @@ class CashSourceFact:
     The projection's own read-time adjustments cannot reach a settled row and are
     deliberately not applied: the entries-aware RESERVATION models money still to
     leave (this has left), and the live override map is built from
-    ``live_projected_net`` / ``live_loan_transfer_amounts``, both of which filter
-    to ``is_projected`` candidates.
+    ``income_service.live_projected_net`` / ``LoanPricing.live_cash``, both of
+    which filter to ``is_projected`` candidates.
 
     Attributes:
         transaction_id: The source row's id -- the transaction itself, or for a
