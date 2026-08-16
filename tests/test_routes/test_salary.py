@@ -33,6 +33,7 @@ from app.services import account_service
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    make_every_period_rule,
     create_loan_account,
     freeze_today,
     seed_fica_config,
@@ -72,12 +73,7 @@ def _create_profile(seed_user):
         db.session.add(cat)
         db.session.flush()
 
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -164,9 +160,7 @@ def _create_other_user_profile():
     db.session.add(cat)
     db.session.flush()
 
-    rule = RecurrenceRule(user_id=other_user.id, pattern_id=every_period.id)
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, other_user.id)
 
     template = TransactionTemplate(
         user_id=other_user.id,
@@ -1907,12 +1901,7 @@ def _create_second_user_salary_profile(second_user_data):
         db.session.add(cat)
         db.session.flush()
 
-    rule = RecurrenceRule(
-        user_id=second_user_data["user"].id,
-        pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, second_user_data["user"].id)
 
     template = TransactionTemplate(
         user_id=second_user_data["user"].id,
@@ -3362,9 +3351,7 @@ def _create_inactive_profile(seed_user, name="Old Job"):
         cat = Category(user_id=seed_user["user"].id, group_name="Income", item_name="Salary")
         db.session.add(cat)
         db.session.flush()
-    rule = RecurrenceRule(user_id=seed_user["user"].id, pattern_id=every_period.id)
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,

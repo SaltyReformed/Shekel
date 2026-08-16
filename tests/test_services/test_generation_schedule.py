@@ -68,7 +68,6 @@ from app import ref_cache
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import CalcMethod, DeductionTiming, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
@@ -76,6 +75,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.services import pay_period_service, pay_period_write, period_population, recurrence_engine
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
+    make_pattern_rule,
     seed_fica_config,
     seed_state_tax_config,
     seed_tax_bracket_set,
@@ -105,15 +105,14 @@ def _make_template(seed_user, pattern_enum, **rule_kwargs):
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`.
     """
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=ref_cache.recurrence_pattern_id(pattern_enum),
+    rule_kwargs.pop("offset_periods", None)
+    rule = make_pattern_rule(
+        seed_user["user"].id, pattern_enum,
         interval_n=rule_kwargs.pop("interval_n", 1),
-        offset_periods=rule_kwargs.pop("offset_periods", 0),
+        fires_on_day=rule_kwargs.pop("day_of_month", None),
+        fires_in_month=rule_kwargs.pop("month_of_year", None),
         **rule_kwargs,
     )
-    db.session.add(rule)
-    db.session.flush()
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
@@ -361,7 +360,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             template = _make_template(
                 seed_user,
                 RecurrencePatternEnum.EVERY_PERIOD,
-                start_date=seed_periods[5].start_date,
+                starts_on=seed_periods[5].start_date,
             )
             window = seed_periods[2:4]
 
@@ -394,7 +393,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             template = _make_template(
                 seed_user,
                 RecurrencePatternEnum.EVERY_PERIOD,
-                start_date=seed_periods[5].start_date,
+                starts_on=seed_periods[5].start_date,
             )
 
             period_population.populate_periods_from_active_templates(
@@ -418,7 +417,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             template = _make_template(
                 seed_user,
                 RecurrencePatternEnum.EVERY_PERIOD,
-                start_date=seed_periods[5].start_date,
+                starts_on=seed_periods[5].start_date,
             )
 
             created = recurrence_engine.generate_for_template(
@@ -500,16 +499,9 @@ class TestThePaycheckSeesTheWholeSchedule:
         Returns:
             ``(template, profile)``, both flushed.
         """
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.EVERY_PERIOD,
-            ),
-            interval_n=1,
-            offset_periods=0,
+        rule = make_pattern_rule(
+            seed_user["user"].id, RecurrencePatternEnum.EVERY_PERIOD,
         )
-        db.session.add(rule)
-        db.session.flush()
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
@@ -948,14 +940,7 @@ class TestTheTransferEngineTakesTheSameSchedule:
         savings = create_savings_account(
             seed_user, db.session, "Savings", Decimal("0.00"),
         )
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=ref_cache.recurrence_pattern_id(pattern_enum),
-            interval_n=1,
-            offset_periods=0,
-        )
-        db.session.add(rule)
-        db.session.flush()
+        rule = make_pattern_rule(seed_user["user"].id, pattern_enum)
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,

@@ -4,49 +4,45 @@ Shekel Budget App -- Recurrence Rule Model (budget schema)
 Defines the pattern by which transactions are auto-generated into
 future pay periods (every_period, monthly, annual, etc.).
 
-**This table is mid-CUTOVER, and it carries two statements of one recurrence.**
-Plan step R2d (developer ruling, 2026-08-07) settled that the redesign's
-two-axis values -- the cadence unit, the first occurrence, the placement, the
-business-day shift -- must not be STORED while they are a derivation over the
-closed-set columns plus the owner's schedule, because a stored derivation is a
-cache and a cache drifts the moment one writer moves one side alone.
+**This table states its recurrence in FIVE columns, and everything else on it
+is an ENCODING of them.**  ``unit_id`` / ``placement_id`` / ``shift_id`` /
+``starts_on`` / ``nominal_day`` are what a caller AUTHORS and what every reader
+takes (plan step **R7c-b**); ``pattern_id`` / ``interval_n`` / ``day_of_month``
+/ ``month_of_year`` / ``start_date`` / ``start_period_id`` / ``offset_periods``
+are derived FROM them by the write door, and plan step **R7c-c** drops the lot.
 
-Plan step **R7c-a** adds them anyway, and the ruling is not being broken: the
-three leaves of R7c are an expand / migrate / contract, and until R7c-b moves
-the readers across **nothing reads the new columns at all**, so no consumer can
-take a stale one.  From R7c-b they are AUTHORED rather than derived for every
-form-authored rule -- ``starts_on`` is what the form collects -- so there is no
-input left for them to lag.  A day-less LOAN payment stays partly
-schedule-derived even then; see ``_authoring._author`` and plan ledger
-row D6.  R7c-c drops the closed-set columns and the table states its
-recurrence once.  Both sides are written from ONE ``resolve`` call in ONE function
-(``recurrence._authoring._author``) for the duration, so no write leaves them
-disagreeing -- though a SCHEDULE rebuilt with no rule written does move the
-derivation past the stored value, which is why R7c-b re-runs the backfill
-before it switches the readers.
+Plan step R2d (developer ruling, 2026-08-07) refused to store the five while
+they were a DERIVATION over the closed-set columns plus the owner's schedule,
+because a stored derivation is a cache and a cache drifts the moment one writer
+moves one side alone.  That is not what they are now: the form collects
+``starts_on`` and the loan sync writes it from a contract, so there is no input
+left for it to lag.  A stored derivation is a cache; a stored authored value is
+a fact.  (A day-less LOAN payment is the one shape still measured against the
+schedule -- see ``recurrence._authoring._author`` and plan ledger row **D6**.)
 
-**``interval_n`` is NOT one of the two sets, and it belongs to the closed one
-until R7c-c.**  ``encode_cadence`` writes ``1`` for every pattern whose
-interval is baked into its name, so a Quarterly rule stores
-``(interval_n = 1, unit_id = month)`` -- which reads as MONTHLY to anything
-that takes the pair at face value.  Nothing does: every reader goes through
-``decode_pattern``, which answers ``3`` from the pattern and consults the
-column only for ``Every N Periods``.  R7c-c re-points it in the migration that
-drops ``pattern_id``, which is where the interval stops being the encoding's.
+**``interval_n`` is the one encoded column with a live READER, and it must not
+be taken at face value.**  ``encode_cadence`` writes ``1`` for every pattern
+whose interval is baked into its NAME, so a Quarterly rule stores
+``(interval_n = 1, unit_id = month)`` -- MONTHLY at face value, 12 occurrences a
+year where 4 are owed.  The read door takes it through
+``recurrence._frequency.stored_interval``, which is the one function that names
+that boundary; R7c-c re-points the column in the migration that drops
+``pattern_id``.
 
-What READS this table today: ``app.services.recurrence.rule_occurrences``,
-which since plan step R4a reads the row WHOLE -- it builds a ``RecurrenceSpec`` from every
-authored column and hands it to ``app.services.recurrence.resolve``.  There is
-no per-pattern dispatch and no branch: ``interval_n`` is read (and refused when
-below 1) for every pattern, and ``day_of_month`` / ``due_day_of_month`` /
-``month_of_year`` are refused outside their CHECK domains for all of them.
+**``day_of_month`` has one reader left and it is not this arc's**:
+``recurrence_engine.compute_due_date`` dates every generated row from it, and
+plan step **R5** is what deletes that function.  Until then the write door
+encodes it from the resolved first occurrence, so it says what ``starts_on``
+says.
 
-``start_period_id`` and ``offset_periods`` are no longer read at all (plan
-step R7b-4).  They were one fact between them -- the paycheck a rule started
-on, and the cycle phase derived from it -- and a rule has ONE opening bound,
-``start_date``.  The phase is now a function of that bound
-(``recurrence._resolution._derive_offset_periods``), written to its column and
-read back by nobody; the FK is NULL on every row.  Plan step R7c drops both.
+``start_period_id``, ``offset_periods``, ``month_of_year`` and ``start_date``
+have NO reader at all.  Each was a second statement of something ``starts_on``
+now carries -- the paycheck a rule started in, the cycle phase, the cycle's
+residue class, the opening bound -- and ruling **R-R16** is what collapsed the
+four: the first occurrence is the earliest thing a cadence produces, its day is
+the cycle's day and its month is the cycle's month.  Plan ledger row **D28**
+measured what keeping them apart would have cost, at 18 of 24 live multi-month
+rules firing in the wrong months forever.
 
 ``end_date`` and ``max_occurrences`` are ONE authored value above this table
 (``app.services.recurrence.EndBound``, plan step R7b-3): the occurrence walk
@@ -101,36 +97,74 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
             "max_occurrences IS NULL OR max_occurrences > 0",
             name="ck_recurrence_rules_positive_max_occurrences",
         ),
-        # ``nominal_day`` records a day the ANCHOR MONTH clamped, and nothing
-        # else (plan step R7c-a; ruling R-R3).  Both halves are needed and
-        # neither implies the other: the range keeps it a real month-end day,
-        # and the comparison keeps it from restating a day ``starts_on``
-        # already carries -- a ``nominal_day`` of 15 beside a 15th would be the
-        # second representation the D28 ruling removes, and one of 15 beside a
-        # 20th would name a day the rule does not fire on.
+        # ``nominal_day`` records a day the FIRST OCCURRENCE'S MONTH clamped,
+        # and nothing else (ruling R-R3).  Three conjuncts and none is implied
+        # by the others: the range keeps it a real month-end day; the
+        # comparison keeps it from restating a day ``starts_on`` already
+        # carries -- a ``nominal_day`` of 15 beside a 15th would be the second
+        # representation the D28 ruling removes; and the CLAMP EQUALITY keeps
+        # it from sitting beside a date that was never clamped at all.
+        #
+        # **The third conjunct landed at plan step R7c-b and it retired a
+        # FENCE.**  Without it ``(starts_on = 2026-04-15, nominal_day = 30)``
+        # passes -- 30 is in range and exceeds 15 -- and April HAS a 30th, so
+        # the rule would fire on a day the date does not name.  Only a runtime
+        # guard in ``recurrence._occurrence._require_generable`` caught that,
+        # and a guard whose entire reachability condition is "the schema cannot
+        # say it" is what this project removes rather than tests.  Presence now
+        # IMPLIES the clamp happened, so the absence has ONE meaning.
         #
         # ``EXTRACT(day FROM <date>)`` is IMMUTABLE for a ``date`` argument
         # (it lowers to ``date_part(text, date)``; the STABLE spellings are the
-        # ``timestamptz`` ones), which is what lets it appear in a CHECK at
+        # ``timestamptz`` ones), and ``date_trunc`` is cast to ``::timestamp``
+        # for the same reason -- which is what lets both appear in a CHECK at
         # all.  Verified against the live server rather than assumed.
         db.CheckConstraint(
             "nominal_day IS NULL OR ("
-            "starts_on IS NOT NULL "
-            "AND nominal_day BETWEEN 29 AND 31 "
-            "AND nominal_day > EXTRACT(day FROM starts_on))",
+            "nominal_day BETWEEN 29 AND 31 "
+            "AND nominal_day > EXTRACT(day FROM starts_on) "
+            "AND EXTRACT(day FROM starts_on) = LEAST(nominal_day, "
+            "EXTRACT(day FROM (date_trunc('month', starts_on::timestamp) "
+            "+ INTERVAL '1 month - 1 day'))))",
             name="ck_recurrence_rules_nominal_day",
         ),
-        # **There is deliberately NO ``end_date >= anchor_date`` CHECK**, and
-        # there is no ``anchor_date`` column for one to name: the anchor is
-        # computed, not stored (plan step R2d).  The constraint lands with the
-        # column at step R7c, together with the Marshmallow validator that can
-        # refuse the pair at the door -- because ``end_date`` is user-authored
-        # and live, and a CHECK against a value the form does not yet collect
-        # would surface as an unhandled CheckViolation out of
-        # ``update_template``'s autoflush, leaving the user unable to stop a
-        # recurring bill.  ``starts_on`` exists from R7c-a; the CHECK naming
-        # it lands at R7c-b, the leaf where the FORM authors that column and
-        # the pair becomes a two-field comparison a schema can refuse.
+        # **There is deliberately NO ``end_date >= starts_on`` CHECK**, and the
+        # absence is a ruling rather than an omission (developer ruling
+        # 2026-08-15, plan step R7c-b).  These two columns hold two different
+        # KINDS of fact: what a user AUTHORS about a repeating definition,
+        # where a stop before the start is a mistake to report, and what the
+        # app DERIVES for a recurring loan payment, where an EMPTY window is a
+        # legitimate answer -- a loan paid off before its first contractual
+        # installment owes nothing, and ``loan_recurrence_sync`` states that by
+        # writing a payoff below the installment date.  A CHECK cannot tell the
+        # two apart, so it would turn a correct derived state into an unhandled
+        # ``CheckViolation`` out of a balance true-up.  The invariant is held at
+        # the two AUTHORING doors instead
+        # (``schemas/validation/_helpers.require_end_bound_after_start`` and
+        # ``_recurrence_form_refusals.refuse_inverted_window``), and the CHECK
+        # lands with the step that stops persisting the derived window, when
+        # every row is user-authored.  See the R7c-b migration's own docstring
+        # for the measured case.
+        #
+        # How far the application's calendar reaches, mirrored on the column
+        # for a writer that never sees a schema -- the same job
+        # ``ck_template_amount_versions_effective_date_range`` does for the
+        # other user-authored date, and the same two dates
+        # (``app.utils.dates.CALENDAR_DATE_MIN`` / ``_MAX``).
+        #
+        # **It backs a measured 500 rather than a hypothetical one.**  Past the
+        # saved horizon the pay calendar PROJECTS the covering paycheck by
+        # adding ``cadence_days`` to a start; a ``starts_on`` near
+        # ``date.max`` overflows that addition with an ``OverflowError`` from
+        # outside the recurrence package's error hierarchy, so the recurrence
+        # preview -- which reads the value from ``request.args``, where no
+        # schema stands -- answered a stack trace to any signed-in user.
+        # ``_resolution._require_authored_start_window`` is the door-side
+        # mirror this backs.
+        db.CheckConstraint(
+            "starts_on BETWEEN DATE '2000-01-01' AND DATE '2100-12-31'",
+            name="ck_recurrence_rules_starts_on_range",
+        ),
         {"schema": "budget"},
     )
 
@@ -168,7 +202,7 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
             "ref.recurrence_units.id", ondelete="RESTRICT",
             name="fk_recurrence_rules_unit_id",
         ),
-        nullable=True,
+        nullable=False,
     )
     placement_id = db.Column(
         db.Integer,
@@ -176,7 +210,7 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
             "ref.period_placements.id", ondelete="RESTRICT",
             name="fk_recurrence_rules_placement_id",
         ),
-        nullable=True,
+        nullable=False,
     )
     shift_id = db.Column(
         db.Integer,
@@ -184,7 +218,7 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
             "ref.business_day_shifts.id", ondelete="RESTRICT",
             name="fk_recurrence_rules_shift_id",
         ),
-        nullable=True,
+        nullable=False,
     )
     # The rule's FIRST OCCURRENCE, and since the developer ruling of
     # 2026-08-14 (plan ledger row D28) that is its ONE meaning for every unit:
@@ -200,10 +234,12 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
     # clone, 18 of the 24 live multi-month rules would have fired in the wrong
     # months forever under that reading.
     #
-    # Produced by ``recurrence._occurrence.first_occurrence``, which is also
-    # what the R7c-a migration's SQL backfill is proven against.  Nullable
-    # until R7c-b for the reason the three above are.
-    starts_on = db.Column(db.Date, nullable=True)
+    # Produced by ``recurrence._resolution.resolve``, which normalises a
+    # pay-period cadence's authored date onto the payday hosting it and returns
+    # every other unit's verbatim -- and that answer is also what the R7c-a
+    # migration's SQL backfill is proven against.  ``NOT NULL`` from R7c-b,
+    # which is the leaf that made every reader take it.
+    starts_on = db.Column(db.Date, nullable=False)
     # The day the rule MEANS when ``starts_on``'s own month was too short to
     # hold it -- April has no 31st, so a day-31 rule first occurring there
     # carries ``starts_on = 2026-04-30`` and ``nominal_day = 31``.  NULL when

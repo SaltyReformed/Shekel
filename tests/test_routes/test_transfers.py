@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import AcctTypeEnum, StatusEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry
@@ -29,9 +29,12 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
+    make_every_period_rule,
     cadence_payload,
+    create_account_of_type,
     create_loan_account,
     field_is_disabled,
+    make_transfer_template,
     net_posted_by_day,
     override_anchor,
 )
@@ -59,12 +62,7 @@ def _create_template(seed_user, savings_acct, with_rule=True):
     rule = None
     if with_rule:
         every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=every_period.id,
-        )
-        db.session.add(rule)
-        db.session.flush()
+        rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransferTemplate(
         user_id=seed_user["user"].id,
@@ -256,6 +254,73 @@ class TestTemplateList:
             assert b'name="default_amount"' in response.data
             assert b'name="from_account_id"' in response.data
             assert b"New Recurring Transfer" in response.data
+
+    def test_the_create_form_names_the_destinations_that_derive_a_start(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """The CREATE form carries which destinations lock "Starts on".
+
+        Plan step R7c-b.  A loan payment's first occurrence is the loan's, so
+        the control stops being the user's to state the moment a loan is
+        chosen as the destination -- and the server cannot know at render
+        which the user will choose, so it ships the SET and
+        ``recurrence_form.js`` applies it.
+
+        What this can see is the attribute; whether the script actually
+        disables the control is ``tests/manual/verify_recurrence_form.py``'s,
+        because rendered HTML cannot tell a control a script re-enabled from
+        one that was never locked -- the defect class this whole affordance
+        belongs to.
+
+        NEGATIVE CONTROL: the savings account below must NOT appear, or the
+        attribute is "every account" and the lock would fire on all of them.
+        """
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Mortgage",
+                principal=Decimal("200000.00"), rate=Decimal("0.05000"),
+                term=360, origination_date=date(2026, 4, 15), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+            )
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Sav",
+                anchor_balance=Decimal("100.00"),
+            )
+            db.session.commit()
+
+            html = auth_client.get("/transfers/new").data.decode()
+
+            assert f'data-loan-account-ids="{loan.id}"' in html
+            assert str(savings.id) not in (
+                html.split('data-loan-account-ids="')[1].split('"')[0]
+            )
+
+    def test_an_edit_form_names_no_such_destinations(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """An EDIT form locks server-side and must not ship a second rule.
+
+        ``recurrence.bounds_are_derived`` already answers "is this template a
+        loan payment" from the row itself, so a client-side set would be a
+        SECOND answer to the same question -- and two answers is how they come
+        to disagree, which is the defect ``owns_validity_window`` was made the
+        one predicate to close.
+        """
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Sav",
+                anchor_balance=Decimal("100.00"),
+            )
+            template = make_transfer_template(
+                db.session, seed_user, to_account=savings,
+            )
+            db.session.commit()
+
+            html = auth_client.get(
+                f"/transfers/{template.id}/edit",
+            ).data.decode()
+
+            assert "data-loan-account-ids" not in html
 
 
 class TestTemplatePrefill:

@@ -31,7 +31,6 @@ from app import ref_cache
 from app.enums import AcctTypeEnum, RecurrencePatternEnum
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.transfer_template import TransferTemplate
 from app.services import balance_at, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver
 from app.services.balance_at import _kernel as net_worth_kernel
@@ -43,6 +42,7 @@ from tests._test_helpers import (
     create_loan_account,
     freeze_today,
     loan_params_for,
+    make_pattern_rule,
     seam_confirmed_view,
 )
 
@@ -617,15 +617,12 @@ def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
     the seam's whole-loan read.
     """
     user = seed_user["user"]
-    rule = RecurrenceRule(
-        user_id=user.id,
-        pattern_id=ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.MONTHLY,
-        ),
-        day_of_month=1,
+    # Authored through the write door (plan step R7c-b): the day a rule fires
+    # on is its first occurrence's own day, so "the 1st" is a DATE the fixture
+    # schedule reaches rather than a separate column.
+    rule = make_pattern_rule(
+        user.id, RecurrencePatternEnum.MONTHLY, fires_on_day=1,
     )
-    db.session.add(rule)
-    db.session.flush()
     template = TransferTemplate(
         user_id=user.id,
         from_account_id=seed_user["account"].id,

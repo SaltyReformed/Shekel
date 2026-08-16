@@ -231,9 +231,16 @@ class TestTheGenericFallbackSurvives:
         that "Not a valid integer." beside a visible widget adds noise.
         """
         with app.app_context():
+            # ``nominal_day`` since plan step R7c-b, which deleted the
+            # ``day_of_month`` field this used to poison: an unknown key is
+            # dropped by ``unknown = EXCLUDE`` and produces NO error at all,
+            # which would make the fallback assertion below pass against an
+            # EMPTY error dict -- the tautology a moved subject leaves behind.
+            # 99 is outside its 29-31 domain and carries marshmallow's own
+            # stock Range message, which is the shape under test.
             errors = TemplateCreateSchema().validate(
-                {"day_of_month": "99"}, partial=True,
+                {"nominal_day": "99"}, partial=True,
             )
 
-            assert "day_of_month" in errors
+            assert "nominal_day" in errors
             assert flash_message_for_errors(errors) == GENERIC_VALIDATION_FLASH

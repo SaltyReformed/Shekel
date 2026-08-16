@@ -29,6 +29,33 @@ from zoneinfo import ZoneInfo
 # sharing a UTC day collide (finding N-133 / F12).
 DISPLAY_TIMEZONE = ZoneInfo("America/New_York")
 
+# How far this application's calendar reaches: the ONE opinion every layer
+# states about which dates a user may put on record.
+#
+# **Here rather than in the validation layer, since plan step R7c-b.**  They
+# were declared in ``app/schemas/validation/_helpers.py``, which is the right
+# home while only a SCHEMA enforces them -- and it stopped being the only one:
+# ``budget.recurrence_rules.starts_on`` is authored, ``NOT NULL`` and reachable
+# through a door no schema stands in front of (the recurrence preview reads it
+# from ``request.args``), so ``services/recurrence/_resolution.py`` mirrors the
+# bound too.  A service may not import from the validation layer, and the
+# alternative was a second pair of numbers that could drift from these; this
+# module is what both layers already depend on.  The schema keeps its names as
+# re-exports, so nothing that imported them from there had to move.
+#
+# The values are the ones ``routes/salary/tax_config.py`` uses for a tax YEAR.
+# Two tables mirror them for writers that never see a schema:
+# ``ck_template_amount_versions_effective_date_range`` and
+# ``ck_recurrence_rules_starts_on_range``.
+#
+# An HTML date input accepts a four- or five-digit-year typo, and both columns
+# STORE what they are given: a stray ``0202`` becomes a template's earliest
+# amount version -- anchoring every date before the series, which the
+# withdrawal door refuses to remove -- and a stray ``9999`` overflows the pay
+# calendar's forward projection with an ``OverflowError`` no handler catches.
+CALENDAR_DATE_MIN: date = date(2000, 1, 1)
+CALENDAR_DATE_MAX: date = date(2100, 12, 31)
+
 
 def to_display_tz(value: datetime) -> datetime:
     """Convert a stored UTC instant to the UI display timezone.

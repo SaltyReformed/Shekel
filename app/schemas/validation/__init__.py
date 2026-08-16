@@ -64,7 +64,13 @@ helper, envelope-on-income rule) live in :mod:`._helpers`.
 from app.schemas.validation._helpers import (
     EFFECTIVE_DATE_MAX,
     EFFECTIVE_DATE_MIN,
+)
+from app.schemas.validation._recurrence import (
     RECURRENCE_END_BOUND_KEY,
+    RECURRENCE_NEEDS_A_START,
+    RECURRENCE_NOMINAL_DAY_KEY,
+    RECURRENCE_STARTS_ON_KEY,
+    end_bound_before_start_message,
 )
 from app.schemas.validation.accounts import (
     AccountCreateSchema,
@@ -169,6 +175,10 @@ __all__ = [
     "EFFECTIVE_DATE_MAX",
     "EFFECTIVE_DATE_MIN",
     "RECURRENCE_END_BOUND_KEY",
+    "RECURRENCE_NEEDS_A_START",
+    "RECURRENCE_NOMINAL_DAY_KEY",
+    "RECURRENCE_STARTS_ON_KEY",
+    "end_bound_before_start_message",
     "AccountCreateSchema",
     "AccountTypeCreateSchema",
     "AccountTypeUpdateSchema",

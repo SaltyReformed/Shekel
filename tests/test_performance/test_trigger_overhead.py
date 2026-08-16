@@ -19,6 +19,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern, Status, TransactionType
 from app.services import recurrence_engine
 from app.services.generation_schedule import GenerationSchedule
+from tests._test_helpers import make_every_period_rule
 
 # Overhead threshold from the Phase 8 plan.
 MAX_OVERHEAD_PERCENT = 20
@@ -34,12 +35,7 @@ def _create_template(perf_user, pattern_name="Every Period"):
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     pattern = db.session.query(RecurrencePattern).filter_by(name=pattern_name).one()
 
-    rule = RecurrenceRule(
-        user_id=perf_user["user"].id,
-        pattern_id=pattern.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, perf_user["user"].id)
 
     template = TransactionTemplate(
         user_id=perf_user["user"].id,

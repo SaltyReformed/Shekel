@@ -61,7 +61,7 @@ from app.services import (
     transfer_recurrence,
     transfer_service,
 )
-from tests._test_helpers import create_loan_account
+from tests._test_helpers import create_loan_account, make_pattern_rule
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -74,18 +74,7 @@ def _projected_id():
 
 def _every_period_rule(seed_user):
     """Build and flush an every-paycheck rule for the seed user."""
-    pattern = db.session.query(RecurrencePattern).filter_by(
-        name="Every Period",
-    ).one()
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=pattern.id,
-        interval_n=1,
-        offset_periods=0,
-    )
-    db.session.add(rule)
-    db.session.flush()
-    return rule
+    return make_pattern_rule(seed_user["user"].id, "Every Period")
 
 
 def _recurring_txn_template(seed_user, rule=None):

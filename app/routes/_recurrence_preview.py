@@ -27,7 +27,6 @@ from markupsafe import Markup
 
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.models.recurrence_rule import RecurrenceRule
-from app.services import pay_period_service
 from app.services.pay_calendar import DerivedPeriod, PayCalendar, calendar_for
 from app.services.recurrence import (
     NEVER_ENDS,
@@ -98,7 +97,7 @@ def _submitted_iso_date(field: str) -> date | None:
 def build_preview_rule(
     unit: RecurrenceUnitEnum,
     placement: PeriodPlacementEnum,
-    start_date: date | None,
+    starts_on: date,
     calendar: PayCalendar,
 ) -> RecurrenceRule:
     """Build an unsaved, fully resolved rule from the preview request args.
@@ -127,8 +126,8 @@ def build_preview_rule(
         unit: The submitted cadence unit, already checked as modelled by the
             caller.
         placement: The submitted placement, likewise.
-        start_date: The submitted opening bound, already parsed by the caller,
-            or ``None``.
+        starts_on: The submitted first occurrence, already parsed by the
+            caller.
         calendar: The user's pay-period schedule.
 
     Returns:
@@ -138,17 +137,23 @@ def build_preview_rule(
         RecurrenceSpec(
             user_id=current_user.id,
             unit=unit,
+            # The rule's FIRST OCCURRENCE (plan step R7c-b).  It replaced an
+            # owner-checked ``start_period_id`` at plan step R7b-4, and the
+            # ownership probe went with it rather than being relocated: a DATE
+            # names nothing of anyone else's, so the disclosure this endpoint
+            # was guarded against (audit finding H3 -- another user's
+            # pay-period structure) is not expressible in the argument any
+            # more.
+            starts_on=starts_on,
             interval_n=request.args.get("interval_n", type=int, default=1),
             placement=placement,
-            day_of_month=request.args.get("day_of_month", type=int),
-            month_of_year=request.args.get("month_of_year", type=int),
-            # The OPENING bound (plan step R7b-4).  It replaced an
-            # owner-checked ``start_period_id``, and the ownership probe went
-            # with it rather than being relocated: a DATE names nothing of
-            # anyone else's, so the disclosure this endpoint was guarded
-            # against (audit finding H3 -- another user's pay-period
-            # structure) is not expressible in the argument any more.
-            start_date=start_date,
+            # The day a clamped first occurrence MEANT.  Unbounded here like
+            # every other numeric arg: a value the date does not leave open is
+            # refused by ``RecurrenceSpec`` itself, which is the caller's
+            # ``RecurrenceResolutionError`` handler's job -- see
+            # :func:`recurrence_preview_fragment` for why every bound is stated
+            # once rather than a third time on this endpoint.
+            nominal_day=request.args.get("nominal_day", type=int),
             # Composed through the SUBMISSION door, not the storage one (plan
             # step R7b-3).  These are query args -- a submission -- so a
             # mistake in them is user input, and
@@ -197,6 +202,91 @@ def render_preview_html(
     return Markup(html)
 
 
+#: The line shown when the request does not describe a previewable rule.
+#:
+#: Named because THREE states share it and users read it: no cadence chosen
+#: ("does not repeat"), no first occurrence stated, and a cadence the authoring
+#: seam refuses.  From the form's side all three mean the same thing -- there is
+#: nothing to preview for what you typed -- and giving them one wording is what
+#: stops the fragment from developing three near-identical strings.
+NOTHING_TO_PREVIEW = "No preview for this cadence"
+
+
+def _muted(text: str) -> str:
+    """Return *text* as the fragment's muted one-liner.
+
+    The markup was written out at each of six return points, which is the shape
+    that lets one of them drift a class.
+
+    Args:
+        text: The sentence to show.
+
+    Returns:
+        The ``<small>`` markup.
+    """
+    return f"<small class='text-muted'>{text}</small>"
+
+
+def _submitted_preview(
+    starts_on: date | None,
+) -> tuple[RecurrenceUnitEnum, PeriodPlacementEnum, date, PayCalendar] | str:
+    """Return the inputs a preview needs, or the line to show instead.
+
+    Reading the request is a different job from walking the rule, and splitting
+    them is what keeps :func:`recurrence_preview_fragment` inside the return
+    count -- the guard plan step R7c-b added for an unstated first occurrence
+    is what pushed it over.
+
+    **Both submitted AXES are checked against what the application MODELS**
+    (plan step R2e-2's rule, on the two fields plan step R7b-2 replaced its one
+    with).  They used to be checked against the ``ref`` table, and the two are
+    not the same set: a row no enum member names passes a table lookup and then
+    raises inside the authoring seam, so the preview would 500 on the same
+    input the picker refuses to offer.
+
+    An ABSENT unit is the form's "does not repeat" option, which has no
+    occurrences to preview.  An absent PLACEMENT is not the same state: a
+    placement is the cadence's second half rather than an optional refinement,
+    so it takes the unmodelled answer (via the ``or 0`` below, which no ``ref``
+    row can carry) rather than being defaulted into a schedule the save would
+    not produce.
+
+    The schedule is resolved BEFORE the rule: the authoring seam measures a
+    rule's first occurrence against it, so an empty schedule is refused rather
+    than anchored against nothing.  ONE calendar, from the same door the SAVE
+    goes through, which is what stops the preview from resolving against a
+    different schedule than the save would (plan step R4b-1).
+
+    Args:
+        starts_on: The parsed ``starts_on`` argument, or ``None`` when it was
+            absent or unparseable.  Passed in rather than read here so the
+            caller states which argument it means.
+
+    Returns:
+        ``(unit, placement, starts_on, calendar)`` when the request describes a
+        previewable rule, or the muted markup to render instead.
+    """
+    unit_id = request.args.get("recurrence_unit", type=int)
+    if not unit_id:
+        return _muted(NOTHING_TO_PREVIEW)
+    unit = modelled_unit(unit_id)
+    placement = modelled_placement(
+        request.args.get("recurrence_placement", type=int) or 0,
+    )
+    if unit is None or placement is None:
+        return _muted("Unknown cadence")
+    calendar = calendar_for(current_user.id)
+    if not calendar.periods:
+        return _muted("No pay periods generated yet")
+    # Since plan step R7c-b there is nothing to preview without a first
+    # occurrence: a rule cannot be authored without stating when it first
+    # happens, so an absent or unparseable value is a request the save could
+    # not honour either.
+    if starts_on is None:
+        return _muted(NOTHING_TO_PREVIEW)
+    return unit, placement, starts_on, calendar
+
+
 def recurrence_preview_fragment() -> str:
     """Return the preview fragment for the recurrence the request describes.
 
@@ -219,11 +309,11 @@ def recurrence_preview_fragment() -> str:
     being defaulted into a schedule the save would not produce.
 
     **Every OTHER query arg is unvalidated, and plan step R4a made that a 200
-    instead of a 500.**  ``interval_n`` / ``day_of_month`` / ``month_of_year``
-    / ``recurrence_end_mode`` / ``end_date`` / ``max_occurrences`` are read
-    straight from ``request.args``; the two form
-    schemas bound them, nothing bounds this endpoint, and it is reachable by
-    anyone signed in.  Measured at R4a: ``?interval_n=0`` raised out of the
+    instead of a 500.**  ``interval_n`` / ``starts_on`` / ``nominal_day`` /
+    ``recurrence_end_mode`` / ``end_date`` / ``max_occurrences`` are read
+    straight from ``request.args``; the two form schemas bound them, nothing
+    bounds this endpoint, and it is reachable by anyone signed in.  Measured at
+    R4a on the arguments of the day: ``?interval_n=0`` raised out of the
     authoring seam, ``?month_of_year=13`` raised ``ValueError`` from
     ``monthrange(year, 13)`` inside the matcher R4a deleted,
     ``?day_of_month=-5`` raised ``ValueError`` from ``date(y, m, -5)``, and
@@ -231,78 +321,49 @@ def recurrence_preview_fragment() -> str:
     clamped or modulo-wrapped date.  Catching the ONE exception the resolution
     seam raises answers all five, and keeps each bound stated once -- on the
     column and its mirror in :func:`app.services.recurrence.resolve` -- rather
-    than a third time here.
+    than a third time here.  The day and month args are gone with the columns
+    they named (plan step R7c-b); ``nominal_day`` took their place and takes
+    the same disposition, refused by ``RecurrenceSpec`` when the date leaves no
+    such day open.
+
+    **``starts_on`` is the one that showed the rule needs maintaining rather
+    than merely restating.**  R7c-b deleted the anchor walk that
+    ``_MAX_START_DATE_YEAR`` was derived from, so the bound went with it -- but
+    the failure it prevented had a second route: past the saved horizon the
+    calendar PROJECTS a paycheck by adding ``cadence_days`` to a start, and
+    ``?starts_on=9999-12-31`` overflowed that addition with an
+    ``OverflowError`` this handler does not catch.
+    ``_resolution._require_authored_start_window`` restores the bound at the
+    seam, on the window the whole application already agrees on, so the muted
+    line below covers it again.
 
     The two DATE bounds are the exception, and it took a second review to
     see the first of them: they are parsed BEFORE the seam and so cannot be
     refused by it.
-    :func:`_submitted_iso_date` handles it -- BOTH bounds, through one
-    parser since plan step R7b-4 -- and the docstring there says why an
-    unparseable bound is dropped rather than refused.  An out-of-RANGE
-    ``start_date`` is refused by the seam like everything else, so the
-    handler below reports it.
+    :func:`_submitted_iso_date` handles it -- BOTH closing-bound dates, through
+    one parser since plan step R7b-4 -- and the docstring there says why an
+    unparseable bound is dropped rather than refused.
 
     Returns:
         The fragment markup, or a muted one-line explanation when there is
         nothing to preview.
     """
-    unit_id = request.args.get("recurrence_unit", type=int)
-    if not unit_id:
-        return "<small class='text-muted'>No preview for this cadence</small>"
-
-    # The placement is REQUIRED once a unit is named: it is the second axis of
-    # the cadence, not an optional refinement, and defaulting it here would let
-    # the preview show a schedule the save would not produce.
-    #
-    # ONE refusal for both axes, because they share a disposition and a
-    # reachability: the form posts ids it derived from
-    # ``cadence_options``, so neither can be unmodelled through any click.  The
-    # ABSENT unit above keeps its own message because that one IS reachable --
-    # it is what "does not repeat" posts, and its copy is read by users.
-    unit = modelled_unit(unit_id)
-    placement = modelled_placement(
-        request.args.get("recurrence_placement", type=int) or 0,
-    )
-    if unit is None or placement is None:
-        return "<small class='text-muted'>Unknown cadence</small>"
-
-    # The schedule is resolved BEFORE the rule: the authoring seam measures a
-    # rule's first occurrence against it, so an empty schedule is refused
-    # rather than anchored against nothing.  ONE calendar, from the same door
-    # the SAVE goes through, serves the authoring seam, the match and the
-    # empty-schedule check below -- which is what stops the preview from
-    # resolving against a different schedule than the save would (plan step
-    # R4b-1), and since plan step C2-b2 it is the same door and the same TYPE.
-    calendar = calendar_for(current_user.id)
-    if not calendar.periods:
-        return "<small class='text-muted'>No pay periods generated yet</small>"
-
-    start_date = _submitted_iso_date("start_date")
+    requested = _submitted_preview(_submitted_iso_date("starts_on"))
+    if isinstance(requested, str):
+        return requested
+    unit, placement, starts_on, calendar = requested
 
     # ``effective_from`` is a DISPLAY choice -- "show me the next five from
-    # here" -- and so the route's, not the rule's: the rule's own opening
-    # bound is its anchor.
-    #
-    # It follows the submitted "Starts on" when there is one, so the list
-    # opens where the user says the rule does rather than at today's
-    # paycheck.  That is not the same as APPLYING the bound -- the rule's
-    # anchor does that, and it does it whether or not this window agrees --
-    # but showing five occurrences the user cannot see the start of is a
-    # preview that answers a question nobody asked (this is what the retired
-    # "First paycheck" select drove, kept because the reasoning was about the
-    # WINDOW rather than about the control).
-    if start_date is not None:
-        effective_from = start_date
-    else:
-        current_period = pay_period_service.get_current_period(current_user.id)
-        effective_from = (
-            current_period.start_date if current_period
-            else calendar.opening_bound()
-        )
+    # here" -- and so the route's, not the rule's.  It follows the submitted
+    # first occurrence, so the list opens where the user says the rule does
+    # rather than at today's paycheck; showing five occurrences the user
+    # cannot see the start of is a preview that answers a question nobody
+    # asked.
+    effective_from = starts_on
 
     try:
         rule = build_preview_rule(
-            unit, placement, start_date, calendar,
+            unit, placement, starts_on, calendar,
         )
         # ``effective_from`` is this ROUTE's display choice, made above --
         # "show me the next five from here" -- never the rule's opening bound,
@@ -332,15 +393,16 @@ def recurrence_preview_fragment() -> str:
             "Recurrence preview refused unresolvable arguments for user %s: %s",
             current_user.id, exc,
         )
-        return "<small class='text-muted'>No preview for this cadence</small>"
+        return _muted(NOTHING_TO_PREVIEW)
 
     preview_periods = matching[:PREVIEW_OCCURRENCE_LIMIT]
     if not preview_periods:
-        return "<small class='text-muted'>No matching periods found</small>"
+        return _muted("No matching periods found")
     return render_preview_html(preview_periods)
 
 
 __all__ = [
+    "NOTHING_TO_PREVIEW",
     "PREVIEW_OCCURRENCE_LIMIT",
     "build_preview_rule",
     "recurrence_preview_fragment",

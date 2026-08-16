@@ -18,8 +18,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.account import Account
-from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern, AccountType, TransactionType
+from app.models.ref import AccountType, TransactionType
 from app import ref_cache
 from app.enums import StatusEnum
 from app.services import pay_period_service, pay_period_write, transfer_recurrence
@@ -30,7 +29,7 @@ from app.exceptions import (
 from app.services import account_service
 from app.utils.log_events import EVT_TRANSFER_HARD_DELETED
 from app.services.generation_schedule import GenerationSchedule
-from tests._test_helpers import open_calendar_hole
+from tests._test_helpers import make_pattern_rule, open_calendar_hole
 
 
 def _assert_shadows_valid(xfer):
@@ -68,11 +67,6 @@ class TestTransferGeneration:
 
     def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + transfer template."""
-        pattern = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name=pattern_name)
-            .one()
-        )
         savings_type = (
             db.session.query(AccountType)
             .filter_by(name="Savings")
@@ -90,16 +84,12 @@ class TestTransferGeneration:
         db.session.add(savings)
         db.session.flush()
 
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=pattern.id,
+        rule = make_pattern_rule(
+            seed_user["user"].id, pattern_name,
             interval_n=rule_kwargs.get("interval_n", 1),
-            offset_periods=rule_kwargs.get("offset_periods", 0),
-            day_of_month=rule_kwargs.get("day_of_month"),
-            month_of_year=rule_kwargs.get("month_of_year"),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
         )
-        db.session.add(rule)
-        db.session.flush()
 
         template = TransferTemplate(
             user_id=seed_user["user"].id,
@@ -437,11 +427,6 @@ class TestTransferRegeneration:
 
     def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + transfer template."""
-        pattern = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name=pattern_name)
-            .one()
-        )
         savings_type = (
             db.session.query(AccountType)
             .filter_by(name="Savings")
@@ -459,16 +444,12 @@ class TestTransferRegeneration:
         db.session.add(savings)
         db.session.flush()
 
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=pattern.id,
+        rule = make_pattern_rule(
+            seed_user["user"].id, pattern_name,
             interval_n=rule_kwargs.get("interval_n", 1),
-            offset_periods=rule_kwargs.get("offset_periods", 0),
-            day_of_month=rule_kwargs.get("day_of_month"),
-            month_of_year=rule_kwargs.get("month_of_year"),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
         )
-        db.session.add(rule)
-        db.session.flush()
 
         template = TransferTemplate(
             user_id=seed_user["user"].id,
@@ -628,11 +609,6 @@ class TestTransferResolveConflicts:
 
     def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + transfer template."""
-        pattern = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name=pattern_name)
-            .one()
-        )
         savings_type = (
             db.session.query(AccountType)
             .filter_by(name="Savings")
@@ -650,16 +626,12 @@ class TestTransferResolveConflicts:
         db.session.add(savings)
         db.session.flush()
 
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=pattern.id,
+        rule = make_pattern_rule(
+            seed_user["user"].id, pattern_name,
             interval_n=rule_kwargs.get("interval_n", 1),
-            offset_periods=rule_kwargs.get("offset_periods", 0),
-            day_of_month=rule_kwargs.get("day_of_month"),
-            month_of_year=rule_kwargs.get("month_of_year"),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
         )
-        db.session.add(rule)
-        db.session.flush()
 
         template = TransferTemplate(
             user_id=seed_user["user"].id,
@@ -898,11 +870,6 @@ class TestNegativePaths:
                                   from_account_id=None, to_account_id=None,
                                   **rule_kwargs):
         """Helper: create rule + template with configurable amount and accounts."""
-        pattern = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name=pattern_name)
-            .one()
-        )
 
         # Create savings account for default to_account if not specified.
         if to_account_id is None:
@@ -923,16 +890,12 @@ class TestNegativePaths:
             db.session.flush()
             to_account_id = savings.id
 
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=pattern.id,
+        rule = make_pattern_rule(
+            seed_user["user"].id, pattern_name,
             interval_n=rule_kwargs.get("interval_n", 1),
-            offset_periods=rule_kwargs.get("offset_periods", 0),
-            day_of_month=rule_kwargs.get("day_of_month"),
-            month_of_year=rule_kwargs.get("month_of_year"),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
         )
-        db.session.add(rule)
-        db.session.flush()
 
         template = TransferTemplate(
             user_id=seed_user["user"].id,
@@ -1142,9 +1105,6 @@ class TestShadowTransactionCreation:
     def _make_template(self, seed_user, pattern_name, category_id=None,
                        **rule_kwargs):
         """Helper: create savings account + rule + template with optional category."""
-        pattern = db.session.query(RecurrencePattern).filter_by(
-            name=pattern_name
-        ).one()
         savings_type = db.session.query(AccountType).filter_by(
             name="Savings"
         ).one()
@@ -1160,16 +1120,12 @@ class TestShadowTransactionCreation:
         db.session.add(savings)
         db.session.flush()
 
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=pattern.id,
+        rule = make_pattern_rule(
+            seed_user["user"].id, pattern_name,
             interval_n=rule_kwargs.get("interval_n", 1),
-            offset_periods=rule_kwargs.get("offset_periods", 0),
-            day_of_month=rule_kwargs.get("day_of_month"),
-            month_of_year=rule_kwargs.get("month_of_year"),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
         )
-        db.session.add(rule)
-        db.session.flush()
 
         template = TransferTemplate(
             user_id=seed_user["user"].id,
@@ -1341,11 +1297,6 @@ class TestResolveConflictsServiceRouting:
 
     def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + template."""
-        pattern = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name=pattern_name)
-            .one()
-        )
         savings_type = (
             db.session.query(AccountType)
             .filter_by(name="Savings")
@@ -1363,14 +1314,10 @@ class TestResolveConflictsServiceRouting:
         db.session.add(savings)
         db.session.flush()
 
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=pattern.id,
+        rule = make_pattern_rule(
+            seed_user["user"].id, pattern_name,
             interval_n=rule_kwargs.get("interval_n", 1),
-            offset_periods=rule_kwargs.get("offset_periods", 0),
         )
-        db.session.add(rule)
-        db.session.flush()
 
         template = TransferTemplate(
             user_id=seed_user["user"].id,
@@ -1653,11 +1600,6 @@ class TestRegenerateDeletionRoutedThroughService:
 
     def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + transfer template."""
-        pattern = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name=pattern_name)
-            .one()
-        )
         savings_type = (
             db.session.query(AccountType)
             .filter_by(name="Savings")
@@ -1674,16 +1616,12 @@ class TestRegenerateDeletionRoutedThroughService:
         db.session.add(savings)
         db.session.flush()
 
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=pattern.id,
+        rule = make_pattern_rule(
+            seed_user["user"].id, pattern_name,
             interval_n=rule_kwargs.get("interval_n", 1),
-            offset_periods=rule_kwargs.get("offset_periods", 0),
-            day_of_month=rule_kwargs.get("day_of_month"),
-            month_of_year=rule_kwargs.get("month_of_year"),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
         )
-        db.session.add(rule)
-        db.session.flush()
 
         template = TransferTemplate(
             user_id=seed_user["user"].id,

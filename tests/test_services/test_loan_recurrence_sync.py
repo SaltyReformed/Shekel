@@ -311,7 +311,7 @@ class TestOwnsValidityWindow:
     Plan step R7b-4 made this the ONE predicate the recurrence form's two bound
     controls lock on and the two crafted-POST refusals fire on, because the
     form was asking a DIFFERENT question and the two disagreed on live data:
-    ``_recurrence_form_helpers.is_loan_payment`` reads
+    ``_recurrence_form_refusals.is_loan_payment`` reads
     ``settings is not None``, and neither of the developer's real loan payments
     carries a ``loan_payment_settings`` row -- so the R7b-3 "Ends" lock never
     fired on either loan and a typed end date would have been silently

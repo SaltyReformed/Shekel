@@ -4,7 +4,7 @@ Keeps a loan's recurring-payment :class:`~app.models.recurrence_rule.RecurrenceR
 bounded at BOTH ends by the loan's own facts, so the recurrence engine generates
 a payment only while the loan actually exists and owes:
 
-* ``start_date`` = the loan's FIRST CONTRACTUAL INSTALLMENT (plan step C9a), so
+* ``starts_on`` = the loan's FIRST CONTRACTUAL INSTALLMENT (plan step C9a), so
   nothing generates before the loan originates.  A pre-origination payment is
   not merely early -- the fold ERASES it (it splits against a zero balance and
   the origination anchor resets over it: $0.00 principal, the whole payment to
@@ -42,10 +42,11 @@ transaction and never commits (the caller owns the transaction boundary).
 """
 
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import TYPE_CHECKING
 
+from app.enums import RecurrenceUnitEnum
 from app.extensions import db
 from app.models.account import Account
 from app.services import balance_at, loan_loaders, rate_period_engine
@@ -53,9 +54,12 @@ from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
     NEVER_ENDS,
     EndsOnDate,
+    RecurrenceSpec,
     end_bound_from_columns,
+    offerable_nominal_days,
     reauthor_rule,
     recurrence_spec,
+    resolve,
 )
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
@@ -124,77 +128,186 @@ def recurrence_end_date(
     return as_of if is_retired else None
 
 
-def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> None:
-    """Bring a loan recurrence's DAY and opening BOUND onto the loan's contract.
+@dataclass(frozen=True)
+class LoanCadenceStart:
+    """When a loan's recurring payment first fires, as its rule states it.
 
-    Both values this writes derive from ONE fact -- the loan's
-    ``payment_day`` -- so they are synced together.  Syncing either alone is
-    the B-14 shape (a persisted copy drifting from its derivation), and here the
-    two disagreeing is worse than either being stale:
+    The two fields ``budget.recurrence_rules`` uses to say "the last day of
+    every month starting in April", held together because they are one fact and
+    the schema refuses them apart
+    (``ck_recurrence_rules_nominal_day``); see :func:`loan_cadence_start`.
 
-    * ``start_date`` = the loan's FIRST CONTRACTUAL INSTALLMENT.  A payment
-      cannot precede the loan.  Generation before origination is not merely
-      early -- the fold ERASES it (the payment splits against a zero balance and
-      the origination anchor then resets over it: $0.00 principal, the whole
-      payment to Refund) while the cash side still debits it, so a mortgage
-      closing one month out projected $3,220.92 of payments for a loan that did
-      not exist (plan step C9a).
-    * ``day_of_month`` = the contractual ``payment_day``, when the rule bills on
-      a day at all.  Nothing else re-points it after a ``payment_day`` edit, and
-      with only ``start_date`` moving the two contradict each other: measured on
-      a mortgage whose ``payment_day`` went 1 -> 20, the bound advanced to the
-      20th while the rule still matched the 1st, so the surviving period
-      contained no matching day and the recurrence generated **nothing at all**.
+    Attributes:
+        starts_on: The loan's first contractual installment, and therefore the
+            recurrence's first occurrence.
+        nominal_day: The contractual ``payment_day`` when *starts_on*'s own
+            month was too short to hold it, else ``None``.
+    """
 
-    Skipped for a rule carrying NO ``day_of_month`` (an every-paycheck or
-    every-N transfer): those schedule by pay period and have no contractual due
-    day to keep in step, and writing one would re-date every generated instance.
-    A rule whose typed ``day_of_month`` never matched the loan's ``payment_day``
-    is corrected onto the contract here rather than left billing a day the
-    servicer does not.
+    starts_on: date
+    nominal_day: int | None
 
-    **Scenario-INDEPENDENT, which is why it is separated from the end bound**
-    (the C8e lesson): both values are functions of the loan's params alone, so
-    they resolve for a user with NO baseline scenario, where the payoff-derived
-    end bound cannot.  Keeping this ahead of the caller's scenario guard is what
-    stops a missing baseline from silently leaving a loan unbounded at the start.
+
+def loan_cadence_start(
+    unit: RecurrenceUnitEnum, params: "LoanParams",
+) -> LoanCadenceStart:
+    """Return the first occurrence a loan's contract implies for *unit*.
+
+    **The ONE producer of "when does this loan's payment start", and plan step
+    R7c-b is what made it one** (developer ruling, 2026-08-15).  Two callers
+    need the answer and each used to compute it: :func:`_sync_loan_cadence`
+    below, and ``routes/loan/payment_transfer.py``, which built the rule with a
+    typed cadence and then let the sync overwrite it a few lines later.  That
+    second shape was worse than duplication -- on the generic transfer form the
+    date the USER typed was written and then silently discarded (see
+    :data:`~app.routes._recurrence_form_refusals.LOAN_PAYMENT_BOUND_IS_DERIVED`,
+    which states the same rule for the EDIT path).  Deriving it BEFORE the rule
+    is built is the ruling: nothing is authored that something else immediately
+    replaces.
+
+    **``starts_on`` is the loan's first contractual installment.**  A payment
+    cannot precede the loan, and generation before origination is not merely
+    early -- the fold ERASES it (the payment splits against a zero balance and
+    the origination anchor then resets over it: $0.00 principal, the whole
+    payment to Refund) while the cash side still debits it, so a mortgage
+    closing one month out projected $3,220.92 of payments for a loan that did
+    not exist (plan step C9a).
+
+    **``nominal_day`` is what keeps a month-end loan on the month's end.**  A
+    servicer's ``payment_day`` of 31 means the last day of every month; if the
+    first installment lands in a 30-day month the DATE alone says "the 30th",
+    and every later payment would be modelled a day early forever.  The pair is
+    exactly the one ``ck_recurrence_rules_nominal_day`` admits -- present only
+    where the installment month clamped the contractual day -- and
+    :class:`~app.services.recurrence.RecurrenceSpec` refuses any other pairing
+    at construction.
+
+    A cadence with no day-of-month coordinate (an every-paycheck loan payment,
+    plan ledger row **D27**'s unenforced precondition) states no nominal day:
+    it bills by PAYCHECK, so ``resolve`` normalises the installment date onto
+    the paycheck that hosts it and there is no contractual day to keep.
 
     Reads no clock: these are contract facts, not functions of when the sync
-    happened to run (the A3 rule).  Idempotent -- writes only on a change, which
-    happens at most once per ``payment_day`` edit.
+    happened to run (the A3 rule).
+
+    Args:
+        unit: The recurrence's cadence unit, which is the WHOLE of what decides
+            whether the cadence has a day-of-month coordinate.  It took the
+            placement beside it until plan step R7c-b; see the inline comment
+            for the wrong-money defect that pairing caused, and
+            :func:`~app.services.recurrence.has_day_of_month_coordinate` for why
+            the unit alone is the right question.
+        params: The loan's :class:`~app.models.loan_params.LoanParams`.
+
+    Returns:
+        The :class:`LoanCadenceStart`.
+    """
+    starts_on = rate_period_engine.first_installment_date(
+        params.origination_date, params.payment_day,
+    )
+    # MEMBERSHIP in the reader's own set, never a second list of conditions.
+    # ``offerable_nominal_days`` IS the rule -- the cadence must have a
+    # day-of-month coordinate, the date must be its month's last day, and the
+    # value must exceed it and stay inside 29-31 -- and it is what
+    # ``RecurrenceSpec``, ``ResolvedRecurrence`` and
+    # ``ck_recurrence_rules_nominal_day`` all admit against.
+    #
+    # **Restating the conditions here was a wrong-money defect** (plan step
+    # R7c-b).  This asked ``fires_on_day_of_month(unit, placement)``, which
+    # answers which ANCHOR FAMILY a cadence derives its first occurrence from,
+    # while ``ResolvedRecurrence.day_of_month`` keys on the UNIT alone -- and
+    # they differ for exactly ``Monthly First``.  Measured against the real
+    # functions, a servicer's day-31 payment first billing in a 30-day month::
+    #
+    #   MONTH / CONTAINING_DATE
+    #     orig 2026-03-10 pday 31 -> starts_on 2026-04-30 nominal 31, day 31
+    #   MONTH / PERIOD_STARTING_ON_OR_AFTER
+    #     orig 2026-03-10 pday 31 -> starts_on 2026-04-30 nominal None, day 30
+    #
+    # Reachable through ``POST /transfers``, where ``Monthly First`` is
+    # authorable and ``settle_first_occurrence`` derives the pair for it: under
+    # that placement the funding PAYCHECK moves a period early in every month
+    # whose schedule puts a payday on the 30th, for the life of the loan.
+    return LoanCadenceStart(
+        starts_on=starts_on,
+        nominal_day=(
+            params.payment_day
+            if params.payment_day in offerable_nominal_days(unit, starts_on)
+            else None
+        ),
+    )
+
+
+def loan_cadence_spec(
+    spec: RecurrenceSpec, params: "LoanParams",
+) -> RecurrenceSpec:
+    """Return *spec* with the loan's contractual first occurrence stated.
+
+    :func:`loan_cadence_start` applied to a spec the caller already holds --
+    the shape the two IN-PLACE writers need, where the rest of the recurrence
+    is the rule's own and only its start is the loan's.  A create route builds
+    its spec from the value instead; see that function for the derivation and
+    for why one producer answers both.
+
+    Args:
+        spec: The rule's current authored state.
+        params: The loan's :class:`~app.models.loan_params.LoanParams`.
+
+    Returns:
+        *spec* with ``starts_on`` and ``nominal_day`` replaced.
+    """
+    start = loan_cadence_start(spec.unit, params)
+    return replace(
+        spec, starts_on=start.starts_on, nominal_day=start.nominal_day,
+    )
+
+
+def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> None:
+    """Bring a loan recurrence's opening bound onto the loan's contract.
+
+    Nothing else re-points a loan payment after a ``payment_day`` or
+    ``origination_date`` edit.  Before plan step R7c-b this had to keep TWO
+    columns in step -- the opening bound and the scheduling day -- and the two
+    disagreeing was worse than either being stale: measured on a mortgage whose
+    ``payment_day`` went 1 -> 20, the bound advanced to the 20th while the rule
+    still matched the 1st, so the surviving period contained no matching day and
+    the recurrence generated **nothing at all**.  One date carries both facts
+    now (ruling **R-R16**), so that failure mode is unconstructible rather than
+    guarded against.
+
+    **Scenario-INDEPENDENT, which is why it is separated from the end bound**
+    (the C8e lesson): the value is a function of the loan's params alone, so it
+    resolves for a user with NO baseline scenario, where the payoff-derived end
+    bound cannot.  Keeping this ahead of the caller's scenario guard is what
+    stops a missing baseline from silently leaving a loan unbounded at the start.
+
+    **Idempotent in TWO stages, and the second one is what a day-less rule
+    needs.**  The cheap comparison is on the authored spec, which settles it for
+    every rule that bills on a day of the month -- both of the developer's live
+    loan payments, and the case the settle / revert path hits on every mutation,
+    so the schedule is still not loaded there.  A rule that bills by PAYCHECK
+    stores the payday ``resolve`` normalised the installment onto, which never
+    equals the raw installment date, so the spec comparison alone would re-author
+    and log on every settle forever.  Comparing the RESOLVED values is what
+    answers that, and it is reached only when the cheap check fails.
 
     Args:
         rule: The recurring payment's :class:`RecurrenceRule`.
         params: The loan's :class:`~app.models.loan_params.LoanParams`.
     """
-    new_start = rate_period_engine.first_installment_date(
-        params.origination_date, params.payment_day,
-    )
-    # A day-less rule schedules by pay period; leave its day alone.
-    new_day = (
-        params.payment_day if rule.day_of_month is not None
-        else rule.day_of_month
-    )
-    if rule.start_date == new_start and rule.day_of_month == new_day:
+    current = recurrence_spec(rule)
+    wanted = loan_cadence_spec(current, params)
+    if wanted == current:
         return
-    old_start, old_day = rule.start_date, rule.day_of_month
+    calendar = calendar_for(rule.user_id)
+    if resolve(wanted, calendar) == resolve(current, calendar):
+        return
+    old_start = current.starts_on
     # RE-AUTHORED, not assigned: a rule is written whole through one door, so
-    # ``offset_periods`` is re-derived from the rule's own opening bound --
-    # the ``start_date`` this very call is moving (plan step R7b-4) -- rather
-    # than left holding the phase a previous cadence implied.  Both values
-    # here also feed the rule's first occurrence, which is DERIVED on read
-    # (plan step R2d) and so cannot lag the contract this edit states.  The
-    # schedule is loaded only on this side of the no-change guard above, so
-    # the ordinary settle / revert path (which reaches this function on every
-    # loan-payment mutation) still costs no extra query.
-    reauthor_rule(
-        rule,
-        replace(
-            recurrence_spec(rule),
-            start_date=new_start, day_of_month=new_day,
-        ),
-        calendar_for(rule.user_id),
-    )
+    # the cycle phase and the closed set's storage encoding are re-derived from
+    # the date this call is moving rather than left holding what a previous
+    # contract implied.
+    reauthor_rule(rule, wanted, calendar)
     log_event(
         logger, logging.INFO,
         EVT_LOAN_RECURRENCE_START_DATE_UPDATED, BUSINESS,
@@ -202,9 +315,9 @@ def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> None:
         account_id=params.account_id,
         rule_id=rule.id,
         old_start_date=str(old_start),
-        new_start_date=str(new_start),
-        old_day_of_month=old_day,
-        new_day_of_month=new_day,
+        new_start_date=str(wanted.starts_on),
+        old_nominal_day=current.nominal_day,
+        new_nominal_day=wanted.nominal_day,
     )
 
 
@@ -257,7 +370,7 @@ def owns_validity_window(template: "object") -> bool:
 
     **It was NOT the same condition, and an adversarial review of plan step
     R7b-3 measured the gap.**  The lock asked
-    ``_recurrence_form_helpers.is_loan_payment`` -- "does this template carry a
+    ``_recurrence_form_refusals.is_loan_payment`` -- "does this template carry a
     :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row" --
     which is BROADER than what the sync writes for: the destination must also
     be a CONFIGURED loan (``LoanParams``), and the template must be the one
@@ -270,7 +383,7 @@ def owns_validity_window(template: "object") -> bool:
     here is what stops the second lock inheriting the first's error.
 
     **Not the same question as "is this a loan payment".**
-    :func:`~app.routes._recurrence_form_helpers.is_loan_payment` keeps the
+    :func:`~app.routes._recurrence_form_refusals.is_loan_payment` keeps the
     settings-row reading, and correctly: what it decides is whether clearing
     the recurrence would strand a standing ``extra_principal``, which is a
     property of that row rather than of this module's write set.
@@ -282,7 +395,7 @@ def owns_validity_window(template: "object") -> bool:
             helpers that call it.
 
     Returns:
-        ``True`` when this module writes the template's ``start_date`` and
+        ``True`` when this module writes the template's ``starts_on`` and
         ``end_date``, so its form must render both read-only.
     """
     account_id = getattr(template, "to_account_id", None)
@@ -300,8 +413,8 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
     The ONE entry every chokepoint calls, syncing BOTH ends of the recurrence's
     window so no caller can move one and leave the other stale:
 
-    * ``start_date`` -- the loan's first contractual installment
-      (:func:`_sync_start_date`); a payment cannot precede the loan.
+    * ``starts_on`` -- the loan's first contractual installment
+      (:func:`loan_cadence_spec`); a payment cannot precede the loan.
     * ``end_date`` -- the loan's derived payoff (R-4,
       :func:`recurrence_end_date`); a payment cannot follow the payoff.
 
@@ -330,7 +443,7 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
 
     Args:
         account_id: The loan account whose recurring-payment validity window
-            (``start_date`` / ``end_date``) to sync.
+            (``starts_on`` / ``end_date``) to sync.
     """
     account = db.session.get(Account, account_id)
     if account is None:

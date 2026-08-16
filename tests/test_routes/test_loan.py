@@ -38,6 +38,7 @@ from app.services import (
 )
 
 from tests._test_helpers import (
+    make_pattern_rule,
     add_escrow_line,
     clear_loan_ledger,
     create_account_of_type,
@@ -265,6 +266,41 @@ class TestLoanDashboard:
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         assert f"{expected} of each month".encode() in resp.data
+
+    def test_the_transfer_prompt_names_the_first_payment_date(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The prompt says WHEN the payment it offers to create will start.
+
+        Plan step R7c-b.  This form collects no recurrence controls at all --
+        the route derives the whole cadence from the loan's contract -- so
+        without the date the user commits to a schedule and finds out when it
+        starts by opening the template afterwards.
+
+        Hand-computed: a loan originating 2026-04-15 with ``payment_day`` 1
+        first bills 2026-05-01 (``first_installment_date``'s convention is the
+        payment day of the month AFTER origination, never a later day in the
+        origination month itself).  It is asserted as the DATE rather than as
+        the string a second derivation would produce, because the whole point
+        is that the prompt and
+        ``loan_recurrence_sync.loan_cadence_start`` answer once.
+        """
+        acct = create_loan_account(
+            seed_user, db.session, name="Closing In April",
+            principal=Decimal("200000.00"), rate=Decimal("0.05000"),
+            term=360, origination_date=date(2026, 4, 15), payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE,
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+
+        assert resp.status_code == 200
+        assert b"No recurring payment set up" in resp.data, (
+            "the prompt must be showing, or the date below proves nothing"
+        )
+        assert b"The first payment is due" in resp.data
+        assert b"May 1, 2026" in resp.data
 
     def test_dashboard_anchor_scorecard_badges(
         self, auth_client, seed_user, db, seed_periods,
@@ -3370,14 +3406,10 @@ class TestTransferPrompt:
         acct = _create_mortgage(seed_user, db.session)
 
         # Create an active recurring transfer template targeting this account.
-        monthly_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=monthly_id,
-            day_of_month=1,
+        rule = make_pattern_rule(
+            seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+            fires_on_day=1,
         )
-        db.session.add(rule)
-        db.session.flush()
         tpl = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
@@ -3409,14 +3441,10 @@ class TestTransferPrompt:
 
         acct = _create_mortgage(seed_user, db.session)
 
-        monthly_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=monthly_id,
-            day_of_month=1,
+        rule = make_pattern_rule(
+            seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+            fires_on_day=1,
         )
-        db.session.add(rule)
-        db.session.flush()
         tpl = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
@@ -3828,14 +3856,10 @@ class TestPaymentDrift:
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
-        monthly_id = ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.MONTHLY,
+        rule = make_pattern_rule(
+            seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+            fires_on_day=1,
         )
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id, pattern_id=monthly_id, day_of_month=1,
-        )
-        db_session.add(rule)
-        db_session.flush()
         tpl = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
@@ -5766,15 +5790,10 @@ def _create_transfer_template(seed_user, db_session, loan_account,
     if name is None:
         name = f"Loan Payment {loan_account.id}"
 
-    monthly_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.MONTHLY)
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=monthly_id,
-        day_of_month=1,
-        end_date=end_date,
+    rule = make_pattern_rule(
+        seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+        fires_on_day=1, end_date=end_date,
     )
-    db_session.add(rule)
-    db_session.flush()
 
     tpl = TransferTemplate(
         user_id=seed_user["user"].id,
@@ -6007,16 +6026,10 @@ class TestRecurrenceEndDateUpdate:
         db.session.flush()
 
         # Create a template even though no LoanParams exist.
-        monthly_id = ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.MONTHLY,
+        rule = make_pattern_rule(
+            seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+            fires_on_day=1,
         )
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=monthly_id,
-            day_of_month=1,
-        )
-        db.session.add(rule)
-        db.session.flush()
         tpl = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
@@ -6052,16 +6065,10 @@ class TestRecurrenceEndDateUpdate:
         other_loan = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
 
         # Create a transfer template for the other user's loan.
-        monthly_id = ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.MONTHLY,
+        rule = make_pattern_rule(
+            second_user["user"].id, RecurrencePatternEnum.MONTHLY,
+            fires_on_day=1,
         )
-        rule = RecurrenceRule(
-            user_id=second_user["user"].id,
-            pattern_id=monthly_id,
-            day_of_month=1,
-        )
-        db.session.add(rule)
-        db.session.flush()
         tpl = TransferTemplate(
             user_id=second_user["user"].id,
             from_account_id=second_user["account"].id,

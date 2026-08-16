@@ -2798,21 +2798,10 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
     # avoidance as the loan helpers above.
     from app import ref_cache
     from app.enums import StatusEnum, TxnTypeEnum
-    from app.models.recurrence_rule import RecurrenceRule
-    from app.models.ref import RecurrencePattern
     from app.models.transaction import Transaction
     from app.models.transaction_template import TransactionTemplate
 
-    every_period = (
-        db_session.query(RecurrencePattern)
-        .filter_by(name="Every Period").one()
-    )
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=every_period.id,
-    )
-    db_session.add(rule)
-    db_session.flush()
+    rule = make_every_period_rule(db_session, seed_user["user"].id)
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -3698,26 +3687,296 @@ def assert_pay_period_invariants(db_session, user_id):
     )
 
 
-def make_every_period_rule(db_session, user_id):
-    """Create and flush an ``Every Period`` recurrence rule for the user.
+def make_every_period_rule(db_session, user_id):  # pylint: disable=unused-argument
+    """Create and flush an every-paycheck recurrence rule for the user.
 
-    The shared rule builder for the pay-period CRUD test suites (extend /
-    truncate / regenerate), so the template builders below and their
-    callers do not each re-derive it.
+    The shared rule builder for every fixture that needs a template to repeat,
+    so no test re-derives it.
+
+    **Authored through the WRITE DOOR since plan step R7c-b**, and the change is
+    a real improvement rather than plumbing.  It used to construct a
+    ``RecurrenceRule`` directly with a ``pattern_id`` and nothing else, which
+    built a row ``resolve`` would refuse: no first occurrence, no unit, no
+    placement.  That was invisible while the two-axis columns were nullable and
+    unread; it is a ``NOT NULL`` violation now, and the door is what a
+    production rule goes through anyway.
+
+    ``starts_on`` is the schedule's OPENING payday, which is what an
+    unbounded rule resolved to before the column was authored -- so every
+    fixture built on this generates into the same periods it always did.
+
+    Args:
+        db_session: The test session.  Unused since the door flushes into it
+            through ``app.extensions.db``; kept because every caller passes it
+            and a signature change would touch two dozen call sites for no
+            behaviour.
+        user_id: The owner.
+
+    Returns:
+        The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
-    from app.models.recurrence_rule import RecurrenceRule
-    from app.models.ref import RecurrencePattern
+    from app.enums import RecurrenceUnitEnum
+    from app.services.pay_calendar import calendar_for
+    from app.services.recurrence import RecurrenceSpec, author_rule
 
-    pattern = (
-        db_session.query(RecurrencePattern).filter_by(name="Every Period").one()
+    calendar = calendar_for(user_id)
+    return author_rule(
+        RecurrenceSpec(
+            user_id=user_id,
+            unit=RecurrenceUnitEnum.PERIOD,
+            starts_on=calendar.opening_bound(),
+        ),
+        calendar,
     )
-    rule = RecurrenceRule(user_id=user_id, pattern_id=pattern.id)
-    db_session.add(rule)
-    db_session.flush()
-    return rule
+
+
+def first_occurrence_on_day(user_id, fires_on_day, fires_in_month=None):
+    """Return the first date matching a calendar cadence the schedule reaches.
+
+    **A TEST-AUTHORING translation, and deliberately not a production one.**
+    Plan step R7c-b made a rule's first occurrence the AUTHORED value (ruling
+    R-R16) and deleted the resolver's month-ordinal search that used to
+    reconstruct it from ``(month_of_year, day_of_month)``.  A form now asks the
+    user for the date outright, so nothing in ``app/`` derives one.
+
+    What survives is a test that describes its subject as "a monthly bill on
+    the 15th" and whose assertions were hand-computed against the dates that
+    description produced.  Restating each as a literal would mean recomputing
+    two dozen of them against a fixture schedule, so the description is
+    translated instead -- ONCE, here, answering exactly what the retired
+    derivation answered: the first date in the cadence's own residue class on
+    or after the schedule's opening.
+
+    Args:
+        user_id: The owner, whose schedule sets the floor.
+        fires_on_day: Day of the month the cadence fires on, 1-31.  Clamped by
+            :func:`~app.services.recurrence._months.clamped_day` in a month too
+            short to hold it, which is where a ``nominal_day`` comes from.
+        fires_in_month: Month of the year, for the annual and semi-annual
+            cadences.  ``None`` for a monthly one, which fires in every month.
+
+    Returns:
+        The :class:`datetime.date` to author as ``starts_on``.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.pay_calendar import calendar_for
+    from app.services.recurrence._months import (
+        MONTHS_PER_YEAR,
+        clamped_day,
+        month_ordinal,
+    )
+
+    opening = calendar_for(user_id).opening_bound()
+    ordinal = month_ordinal(opening)
+    if fires_in_month is not None:
+        # Step to the named month, then forward a year if it has already
+        # passed -- the residue class the old ``_calendar_anchor`` walked.
+        ordinal += (fires_in_month - opening.month) % MONTHS_PER_YEAR
+    candidate = clamped_day(ordinal, fires_on_day)
+    if candidate >= opening:
+        return candidate
+    step = MONTHS_PER_YEAR if fires_in_month is not None else 1
+    return clamped_day(ordinal + step, fires_on_day)
+
+
+def _default_first_occurrence(user_id, calendar, unit, placement):
+    """Return what the retired anchor derivation answered for a day-less rule.
+
+    :func:`make_pattern_rule`'s ``starts_on`` default, split out because it has
+    THREE answers and each is a different retired derivation.  A fixture that
+    states no date is describing a cadence, not a date, so what it must get is
+    the date that description produced before plan step R7c-b -- otherwise
+    every hand-computed assertion built on it moves.
+
+    * ``PERIOD`` -- the schedule's opening payday, which is what
+      ``_phased_period_anchor`` answered for a rule with no stated bound.
+    * ``MONTHLY_FIRST`` -- the FIRST of the opening's own month.
+      ``_first_of_month_anchor`` scanned for the earliest month whose own first
+      payday was not before the effective start and took ``date_trunc('month')``
+      of it; the opening's month always qualifies, because the opening IS the
+      schedule's earliest payday.  **It can therefore fall BELOW the opening**,
+      and that is not a defect: the occurrence is a marker the placement reads,
+      and clamping it up to the opening drops the opening month's own paycheck.
+      Measured: the fixture schedule opening 2026-01-02 owes 5 rows and a
+      clamped default produced 4.
+    * every other calendar cadence -- the first day-1 at or after the opening,
+      because ``_calendar_anchor`` defaulted an unstated day to 1 and walked
+      forward.
+
+    The MONTHLY_FIRST arm is selected by
+    :func:`~app.services.recurrence.fires_on_day_of_month`, the application's
+    own projection of which cadences anchor on the calendar, rather than by a
+    ``(unit, placement)`` pair written out here -- a second statement of that
+    mapping is one that can disagree with it.
+
+    Args:
+        user_id: The owner, whose schedule sets the floor.
+        calendar: That owner's :class:`~app.services.pay_calendar.PayCalendar`.
+        unit: The cadence unit.
+        placement: Which pay period funds an occurrence.
+
+    Returns:
+        The :class:`datetime.date` to author as ``starts_on``.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.enums import RecurrenceUnitEnum
+    from app.services.recurrence import fires_on_day_of_month
+
+    if unit is RecurrenceUnitEnum.PERIOD:
+        return calendar.opening_bound()
+    if not fires_on_day_of_month(unit, placement):
+        return calendar.opening_bound().replace(day=1)
+    return first_occurrence_on_day(user_id, 1)
+
+
+def transient_pattern_rule(user_id, pattern_name, **kwargs):
+    """Author one rule of a NAMED pattern WITHOUT adding it to the session.
+
+    :func:`make_pattern_rule`'s unsaved twin, for the tests that hand a real
+    rule to a route helper and never persist it -- the recurrence-form helpers,
+    which re-point a rule in place and are called on a bare
+    ``test_request_context``.
+
+    It exists for the same reason its sibling does: plan step R7c-b made the
+    two-axis columns ``NOT NULL``, so a hand-built rule naming only a pattern
+    is a shape production cannot produce, and a helper reading it would resolve
+    something the application never stores.
+
+    Args:
+        user_id: The owner.
+        pattern_name: A ``ref.recurrence_patterns`` display name, or the
+            matching :class:`~app.enums.RecurrencePatternEnum` member.
+        **kwargs: Every other argument :func:`make_pattern_rule` takes.
+
+    Returns:
+        The unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
+    """
+    return make_pattern_rule(user_id, pattern_name, _flush=False, **kwargs)
+
+
+def make_pattern_rule(
+    user_id,
+    pattern_name,
+    *,
+    starts_on=None,
+    fires_on_day=None,
+    fires_in_month=None,
+    interval_n=1,
+    nominal_day=None,
+    due_day_of_month=None,
+    end_date=None,
+    _flush=True,
+):
+    """Author one rule of a NAMED closed-set pattern, through the write door.
+
+    :func:`make_every_period_rule`'s general sibling, for the tests that need a
+    cadence other than every-paycheck.  Both exist because a rule may not be
+    constructed field by field any more: plan step R7c-b made ``unit_id``,
+    ``placement_id``, ``shift_id`` and ``starts_on`` ``NOT NULL``, so a
+    hand-built ``RecurrenceRule`` naming only a pattern is a constraint
+    violation rather than a shortcut.
+
+    **The two axes are DECODED from the pattern rather than restated here.**
+    ``decode_pattern`` is the application's own one place a stored pattern id
+    becomes ``(interval_n, unit, placement)``; a table in a test file saying
+    "Quarterly means MONTH / CONTAINING_DATE" would be a second statement of
+    that mapping, and a second statement is one that can disagree.  So a test
+    naming ``"Quarterly"`` gets exactly the cadence the write door would encode
+    back to ``Quarterly``.
+
+    Args:
+        user_id: The owner.
+        pattern_name: A ``ref.recurrence_patterns`` display name, which is also
+            a :class:`~app.enums.RecurrencePatternEnum` value.
+        starts_on: The rule's FIRST OCCURRENCE (ruling R-R16).  Defaults to
+            what the retired derivation answered for a rule stating no day:
+            the schedule's opening payday for a PAYCHECK-space cadence, and
+            the first 1st of a month the schedule reaches for a calendar
+            one -- so a fixture that states nothing generates where it
+            always did, and a MONTHLY_FIRST rule does not read as firing on
+            whichever day of the month the schedule happened to open on.
+        fires_on_day: An alternative to *starts_on* for a test that describes
+            its subject as a cadence rather than as a date -- "a monthly bill
+            on the 15th".  Translated by :func:`first_occurrence_on_day`; see
+            it for why the translation lives in the tests and not in ``app/``.
+            Mutually exclusive with *starts_on*.
+        fires_in_month: The month half of that description, for the annual and
+            semi-annual cadences.
+        interval_n: Read only for ``Every N Periods``, whose interval is a
+            column; every other pattern's interval is a property of the
+            pattern, and ``decode_pattern`` discards what is passed here.
+        nominal_day: The day the rule MEANS when *starts_on*'s month clamped
+            it (ruling R-R3).
+        due_day_of_month: Real bill due day, when it differs from the
+            scheduling day.
+        end_date: The rule's closing bound.  ``None`` never ends.
+        _flush: Private.  ``False`` builds the rule WITHOUT adding it to
+            the session; call :func:`transient_pattern_rule` rather than
+            passing it, which is why the name is underscored.
+
+    Returns:
+        The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import RecurrencePatternEnum, RecurrenceUnitEnum
+    from app.services.pay_calendar import calendar_for
+    from app.services.recurrence import (
+        NEVER_ENDS,
+        EndsOnDate,
+        RecurrenceSpec,
+        author_rule,
+        build_transient_rule,
+        decode_pattern,
+    )
+
+    if starts_on is not None and fires_on_day is not None:
+        raise ValueError(
+            "make_pattern_rule takes starts_on OR fires_on_day, not both: "
+            "they are two statements of the same fact and only one can be "
+            f"authored (got {starts_on!r} and day {fires_on_day!r})",
+        )
+    pattern = RecurrencePatternEnum(pattern_name)
+    reading = decode_pattern(
+        ref_cache.recurrence_pattern_id(pattern), interval_n,
+    )
+    calendar = calendar_for(user_id)
+    if starts_on is None and fires_on_day is not None:
+        starts_on = first_occurrence_on_day(
+            user_id, fires_on_day, fires_in_month,
+        )
+    if starts_on is None:
+        starts_on = _default_first_occurrence(
+            user_id, calendar, reading.cadence.unit, reading.placement,
+        )
+    write = author_rule if _flush else build_transient_rule
+    return write(
+        RecurrenceSpec(
+            user_id=user_id,
+            unit=reading.cadence.unit,
+            placement=reading.placement,
+            interval_n=reading.cadence.interval_n,
+            starts_on=(
+                starts_on if starts_on is not None
+                else calendar.opening_bound()
+            ),
+            nominal_day=nominal_day,
+            due_day_of_month=due_day_of_month,
+            end_bound=(
+                NEVER_ENDS if end_date is None else EndsOnDate(end_date)
+            ),
+        ),
+        calendar,
+    )
 
 
 def make_expense_template(db_session, seed_user, amount="1200.00", is_active=True):
@@ -4433,12 +4692,23 @@ def seed_tax_bracket_set(user_id, tax_year=2026):
 # names and the defaults are stated once for both.
 
 
-def validated_cadence(unit=None, interval_n=1, placement=None):
+def validated_cadence(
+    unit=None, interval_n=1, placement=None, starts_on=None, nominal_day=None,
+    states_a_start=True,
+):
     """Return one cadence as a SCHEMA hands it to a route helper.
 
-    The post-``load()`` shape: enum members and a real ``int``, which is what
+    The post-``load()`` shape: enum members, a real ``int`` and a real
+    ``date``, which is what
     :func:`app.routes._recurrence_form_helpers.build_recurrence_rule_from_form`
     and its siblings read.
+
+    **``starts_on`` rides WITH the cadence since plan step R7c-b**, and it is
+    not optional garnish: the rule's first occurrence is authored (ruling
+    R-R16), ``budget.recurrence_rules.starts_on`` is ``NOT NULL``, and
+    ``RecurrenceFormFieldsMixin.validate_recurrence_states_a_start`` refuses a
+    submission that names a cadence without one.  A helper that produced the
+    cadence alone would produce a payload no form can post.
 
     Args:
         unit: A :class:`~app.enums.RecurrenceUnitEnum` member.  Defaults to
@@ -4446,6 +4716,22 @@ def validated_cadence(unit=None, interval_n=1, placement=None):
         interval_n: How many units pass between occurrences.
         placement: A :class:`~app.enums.PeriodPlacementEnum` member.  Defaults
             to ``CONTAINING_DATE``, the placement every unit offers.
+        starts_on: The rule's FIRST OCCURRENCE.  Defaults to whatever a create
+            form opens on, taken from that form's own producer rather than
+            restated here, so a fixture starts where a user would.
+        nominal_day: The day the rule MEANS when *starts_on*'s month was too
+            short to hold it (ruling R-R3), and ``None`` -- the ordinary case
+            -- when the date holds the day.  Omitted from the payload entirely
+            when ``None``, because the control that posts it renders only where
+            the chosen date leaves the question open.
+        states_a_start: ``False`` leaves ``starts_on`` OUT of the payload
+            entirely, which is a different request from stating a date and is
+            what a locked control produces -- a loan payment's, whose bound the
+            app derives, renders ``disabled`` and so posts nothing.  An UPDATE
+            reads the absence as "leave the stored one alone"; a CREATE refuses
+            it.  Absence and presence being distinguishable is the whole point
+            of the ruling of 2026-08-15, so a helper that could only produce
+            one of them could not exercise it.
 
     Returns:
         A dict of deserialized payload values, ready to splat into the ``data``
@@ -4459,8 +4745,11 @@ def validated_cadence(unit=None, interval_n=1, placement=None):
         PeriodPlacementEnum,
         RecurrenceUnitEnum,
     )
+    from app.routes._recurrence_form_render import (  # pylint: disable=import-outside-toplevel
+        create_form_default_starts_on,
+    )
 
-    return {
+    payload = {
         "recurrence_unit": (
             unit if unit is not None else RecurrenceUnitEnum.PERIOD
         ),
@@ -4470,6 +4759,14 @@ def validated_cadence(unit=None, interval_n=1, placement=None):
             else PeriodPlacementEnum.CONTAINING_DATE
         ),
     }
+    if states_a_start:
+        payload["starts_on"] = (
+            starts_on if starts_on is not None
+            else create_form_default_starts_on()
+        )
+    if nominal_day is not None:
+        payload["nominal_day"] = nominal_day
+    return payload
 
 
 def end_bound_payload(bound=None):
@@ -4502,13 +4799,19 @@ def end_bound_payload(bound=None):
     return payload
 
 
-def cadence_payload(unit=None, interval_n=1, placement=None):
+def cadence_payload(
+    unit=None, interval_n=1, placement=None, starts_on=None, nominal_day=None,
+    states_a_start=True,
+):
     """Return the form keys that author one cadence, as a BROWSER posts them.
 
     :func:`validated_cadence`'s wire form: each enum member resolved to its
     ``ref`` row id, every value a string.  Derived from that function rather
     than written beside it, so the key names and the defaults have one
-    statement and plan step R7c moves both together.
+    statement and plan step R7c moved both together.
+
+    ``starts_on`` goes out ISO-formatted, which is what ``<input type="date">``
+    posts and what ``fields.Date`` reads.
 
     Args:
         unit: A :class:`~app.enums.RecurrenceUnitEnum` member.  Defaults to
@@ -4516,6 +4819,12 @@ def cadence_payload(unit=None, interval_n=1, placement=None):
         interval_n: How many units pass between occurrences.
         placement: A :class:`~app.enums.PeriodPlacementEnum` member.  Defaults
             to ``CONTAINING_DATE``.
+        starts_on: The rule's first occurrence; see :func:`validated_cadence`.
+        nominal_day: The clamped day the rule means; see
+            :func:`validated_cadence`.  Absent from the returned dict when
+            ``None``, matching the control's own conditional rendering.
+        states_a_start: ``False`` omits ``starts_on``, which is what a locked
+            (``disabled``) control posts; see :func:`validated_cadence`.
 
     Returns:
         A dict of form values -- strings, as an HTML form submits them -- ready
@@ -4524,8 +4833,10 @@ def cadence_payload(unit=None, interval_n=1, placement=None):
     # Pylint: ``import-outside-toplevel`` -- see :func:`validated_cadence`.
     from app import ref_cache  # pylint: disable=import-outside-toplevel
 
-    loaded = validated_cadence(unit, interval_n, placement)
-    return {
+    loaded = validated_cadence(
+        unit, interval_n, placement, starts_on, nominal_day, states_a_start,
+    )
+    payload = {
         "recurrence_unit": str(
             ref_cache.recurrence_unit_id(loaded["recurrence_unit"]),
         ),
@@ -4534,6 +4845,11 @@ def cadence_payload(unit=None, interval_n=1, placement=None):
             ref_cache.period_placement_id(loaded["recurrence_placement"]),
         ),
     }
+    if "starts_on" in loaded:
+        payload["starts_on"] = loaded["starts_on"].isoformat()
+    if "nominal_day" in loaded:
+        payload["nominal_day"] = str(loaded["nominal_day"])
+    return payload
 
 
 def derived_window(paydays, cadence_days):

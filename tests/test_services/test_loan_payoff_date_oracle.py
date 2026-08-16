@@ -63,6 +63,7 @@ from tests._test_helpers import (
     create_loan_account,
     insert_trueup_event,
     loan_params_for,
+    make_pattern_rule,
     seam_confirmed_view,
 )
 
@@ -197,15 +198,12 @@ def _create_loan(seed_user, period, origination_date, *, name):
 def _attach_derive_extra(seed_user, loan_account, extra):
     """Attach a derive-from-loan recurring payment carrying a standing extra."""
     user = seed_user["user"]
-    rule = RecurrenceRule(
-        user_id=user.id,
-        pattern_id=ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.MONTHLY,
-        ),
-        day_of_month=1,
+    # Authored through the write door (plan step R7c-b): the day the rule
+    # fires on is its first occurrence's own day, so "the 1st" is stated as a
+    # DATE the fixture schedule reaches rather than as a separate column.
+    rule = make_pattern_rule(
+        user.id, RecurrencePatternEnum.MONTHLY, fires_on_day=1,
     )
-    db.session.add(rule)
-    db.session.flush()
     template = TransferTemplate(
         user_id=user.id,
         from_account_id=seed_user["account"].id,

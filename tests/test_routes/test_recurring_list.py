@@ -20,12 +20,12 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.extensions import db
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
 from app.utils.dates import month_name
+from tests._test_helpers import make_pattern_rule
 
 #: Named so the cycle arithmetic below is not a bare literal.
 MONTHS_IN_YEAR = 12
@@ -34,16 +34,16 @@ MONTHS_IN_YEAR = 12
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _rule(user, pattern_enum, *, day_of_month=None):
-    rule = RecurrenceRule(
-        user_id=user.id,
-        pattern_id=ref_cache.recurrence_pattern_id(pattern_enum),
-        interval_n=1,
-        day_of_month=day_of_month,
+def _rule(user, pattern_enum, *, day_of_month=None, starts_on=None):
+    """Author one rule of *pattern_enum* for *user*, through the write door.
+
+    Plan step R7c-b made the two-axis columns NOT NULL, so a rule naming only a
+    pattern no longer produces a row.
+    """
+    return make_pattern_rule(
+        user.id, pattern_enum,
+        fires_on_day=day_of_month, starts_on=starts_on,
     )
-    db.session.add(rule)
-    db.session.flush()
-    return rule
 
 
 def _txn(user, account, category, rule, amount, *, type_enum, name):
@@ -425,33 +425,38 @@ class TestTheRenderedRecurrenceCell:
         assert "Quarterly (" in row
         assert " 21)" in row, "the quarterly cell must name its day"
 
-    def test_a_quarterly_definition_authored_before_the_schedule_names_its_first(
+    def test_a_quarterly_definition_authored_before_the_schedule_names_it(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """The shape that MOVED on production, pinned end to end.
+        """The cell names the rule's OWN first occurrence, wherever it falls.
 
-        Anchor Disposal is quarterly, authored March, day 2, on a schedule
-        opening 2026-03-26 -- so its first occurrence is 2 June and the old
-        cell said "starting Mar", a month already behind the schedule.  The
-        sibling test above deliberately authors a month the schedule COVERS,
-        which is the case that did not move; without this one the whole
-        user-visible regression risk of plan step R7a-1 is untested.
+        This asserted the opposite until plan step R7c-b, and the reversal is
+        ruling R-R16.  ``Anchor Disposal`` is quarterly, authored March, day 2,
+        on a schedule opening later that year -- and the cell said "Mar", a
+        month already behind the schedule, which plan step R7a-1 treated as the
+        defect and taught the cell to walk forward from.
 
-        Built by authoring a month a full cycle BEFORE the schedule opens, so
-        the assertion holds whatever day of the year the suite runs on: the
-        first occurrence is then always a LATER member of the same quarterly
-        cycle, never the authored month.
+        The date is AUTHORED now: 2 March IS when the rule first happens, and
+        it is a fact about the rule rather than about whichever schedule the
+        owner currently has.  Walking forward made the cell HORIZON-DEPENDENT
+        -- the same shape as plan ledger row D10 -- so the same definition read
+        differently after a pay-period rebuild that changed nothing about it.
+
+        Nothing is lost from the surface: the row's own "next" column answers
+        when the definition next fires, which is the question the walk was
+        standing in for, and it answers it for every row rather than only for
+        the ones whose authored month is behind the schedule.
+
+        **The date is a whole year before the schedule opens**, so no forward
+        walk could land on it by coincidence: a cell that still walked would
+        name some month at or after the opening, and every one of those is a
+        different string from the one asserted here.
         """
         user = seed_user["user"]
-        opening = seed_periods_today[0].start_date
-        # Three months back is one full quarterly cycle: the SAME residue class
-        # mod 3, so the rule's months are unchanged, but the named month is
-        # strictly behind the schedule and can host no row.  Plain modular
-        # arithmetic rather than a date library the project does not depend on.
-        authored_month = (opening.month - 3 - 1) % MONTHS_IN_YEAR + 1
-        rule = _rule(user, RecurrencePatternEnum.QUARTERLY, day_of_month=2)
-        rule.month_of_year = authored_month
-        db.session.flush()
+        authored = seed_periods_today[0].start_date.replace(
+            year=seed_periods_today[0].start_date.year - 1,
+        ).replace(month=3, day=2)
+        rule = _rule(user, RecurrencePatternEnum.QUARTERLY, starts_on=authored)
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
              rule, "45.00", type_enum=TxnTypeEnum.EXPENSE,
              name="Anchor Disposal")
@@ -460,28 +465,13 @@ class TestTheRenderedRecurrenceCell:
         html = auth_client.get("/templates").data.decode()
         row = self._row_markup(html, "Anchor Disposal")
 
-        # An INDEPENDENT forward walk of the same cycle, in the test: start a
-        # year before the schedule and step three months until a date lands on
-        # or after the opening.  Asserting the exact expected string rather
-        # than "not the authored month" is what makes this fire -- a negative
-        # is satisfied by any wrong month, and a mutant naming the month one
-        # cycle back passed it.
-        ordinal = (opening.year - 1) * MONTHS_IN_YEAR + (authored_month - 1)
-        while True:
-            year, month_index = divmod(ordinal, MONTHS_IN_YEAR)
-            first_occurrence = date(year, month_index + 1, 2)
-            if first_occurrence >= opening:
-                break
-            ordinal += 3
-        expected = (
-            f"Quarterly ({month_name(first_occurrence.month, abbr=True)} 2)"
-        )
-
-        assert expected in row, (
-            f"the cell must name the first occurrence {first_occurrence}; the "
-            f"authored month is "
-            f"{month_name(authored_month, abbr=True)}, which is behind the "
-            f"schedule opening {opening} and hosts no row"
+        # ``abbr=True`` because that is the form the list views use, taken
+        # from the app's own producer rather than spelled out: ``month_name``
+        # exists so the describer and this assertion cannot come to name March
+        # two different things.
+        assert f"Quarterly ({month_name(3, abbr=True)} 2)" in row, (
+            "the cell must name the rule's own authored first occurrence, not "
+            "a month walked forward onto the current schedule"
         )
 
     def test_an_end_date_renders_as_its_own_muted_line(

@@ -26,11 +26,12 @@ from datetime import date
 import pytest
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum
+from app.enums import BusinessDayShiftEnum, RecurrencePatternEnum
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
     RecurrenceResolutionError,
+    decode_pattern,
     read_rule,
     resolved_recurrence,
     rule_occurrences,
@@ -43,25 +44,53 @@ from tests.test_services.test_recurrence_resolution import build_calendar
 
 _USER_ID = 1
 
+#: The first occurrence :func:`_rule` states unless a test names another.
+#:
+#: A date the shared :func:`build_calendar` schedule reaches, and a MONTHLY
+#: rule's own first occurrence rather than a bound it is filtered against
+#: (ruling R-R16) -- so every placement below is dated from it directly.
+_A_FIRST_OCCURRENCE = date(2026, 4, 22)
 
-def _rule(pattern_enum, **columns):
-    """Return an unsaved rule naming *pattern_enum*.
+
+def _rule(pattern_enum, starts_on=_A_FIRST_OCCURRENCE, **columns):
+    """Return an unsaved rule naming *pattern_enum*, as R7c-b stores one.
 
     Transient by design: the read door takes a rule row and issues no query,
     so nothing here needs the rule to exist in a table.
 
+    **It states the two-axis columns rather than a pattern alone** (plan step
+    R7c-b).  ``unit_id`` and ``placement_id`` are what
+    :func:`~app.services.recurrence.recurrence_spec` reads the cadence's shape
+    off -- only the INTERVAL still comes from the pattern -- and all four are
+    ``NOT NULL``, so a pattern-only row is a shape the table cannot hold.
+    They are DECODED from the pattern rather than tabulated here, so a rule
+    built for this file carries exactly what the write door would have written
+    for the same name.
+
     Args:
         pattern_enum: The pattern the rule names.
-        **columns: Any authored column to override.
+        starts_on: The rule's first occurrence.  Defaults to
+            :data:`_A_FIRST_OCCURRENCE`, which the shared
+            :func:`build_calendar` schedule reaches.
+        **columns: Any other column to override.
 
     Returns:
         The unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
+    # Decoded at interval 1 whatever the caller states, because the two axes
+    # this reads are properties of the PATTERN alone -- and one case below
+    # deliberately stores the interval ``ck_recurrence_rules_positive_interval``
+    # refuses, which the decode would refuse first.
+    reading = decode_pattern(ref_cache.recurrence_pattern_id(pattern_enum), 1)
     defaults = {
         "user_id": _USER_ID,
         "pattern_id": ref_cache.recurrence_pattern_id(pattern_enum),
         "interval_n": 1,
         "offset_periods": 0,
+        "unit_id": ref_cache.recurrence_unit_id(reading.cadence.unit),
+        "placement_id": ref_cache.period_placement_id(reading.placement),
+        "shift_id": ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE),
+        "starts_on": starts_on,
     }
     defaults.update(columns)
     return RecurrenceRule(**defaults)
@@ -74,7 +103,7 @@ class TestOneComposition:
         """The meaning and the placements, from one call."""
         with app.app_context():
             calendar = build_calendar()
-            rule = _rule(RecurrencePatternEnum.MONTHLY, day_of_month=22)
+            rule = _rule(RecurrencePatternEnum.MONTHLY)
 
             reading = read_rule(rule, calendar)
 
@@ -95,7 +124,7 @@ class TestOneComposition:
             calendar = build_calendar()
 
             for pattern in RecurrencePatternEnum:
-                rule = _rule(pattern, day_of_month=15, month_of_year=6)
+                rule = _rule(pattern, starts_on=date(2026, 6, 15))
 
                 assert rule_occurrences(rule, calendar) == (
                     read_rule(rule, calendar).placements
@@ -112,7 +141,7 @@ class TestOneComposition:
         """
         with app.app_context():
             calendar = build_calendar()
-            rule = _rule(RecurrencePatternEnum.MONTHLY, day_of_month=22)
+            rule = _rule(RecurrencePatternEnum.MONTHLY)
 
             calls = []
             real = _reading.occurrence_placements
@@ -142,7 +171,7 @@ class TestTheMeaningAlone:
         """
         with app.app_context():
             calendar = build_calendar()
-            rule = _rule(RecurrencePatternEnum.MONTHLY, day_of_month=22)
+            rule = _rule(RecurrencePatternEnum.MONTHLY)
 
             def fail_if_called(*_args, **_kwargs):
                 raise AssertionError("the meaning-only read placed occurrences")
@@ -153,7 +182,7 @@ class TestTheMeaningAlone:
             resolved = resolved_recurrence(rule, calendar)
 
             assert resolved is not None
-            assert resolved.anchor_date == date(2026, 4, 22)
+            assert resolved.starts_on == date(2026, 4, 22)
 
     def test_it_agrees_with_read_rules_own_half(self, app):
         """The two entry points cannot state different meanings."""
@@ -161,7 +190,7 @@ class TestTheMeaningAlone:
             calendar = build_calendar()
 
             for pattern in RecurrencePatternEnum:
-                rule = _rule(pattern, day_of_month=15, month_of_year=6)
+                rule = _rule(pattern, starts_on=date(2026, 6, 15))
 
                 assert resolved_recurrence(rule, calendar) == (
                     read_rule(rule, calendar).resolved
@@ -182,7 +211,7 @@ class TestTheEmptySchedule:
             empty = PayCalendar.from_paydays(
                 paydays=(), cadence_days=None, user_id=_USER_ID,
             )
-            rule = _rule(RecurrencePatternEnum.MONTHLY, day_of_month=22)
+            rule = _rule(RecurrencePatternEnum.MONTHLY)
 
             assert resolved_recurrence(rule, empty) is None
 
@@ -227,7 +256,7 @@ class TestItSwallowsNothingElse:
                 ref_cache.recurrence_pattern_id(member)
                 for member in RecurrencePatternEnum
             )
-            rule = _rule(RecurrencePatternEnum.MONTHLY, day_of_month=22)
+            rule = _rule(RecurrencePatternEnum.MONTHLY)
             rule.pattern_id = highest + 1000
 
             with pytest.raises(RecurrenceResolutionError, match="matches no"):
@@ -247,7 +276,7 @@ class TestItSwallowsNothingElse:
         """
         with app.app_context():
             other = build_calendar(user_id=_USER_ID + 1)
-            rule = _rule(RecurrencePatternEnum.MONTHLY, day_of_month=22)
+            rule = _rule(RecurrencePatternEnum.MONTHLY)
 
             with pytest.raises(RecurrenceResolutionError, match="cannot be"):
                 resolved_recurrence(rule, other)
@@ -262,10 +291,38 @@ class TestItSwallowsNothingElse:
                 resolved_recurrence(rule, calendar)
 
     def test_a_day_outside_its_column_domain_still_raises(self, app):
-        """A day of 99 would CLAMP to a month's last day, answering a lie."""
+        """A day of 99 would CLAMP to a month's last day, answering a lie.
+
+        The column this asks about MOVED at plan step R7c-b and the refusal
+        did not: ``day_of_month`` stopped being authored -- the write door
+        encodes it from the resolved first occurrence -- so the authored day
+        left with a domain of its own is ``due_day_of_month``, whose
+        ``ck_recurrence_rules_due_dom`` this mirrors.
+        """
         with app.app_context():
             calendar = build_calendar()
-            rule = _rule(RecurrencePatternEnum.MONTHLY, day_of_month=99)
+            rule = _rule(RecurrencePatternEnum.MONTHLY, due_day_of_month=99)
 
-            with pytest.raises(RecurrenceResolutionError, match="day_of_month"):
+            with pytest.raises(
+                RecurrenceResolutionError, match="due_day_of_month",
+            ):
+                resolved_recurrence(rule, calendar)
+
+    def test_a_start_outside_the_calendar_window_still_raises(self, app):
+        """A first occurrence past 2100 overflows the calendar's projection.
+
+        The fourth rule-level refusal, and the one plan step R7c-b added: past
+        the saved horizon the pay calendar projects the covering paycheck by
+        adding ``cadence_days`` to a start, which raises ``OverflowError`` from
+        outside this package's hierarchy.  It must reach the caller rather than
+        being answered ``None`` beside the empty-schedule case -- the rule is
+        wrong, not the schedule.
+        """
+        with app.app_context():
+            calendar = build_calendar()
+            rule = _rule(
+                RecurrencePatternEnum.MONTHLY, starts_on=date(9999, 12, 31),
+            )
+
+            with pytest.raises(RecurrenceResolutionError, match="starts_on"):
                 resolved_recurrence(rule, calendar)

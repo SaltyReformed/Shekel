@@ -69,8 +69,8 @@ from app.services.recurrence import (
     NEVER_ENDS,
     EndsOnDate,
     RecurrenceGenerationError,
+    RecurrenceResolutionError,
     ResolvedRecurrence,
-    first_occurrence,
     occurrence_placements,
     occurrences,
     place,
@@ -191,7 +191,7 @@ _USER_ID = 1
 def resolved_value(
     *,
     unit: RecurrenceUnitEnum,
-    anchor_date: date,
+    starts_on: date,
     interval_n: int = 1,
     offset_periods: int = 0,
     placement: PeriodPlacementEnum = PeriodPlacementEnum.CONTAINING_DATE,
@@ -213,13 +213,17 @@ def resolved_value(
 
     Args:
         unit: The cadence unit.
-        anchor_date: The first occurrence (or, for ``PERIOD``, the bound).
+        starts_on: The first occurrence, one meaning for every unit since
+            plan step R7c-b -- so a ``PERIOD`` value stated here must
+            already be a payday, which ``resolve`` would have normalised it
+            onto.
         interval_n: Units between occurrences.
         offset_periods: Phase within the ``PERIOD`` cycle.
         placement: How an occurrence maps onto a pay period.
         shift: Weekend/holiday adjustment.
         end_bound: When the recurrence stops.
-        nominal_day: The day the rule means when the anchor month clamped it.
+        nominal_day: The day the rule means when the first occurrence's
+            month clamped it.
 
     Returns:
         The :class:`~app.services.recurrence.ResolvedRecurrence`.
@@ -228,7 +232,7 @@ def resolved_value(
         offset_periods=offset_periods,
         interval_n=interval_n,
         unit=unit,
-        anchor_date=anchor_date,
+        starts_on=starts_on,
         placement=placement,
         shift=shift,
         end_bound=end_bound,
@@ -531,7 +535,7 @@ class TestTheParallelRun:
         assert set(new) == set(committed), (
             "the shape set moved between the snapshot and this run"
         )
-        assert len(committed) == 430, f"{len(committed)} shapes captured"
+        assert len(committed) == 434, f"{len(committed)} shapes captured"
         for label in sorted(committed):
             assert new[label] == committed[label], (
                 f"{label}: forward engine answers {new[label]}, the committed "
@@ -576,11 +580,9 @@ class TestTheParallelRun:
         for label in bounded:
             shape = shapes[label]
             for occurrence, _index in placements[label]:
-                assert (
-                    shape.start_date is None or occurrence >= shape.start_date
-                ), (
-                    f"{label}: fired {occurrence}, before its start_date "
-                    f"{shape.start_date}"
+                assert occurrence >= shape.starts_on, (
+                    f"{label}: fired {occurrence}, before its first "
+                    f"occurrence {shape.starts_on}"
                 )
                 assert (
                     shape.end_date is None or occurrence <= shape.end_date
@@ -620,8 +622,8 @@ class TestTheParallelRun:
 
         for label, (index, occurrence) in _BOUND_DIVERGENCES.items():
             shape = shapes[label]
-            assert shape.day_of_month == occurrence.day, (
-                f"{label}: {occurrence} is not a day-{shape.day_of_month} "
+            assert shape.starts_on.day == occurrence.day, (
+                f"{label}: {occurrence} is not a day-{shape.starts_on.day} "
                 f"occurrence of its own cadence"
             )
             period = by_index[index]
@@ -630,15 +632,16 @@ class TestTheParallelRun:
                 f"{period.end_date}) does not contain {occurrence}, so it is "
                 f"not the row a period-bounded matcher would have generated"
             )
-            outside_start = (
-                shape.start_date is not None and occurrence < shape.start_date
-            )
+            # The opening side needs no ``is not None`` guard since plan step
+            # R7c-b: a shape ALWAYS states its first occurrence, and a rule
+            # never fires before it.
+            outside_start = occurrence < shape.starts_on
             outside_end = (
                 shape.end_date is not None and occurrence > shape.end_date
             )
             assert outside_start or outside_end, (
                 f"{label}: {occurrence} lies INSIDE the rule's window "
-                f"({shape.start_date}..{shape.end_date}), so dropping it "
+                f"({shape.starts_on}..{shape.end_date}), so dropping it "
                 f"would be a regression, not defect D5's fix"
             )
             assert (index, occurrence) not in committed[label], (
@@ -752,13 +755,13 @@ class TestTheParallelRun:
         assert placements[2] == (date(2024, 3, 1), 1)
         assert long_periods[1].start_date == date(2024, 3, 31)
 
-    def test_a_calendar_units_first_occurrence_is_its_own_anchor(self):
-        """The resolver's anchor and the engine's first occurrence agree.
+    def test_a_calendar_units_first_occurrence_is_the_date_it_states(self):
+        """``resolve``'s date and the engine's first occurrence agree.
 
-        The seam between the two halves of the model.  ``resolve`` derives the
-        anchor by one month-ordinal walk and the engine re-walks from it; if
-        they clamped differently, every rule would fire one day off in its
-        first month and nothing else would say so.
+        The seam between the two halves of the model.  ``resolve`` answers a
+        calendar cadence's ``starts_on`` unchanged and the engine walks from
+        it; if the walk clamped differently, every rule would fire one day off
+        in its first month and nothing else would say so.
         """
         biweekly, long_cadence = _baseline_schedules()
         calendars = _baseline_calendars(biweekly, long_cadence)
@@ -785,14 +788,15 @@ class TestTheParallelRun:
                 # quietly stops emitting hide.
                 skipped.append(shape.label)
                 continue
-            assert emitted[0].occurrence == resolved.anchor_date, shape.label
+            assert emitted[0].occurrence == resolved.starts_on, shape.label
             checked += 1
         assert skipped == [
             "bounds.window.inverted", "horizon_bound.monthly_first",
         ], skipped
-        # 430 captured shapes less the 38 pay-period-space ones, less the two
-        # above that fire nowhere.
-        assert checked == 390, f"{checked} calendar-unit shapes checked"
+        # 434 captured shapes less the 41 pay-period-space ones, less the two
+        # above that fire nowhere.  Plan step R7c-b's four new
+        # ``anchor.*`` shapes split 3 period-space to 1 calendar.
+        assert checked == 391, f"{checked} calendar-unit shapes checked"
 
     def test_a_period_units_first_occurrence_is_a_payday(self):
         """A pay-period-space rule fires on paydays, not on its bound.
@@ -825,9 +829,10 @@ class TestTheParallelRun:
                 assert placement.occurrence == placement.period.start_date
             checked += 1
         # 36 ``every_n_periods`` shapes (intervals 1-8 x every legal phase)
-        # plus ``every_period`` and its long-cadence twin = 38.  ``Monthly
-        # First`` is NOT period-space: it resolves to the MONTH unit.
-        assert checked == 38, f"{checked} period-space shapes"
+        # plus ``every_period`` and its long-cadence twin = 38, plus the three
+        # period-space ``anchor.*`` shapes plan step R7c-b added = 41.
+        # ``Monthly First`` is NOT period-space: it resolves to the MONTH unit.
+        assert checked == 41, f"{checked} period-space shapes"
 
 
 @pytest.mark.usefixtures("app")
@@ -927,7 +932,7 @@ class TestThePeriodUnit:
         """Interval 1 emits one occurrence per period, each on its payday."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.PERIOD, anchor_date=date(2026, 3, 26),
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 3, 26),
         )
 
         emitted = dates_through(value, calendar, calendar.horizon())
@@ -951,7 +956,7 @@ class TestThePeriodUnit:
         calendar = build_calendar()
         # 2026-04-01 sits inside period 0 (2026-03-26..2026-04-08).
         value = resolved_value(
-            unit=RecurrenceUnitEnum.PERIOD, anchor_date=date(2026, 4, 1),
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 4, 1),
         )
 
         emitted = dates_through(value, calendar, calendar.horizon())
@@ -964,7 +969,7 @@ class TestThePeriodUnit:
         """A bound equal to a payday opens on that paycheck, not the previous."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.PERIOD, anchor_date=date(2026, 4, 9),
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 4, 9),
         )
 
         emitted = dates_through(value, calendar, calendar.horizon())
@@ -980,7 +985,7 @@ class TestThePeriodUnit:
         value = resolved_value(
             unit=RecurrenceUnitEnum.PERIOD,
             # ``_phased_period_anchor`` puts the anchor on period 2's payday.
-            anchor_date=date(2026, 3, 26) + timedelta(days=28),
+            starts_on=date(2026, 3, 26) + timedelta(days=28),
             interval_n=3, offset_periods=2,
         )
 
@@ -1002,11 +1007,11 @@ class TestThePeriodUnit:
         """
         calendar = build_calendar()
         containing = resolved_value(
-            unit=RecurrenceUnitEnum.PERIOD, anchor_date=date(2026, 4, 1),
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 4, 1),
             placement=PeriodPlacementEnum.CONTAINING_DATE,
         )
         on_or_after = resolved_value(
-            unit=RecurrenceUnitEnum.PERIOD, anchor_date=date(2026, 4, 1),
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 4, 1),
             placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
         )
 
@@ -1019,7 +1024,7 @@ class TestThePeriodUnit:
         """No paycheck exists past the schedule, so nothing is emitted."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.PERIOD, anchor_date=date(2030, 1, 1),
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2030, 1, 1),
         )
 
         assert dates_through(value, calendar, date(2035, 1, 1)) == []
@@ -1034,7 +1039,7 @@ class TestTheCalendarUnits:
         """Interval 1 MONTH fires on the anchor's day every month."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
         )
 
         assert dates_through(value, calendar, date(2026, 8, 31)) == [
@@ -1051,7 +1056,7 @@ class TestTheCalendarUnits:
         """
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
             interval_n=2,
         )
 
@@ -1063,7 +1068,7 @@ class TestTheCalendarUnits:
         """Interval 3 MONTH reproduces the Quarterly pattern."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
             interval_n=3,
         )
 
@@ -1076,7 +1081,7 @@ class TestTheCalendarUnits:
         """Interval 1 YEAR is the twelve-month stride."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.YEAR, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.YEAR, starts_on=date(2026, 4, 15),
         )
 
         assert dates_through(value, calendar, date(2029, 1, 1)) == [
@@ -1087,7 +1092,7 @@ class TestTheCalendarUnits:
         """Interval 2 YEAR -- the second cadence the old enum could not name."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.YEAR, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.YEAR, starts_on=date(2026, 4, 15),
             interval_n=2,
         )
 
@@ -1099,7 +1104,7 @@ class TestTheCalendarUnits:
         """CONTAINING_DATE puts the row in the paycheck the date falls inside."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
         )
 
         placements = occurrence_placements(value, calendar)
@@ -1118,7 +1123,7 @@ class TestTheWeekUnit:
         """Interval 1 WEEK fires every seventh day from the anchor."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.WEEK, anchor_date=date(2026, 3, 26),
+            unit=RecurrenceUnitEnum.WEEK, starts_on=date(2026, 3, 26),
         )
 
         assert dates_through(value, calendar, date(2026, 4, 23)) == [
@@ -1130,7 +1135,7 @@ class TestTheWeekUnit:
         """Interval 2 WEEK is the biweekly-by-DATE bill the old set lacked."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.WEEK, anchor_date=date(2026, 3, 26),
+            unit=RecurrenceUnitEnum.WEEK, starts_on=date(2026, 3, 26),
             interval_n=2,
         )
 
@@ -1147,7 +1152,7 @@ class TestMonthEndClamping:
         """Day 31 clamps per month and recovers the 31st where it exists."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 1, 31),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 1, 31),
         )
 
         assert dates_through(value, calendar, date(2026, 7, 31)) == [
@@ -1161,18 +1166,18 @@ class TestMonthEndClamping:
         """``nominal_day`` is what stops a month-end rule decaying forever.
 
         Ruling R-R3's own measurement, made executable.  A day-31 rule whose
-        first occurrence falls in April carries ``anchor_date`` 2026-04-30 --
+        first occurrence falls in April carries ``starts_on`` 2026-04-30 --
         April has no 31st -- and the nominal day in the
         ``recurrence_month_anchors`` subtype.  Without it the walk would take
-        the ANCHOR's day, 30, and every later 31-day month would be wrong.
+        the STORED date's day, 30, and every later 31-day month would be wrong.
         """
         calendar = build_calendar()
         with_subtype = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 30),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 30),
             nominal_day=31,
         )
         without_subtype = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 30),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 30),
         )
 
         assert dates_through(with_subtype, calendar, date(2026, 7, 31)) == [
@@ -1189,7 +1194,7 @@ class TestMonthEndClamping:
         """February 29 comes back in the next leap year, not once and never."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.YEAR, anchor_date=date(2024, 2, 29),
+            unit=RecurrenceUnitEnum.YEAR, starts_on=date(2024, 2, 29),
         )
 
         assert dates_through(value, calendar, date(2028, 12, 31)) == [
@@ -1201,7 +1206,7 @@ class TestMonthEndClamping:
         """Every month holds a 28th, so the common case costs nothing."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 1, 28),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 1, 28),
         )
 
         assert dates_through(value, calendar, date(2026, 4, 30)) == [
@@ -1218,7 +1223,7 @@ class TestTheClosingBounds:
         """Defect D5 dies here: no row is dated outside its own window."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
             end_bound=EndsOnDate(on=date(2026, 6, 14)),
         )
 
@@ -1230,7 +1235,7 @@ class TestTheClosingBounds:
         """The bound is inclusive -- a bill due the day the rule ends is due."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
             end_bound=EndsOnDate(on=date(2026, 6, 15)),
         )
 
@@ -1242,7 +1247,7 @@ class TestTheClosingBounds:
         """The count bound, whose first author is plan step R8."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
             end_bound=EndsAfterOccurrences(count=3),
         )
 
@@ -1271,7 +1276,7 @@ class TestTheClosingBounds:
             user_id=_USER_ID,
         )
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 1, 20),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 1, 20),
             end_bound=EndsAfterOccurrences(count=2),
         )
 
@@ -1295,7 +1300,7 @@ class TestTheClosingBounds:
         """Nothing before the first occurrence can ever be generated."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
         )
 
         assert dates_through(value, calendar, date(2026, 4, 14)) == []
@@ -1353,7 +1358,7 @@ class TestPlacement:
         calendar = build_calendar()
         for placement in PeriodPlacementEnum:
             value = resolved_value(
-                unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2028, 5, 20),
+                unit=RecurrenceUnitEnum.MONTH, starts_on=date(2028, 5, 20),
                 placement=placement,
             )
             items = occurrence_placements(
@@ -1390,7 +1395,7 @@ class TestTheGenerationWindowAndTheHorizon:
         """Past the last covered day no placement can succeed, so none is asked."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2028, 6, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2028, 6, 15),
         )
 
         placements = occurrence_placements(value, calendar)
@@ -1405,7 +1410,7 @@ class TestTheGenerationWindowAndTheHorizon:
         """Explicitly asked for, they come back explicitly unplaced."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2028, 6, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2028, 6, 15),
         )
 
         placements = occurrence_placements(
@@ -1430,7 +1435,7 @@ class TestTheGenerationWindowAndTheHorizon:
         """
         calendar = _empty_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
         )
 
         assert occurrence_placements(value, calendar) == ()
@@ -1452,7 +1457,7 @@ class TestRefusals:
         """
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
             shift=shift,
         )
 
@@ -1464,7 +1469,7 @@ class TestRefusals:
         """A zero stride emits the same date forever; refuse, do not spin."""
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
             interval_n=interval,
         )
 
@@ -1480,7 +1485,7 @@ class TestRefusals:
         """
         calendar = build_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
         )
         not_a_unit = ResolvedRecurrence(
             **{**vars(value), "unit": object()},
@@ -1566,7 +1571,7 @@ class TestRefusals:
         """
         calendar = build_calendar()
         yearly = resolved_value(
-            unit=RecurrenceUnitEnum.YEAR, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.YEAR, starts_on=date(2026, 4, 15),
             interval_n=2,
         )
 
@@ -1584,33 +1589,38 @@ class TestRefusals:
         with pytest.raises(RecurrenceGenerationError, match="has no rule"):
             place(date(2026, 4, 15), calendar, object())
 
-    def test_a_nominal_day_that_disagrees_with_its_anchor_is_refused(self):
-        """The pair must state one day, and R7c is where they can diverge.
+    def test_a_nominal_day_that_disagrees_with_its_date_cannot_be_BUILT(self):
+        """The walk cannot be handed the pair at all, so it need not check.
 
-        ``nominal_day`` exists only because the anchor MONTH was too short to
-        hold the day the user meant (ruling R-R3), so
-        ``min(nominal_day, days in the anchor's month)`` must be the anchor's
-        own day.  ``resolve`` cannot break that -- ``_month_anchor_day``
-        records the day only when the anchor lands on its month's last day --
-        but plan step R7c turns both into independently-authored columns whose
-        only constraint is ``nominal_day BETWEEN 29 AND 31``.  Walking from a
-        disagreeing pair fires the first occurrence on a day the anchor does
-        not name, which nothing downstream would notice.
+        ``nominal_day`` exists only because the first occurrence's MONTH was
+        too short to hold the day the user meant (ruling R-R3), so
+        ``min(nominal_day, days in that month)`` must be the date's own day.
+        Walking from a disagreeing pair would fire on a day the date does not
+        name, which nothing downstream would notice.
+
+        **Until plan step R7c-b a walk-time guard caught this**, because the
+        column CHECK admitted the pair -- it graded ``nominal_day BETWEEN 29
+        AND 31`` and nothing else.  That step completed the constraint and put
+        the same rule in ``__post_init__``, so the refusal is now at
+        construction and the guard is deleted.  ``RecurrenceSpec``'s half of
+        it is
+        ``test_recurrence_resolution.TestTheNominalDayPair
+        .test_a_contradictory_pair_cannot_be_CONSTRUCTED``; this is
+        ``ResolvedRecurrence``'s, which is the value the walk actually reads.
         """
-        calendar = build_calendar()
-        # April HAS a 15th, so a day-31 rule could never anchor on the 15th.
-        value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
-            nominal_day=31,
-        )
+        # April HAS a 15th, so a day-31 rule could never START on the 15th.
+        with pytest.raises(RecurrenceResolutionError, match="nominal_day 31"):
+            resolved_value(
+                unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
+                nominal_day=31,
+            )
 
-        with pytest.raises(RecurrenceGenerationError, match="nominal_day 31"):
-            occurrences(value, calendar, through=date(2026, 12, 31))
-
+    # ``{"nominal_day": 31}`` was a third case here until plan step R7c-b.
+    # It is gone because it can no longer be CONSTRUCTED, which is a stronger
+    # refusal than the one this test grades -- see the test just above.
     @pytest.mark.parametrize("broken", [
         {"shift": BusinessDayShiftEnum.PRIOR},
         {"interval_n": 0},
-        {"nominal_day": 31},
     ])
     def test_an_empty_schedule_does_not_excuse_a_broken_value(self, broken):
         """The composition refuses what ``occurrences`` refuses, always.
@@ -1623,7 +1633,7 @@ class TestRefusals:
         """
         empty = _empty_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
             **broken,
         )
 
@@ -1634,7 +1644,7 @@ class TestRefusals:
         """Same, for the placement axis, which resolves before the walk."""
         empty = _empty_calendar()
         value = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH, anchor_date=date(2026, 4, 15),
+            unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 15),
             placement=object(),
         )
 
@@ -1701,21 +1711,22 @@ class TestTheScheduleSearches:
 
 
 class TestTheFirstOccurrenceIsTheWalksFirstYield:
-    """:func:`first_occurrence` against the WALK, which is its only oracle.
+    """``resolve``'s ``starts_on`` against the WALK, which is its only oracle.
 
-    Plan step **R7c-a** added that function to seed
-    ``budget.recurrence_rules.starts_on``, and its docstring states the
-    property this class checks: *it is the walk's first yield wherever the
-    walk yields at all*.
+    ``ResolvedRecurrence.starts_on`` is the first date the rule fires on, and
+    the property this class checks is that it is the walk's first yield
+    wherever the walk yields at all.
 
-    **An adversarial review of R7c-a asked for this by name**, and the reason
-    generalises past this function.  That step's other new assertion compares
-    the column the write door wrote against ``first_occurrence`` -- and the
-    door wrote it BY CALLING ``first_occurrence``, so that comparison cannot
-    fail for any bug inside it.  ``docs/plans/verification.md`` standard 2:
-    *never a producer as its own oracle*.  :func:`occurrences` is a genuinely
-    separate implementation -- a forward walk rather than a direct search --
-    so it is the oracle, and the two hand-computed cases below are the ground
+    **An adversarial review of plan step R7c-a asked for this by name**, and
+    the reason outlived the function it was asked about.  That step seeded the
+    column with a ``first_occurrence`` helper and then asserted the column
+    against that same helper -- a comparison no bug inside it could fail.
+    ``docs/plans/verification.md`` standard 2: *never a producer as its own
+    oracle*.  Step R7c-b deleted the helper by making ``resolve`` normalise the
+    date itself, which removes the second implementation but NOT the need for
+    an independent one to grade it.  :func:`occurrences` is that independent
+    implementation -- a forward walk rather than a direct search -- so it
+    remains the oracle, and the two hand-computed cases below are the ground
     truth neither of them can fabricate.
     """
 
@@ -1736,7 +1747,7 @@ class TestTheFirstOccurrenceIsTheWalksFirstYield:
             resolved = resolve(
                 recurrence_baseline.build_shape_spec(shape), calendar,
             )
-            seeded = first_occurrence(resolved, calendar)
+            seeded = resolved.starts_on
             walked = list(
                 occurrences(resolved, calendar, through=calendar.horizon()),
             )
@@ -1775,10 +1786,11 @@ class TestTheFirstOccurrenceIsTheWalksFirstYield:
         the cash leaves, which is what lets a loan whose first installment
         falls mid-period bill in that period (plan step C9a).
 
-        It is also where ``first_occurrence`` and ``anchor_date`` part: the
-        anchor IS the bound for this unit (ruling R-R8), so a column seeded
-        from the anchor would carry 2026-01-20 -- a date the rule never fires
-        on.
+        It is also the one date ``resolve`` still MOVES.  Until plan step
+        R7c-b the stated 2026-01-20 was kept as an opening bound and a
+        separate ``first_occurrence`` function converted it; the field now
+        holds the converted answer, so a stored first occurrence and a
+        generated row cannot disagree.
         """
         calendar = build_calendar(
             first_payday=date(2026, 1, 2), cadence_days=14, count=10,
@@ -1787,13 +1799,12 @@ class TestTheFirstOccurrenceIsTheWalksFirstYield:
             _resolution.RecurrenceSpec(
                 user_id=_USER_ID,
                 unit=RecurrenceUnitEnum.PERIOD,
-                start_date=date(2026, 1, 20),
+                starts_on=date(2026, 1, 20),
             ),
             calendar,
         )
 
-        assert resolved.anchor_date == date(2026, 1, 20)
-        assert first_occurrence(resolved, calendar) == date(2026, 1, 16)
+        assert resolved.starts_on == date(2026, 1, 16)
         assert dates_through(
             resolved, calendar, date(2026, 3, 1),
         )[0] == date(2026, 1, 16)
@@ -1802,9 +1813,11 @@ class TestTheFirstOccurrenceIsTheWalksFirstYield:
         """A MONTH rule's first occurrence is the cadence's date, not a payday.
 
         The other half of the pair, hand-computed on the same schedule: a
-        day-15 rule with no stated bound.  The schedule opens 2026-01-02, so
-        the first 15th on or after it is **2026-01-15** -- not a payday, which
-        is exactly the difference from the case above.
+        rule stating 2026-01-15, which is NOT a payday (they fall every 14
+        days from 2026-01-02, so 01-02, 01-16, 01-30...).  The answer is
+        **2026-01-15** unchanged, because the normalisation above applies to
+        the paycheck unit and to nothing else -- a calendar cadence fires on
+        the date it names.
         """
         calendar = build_calendar(
             first_payday=date(2026, 1, 2), cadence_days=14, count=10,
@@ -1813,10 +1826,12 @@ class TestTheFirstOccurrenceIsTheWalksFirstYield:
             _resolution.RecurrenceSpec(
                 user_id=_USER_ID,
                 unit=RecurrenceUnitEnum.MONTH,
-                day_of_month=15,
+                starts_on=date(2026, 1, 15),
             ),
             calendar,
         )
 
-        assert first_occurrence(resolved, calendar) == date(2026, 1, 15)
-        assert resolved.anchor_date == date(2026, 1, 15)
+        assert resolved.starts_on == date(2026, 1, 15)
+        assert dates_through(
+            resolved, calendar, date(2026, 3, 1),
+        )[0] == date(2026, 1, 15)

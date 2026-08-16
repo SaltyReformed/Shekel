@@ -750,7 +750,8 @@ class TestGoalTrajectoryDashboard:
         A $500/month recurring transfer into the savings account with
         $3,000 balance and $6,000 target should produce months_to_goal=6.
         """
-        from app.models.recurrence_rule import RecurrenceRule
+        from app.enums import RecurrencePatternEnum
+        from tests._test_helpers import make_pattern_rule
 
         with app.app_context():
             savings_type = (
@@ -768,16 +769,12 @@ class TestGoalTrajectoryDashboard:
             db.session.add(savings)
             db.session.flush()
 
-            from app.enums import RecurrencePatternEnum
-            monthly_pattern_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.MONTHLY
+            # Authored through the write door (plan step R7c-b): the
+            # two-axis columns are NOT NULL, so a rule naming only a pattern
+            # cannot be stored.
+            rule = make_pattern_rule(
+                seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
             )
-            rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
-                pattern_id=monthly_pattern_id,
-            )
-            db.session.add(rule)
-            db.session.flush()
 
             from app.models.transfer_template import TransferTemplate
             template = TransferTemplate(

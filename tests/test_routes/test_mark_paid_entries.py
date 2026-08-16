@@ -24,7 +24,7 @@ from app.models.ref import RecurrencePattern
 from app import ref_cache
 from app.enums import StatusEnum
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import freeze_today, make_every_period_rule
 
 
 @pytest.fixture(autouse=True)
@@ -83,12 +83,7 @@ def _create_tracked_txn(seed_user, seed_periods):
     )
     projected = db.session.query(Status).filter_by(name="Projected").one()
 
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,

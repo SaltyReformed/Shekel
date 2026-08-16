@@ -12,11 +12,11 @@ from app.schemas.validation._helpers import (
     EFFECTIVE_DATE_MAX,
     EFFECTIVE_DATE_MIN,
     BaseSchema,
-    RecurrenceFormFieldsMixin,
     RowId,
     _normalize_empty_inputs,
     _reject_envelope_on_income,
 )
+from app.schemas.validation._recurrence import RecurrenceFormFieldsMixin
 
 
 class TemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
@@ -58,7 +58,7 @@ class TemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     companion_visible = fields.Boolean(load_default=False)
 
     # The recurrence controls both template forms share are on
-    # :class:`~app.schemas.validation._helpers.RecurrenceFormFieldsMixin`.
+    # :class:`~app.schemas.validation._recurrence.RecurrenceFormFieldsMixin`.
     # This one field is NOT shared: only a transaction template carries a
     # separate bill due-day, and declaring it on the mixin would silently set
     # a column from a key the transfer schemas never validate.
@@ -114,6 +114,13 @@ class TemplateUpdateSchema(TemplateCreateSchema):
     ``version_id`` is the optimistic-locking counter; see
     :class:`TransactionUpdateSchema` for the contract.
     """
+
+    # An UPDATE may omit the first occurrence, and the omission MEANS
+    # something: "leave the stored one alone".  See
+    # ``RecurrenceFormFieldsMixin.validate_recurrence_states_a_start`` for the
+    # ruling and for where the one authoring branch of an update is refused
+    # instead.
+    recurrence_start_is_required = False
 
     # Override -- all fields optional for update.
     name = fields.String(validate=validate.Length(min=1, max=200))

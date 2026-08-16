@@ -30,16 +30,29 @@ did, because its ``UPDATE`` was unscoped and ran before the check.
 from __future__ import annotations
 
 import importlib.util
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum
+from app.enums import (
+    BusinessDayShiftEnum,
+    PeriodPlacementEnum,
+    RecurrencePatternEnum,
+    RecurrenceUnitEnum,
+)
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
+
+#: A ``starts_on`` that makes a row STORABLE, and nothing this file asserts on.
+#:
+#: The migration under test predates the column and reads only ``start_date``
+#: and ``start_period_id``; this exists so the INSERT clears the ``NOT NULL``
+#: plan step R7c-b added.  Inside the calendar window, so
+#: ``ck_recurrence_rules_starts_on_range`` admits it.
+_A_STORABLE_START = date(2026, 1, 2)
 
 #: The revision module, loaded by PATH because ``migrations/versions`` is not
 #: an importable package.  Loading it rather than re-typing its SQL is what
@@ -86,6 +99,19 @@ def _run_fold():
 def _rule(seed_user, *, start_date=None, start_period=None):
     """Create and flush a rule carrying the given opening bound(s).
 
+    **Built column by column and NOT through the write door**, which is not a
+    shortcut: this file's subject is a migration that ran BEFORE plan step
+    R7c-a existed, over rows whose only opening bounds were the two columns
+    R7b-4 folded.  ``author_rule`` cannot produce that shape -- it writes
+    ``starts_on`` and never writes ``start_date`` at all -- so a rule authored
+    through it would carry no input for the fold to read.
+
+    The four columns plan step R7c-b made ``NOT NULL`` are stated so the row
+    is STORABLE.  They are the two-axis reading of an every-paycheck cadence
+    and its opening payday, which is what R7c-a's backfill would have written
+    for this shape; the fold below reads none of them, so no case here turns
+    on their values.
+
     Args:
         seed_user: The seeded owner fixture.
         start_date: The rule's ``start_date``, or ``None``.
@@ -101,6 +127,12 @@ def _rule(seed_user, *, start_date=None, start_period=None):
         ),
         start_date=start_date,
         start_period_id=None if start_period is None else start_period.id,
+        unit_id=ref_cache.recurrence_unit_id(RecurrenceUnitEnum.PERIOD),
+        placement_id=ref_cache.period_placement_id(
+            PeriodPlacementEnum.CONTAINING_DATE,
+        ),
+        shift_id=ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE),
+        starts_on=_A_STORABLE_START,
     )
     db.session.add(rule)
     db.session.flush()

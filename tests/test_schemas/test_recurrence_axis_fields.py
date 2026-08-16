@@ -30,6 +30,8 @@ is tested here rather than trusted: it is the reason the write door's
 ``RecurrenceResolutionError`` stays a broken-invariant 500 rather than becoming
 a user-facing path.
 """
+from datetime import date
+
 import pytest
 from marshmallow import ValidationError
 
@@ -47,6 +49,15 @@ from app.schemas.validation.transfers import (
 #: naming no control the user can see.
 _UNIT_REFUSAL = "Invalid repeat unit."
 _PLACEMENT_REFUSAL = "Invalid funding choice."
+
+#: A first occurrence to state beside a cadence (plan step R7c-b).
+#:
+#: A LITERAL rather than a clock read, and this file is the one place that is
+#: right: every check here is a property of the SCHEMA -- no pay-period
+#: schedule, no ``app_context`` database -- so the date is never compared
+#: against the app's own today.  It only has to fall inside
+#: ``app.utils.dates.CALENDAR_DATE_MIN``..``_MAX``, which the field range-checks.
+_A_FIRST_OCCURRENCE = date(2026, 3, 1)
 
 #: The four schemas that accept a cadence.  Swept rather than sampled: the
 #: fields are inherited by the update schemas, and an override that dropped one
@@ -252,6 +263,14 @@ class TestTheTripleMustBeStorable:
     def _payload(unit, placement, interval_n=None):
         """Return a partial payload naming one cadence.
 
+        **``starts_on`` rides with it since plan step R7c-b**, and stating it
+        is what keeps each case testing what it names: a chosen cadence with no
+        first occurrence is refused by
+        ``RecurrenceFieldsMixin.validate_recurrence_states_a_start`` on the two
+        CREATE schemas, so the refusal cases below would otherwise raise
+        whether or not ``validate_authorable_cadence`` still worked, and the
+        acceptance cases could not pass at all.
+
         Args:
             unit: A ``RecurrenceUnitEnum`` member.
             placement: A ``PeriodPlacementEnum`` member.
@@ -266,6 +285,7 @@ class TestTheTripleMustBeStorable:
             "recurrence_placement": str(
                 ref_cache.period_placement_id(placement),
             ),
+            "starts_on": _A_FIRST_OCCURRENCE.isoformat(),
         }
         if interval_n is not None:
             payload["interval_n"] = str(interval_n)
@@ -444,3 +464,151 @@ class TestTheTripleMustBeStorable:
             )
 
             assert "recurrence_unit" not in loaded
+
+
+class TestTheNominalDayMustFitTheFirstOccurrence:
+    """The two-field half of ``ck_recurrence_rules_nominal_day`` (R7c-b).
+
+    The field's own ``Range(29, 31)`` mirrors ONE of the CHECK's three
+    conjuncts.  The other two are a rule over ``(starts_on, nominal_day)``
+    together -- the day must EXCEED the date's own, and the date's day must be
+    exactly what clamping the day into that month produces -- so no single
+    field can hold them, and a schema that mirrored the domain alone let the
+    pair reach :class:`~app.services.recurrence.RecurrenceSpec`, which refuses
+    it as a BROKEN INVARIANT.  That is a 500 on a crafted or JavaScript-off
+    POST rather than a field error naming the control.
+
+    :func:`~app.services.recurrence.is_offerable_nominal_day` had existed for
+    exactly this since plan step R7c-a and had no production caller; these
+    cases are what makes it one.
+    """
+
+    #: ``(label, starts_on, nominal_day)`` the pair rule must REFUSE.
+    _CONTRADICTORY = (
+        # April HAS a 30th, so the 15th was never clamped by anything: a
+        # nominal day here names a day the rule does not fire on.
+        ("a date its month did not clamp", date(2026, 4, 15), 30),
+        # April's last day IS the 30th, so 30 restates what the date carries.
+        ("a day the date already states", date(2026, 4, 30), 30),
+        # January holds all 31, so nothing was lost.
+        ("a 31-day month, which clamps nothing", date(2026, 1, 31), 31),
+    )
+
+    @pytest.mark.parametrize("label,starts_on,nominal_day", _CONTRADICTORY)
+    @pytest.mark.parametrize("schema_label,schema_cls", _SCHEMAS)
+    def test_a_contradictory_pair_is_a_field_error(
+        self, app, label, starts_on, nominal_day, schema_label, schema_cls,
+    ):
+        """Every schema that accepts the pair refuses the contradiction.
+
+        Swept over all four because the rule is inherited: an update schema
+        that lost it would let the same POST through one door and not the
+        other.
+        """
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc:
+                schema_cls().load(
+                    {
+                        "recurrence_unit": str(
+                            ref_cache.recurrence_unit_id(
+                                RecurrenceUnitEnum.MONTH,
+                            ),
+                        ),
+                        "recurrence_placement": str(
+                            ref_cache.period_placement_id(
+                                PeriodPlacementEnum.CONTAINING_DATE,
+                            ),
+                        ),
+                        "starts_on": starts_on.isoformat(),
+                        "nominal_day": str(nominal_day),
+                    },
+                    partial=True,
+                )
+
+            assert "nominal_day" in exc.value.messages, (
+                f"{schema_label}: {label}"
+            )
+
+    def test_the_pair_the_date_DOES_leave_open_is_admitted(self, app):
+        """The control case, and it is what stops the rule refusing everything.
+
+        2026-04-30 is April's last day in a 30-day month, so "the last day of
+        the month" (31) is a real second reading of it -- the whole reason the
+        control exists.  Without this arm a rule that refused every nominal day
+        would pass the cases above.
+        """
+        with app.app_context():
+            loaded = TemplateCreateSchema().load(
+                {
+                    "recurrence_unit": str(
+                        ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH),
+                    ),
+                    "recurrence_placement": str(
+                        ref_cache.period_placement_id(
+                            PeriodPlacementEnum.CONTAINING_DATE,
+                        ),
+                    ),
+                    "starts_on": "2026-04-30",
+                    "nominal_day": "31",
+                },
+                partial=True,
+            )
+
+            assert loaded["nominal_day"] == 31
+
+    def test_a_MONTHLY_FIRST_cadence_may_carry_one_too(self, app):
+        """The cadence the two day questions disagree about.
+
+        ``Monthly First`` anchors on a PAYCHECK, so ``fires_on_day_of_month``
+        answers ``False`` for it -- but its occurrences are still days of the
+        month and the walk reads ``day_of_month`` for it, so the nominal day is
+        meaningful.  Keying this rule on the anchor question instead would
+        refuse a pair the write door accepts, which is the same disagreement
+        that erased a month-end rent's ``nominal_day`` on the form.
+        """
+        with app.app_context():
+            loaded = TemplateCreateSchema().load(
+                {
+                    "recurrence_unit": str(
+                        ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH),
+                    ),
+                    "recurrence_placement": str(
+                        ref_cache.period_placement_id(
+                            PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                        ),
+                    ),
+                    "starts_on": "2026-04-30",
+                    "nominal_day": "31",
+                },
+                partial=True,
+            )
+
+            assert loaded["nominal_day"] == 31
+
+    def test_an_absent_start_skips_the_rule(self, app):
+        """A locked "Starts on" control posts nothing, and must stay savable.
+
+        The update door reads ``nominal_day`` off the SAME presence key as
+        ``starts_on`` -- they are one statement of when the rule fires -- so a
+        submission carrying no date states no day either, and grading the pair
+        against a date the payload does not have would refuse a loan payment's
+        every ordinary edit.
+        """
+        with app.app_context():
+            loaded = TemplateUpdateSchema().load(
+                {
+                    "recurrence_unit": str(
+                        ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH),
+                    ),
+                    "recurrence_placement": str(
+                        ref_cache.period_placement_id(
+                            PeriodPlacementEnum.CONTAINING_DATE,
+                        ),
+                    ),
+                    "nominal_day": "31",
+                },
+                partial=True,
+            )
+
+            assert loaded["nominal_day"] == 31
+            assert "starts_on" not in loaded

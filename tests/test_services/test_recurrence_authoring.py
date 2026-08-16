@@ -53,7 +53,7 @@ from app.services.recurrence import (
     ResolvedRecurrence,
     author_rule,
     decode_pattern,
-    first_occurrence,
+    occurrence_placements,
     reauthor_rule,
     recurrence_spec,
     resolve,
@@ -74,10 +74,17 @@ from tests._test_helpers import create_loan_account
 #: **A caller's request decides these and nothing else does**, which is what
 #: makes "re-authoring changes nothing" and "a schedule rebuild changes
 #: nothing" meaningful assertions about them.
+#: ``month_of_year`` and ``start_date`` LEFT this list at plan step R7c-b, and
+#: they left in opposite directions.  ``start_date``'s meaning moved to the
+#: authored ``starts_on`` (ruling R-R16), and ``month_of_year`` stopped being
+#: stated at all -- a caller names one date and the door derives the month from
+#: it.  Neither is written by anything now, so both are RETIRED below rather
+#: than merely absent here.  ``day_of_month`` is NOT with them: the door still
+#: ENCODES it, because ``recurrence_engine.compute_due_date`` dates every
+#: generated row from it until plan step R5 deletes that reader.
 _AUTHORED_COLUMNS = (
     "user_id", "pattern_id", "interval_n", "day_of_month",
-    "due_day_of_month", "month_of_year", "start_date",
-    "end_date", "max_occurrences",
+    "due_day_of_month", "end_date", "max_occurrences",
 )
 
 #: Every column the write door DERIVES, from ``resolve`` and the owner's
@@ -122,9 +129,20 @@ _DB_ASSIGNED_COLUMNS = frozenset({"id", "created_at"})
 #:
 #: Naming it here is what keeps the gate STRICT for everything else: a column
 #: added and forgotten still fails, because it will not be on this list.  The
-#: list must EMPTY at R7c, and a name left on it after its column is dropped
+#: list must EMPTY at R7c-c, and a name left on it after its column is dropped
 #: fails :meth:`TestTheAuthoredSurfaceIsWholeAndClosed.test_every_retired_column_still_exists`.
-_RETIRED_COLUMNS = frozenset({"start_period_id"})
+#:
+#: **``month_of_year`` and ``start_date`` JOINED it at plan step R7c-b**, on
+#: the same terms: a caller states one date, the door derives everything the
+#: two used to carry, and no reader is left.  ``start_date``'s last one was
+#: ``_resolution._effective_start``, deleted with the anchor walk;
+#: ``month_of_year``'s was the same walk's residue-class search.  Both columns
+#: keep whatever the R7c-a backfill left in them until R7c-c drops them, which
+#: is what makes this a THREE-leaf expand / migrate / contract (ruling R-R18)
+#: rather than a rename with a gap in the middle.
+_RETIRED_COLUMNS = frozenset({
+    "start_period_id", "month_of_year", "start_date",
+})
 
 
 def authored_columns(rule: RecurrenceRule) -> dict:
@@ -181,6 +199,12 @@ def spec_for(pattern: RecurrencePatternEnum, **overrides) -> RecurrenceSpec:
     the pattern's own name does not -- which is the whole point of the two-axis
     vocabulary.
 
+    ``starts_on`` defaults to the owner's OPENING PAYDAY, which is what an
+    unbounded rule of any cadence resolved to before plan step R7c-b made the
+    first occurrence authored.  A case that cares about the date states one;
+    the rest are about columns and round trips, and they measure the same
+    thing they always did.
+
     Args:
         pattern: The pattern member whose cadence to build.
         **overrides: Any :class:`~app.services.recurrence.RecurrenceSpec`
@@ -195,6 +219,9 @@ def spec_for(pattern: RecurrencePatternEnum, **overrides) -> RecurrenceSpec:
     # sweep built on this helper.
     interval_override = overrides.pop("interval_n", None)
     reading = decode_pattern(ref_cache.recurrence_pattern_id(pattern), 2)
+    overrides.setdefault(
+        "starts_on", calendar_for(overrides["user_id"]).opening_bound(),
+    )
     return RecurrenceSpec(
         unit=reading.cadence.unit,
         interval_n=(
@@ -246,7 +273,7 @@ def assert_resolves_completely(rule: RecurrenceRule) -> None:
     """
     resolved = resolved_for(rule)
 
-    assert resolved.anchor_date is not None
+    assert resolved.starts_on is not None
     assert isinstance(resolved.unit, RecurrenceUnitEnum)
     assert isinstance(resolved.placement, PeriodPlacementEnum)
     assert isinstance(resolved.shift, BusinessDayShiftEnum)
@@ -380,7 +407,9 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
         calendar = calendar_for(user_id)
         for pattern in RecurrencePatternEnum:
             rule = author_rule(
-                spec_for(pattern, user_id=user_id, day_of_month=15),
+                spec_for(
+                    pattern, user_id=user_id, starts_on=date(2026, 1, 15),
+                ),
                 calendar,
             )
             db.session.flush()
@@ -392,7 +421,7 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
                     resolved.placement,
                 ),
                 "shift_id": ref_cache.business_day_shift_id(resolved.shift),
-                "starts_on": first_occurrence(resolved, calendar),
+                "starts_on": resolved.starts_on,
                 "nominal_day": resolved.nominal_day,
             }, (
                 f"the {pattern.value} rule's stored two-axis columns disagree "
@@ -434,20 +463,34 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
         (defect **D1**'s fix).  A field a caller can state and the door
         ignores is a field that lies about what it does, so R7b-4 removed it
         from the spec rather than from this list: nobody authors a phase now.
+
+        **Two names, not one, since plan step R7c-b.**  A spec field reaches
+        the row by one of two routes: the door copies it (``spec.x``) or the
+        RESOLVER answers it and the door copies that (``resolved.x``).
+        ``starts_on`` travels the second route and must -- a paycheck-space
+        rule's first occurrence is normalised onto a payday, so the value the
+        column holds is deliberately not the one the caller stated -- and
+        counting only ``spec.`` reads would have reported it as dropped.
+        Widening the census does not weaken it: a field on NEITHER name is
+        still a field nothing carries, and whether ``resolve`` carries what it
+        is handed is graded separately, by
+        ``test_recurrence_resolution.TestTotality``.
         """
         source = inspect.getsource(_authoring)
+        carriers = {"spec", "resolved"}
         read_from_spec = {
             node.attr
             for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
-            and node.value.id == "spec"
+            and node.value.id in carriers
         }
         spec_fields = {field.name for field in fields(RecurrenceSpec)}
 
         assert spec_fields - read_from_spec == set(), (
-            "a RecurrenceSpec field the write door never reads is one a "
-            "caller can state and the table will not carry."
+            "a RecurrenceSpec field the write door never reads -- on the spec "
+            "OR on the value the resolver returns -- is one a caller can "
+            "state and the table will not carry."
         )
 
 
@@ -481,7 +524,7 @@ class TestSalaryProfileWriter:
         assert_resolves_completely(rule)
         assert_reauthoring_changes_nothing(rule)
         resolved = resolved_for(rule)
-        assert resolved.anchor_date == seed_periods[0].start_date
+        assert resolved.starts_on == seed_periods[0].start_date
         assert resolved.unit is RecurrenceUnitEnum.PERIOD
         assert resolved.interval_n == 1
 
@@ -493,15 +536,25 @@ class TestLoanPaymentTransferWriter:
     def test_the_created_rule_anchors_on_the_loans_contractual_day(
         self, auth_client, seed_user, db,
     ):
-        """The anchor is the first payment day at or after the first installment.
+        """The first occurrence IS the loan's first contractual installment.
 
-        The route creates the rule with ``day_of_month = payment_day`` and
-        then ``bind_rule_to_loan`` stamps ``start_date`` = the loan's first
-        contractual installment, re-authoring it.  With an origination of
-        2023-06-01 and a payment day of 1, that installment is 2023-07-01 --
-        which precedes the schedule opening (2026-01-02), so the effective
-        bound is the opening and the first day-1 occurrence at or after it is
-        2026-02-01.
+        With an origination of 2023-06-01 and a payment day of 1, that
+        installment is 2023-07-01, and since plan step R7c-b that is what the
+        column holds: ``loan_cadence_start`` derives it once, before the rule
+        is built (developer ruling, Fork 2).
+
+        **It used to hold 2026-02-01**, the first day-1 occurrence at or after
+        the schedule's opening -- because the date was an opening BOUND and the
+        resolver clamped it to the schedule before deriving an anchor.  That
+        made the stored value HORIZON-DEPENDENT, which is plan ledger row
+        D10's own shape: extending the schedule backwards moved it.  The
+        loan's first installment is a fact about the loan.
+
+        **Generation is unchanged, and that was measured rather than assumed**:
+        the walk emits 35 occurrences from 2023-07-01, of which 4 place -- the
+        first at 2026-02-01, exactly as before.  The 31 that precede the
+        schedule place nowhere and are dropped, which is the same reason a
+        payment does not generate before its loan exists.
         """
         loan = create_loan_account(
             seed_user, db.session, name="Mortgage",
@@ -522,10 +575,20 @@ class TestLoanPaymentTransferWriter:
         assert_resolves_completely(rule)
         assert_reauthoring_changes_nothing(rule)
         assert rule.day_of_month == 1
-        assert rule.start_date == date(2023, 7, 1)
+        assert rule.starts_on == date(2023, 7, 1)
         resolved = resolved_for(rule)
-        assert resolved.anchor_date == date(2026, 2, 1)
+        assert resolved.starts_on == date(2023, 7, 1)
         assert resolved.unit is RecurrenceUnitEnum.MONTH
+        # The first occurrence the SCHEDULE can host is still 2026-02-01, so
+        # what generates is unchanged; only where the fact is recorded moved.
+        placed = [
+            placement
+            for placement in occurrence_placements(
+                resolved, calendar_for(rule.user_id),
+            )
+            if placement.period is not None
+        ]
+        assert placed[0].occurrence == date(2026, 2, 1)
 
     @pytest.mark.usefixtures("seed_periods")
     def test_a_payment_day_edit_moves_the_anchor_with_it(
@@ -533,14 +596,17 @@ class TestLoanPaymentTransferWriter:
     ):
         """Moving the payment day moves the first occurrence with it.
 
-        The anchor is computed from ``day_of_month``, so the two cannot
-        disagree -- which is the point of plan step R2d.  Before the write
-        door existed, ``_sync_loan_cadence`` wrote ``day_of_month`` and
+        The first occurrence is DERIVED from the loan's terms, so the two
+        cannot disagree -- which is the point of plan step R2d, and of the
+        ruling that made ``loan_cadence_start`` the one producer.  Before the
+        write door existed, ``_sync_loan_cadence`` wrote ``day_of_month`` and
         ``start_date`` alone; while the anchor was a stored column that left
         it on the day the servicer no longer bills, with no query able to tell
-        the stale value from a fresh one.  Moving the payment day from the 1st
-        to the 20th must move the first occurrence from 2026-02-01 to
-        2026-01-20.
+        the stale value from a fresh one.
+
+        Origination 2023-06-01: at payment day 1 the first installment is
+        2023-07-01, and at 20 it is 2023-07-20 -- the first billing month
+        is the one after origination either way, so only the DAY moves.
         """
         loan = create_loan_account(
             seed_user, db.session, name="Auto",
@@ -552,13 +618,13 @@ class TestLoanPaymentTransferWriter:
             spec_for(
                 RecurrencePatternEnum.MONTHLY,
                 user_id=seed_user["user"].id,
-                day_of_month=1,
+                starts_on=date(2026, 2, 1),
             ),
             calendar_for(seed_user["user"].id),
         )
         loan_recurrence_sync.bind_rule_to_loan(rule, loan.id)
         db.session.flush()
-        assert resolved_for(rule).anchor_date == date(2026, 2, 1)
+        assert resolved_for(rule).starts_on == date(2023, 7, 1)
 
         params = loan.loan_params
         params.payment_day = 20
@@ -566,7 +632,7 @@ class TestLoanPaymentTransferWriter:
         db.session.flush()
 
         assert rule.day_of_month == 20
-        assert resolved_for(rule).anchor_date == date(2026, 1, 20)
+        assert resolved_for(rule).starts_on == date(2023, 7, 20)
         assert_reauthoring_changes_nothing(rule)
 
 
@@ -601,12 +667,12 @@ class TestScheduleRebuildRepoint:
             spec_for(
                 RecurrencePatternEnum.EVERY_PERIOD,
                 user_id=user_id,
-                start_date=seed_periods[0].start_date,
+                starts_on=seed_periods[0].start_date,
             ),
             calendar_for(user_id),
         )
         db.session.flush()
-        assert resolved_for(rule).anchor_date == date(2026, 1, 2)
+        assert resolved_for(rule).starts_on == date(2026, 1, 2)
         before = authored_columns(rule)
 
         new_periods = pay_period_admin.reset_pay_periods(
@@ -616,25 +682,28 @@ class TestScheduleRebuildRepoint:
 
         assert new_periods[0].start_date == date(2027, 3, 5)
         assert authored_columns(rule) == before
-        assert resolved_for(rule).anchor_date == date(2027, 3, 5)
+        assert resolved_for(rule).starts_on == date(2027, 3, 5)
 
-        # **The stored first occurrence is now STALE, and that is pinned
-        # rather than tolerated** (plan step R7c-a).  The dual write refreshes
-        # the two-axis columns on every RULE write and on no other event, so a
-        # schedule rebuilt with nothing rewriting the rule moves the
-        # derivation and leaves the column.  Harmless while nothing reads it;
-        # at plan step R7c-b the stored value becomes authoritative, and this
-        # is the state that would then FREEZE a first occurrence from a
-        # schedule the owner no longer has.
+        # **The stored date is stale and the READ answer is not, which is what
+        # plan step R7c-b narrowed this to.**  The door writes ``starts_on`` on
+        # every RULE write and on no other event, so a schedule rebuilt with
+        # nothing rewriting the rule leaves the column holding a payday the
+        # owner no longer has.  What changed at R7c-b is the blast radius: a
+        # CALENDAR cadence's date is authored and a rebuild must not move it at
+        # all, while a PAY-PERIOD one is normalised onto the paycheck that
+        # hosts it -- so the READ re-normalises against whatever schedule
+        # exists now and answers the new opening payday.  The stored value is
+        # repaired by the next write, and nothing reads it without resolving.
         #
-        # **R7c-b's re-backfill is what makes this assertion fail**, and it is
-        # meant to: a test that has to be deleted by the leaf that fixes the
-        # thing it describes is the mechanism, where a paragraph is not.
+        # The MIGRATION re-ran the backfill for exactly this reason: a database
+        # that sat between R7c-a and R7c-b through a rebuild would otherwise
+        # have carried the stale date into the leaf that makes it
+        # authoritative.
         new_calendar = calendar_for(user_id)
         assert rule.starts_on == date(2026, 1, 2)
-        assert first_occurrence(
-            resolve(recurrence_spec(rule), new_calendar), new_calendar,
-        ) == date(2027, 3, 5)
+        assert resolve(
+            recurrence_spec(rule), new_calendar,
+        ).starts_on == date(2027, 3, 5)
 
         reauthor_rule(rule, recurrence_spec(rule), new_calendar)
         db.session.flush()
@@ -653,12 +722,12 @@ class TestScheduleRebuildRepoint:
         2026-01-02 while a rule states it starts 2026-03-27, and the re-point
         answered "starts 2026-01-02" -- silently discarding the user's stated
         start because the FK it had to restore could only name the first
-        period.  A date has nothing to restore: the bound survives, and
-        ``max(2026-01-02, 2026-03-27)`` keeps it.
+        period.  A date has nothing to restore: it survives the rebuild
+        untouched.
 
-        Index 5 of a 14-day schedule opening 2026-01-02 is 2026-03-13, so a
-        bound of 2026-03-27 lands inside index 6 and the rule opens there
-        rather than at the schedule's own start.
+        2026-01-02 + 6 x 14 days is 2026-03-27, so the stated date IS index
+        6's payday -- which is what makes it a legal first occurrence for a
+        paycheck-space rule, and why the normalisation leaves it alone.
         """
         user_id = seed_user["user"].id
         stated_start = date(2026, 3, 27)
@@ -666,7 +735,7 @@ class TestScheduleRebuildRepoint:
             spec_for(
                 RecurrencePatternEnum.EVERY_PERIOD,
                 user_id=user_id,
-                start_date=stated_start,
+                starts_on=stated_start,
             ),
             calendar_for(user_id),
         )
@@ -677,8 +746,8 @@ class TestScheduleRebuildRepoint:
         )
         db.session.flush()
 
-        assert rule.start_date == stated_start
-        assert resolved_for(rule).anchor_date == stated_start
+        assert rule.starts_on == stated_start
+        assert resolved_for(rule).starts_on == stated_start
 
     def test_a_reset_re_phases_an_every_n_rule_through_the_new_schedule(
         self, seed_user, db, seed_periods,
@@ -703,7 +772,7 @@ class TestScheduleRebuildRepoint:
                 RecurrencePatternEnum.EVERY_N_PERIODS,
                 user_id=user_id,
                 interval_n=3,
-                start_date=seed_periods[2].start_date,
+                starts_on=seed_periods[2].start_date,
             ),
             calendar_for(user_id),
         )
@@ -758,8 +827,8 @@ class TestScheduleRebuildRepoint:
             calendar_for(user_id),
         )
         db.session.flush()
-        assert rule.start_date is None
-        assert resolved_for(rule).anchor_date == seed_periods[0].start_date
+        assert rule.starts_on == seed_periods[0].start_date
+        assert resolved_for(rule).starts_on == seed_periods[0].start_date
         before = authored_columns(rule)
 
         pay_period_admin.reset_pay_periods(
@@ -774,7 +843,7 @@ class TestScheduleRebuildRepoint:
         # stored anchor had.
         assert authored_columns(rule) == before
         # And it still answers for the schedule that exists now.
-        assert resolved_for(rule).anchor_date == date(2027, 3, 5)
+        assert resolved_for(rule).starts_on == date(2027, 3, 5)
 
 
 class TestTheClampIsResolvedAndStoredOnTheRuleNeverInASubtype:
@@ -812,15 +881,15 @@ class TestTheClampIsResolvedAndStoredOnTheRuleNeverInASubtype:
             spec_for(
                 RecurrencePatternEnum.MONTHLY,
                 user_id=user_id,
-                day_of_month=31,
-                start_date=date(2026, 4, 1),
+                starts_on=date(2026, 4, 30),
+                nominal_day=31,
             ),
             calendar_for(user_id),
         )
         db.session.flush()
 
         resolved = resolved_for(rule)
-        assert resolved.anchor_date == date(2026, 4, 30)
+        assert resolved.starts_on == date(2026, 4, 30)
         assert resolved.nominal_day == 31
         assert rule.day_of_month == 31
         # The COLUMN carries what the resolved value carries (plan step
@@ -846,8 +915,8 @@ class TestTheClampIsResolvedAndStoredOnTheRuleNeverInASubtype:
             spec_for(
                 RecurrencePatternEnum.MONTHLY,
                 user_id=user_id,
-                day_of_month=31,
-                start_date=date(2026, 4, 1),
+                starts_on=date(2026, 4, 30),
+                nominal_day=31,
             ),
             calendar_for(user_id),
         )
@@ -856,13 +925,16 @@ class TestTheClampIsResolvedAndStoredOnTheRuleNeverInASubtype:
 
         reauthor_rule(
             rule,
-            replace(recurrence_spec(rule), day_of_month=15),
+            replace(
+                recurrence_spec(rule),
+                starts_on=date(2026, 4, 15), nominal_day=None,
+            ),
             calendar_for(user_id),
         )
         db.session.flush()
 
         resolved = resolved_for(rule)
-        assert resolved.anchor_date == date(2026, 4, 15)
+        assert resolved.starts_on == date(2026, 4, 15)
         assert resolved.nominal_day is None
         # **The CLEARING, which is what this case exists for.**  A door that
         # set the column and never unset it would leave 31 here and restore
@@ -917,7 +989,9 @@ class TestTheIntervalIsStillTheClosedSets:
         """
         user_id = seed_user["user"].id
         rule = author_rule(
-            spec_for(pattern, user_id=user_id, day_of_month=15),
+            spec_for(
+                pattern, user_id=user_id, starts_on=date(2026, 1, 15),
+            ),
             calendar_for(user_id),
         )
         db.session.flush()
@@ -966,7 +1040,7 @@ class TestPhasePreservedAcrossAnEdit:
                 RecurrencePatternEnum.EVERY_N_PERIODS,
                 user_id=user_id,
                 interval_n=3,
-                start_date=seed_periods[2].start_date,
+                starts_on=seed_periods[2].start_date,
             ),
             calendar_for(user_id),
         )
@@ -1133,7 +1207,7 @@ class TestTheIntervalSurvivesTheStorageEncoding:
             spec_for(
                 RecurrencePatternEnum.QUARTERLY,
                 user_id=user_id,
-                month_of_year=2, day_of_month=10,
+                starts_on=date(2026, 2, 10),
             ),
             calendar_for(user_id),
         )
@@ -1154,7 +1228,7 @@ class TestTheIntervalSurvivesTheStorageEncoding:
                 RecurrencePatternEnum.EVERY_N_PERIODS,
                 user_id=user_id,
                 interval_n=4,
-                start_date=seed_periods[0].start_date,
+                starts_on=seed_periods[0].start_date,
             ),
             calendar_for(user_id),
         )
@@ -1180,7 +1254,7 @@ class TestTheIntervalSurvivesTheStorageEncoding:
                 RecurrencePatternEnum.EVERY_N_PERIODS,
                 user_id=user_id,
                 interval_n=4,
-                start_date=seed_periods[0].start_date,
+                starts_on=seed_periods[0].start_date,
             ),
             calendar_for(user_id),
         )
@@ -1192,7 +1266,7 @@ class TestTheIntervalSurvivesTheStorageEncoding:
                 recurrence_spec(rule),
                 unit=RecurrenceUnitEnum.MONTH,
                 interval_n=3,
-                month_of_year=2, day_of_month=10,
+                starts_on=date(2026, 2, 10),
             ),
             calendar_for(user_id),
         )
@@ -1228,8 +1302,7 @@ class TestEveryPatternAuthorsAndResolves:
             spec_for(
                 pattern,
                 user_id=user_id,
-                day_of_month=15, month_of_year=3,
-                start_date=seed_periods[1].start_date,
+                starts_on=seed_periods[1].start_date,
             ),
             calendar_for(user_id),
         )

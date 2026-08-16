@@ -35,6 +35,17 @@
         + <span class="font-mono">{{ money(monthly_escrow) }}</span> escrow)
       {% endif %}
       to keep your loan on track.
+      {# WHEN it starts, which this form never asks for: the route derives the
+         whole cadence from the loan's contract (plan step R7c-b), so the only
+         honest place for the date is beside the button that commits to it.
+         The figure comes from loan_recurrence_sync.loan_cadence_start -- the
+         SAME producer the create route authors the rule with -- so the promise
+         made here and the row written cannot disagree. #}
+      {% if first_payment_on %}
+      The first payment is due
+      <strong>{{ first_payment_on.strftime('%b %-d, %Y') }}</strong>,
+      one month after the loan originates.
+      {% endif %}
     </p>
     <form method="POST" action="{{ url_for('loan.create_payment_transfer', account_id=account.id) }}" class="row g-2 align-items-end">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

@@ -14,7 +14,6 @@ from app import ref_cache
 from app.exceptions import BaselineMissingError
 from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
 from app.models.pay_period import PayPeriod
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -29,7 +28,7 @@ from app.services import (
     pay_period_write,
     pay_schedule_service,
 )
-from tests._test_helpers import default_settle_day
+from tests._test_helpers import default_settle_day, make_pattern_rule
 from app.services.balance_at import BalanceContext
 from app.services.balance_at import _context as resolution_context
 from app.services.calendar_infrequency import is_infrequent as _is_infrequent
@@ -141,13 +140,9 @@ def _make_template_with_pattern(
     """
     rule = None
     if pattern_enum is not None:
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=ref_cache.recurrence_pattern_id(pattern_enum),
-            interval_n=interval_n,
+        rule = make_pattern_rule(
+            seed_user["user"].id, pattern_enum, interval_n=interval_n,
         )
-        db_session.add(rule)
-        db_session.flush()
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,

@@ -286,9 +286,11 @@ def first_installment_date(origination_date: date, payment_day: int) -> date:
     pay period contains) and would return that wrong 2026-04-20.
 
     Exposed because the recurrence bound needs it
-    (:func:`app.services.loan_recurrence_sync.sync_recurring_payment_bounds`
-    writes it to ``RecurrenceRule.start_date`` so no payment generates before the
-    loan exists, plan step C9a).  The alternative -- reading
+    (:func:`app.services.loan_recurrence_sync.loan_cadence_start` makes it the
+    rule's ``starts_on`` -- its FIRST OCCURRENCE since ruling R-R16 -- so no
+    payment generates before the loan exists, plan step C9a).  It named
+    ``RecurrenceRule.start_date`` until plan step R7c-b, which is a column
+    nothing writes or reads any more.  The alternative -- reading
     ``contractual_schedule_from_origination(...)[0].payment_date`` -- yields the
     identical date (pinned by test) but builds the loan's entire 360-row schedule
     and needs its rate feed to answer a question no rate can influence.

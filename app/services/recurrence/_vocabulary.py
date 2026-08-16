@@ -158,7 +158,7 @@ def modelled_placement(placement_id: int) -> PeriodPlacementEnum | None:
 #: unit ``<select>`` has its empty "Does not repeat" entry selected, so saving
 #: unchanged posts a legitimate CLEAR that both form schemas accept -- they must,
 #: because that is how a cadence is ended.  ``app.routes
-#: ._recurrence_form_helpers.UNREPAIRED_CADENCE_CANNOT_BE_CLEARED`` is the
+#: ._recurrence_form_refusals.UNREPAIRED_CADENCE_CANNOT_BE_CLEARED`` is the
 #: refusal, made from the stored rule plus the submission, which is what keeps
 #: this warning honest rather than advisory.
 UNAVAILABLE_PATTERN_MESSAGE: str = (

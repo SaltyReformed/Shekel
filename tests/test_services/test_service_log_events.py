@@ -34,7 +34,6 @@ from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.models.recurrence_rule import RecurrenceRule
 from app.services import (
     carry_forward_service,
     cash_ledger,
@@ -50,7 +49,7 @@ from app.services import (
     transfer_service,
 )
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.services import account_service
 from app.services.generation_schedule import GenerationSchedule
 from app.utils.log_events import (
@@ -80,6 +79,7 @@ from app.utils.log_events import (
     EVT_TRANSFER_SOFT_DELETED,
     EVT_TRANSFER_UPDATED,
 )
+from tests._test_helpers import make_every_period_rule
 
 
 class _LogCapture:
@@ -408,15 +408,11 @@ def _envelope_transaction(app, db, seed_user, seed_periods):
     ).filter_by(name="Expense").one()
     projected = db.session.query(Status).filter_by(name="Projected").one()
 
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.EVERY_PERIOD,
-        ),
-        start_period_id=seed_periods[0].id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    # Authored through the write door (plan step R7c-b): a rule naming only a
+    # pattern is a NOT NULL violation now, and ``make_every_period_rule``
+    # starts it on the schedule's OPENING payday -- ``seed_periods[0]``, the
+    # period this used to name directly.
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -699,15 +695,11 @@ def _recurrence_setup(app, db, seed_user, seed_periods):
         TransactionType,
     ).filter_by(name="Expense").one()
 
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.EVERY_PERIOD,
-        ),
-        start_period_id=seed_periods[0].id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    # Authored through the write door (plan step R7c-b): a rule naming only a
+    # pattern is a NOT NULL violation now, and ``make_every_period_rule``
+    # starts it on the schedule's OPENING payday -- ``seed_periods[0]``, the
+    # period this used to name directly.
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -916,15 +908,7 @@ class TestTransferRecurrenceLogging:
         # Build a transfer template and rule.
         from app.models.transfer_template import TransferTemplate  # noqa: WPS433
 
-        rule = RecurrenceRule(
-            user_id=td["user"].id,
-            pattern_id=ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.EVERY_PERIOD,
-            ),
-            start_period_id=seed_periods[0].id,
-        )
-        db.session.add(rule)
-        db.session.flush()
+        rule = make_every_period_rule(db.session, td["user"].id)
 
         template = TransferTemplate(
             user_id=td["user"].id,

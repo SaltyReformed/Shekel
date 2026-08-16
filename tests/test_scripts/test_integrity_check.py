@@ -15,7 +15,7 @@ from app.models.user import User
 from app.enums import StatusEnum
 from app.services.auth_service import hash_password
 from app.services import account_service
-from tests._test_helpers import add_txn, open_calendar_hole
+from tests._test_helpers import add_txn, make_every_period_rule, open_calendar_hole
 from scripts.integrity_check import (
     CheckResult,
     check_balance_anomalies,
@@ -210,12 +210,7 @@ class TestOrphanDetection:
         pattern = db.session.query(RecurrencePattern).filter_by(
             name="Every Period"
         ).one()
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=pattern.id,
-        )
-        db.session.add(rule)
-        db.session.flush()
+        rule = make_every_period_rule(db.session, seed_user["user"].id)
 
         results = check_orphaned_records(db.session)
         or02 = next(r for r in results if r.check_id == "OR-02")
