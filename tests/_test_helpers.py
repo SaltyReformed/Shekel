@@ -3874,27 +3874,33 @@ def make_pattern_rule(
     end_date=None,
     _flush=True,
 ):
-    """Author one rule of a NAMED closed-set pattern, through the write door.
+    """Author one rule of a NAMED cadence, through the write door.
 
     :func:`make_every_period_rule`'s general sibling, for the tests that need a
     cadence other than every-paycheck.  Both exist because a rule may not be
     constructed field by field any more: plan step R7c-b made ``unit_id``,
     ``placement_id``, ``shift_id`` and ``starts_on`` ``NOT NULL``, so a
-    hand-built ``RecurrenceRule`` naming only a pattern is a constraint
-    violation rather than a shortcut.
+    hand-built ``RecurrenceRule`` stating a cadence in one field is a
+    constraint violation rather than a shortcut.
 
-    **The two axes are DECODED from the pattern rather than restated here.**
-    ``decode_pattern`` is the application's own one place a stored pattern id
-    becomes ``(interval_n, unit, placement)``; a table in a test file saying
-    "Quarterly means MONTH / CONTAINING_DATE" would be a second statement of
-    that mapping, and a second statement is one that can disagree.  So a test
-    naming ``"Quarterly"`` gets exactly the cadence the write door would encode
-    back to ``Quarterly``.
+    **The NAME is test-side SHORTHAND from plan step R7c-c**, and this docstring
+    said the opposite one leaf earlier.  It read "the two axes are DECODED from
+    the pattern rather than restated here", because ``decode_pattern`` was the
+    application's own one place a stored ``pattern_id`` became
+    ``(interval_n, unit, placement)`` and a table in a test file would have been
+    a second statement of it.  That column and that function are dropped, so the
+    mapping has exactly one home and it is
+    ``tests.oracles.recurrence_baseline.CADENCE_BY_LEGACY_NAME`` -- beside the
+    frozen shapes, whose labels use the same names, so a fixture asking for "a
+    Quarterly rule" and a captured shape labelled ``quarterly`` cannot come to
+    mean different cadences.
 
     Args:
         user_id: The owner.
-        pattern_name: A ``ref.recurrence_patterns`` display name, which is also
-            a :class:`~app.enums.RecurrencePatternEnum` value.
+        pattern_name: One of the closed pattern set's old display names, as
+            shorthand for the cadence it used to encode.  Plain strings, so
+            this vocabulary does not go down with the enum plan step R9
+            deletes.
         starts_on: The rule's FIRST OCCURRENCE (ruling R-R16).  Defaults to
             what the retired derivation answered for a rule stating no day:
             the schedule's opening payday for a PAYCHECK-space cadence, and
@@ -3909,9 +3915,11 @@ def make_pattern_rule(
             Mutually exclusive with *starts_on*.
         fires_in_month: The month half of that description, for the annual and
             semi-annual cadences.
-        interval_n: Read only for ``Every N Periods``, whose interval is a
-            column; every other pattern's interval is a property of the
-            pattern, and ``decode_pattern`` discards what is passed here.
+        interval_n: Read only for ``"Every N Periods"``, the one shorthand that
+            fixes no interval of its own; every other name carries one and this
+            argument is discarded.  (The COLUMN takes any positive interval for
+            any unit since plan step R7c-c -- what is narrow here is the
+            shorthand, not the model.)
         nominal_day: The day the rule MEANS when *starts_on*'s month clamped
             it (ruling R-R3).
         due_day_of_month: Real bill due day, when it differs from the
@@ -3927,8 +3935,6 @@ def make_pattern_rule(
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
-    from app import ref_cache
-    from app.enums import RecurrencePatternEnum, RecurrenceUnitEnum
     from app.services.pay_calendar import calendar_for
     from app.services.recurrence import (
         NEVER_ENDS,
@@ -3936,8 +3942,8 @@ def make_pattern_rule(
         RecurrenceSpec,
         author_rule,
         build_transient_rule,
-        decode_pattern,
     )
+    from tests.oracles.recurrence_baseline import CADENCE_BY_LEGACY_NAME
 
     if starts_on is not None and fires_on_day is not None:
         raise ValueError(
@@ -3945,9 +3951,27 @@ def make_pattern_rule(
             "they are two statements of the same fact and only one can be "
             f"authored (got {starts_on!r} and day {fires_on_day!r})",
         )
-    pattern = RecurrencePatternEnum(pattern_name)
-    reading = decode_pattern(
-        ref_cache.recurrence_pattern_id(pattern), interval_n,
+    # ``getattr(..., "value")`` so a caller may still pass a
+    # ``RecurrencePatternEnum`` member: that enum outlives its column by one
+    # step (plan step R9 drops it with ``ref.recurrence_patterns``), and
+    # rewriting ~130 call sites to unwrap it would be a large diff carrying no
+    # meaning.  The table itself is keyed by plain STRING, so nothing here goes
+    # down with the enum when R9 lands.
+    cadence = CADENCE_BY_LEGACY_NAME.get(
+        getattr(pattern_name, "value", pattern_name),
+    )
+    if cadence is None:
+        raise ValueError(
+            f"no cadence is filed under {pattern_name!r}.  This helper takes "
+            f"one of the closed pattern set's own display names as SHORTHAND "
+            f"for a cadence -- plan step R7c-c dropped the column, so the "
+            f"names are a test vocabulary now and "
+            f"tests.oracles.recurrence_baseline.CADENCE_BY_LEGACY_NAME is the "
+            f"one place they are defined.  Known: "
+            f"{sorted(CADENCE_BY_LEGACY_NAME)}.",
+        )
+    resolved_interval = (
+        interval_n if cadence.interval_n is None else cadence.interval_n
     )
     calendar = calendar_for(user_id)
     if starts_on is None and fires_on_day is not None:
@@ -3956,15 +3980,15 @@ def make_pattern_rule(
         )
     if starts_on is None:
         starts_on = _default_first_occurrence(
-            user_id, calendar, reading.cadence.unit, reading.placement,
+            user_id, calendar, cadence.unit, cadence.placement,
         )
     write = author_rule if _flush else build_transient_rule
     return write(
         RecurrenceSpec(
             user_id=user_id,
-            unit=reading.cadence.unit,
-            placement=reading.placement,
-            interval_n=reading.cadence.interval_n,
+            unit=cadence.unit,
+            placement=cadence.placement,
+            interval_n=resolved_interval,
             starts_on=(
                 starts_on if starts_on is not None
                 else calendar.opening_bound()

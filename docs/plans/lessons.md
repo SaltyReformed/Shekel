@@ -122,6 +122,10 @@ no reconciler.
 - **A guard written against the wrong failure mode can still be a good guard** -- write the reason
   beside it.
 - **A skip is safer to state than a fire**, when the operation being guarded is the one under test.
+- **A GATE OVER A MAPPING NEEDS BOTH ARMS, OR IT CATCHES A RENAME AND MISSES AN ADDITION**, and its
+  docstring will claim otherwise -- read what a gate asserts, not what it says it asserts (R7c-c).
+- **AN ASSERTION ABOUT PERSISTED STATE MUST NAME THE STORE THE CODE UNDER TEST WRITES TO.** A
+  hard-coded database name beside an app pointed at a copy passes with every refusal ACCEPTED.
 
 ## Instruments, oracles and censuses
 

@@ -23,7 +23,6 @@ from app import ref_cache
 from app.enums import (
     BusinessDayShiftEnum,
     PeriodPlacementEnum,
-    RecurrencePatternEnum,
     RecurrenceUnitEnum,
     StatusEnum,
 )
@@ -36,7 +35,6 @@ from app.services import (
 from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.recurrence import (
     RecurrenceResolutionError,
-    decode_pattern,
     fires_on_day_of_month,
     reauthor_rule,
     recurrence_spec,
@@ -50,16 +48,17 @@ from app.exceptions import (
 )
 from app.services import account_service
 from app.services.generation_schedule import GenerationSchedule
+from tests.oracles.recurrence_baseline import CADENCE_BY_LEGACY_NAME
 from tests._test_helpers import (
     make_every_period_rule,
     make_pattern_rule,
     open_calendar_hole,
 )
 
-# Map human-readable pattern names to RecurrencePatternEnum members for
+# Map the closed set's old display names onto cadences, for
 # use in build_rule and test helpers.  Allows tests to construct a rule
 # with a pattern name string and resolve it to the integer ID via ref_cache.
-_PATTERN_NAME_TO_ENUM = {e.value: e for e in RecurrencePatternEnum}
+_PATTERN_NAME_TO_CADENCE = dict(CADENCE_BY_LEGACY_NAME)
 
 
 # --- Rule / period objects for the pure pattern-matching tests ---------------
@@ -97,7 +96,11 @@ _SCHEDULE_OPENS = date(2026, 1, 2)
 
 
 
-def build_rule(pattern_name="Every Period", interval_n=1,
+_CADENCES_OWN_INTERVAL = object()
+
+
+def build_rule(pattern_name="Every Period",
+               interval_n=_CADENCES_OWN_INTERVAL,
                starts_on=_SCHEDULE_OPENS, nominal_day=None,
                end_date=None, due_day_of_month=None):
     """Build a REAL, unsaved ``RecurrenceRule`` for the pure matcher tests.
@@ -135,7 +138,14 @@ def build_rule(pattern_name="Every Period", interval_n=1,
         pattern_name: Display name of the recurrence pattern, resolved to
             ``pattern_id`` through ``ref_cache`` (needs an app context, as the
             stub's own constructor did).
-        interval_n: ``every_n_periods`` interval.
+        interval_n: The cadence interval to store.  Defaults to the one
+            *pattern_name* itself names -- 3 for Quarterly, 6 for
+            Semi-Annual, 1 elsewhere -- because plan step R7c-c
+            re-pointed the column onto the two-axis interval, so a
+            builder writing a bare ``1`` would state MONTHLY for a case
+            that asked for quarterly.  A caller states one to vary the
+            rhythm, including the non-positive values the walk's
+            refusals are handed.
         day_of_month: Scheduling day for monthly / quarterly / annual.
         month_of_year: Month for the annual / semi-annual patterns.
         start_date: The rule's opening validity bound, and the whole of what
@@ -148,57 +158,49 @@ def build_rule(pattern_name="Every Period", interval_n=1,
     Returns:
         An unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
-    enum_member = _PATTERN_NAME_TO_ENUM.get(pattern_name)
-    pattern_id = (
-        ref_cache.recurrence_pattern_id(enum_member) if enum_member else None
-    )
-    # **DECODED from the pattern, never restated.**  An authored rule gets its
-    # two axes from the write door; a TRANSIENT one built for a pure test never
-    # passes through that door, and forcing a database and a calendar into a
-    # pure test would be a worse test rather than a stricter one.  What it must
-    # not do is state the mapping a second time -- a table here saying
+    # **Read from the SHARED table, never restated.**  An authored rule gets
+    # its cadence from the write door; a TRANSIENT one built for a pure test
+    # never passes through that door, and forcing a database and a calendar
+    # into a pure test would be a worse test rather than a stricter one.  What
+    # it must not do is state the mapping a second time -- a table here saying
     # "Quarterly means MONTH / CONTAINING_DATE" is one that can disagree with
-    # the encoder -- so it reads ``decode_pattern``, the application's own one
-    # place a stored pattern id becomes ``(interval_n, unit, placement)``.
+    # the frozen shapes -- so it reads
+    # :data:`~tests.oracles.recurrence_baseline.CADENCE_BY_LEGACY_NAME`, which
+    # is where ``tests/`` states it once (plan step R7c-c).
     #
-    # The ``None`` branch is the unmodelled-pattern case, which has no axes to
-    # decode because it has no pattern; the walk refuses it either way.
+    # The fallback is the unreadable-cadence case, which has no cadence to look
+    # up; the walk refuses it either way, and a test that wants that state
+    # plants an unmodelled ``unit_id`` on the row afterwards.
     #
-    # **Decoded at interval 1, never at the caller's**, and the difference is
-    # two tests below.  A pattern's UNIT and PLACEMENT do not depend on the
-    # interval -- only the ``Every N Periods`` cadence reads it, and then only
-    # for the interval it reports back -- but ``decode_pattern`` REFUSES a
-    # non-positive one.  Passing the caller's would make this builder reject
-    # the very shapes ``test_every_n_periods_interval_zero_raises`` and its
-    # ``None`` twin exist to hand the WALK, moving a refusal this file grades
-    # into the fixture that sets it up.  The caller's value still lands on the
-    # column verbatim, which is the rule shape those tests need.
-    if pattern_id is None:
+    # **The caller's interval lands on the column verbatim**, including the
+    # non-positive values ``test_every_n_periods_interval_zero_raises`` and its
+    # ``None`` twin hand the WALK.  That is the rule shape those tests need,
+    # and the refusal they grade belongs to the walk rather than to this
+    # fixture.
+    cadence = _PATTERN_NAME_TO_CADENCE.get(pattern_name)
+    if cadence is None:
         unit = RecurrenceUnitEnum.PERIOD
         placement = PeriodPlacementEnum.CONTAINING_DATE
+        own_interval = 1
     else:
-        reading = decode_pattern(pattern_id, 1)
-        unit = reading.cadence.unit
-        placement = reading.placement
+        unit = cadence.unit
+        placement = cadence.placement
+        # ``None`` for the one shorthand that fixes no interval of its
+        # own, which is the shape a caller varies.
+        own_interval = (
+            1 if cadence.interval_n is None else cadence.interval_n
+        )
     return RecurrenceRule(
         user_id=_MATCH_USER_ID,
-        pattern_id=pattern_id,
-        interval_n=interval_n,
+        interval_n=(
+            own_interval if interval_n is _CADENCES_OWN_INTERVAL
+            else interval_n
+        ),
         unit_id=ref_cache.recurrence_unit_id(unit),
         placement_id=ref_cache.period_placement_id(placement),
         shift_id=ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE),
         starts_on=starts_on,
         nominal_day=nominal_day,
-        # The legacy encode the write door performs, restated for a TRANSIENT
-        # rule the door never sees: ``compute_due_date`` still dates every
-        # generated row from this column until plan step R5 deletes it, so a
-        # rule built here has to carry what an authored one would.  It is the
-        # day ``starts_on`` names, and NULL for a cadence with no day-of-month
-        # coordinate -- which is what ``fires_on_day_of_month`` decides.
-        day_of_month=(
-            (nominal_day or starts_on.day)
-            if fires_on_day_of_month(unit, placement) else None
-        ),
         due_day_of_month=due_day_of_month,
         end_date=end_date,
     )
@@ -763,24 +765,24 @@ class TestMatchPeriodsEdgeCases:
         for period in matched:
             assert period.start_date >= effective_from
 
-    def test_unknown_pattern_is_refused(self, biweekly_periods):
-        """An unmodelled pattern id is REFUSED, naming the id.
+    def test_an_unmodelled_unit_is_refused(self, biweekly_periods):
+        """An unmodelled cadence id is REFUSED, naming the id.
 
         It used to log a warning and answer ``[]``, which reads as "this rule
-        fires nowhere" -- a rule that generates nothing forever, silently.  A
-        pattern id the application does not MODEL is a broken invariant, not a
-        rule with no occurrences: ``RecurrencePatternEnum`` is the vocabulary
-        (plan step R2e-2), the write doors refuse anything outside it, and
-        plan step R2e-3's migration deleted the last rows that carried one.
-        Plan step R4a's adapter resolves through
-        ``app.services.recurrence.resolve``, which raises rather than
-        fabricating a cadence.
+        fires nowhere" -- a rule that generates nothing forever, silently.  An
+        id the application does not MODEL is a broken invariant, not a rule
+        with no occurrences: the enums are the vocabulary (plan step R2e-2) and
+        the write doors refuse anything outside them.  ``resolve`` raises
+        rather than fabricating a cadence.
+
+        **The unreadable COLUMN moved at plan step R7c-c.**  This planted a
+        ``pattern_id`` no member named; that column is dropped, and the state
+        it leaves is a ``unit_id`` naming a ``ref.recurrence_units`` row the
+        enums do not model -- the same broken invariant through the column
+        that replaced it.
         """
-        rule = build_rule(pattern_name="bogus_pattern")
-        # ``build_rule`` leaves ``pattern_id`` NULL for a name the enum does
-        # not carry; an id the ``ref`` table does not carry is the other half
-        # of the same state, and both must refuse.
-        rule.pattern_id = 99999
+        rule = build_rule(pattern_name="Monthly")
+        rule.unit_id = 99999
         effective_from = biweekly_periods[0].start_date
 
         with pytest.raises(RecurrenceResolutionError, match="99999"):
@@ -4314,22 +4316,7 @@ class TestDueDateGeneration:
         """
         with app.app_context():
             from app import ref_cache
-            from app.enums import (
-    BusinessDayShiftEnum,
-    PeriodPlacementEnum,
-    RecurrencePatternEnum,
-    RecurrenceUnitEnum,
-    StatusEnum,
-)
-
-            monthly_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.MONTHLY
-            )
-            every_period_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.EVERY_PERIOD
-            )
-
-            # Test with day_of_month set (monthly-style).
+            # Test with a day-of-month cadence (monthly-style).
             rule_monthly = build_rule(
                 pattern_name="Monthly", starts_on=date(2026, 1, 20),
             )
@@ -4344,7 +4331,7 @@ class TestDueDateGeneration:
             )
             assert result == date(2026, 3, 20)
 
-            # Test with no day_of_month (every-period style).
+            # Test with a cadence that names no day (every-period style).
             rule_every = build_rule(pattern_name="Every Period")
             result = recurrence_engine.compute_due_date(
                 rule_every, period,

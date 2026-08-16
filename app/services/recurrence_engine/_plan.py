@@ -20,7 +20,7 @@ from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app import ref_cache
 from app.enums import StatusEnum
-from app.services.recurrence import rule_occurrences
+from app.services.recurrence import rule_occurrences, scheduling_day_of_month
 from app.services._recurrence_common import check_scenario_ownership
 
 logger = logging.getLogger(__name__)
@@ -245,40 +245,60 @@ def compute_due_date(rule, period):
     Derives the calendar date the bill is actually due, using the
     recurrence rule's scheduling day and optional due-day override.
     Public (no leading underscore): the transfer engine, the transfers
-    preview route, the due-date backfill script, and a data migration all
-    derive a row's due date through this same pure helper, so it is
-    deliberately part of this module's public surface (like
-    :func:`rule_occurrences`) rather than a leading-underscore internal.
+    preview route and a data migration all derive a row's due date through this
+    same pure helper, so it is deliberately part of this module's public
+    surface (like :func:`rule_occurrences`) rather than a leading-underscore
+    internal.
 
     Source priority:
-      1. rule.due_day_of_month (if set and differs from day_of_month)
-      2. rule.day_of_month (placed within the period's month context)
-      3. period.start_date (for every-paycheck patterns with no day)
+      1. rule.due_day_of_month (if set and differs from the scheduling day)
+      2. the rule's SCHEDULING DAY (placed within the period's month context)
+      3. period.start_date (for a cadence that names no day of the month)
 
-    Next-month convention: if due_day_of_month < day_of_month, the due
-    date falls in the following calendar month.  Example: day_of_month=22
-    with due_day_of_month=1 means the bill is due on the 1st of the
+    **The scheduling day is DERIVED rather than read off a column since plan
+    step R7c-c** (developer ruling 2026-08-16, plan ledger row **D37**).  It was
+    ``rule.day_of_month``, which the write door encoded from the rule's authored
+    columns and that step drops;
+    :func:`~app.services.recurrence.scheduling_day_of_month` answers the same
+    value from the columns that survive, and was measured equal to the stored
+    one for all 46 live rules on a production clone before the column went.
+    Both it and this function are deleted by plan step **R5**, which gives a
+    generated row its own ``occurs_on`` and ``due_on``.
+
+    Next-month convention: if due_day_of_month < the scheduling day, the due
+    date falls in the following calendar month.  Example: a rule scheduled on
+    the 22nd with due_day_of_month=1 means the bill is due on the 1st of the
     next month after the scheduling month.
 
     Month-end clamping: day values exceeding the month's last day are
     clamped (e.g. day 31 in April becomes 30, day 30 in Feb becomes 28).
 
     Args:
-        rule: The RecurrenceRule with day_of_month and due_day_of_month.
+        rule: The RecurrenceRule to date the row from.
         period: The PayPeriod the transaction was assigned to.
 
     Returns:
         A date object representing the due date.
+
+    Raises:
+        RecurrenceResolutionError: When the rule names a unit or a placement
+            this application does not model -- see
+            :func:`~app.services.recurrence.scheduling_day_of_month`.  It could
+            not raise while it read a plain column; it now makes the same
+            refusal every other reader of this rule already makes, rather than
+            dating a row from a cadence nothing can read.
     """
-    dom = rule.day_of_month
+    dom = scheduling_day_of_month(rule)
     due_dom = rule.due_day_of_month
 
-    # Patterns without day_of_month (every-paycheck, every-N): use period start.
+    # A cadence that names no day of the month -- every-paycheck, every-N, and
+    # a monthly rule funded from the month's first paycheck -- is dated from
+    # its period's start.
     if dom is None:
         return period.start_date
 
     # Determine the base month by finding which month within the period
-    # contains the day_of_month target.  This is the LAST reader of the
+    # contains the scheduling-day target.  This is the LAST reader of the
     # endpoint-month scan plan step R4a deleted from period selection, and it
     # carries the same defect: at a cadence where the firing month is neither
     # endpoint the row is dated in the wrong month entirely (plan ledger row

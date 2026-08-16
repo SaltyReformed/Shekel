@@ -72,28 +72,37 @@ class TestChaining:
 
 
 class TestNoOnceRuleSurvives:
-    """No ``budget.recurrence_rules`` row names the retired pattern."""
+    """No ``budget.recurrence_rules`` row can name the retired pattern."""
 
     def test_zero_rules_reference_the_retired_pattern(self, app):
         """The upgrade's whole point, asserted against the live database.
 
-        Scoped to the retired pattern by NAME through a join, exactly as the
-        migration selects -- a hard-coded id would test the wrong row on a
-        migration-built database, where ``a3b1c2d4e5f6`` appends two rows
-        after the initial seed and the ids are not in enum order.
+        **The assertion got STRONGER at plan step R7c-c, and the query
+        changed with it.**  It counted the rules whose ``pattern_id`` joined to
+        the retired row by NAME -- the honest question while a rule could point
+        at one.  That column is dropped (migration ``d9f5c1a48b73``), so what
+        is assertable now is that ``ref.recurrence_patterns`` has no inbound
+        foreign key at all: no rule NAMES the retired pattern because no rule
+        CAN, which is the same claim made unconditionally.
+
+        The ``ref`` row itself still survives, and deliberately -- see
+        :class:`TestTheSurvivingRefRow` and ruling R-R11; plan step **R9**
+        drops the table.
         """
         with app.app_context():
-            surviving = db.session.execute(text("""
+            referencing = db.session.execute(text("""
                 SELECT count(*)
-                  FROM budget.recurrence_rules r
-                  JOIN ref.recurrence_patterns p ON p.id = r.pattern_id
-                 WHERE p.name = :name
-            """), {"name": _RETIRED}).scalar_one()
+                  FROM pg_constraint c
+                 WHERE c.contype = 'f'
+                   AND c.confrelid = 'ref.recurrence_patterns'::regclass
+            """)).scalar_one()
 
-        assert surviving == 0, (
-            f"a '{_RETIRED}' recurrence rule survives; nothing can resolve it "
-            f"-- app.services.recurrence.resolve raises for a pattern no "
-            f"RecurrencePatternEnum member names"
+        assert referencing == 0, (
+            f"a foreign key still points at ref.recurrence_patterns, so a "
+            f"rule could name the '{_RETIRED}' pattern again.  Plan step "
+            f"R7c-c dropped budget.recurrence_rules.pattern_id, which is the "
+            f"only one there was -- and dropping it is what turns "
+            f"'no surviving rule names it' into 'no rule CAN name it'"
         )
 
     def test_no_template_of_either_kind_names_a_retired_rule(self, app):
@@ -108,16 +117,18 @@ class TestNoOnceRuleSurvives:
             dangling = db.session.execute(text("""
                 SELECT count(*) FROM (
                     SELECT t.id FROM budget.transaction_templates t
-                      JOIN budget.recurrence_rules r ON r.id = t.recurrence_rule_id
-                      JOIN ref.recurrence_patterns p ON p.id = r.pattern_id
-                     WHERE p.name = :name
+                     WHERE t.recurrence_rule_id IS NOT NULL
+                       AND NOT EXISTS (
+                           SELECT 1 FROM budget.recurrence_rules r
+                            WHERE r.id = t.recurrence_rule_id)
                     UNION ALL
                     SELECT t.id FROM budget.transfer_templates t
-                      JOIN budget.recurrence_rules r ON r.id = t.recurrence_rule_id
-                      JOIN ref.recurrence_patterns p ON p.id = r.pattern_id
-                     WHERE p.name = :name
+                     WHERE t.recurrence_rule_id IS NOT NULL
+                       AND NOT EXISTS (
+                           SELECT 1 FROM budget.recurrence_rules r
+                            WHERE r.id = t.recurrence_rule_id)
                 ) AS both_kinds
-            """), {"name": _RETIRED}).scalar_one()
+            """)).scalar_one()
 
         assert dangling == 0
 
