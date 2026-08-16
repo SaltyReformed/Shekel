@@ -220,7 +220,7 @@ def load_gap_inputs(balance_ctx):
         settings=settings,
         pensions=pensions,
         salary_profiles=salary_profiles,
-        pay=_compute_current_pay(user_id, salary_profiles),
+        pay=_compute_current_pay(balance_ctx, salary_profiles),
         merit_horizon_years=_resolve_merit_horizon(settings),
         # Resolved once here (plan step R7a-2a): the retire-later solver
         # probes this bundle dozens of times per request and the cadence does
@@ -596,7 +596,7 @@ def compute_pension_summary(
 
 
 def _compute_current_pay(
-    user_id: int, salary_profiles: list[SalaryProfile],
+    balance_ctx, salary_profiles: list[SalaryProfile],
 ) -> _CurrentPay:
     """Load the pay-period calendar and the current paycheck breakdown.
 
@@ -605,8 +605,21 @@ def _compute_current_pay(
     both net and gross for the current period.  Returns zero / ``None``
     pay when the user has no active salary profile or no current period.
 
+    **WHICH period is current comes off the read pass** (plan step C2-f2d-1,
+    corrected by its adversarial code review).  ``get_current_period``'s
+    ``as_of`` defaults to ``date.today()``, and this loader runs TWICE per
+    ``/retirement`` render -- once for the verdict, once for the levers -- so
+    the two cards resolved it from two independent clock reads.  Threading the
+    pass's day closes that, and it closes a WIDER window the leaf itself
+    opened: the pass used to be built microseconds after this line, and is now
+    built at the route, so a levers producer reading its own clock here would
+    be internally inconsistent with its own axis across a payday boundary.
+    A period is not cosmetic -- it selects the displayed balance and the
+    contribution basis.
+
     Args:
-        user_id: The authenticated user's ID.
+        balance_ctx: The render's read pass -- its ``user_id`` scopes the
+            queries and its ``as_of`` decides which period is current.
         salary_profiles: The user's active salary profiles (the first is
             used as the current profile).
 
@@ -614,8 +627,11 @@ def _compute_current_pay(
         A :class:`_CurrentPay` snapshot with the period calendar, the
         current period, the net biweekly pay, and the full breakdown.
     """
+    user_id = balance_ctx.user_id
     all_periods = pay_period_service.get_all_periods(user_id)
-    current_period = pay_period_service.get_current_period(user_id)
+    current_period = pay_period_service.get_current_period(
+        user_id, as_of=balance_ctx.as_of,
+    )
     net_biweekly = Decimal("0")
     current_breakdown = None
     # F-20 / MED-06 / F-032: take the current-period net (and, via the

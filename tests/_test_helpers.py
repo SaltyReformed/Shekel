@@ -5076,3 +5076,47 @@ def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
         as_of=as_of,
         _calendars={user_id: calendar},
     )
+
+
+@contextmanager
+def counting_read_passes():
+    """Count every ``BalanceContext.build`` while the block runs.
+
+    **The ONE instrument for "how many read passes did this open"**, shared by
+    the architecture gate (``tests/test_arch/test_one_read_pass_per_render.py``)
+    and the cutover harness (``tests/manual/verify_retirement_pass_cutover.py``)
+    -- which is what plan step ``C2-f2d-1``'s adversarial code review asked for
+    after both shipped their own copy of it. Two copies of a measuring
+    instrument is the shape where one is later taught something the other is
+    not, and the one that was not keeps grading the old question.
+
+    Patched on the CLASS rather than on any module's imported name: several
+    producers hold their own reference to ``BalanceContext``, so patching a
+    single module's attribute would count some builds and miss others -- and a
+    counter that undercounts reads exactly like a gate that passes.
+
+    **It counts ``build``, not construction.** A direct
+    ``BalanceContext(user_id=..., scenario=..., as_of=...)`` is invisible to it.
+    Nothing in ``app/`` does that today, but :func:`read_pass_over_paydays`
+    above does, so the path is live in this repository and a producer that took
+    it would go uncounted.
+
+    Yields:
+        A ``{"n": int}`` dict whose ``n`` is the count so far; read it after
+        the block exits.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.services.balance_at import BalanceContext
+
+    counter = {"n": 0}
+    real = BalanceContext.build.__func__
+
+    def counting(cls, user_id, as_of=None):
+        counter["n"] += 1
+        return real(cls, user_id, as_of)
+
+    BalanceContext.build = classmethod(counting)
+    try:
+        yield counter
+    finally:
+        BalanceContext.build = classmethod(real)

@@ -257,7 +257,10 @@ def compute_debt_summary(
     two paths to one number this arc exists to remove.
 
     Args:
-        user_id: Integer ID of the current user.
+        user_id: Integer ID of the current user, used ONLY when *balance_ctx*
+            is ``None`` -- everything below reads ``core.balance_ctx.user_id``
+            (plan step C2-f2d-1), so supplying both makes this one inert.
+            ``C2-f2d-3`` deletes it.
         balance_ctx: An existing read pass's
             :class:`~app.services.balance_at.BalanceContext` to share, or
             ``None`` to start one.  The budget dashboard's tracks section runs
@@ -334,7 +337,8 @@ def compute_goal_progress(
     page report the same numbers for the same goal.
 
     Args:
-        user_id: Integer ID of the current user.
+        user_id: Integer ID of the current user, used ONLY when *balance_ctx*
+            is ``None``; see :func:`compute_debt_summary`'s note.
         balance_ctx: An optional shared read-pass context (see
             :func:`compute_debt_summary`).
 

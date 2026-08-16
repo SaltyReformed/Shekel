@@ -155,11 +155,14 @@ class _ProjectionBatch:
     loan-resolution memos away -- which is true, and which needs no field here
     to satisfy: the pass is an INPUT, so it rides on the input bundle
     (:class:`_RetirementProjectionContext`) that every function taking this one
-    already takes beside it, and the P2b probes reuse ``ctx`` exactly as they
-    reuse this batch.  Holding it in both places would be one fact under two
-    keys, which is the shape ruling R-AZ deletes -- and the two could not even
-    be checked against each other, because a batch built for one pass is
-    indistinguishable from a batch built for another.
+    already takes beside it.  **The P2b probes do NOT reuse ``ctx`` by identity
+    -- they ``dataclasses.replace`` it per candidate horizon -- and the pass
+    rides through that replace untouched**, which is the whole reason moving it
+    off this batch is safe.  Holding it in both places would be one fact under
+    two keys, and the two could not even be checked against each other: a batch
+    built for one pass is indistinguishable from a batch built for another.
+    (Ruling R-AZ is about a PUBLISHED key with no consumer, which this is not;
+    the rule here is the plainer one that a fact has one home.)
 
     **The forward projection's SEED is deliberately NOT here** (plan step
     X-g2b, rulings R-AB / R-AE).  It is read the day BEFORE the projection
@@ -558,8 +561,13 @@ def load_projection_batch(
     # F-20 / MED-06 / F-032: raise-aware engine gross-biweekly (not the
     # off-engine ``annual_salary / pay_periods_per_year`` recompute that
     # dropped any applicable SalaryRaise); feeds the employer-match cap.
+    # ``as_of`` is the PASS's (plan step C2-f2d-1, corrected by its
+    # adversarial code review): this resolver defaults to ``date.today()`` and
+    # resolves its own current period from it, so without the argument the
+    # employer-match cap basis came off a clock read of its own -- twice per
+    # ``/retirement`` render, once for the verdict and once for the levers.
     salary_gross_biweekly = income_service.get_current_gross_biweekly(
-        user_id,
+        user_id, as_of=ctx.balance_ctx.as_of,
     )
 
     # The displayed per-account balance is the model-from-anchor value at the

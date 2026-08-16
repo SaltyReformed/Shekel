@@ -74,7 +74,14 @@ def _load_dashboard_core_data(balance_ctx):
         accounts=accounts,
         balance_ctx=balance_ctx,
         all_periods=pay_period_service.get_all_periods(user_id),
-        current_period=pay_period_service.get_current_period(user_id),
+        # The period containing the PASS's day, which is what
+        # ``_DashboardCoreData.current_period`` has always claimed to be and
+        # was not: ``get_current_period``'s ``as_of`` defaults to
+        # ``date.today()``, so the field answered a clock this bundle does not
+        # carry (plan step C2-f2d-1, corrected by its adversarial code review).
+        current_period=pay_period_service.get_current_period(
+            user_id, as_of=balance_ctx.as_of,
+        ),
     )
 
 

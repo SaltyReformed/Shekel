@@ -66,12 +66,14 @@ from app import create_app
 from app.extensions import db
 from app.models.user import User
 from app.services import (
+    dashboard_pulse_service,
     retirement_dashboard_service,
     retirement_levers,
     retirement_readiness,
     savings_dashboard_service,
 )
 from app.services.balance_at import BalanceContext
+from tests._test_helpers import counting_read_passes
 
 # The day this capture ran.  Written into the dump so a diff taken across
 # midnight names its own cause instead of reading as a defect.
@@ -160,7 +162,7 @@ def _guard(label, thunk):
         }
 
 
-def _call(producer, user_id, **kwargs):
+def _call(producer, user_id, shared_pass=None, **kwargs):
     """Call *producer* on either side of the read-pass cutover.
 
     BEFORE the leaf a producer takes ``user_id`` and builds its own read pass;
@@ -169,10 +171,18 @@ def _call(producer, user_id, **kwargs):
     grades both trees -- which is what makes the two captures comparable at
     all.  A signature carrying neither name is a producer this harness was not
     written for and says so rather than guessing.
+
+    *shared_pass* is used only where the callee accepts one; ``None`` means
+    "give this producer a pass of its own", which is also what every call
+    degrades to on the HEAD side, where no producer has the parameter.
     """
     parameters = inspect.signature(producer).parameters
     if "balance_ctx" in parameters:
-        return producer(BalanceContext.build(user_id), **kwargs)
+        return producer(
+            shared_pass if shared_pass is not None
+            else BalanceContext.build(user_id),
+            **kwargs,
+        )
     if "user_id" in parameters:
         return producer(user_id, **kwargs)
     raise TypeError(
@@ -181,16 +191,20 @@ def _call(producer, user_id, **kwargs):
     )
 
 
-def _retirement(user_id):
+def _retirement_figures(user_id, shared_pass):
     """Every figure the /retirement page and its what-if fragment publish.
 
     The page runs ``compute_gap_data`` and shapes the readiness picture from
     it, then runs ``compute_lever_data`` beside it; the fragment runs
     ``compute_readiness_whatif`` and, when a stepper moved, the levers again.
-    All four are captured because all four opened a read pass of their own.
+    All four are captured because all four opened a read pass of their own
+    before this leaf.
+
+    *shared_pass* is the pass every producer is handed, or ``None`` to let each
+    open its own -- see :func:`_retirement` for why both are captured.
     """
     gap = _guard("gap", lambda: _call(
-        retirement_dashboard_service.compute_gap_data, user_id,
+        retirement_dashboard_service.compute_gap_data, user_id, shared_pass,
     ))
     readiness = (
         gap if isinstance(gap, dict) and "RAISED" in gap
@@ -201,15 +215,42 @@ def _retirement(user_id):
         "gap_data": _plain(gap),
         "readiness": _plain(readiness),
         "levers": _plain(_guard("levers", lambda: _call(
-            retirement_levers.compute_lever_data, user_id,
+            retirement_levers.compute_lever_data, user_id, shared_pass,
         ))),
         "whatif_baseline": _plain(_guard("whatif_baseline", lambda: _call(
             retirement_readiness.compute_readiness_whatif, user_id,
+            shared_pass,
         ))),
         "whatif_override": _plain(_guard("whatif_override", lambda: _call(
             retirement_readiness.compute_readiness_whatif, user_id,
-            merit_horizon_override=_MERIT_HORIZON_WHATIF,
+            shared_pass, merit_horizon_override=_MERIT_HORIZON_WHATIF,
         ))),
+    }
+
+
+def _retirement(user_id):
+    """The /retirement figures, captured TWICE: per-producer and shared.
+
+    **The per-producer capture alone would not grade this leaf**, and an
+    earlier version of this file did only that (adversarial code review,
+    2026-08-16).  ``_call`` builds a pass for whichever producer it is calling,
+    so a dump taken that way runs every producer in its OWN pass -- which is
+    the topology BEFORE the change, on both sides of the diff.  It proves the
+    figures did not move when a producer's pass arrived by parameter instead of
+    being built inside; it says nothing about the configuration production now
+    runs, where all four SHARE one.
+
+    ``shared`` is that configuration, and comparing the two blocks inside a
+    single AFTER capture is a self-consistency check needing no HEAD side: if
+    sharing a pass moved a figure, these two disagree.  On the HEAD side the
+    two blocks are identical by construction (no producer takes a pass), which
+    is why the key exists on both and the diff stays readable.
+    """
+    return {
+        "per_producer_pass": _retirement_figures(user_id, None),
+        "shared_pass": _retirement_figures(
+            user_id, BalanceContext.build(user_id),
+        ),
     }
 
 
@@ -232,29 +273,16 @@ def _savings(user_id):
         "debt_summary": _plain(_guard("debt_summary", lambda: (
             savings_dashboard_service.compute_debt_summary(user_id)
         ))),
+        # The budget dashboard's TRACKS section, which is the one production
+        # caller that hands ONE pass to both narrow producers -- and therefore
+        # the only place the calendar read this leaf moved onto the pass memo
+        # runs under a shared pass.  Calling the two producers separately above
+        # exercises neither that sharing nor that caller (adversarial code
+        # review, 2026-08-16).
+        "dashboard_tracks": _plain(_guard("dashboard_tracks", lambda: (
+            dashboard_pulse_service.compute_tracks_section(user_id)
+        ))),
     }
-
-
-def _count_passes(thunk):
-    """Run *thunk*, returning how many read passes were opened inside it.
-
-    Patched on the CLASS rather than on a module attribute, so a module holding
-    its own imported reference to the name still routes through the counter --
-    the very site this leaf deletes (``retirement_projection``) holds one.
-    """
-    counter = {"n": 0}
-    real = BalanceContext.build.__func__
-
-    def counting(cls, user_id, as_of=None):
-        counter["n"] += 1
-        return real(cls, user_id, as_of)
-
-    BalanceContext.build = classmethod(counting)
-    try:
-        _guard("pass_count", thunk)
-    finally:
-        BalanceContext.build = classmethod(real)
-    return counter["n"]
 
 
 def _passes_below_route(user_id, producers):
@@ -280,9 +308,25 @@ def _passes_below_route(user_id, producers):
             return producer(route_pass, **kwargs)
         return producer(user_id, **kwargs)
 
-    return _count_passes(lambda: [
-        _offer(producer, **kwargs) for producer, kwargs in producers
-    ])
+    with counting_read_passes() as counter:
+        _guard("passes_below_route", lambda: [
+            _offer(producer, **kwargs) for producer, kwargs in producers
+        ])
+    return counter["n"]
+
+
+def _savings_page_passes(user_id):
+    """Count the read passes ONE ``/savings`` render opens, whole.
+
+    Counted whole rather than below-the-route because that route calls exactly
+    one producer, so the producer IS the render's door and opening the pass
+    there is correct.  The expected move is 2 -> 1, not 2 -> 0.
+    """
+    with counting_read_passes() as counter:
+        _guard("savings_page_passes", lambda: (
+            savings_dashboard_service.compute_dashboard_data(user_id)
+        ))
+    return counter["n"]
 
 
 def _pass_counts(user_id):
@@ -308,9 +352,7 @@ def _pass_counts(user_id):
              {"merit_horizon_override": _MERIT_HORIZON_WHATIF}),
             (retirement_levers.compute_lever_data, {}),
         ]),
-        "savings_page_total": _count_passes(lambda: (
-            savings_dashboard_service.compute_dashboard_data(user_id)
-        )),
+        "savings_page_total": _savings_page_passes(user_id),
     }
 
 

@@ -89,7 +89,8 @@ def dashboard():
     owner, one baseline scenario and one day.  Each built a pass of its own
     until this leaf, so the two cards could be computed against different days
     -- reproduced on a production clone at ``$4.18`` of after-tax projected
-    savings and one paycheck of countdown across a midnight-into-payday render.
+    savings over projection axes one period apart, across a
+    midnight-into-payday render.
 
     **What that buys, stated exactly.**  Every figure resolved THROUGH the pass
     now shares one clock, and a producer below cannot be reached without being

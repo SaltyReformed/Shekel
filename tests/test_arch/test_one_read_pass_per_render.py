@@ -27,9 +27,12 @@ Two figures published on ONE screen from two passes are two figures computed
 against two clocks.  Reproduced on that clone by pinning each pass to a day
 either side of a payday: the verdict card's after-tax projected savings read
 ``$836,398.65`` while the levers card beside it read ``$836,402.83`` -- ``$4.18``
-apart -- and the countdown disagreed by one paycheck (517 against 516).  The
-figures were not wrong; they contradicted each other, and nothing in the
-application could notice.
+apart.  The two projection AXES differed by one period (517 against 516), which
+is not merely a countdown: the contribution lever's annuity factor folds over
+the baseline probe's axis, so a one-period difference changes the extra
+per-period contribution the page tells the owner to make.  The figures were not
+wrong; they contradicted each other, and nothing in the application could
+notice.
 
 Why this test is BEHAVIORAL, not a name list
 --------------------------------------------
@@ -44,14 +47,17 @@ in.
 ``app/services/**`` calls ``BalanceContext.build``", the pass built at the HTTP
 boundary and nowhere below it (adversarial design review, 2026-08-16).  That is
 not a name list and it is the right end state; **eight service modules stand
-between here and it** (measured, ``grep -rl "BalanceContext\\.build"
-app/services/``): ``calendar_service``, ``dashboard_pulse_service``,
-``dashboard_service``, ``investment_dashboard_service/_context``,
+between here and it**, measured with ``grep -rl "BalanceContext\\.build("
+app/services/`` -- the trailing paren matters, because the bare name also
+matches the docstring in ``retirement_projection`` that records the call this
+leaf DELETED, and reports nine.  They are ``calendar_service``,
+``dashboard_pulse_service``, ``dashboard_service``,
+``investment_dashboard_service/_context``,
 ``investment_dashboard_service/_orchestrator``, ``loan_recurrence_sync``,
-``savings_dashboard_service/_data`` and ``tax_report_service``.  The seventh is
-one of THESE two pages -- it is ``/savings``'s own door, left deliberately (see
-``_orchestrator.compute_dashboard_data``) and owned by ``C2-f2d-3``.  Ledger row
-**P56** carries the layer predicate.  Asserting it here today would fail on
+``savings_dashboard_service/_orchestrator`` and ``tax_report_service``.  The
+seventh is one of THESE two pages -- it is ``/savings``'s own door, left
+deliberately (see ``_orchestrator._pass_for``) and owned by ``C2-f2d-3``.
+Ledger row **P56** carries the layer predicate.  Asserting it here today would fail on
 eight modules this leaf does not touch, so the gate is per-render and grows a
 render at a time.
 
@@ -71,34 +77,13 @@ Test IDs
   must be able to fail, or the three above grade nothing)
 """
 
-from contextlib import contextmanager
 from decimal import Decimal
 
 from app.services.balance_at import BalanceContext
-from tests._test_helpers import make_investment_account
-
-
-@contextmanager
-def _counting_read_passes():
-    """Count every ``BalanceContext.build`` while the block runs.
-
-    Patched on the CLASS rather than on any module's imported name: several
-    producers hold their own reference to ``BalanceContext``, so patching one
-    module's attribute would count some builds and miss others -- and a gate
-    that undercounts reads exactly like a gate that passes.
-    """
-    counter = {"n": 0}
-    real = BalanceContext.build.__func__
-
-    def counting(cls, user_id, as_of=None):
-        counter["n"] += 1
-        return real(cls, user_id, as_of)
-
-    BalanceContext.build = classmethod(counting)
-    try:
-        yield counter
-    finally:
-        BalanceContext.build = classmethod(real)
+from tests._test_helpers import (
+    counting_read_passes,
+    make_investment_account,
+)
 
 
 def _seed_projecting_account(db, seed_user, seed_periods_today):
@@ -144,7 +129,7 @@ class TestOneReadPassPerRender:
         with app.app_context():
             _seed_projecting_account(db, seed_user, seed_periods_today)
 
-        with _counting_read_passes() as counter:
+        with counting_read_passes() as counter:
             resp = auth_client.get("/retirement")
 
         assert resp.status_code == 200
@@ -166,7 +151,7 @@ class TestOneReadPassPerRender:
         with app.app_context():
             _seed_projecting_account(db, seed_user, seed_periods_today)
 
-        with _counting_read_passes() as counter:
+        with counting_read_passes() as counter:
             resp = auth_client.get("/savings")
 
         assert resp.status_code == 200
@@ -189,7 +174,7 @@ class TestOneReadPassPerRender:
         with app.app_context():
             _seed_projecting_account(db, seed_user, seed_periods_today)
 
-        with _counting_read_passes() as counter:
+        with counting_read_passes() as counter:
             resp = auth_client.get(
                 "/retirement/readiness"
                 "?merit_raise_horizon_years=7&months=24",
@@ -220,11 +205,11 @@ class TestOneReadPassPerRender:
         with app.app_context():
             _seed_projecting_account(db, seed_user, seed_periods_today)
 
-        with _counting_read_passes() as render_only:
+        with counting_read_passes() as render_only:
             resp = auth_client.get("/retirement")
         assert resp.status_code == 200
 
-        with _counting_read_passes() as render_plus_one:
+        with counting_read_passes() as render_plus_one:
             assert auth_client.get("/retirement").status_code == 200
             with app.app_context():
                 BalanceContext.build(seed_user["user"].id)
