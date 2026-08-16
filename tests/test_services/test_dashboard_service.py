@@ -113,7 +113,8 @@ class TestBillRowSingleBase:
         a number the test handed itself.
         """
         contributions = cash_ledger.contributions_by_id(
-            seed_user["user"].id, txn.scenario_id, [txn],
+            [txn],
+            cash_ledger.amount_basis(seed_user["user"].id, txn.scenario_id),
         )
         return dashboard_service.txn_to_bill_dict(
             txn, today, contributions[txn.id],

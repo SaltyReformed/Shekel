@@ -39,7 +39,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.cash_ledger import contributions_by_id
+from app.services.cash_ledger import AmountBasis, contributions_by_id
 from app.services.investment_projection import (
     InvestmentInputs,
     PricedContribution,
@@ -260,7 +260,7 @@ def load_investment_params_for_accounts(
 
 
 def load_shadow_income_contributions_for_accounts(
-    user_id: int, scenario_id: int,
+    basis: AmountBasis,
     account_ids: list[int], period_ids: list[int],
 ) -> ShadowContributions:
     """Return PRICED shadow-income contributions across many accounts.
@@ -311,9 +311,12 @@ def load_shadow_income_contributions_for_accounts(
     that is no longer optional.
 
     Args:
-        user_id: The owner of the accounts; scopes the salary producer behind
-            the amount basis.
-        scenario_id: The scenario the amounts resolve under.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis` -- the owner and the
+            scenario these amounts resolve under, and the derivations they
+            resolve through.  Taken rather than built here since plan step
+            X-au-c2b, so a caller that also prices its own rows pays for the
+            paycheck engine once (findings **N-268**, **N-269**).
         account_ids: Investment / retirement account ids to scope to.
         period_ids: Pay-period ids to scope the contribution window
             against.
@@ -353,9 +356,7 @@ def load_shadow_income_contributions_for_accounts(
         (row, payday) for row, payday in rows
         if status_contributes_to_balance(row)
     ]
-    amounts = contributions_by_id(
-        user_id, scenario_id, [row for row, _ in counted],
-    )
+    amounts = contributions_by_id([row for row, _ in counted], basis)
     return ShadowContributions(
         records=[
             PricedContribution(
@@ -375,7 +376,7 @@ def load_shadow_income_contributions_for_accounts(
 
 
 def load_shadow_income_contributions_for_account(
-    user_id: int, scenario_id: int,
+    basis: AmountBasis,
     account_id: int, period_ids: list[int],
 ) -> ShadowContributions:
     """Return PRICED shadow-income contributions into a single account.
@@ -388,8 +389,7 @@ def load_shadow_income_contributions_for_account(
     not issue an ``IN ()`` query against PostgreSQL.
 
     Args:
-        user_id: The account's owner; scopes the amount basis.
-        scenario_id: The scenario the amounts resolve under.
+        basis: The read pass's amount basis (see the batch variant).
         account_id: ID of the investment / retirement account.
         period_ids: Pay-period ids to scope the contribution window
             against.
@@ -399,7 +399,7 @@ def load_shadow_income_contributions_for_account(
         records (see the batch variant for what pricing at this boundary buys).
     """
     return load_shadow_income_contributions_for_accounts(
-        user_id, scenario_id, [account_id], period_ids,
+        basis, [account_id], period_ids,
     )
 
 

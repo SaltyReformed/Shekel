@@ -214,7 +214,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # whole pay-period set (finding **N-228**) -- though on this set it makes
     # no query at all, every row being an expense.
     contributions = cash_ledger.contributions_by_id(
-        user_id, balance_ctx.scenario_id, unpaid_rows,
+        unpaid_rows, balance_ctx.amounts(),
     )
 
     due_soon = _pulse_due_soon(unpaid_rows, contributions, current_period)

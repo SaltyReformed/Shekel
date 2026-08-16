@@ -138,107 +138,135 @@ def get_current_gross_biweekly(
     return breakdown.earnings.gross_biweekly
 
 
-def live_projected_net(
-    user_id: int,
-    scenario_id: int,
-    transactions: list,
-) -> dict[int, Decimal]:
-    """Return ``{transaction_id: live_net_pay}`` for salary-linked Projected income.
+class SalaryPricing:
+    """What the owner's active salary profiles pay, per template and period.
 
-    The read-time analogue of the recurrence engine's generation-time
-    amount: for every Projected, non-overridden income transaction in
-    ``transactions`` whose template is linked to an active
-    :class:`SalaryProfile` in ``scenario_id``, recompute the net
-    paycheck LIVE from that profile -- the same path the salary
-    projection page uses (:func:`paycheck_calculator.project_salary`
-    over the full pay-period set, tax configs resolved PER period year --
-    the same per-year resolution the recurrence engine uses to GENERATE
-    the stored amount (DH-#30) -- the profile's calibration).  The result
-    lets a balance/display consumer
-    treat the stored ``Transaction.estimated_amount`` as a cache that
-    cannot silently disagree with the salary page after a profile,
-    calibration, or financial-calc CODE change that did not fire a
-    regeneration (the staleness gap that shipped the SS regression).
+    **The DERIVATION half of the salary amount rule, split from its per-row
+    lookup at plan step X-au-c2b.**  Everything expensive behind a paycheck's
+    live figure -- the owner's whole pay-period set, each profile's tax configs
+    resolved per period YEAR, and ``paycheck_calculator.project_salary`` run over
+    the complete set so the biweekly rounding residue reconciles against the
+    annual figure -- depends on ``(user_id, scenario_id)`` and on NOTHING about
+    which rows a caller happens to have loaded.  Keying it that way is what lets
+    one read pass resolve it ONCE however many row sets ask
+    (:class:`~app.services.cash_ledger.AmountBasis`).
 
-    Only transactions that are ALL of:
+    It was a ``{transaction_id: Decimal}`` map built per row set until that step,
+    and the two consequences are why this type exists.  A request that loaded two
+    row sets ran the paycheck engine twice (findings **N-268**, **N-269**), and a
+    row outside the set it was built over had no answer -- which forced the basis
+    to carry the set as a membership guard so the miss could be REFUSED rather
+    than read as "this row has no live figure".  Keyed on the definition and the
+    period instead, there is no membership question left to get wrong: the pair
+    IS the paycheck's identity.
 
-      * income (:attr:`Transaction.is_income`),
-      * Projected (:func:`~app.utils.balance_predicates.is_projected` --
-        Received / Settled income carries a realized ``actual_amount``
-        that is a historical fact, never a recomputable projection),
-      * NOT user-overridden (``is_override`` -- a manual amount the user
-        deliberately set is respected, mirroring the recurrence engine),
-      * linked to a template that maps to an active ``SalaryProfile`` in
-        ``scenario_id``,
+    **The derivation is LAZY**, so a read pass whose rows hold no paycheck pays
+    nothing: :func:`salary_net_for` answers ``None`` from the row's own columns
+    before it touches :attr:`net_by_template_period`.  That is the "no query
+    when there are no candidates" property the row-set producer had, kept rather
+    than traded away for the sharing.
+    """
 
-    appear in the result.  Every other transaction is omitted, so a
-    caller's ``overrides.get(txn.id, <the row's own contribution>)`` falls back
-    to the stored value for non-salary income, overridden rows, and
-    expenses.
+    def __init__(self, user_id: int, scenario_id: int) -> None:
+        """Pin the owner and scenario; resolve nothing yet.
 
-    Boundary discipline: no Flask import; inputs are plain data
-    (ids + an already-loaded transaction list), output is a plain dict.
-    The full-period ``project_salary`` call is what makes the per-period
-    gross reconcile exactly (:func:`paycheck_calculator._gross_biweekly_for_period`),
-    so callers pass the transactions they have loaded -- this helper
-    sources the canonical full pay-period set itself.
+        Args:
+            user_id: The owner whose active profiles price these rows.
+            scenario_id: The scenario to resolve profiles against.
+        """
+        self._user_id = user_id
+        self._scenario_id = scenario_id
+        self._net: "dict[tuple[int, int], Decimal] | None" = None
+
+    @property
+    def net_by_template_period(self) -> dict[tuple[int, int], Decimal]:
+        """``{(template_id, pay_period_id): net pay}``, resolved on first read.
+
+        Covers every period each active profile's projection reaches.  A
+        template named by no active profile in this scenario is absent, and so
+        is a period the projection does not cover -- both are the refusals rule
+        2 raises rather than substituting a stored figure.
+        """
+        if self._net is None:
+            self._net = _resolve_salary_net(self._user_id, self._scenario_id)
+        return self._net
+
+
+def salary_pricing(user_id: int, scenario_id: int) -> SalaryPricing:
+    """Return the read pass's :class:`SalaryPricing` for an owner and scenario.
+
+    The named constructor the amount model calls, so no caller reaches for the
+    class directly and the two pins are always supplied together.  Resolves
+    nothing: the projection behind it is lazy, so a pass that prices no paycheck
+    issues no query.
 
     Args:
-        user_id: Owning user; scopes the SalaryProfile and pay-period
-            queries.
-        scenario_id: Scenario to resolve salary profiles against; the
-            grid and every balance surface are scenario-scoped, and a
-            profile drives income only within its own scenario.
-        transactions: Already-loaded :class:`Transaction` rows (the
-            caller's balance or display set).  Each must expose
-            ``is_income``, ``status`` (for ``is_projected``),
-            ``is_override``, ``template_id``, ``pay_period_id``, ``id``.
+        user_id: The owner whose profiles price these rows.
+        scenario_id: The scenario to resolve profiles against.
 
     Returns:
-        ``dict`` mapping transaction id to the live net pay
-        (:class:`~decimal.Decimal`) for the transaction's period.
-        Empty when there are no salary-linked Projected income rows --
-        the common case for non-salary accounts and expense-only sets,
-        and a fast no-op (no query) when no candidate rows exist.
+        The unresolved :class:`SalaryPricing` handle.
     """
-    candidates = [
-        txn for txn in transactions
-        if txn.is_income
-        and is_projected(txn)
-        and not txn.is_override
-        and txn.template_id is not None
-    ]
-    if not candidates:
-        return {}
+    return SalaryPricing(user_id, scenario_id)
 
-    template_ids = {txn.template_id for txn in candidates}
+
+def _resolve_salary_net(
+    user_id: int, scenario_id: int,
+) -> dict[tuple[int, int], Decimal]:
+    """Resolve what every active salary profile pays, per template and period.
+
+    The owner-and-scenario-scoped derivation behind
+    :func:`salary_net_for` and :func:`live_projected_net`.  Runs
+    :func:`paycheck_calculator.project_salary` once per active profile over the
+    owner's full pay-period set -- required, not an optimisation: the biweekly
+    residue reconciliation anchors against the complete annual figure, exactly as
+    the salary projection page does.  Tax configs resolve PER period year
+    (DH-#30), the same per-year resolution the recurrence engine uses to GENERATE
+    the stored amount, so the live figure and the generated one cannot disagree
+    for want of a bracket set.
+
+    **It loads every active profile rather than only those a caller's rows
+    name**, which is the row-set independence this split exists for.  The
+    figures are identical either way -- ``project_salary`` never reads the
+    caller's rows -- so the only difference is that a second row set in the same
+    read pass now costs nothing.
+
+    **The profile query is ORDERED, and it was not before.**  Two active profiles
+    naming ONE template in one scenario is expressible (nothing constrains it),
+    and the map this builds keeps the last writer.  Unordered, that was whichever
+    row the planner reached first, so one owner could be priced two ways across
+    two requests; ordering by id makes the collision resolve the same way every
+    time.  The collision itself is finding **N-296**, reported rather than fixed
+    here: which profile SHOULD win is a question for the salary arc, and
+    answering it inside a reader refactor would be an unreviewed ruling.
+
+    Args:
+        user_id: The owner whose profiles to resolve; also scopes the
+            pay-period set the projection runs over.
+        scenario_id: The scenario to resolve profiles against -- a profile
+            drives income only within its own scenario.
+
+    Returns:
+        ``{(template_id, pay_period_id): net pay}``.  Empty when the owner has
+        no active profile in the scenario, which costs one indexed query and no
+        projection.
+    """
     profiles = (
         db.session.query(SalaryProfile)
         .filter(
             SalaryProfile.user_id == user_id,
             SalaryProfile.scenario_id == scenario_id,
             SalaryProfile.is_active.is_(True),
-            SalaryProfile.template_id.in_(template_ids),
         )
+        .order_by(SalaryProfile.id)
         .all()
     )
-    profile_by_template = {p.template_id: p for p in profiles}
-    if not profile_by_template:
+    if not profiles:
         return {}
 
-    # Compute each profile's live per-period net ONCE.  The full
-    # pay-period set is required so the biweekly residue reconciliation
-    # anchors against the complete annual figure, exactly as the salary
-    # projection page does.
     all_periods = pay_period_service.get_all_periods(user_id)
-    net_by_period_per_profile: dict[int, dict[int, Decimal]] = {}
-    for profile in profile_by_template.values():
-        # Resolve tax configs PER period year (DH-#30) so this live
-        # recompute uses each period's own year's brackets/FICA -- exactly
-        # as the recurrence engine does when it GENERATES the stored grid
-        # amount.  A single current-year dict (the pre-fix behaviour) made
-        # the two silently disagree once future-year configs existed,
-        # breaking the reconciliation contract this helper advertises.
+    net_by_template_period: dict[tuple[int, int], Decimal] = {}
+    for profile in profiles:
         configs_by_year = load_tax_configs_for_periods(
             user_id, profile, all_periods,
         )
@@ -246,16 +274,85 @@ def live_projected_net(
             profile, all_periods, configs_by_year=configs_by_year,
             calibration=profile.calibration,
         )
-        net_by_period_per_profile[profile.id] = {
-            bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
-        }
+        for breakdown in breakdowns:
+            net_by_template_period[
+                (profile.template_id, breakdown.period.period_id)
+            ] = breakdown.earnings.net_pay
+    return net_by_template_period
 
-    overrides: dict[int, Decimal] = {}
-    for txn in candidates:
-        profile = profile_by_template.get(txn.template_id)
-        if profile is None:
-            continue
-        net = net_by_period_per_profile[profile.id].get(txn.pay_period_id)
-        if net is not None:
-            overrides[txn.id] = net
-    return overrides
+
+def salary_net_for(txn, pricing: SalaryPricing) -> "Decimal | None":
+    """Return what the salary profile pays for *txn*'s period, or ``None``.
+
+    **The PRICING lookup -- amount rule 2's whole body** (ruling **R-FI**), split
+    from the read-time repair below at plan step X-au-c2b.  It asks only what a
+    paycheck IS worth, so it reads nothing about whether the row still counts:
+    not ``is_projected``, not ``is_override``, not ``is_deleted``.  That is
+    finding **N-262**'s rule applied one tier down -- those three say whether a
+    row COUNTS and who last touched it, never who prices it -- and it is why a
+    Cancelled paycheck resolves like any other instead of refusing for a reason
+    that has nothing to do with pricing.
+
+    ``is_income`` IS read, and it is a pricing fact rather than a status one: a
+    salary profile states a NET PAY, so an expense row on a salary-linked
+    template has no figure here to find.  ``amount_rule`` still places such a
+    row under rule 2 (it classifies by the definition, which is salary-linked),
+    so this returning ``None`` is what turns it into that rule's refusal.
+
+    Args:
+        txn: The row being priced.  ``is_income``, ``template_id`` and
+            ``pay_period_id`` are read.
+        pricing: The read pass's :class:`SalaryPricing`.
+
+    Returns:
+        The live net pay for the row's period, or ``None`` when no active
+        profile in this scenario names its template, when the projection does
+        not cover its period, or when it is not an income row.
+    """
+    if not txn.is_income or txn.template_id is None:
+        return None
+    return pricing.net_by_template_period.get(
+        (txn.template_id, txn.pay_period_id),
+    )
+
+
+def live_projected_net(txn, pricing: SalaryPricing) -> "Decimal | None":
+    """Return the live net that SUPERSEDES *txn*'s stored figure, or ``None``.
+
+    The read-time repair, and the half of the old batch producer that reads a
+    row's status.  A stored ``Transaction.estimated_amount`` is a cache of this
+    derivation (finding **N-224**), so every balance and display surface shows
+    the recompute rather than the column -- which is what keeps the grid from
+    disagreeing with the salary page after a profile, calibration, or
+    financial-calc CODE change that fired no regeneration.
+
+    Only a row that is ALL of:
+
+      * income with a template, and priced by an active profile in this
+        scenario for its own period (:func:`salary_net_for`);
+      * Projected (:func:`~app.utils.balance_predicates.is_projected` --
+        Received / Settled income carries a realized ``actual_amount`` that is a
+        historical fact, never a recomputable projection);
+      * NOT user-overridden (``is_override`` -- a manual amount the user
+        deliberately set is respected, mirroring the recurrence engine),
+
+    has a live figure.  Every other row answers ``None`` and keeps its stored
+    one, so the repair stays dormant for non-salary income, overridden rows and
+    expenses.
+
+    **This gate is the repair's, NOT the pricing rule's**, and separating them is
+    plan step X-au-c2b.  Ruling R-FI deletes the repair outright -- plan steps
+    X-au-d and X-au-g declare these rows DERIVED, after which the resolver
+    answers them from :func:`salary_net_for` and there is no stored figure left
+    to supersede.  Until then the two coexist and only this one reads status.
+
+    Args:
+        txn: The row to ask about.
+        pricing: The read pass's :class:`SalaryPricing`.
+
+    Returns:
+        The live net pay when the repair applies to this row, else ``None``.
+    """
+    if not is_projected(txn) or txn.is_override:
+        return None
+    return salary_net_for(txn, pricing)

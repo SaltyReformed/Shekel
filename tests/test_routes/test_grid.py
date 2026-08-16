@@ -8909,7 +8909,9 @@ class TestGridInterestAccrual:
         # The live recompute revalues this income at $5,000 (vs $1,000 stored).
         monkeypatch.setattr(
             income_service, "live_projected_net",
-            lambda uid, sid, txns: {income.id: Decimal("5000.00")},
+            lambda txn, pricing: (
+                Decimal("5000.00") if txn.id == income.id else None
+            ),
         )
         current = pay_period_service.get_current_period(user_id)
         # The seam builds the live map itself (ruling R-Q), so no override is

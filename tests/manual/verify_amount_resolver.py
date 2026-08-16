@@ -218,8 +218,8 @@ def _grade_group(account, scenario_id, rows):
     Returns:
         A list of per-row record dicts.
     """
-    basis = amount_basis(account.user_id, scenario_id, rows)
-    overrides = live_amounts(basis)
+    basis = amount_basis(account.user_id, scenario_id)
+    overrides = live_amounts(basis, rows)
 
     records = []
     for txn in rows:

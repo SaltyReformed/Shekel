@@ -40,9 +40,9 @@ Three rule families live here, split by the question they answer.
 What a row is worth while it is still PROJECTED -- a reservation, money not yet
 gone -- is two of them, composing in one direction:
 
-  * :func:`live_override` reads the two live producers' answers out of the
-    basis; it IS the read-time repair ruling R-FI deletes, and the per-kind
-    cutovers take it with the producers it merges; and
+  * :func:`live_override` asks the basis's two live DERIVATIONS what supersedes
+    the row's stored figure; it IS the read-time repair ruling R-FI deletes, and
+    the per-kind cutovers take it with the producers it merges; and
   * :func:`income_amount` / :func:`_expense_amount` CONSUME that lookup, falling
     through to the valuation -- and, for an expense carrying entries, to the
     entries-aware reservation formula :func:`_entry_checking_impact`.
@@ -84,11 +84,7 @@ from app.models.transaction import Transaction
 from app.services.row_valuation import fixed_contribution, owned_contribution
 from app.utils.balance_predicates import is_balance_contributing, is_projected
 
-from ._amount_source import (
-    AmountBasis,
-    amount_basis,
-    resolve_transaction_amount,
-)
+from ._amount_source import AmountBasis, resolve_transaction_amount
 
 
 @dataclass(frozen=True)
@@ -253,44 +249,69 @@ def live_override(txn, basis: AmountBasis):
     transfer shadows -- but that rests on a convention rather than a constraint,
     which is why the precedence is preserved rather than declared impossible.
 
+    **It asks each derivation directly since plan step X-au-c2b**, where it
+    used to index a map :func:`live_amounts` had built for a whole row set.  The
+    order is the merge rule and the LOAN half still wins a collision, exactly as
+    the ``{**salary_net, **loan_cash}`` flattening it replaced did.  The two
+    candidate sets are disjoint in practice -- salary income rows against
+    loan-payment transfer shadows -- but that rests on a convention rather than
+    a constraint, which is why the precedence is preserved rather than declared
+    impossible.
+
+    Each half answers ``None`` from the row's own columns before it touches its
+    derivation, so a row set holding neither kind resolves nothing and issues no
+    query.
+
     Args:
         txn: The Transaction being priced.
-        basis: The account's :class:`~._amount_source.AmountBasis`.
+        basis: The read pass's :class:`~._amount_source.AmountBasis`.
 
     Returns:
-        The override ``Decimal`` when either producer answered for ``txn``,
+        The override ``Decimal`` when either derivation answered for ``txn``,
         else None.
     """
-    return live_amounts(basis).get(txn.id)
+    # Pylint: ``import-outside-toplevel`` -- the paycheck / tax and
+    # loan-resolver stacks stay off this module's load path, the same reason
+    # ``_amount_source.amount_basis`` imports them at call time (finding N-267).
+    # pylint: disable=import-outside-toplevel
+    from app.services.income_service import live_projected_net
+    loan = basis.loans.live_cash(txn)
+    if loan is not None:
+        return loan
+    return live_projected_net(txn, basis.salary)
 
 
-def live_amounts(basis: AmountBasis) -> dict[int, Decimal]:
-    """Return both live producers' answers as ONE ``{transaction_id: Decimal}`` map.
+def live_amounts(basis: AmountBasis, rows) -> dict[int, Decimal]:
+    """Return both live derivations' answers over *rows* as ONE map.
 
-    The map form of :func:`live_override`, and the ONE statement of the merge --
-    which is why that per-row lookup delegates here rather than testing the two
-    maps in its own order.  It exists for the surfaces that want a LOOKUP rather
-    than a per-row question: the grid publishes it so a cell and the balance row
-    beside it read one object (ruling R-Q), and the period figures carry it for
-    the same reason.
+    The map form of :func:`live_override`, and it delegates to that per-row
+    question rather than restating the merge -- which is what keeps the two from
+    coming to disagree about precedence.  It exists for the surfaces that want a
+    LOOKUP rather than a per-row question: the grid publishes it so a cell and
+    the balance row beside it read one object (ruling R-Q), and the period
+    figures carry it for the same reason.
 
-    The basis keeps the two producers APART because which rule prices a row is a
-    fact about the row and never about which map its id turned up in (ruling
-    R-FI's refuted discriminator).  A surface that only wants "is there a live
-    figure for this id" is not asking that question, so merging for it costs
-    nothing -- and the loan half wins a collision, exactly as the
-    ``{**salary_net, **loan_cash}`` this replaced did.  The key sets are
-    disjoint in practice (salary income rows against loan-payment transfer
-    shadows) but that rests on a convention rather than a constraint, so the
-    precedence is preserved rather than declared impossible.
+    **It takes the rows it is a map OVER** (plan step X-au-c2b).  It used to
+    flatten two ``{transaction_id: Decimal}`` maps the basis carried, which is
+    why the basis had to be built per row set at all; a basis now holds the
+    derivations, and a map keyed by row id is something a caller asks for about
+    ITS OWN rows.  Only the rows a live derivation answers for appear, so the
+    result is still the "is there a live figure for this id" lookup its
+    consumers read it as.
 
     Args:
-        basis: The :class:`~._amount_source.AmountBasis` to flatten.
+        basis: The read pass's :class:`~._amount_source.AmountBasis`.
+        rows: The loaded rows to build the map over.
 
     Returns:
-        ``{transaction_id: Decimal}``, empty when neither producer answered.
+        ``{transaction_id: Decimal}``, empty when no row has a live figure.
     """
-    return {**basis.salary_net, **basis.loan_cash}
+    answers: dict[int, Decimal] = {}
+    for txn in rows:
+        live = live_override(txn, basis)
+        if live is not None:
+            answers[txn.id] = live
+    return answers
 
 
 def contributed_amount(txn, resolved: Decimal) -> Decimal:
@@ -324,17 +345,22 @@ def contributed_amount(txn, resolved: Decimal) -> Decimal:
     return resolved if fixed is None else fixed
 
 
-def contributions_by_id(user_id, scenario_id, rows) -> dict[int, Decimal]:
+def contributions_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
     """Return ``{transaction_id: what the row contributes}`` for *rows*.
 
     **The BATCH valuation every reader that can see a still-projected row uses**
-    (plan step X-au-c2).  It builds ONE
-    :class:`~._amount_source.AmountBasis` over the whole set -- so the paycheck
-    engine runs once per read pass rather than once per row (finding **N-228**)
-    and once per read pass rather than once per ACCOUNT, which is what re-keying
-    the basis on the owner bought -- and then values each row through
+    (plan step X-au-c2).  It values each row through
     :func:`~app.services.row_valuation.fixed_contribution`, resolving only the
-    rows that reach the amount model at all.
+    rows that reach the amount model at all -- so the paycheck engine runs once
+    per read pass rather than once per row (finding **N-228**).
+
+    **It TAKES the basis rather than building one** (plan step X-au-c2b).  A
+    basis is pinned to an owner and a scenario, not to a row set, so a caller
+    that also needs the budget map or the live-override map asks all of them
+    against ONE -- which is how a single request stopped running the paycheck
+    engine once per row set (findings **N-268**, **N-269**).  A caller with a
+    read pass passes ``ctx.amounts()``; one without builds its own with
+    :func:`~._amount_source.amount_basis`.
 
     That ordering is the point rather than an optimisation: an excluded row is
     worth ``$0.00`` and its derived amount has no producer to answer it, so a
@@ -347,10 +373,10 @@ def contributions_by_id(user_id, scenario_id, rows) -> dict[int, Decimal]:
     fabricated figure in a money path.
 
     Args:
-        user_id: The owner of *rows*; scopes the salary producer.
-        scenario_id: The scenario the amounts resolve under.
         rows: The loaded rows to value.  They may span accounts -- the basis is
-            keyed on the owner, not on one account.
+            keyed on the owner, not on one account -- but every one must belong
+            to *basis*'s owner and scenario.
+        basis: The read pass's :class:`~._amount_source.AmountBasis`.
 
     Returns:
         ``{transaction_id: Decimal}`` covering every row.
@@ -360,7 +386,6 @@ def contributions_by_id(user_id, scenario_id, rows) -> dict[int, Decimal]:
             answer.  A refusal is never a fallback (see
             :mod:`app.services.cash_ledger._amount_source`).
     """
-    basis = amount_basis(user_id, scenario_id, rows)
     return {row.id: contribution_of(row, basis) for row in rows}
 
 
@@ -873,7 +898,7 @@ def _expense_amount(txn, basis: AmountBasis):
     The expense-leg analogue of :func:`income_amount`.  When a live producer
     answered for the row -- e.g. a recurring loan-payment transfer whose cash
     debit is derived from the destination loan via
-    :func:`app.services.loan_payment_service.live_loan_transfer_amounts` -- the
+    :meth:`~app.services.loan_payment_service.LoanPricing.live_cash` -- the
     live amount replaces every other answer.  Otherwise it falls to
     :func:`_entry_aware_amount`, preserving the entry-checking formula for
     envelope expenses.

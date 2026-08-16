@@ -71,8 +71,11 @@ from decimal import Decimal
 
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
-from app.services import loan_payment_service
-from app.services.cash_ledger import amount_basis, resolve_transaction_amount
+from app.services.cash_ledger import (
+    AmountBasis,
+    amount_basis,
+    resolve_transaction_amount,
+)
 from app.services.row_valuation import fixed_contribution
 from app.services.transfer_service._status import apply_status_to_all_three
 from app.services.transfer_service._validation import TransferRows
@@ -127,7 +130,7 @@ def _reject_unsettleable(shadow: Transaction) -> None:
         )
 
 
-def frozen_amount(shadow: Transaction) -> Decimal | None:
+def frozen_amount(shadow: Transaction, basis: AmountBasis) -> Decimal | None:
     """Return the live payment-date figure a settle FREEZES, or ``None``.
 
     The capture-on-settle rule: when the operator settles an auto-derived loan
@@ -152,8 +155,15 @@ def frozen_amount(shadow: Transaction) -> Decimal | None:
     operator owns that amount), an already-settled shadow, a transfer that is
     not a loan payment (no settings row), a MANUAL payment with no standing
     extra (its stored estimate already IS the cash), or a loan that cannot
-    resolve.  ``loan_payment_service.live_loan_payment_amount`` owns that list;
-    this is a named seam over it, not a second copy.
+    resolve.  :meth:`~app.services.loan_payment_service.LoanPricing.live_cash`
+    owns that list; this is a named seam over it, not a second copy.
+
+    **It asks the pass's OWN loan derivation** (plan step X-au-c2b).  It called
+    ``live_loan_payment_amount``, a second implementation of that same rule
+    whose docstring said it "mirrors" the first's candidate filter -- and which
+    re-queried the transfer and re-resolved the loan for every offered row,
+    which is finding **N-269**.  One derivation, asked twice, costs the second
+    ask nothing.
 
     **The ``is_projected`` guard inside makes the freeze ONE-SHOT**, and
     :func:`settle` is placed to keep it that way: it resolves this BEFORE the
@@ -166,13 +176,14 @@ def frozen_amount(shadow: Transaction) -> Decimal | None:
         shadow: Either leg of the transfer -- both share the transfer id, the
             pay period and the due date, so either resolves the same figure and
             Transfer Invariant 3 is preserved whichever is passed.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`, whose ``loans``
+            derivation answers.
 
     Returns:
         The ``Decimal`` to freeze, or ``None``.
     """
-    return loan_payment_service.live_loan_payment_amount(
-        shadow, shadow.scenario_id,
-    )
+    return basis.loans.live_cash(shadow)
 
 
 def settle_amount(shadow: Transaction) -> Decimal:
@@ -203,11 +214,15 @@ def settle_amount(shadow: Transaction) -> Decimal:
             price it.  A refusal is never a fallback.
     """
     _reject_unsettleable(shadow)
-    frozen = frozen_amount(shadow)
-    return _unfrozen_amount(shadow) if frozen is None else frozen
+    # ONE basis for both halves (plan step X-au-c2b, finding **N-269**): the
+    # freeze and the fall-through both price this shadow, and building one each
+    # is how a single offered row paid for the transfer lookup twice.
+    basis = amount_basis(shadow.account.user_id, shadow.scenario_id)
+    frozen = frozen_amount(shadow, basis)
+    return _unfrozen_amount(shadow, basis) if frozen is None else frozen
 
 
-def _unfrozen_amount(shadow: Transaction) -> Decimal:
+def _unfrozen_amount(shadow: Transaction, basis: AmountBasis) -> Decimal:
     """Return what *shadow* contributes when no freeze answers for it.
 
     The transfer twin's replacement for ``shadow.effective_amount`` (plan step
@@ -227,22 +242,18 @@ def _unfrozen_amount(shadow: Transaction) -> Decimal:
     producer run whose answer was discarded.
 
     **It is reached only when :func:`frozen_amount` answered ``None``.**  A
-    derive-mode loan payment is priced by the freeze, so this basis is built
-    exactly for the rows the loan resolver had no answer for.  What it still
-    costs on the rows that DO reach the resolver is one repeat of the transfer
-    /template lookup ``frozen_amount`` just made -- recorded rather than fixed,
-    because removing it means threading a resolved config into ``amount_basis``,
-    which is plan step X-au-f's redesign of this door.
-
-    A basis over ONE row is correct here rather than a batch: both public
-    surfaces price a single shadow -- the panel offers row by row and the settle
-    books one transfer -- so there is no row set to amortise a producer call
-    over.
+    derive-mode loan payment is priced by the freeze, so the resolver runs
+    exactly for the rows the loan derivation had no answer for.  It once repeated
+    the transfer / template lookup ``frozen_amount`` had just made -- finding
+    **N-269** -- which plan step X-au-c2b closed by handing both halves the same
+    basis: a derivation asked a second time answers from what it already
+    resolved.
 
     Args:
-        shadow: The leg being priced.  Its ``scenario_id`` is a column and its
-            ``account`` relationship is ``lazy="joined"``, so neither key costs
-            a query.
+        shadow: The leg being priced.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`, shared with
+            :func:`frozen_amount`.
 
     Returns:
         ``0`` for a row that contributes nothing, the entered ``actual_amount``
@@ -254,10 +265,7 @@ def _unfrozen_amount(shadow: Transaction) -> Decimal:
     fixed = fixed_contribution(shadow)
     if fixed is not None:
         return fixed
-    return resolve_transaction_amount(
-        shadow,
-        amount_basis(shadow.account.user_id, shadow.scenario_id, [shadow]),
-    )
+    return resolve_transaction_amount(shadow, basis)
 
 
 def settle(
@@ -357,8 +365,11 @@ def settle(
     # X-f2-c3 -- by the arm's correction predicate, by the dispatch's own
     # predicate, and by its fallback -- and each asking is a ``Transfer`` query
     # plus, for a derive-mode payment, a loan-basis resolve and an escrow load.
-    frozen = frozen_amount(rows.expense)
-    booked = _unfrozen_amount(rows.expense) if frozen is None else frozen
+    basis = amount_basis(rows.expense.account.user_id, rows.expense.scenario_id)
+    frozen = frozen_amount(rows.expense, basis)
+    booked = (
+        _unfrozen_amount(rows.expense, basis) if frozen is None else frozen
+    )
     correction = (
         submitted if submitted is not None and submitted != booked else None
     )

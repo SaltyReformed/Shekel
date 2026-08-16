@@ -77,7 +77,6 @@ from pathlib import Path
 import pytest
 import sqlalchemy.exc
 
-from app.services.cash_ledger._amount_source import AmountBasis
 from app.services.cash_ledger._amounts import (
     _entry_aware_amount,
     _expense_amount,
@@ -85,7 +84,12 @@ from app.services.cash_ledger._amounts import (
 )
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
-from tests._test_helpers import add_entry, add_txn, create_envelope_txn
+from tests._test_helpers import (
+    add_entry,
+    add_txn,
+    create_envelope_txn,
+    planted_basis,
+)
 
 
 # The four days these tests turn on, named for the fact each one is.  They are
@@ -115,23 +119,20 @@ _STATEMENT_DAY = date(2026, 1, 22)
 def _basis(*rows, overrides=None):
     """The :class:`AmountBasis` a producer would hand these rows.
 
-    Built HONESTLY rather than zeroed: ``priced_ids`` covers exactly the rows
-    passed, because the resolver refuses a row its basis was not built over, and
-    a test that reached a refusal by violating that contract would be grading
-    the contract instead of the rule.  ``overrides`` lands in the SALARY map --
-    either producer's map answers :func:`live_override` identically, and which
-    rule prices a row is never decided by which map its id turned up in.
+    ``overrides`` is planted on the live DERIVATIONS
+    (:class:`~tests._test_helpers.PlantedPricing`) rather than into a
+    ``{transaction_id: Decimal}`` map the basis carries: plan step X-au-c2b
+    made a basis hold the derivations themselves, keyed on an owner and a
+    scenario rather than on a row set.  Either half answers
+    :func:`live_override` identically, and which rule prices a row is never
+    decided by which one its id turned up in.
 
     **It was a ``ProjectedBasis`` carrying the account's clearing rule beside
     this until plan step X-f3b** (ruling **R-FM**), because the reservation
     asked which statement had cleared a purchase.  It asks the purchase now, so
     the wrapper and its second field went with the question.
     """
-    return AmountBasis(
-        priced_ids=frozenset(row.id for row in rows),
-        salary_net=dict(overrides or {}),
-        loan_cash={},
-    )
+    return planted_basis(*rows, overrides=overrides)
 _POSTED_AFTER_THE_STATEMENT = date(2026, 1, 23)
 
 
@@ -707,13 +708,22 @@ class TestTheEntriesRelationshipIsNotASeam:
 class _FakeRow:  # pylint: disable=too-few-public-methods
     """A non-ORM stand-in carrying only what a valuation rule may read.
 
-    Deliberately missing ``entries`` and ``status_id``: the ordering of
-    :func:`_entry_aware_amount`'s two guards is load-bearing, and this shape is
-    what proves it (see
+    Deliberately missing ``entries``, and missing ``status_id`` too when
+    *statusless* is set: the ordering of :func:`_entry_aware_amount`'s two
+    guards is load-bearing, and that shape is what proves it (see
     :meth:`TestTheLiveOverride.test_no_entries_short_circuits_before_the_status_read`).
+
+    **It grew the override seam's columns at plan step X-au-c2b**, and the
+    reason is the restructure itself: :func:`live_override` indexed a
+    ``{transaction_id: Decimal}`` map the basis carried, so it read no column at
+    all; it asks the two live DERIVATIONS per row now, and each answers ``None``
+    from the row's own columns before touching anything expensive.  Those reads
+    are the same ones the producers made when they BUILT that map over a row
+    set -- moved, not added -- so a stand-in for a row a valuation may see
+    carries them.
     """
 
-    def __init__(self, txn_id=None, effective_amount="77.00"):
+    def __init__(self, txn_id=None, effective_amount="77.00", statusless=False):
         self.id = txn_id
         # What the row OWNS, which since plan step X-au-c2 is what the
         # valuation reads: ``amount_source_id IS NULL`` says the figure is the
@@ -725,6 +735,18 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
         self.actual_amount = None
         self.is_deleted = False
         self.status = None
+        # What the live-override seam reads before it answers "nothing
+        # supersedes this row": the loan half asks for a transfer, the salary
+        # half for an income row on a template, and both for the two status
+        # facts.  ``None`` / ``False`` throughout, so neither derivation is
+        # reached and the fall-through under test is what runs.
+        self.transfer_id = None
+        self.is_override = False
+        self.is_income = False
+        self.template_id = None
+        self.pay_period_id = None
+        if not statusless:
+            self.status_id = None
 
 
 class TestTheLiveOverride:
@@ -827,5 +849,5 @@ class TestTheLiveOverride:
         ``is_projected`` reads ``status_id`` BEFORE it consults ``ref_cache``,
         so that attribute, not the cache, is what the ordering protects.
         """
-        row = _FakeRow(txn_id=1)
+        row = _FakeRow(txn_id=1, statusless=True)
         assert _entry_aware_amount(row, _basis(row)) == Decimal("77.00")

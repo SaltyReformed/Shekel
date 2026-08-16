@@ -651,6 +651,15 @@ _FENCED_MODULE_RULINGS = {
         # render.
         "calendar",
         "reported_periods",
+        # The read pass's AMOUNT-MODEL memo (plan step X-au-c2b).  A
+        # NON-producer on the ground ``calendar`` stands on: it hands back an
+        # ``AmountBasis``, which carries the two live DERIVATIONS a row's
+        # amount is priced from and no balance-at-T of any kind -- and
+        # ``cash_ledger.amount_basis`` is a public leaf BELOW this seam that any
+        # consumer may call directly for the identical value.  What this adds is
+        # that the seam and its caller cannot end up pricing one render's rows
+        # two ways.
+        "amounts",
     })),
     # The loan-payment LOADER module (:data:`_LOAN_PAYMENT_SEAM_MODULES`).  It
     # was "the one reader-allowlisted module outside the defining package" until
@@ -673,9 +682,20 @@ _FENCED_MODULE_RULINGS = {
         # figure of any kind.
         "prepare_payments_for_engine",
         # A projected payment's LIVE cash (P&I + current escrow + standing
-        # extra) -- what a payment is worth, not what an account owes.
-        "live_loan_payment_amount",
-        "live_loan_transfer_amounts",
+        # extra) -- what a payment is worth, not what an account owes.  Plan
+        # step X-au-c2b collapsed the two functions that answered this into
+        # ``LoanPricing``: ``live_cash`` is the rule both the display and the
+        # settle freeze ask, ``derive_cash`` its derive-mode arm.  Same
+        # standing as the pair they replaced.
+        "live_cash",
+        "derive_cash",
+        # The scenario's loan-payment CONFIG map (which transfers are loan
+        # payments, in which mode, with what standing extra) and the named
+        # constructor for the derivation holding it.  Configuration and
+        # ingredients; no figure at all in the first, and the second resolves
+        # nothing when it is called.
+        "config_by_transfer",
+        "loan_pricing",
         # Two BOOLEAN-and-a-Decimal settings off a transfer template: does this
         # payment's cash derive from the loan, and what standing extra rides on
         # it.  Public since plan step X-au-b, whose amount resolver has to know

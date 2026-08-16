@@ -10,7 +10,7 @@ which is the whole reason it is a module of its own.
 and the gate that forbids it is pylint's** (plan step X-au-c2).
 :mod:`~app.services.cash_ledger._amount_source` reaches UP into
 ``loan_payment_service`` for amount rule 4's producer
-(``live_loan_transfer_amounts``, ``loan_payment_config``).  Both of those
+(``LoanPricing``, ``loan_payment_config``).  Both of those
 imports are DEFERRED to call time, so the RUNTIME module graph is acyclic and
 importing :mod:`app.services.cash_ledger` pulls in no loan service at all --
 that much an adversarial review measured, correcting an earlier draft of this
@@ -66,7 +66,7 @@ def fixed_contribution(txn) -> "Decimal | None":
     excluded row from inside the valuation, where the resolver would REFUSE the
     same row: both live producers filter to Projected rows
     (``income_service.live_projected_net``,
-    ``loan_payment_service.live_loan_transfer_amounts``), so a Cancelled salary
+    ``loan_payment_service.LoanPricing.live_cash``), so a Cancelled salary
     row is absent from their maps and has no derived answer at all.  Asking what
     a row is worth before asking what it is priced at is what keeps that from
     being a 500 on a row nobody is counting.
@@ -141,7 +141,7 @@ def owned_contribution(txn) -> Decimal:
     **One reader takes it for a different reason, and that reason is a CYCLE**:
     ``loan_payment_service.get_payment_history`` is NOT settled-only -- its
     query admits Projected shadows -- but the rule that would price one routes
-    back through it (rule 4 -> ``live_loan_transfer_amounts`` ->
+    back through it (rule 4 -> ``LoanPricing.derive_cash`` ->
     ``_resolve_loan_basis`` -> ``load_loan_context`` -> that function).  So the
     loan-side INCOME leg must keep owning its figure and only the checking-side
     EXPENSE leg can be declared derived, which is a bound plan step X-au-g
