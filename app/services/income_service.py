@@ -236,7 +236,7 @@ def _resolve_salary_net(
     and the map this builds keeps the last writer.  Unordered, that was whichever
     row the planner reached first, so one owner could be priced two ways across
     two requests; ordering by id makes the collision resolve the same way every
-    time.  The collision itself is finding **N-296**, reported rather than fixed
+    time.  The collision itself is finding **N-294**, reported rather than fixed
     here: which profile SHOULD win is a question for the salary arc, and
     answering it inside a reader refactor would be an unreviewed ruling.
 
