@@ -70,6 +70,7 @@ Exit code 0 when every check passes, 1 on a failure, 2 when the preconditions
 are not met.  It is paced: the dev app runs the real Redis limiter (30/minute
 per IP, prod behaviour), and a burst meets 429s.
 """
+import os
 import subprocess
 import sys
 import time
@@ -81,6 +82,23 @@ from playwright.sync_api import sync_playwright
 #: ``save_dev_session.py`` -- the cookie is host-scoped THERE, so shooting
 #: 127.0.0.1 silently returns the login page.
 DEV_BASE_URL = "http://172.32.0.1:5000"
+
+#: The database THE APP IS POINTED AT, which is what this script must query.
+#:
+#: **It was hard-coded to ``shekel`` and that made two checks vacuous** (found
+#: at plan step R7c-c, by running this script against a database COPY).  A
+#: branch whose migration the shared dev database must not receive runs the dev
+#: app against ``CREATE DATABASE ... TEMPLATE shekel``; the app then writes
+#: there while this script kept counting rows in the original, so
+#: "no template was persisted by any refusal" and "no recurrence rule was
+#: persisted" passed by reading a database nothing had written to.  They would
+#: have passed with every refusal accepted.
+#:
+#: Set ``VERIFY_DEV_DATABASE`` to whatever ``DATABASE_URL`` names when the app
+#: is overridden.  The ``ref`` ids this script looks up are the same either way
+#: -- a TEMPLATE copy carries them -- which is exactly why the mismatch was
+#: invisible.
+DEV_DATABASE = os.environ.get("VERIFY_DEV_DATABASE", "shekel")
 
 #: The storage state ``save_dev_session.py`` writes.
 SESSION_STATE = Path(__file__).resolve().parent / ".dev_session_state.json"
@@ -115,15 +133,16 @@ def _sql(query: str) -> list[str]:
     """Return the rows of one query against the dev database.
 
     Args:
-        query: SQL to run as ``shekel_user`` against the ``shekel`` database
-            in the ``shekel-dev-db`` container.
+        query: SQL to run as ``shekel_user`` against :data:`DEV_DATABASE` in
+            the ``shekel-dev-db`` container -- the database the app under test
+            is pointed at, not necessarily ``shekel``.
 
     Returns:
         The non-empty output lines, pipe-separated.
     """
     completed = subprocess.run(
         ["docker", "exec", "shekel-dev-db", "psql", "-U", "shekel_user",
-         "-d", "shekel", "-tAF|", "-c", query],
+         "-d", DEV_DATABASE, "-tAF|", "-c", query],
         capture_output=True, text=True, check=True,
     )
     return [line for line in completed.stdout.strip().split("\n") if line]
@@ -863,27 +882,57 @@ def _drive_refusals(context, page) -> None:
             "SELECT id FROM ref.recurrence_units WHERE name = 'month'")[0],
         "period": _sql(
             "SELECT id FROM ref.recurrence_units WHERE name = 'period'")[0],
+        "week": _sql(
+            "SELECT id FROM ref.recurrence_units WHERE name = 'week'")[0],
+        "year": _sql(
+            "SELECT id FROM ref.recurrence_units WHERE name = 'year'")[0],
         "covering": _sql("SELECT id FROM ref.period_placements "
                          "WHERE name = 'containing_date'")[0],
         "first_pay": _sql("SELECT id FROM ref.period_placements "
                           "WHERE name = 'period_starting_on_or_after'")[0],
     }
+    # ``starts_on`` rides in the BASE form from plan step R7c-c, so each case
+    # below carries exactly ONE fault.  Without it every payload here was also
+    # missing a first occurrence, which the create schema requires beside any
+    # chosen cadence -- so a case could pass by meeting a refusal it was not
+    # written for, and two of them did the moment their own refusal stopped
+    # existing.
     base_form = {
         "name": f"{MARK}-refused", "default_amount": "10.00",
         "category_id": ids["category"], "account_id": ids["account"],
         "transaction_type_id": ids["expense"],
+        "starts_on": "2026-03-15",
     }
     rules_before = _sql("SELECT count(*) FROM budget.recurrence_rules")[0]
 
     cases = [
-        ("every other month has no pattern",
-         {"recurrence_unit": ids["month"], "interval_n": "2",
+        # **The unauthorable SET moved at plan step R7c-c**, and this list is
+        # where that shows.  It was every month or year INTERVAL the closed
+        # pattern set could not name -- "every other month", "quarterly funded
+        # from the first paycheck" -- because STORAGE was the binding
+        # constraint.  Freeing the interval is what this arc exists for, so
+        # both of those SAVE now and what is left to refuse is a
+        # ``(unit, placement)`` pair the resolver has no anchor derivation for.
+        ("the WEEK unit has no anchor this vocabulary collects",
+         {"recurrence_unit": ids["week"], "interval_n": "1",
           "recurrence_placement": ids["covering"]},
          "That repeat schedule cannot be saved yet"),
-        ("quarterly funded from the first paycheck has no twin",
-         {"recurrence_unit": ids["month"], "interval_n": "3",
+        ("a yearly cadence on the first paycheck names no cycle month",
+         {"recurrence_unit": ids["year"], "interval_n": "1",
           "recurrence_placement": ids["first_pay"]},
          "That repeat schedule cannot be saved yet"),
+        # The interval box is a free number input from R7c-c, so a CLEARED one
+        # is a payload the form really can produce -- and it defaulted to 1,
+        # which re-cadenced a quarterly bill to monthly on save.  Driven here
+        # because only a browser proves the box submits "" rather than nothing.
+        ("a CLEARED interval box beside a chosen cadence",
+         {"recurrence_unit": ids["month"], "interval_n": "",
+          "recurrence_placement": ids["covering"]},
+         "Say how often this repeats"),
+        ("an interval past the column's domain",
+         {"recurrence_unit": ids["period"], "interval_n": "2147483648",
+          "recurrence_placement": ids["covering"]},
+         "Must be greater than or equal to 1"),
         ("a unit with no placement key",
          {"recurrence_unit": ids["period"], "interval_n": "1"},
          "Choose which paycheck funds each occurrence"),
@@ -899,6 +948,13 @@ def _drive_refusals(context, page) -> None:
          {"recurrence_unit": ids["period"], "interval_n": "1",
           "recurrence_placement": "999999"},
          "Invalid funding choice"),
+        # R7c-b authored this refusal and nothing carried it to the user until
+        # R7c-c put the key on the flash allowlist; it is driven here because a
+        # message that reaches no surface is invisible to the suite.
+        ("a chosen cadence with no first occurrence",
+         {"recurrence_unit": ids["month"], "interval_n": "1",
+          "recurrence_placement": ids["covering"], "starts_on": ""},
+         "Choose the date this first happens"),
     ]
     for label, cadence, expected in cases:
         response = context.request.post(
