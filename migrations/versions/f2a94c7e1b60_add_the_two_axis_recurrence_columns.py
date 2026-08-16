@@ -145,7 +145,8 @@ from the container entrypoint -- over a state that is not a defect, and told
 the operator to go hunting corruption that does not exist.  The backfill now
 derives the cadence the same way, so there is nothing left to refuse.
 
-Then the result is CHECKED rather than argued: :data:`_VERIFY_BACKFILL_SQL`
+Then the result is CHECKED rather than argued:
+:data:`~migrations._recurrence_two_axis_backfill.VERIFY_BACKFILL_SQL`
 names any row left holding a NULL and the upgrade raises on it.  A derivation
 that is total by argument is still a derivation nobody counted.
 
@@ -172,6 +173,12 @@ Create Date: 2026-08-14
 from alembic import op
 import sqlalchemy as sa
 
+from migrations._recurrence_two_axis_backfill import (
+    BACKFILL_SQL,
+    refuse_underivable,
+    verify_backfilled,
+)
+
 
 # revision identifiers, used by Alembic.
 revision = "f2a94c7e1b60"
@@ -180,341 +187,19 @@ branch_labels = None
 depends_on = None
 
 
-#: The rules this migration cannot derive a first occurrence for.
-#:
-#: All three arms are states the application refuses -- ``resolve`` will not
-#: read a rule whose owner has no schedule or whose pattern it does not model,
-#: and ``pay_calendar.derive_periods`` will not build periods without a
-#: cadence -- so a row satisfying any of them was not written by this
-#: application.  Refusing here rather than letting the ``NOT NULL`` fail is what
-#: names WHICH rule and WHY: a bare ``null value in column "starts_on"`` says
-#: neither, and the value it would have written is a plausible wrong date
-#: rather than an obvious one.
-_REFUSE_UNDERIVABLE_SQL = """
-SELECT r.id,
-       CASE
-         WHEN s.opening IS NULL THEN 'owner has no pay periods'
-         ELSE 'pattern is not one this application models'
-       END AS reason
-FROM budget.recurrence_rules r
-LEFT JOIN (
-    SELECT user_id, MIN(start_date) AS opening
-    FROM budget.pay_periods
-    GROUP BY user_id
-) s ON s.user_id = r.user_id
-WHERE s.opening IS NULL
-   OR r.pattern_id NOT IN (
-       SELECT id FROM ref.recurrence_patterns
-       WHERE name IN ('Every Period', 'Every N Periods', 'Monthly',
-                      'Monthly First', 'Quarterly', 'Semi-Annual', 'Annual')
-   )
-ORDER BY r.id
-"""
-
-
-#: Every rule the backfill left a NULL on.
-#:
-#: **The three-step's VERIFY half** (``.claude/rules/database.md``,
-#: ``docs/coding-standards.md``): a backfill states the count it wrote and
-#: refuses to continue when a row is left behind.  Deferring the ``NOT NULL``
-#: to plan step R7c-b makes this MORE necessary rather than less -- the
-#: constraint that would otherwise catch a missed row is a whole leaf away, and
-#: until it lands a silent NULL reads as a successful upgrade.
-#:
-#: :data:`_REFUSE_UNDERIVABLE_SQL` cannot stand in for it: that query grades the
-#: INPUTS (does this rule have a schedule to measure against, is its pattern one
-#: we model) and says nothing about what the ``UPDATE`` actually wrote.  A
-#: ``ref`` table short a row -- a partial restore, or a seed whose
-#: ``ON CONFLICT (name) DO NOTHING`` masked a name mismatch -- makes the id
-#: subqueries answer NULL with every input arm green.
-_VERIFY_BACKFILL_SQL = """
-SELECT id FROM budget.recurrence_rules
-WHERE starts_on IS NULL
-   OR unit_id IS NULL
-   OR placement_id IS NULL
-   OR shift_id IS NULL
-ORDER BY id
-"""
-
-
-#: The two-axis reading of each closed-set pattern, and the first occurrence it
-#: implies.
-#:
-#: ONE statement, read as a CTE chain rather than as four UPDATEs, so a rule
-#: cannot take its unit from one pass and its date from another.
-#:
-#: ``pat`` resolves the seven pattern NAMES to their seeded ids in one place;
-#: every ``CASE`` below compares against those columns rather than against a
-#: literal id, because a ``ref`` id is a seed artifact and this file has to be
-#: correct on any database the migration chain has built.
-_BACKFILL_SQL = """
-WITH pat AS (
-    SELECT
-      MAX(id) FILTER (WHERE name = 'Every Period')   AS every_period,
-      MAX(id) FILTER (WHERE name = 'Every N Periods') AS every_n_periods,
-      MAX(id) FILTER (WHERE name = 'Monthly')        AS monthly,
-      MAX(id) FILTER (WHERE name = 'Monthly First')  AS monthly_first,
-      MAX(id) FILTER (WHERE name = 'Quarterly')      AS quarterly,
-      MAX(id) FILTER (WHERE name = 'Semi-Annual')    AS semi_annual,
-      MAX(id) FILTER (WHERE name = 'Annual')         AS annual
-    FROM ref.recurrence_patterns
-),
-sched AS (
-    SELECT p.user_id,
-           MIN(p.start_date) AS opening,
-           MAX(p.start_date) AS last_payday
-    FROM budget.pay_periods p
-    GROUP BY p.user_id
-),
-base AS (
-    SELECT r.id,
-           r.user_id,
-           r.pattern_id,
-           r.day_of_month,
-           r.month_of_year,
-           -- ``pay_schedule_service.resolve_cadence`` verbatim, INCLUDING its
-           -- legacy fallback: an owner with periods but no schedule row --
-           -- they generated before that table existed -- has the cadence
-           -- INFERRED from the last period's stored length, because the last
-           -- period's end is ``start_date + (cadence_days - 1)``.  The app
-           -- serves such an owner correctly (``calendar_for`` resolves through
-           -- that function), so refusing them here would abort a deploy on a
-           -- state the application supports.  Pay-calendar row P8 owns the
-           -- fallback; plan step C4 removes it with the column it reads, and
-           -- this expression goes at the same time.
-           COALESCE(sch.cadence_days, (
-               SELECT (p.end_date - p.start_date) + 1
-               FROM budget.pay_periods p
-               WHERE p.user_id = r.user_id
-               ORDER BY p.period_index DESC
-               LIMIT 1
-           )) AS cadence_days,
-           s.last_payday,
-           GREATEST(s.opening, r.start_date) AS effective,
-           -- The cycle length in months, for the calendar family only.  It is
-           -- ``_months.months_per_step(unit, interval_n)``: 1 for Monthly, and
-           -- the interval baked into each other pattern's NAME.
-           CASE
-             WHEN r.pattern_id = pat.monthly     THEN 1
-             WHEN r.pattern_id = pat.quarterly   THEN 3
-             WHEN r.pattern_id = pat.semi_annual THEN 6
-             WHEN r.pattern_id = pat.annual      THEN 12
-           END AS month_step,
-           pat.every_period, pat.every_n_periods, pat.monthly_first
-    FROM budget.recurrence_rules r
-    CROSS JOIN pat
-    JOIN sched s ON s.user_id = r.user_id
-    LEFT JOIN budget.pay_schedule sch ON sch.user_id = r.user_id
-),
--- The rule's residue class over ABSOLUTE month ordinals, aligned to the first
--- ordinal at or above the effective month that is in it.  Postgres ``%`` keeps
--- the dividend's sign where Python's does not, so ``+ b.month_step`` normalises
--- the remainder into ``0 .. step-1`` and this expression reads as a
--- transliteration of ``_calendar_anchor``.
---
--- **That normalisation is provably a NO-OP on every reachable input**, and an
--- adversarial review of this migration measured it: deleting it changed 0 of
--- 24,300 rules where 16 other planted mutations moved 380-19,067.  Both
--- operands are non-negative (a month ordinal is ``year * 12 + month - 1`` and
--- ``ck_recurrence_rules_moy`` bounds the month to 1-12), and where the raw
--- remainder would differ the ``CASE`` below selects the other candidate and
--- lands on the same date.  It is kept because the cost is eight characters
--- and the benefit is that a reader can check this line against the Python one
--- without reconstructing that two-step argument.
-aligned AS (
-    SELECT b.*,
-           (
-             EXTRACT(year FROM b.effective)::int * 12
-             + EXTRACT(month FROM b.effective)::int - 1
-           ) AS eff_ordinal,
-           (
-             (
-               ((COALESCE(b.month_of_year, 1) - 1) % b.month_step)
-               - ((
-                   EXTRACT(year FROM b.effective)::int * 12
-                   + EXTRACT(month FROM b.effective)::int - 1
-                 ) % b.month_step)
-               + b.month_step
-             ) % b.month_step
-           ) AS align_offset
-    FROM base b
-),
-candidates AS (
-    SELECT a.*,
-           -- The rule's day, clamped to each candidate month's own length --
-           -- ``_months.clamped_day``, which is what keeps a day-31 rule on the
-           -- last day of every month rather than decaying to the 30th.
-           make_date(
-             (a.eff_ordinal + a.align_offset) / 12,
-             (a.eff_ordinal + a.align_offset) % 12 + 1,
-             LEAST(
-               COALESCE(a.day_of_month, 1),
-               EXTRACT(day FROM (
-                 make_date(
-                   (a.eff_ordinal + a.align_offset) / 12,
-                   (a.eff_ordinal + a.align_offset) % 12 + 1, 1
-                 ) + INTERVAL '1 month - 1 day'
-               ))::int
-             )
-           ) AS cand_first,
-           make_date(
-             (a.eff_ordinal + a.align_offset + a.month_step) / 12,
-             (a.eff_ordinal + a.align_offset + a.month_step) % 12 + 1,
-             LEAST(
-               COALESCE(a.day_of_month, 1),
-               EXTRACT(day FROM (
-                 make_date(
-                   (a.eff_ordinal + a.align_offset + a.month_step) / 12,
-                   (a.eff_ordinal + a.align_offset + a.month_step) % 12 + 1, 1
-                 ) + INTERVAL '1 month - 1 day'
-               ))::int
-             )
-           ) AS cand_next
-    FROM aligned a
-    WHERE a.month_step IS NOT NULL
-),
-derived AS (
-    SELECT b.id,
-           CASE
-             -- The pay-period family: the payday of the span covering the
-             -- effective start.  Past the last saved payday the schedule is
-             -- projected forward at the owner's own cadence, which is
-             -- ``PayCalendar._projected_after``.
-             WHEN b.pattern_id IN (b.every_period, b.every_n_periods) THEN
-               CASE WHEN b.effective <= b.last_payday
-                 THEN (
-                   SELECT MAX(p.start_date) FROM budget.pay_periods p
-                   WHERE p.user_id = b.user_id AND p.start_date <= b.effective
-                 )
-                 ELSE b.last_payday + (
-                   ((b.effective - b.last_payday) / b.cadence_days)
-                   * b.cadence_days
-                 )
-               END
-             -- The first-of-month family: the 1st of the earliest month whose
-             -- own first payday falls on or after the effective start, else
-             -- the 1st of the month after the effective one.
-             WHEN b.pattern_id = b.monthly_first THEN
-               COALESCE(
-                 (
-                   SELECT date_trunc('month', p.start_date::timestamp)::date
-                   FROM budget.pay_periods p
-                   WHERE p.user_id = b.user_id
-                     AND p.start_date >= b.effective
-                     AND (
-                       SELECT MIN(q.start_date) FROM budget.pay_periods q
-                       WHERE q.user_id = b.user_id
-                         AND date_trunc('month', q.start_date::timestamp)
-                             = date_trunc('month', p.start_date::timestamp)
-                     ) >= b.effective
-                   ORDER BY p.start_date
-                   LIMIT 1
-                 ),
-                 (date_trunc('month', b.effective::timestamp)
-                  + INTERVAL '1 month')::date
-               )
-             -- The calendar family.
-             ELSE (
-               SELECT CASE WHEN c.cand_first >= b.effective
-                           THEN c.cand_first ELSE c.cand_next END
-               FROM candidates c WHERE c.id = b.id
-             )
-           END AS starts_on
-    FROM base b
-)
-UPDATE budget.recurrence_rules r
-SET starts_on = d.starts_on,
-    unit_id = (
-      SELECT u.id FROM ref.recurrence_units u
-      WHERE u.name = CASE
-        WHEN r.pattern_id = (SELECT MAX(id) FROM ref.recurrence_patterns
-                             WHERE name = 'Annual') THEN 'year'
-        WHEN r.pattern_id IN (SELECT id FROM ref.recurrence_patterns
-                              WHERE name IN ('Every Period',
-                                             'Every N Periods')) THEN 'period'
-        ELSE 'month' END
-    ),
-    placement_id = (
-      SELECT pl.id FROM ref.period_placements pl
-      WHERE pl.name = CASE
-        WHEN r.pattern_id = (SELECT MAX(id) FROM ref.recurrence_patterns
-                             WHERE name = 'Monthly First')
-        THEN 'period_starting_on_or_after' ELSE 'containing_date' END
-    ),
-    shift_id = (SELECT id FROM ref.business_day_shifts WHERE name = 'none'),
-    -- Only where the anchor month actually clamped the authored day: a value
-    -- at or below the day ``starts_on`` carries would be a second statement of
-    -- a day the date already holds.  The first-of-month family reads no day at
-    -- all, so it is excluded rather than compared.
-    nominal_day = CASE
-      WHEN r.pattern_id NOT IN (
-             SELECT id FROM ref.recurrence_patterns
-             WHERE name IN ('Every Period', 'Every N Periods', 'Monthly First')
-           )
-       AND r.day_of_month > EXTRACT(day FROM d.starts_on)
-      THEN r.day_of_month
-    END
-FROM derived d
-WHERE d.id = r.id
-"""
-
-
-def refuse_underivable(bind) -> None:
-    """Raise when any rule has no derivable first occurrence.
-
-    **A named function rather than an inline block, so a test can drive it.**
-    Its predecessor was inline in :func:`upgrade`, where the only way to
-    exercise the RAISE was to run real DDL inside an xdist worker and move the
-    whole session's schema.  A refusal nothing executes is a refusal nobody has
-    seen work -- and this one is the leaf's only protection against seating a
-    recurring bill on a fabricated date.
-
-    Args:
-        bind: A SQLAlchemy connection or session bind.
-
-    Raises:
-        RuntimeError: Naming every offending rule id and why it is offending.
-    """
-    underivable = bind.execute(sa.text(_REFUSE_UNDERIVABLE_SQL)).all()
-    if not underivable:
-        return
-    raise RuntimeError(
-        "cannot derive a first occurrence for recurrence rule(s) "
-        + "; ".join(f"id={row.id} ({row.reason})" for row in underivable)
-        + ".  Both states are ones app.services.recurrence.resolve refuses, "
-        "so no application path wrote them; deriving a plausible date for one "
-        "would seat a recurring bill on a cadence the rule never named.  "
-        "Repair or delete the row and re-run."
-    )
-
-
-def verify_backfilled(bind) -> None:
-    """Raise when the backfill left a NULL on any rule.
-
-    The three-step's VERIFY half; see :data:`_VERIFY_BACKFILL_SQL` for why the
-    input refusal above cannot stand in for it.  Named for the same reason
-    :func:`refuse_underivable` is.
-
-    Args:
-        bind: A SQLAlchemy connection or session bind.
-
-    Raises:
-        RuntimeError: Naming every rule left holding a NULL, and the SELECT
-            that shows which column.
-    """
-    unfilled = bind.execute(sa.text(_VERIFY_BACKFILL_SQL)).scalars().all()
-    if not unfilled:
-        return
-    raise RuntimeError(
-        "the two-axis backfill left a NULL on recurrence rule(s) "
-        + ", ".join(str(rule_id) for rule_id in unfilled)
-        + ".  Every row that clears the refusal has a derivable first "
-        "occurrence, so a NULL here means the statement could not resolve a "
-        "``ref`` id -- a seed short a row, or a partial restore.  Diagnose "
-        "with: SELECT id, starts_on, unit_id, placement_id, shift_id FROM "
-        "budget.recurrence_rules WHERE starts_on IS NULL OR unit_id IS NULL "
-        "OR placement_id IS NULL OR shift_id IS NULL;"
-    )
+#: The backfill, its two guards and the SQL behind them are SHARED with
+#: plan step **R7c-b**, which re-runs this exact statement before it makes
+#: the columns authoritative -- see
+#: :mod:`migrations._recurrence_two_axis_backfill` for why the two leaves
+#: must run one text rather than two copies that agree.  The statement was
+#: EXTRACTED there when R7c-b landed, unchanged: this migration had already
+#: run on the developer's dev databases and had not yet reached production,
+#: and moving text that is byte-identical changes nothing a database has
+#: applied.  The module lives under ``migrations/`` rather than in ``app/``
+#: for the reason the SQL exists at all: plan step R7c-c deletes
+#: ``decode_pattern`` and the closed-set table this reads, so a backfill
+#: built on the application would stop being runnable against a fresh
+#: database the moment that leaf shipped.
 
 
 def upgrade():
@@ -546,7 +231,7 @@ def upgrade():
         schema="budget",
     )
 
-    op.execute(sa.text(_BACKFILL_SQL))
+    op.execute(sa.text(BACKFILL_SQL))
 
     verify_backfilled(op.get_bind())
 
@@ -568,7 +253,8 @@ def upgrade():
     # gives it a reason.
     #
     # What proves the backfill is TOTAL in the meantime is not the constraint:
-    # it is ``_REFUSE_UNDERIVABLE_SQL`` above, which names every row this
+    # it is ``REFUSE_UNDERIVABLE_SQL`` in the shared module, which names
+    # every row this
     # derivation cannot answer for and refuses to run beside it.
 
     op.create_foreign_key(

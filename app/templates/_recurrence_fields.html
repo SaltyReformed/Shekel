@@ -130,10 +130,22 @@
 {% endmacro %}
 
 
-{# The remaining cadence-dependent fields inside #recurrence-fields: the
-   day / due-day / month row.  recurrence_form.js toggles each on by id from
-   the facts the chosen offer carries.  Does NOT include the pay-period
-   selector, the preview or the "Ends" control (each form places those).
+{# The one remaining cadence-dependent detail inside #recurrence-fields: the
+   bill's real DUE day, when it differs from the day the cadence is scheduled
+   on.  recurrence_form.js toggles it by id from the facts the chosen offer
+   carries.  Does NOT include the pay-period selector, the preview or the
+   "Ends" control (each form places those).
+
+   **Day of Month and Month LEFT at plan step R7c-b** (ruling R-R16).  Three
+   inputs said what one date says: the first occurrence's day IS the cycle's
+   day and its month IS the cycle's residue class, so the "Starts on" control
+   below carries both and the pair cannot state two different cadences.  Row
+   D28 measured what the old split cost -- 18 of 24 live multi-month rules
+   would have fired in the wrong months once the anchor became a column.
+
+   ``due_day_of_month`` survives because it is NOT a coordinate of the cadence:
+   it is the servicer's date for a bill the cadence schedules elsewhere.  Plan
+   step R5 moves it onto the generated ROW as ``due_on``.
 
    The END BOUND left at plan step R7b-3, into recurrence_end_bound below: it
    is not cadence-dependent -- every cadence can stop -- and it needs the
@@ -147,34 +159,17 @@
    off a Quarterly rule's column -- a column whose validity depended on the
    pattern, the exact defect this redesign removes. #}
 {% macro recurrence_detail_fields(template, include_due_day) %}
+{% if include_due_day %}
 <div class="row mb-3">
-  <div class="col d-none" id="field-dom">
-    <label for="day_of_month" class="form-label">Day of Month</label>
-    <input type="number" id="day_of_month" name="day_of_month" class="form-control" min="1" max="31"
-           value="{{ template.recurrence_rule.day_of_month if template and template.recurrence_rule and template.recurrence_rule.day_of_month else '' }}">
-  </div>
-  {% if include_due_day %}
   <div class="col d-none" id="field-due-dom">
     <label for="due_day_of_month" class="form-label">Due Day of Month</label>
     <input type="number" id="due_day_of_month" name="due_day_of_month" class="form-control" min="1" max="31"
            value="{{ template.recurrence_rule.due_day_of_month if template and template.recurrence_rule and template.recurrence_rule.due_day_of_month else '' }}"
-           placeholder="Same as day">
-    <small class="form-text text-muted">Actual bill due day (if different from scheduled day)</small>
-  </div>
-  {% endif %}
-  <div class="col d-none" id="field-moy">
-    <label for="month_of_year" class="form-label">Month</label>
-    <select id="month_of_year" name="month_of_year" class="form-select">
-      <option value="">--</option>
-      {% for num in range(1, 13) %}
-      <option value="{{ num }}"
-        {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.month_of_year == num else '' }}>
-        {{ num|month_name }}
-      </option>
-      {% endfor %}
-    </select>
+           placeholder="Same as scheduled day">
+    <small class="form-text text-muted">Actual bill due day (if different from the day it is scheduled on)</small>
   </div>
 </div>
+{% endif %}
 {% endmacro %}
 
 
@@ -275,57 +270,148 @@
 {% endmacro %}
 
 
-{# The OPENING bound (plan step R7b-4): "Starts on", a DATE.
+{# The rule's FIRST OCCURRENCE (plan step R7c-b, ruling R-R16): "Starts on",
+   a DATE, plus the one control that says what a clamped date MEANT.
 
-   It replaced a "First paycheck" <select> of pay periods, and the swap is the
-   point rather than the widget: that control named a pay-period ROW, so it
-   could only ever mean a paycheck the schedule already held, it vanished
-   (ON DELETE SET NULL) when that paycheck was rebuilt, and a caller passing
-   its own window bypassed it (defect D2).  A date is unbypassable, survives
-   any schedule operation, and is the same KIND of value as the "Ends" control
-   below -- which is what makes the two read as one validity window.
+   It carries what three inputs used to say.  A recurrence's first occurrence
+   is the earliest thing the cadence produces, its day is the cycle's day and
+   its month is the cycle's residue class -- so "Day of Month" and "Month" are
+   deleted rather than renamed, and the two-representation question this arc
+   kept answering becomes unaskable.  Ledger row D28 is what forced it: a
+   BOUND is not in the cycle's residue class, so freezing the anchor under the
+   earlier reading would have fired 18 of 24 live multi-month rules in the
+   wrong months forever.
 
-   ``locked`` disables it, for the same definition and the same reason
-   recurrence_end_bound is locked: a loan payment's opening bound is the
-   loan's FIRST CONTRACTUAL INSTALLMENT, which loan_recurrence_sync rewrites
-   on every payoff-affecting edit.  Both controls ask ONE predicate
+   The control before that was a "First paycheck" <select> of pay periods,
+   which named a pay-period ROW: it could only ever mean a paycheck the
+   schedule already held, it vanished (ON DELETE SET NULL) when that paycheck
+   was rebuilt, and a caller passing its own window bypassed it (defect D2).
+
+   ``nominal_day`` is the SECOND control and it is rendered only where the
+   date leaves the question open.  A date that is its own month's LAST day in
+   a month shorter than 31 days is ambiguous: 2026-04-30 could be "the 30th"
+   or "the last day of the month", and those are different cadences from May
+   onwards.  Every other date says its day and nothing else -- INCLUDING the
+   31st of a 31-day month, which already IS the last-day idiom because the
+   walk clamps it per month.  The offer set comes from
+   app.services.recurrence.offerable_nominal_days, the same function the write
+   door refuses a bad pair with, so the control cannot offer one the save
+   would reject.
+
+   ``locked`` marks the row READ-ONLY, for the same definition and the same
+   reason recurrence_end_bound is locked: a loan payment's first occurrence is
+   the loan's FIRST CONTRACTUAL INSTALLMENT, which loan_recurrence_sync
+   rewrites on every payoff-affecting edit.  Both controls ask ONE predicate
    (_recurrence_form_render.edit_form_bounds_are_derived), so they cannot lock
-   on different sets.  A disabled control posts nothing, so the key arrives
-   ABSENT -- which the update route reads as "this form said nothing" and
-   leaves the stored bound alone.  The server refuses a crafted submission
-   that sends one anyway (LOAN_PAYMENT_BOUND_IS_DERIVED).
+   on different sets.
 
-   An EMPTY box is a real answer -- "no opening bound", start with the
-   schedule -- so the field is allow_none at the schema and clearing it is a
-   save that clears the bound.  That is why it is not hidden when unset.
+   ``disabled``, exactly like the "Ends" control, so a locked form posts
+   NOTHING for this field and absence keeps one meaning: "not mine to state",
+   which the update path reads as "leave the stored bound alone".
+
+   It was briefly ``readonly`` -- a readonly input still posts, and the schema
+   requires a first occurrence beside any chosen cadence, so disabling it
+   appeared to make a locked form unsubmittable.  That reasoning was wrong at
+   the layer it blamed: the schema's rule belongs on a CREATE, where an
+   unstated start would author a rule that backdates into closed pay periods.
+   An UPDATE that states nothing cannot backdate anything, because the rule it
+   edits already has a start.  Ruled by the developer 2026-08-15; the readonly
+   version refused every ordinary edit of a loan payment
+   (LOAN_PAYMENT_BOUND_IS_DERIVED on a rename), and the obvious patch -- refuse
+   only a DIFFERENT date -- would have made "not mine to state" and "I chose
+   exactly the derived value" identical on the wire.
+
+   The server refusal stands behind the affordance either way
+   (LOAN_PAYMENT_BOUND_IS_DERIVED): disabling is what the user sees, the
+   refusal is what a crafted POST meets.
 
    NO ``d-none`` of its own, unlike every other row in this file.  Those are
-   toggled per cadence by recurrence_form.js -- a day-of-month cell belongs to
-   some cadences and not others -- and EVERY cadence can have an opening
-   bound, so this one shows and hides with the #recurrence-fields container
-   that wraps it.  Carrying a class no script removes is how a control ships
-   permanently invisible; the suite cannot see the difference, which is what
+   toggled per cadence by recurrence_form.js -- a due-day cell belongs to some
+   cadences and not others -- and EVERY cadence has a first occurrence, so
+   this one shows and hides with the #recurrence-fields container that wraps
+   it.  Carrying a class no script removes is how a control ships permanently
+   invisible; the suite cannot see the difference, which is what
    tests/manual/verify_recurrence_form.py exists for. #}
-{% macro recurrence_start_date(selected, date_min, date_max, locked=false) %}
-<div class="mb-3" id="field-start-date">
-  <label class="form-label" for="start_date">Starts on</label>
-  {# ``min`` / ``max`` mirror the schema's own window (EFFECTIVE_DATE_MIN /
-     EFFECTIVE_DATE_MAX), so the browser helps the user avoid the four- or
-     five-digit-year typo that window exists to refuse.  The refusal is still
-     the schema's -- this is the affordance, exactly as ``disabled`` is on the
-     locked controls -- and the two are passed in rather than written here so
-     one window is stated once. #}
-  <input type="date" id="start_date" name="start_date" class="form-control"
-         aria-describedby="start-date-help"
-         min="{{ date_min.isoformat() }}" max="{{ date_max.isoformat() }}"
-         value="{{ selected.isoformat() if selected is not none else '' }}"
-         {{ 'disabled' if locked else '' }}>
-  <div id="start-date-help" class="form-text">
-    {%- if locked -%}
-      Set from the loan's first payment, and updated when the loan changes.
-    {%- else -%}
-      Nothing is generated before this. Leave empty to start with your schedule.
-    {%- endif -%}
+{% macro recurrence_starts_on(picker, selected, date_min, date_max, locked=false, swappable=false) %}
+<div class="mb-3" id="field-starts-on">
+  <label class="form-label" for="starts_on">Starts on</label>
+  <div class="row g-2 align-items-center">
+    <div class="col-auto">
+      {# ``min`` / ``max`` mirror the application's calendar window
+         (app.utils.dates.CALENDAR_DATE_MIN / _MAX, which the schema, the
+         resolution door and ck_recurrence_rules_starts_on_range all read), so
+         the browser helps the user avoid the four- or five-digit-year typo
+         that window exists to refuse.  The refusal is still the server's --
+         this is the affordance, exactly as ``disabled`` is on a locked form --
+         and the two are passed in rather than written here so one window is
+         stated once. #}
+      <input type="date" id="starts_on" name="starts_on" class="form-control"
+             aria-describedby="starts-on-help"
+             min="{{ date_min.isoformat() }}" max="{{ date_max.isoformat() }}"
+             value="{{ selected.starts_on.isoformat() }}"
+             {{ 'disabled' if locked else '' }}>
+    </div>
+    {# The ambiguity control.  The COPY is static and the option set is fixed
+       -- the days a month can fail to hold are 29, 30 and 31 and no other --
+       so nothing here is computed and the script has no wording to repeat.
+       What the server decides is which of them the chosen date leaves OPEN
+       (``day_choices``, from app.services.recurrence.offerable_nominal_days)
+       and therefore whether the row shows at all; recurrence_form.js applies
+       the same rule as the user edits the date, and the write door refuses
+       any pair either of them gets wrong.
+
+       Hidden AND disabled together when there is nothing to ask: a hidden
+       control still submits, and a stale nominal day beside a date that never
+       clamped is exactly what ck_recurrence_rules_nominal_day refuses.  Each
+       option carries ``data-day`` so the script can enable the ones above the
+       chosen day without knowing what any of them are called. #}
+    <div class="col-auto {{ '' if selected.day_choices else 'd-none' }}"
+         id="field-nominal-day">
+      <div class="input-group">
+        <label class="input-group-text" for="nominal_day">repeating on</label>
+        <select id="nominal_day" name="nominal_day" class="form-select"
+                {{ '' if selected.day_choices and not locked else 'disabled' }}>
+          <option value="" {{ 'selected' if selected.nominal_day is none else '' }}>
+            the same day of the month
+          </option>
+          {% for option in picker.nominal_days %}
+          {% set day = option.day %}
+          {% set label = option.label %}
+          <option value="{{ day }}" data-day="{{ day }}"
+            {{ 'selected' if selected.nominal_day == day else '' }}
+            {{ '' if day in selected.day_choices else 'disabled' }}>
+            {{ label }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+  {# Both wordings ride on the element ONLY where the row can change without a
+     reload, which is the transfer CREATE form and nowhere else: its
+     destination is chosen in the form, so the server cannot know at render
+     whether this will be a loan payment and recurrence_form.js swaps the text
+     when a loan account is picked.  It reads these attributes rather than
+     carrying a copy of either sentence -- a second wording in the script is
+     one that can disagree with the server's, the same rule that keeps the
+     nominal day's option labels here and not there.
+
+     ``swappable`` is FALSE everywhere else, and that is not tidiness: the
+     transaction form has no destination account and can never be a loan
+     payment, and an EDIT form already knows.  Shipping the locked sentence to
+     a page that can never use it puts its words into every render -- caught by
+     ``test_template_flags``, which asserts a page carries no success copy and
+     met the word "updated" in an attribute nothing could read. #}
+  {% set starts_on_locked_help =
+       "Set from the loan's first payment, and updated when the loan changes." %}
+  {% set starts_on_open_help =
+       "The first time this happens. It repeats from here, and nothing is generated before it." %}
+  <div id="starts-on-help" class="form-text"
+       {% if swappable %}
+       data-locked-text="{{ starts_on_locked_help }}"
+       data-open-text="{{ starts_on_open_help }}"
+       {% endif %}>
+    {{- starts_on_locked_help if locked else starts_on_open_help -}}
   </div>
 </div>
 {% endmacro %}

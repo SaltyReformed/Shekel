@@ -259,7 +259,7 @@ def _coordinate(resolved: ResolvedRecurrence) -> str:
         # pins -- the same locale dependence the month names moved to
         # ``app.utils.dates`` to escape.  The plural is the honest reading: the
         # rule fires on that weekday every ``interval_n`` weeks.
-        return f"{weekday_name(resolved.anchor_date)}s"
+        return f"{weekday_name(resolved.starts_on)}s"
     day = resolved.day_of_month
     if day is None:
         raise RecurrenceDescriptionError(
@@ -270,7 +270,7 @@ def _coordinate(resolved: ResolvedRecurrence) -> str:
         )
     if resolved.unit is RecurrenceUnitEnum.MONTH and resolved.interval_n == 1:
         return f"day {day}"
-    return f"{month_name(resolved.anchor_date.month, abbr=True)} {day}"
+    return f"{month_name(resolved.starts_on.month, abbr=True)} {day}"
 
 
 def _placement_note(resolved: ResolvedRecurrence) -> str | None:

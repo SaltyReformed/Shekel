@@ -24,11 +24,9 @@ from app.models.account import Account
 from app.models.ref import GoalMode, IncomeUnit
 from app.models.savings_goal import SavingsGoal
 from app.routes._commit_helpers import (
+    STALE_EDITING_MESSAGE,
     StaleConflictContext,
     commit_or_handle_stale,
-)
-from app.routes._recurrence_form_helpers import (
-    STALE_EDITING_MESSAGE,
     handle_stale_form_conflict,
 )
 from app.routes._redirect_target import RedirectTarget

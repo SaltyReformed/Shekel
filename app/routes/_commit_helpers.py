@@ -14,9 +14,14 @@ Three things needed to report such a conflict -- the logging identity,
 the user-facing flash text, and where to send the user -- always travel
 together, so they are bundled into the frozen
 :class:`StaleConflictContext`.  The same bundle drives the pre-flush
-form-side mirror
-:func:`app.routes._recurrence_form_helpers.handle_stale_form_conflict`,
-which adds only the submitted / current version counters.
+form-side mirror :func:`handle_stale_form_conflict`, which adds only the
+submitted / current version counters and does NOT roll back, since no write
+has been attempted at its call site.  That mirror and the two
+``STALE_*_MESSAGE`` templates moved here from
+``app.routes._recurrence_form_helpers`` at plan step R7c-b: they are about
+optimistic locking rather than recurrence, and the savings-goal and
+amount-version routes were importing them across a module boundary that had
+nothing to say about them.
 
 Three wrappers cover the structural variants:
 
@@ -66,6 +71,25 @@ from app.routes._redirect_target import RedirectTarget
 from app.utils.db_errors import is_unique_violation
 
 
+# Stale-conflict flash templates.  The ``{noun}`` placeholder is
+# substituted by the caller ("recurring transaction" / "recurring transfer" /
+# "savings goal") so the human label matches the route's domain without
+# forcing the helper to know the route taxonomy.
+
+STALE_EDITING_MESSAGE: str = (
+    "This {noun} was changed by another action while you were "
+    "editing.  Please reload and try again."
+)
+"""Flash template for routes invoked from an edit form (update_*)."""
+
+STALE_ACTION_MESSAGE: str = (
+    "This {noun} was changed by another action.  "
+    "Please reload and try again."
+)
+"""Flash template for non-edit-form mutations (archive / unarchive /
+hard-delete) where "while you were editing" would be misleading."""
+
+
 @dataclass(frozen=True)
 class StaleConflictContext:
     """Everything needed to report a stale-data conflict to the user.
@@ -78,9 +102,8 @@ class StaleConflictContext:
     :func:`commit_or_handle_stale` /
     :func:`regenerate_and_commit_or_stale` (which only forward it on a
     conflict) and consumed by :func:`handle_stale_conflict`; the
-    pre-flush form-side mirror
-    :func:`app.routes._recurrence_form_helpers.handle_stale_form_conflict`
-    reuses it verbatim, adding only the version counters.
+    pre-flush form-side mirror :func:`handle_stale_form_conflict` reuses it
+    verbatim, adding only the version counters.
 
     Attributes:
         logger: Per-module logger; the context carries it rather than
@@ -125,6 +148,58 @@ def handle_stale_conflict(ctx: StaleConflictContext) -> Response:
     db.session.rollback()
     ctx.logger.info(
         "Stale-data conflict on %s id=%d", ctx.log_label, ctx.log_id,
+    )
+    flash(ctx.flash_message, "warning")
+    return ctx.redirect.to_response()
+
+
+def handle_stale_form_conflict(
+    ctx: StaleConflictContext,
+    *,
+    submitted: int,
+    current: int,
+) -> Response:
+    """Optimistic-locking PRE-FLUSH, form-side conflict handler (F-26).
+
+    :func:`handle_stale_conflict`'s mirror for the
+    ``submitted_version != template.version_id`` branch that fires BEFORE the
+    commit attempt.  Logs both the submitted and current counters so
+    post-mortem analysis can reconstruct the race (matching the byte-identical
+    pre-extraction log messages on both the templates and transfers update
+    routes); flashes the context-supplied message; redirects.  Does NOT roll
+    back the session, because no DB write has been attempted yet at the call
+    site -- which is the one behavioural difference between the two and the
+    reason they are separate functions rather than one with a flag.
+
+    **It lived in ``_recurrence_form_helpers`` until plan step R7c-b**, and
+    moving it here is a correction rather than a size fix.  It is not about
+    recurrence: its two callers outside the template routes are the savings
+    goal form and the amount-version actions, which imported
+    :data:`STALE_EDITING_MESSAGE` across a module boundary that had nothing to
+    say about them.  Its own siblings -- :func:`handle_stale_conflict`,
+    :func:`commit_or_handle_stale` -- made the same move for the same reason
+    when the salary / savings / account routes needed them.
+
+    Args:
+        ctx: The :class:`StaleConflictContext` shared with the commit-time
+            handler -- its ``logger`` (records originate at the route module so
+            log grep by ``logger=app.routes.templates`` keeps working),
+            ``log_label`` / ``log_id`` for the log line, ``flash_message``
+            (callers compose it via :data:`STALE_EDITING_MESSAGE` substituting
+            the route's domain noun), and ``redirect`` target (typically the
+            edit form so the user can re-load).
+        submitted: Version counter the form payload carried.
+        current: Version counter on the row right now.  The two differ exactly
+            when a concurrent edit has landed.
+
+    Returns:
+        A Flask redirect :class:`Response`.  The caller returns it directly so
+        the route's control flow is identical to the pre-extraction shape.
+    """
+    ctx.logger.info(
+        "Stale-form conflict on %s id=%d "
+        "(submitted=%d, current=%d)",
+        ctx.log_label, ctx.log_id, submitted, current,
     )
     flash(ctx.flash_message, "warning")
     return ctx.redirect.to_response()
@@ -405,10 +480,13 @@ def regenerate_commit_or_report(
 
 
 __all__ = [
+    "STALE_ACTION_MESSAGE",
+    "STALE_EDITING_MESSAGE",
     "StaleConflictContext",
     "DbErrorContext",
     "UniqueViolationContext",
     "handle_stale_conflict",
+    "handle_stale_form_conflict",
     "handle_db_error",
     "handle_unique_violation",
     "commit_or_handle_stale",

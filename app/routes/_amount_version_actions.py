@@ -25,8 +25,11 @@ from logging import Logger
 
 from flask import Response, flash, redirect, url_for
 
-from app.routes._commit_helpers import StaleConflictContext, commit_or_handle_stale
-from app.routes._recurrence_form_helpers import STALE_ACTION_MESSAGE
+from app.routes._commit_helpers import (
+    STALE_ACTION_MESSAGE,
+    StaleConflictContext,
+    commit_or_handle_stale,
+)
 from app.routes._redirect_target import RedirectTarget
 from app.services import template_amount_service
 

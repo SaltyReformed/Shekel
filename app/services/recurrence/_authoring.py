@@ -20,40 +20,39 @@ The shape that leaves nothing for a writer to get half-right:
   :func:`~app.services.recurrence.resolve` call that validates the spec --
   never from the payload, which is what closes defect D1.
 
-**Since plan step R7c-a it writes a SECOND set of columns**, and that is
-deliberate rather than a lapse into the redundancy this arc removes.  It is the
-EXPAND half of an expand / migrate / contract: the closed-set columns
-(``pattern_id`` and its parameters) stay authoritative and the two-axis columns
-(``unit_id`` / ``placement_id`` / ``shift_id`` / ``starts_on`` /
-``nominal_day``) are written beside them and read by nobody.  R7c-b moves the
-readers across; R7c-c drops the closed set.  Both sides come from ONE
-``resolve`` call in ONE function, so no WRITE can leave them disagreeing --
-which is the property a dual write has to earn.
+**Since plan step R7c-b the table's AUTHORED columns and its ENCODED ones are
+two clearly different things, and this function is where the line is drawn.**
+The rule states its recurrence in ``unit_id`` / ``placement_id`` / ``shift_id``
+/ ``starts_on`` / ``nominal_day``, which are what every reader now takes;
+``pattern_id`` / ``interval_n`` / ``day_of_month`` are the closed set's STORAGE
+ENCODING of that same statement, derived here and dropped at plan step R7c-c.
+Two representations, one producer, and the direction runs one way -- which is
+what the R7c-a leaf's dual write earned and this one keeps.
 
-**The second set is not yet a whole cadence, and the missing half is the
-INTERVAL.**  ``interval_n`` is the closed set's column: ``encode_cadence``
-writes ``1`` for every pattern whose interval is baked into its NAME, so a
-Quarterly rule stores ``(interval_n = 1, unit_id = month)``.  Every reader goes
-through ``decode_pattern``, which answers ``3`` from the pattern and reads the
-column only for ``Every N Periods``, so nothing is wrong today -- but the pair
-must not be read at face value before R7c-c re-points the column with the
-migration that drops ``pattern_id``.
+**``interval_n`` is the one value the encoding still OWNS**, and reading it off
+the column is the mistake this leaf must not make.  ``encode_cadence`` writes
+``1`` for every pattern whose interval is baked into its NAME, so a Quarterly
+rule stores ``(interval_n = 1, unit_id = month)`` -- MONTHLY at face value, 12
+occurrences a year where 4 are owed.  The read door takes it through
+``_frequency.stored_interval``, which names that boundary; R7c-c re-points the
+column in the migration that drops ``pattern_id``.
 
-**It is not the stronger property, and the difference is stated rather than
-glossed.**  ``starts_on`` is measured against the owner's SCHEDULE, so a
-schedule rebuilt without any rule being written moves the derivation and leaves
-the column where it was.  Nothing reads the column in this leaf, so nothing is
-wrong; R7c-b re-runs the backfill before it switches the readers, which is
-where that window closes.
+**The stored first occurrence no longer LAGS anything, which is what changed at
+this step.**  While ``starts_on`` was derived from the closed-set columns plus
+the owner's schedule, a schedule rebuilt with no rule written moved the
+derivation and left the column -- so R7c-b re-ran the backfill before switching
+the readers.  From here the column is AUTHORED: the form collects it, the loan
+sync writes it from the loan's own contract, and neither has an input left to
+lag.  The one derivation that remains is the pay-period NORMALISATION, and it
+runs on every write.
 
-**A partial change is expressed as a whole one.**  The three in-place writers
-do not set a field; they read the rule's authored state back with
+**A partial change is expressed as a whole one.**  The two in-place writers do
+not set a field; they read the rule's authored state back with
 :func:`~app.services.recurrence.recurrence_spec` -- the READ door's, in
 ``_reading`` -- change the one fact they own with ``dataclasses.replace``, and
-re-author.  So "the loan's payment day moved" is stated as a new spec, and the
-first occurrence is re-derived from it in the same call rather than left
-holding what a previous cadence implied -- which is what keeps the stored
-``starts_on`` and the day it is derived from from disagreeing across an edit.
+re-author.  So "the loan's payment day moved" is stated as a new spec, and every
+encoded column is re-derived from it in the same call rather than left holding
+what a previous cadence implied.
 
 Flask-isolated (plain values in, no ``request`` / ``session`` reads) and it
 never commits: writes flush into the caller's transaction, which owns the
@@ -63,58 +62,61 @@ from app import ref_cache
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import PayCalendar
-from app.services.recurrence._frequency import encode_cadence
-from app.services.recurrence._occurrence import first_occurrence
+from app.services.recurrence._frequency import (
+    encode_cadence,
+    fires_on_day_of_month,
+)
 from app.services.recurrence._resolution import RecurrenceSpec, resolve
 
 
 def _author(
     rule: RecurrenceRule, spec: RecurrenceSpec, calendar: PayCalendar,
 ) -> None:
-    """Write *spec* onto *rule*, with the derived phase filled in.
+    """Write *spec* onto *rule*, with every derived and encoded column filled in.
 
     The ONE place a recurrence rule's columns are assigned.  It writes the
-    authored spec verbatim -- every column of ``budget.recurrence_rules`` that
-    a user controls -- plus the values derived on write: ``offset_periods``,
-    and since plan step R7c-a the five two-axis columns nothing reads yet.
+    authored spec -- the four columns that state the recurrence, plus
+    ``due_day_of_month`` and the closing bound's exclusive arc -- and derives
+    the rest from the same ``resolve`` call that validates it: the cycle phase,
+    the pay-period normalisation, and the closed set's storage encoding.
 
-    **The two-axis columns are a DERIVATION being frozen, not a cache**, and
-    the distinction is plan step R2d's.  Until R7c-b's readers move across they
-    are written and never read, so nothing can consume a stale one; from R7c-b
-    they are AUTHORED -- ``starts_on`` is what the form collects -- so for a
-    form-authored rule there is no input left to lag behind.  The window in
-    which a stored derivation could drift is the window in which nothing reads
-    it.
+    **The two-axis columns are AUTHORED from plan step R7c-b**, which is what
+    retires the "a stored derivation is a cache" objection ruling R2d raised
+    against writing them at all.  ``starts_on`` is what the form collects and
+    what the loan sync writes from a contract; there is no input left for it to
+    lag behind.  The window in which it could drift was the window in which
+    nothing read it, and that window closed with R7c-b's re-backfill.
 
-    **A LOAN PAYMENT is the exception, and it is a narrow one.**  Its bound is
-    written from the loan's contract rather than typed, and for a day-less loan
-    rule ``starts_on`` is still the payday of the paycheck that installment
-    falls in -- a function of the schedule after R7c-b as well as before.  Both
-    of the developer's live loan payments fire on a day of the month, where the
-    installment IS an occurrence and the value is contract-derived rather than
-    schedule-derived; plan ledger row **D6** is where the day-less shape is
-    tracked.
+    **A day-less LOAN PAYMENT is the one value still measured against the
+    schedule**, and it is narrow.  Its date is the loan's first contractual
+    installment; when the rule bills by PAYCHECK rather than on a day of the
+    month, the stored value is the payday of the paycheck that installment falls
+    in, so a schedule rebuilt under it moves what the column would be re-derived
+    as.  Both of the developer's live loan payments fire on a day of the month,
+    where the installment IS the occurrence and the value is contract-derived.
+    Plan ledger row **D6** tracks the day-less shape.
 
     **Resolved BEFORE the write, and the same call does both jobs.**  A
     recurrence that cannot be resolved must not reach the table, and
     ``resolve`` is where every such refusal already lives -- an owner
-    mismatch, a non-positive interval, a ``(unit, placement)`` pair with no
-    anchor derivation, a day or month outside its column's domain, an empty
-    schedule.  Re-checking those here would be a second copy of one judgement.
-    The refusal that is NOT ``resolve``'s is the encode below: a cadence the
-    closed pattern set cannot name resolves perfectly well and simply has
-    nowhere to be written.  Taking the phase from that same result rather than deriving
-    it again is the other half: two calls could not disagree today, but they
-    would be two producers of one value, which is the shape this step exists
-    to remove.
+    mismatch, a non-positive interval, a due day outside its column's domain, a
+    pay-period cadence against an empty schedule.  Re-checking those here would
+    be a second copy of one judgement.  The refusal that is NOT ``resolve``'s is
+    the encode below: a cadence the closed pattern set cannot name resolves
+    perfectly well and simply has nowhere to be written.  Taking the phase, the
+    normalised date and the encoded day from that one result rather than
+    deriving each again is the other half: several calls could not disagree
+    today, but they would be several producers of one value, which is the shape
+    this step exists to remove.
 
-    **The ENCODE step is here and nowhere else** (plan step R7b).  A caller
-    authors a cadence -- an interval, a unit and a placement -- and the table
-    still names its cadence with a closed pattern set, so
+    **The ENCODE step is here and nowhere else** (plan step R7b, widened to the
+    anchor columns at R7c-b).  A caller authors a cadence and a first
+    occurrence; the table still names its cadence with a closed pattern set and
+    still carries the scheduling day as a column, so
     :func:`~app.services.recurrence._frequency.encode_cadence` turns the first
-    into ``pattern_id`` plus the ``interval_n`` COLUMN.  Its inverse is the read
-    door's ``decode_pattern``, and both read one table, so the round trip
-    cannot half-drift.  Plan step R7c deletes this line together with the
+    into ``pattern_id`` plus the ``interval_n`` COLUMN and
+    :attr:`~app.services.recurrence.ResolvedRecurrence.day_of_month` supplies
+    the second.  Plan step R7c-c deletes all three lines together with the
     columns.
 
     **The encode runs FIRST, and an adversarial review of plan step R7b-2
@@ -140,49 +142,80 @@ def _author(
             pattern set cannot store (see ``encode_cadence``), or cannot be
             resolved against *calendar* (see
             :func:`~app.services.recurrence.resolve`).
-        RecurrenceGenerationError: When
-            :func:`~app.services.recurrence.first_occurrence` finds no pay
-            period spanning the anchor.  Unreachable from a value ``resolve``
-            produced -- it refuses an empty schedule and returns an anchor at
-            or after the opening payday -- and declared because this door is
-            what a caller catches around, and a raise it does not name is one
-            no handler above it is written for.
+
+            **``RecurrenceGenerationError`` left this list at plan step
+            R7c-b**, and it left because the function that raised it did.  The
+            pay-period normalisation is ``resolve``'s now, so an empty schedule
+            is refused in the resolution hierarchy rather than in the
+            generation one -- one door, one error class for a caller to catch
+            around.
     """
     encoded = encode_cadence(spec.interval_n, spec.unit, spec.placement)
     resolved = resolve(spec, calendar)
 
     rule.user_id = spec.user_id
-    rule.pattern_id = ref_cache.recurrence_pattern_id(encoded.pattern)
-    rule.interval_n = encoded.interval_n
     rule.offset_periods = resolved.offset_periods
-    # The two-axis columns, written beside the closed-set ones they replace
-    # (plan step R7c-a, the EXPAND half).  **Nothing reads them until plan step
-    # R7c-b**; writing them here from the SAME ``resolve`` call that produced
-    # the phase is what keeps the two representations equal on every write, so
-    # the leaf that switches the readers over switches them onto values the
-    # door has been maintaining rather than onto a backfill that has been
-    # sitting still since the migration ran.
+    rule.due_day_of_month = spec.due_day_of_month
+    # ---- what the rule AUTHORS (plan step R7c-b) -------------------------
     #
-    # ``first_occurrence`` rather than ``resolved.anchor_date``, and the
-    # difference is the whole of the D28 ruling: the anchor is the first
-    # occurrence for a calendar cadence and the opening BOUND for a
-    # pay-period one (ruling R-R8, plan ledger row D6), while ``starts_on``
-    # carries one meaning for every unit.
+    # The four columns that carry the recurrence itself, written from the ONE
+    # ``resolve`` call above.  ``starts_on`` is ``resolved``'s rather than
+    # ``spec``'s, and the difference is the pay-period NORMALISATION: a caller
+    # may author any date for a paycheck-space cadence and ``resolve`` answers
+    # the payday of the paycheck that hosts it, so what reaches the column is
+    # always a real occurrence (ruling **R-R16**).  For every other unit the two
+    # are the same value.
     rule.unit_id = ref_cache.recurrence_unit_id(spec.unit)
     rule.placement_id = ref_cache.period_placement_id(spec.placement)
     rule.shift_id = ref_cache.business_day_shift_id(resolved.shift)
-    rule.starts_on = first_occurrence(resolved, calendar)
+    rule.starts_on = resolved.starts_on
     rule.nominal_day = resolved.nominal_day
-    rule.day_of_month = spec.day_of_month
-    rule.due_day_of_month = spec.due_day_of_month
-    rule.month_of_year = spec.month_of_year
-    # ``start_period_id`` is NOT assigned, and its absence is the point (plan
-    # step R7b-4).  The column was the form's "First paycheck"; that step's
-    # migration folded every value into ``start_date`` and left the column
-    # NULL on all 46 live rules, so this door has nothing to write there and
-    # no other writer exists.  Nulling it here anyway would be a fence over a
-    # state nothing can reach.  Plan step R7c drops the column.
-    rule.start_date = spec.start_date
+    # ---- what the closed set ENCODES (dies at plan step R7c-c) ------------
+    #
+    # ``pattern_id`` / ``interval_n`` / ``day_of_month`` are the STORAGE
+    # ENCODING of what the four columns above already say, and they are derived
+    # here rather than authored -- which is the relationship ``pattern_id`` has
+    # had to the cadence since plan step R7b, extended to the anchor columns
+    # now that the anchor is authored.  A caller states no day and no month;
+    # ``encode_cadence`` chooses the pattern that stores the cadence and the
+    # first occurrence's own day is what the legacy column holds.
+    #
+    # **``day_of_month`` is still WRITTEN because it is still READ**:
+    # ``recurrence_engine.compute_due_date`` dates every generated row from it
+    # and plan step R5 is what deletes that function.  Gated on
+    # ``fires_on_day_of_month`` rather than taken from
+    # ``resolved.day_of_month`` alone, because the two differ for exactly one
+    # cadence and the difference moves dates: a ``Monthly First`` rule is a
+    # MONTH-unit cadence whose occurrences are the 1st, so the accessor answers
+    # ``1`` while the column has always been NULL -- and NULL is what makes
+    # ``compute_due_date`` date the row from its paycheck.  Writing the ``1``
+    # would be plan ledger row **D26**'s fix arriving in the wrong step
+    # (measured there at 11 rows).
+    #
+    # **For the calendar family this column went from possibly-NULL to
+    # ALWAYS-SET at plan step R7c-b, and that MOVES a generated row's date on
+    # the next re-author.**  Stated rather than left to be discovered: a caller
+    # used to author ``day_of_month`` directly and could leave it NULL, which
+    # made ``compute_due_date`` date the row from its PAYCHECK instead of from
+    # the day the cadence fires on.  ``resolved.day_of_month`` is non-``None``
+    # for every MONTH- and YEAR-unit rule (the first occurrence carries it), so
+    # a re-author now dates such a row from the rule's own day.  That is a FIX
+    # -- dating a monthly bill from its paycheck is plan ledger row **D18**'s
+    # shape -- and it is the one behaviour change here a reader would not
+    # predict from the columns.
+    #
+    # **``month_of_year`` and ``start_date`` are deliberately NOT assigned**,
+    # exactly as ``start_period_id`` has not been since plan step R7b-4: this
+    # step moved their last readers onto ``starts_on``, so no value written here
+    # could be read back, and writing one would churn 24 live rows to say
+    # something nothing asks.  Plan step R7c-c drops all three.
+    rule.pattern_id = ref_cache.recurrence_pattern_id(encoded.pattern)
+    rule.interval_n = encoded.interval_n
+    rule.day_of_month = (
+        resolved.day_of_month
+        if fires_on_day_of_month(spec.unit, spec.placement)
+        else None
+    )
     # The closing bound is ONE authored value and TWO columns under an
     # exclusive arc (``ck_recurrence_rules_single_end_bound``), so it is split
     # here and rejoined at the read door -- the only two places the pair is
@@ -214,7 +247,6 @@ def build_transient_rule(
     Raises:
         RecurrenceResolutionError: When the spec cannot be resolved -- see
             :func:`~app.services.recurrence.resolve`.
-        RecurrenceGenerationError: See :func:`_author`.
     """
     rule = RecurrenceRule()
     _author(rule, spec, calendar)
@@ -239,7 +271,6 @@ def author_rule(
     Raises:
         RecurrenceResolutionError: When the spec cannot be resolved -- see
             :func:`~app.services.recurrence.resolve`.
-        RecurrenceGenerationError: See :func:`_author`.
     """
     rule = RecurrenceRule()
     _author(rule, spec, calendar)
@@ -265,6 +296,5 @@ def reauthor_rule(
     Raises:
         RecurrenceResolutionError: When the spec cannot be resolved -- see
             :func:`~app.services.recurrence.resolve`.
-        RecurrenceGenerationError: See :func:`_author`.
     """
     _author(rule, spec, calendar)

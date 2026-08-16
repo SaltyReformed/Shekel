@@ -6,49 +6,51 @@ and the single producer of what a recurrence MEANS, and the public surface of
 a package whose private modules are fenced by ``shekel-private-module-import``
 (W9910).
 
-Two vocabularies, one of which is computed
-------------------------------------------
+What a rule AUTHORS, and what is left of the encoding
+-----------------------------------------------------
 
-``budget.recurrence_rules`` STORES the closed ``pattern_id`` set and its
-parameters.  Since plan step R7b that is an ENCODING rather than the authored
-vocabulary: a caller states ``(interval_n, unit, placement)`` and the seam
-encodes it on the way in and decodes it on the way out.  What remains a
-DERIVATION over those columns plus the owner's pay-period schedule -- the first
-occurrence, and the phase the ``PERIOD`` unit fires on -- is **not stored**
-(developer ruling 2026-08-07, plan step R2d).
+``budget.recurrence_rules`` states its recurrence in five columns: ``unit_id``,
+``placement_id``, ``shift_id``, ``starts_on`` and the 0-or-1 ``nominal_day``.
+A caller states the same thing (:class:`RecurrenceSpec`) and every reader takes
+it from there.  That is the END of plan step R7c's expand / migrate / contract:
+**R7c-a** added the columns and had the write door keep them in step while
+nothing read them, **R7c-b** moved every reader across and gave the form one
+date to collect, **R7c-c** drops what is left of the closed set.
 
-Storing it beside its own inputs would make it a cache, and a cache drifts the
-moment one writer moves one side alone.  The mechanisms proposed to stop that
--- read-only column accessors, a lint checker, a periodic integrity scan --
-are all apparatus for keeping a cache honest, and none can be complete:
-measured on SQLAlchemy 2.0.49, read-only accessors block attribute assignment
-and keyword construction but not ORM bulk ``update()``, Core ``update()`` on
-``__table__``, or assignment to the private name.  So the cache is not kept
-honest; it is not kept.  :func:`resolve` is a pure function and the only
-producer, so two readers cannot disagree.
+**What is left is an ENCODING, and it runs one way.**  ``pattern_id`` /
+``interval_n`` / ``day_of_month`` / ``month_of_year`` / ``start_date`` /
+``start_period_id`` / ``offset_periods`` are derived by the write door from the
+five above and read by almost nothing: ``interval_n`` still carries the cadence
+interval (``encode_cadence`` writes ``1`` for every pattern whose interval is in
+its NAME, so the read door takes it through ``_frequency.stored_interval`` and
+never off the column), ``day_of_month`` still feeds
+``recurrence_engine.compute_due_date`` until plan step R5 deletes that function,
+and the other four have no reader at all.
 
-The two-axis values become COLUMNS across plan step R7c's three leaves, which
-are an expand / migrate / contract rather than one transaction: **R7c-a** adds
-them and has the write door keep them in step while nothing reads them,
-**R7c-b** moves every reader across and the form starts collecting
-``starts_on`` directly, **R7c-c** drops the closed-set columns.  From R7c-b
-they are AUTHORED rather than derived for every form-authored rule, which is
-what makes storing them correct under the R2d ruling above -- a stored
-derivation is a cache, and a stored authored value is a fact.  (A day-less LOAN
-payment is the one shape that stays partly schedule-derived; plan ledger row D6
-tracks it.)
+**A stored DERIVATION would have been a cache; a stored AUTHORED value is a
+fact**, and that distinction is why the R2d ruling of 2026-08-07 refused these
+columns and R7c-b makes them correct.  The mechanisms proposed to keep a cache
+honest -- read-only column accessors, a lint checker, a periodic integrity scan
+-- are all apparatus, and none can be complete: measured on SQLAlchemy 2.0.49,
+read-only accessors block attribute assignment and keyword construction but not
+ORM bulk ``update()``, Core ``update()`` on ``__table__``, or assignment to the
+private name.  Nothing is being kept honest here, because nothing is derived
+from an input that can move: the form collects ``starts_on``, the loan sync
+writes it from a contract.  (A day-less LOAN payment is the one shape still
+measured against the schedule; plan ledger row **D6** tracks it.)
 
 What this package offers
 ------------------------
 
 * :func:`resolve` -- ``(spec, calendar) -> ResolvedRecurrence``, the two-axis
   meaning.  Pure: no Flask, no ORM, no clock, no database.
-* :func:`first_occurrence` -- ``(resolved, calendar) -> date``, the date a
-  recurrence FIRST fires on, with ONE meaning for every unit.  It is what
-  ``budget.recurrence_rules.starts_on`` holds (developer ruling 2026-08-14,
-  plan ledger row **D28**), and it is not ``anchor_date``: that field is the
+  Its ``starts_on`` is the rule's FIRST OCCURRENCE, with ONE meaning for every
+  unit (ruling **R-R16**, plan ledger row **D28**), and it is what
+  ``budget.recurrence_rules.starts_on`` holds.  ``anchor_date`` and the
+  standalone ``first_occurrence`` went at plan step R7c-b: that field was the
   first occurrence for a calendar cadence and the opening BOUND for a
-  pay-period one (row **D6**).
+  pay-period one (row **D6**), so one name meant two things and a second
+  function existed to reconcile them.
 * :func:`author_rule` / :func:`reauthor_rule` / :func:`build_transient_rule`
   -- the ORM-facing door.  A caller states what it AUTHORS
   (:class:`RecurrenceSpec`), never a column.
@@ -93,8 +95,10 @@ What lives where
   table serves all three (plan step R7b-3).
 * ``_resolution`` -- :class:`RecurrenceSpec`, :class:`ResolvedRecurrence` and
   :func:`resolve`, the pure derivation of what a recurrence means AGAINST a
-  schedule.  It holds WHERE each family puts the anchor; the family router
-  itself is one module down, because that answer needs no schedule.
+  schedule.  Since plan step R7c-b that derivation is TWO things -- the
+  pay-period normalisation and the cycle phase -- because the first occurrence
+  is authored rather than reconstructed; the three anchor derivations that
+  used to live here are deleted with the columns they read.
 * ``_authoring`` -- the WRITE door: refuse the unresolvable, write the
   authored spec.  The only module here that holds a session.  The SCHEDULE it
   resolves against is :class:`~app.services.pay_calendar.PayCalendar`, loaded
@@ -102,9 +106,11 @@ What lives where
   and a second loader until plan step **C2-b2** deleted both.
 * ``_occurrence`` -- the forward occurrence engine: walk the cadence, place
   each occurrence on a pay period.  Consumes :class:`ResolvedRecurrence`.  It
-  also holds :func:`first_occurrence`, which is the walk's first element stated
-  as a direct search -- beside the walk rather than beside the anchor
-  derivation, because the walk is what it has to agree with.
+  held ``first_occurrence`` until plan step R7c-b -- the walk's first element
+  stated as a direct search, so the value seeding the stored column could not
+  differ from the value generating the rows.  ``resolve`` normalises the date
+  itself now, so ``starts_on`` IS that first element by construction and there
+  are no longer two functions to keep in step.
 * ``_reading`` -- the READ door: a stored rule's authored state, its
   occurrences, and the projection onto periods.  Its own module rather than a
   line in ``_authoring`` because reading is not writing -- and because
@@ -172,7 +178,6 @@ from app.services.recurrence._describe import (
 from app.services.recurrence._occurrence import (
     OccurrencePlacement,
     RecurrenceGenerationError,
-    first_occurrence,
     occurrence_placements,
     occurrences,
     place,
@@ -186,10 +191,14 @@ from app.services.recurrence._reading import (
     recurrence_spec_with_cadence,
     resolved_recurrence,
     rule_occurrences,
+    stored_cadence,
 )
 from app.services.recurrence._resolution import (
     RecurrenceSpec,
     ResolvedRecurrence,
+    has_day_of_month_coordinate,
+    is_offerable_nominal_day,
+    offerable_nominal_days,
     resolve,
 )
 from app.services.recurrence._picker import (
@@ -199,6 +208,7 @@ from app.services.recurrence._picker import (
     SelectedCadence,
     cadence_options,
     end_bound_options,
+    fires_on_day_of_month,
     picker_model,
     selected_cadence,
 )
@@ -244,13 +254,16 @@ __all__ = [
     "end_bound_from_columns",
     "end_bound_from_token",
     "end_bound_options",
-    "first_occurrence",
+    "fires_on_day_of_month",
     "has_ended",
     "is_authorable",
+    "has_day_of_month_coordinate",
+    "is_offerable_nominal_day",
     "modelled_pattern",
     "modelled_placement",
     "modelled_unit",
     "occurrence_placements",
+    "offerable_nominal_days",
     "occurrences",
     "picker_model",
     "place",
@@ -263,4 +276,5 @@ __all__ = [
     "resolved_recurrence",
     "rule_occurrences",
     "selected_cadence",
+    "stored_cadence",
 ]

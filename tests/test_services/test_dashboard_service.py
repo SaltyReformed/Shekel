@@ -29,6 +29,7 @@ from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger, dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    make_every_period_rule,
     add_txn as _add_txn,
     make_investment_account,
     set_default_grid_account,
@@ -69,12 +70,7 @@ class TestBillRowSingleBase:
             db.session.query(RecurrencePattern)
             .filter_by(name="Every Period").one()
         )
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=every_period.id,
-        )
-        db.session.add(rule)
-        db.session.flush()
+        rule = make_every_period_rule(db.session, seed_user["user"].id)
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,

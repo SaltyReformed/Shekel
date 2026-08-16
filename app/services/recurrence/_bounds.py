@@ -27,7 +27,7 @@ Before this step nothing wrote a count at all, so the pair was unreachable;
 this step's own "Ends" control is what would have made it reachable.  Two
 independent things now stop it, and only one of them is this module's: the
 form door refuses a submitted bound on a loan payment
-(``_recurrence_form_helpers.LOAN_PAYMENT_BOUND_IS_DERIVED``), which closes the
+(``_recurrence_form_refusals.LOAN_PAYMENT_BOUND_IS_DERIVED``), which closes the
 PATH, and the type closes the POSSIBILITY.  The second is what a later step
 adding a third door inherits for free; the first is not.
 

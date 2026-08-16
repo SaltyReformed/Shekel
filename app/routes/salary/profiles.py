@@ -76,6 +76,89 @@ def new_profile():
     )
 
 
+def _salary_category(user_id: int) -> Category:
+    """Return this owner's ``Income: Salary`` category, creating it if absent.
+
+    Every salary profile files its paycheck under one category, and a new owner
+    has none until their first profile is created -- so the read and the create
+    are one operation rather than a caller's two-step.
+
+    Args:
+        user_id: The owner.
+
+    Returns:
+        The persisted :class:`~app.models.category.Category`, flushed when
+        newly created so it carries an id the caller can link.
+    """
+    existing = (
+        db.session.query(Category)
+        .filter_by(user_id=user_id, group_name="Income", item_name="Salary")
+        .first()
+    )
+    if existing:
+        return existing
+    category = Category(
+        user_id=user_id,
+        group_name="Income",
+        item_name="Salary",
+        sort_order=0,
+    )
+    db.session.add(category)
+    db.session.flush()
+    return category
+
+
+def _paycheck_template(
+    data: dict, *, account_id: int, category_id: int,
+) -> TransactionTemplate:
+    """Create and flush the every-paycheck template a salary profile files through.
+
+    The rule and the template are one operation: a salary profile's paycheck
+    recurs every pay period by definition, so nothing chooses a cadence and
+    nothing links the two afterwards.
+
+    **The rule starts at the OPENING of the owner's schedule.**  Stated rather
+    than implied since plan step R7c-b made ``starts_on`` required, and it is
+    the same value an absent opening bound resolved to before -- so a new
+    salary profile fans its paychecks across every pay period the owner has,
+    closed ones included.  Plan ledger row **D34** carries whether it should.
+
+    Args:
+        data: The validated create payload; read for the name, the annual
+            salary and the pay-period count.
+        account_id: The non-loan deposit account the paychecks land in.
+        category_id: This owner's ``Income: Salary`` category.
+
+    Returns:
+        The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
+        carrying an id the profile can link.
+    """
+    calendar = calendar_for(current_user.id)
+    rule = author_rule(
+        RecurrenceSpec(
+            user_id=current_user.id,
+            unit=RecurrenceUnitEnum.PERIOD,
+            starts_on=calendar.opening_bound(),
+        ),
+        calendar,
+    )
+    template = TransactionTemplate(
+        user_id=current_user.id,
+        account_id=account_id,
+        category_id=category_id,
+        recurrence_rule_id=rule.id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+        name=data["name"],
+        default_amount=(
+            data["annual_salary"] / data.get("pay_periods_per_year", 26)
+        ),
+        is_active=True,
+    )
+    db.session.add(template)
+    db.session.flush()
+    return template
+
+
 @salary_bp.route("/salary", methods=["POST"])
 @login_required
 @require_owner
@@ -98,24 +181,7 @@ def create_profile():
         ), "danger")
         return redirect(url_for("salary.cockpit"))
 
-    # Find or create Income: Salary category
-    salary_category = (
-        db.session.query(Category)
-        .filter_by(user_id=current_user.id, group_name="Income", item_name="Salary")
-        .first()
-    )
-    if not salary_category:
-        salary_category = Category(
-            user_id=current_user.id,
-            group_name="Income",
-            item_name="Salary",
-            sort_order=0,
-        )
-        db.session.add(salary_category)
-        db.session.flush()
-
-    # Get income transaction type ID from ref_cache.
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    salary_category = _salary_category(current_user.id)
 
     # Get the default deposit account -- a NON-LOAN (non-amortizing) account.
     # A loan's balance is ledger-derived, not a transaction sum (ruling D4 /
@@ -145,28 +211,11 @@ def create_profile():
     user_id = current_user.id
 
     try:
-        # Create every_period recurrence rule
-        rule = author_rule(
-            RecurrenceSpec(
-                user_id=current_user.id,
-                unit=RecurrenceUnitEnum.PERIOD,
-            ),
-            calendar_for(current_user.id),
-        )
-
-        # Create linked transaction template
-        template = TransactionTemplate(
-            user_id=current_user.id,
+        template = _paycheck_template(
+            data,
             account_id=account.id,
             category_id=salary_category.id,
-            recurrence_rule_id=rule.id,
-            transaction_type_id=income_type_id,
-            name=data["name"],
-            default_amount=data["annual_salary"] / (data.get("pay_periods_per_year", 26)),
-            is_active=True,
         )
-        db.session.add(template)
-        db.session.flush()
 
         # Create the salary profile
         profile = SalaryProfile(

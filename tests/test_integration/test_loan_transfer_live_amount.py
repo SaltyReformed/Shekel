@@ -19,7 +19,6 @@ from app.enums import AcctTypeEnum, RecurrencePatternEnum
 from app.extensions import db
 from app.models.escrow_line import EscrowComponentVersion
 from app.models.loan_payment_settings import LoanPaymentSettings
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
@@ -35,6 +34,7 @@ from tests._test_helpers import (
     add_escrow_line,
     create_loan_account,
     loan_params_for,
+    make_pattern_rule,
 )
 from app.services.row_valuation import owned_contribution
 
@@ -70,15 +70,12 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
         effective_date=params.origination_date,
     )
 
-    rule = RecurrenceRule(
-        user_id=user.id,
-        pattern_id=ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.MONTHLY,
-        ),
-        day_of_month=1,
+    # Authored through the write door (plan step R7c-b): the day a rule fires
+    # on is its first occurrence's own day, so "the 1st" is a DATE the fixture
+    # schedule reaches rather than a separate column.
+    rule = make_pattern_rule(
+        user.id, RecurrencePatternEnum.MONTHLY, fires_on_day=1,
     )
-    db.session.add(rule)
-    db.session.flush()
     template = TransferTemplate(
         user_id=user.id,
         from_account_id=checking.id,

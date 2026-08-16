@@ -43,6 +43,7 @@ from app.services import obligations_aggregator, recurring_view
 from app.services.pay_calendar import PayCadence, PayCalendar, calendar_for
 from app.services.recurrence import RecurrenceResolutionError
 from app.utils.money import MONTHS_PER_YEAR
+from tests._test_helpers import make_pattern_rule
 
 #: 14 days between paydays, 26 a year -- the cadence every hand-computed
 #: figure in this file assumes, and the one the retired
@@ -87,15 +88,10 @@ def _biweekly_calendar(user_id: int = 1) -> PayCalendar:
 
 def _create_rule(seed_user, pattern_enum, *, interval_n=1, end_date=None):
     """Create and flush a RecurrenceRule for the seed user."""
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=ref_cache.recurrence_pattern_id(pattern_enum),
-        interval_n=interval_n,
-        end_date=end_date,
+    return make_pattern_rule(
+        seed_user["user"].id, pattern_enum,
+        interval_n=interval_n, end_date=end_date,
     )
-    db.session.add(rule)
-    db.session.flush()
-    return rule
 
 
 def _create_expense(seed_user, rule, amount, *, name="Expense"):

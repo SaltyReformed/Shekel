@@ -267,17 +267,37 @@ def test_server_default_fills_omitted_recurrence_integers(db, seed_user):
     """
     from app import ref_cache  # pylint: disable=import-outside-toplevel
     from app.enums import (  # pylint: disable=import-outside-toplevel
+        BusinessDayShiftEnum,
+        PeriodPlacementEnum,
         RecurrencePatternEnum,
+        RecurrenceUnitEnum,
     )
 
     user_id = seed_user["user"].id
     pattern_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.EVERY_PERIOD,
     )
+    # The two-axis columns are stated because plan step R7c-b made them NOT
+    # NULL.  Omitting them would make this INSERT fail on a null before the
+    # server_default under test was ever reached -- which is the same
+    # IntegrityError, from a different cause, on a case whose whole point is
+    # that a storage-tier-only INSERT lands the documented defaults.
     db.session.execute(db.text(
-        "INSERT INTO budget.recurrence_rules (user_id, pattern_id) "
-        "VALUES (:user_id, :pattern_id)"
-    ), {"user_id": user_id, "pattern_id": pattern_id})
+        "INSERT INTO budget.recurrence_rules "
+        "(user_id, pattern_id, unit_id, placement_id, shift_id, starts_on) "
+        "VALUES (:user_id, :pattern_id, :unit_id, :placement_id, :shift_id, "
+        "DATE '2026-01-02')"
+    ), {
+        "user_id": user_id,
+        "pattern_id": pattern_id,
+        "unit_id": ref_cache.recurrence_unit_id(RecurrenceUnitEnum.PERIOD),
+        "placement_id": ref_cache.period_placement_id(
+            PeriodPlacementEnum.CONTAINING_DATE,
+        ),
+        "shift_id": ref_cache.business_day_shift_id(
+            BusinessDayShiftEnum.NONE,
+        ),
+    })
     db.session.commit()
     row = db.session.execute(db.text(
         "SELECT interval_n, offset_periods FROM budget.recurrence_rules "

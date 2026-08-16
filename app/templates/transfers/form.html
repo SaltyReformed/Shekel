@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
 {% from "_amount_macros.html" import amount_field, amount_history with context %}
-{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_detail_fields, recurrence_end_bound, recurrence_preview, recurrence_start_date, start_period_field with context %}
+{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_detail_fields, recurrence_end_bound, recurrence_preview, recurrence_starts_on, start_period_field with context %}
 {% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if template else 'New' }} Transfer -- Shekel{% endblock title %}
 
@@ -78,15 +78,33 @@
       <div class="form-section--accent">
         <h6 class="form-section__title">Recurrence</h6>
         {{ recurrence_cadence_controls(recurrence.picker, recurrence.selected_cadence) }}
-        <div id="recurrence-fields" class="d-none">
+        {# ``data-loan-account-ids`` carries which destinations the app derives
+           a first occurrence FOR, so recurrence_form.js can lock the "Starts
+           on" row the moment one is chosen (plan step R7c-b).  It is emitted
+           on the CREATE form ALONE: an EDIT form already knows whether THIS
+           template is a loan payment and locks server-side through
+           recurrence.bounds_are_derived, and two locks answering the same
+           question is how they come to disagree.
+
+           The lock is an affordance.  The enforcement is the route's --
+           _transfer_creation_helpers.settle_first_occurrence derives the date
+           from the loan's contract whatever the payload says -- so a browser
+           with JavaScript off, or a crafted POST, gets the same stored value
+           and no worse an outcome than a discarded input. #}
+        <div id="recurrence-fields" class="d-none"
+             {% if template is none %}
+             data-loan-account-ids="{{ loan_account_ids|join(',') }}"
+             {% endif %}>
           {# Both validity bounds lock together on ONE predicate (plan step
              R7b-4): a recurring loan payment runs from the loan's first
              contractual installment to its projected payoff, and
              loan_recurrence_sync owns both. #}
-          {{ recurrence_start_date(recurrence.selected_start_date,
-                                       recurrence.start_date_min,
-                                       recurrence.start_date_max,
-                                       locked=recurrence.bounds_are_derived) }}
+          {{ recurrence_starts_on(recurrence.picker,
+                                   recurrence.selected_start,
+                                   recurrence.starts_on_min,
+                                   recurrence.starts_on_max,
+                                   locked=recurrence.bounds_are_derived,
+                                   swappable=(template is none)) }}
           {{ recurrence_detail_fields(template, include_due_day=false) }}
           {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end_bound,
                                      locked=recurrence.bounds_are_derived) }}

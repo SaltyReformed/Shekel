@@ -20,7 +20,10 @@ from flask import abort, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app import ref_cache
-from app.enums import AcctTypeEnum
+from app.enums import (
+    AcctTypeEnum,
+    RecurrenceUnitEnum,
+)
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType
@@ -36,7 +39,13 @@ from app.routes.loan._helpers import (
     build_band_chart,
     build_baseline_scenarios,
 )
-from app.services import balance_at, cash_ledger, escrow_calculator
+from app.services import (
+    balance_at,
+    cash_ledger,
+    escrow_calculator,
+    loan_loaders,
+    loan_recurrence_sync,
+)
 from app.services.loan_posting_service import (
     confirmed_loan_payment_history,
     loan_balance_anchor_history,
@@ -298,6 +307,9 @@ def _resolve_transfer_prompt(account, template):
             "default_source_id": None,
             "has_recurring_payment": True,
             "recurring_payment_extra": extra,
+            # The prompt is not rendered on this branch; the key is present so
+            # the template never references an undefined value.
+            "first_payment_on": None,
         }
 
     source_accounts = (
@@ -319,12 +331,29 @@ def _resolve_transfer_prompt(account, template):
          if acct.account_type_id == checking_type_id),
         None,
     )
+    # When the FIRST PAYMENT falls, from the same producer the create route
+    # authors it with (plan step R7c-b).  The prompt's form collects no
+    # recurrence controls at all -- the route derives the whole cadence -- so
+    # without this the user clicks "Create Recurring Transfer" and learns when
+    # it starts only by opening the template afterwards.  Reading
+    # ``loan_cadence_start`` rather than restating ``origination_date +
+    # payment_day`` is what keeps the promise and the write one statement.
+    #
+    # ``None`` for an unconfigured loan, which is also the state
+    # ``create_payment_transfer`` refuses: the prompt renders without a date
+    # rather than inventing one.
+    params = loan_loaders.load_loan_params(account.id)
     return {
         "show_transfer_prompt": True,
         "source_accounts": source_accounts,
         "default_source_id": default_source_id,
         "has_recurring_payment": False,
         "recurring_payment_extra": Decimal("0.00"),
+        "first_payment_on": None if params is None else (
+            loan_recurrence_sync.loan_cadence_start(
+                RecurrenceUnitEnum.MONTH, params,
+            ).starts_on
+        ),
     }
 
 

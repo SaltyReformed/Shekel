@@ -89,6 +89,22 @@ SESSION_STATE = Path(__file__).resolve().parent / ".dev_session_state.json"
 #: even after an aborted run.
 MARK = "ZZVERIFY-RECURRENCE"
 
+#: How long to wait after a field change that fires a preview fetch.
+#:
+#: **The limiter being REAL is the point**, so the run is paced to it rather
+#: than the other way round: the dev app runs prod's Redis limiter at 30
+#: requests a minute per IP, ``recurrence_form.js`` fetches the occurrence
+#: preview on every field change, and this script changes a field about sixty
+#: times.  At 2.5s that is 24 a minute, the same headroom
+#: :data:`POST_SPACING_SECONDS` leaves the crafted POSTs.
+#:
+#: Plan step R7c-b is what made it necessary: it added three driver passes
+#: (``_drive_nominal_day`` on both forms, ``_drive_loan_destination_lock``),
+#: and the run then met nine 429s -- all of them preview fetches, all reported
+#: as console errors, none of them a product defect.  Loosening the limiter
+#: would have hidden a class of defect the console check exists to catch.
+FIELD_SPACING_MS = 2500
+
 #: How long to wait between crafted POSTs.  See the module docstring.
 POST_SPACING_SECONDS = 2.5
 
@@ -125,6 +141,18 @@ def _check(label: str, passed: bool, detail: str = "") -> None:
           + ("" if passed else f" -- {detail}"))
     if not passed:
         _failures.append(f"{label}: {detail}")
+
+
+def _settle(page) -> None:
+    """Let the script's last field change settle, PACED to the rate limiter.
+
+    Every change fires an occurrence-preview fetch, so the wait is both a DOM
+    settle and the run's rate budget; see :data:`FIELD_SPACING_MS`.
+
+    Args:
+        page: The Playwright page.
+    """
+    page.wait_for_timeout(FIELD_SPACING_MS)
 
 
 def _visible(page, element_id: str) -> bool:
@@ -224,7 +252,7 @@ def _select_interval(page, unit_id: str, interval_n: int) -> None:
         }""",
         index,
     )
-    page.wait_for_timeout(200)
+    _settle(page)
 
 
 def _unit_ids(page) -> dict[str, str]:
@@ -295,7 +323,8 @@ def _posted_opening(page) -> dict[str, list[str]]:
             const form = document.getElementById('recurrence_unit').form;
             const data = new FormData(form);
             return {
-                start_date: data.getAll('start_date'),
+                starts_on: data.getAll('starts_on'),
+                nominal_day: data.getAll('nominal_day'),
                 start_period_id: data.getAll('start_period_id'),
             };
         }"""
@@ -330,12 +359,12 @@ def _drive_opening_bound(page, kind: str, url: str) -> None:
 
     # --- does NOT repeat -------------------------------------------------
     page.locator("#recurrence_unit").select_option("")
-    page.wait_for_timeout(200)
+    _settle(page)
     _check(f"{kind} K: Starts on is hidden when it does not repeat",
-           not _visible(page, "field-start-date"), "visible")
+           not _visible(page, "field-starts-on"), "visible")
     posted = _posted_opening(page)
-    _check(f"{kind} K: no start_date posts when it does not repeat",
-           posted["start_date"] == [], str(posted["start_date"]))
+    _check(f"{kind} K: no starts_on posts when it does not repeat",
+           posted["starts_on"] == [], str(posted["starts_on"]))
     if has_period_select:
         _check(f"{kind} K: the pay-period row IS shown when it does not repeat",
                _visible(page, "field-start-period"), "hidden")
@@ -345,9 +374,9 @@ def _drive_opening_bound(page, kind: str, url: str) -> None:
 
     # --- repeats ---------------------------------------------------------
     page.locator("#recurrence_unit").select_option(units["paychecks"])
-    page.wait_for_timeout(200)
+    _settle(page)
     _check(f"{kind} L: Starts on is SHOWN for a repeating definition",
-           _visible(page, "field-start-date"), "hidden")
+           _visible(page, "field-starts-on"), "hidden")
     if has_period_select:
         _check(f"{kind} L: the pay-period row is hidden when it repeats",
                not _visible(page, "field-start-period"), "visible")
@@ -355,27 +384,180 @@ def _drive_opening_bound(page, kind: str, url: str) -> None:
                _posted_opening(page)["start_period_id"] == [],
                str(_posted_opening(page)["start_period_id"]))
 
-    # An untouched box posts the form's own DEFAULT -- the current paycheck's
-    # payday -- and that is load-bearing rather than cosmetic: the control this
+    # An untouched box posts the form's own DEFAULT -- TODAY since plan step
+    # R7c-b -- and that is load-bearing rather than cosmetic: the control this
     # replaced was a <select> with no empty option preselecting the current
     # period, so every create was bounded.  Defaulting to EMPTY silently made
     # "unbounded" the default, and the create routes generate over every period
     # the owner has: a rent template created today wrote projected debits into
     # pay periods that had already closed.  Found by an adversarial review of
-    # this step; asserted here because only a real render shows what the box
-    # actually holds.
-    posted_default = _posted_opening(page)["start_date"]
-    _check(f"{kind} L: an untouched Starts on posts the current paycheck",
+    # plan step R7b-4; asserted here because only a real render shows what the
+    # box actually holds.
+    posted_default = _posted_opening(page)["starts_on"]
+    _check(f"{kind} L: an untouched Starts on posts the form's default",
            len(posted_default) == 1 and posted_default[0] != "",
            str(posted_default))
-    page.fill("#start_date", "2026-09-15")
-    page.wait_for_timeout(200)
+    page.fill("#starts_on", "2026-09-15")
+    _settle(page)
     _check(f"{kind} L: a typed Starts on posts that date",
-           _posted_opening(page)["start_date"] == ["2026-09-15"],
-           str(_posted_opening(page)["start_date"]))
+           _posted_opening(page)["starts_on"] == ["2026-09-15"],
+           str(_posted_opening(page)["starts_on"]))
     _check(f"{kind} L: the preview survived the opening bound",
            "Could not load preview" not in page.inner_text("#recurrence-preview"),
            page.inner_text("#recurrence-preview"))
+
+
+def _drive_nominal_day(page, kind: str, url: str) -> None:
+    """Check the "repeating on" control appears and posts only where it means.
+
+    **Plan step R7c-b's new control, and the same defect class one field
+    over.**  ``nominal_day`` records the day a rule MEANS when its first
+    occurrence's own month was too short to hold it -- 2026-04-30 is "the 30th"
+    or "the 31st", and those are different cadences from May on.  The control
+    therefore renders ONLY where the chosen date leaves that question open, and
+    it must be DISABLED as well as hidden everywhere else: a hidden select
+    still submits, and a stale day beside a date that never clamped is exactly
+    what ``ck_recurrence_rules_nominal_day`` refuses.  A rendered-HTML
+    assertion cannot tell "hidden" from "hidden and still submitting".
+
+    The per-OPTION half matters too and pytest cannot see it either: only the
+    days ABOVE the chosen one are meaningful, so choosing 2026-04-30 must offer
+    31 and not 30, and moving to a month that holds them all must clear the
+    selection rather than leave it stating a day the rule no longer fires on.
+
+    Args:
+        page: The Playwright page.
+        kind: "transaction" or "transfer", for the labels.
+        url: The create form's path.
+    """
+    print(f"\n=== {kind} nominal day: {url} ===")
+    page.goto(f"{DEV_BASE_URL}{url}", wait_until="domcontentloaded")
+    page.wait_for_selector("#recurrence_unit")
+    units = _unit_ids(page)
+
+    # A MONTHLY cadence, which is the only family with a day-of-month
+    # coordinate at all.
+    page.locator("#recurrence_unit").select_option(units["months"])
+    _settle(page)
+
+    # --- a date its month CAN hold: nothing to ask -----------------------
+    page.fill("#starts_on", "2026-04-15")
+    _settle(page)
+    _check(f"{kind} N: repeating-on is hidden for a mid-month date",
+           not _visible(page, "field-nominal-day"), "visible")
+    _check(f"{kind} N: repeating-on posts NOTHING for a mid-month date",
+           _posted_opening(page)["nominal_day"] == [],
+           str(_posted_opening(page)["nominal_day"]))
+
+    # --- a month's LAST day in a short month: the question is open -------
+    page.fill("#starts_on", "2026-04-30")
+    _settle(page)
+    _check(f"{kind} N: repeating-on is SHOWN on a short month's last day",
+           _visible(page, "field-nominal-day"), "hidden")
+    enabled = page.evaluate(
+        """() => Array.from(document.getElementById('nominal_day').options)
+              .filter(o => o.value !== '' && !o.disabled)
+              .map(o => o.value)"""
+    )
+    _check(f"{kind} N: only the days ABOVE the 30th are offered",
+           enabled == ["31"], str(enabled))
+
+    page.select_option("#nominal_day", "31")
+    _settle(page)
+    _check(f"{kind} N: a chosen nominal day posts exactly once",
+           _posted_opening(page)["nominal_day"] == ["31"],
+           str(_posted_opening(page)["nominal_day"]))
+
+    # --- back to a month that holds every day: the choice must GO --------
+    page.fill("#starts_on", "2026-05-31")
+    _settle(page)
+    _check(f"{kind} N: repeating-on is hidden again on a 31-day month's end",
+           not _visible(page, "field-nominal-day"), "visible")
+    _check(f"{kind} N: the stale nominal day posts nothing after the move",
+           _posted_opening(page)["nominal_day"] == [],
+           str(_posted_opening(page)["nominal_day"]))
+
+
+def _drive_loan_destination_lock(page) -> None:
+    """Check a loan destination locks "Starts on" on the CREATE form.
+
+    **Plan step R7c-b, and the create-side half of a rule the edit form has
+    carried since R7b-4.**  A recurring loan payment's first occurrence is the
+    loan's first contractual installment, which the app derives -- so asking
+    the user for it and discarding the answer is the defect
+    ``LOAN_PAYMENT_BOUND_IS_DERIVED`` closes on the edit path.  The create form
+    cannot know at render which destination will be chosen, so the server ships
+    the SET of loan accounts and ``recurrence_form.js`` applies it.
+
+    Only a real ``FormData`` says whether the control is disabled, and only a
+    real render says whether the help text swapped -- both are exactly the
+    difference this file exists for.
+
+    **It also covers the defect this step SHIPPED and reading caught**: the
+    script read ``startsOn.readOnly`` while the template emitted ``disabled``,
+    so ``startsOnLocked`` was false on every locked form and ``syncStartsOn``
+    re-enabled the control the moment the page settled.  The edit-form arm
+    below is that regression's control.
+
+    Skipped with a printed note when the owner has no loan account -- the dev
+    clone has one, but a fresh database does not, and a check that silently
+    passes on an empty set is worse than one that says it did not run.
+
+    Args:
+        page: The Playwright page.
+    """
+    print("\n=== transfer loan-destination lock: /transfers/new ===")
+    page.goto(f"{DEV_BASE_URL}/transfers/new", wait_until="domcontentloaded")
+    page.wait_for_selector("#recurrence_unit")
+    loan_ids = page.evaluate(
+        """() => (document.getElementById('recurrence-fields')
+              .getAttribute('data-loan-account-ids') || '')
+              .split(',').filter(Boolean)"""
+    )
+    if not loan_ids:
+        print("   SKIPPED: this owner has no configured loan account")
+        return
+
+    units = _unit_ids(page)
+    page.locator("#recurrence_unit").select_option(units["months"])
+    _settle(page)
+
+    # --- a NON-loan destination: the date is the user's ------------------
+    non_loan = page.evaluate(
+        """(loanIds) => Array.from(
+              document.getElementById('to_account_id').options
+           ).map(o => o.value).find(v => v && loanIds.indexOf(v) === -1)""",
+        loan_ids,
+    )
+    _check("transfer M: the form offers a non-loan destination to compare",
+           non_loan is not None, "every destination is a loan")
+    if non_loan is None:
+        return
+    page.select_option("#to_account_id", non_loan)
+    _settle(page)
+    _check("transfer M: Starts on is the user's for a non-loan destination",
+           not page.locator("#starts_on").is_disabled(), "disabled")
+    _check("transfer M: it posts the date for a non-loan destination",
+           len(_posted_opening(page)["starts_on"]) == 1,
+           str(_posted_opening(page)["starts_on"]))
+
+    # --- a LOAN destination: the app derives it --------------------------
+    page.select_option("#to_account_id", loan_ids[0])
+    _settle(page)
+    _check("transfer M: Starts on is DISABLED for a loan destination",
+           page.locator("#starts_on").is_disabled(), "enabled")
+    _check("transfer M: it posts NOTHING for a loan destination",
+           _posted_opening(page)["starts_on"] == [],
+           str(_posted_opening(page)["starts_on"]))
+    _check("transfer M: the help text says the loan sets it",
+           "loan's first payment" in page.inner_text("#starts-on-help"),
+           page.inner_text("#starts-on-help"))
+
+    # --- and BACK: the lock is not one-way -------------------------------
+    page.select_option("#to_account_id", non_loan)
+    _settle(page)
+    _check("transfer M: Starts on is handed back when the loan is deselected",
+           not page.locator("#starts_on").is_disabled(), "still disabled")
 
 
 def _select_end_mode(page, token: str) -> None:
@@ -391,7 +573,7 @@ def _select_end_mode(page, token: str) -> None:
             ``after_occurrences``.
     """
     page.select_option("#recurrence_end_mode", token)
-    page.wait_for_timeout(200)
+    _settle(page)
 
 
 def _drive_end_bound(page, kind: str, url: str) -> None:
@@ -412,7 +594,7 @@ def _drive_end_bound(page, kind: str, url: str) -> None:
     page.wait_for_selector("#recurrence_unit")
     units = _unit_ids(page)
     page.locator("#recurrence_unit").select_option(units["paychecks"])
-    page.wait_for_timeout(200)
+    _settle(page)
 
     _check(f"{kind} G: the Ends row is shown for a repeating definition",
            _visible(page, "field-end-bound"), "hidden")
@@ -461,7 +643,7 @@ def _drive_end_bound(page, kind: str, url: str) -> None:
     # Back to "does not repeat": the whole control goes, and posts NOTHING --
     # a hidden-but-enabled control is the defect class this file exists for.
     page.locator("#recurrence_unit").select_option("")
-    page.wait_for_timeout(200)
+    _settle(page)
     posted = _posted_bound(page)
     _check(f"{kind} J: a non-repeating definition posts no bound at all",
            posted["recurrence_end_mode"] == []
@@ -475,8 +657,56 @@ def _drive_end_bound(page, kind: str, url: str) -> None:
            "preview broke")
 
 
+def _posted_due_day(page) -> list[str]:
+    """Return the ``due_day_of_month`` values the form would actually submit.
+
+    From a real ``FormData``, for the reason :func:`_posted_intervals` reads
+    one -- and this is the control that shipped the defect the idiom exists
+    for.  The Due Day row is HIDDEN for a cadence that anchors on a paycheck
+    and was never DISABLED, so a value typed under "every 1 month" still
+    posted after switching to "funded from the first paycheck" and landed in
+    the column through ``recurrence._authoring._author``.  Rendered HTML cannot
+    tell a hidden row from a hidden row that still submits.
+
+    Args:
+        page: The Playwright page.
+
+    Returns:
+        Every value the form would post under that name.  Empty on the
+        transfer form, which does not render the control at all.
+    """
+    return page.evaluate(
+        """() => {
+            const form = document.getElementById('recurrence_unit').form;
+            return new FormData(form).getAll('due_day_of_month');
+        }"""
+    )
+
+
 def _drive_visibility(page, kind: str, url: str) -> None:
     """Check which controls each cadence shows, on one form kind.
+
+    **Re-pointed onto ``field-due-dom`` at plan step R7c-b, and the previous
+    version is the lesson.**  It drove ``field-dom`` (Day of Month) and
+    ``field-moy`` (Month), the two controls that step DELETED -- ruling R-R16
+    put the cycle's day and its month on ``starts_on``.  So its five
+    ``VISIBLE`` assertions failed correctly, and, far worse, its six ``hidden``
+    assertions PASSED VACUOUSLY: a non-existent element is not visible, so
+    those read green while proving nothing.
+
+    The day question they asked is now answered in two places and both have
+    their own driver: ``starts_on`` (always shown --
+    :func:`_drive_opening_bound`) and ``nominal_day`` (conditionally shown --
+    :func:`_drive_nominal_day`).  What is left cadence-dependent, and what this
+    function is now about, is ``field-due-dom``: the bill's separate REAL due
+    day, which ``recurrence_form.js`` toggles on the chosen offer's
+    ``anchors_day_of_month``.
+
+    Every visibility check is paired with a POSTED-VALUE check, which is what
+    earns the re-point rather than merely keeping the function alive: the row
+    was hidden by class and never disabled, so it submitted from behind the
+    hiding.  That is this file's whole defect class, live, in the one control
+    it was left holding.
 
     Args:
         page: The Playwright page.
@@ -488,6 +718,13 @@ def _drive_visibility(page, kind: str, url: str) -> None:
     page.wait_for_selector("#recurrence_unit")
     units = _unit_ids(page)
     unit = page.locator("#recurrence_unit")
+    # The transfer form does not render a Due Day at all (only a transaction
+    # template carries one), so its every due-day assertion would be vacuous in
+    # exactly the way this rewrite exists to remove.  Named once, asked at each
+    # site.
+    has_due_day = page.evaluate(
+        "() => document.getElementById('field-due-dom') !== null")
+    print(f"   (due-day row rendered on this form: {has_due_day})")
 
     def one_interval(label: str) -> list[str]:
         """Exactly one interval control submits, in every state."""
@@ -496,39 +733,67 @@ def _drive_visibility(page, kind: str, url: str) -> None:
                len(posted) <= 1, f"posted={posted}")
         return posted
 
+    def due_day(label: str, shown: bool) -> None:
+        """The Due Day row is shown and submits together, or neither.
+
+        Args:
+            label: The case letter.
+            shown: Whether this cadence should render the row.
+        """
+        if not has_due_day:
+            return
+        _check(f"{kind} {label}: due-day row "
+               f"{'VISIBLE' if shown else 'hidden'}",
+               _visible(page, "field-due-dom") == shown,
+               "hidden" if shown else "shown")
+        posted = _posted_due_day(page)
+        # A control the user cannot see must state NOTHING.  ``["25"]`` here
+        # is the live defect: a value typed under a day-of-month cadence
+        # surviving the switch to one that reads no day.
+        _check(f"{kind} {label}: due-day posts "
+               f"{'its value' if shown else 'NOTHING'}",
+               (posted != []) == shown, f"posted={posted}")
+
     # Does not repeat: the form's own empty option, not a cadence.
     unit.select_option("")
-    page.wait_for_timeout(200)
+    _settle(page)
     _check(f"{kind} A: interval row hidden", not _visible(page, "field-interval"), "shown")
     _check(f"{kind} A: placement row hidden", not _visible(page, "field-placement"), "shown")
-    _check(f"{kind} A: day hidden", not _visible(page, "field-dom"), "shown")
-    _check(f"{kind} A: month hidden", not _visible(page, "field-moy"), "shown")
+    due_day("A", shown=False)
     one_interval("A")
 
     # Paychecks: a free interval, and ONE placement, so that row stays hidden.
     unit.select_option(units["paychecks"])
-    page.wait_for_timeout(200)
+    _settle(page)
     _check(f"{kind} B: free box enabled",
            page.evaluate("() => !document.getElementById('interval_n_free').disabled"),
            "disabled")
     _check(f"{kind} B: placement row hidden (one placement offered)",
            not _visible(page, "field-placement"),
            "the Funded-from row is shown with a single usable choice")
-    _check(f"{kind} B: day hidden", not _visible(page, "field-dom"), "shown")
+    due_day("B", shown=False)
     one_interval("B")
 
-    # Months at 1: a day of the month, no month-of-year, both placements.
+    # Months at 1: anchors on the calendar, so the bill's due day applies.
     unit.select_option(units["months"])
-    page.wait_for_timeout(200)
+    _settle(page)
     _check(f"{kind} C: the chosen interval belongs to the chosen unit",
            _selected_interval_owner(page) == units["months"],
            f"owner={_selected_interval_owner(page)} unit={units['months']}")
     _select_interval(page, units["months"], 1)
     _check(f"{kind} C: placement row shown at 1 month",
            _visible(page, "field-placement"), "hidden")
-    _check(f"{kind} C: day VISIBLE", _visible(page, "field-dom"), "hidden")
-    _check(f"{kind} C: month hidden at 1 month", not _visible(page, "field-moy"), "shown")
+    due_day("C", shown=True)
     one_interval("C")
+
+    # TYPE a due day here, so the next case measures whether it SURVIVES the
+    # switch to a cadence that reads no day.  This is the defect: the value is
+    # what makes D's posted check able to fail.
+    if has_due_day:
+        page.fill("#due_day_of_month", "25")
+        _settle(page)
+        _check(f"{kind} C: a typed due day posts",
+               _posted_due_day(page) == ["25"], str(_posted_due_day(page)))
 
     # Months at 1, funded from the month's FIRST paycheck: anchors on a
     # paycheck, so it reads no day of the month.
@@ -536,30 +801,25 @@ def _drive_visibility(page, kind: str, url: str) -> None:
         """() => { const s = document.getElementById('recurrence_placement');
                    s.selectedIndex = 1;
                    s.dispatchEvent(new Event('change', {bubbles: true})); }""")
-    page.wait_for_timeout(200)
-    _check(f"{kind} D: day HIDDEN for first-paycheck funding",
-           not _visible(page, "field-dom"),
-           "a Day of Month input is shown for a cadence that reads no day")
+    _settle(page)
+    due_day("D", shown=False)
 
-    # Months at 3: no quarterly first-paycheck twin, so the row goes.
+    # Months at 3: no quarterly first-paycheck twin, so the placement row goes
+    # and the cadence anchors on the calendar again.
     _select_interval(page, units["months"], 3)
     _check(f"{kind} E: placement row hidden at 3 months",
            not _visible(page, "field-placement"), "shown")
-    _check(f"{kind} E: day VISIBLE", _visible(page, "field-dom"), "hidden")
-    _check(f"{kind} E: month VISIBLE at 3 months", _visible(page, "field-moy"), "hidden")
+    due_day("E", shown=True)
     one_interval("E")
 
     # Years: interval 1, cycle twelve months -- the case an "interval > 1"
-    # inference got wrong, hiding the Month control on every annual rule.
+    # inference got wrong.
     unit.select_option(units["years"])
-    page.wait_for_timeout(200)
+    _settle(page)
     _check(f"{kind} F: the chosen interval belongs to the chosen unit",
            _selected_interval_owner(page) == units["years"],
            f"owner={_selected_interval_owner(page)}")
-    _check(f"{kind} F: day VISIBLE for annual", _visible(page, "field-dom"), "hidden")
-    _check(f"{kind} F: month VISIBLE for annual",
-           _visible(page, "field-moy"),
-           "an annual rule cannot say which month it falls in")
+    due_day("F", shown=True)
     _check(f"{kind} F: posts interval 1", one_interval("F") == ["1"], "wrong interval")
 
     preview = page.locator("#recurrence-preview").inner_text().strip()
@@ -684,7 +944,11 @@ def main() -> int:
                           ("transfer", "/transfers/new")):
             _drive_visibility(page, kind, url)
             _drive_opening_bound(page, kind, url)
+            _drive_nominal_day(page, kind, url)
             _drive_end_bound(page, kind, url)
+        # Transfer-only: the transaction form has no destination account, so
+        # its definition can never be a loan payment.
+        _drive_loan_destination_lock(page)
         _drive_refusals(context, page)
 
         # A blocked inline style is a console error and nothing else, which is

@@ -45,29 +45,30 @@ members.
 What an occurrence IS, per unit
 -------------------------------
 
-* ``MONTH`` / ``YEAR`` -- the anchor's day, in every *interval_n*-th month
-  (or every *interval_n*-th YEAR, which is the same walk with a step of
-  twelve), month-end clamped exactly as
-  ``app.services.recurrence.resolve`` clamped the anchor itself.  The day
-  clamped from is :attr:`ResolvedRecurrence.nominal_day` when the anchor month
-  was too short to hold it, and ``anchor_date.day`` otherwise (ruling R-R3) --
-  which is what keeps a day-31 rule on the last day of every month instead of
-  decaying to the 30th forever.
-* ``WEEK`` -- the anchor plus multiples of ``7 * interval_n`` days.  No
+* ``MONTH`` / ``YEAR`` -- the day ``starts_on`` names, in every
+  *interval_n*-th month (or every *interval_n*-th YEAR, which is the same walk
+  with a step of twelve), month-end clamped per month.  The day clamped from is
+  :attr:`ResolvedRecurrence.nominal_day` when ``starts_on``'s own month was too
+  short to hold it, and ``starts_on.day`` otherwise (ruling R-R3) -- which is
+  what keeps a day-31 rule on the last day of every month instead of decaying
+  to the 30th forever.  Both are read through
+  :attr:`ResolvedRecurrence.day_of_month`, the one place that join is written.
+* ``WEEK`` -- ``starts_on`` plus multiples of ``7 * interval_n`` days.  No
   pattern resolves to this unit yet; plan step R8 is its first author.  It is
   implemented here rather than refused because a partial function over an
   enum is the defect this redesign exists to remove, and because a walk that
   silently ignored the unit would be a wrong answer rather than an error.
-* ``PERIOD`` -- **the qualifying paycheck's own payday.**  Here the anchor is
-  a BOUND, not the first occurrence: ruling R-R8 settled that a period-space
-  rule anchors on the effective start ITSELF, because "the first period ending
-  on or after the bound" is not derivable when the bound falls past the
-  materialised horizon.  The first occurrence is therefore the payday of the
-  first paycheck that has not already ENDED before that bound -- which is what
-  the reverse matcher selected (``p.end_date >= effective_from``), and it
-  is deliberate: a loan whose first installment falls mid-period bills in that
-  period, not the next (plan step C9a).  Ledger row **D6** records the same
-  asymmetry from the schema's side.
+* ``PERIOD`` -- **the qualifying paycheck's own payday.**  A paycheck qualifies
+  when it has not already ENDED before ``starts_on`` -- which is what the
+  reverse matcher selected (``p.end_date >= effective_from``) -- and it is
+  deliberate that a mid-period date bills in that period rather than the next:
+  a loan whose first installment falls mid-period pays from that paycheck
+  (plan step C9a).  **Since plan step R7c-b there is nothing to reconcile
+  here**: ``resolve`` NORMALISES an authored date onto that paycheck's own
+  payday before this walk ever sees it, so ``starts_on`` is this sequence's
+  first element by construction.  Plan ledger row **D6** recorded the
+  asymmetry that produced -- one field meaning an occurrence for three units
+  and a BOUND for the fourth -- and it is what ruling R-R16 removed.
 
 **A consequence worth stating rather than discovering: placement is INERT
 under the ``PERIOD`` unit.**  Every occurrence it emits is a period's own
@@ -208,7 +209,6 @@ paycheck that may fall after it.  Plan step R8 adds it.
 
 Pure: no Flask, no ORM, no clock, no database.
 """
-import calendar as calendar_module
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -303,27 +303,29 @@ def _period_walk(
 
     The ``PERIOD`` unit's occurrences, and the reason
     :func:`occurrences` takes a calendar at all (finding D9).  A paycheck
-    qualifies when it has not ENDED before the rule's bound -- the anchor --
-    and when its index is in the rule's phase.  Both tests are verbatim what
-    the reverse matcher applied
-    (``p.end_date >= effective_from`` and
+    qualifies when it has not ENDED before ``starts_on`` and when its index is
+    in the rule's phase.  Both tests are verbatim what the reverse matcher
+    applied (``p.end_date >= effective_from`` and
     ``(p.period_index - offset) % n == 0``), which is what made plan step
     R4a's cutover a no-op for every pay-period-space rule.
 
-    **The phase and the anchor are now ONE fact, so the divergence this note
-    used to record is gone** (plan step R7b-4).  It said: deriving the phase
-    from the anchor -- "the anchor's own period index, then every N-th after
-    it" -- agrees whenever the anchor names a qualifying period, but
-    ``_phased_period_anchor`` fell back to the raw bound when the schedule
-    reached NO period in phase (fewer than ``interval_n`` periods left past
-    the bound), and the derived form would then take the first remaining
-    period, in phase or not.  Both halves were symptoms of one cause: the
-    phase was stored INDEPENDENTLY of the bound, so the anchor had to be
-    dragged to meet it.  ``resolve`` derives the phase FROM the bound now
-    (``_derive_offset_periods``), the paycheck the bound falls in is in phase
-    by construction, and the advancing anchor is deleted.  ``resolved`` still
-    carries ``offset_periods`` because this walk is the ONE reader of it, and
-    plan step R7c drops the column it is written to.
+    **The phase and the first occurrence are ONE fact, so the divergence this
+    note used to record is gone** (plan step R7b-4).  It said: deriving the
+    phase from the anchor agrees whenever the anchor names a qualifying period,
+    but ``_phased_period_anchor`` fell back to the raw bound when the schedule
+    reached NO period in phase, and the derived form would then take the first
+    remaining period, in phase or not.  Both halves were symptoms of one cause:
+    the phase was stored INDEPENDENTLY of the bound.  ``resolve`` reads the
+    phase off ``starts_on`` now (``_derive_offset_periods``), the paycheck that
+    date falls in is in phase by construction, and the advancing anchor is
+    deleted.  ``resolved`` still carries ``offset_periods`` because this walk is
+    the ONE reader of it, and plan step R7c-c drops the column it is written to.
+
+    **``starts_on`` is this walk's own first yield, since plan step R7c-b**, and
+    that is structural rather than checked: ``_resolution._first_occurrence``
+    normalises an authored date onto the payday of the first paycheck not
+    ending before it, which is this loop's admission test read directly.
+    Nothing has to agree with anything.
 
     Naturally bounded by the schedule, unlike its two siblings.
 
@@ -335,90 +337,12 @@ def _period_walk(
         Qualifying periods' ``start_date`` values, ascending.
     """
     for period in calendar.periods:
-        if period.end_date < resolved.anchor_date:
+        if period.end_date < resolved.starts_on:
             continue
         phase = period.period_index - resolved.offset_periods
         if phase % resolved.interval_n != 0:
             continue
         yield period.start_date
-
-
-def first_occurrence(
-    resolved: ResolvedRecurrence, calendar: PayCalendar,
-) -> date:
-    """Return the date this recurrence FIRST fires on, for any unit.
-
-    **The value ``budget.recurrence_rules.starts_on`` holds** (developer ruling
-    2026-08-14, plan ledger row **D28**), and the whole content of that ruling:
-
-        ``starts_on`` is the rule's FIRST OCCURRENCE.  For a calendar cadence
-        it is the first date the cadence fires on; for a pay-period cadence it
-        is the payday of the first paycheck the rule bills in.  Nothing is
-        generated before it, and its position in the cycle IS the rule's phase.
-
-    **It is ``anchor_date`` for three of the four UNITS and not for the fourth**,
-    which is the asymmetry this function exists to remove.  Ruling R-R8 made a
-    pay-period-space rule anchor on its opening BOUND rather than on an
-    occurrence, so ``anchor_date`` means the first occurrence for a MONTH,
-    YEAR or WEEK cadence and a bound for a PERIOD one -- one field with two
-    meanings, which is plan ledger row **D6** seen from the schema.  (Units,
-    not anchor FAMILIES: there are three of those, and two of them anchor on
-    an occurrence.)
-
-    **It lives HERE, beside :func:`_period_walk`, because that is the function
-    it has to agree with.**  The paycheck arm below is the walk's own first
-    yield restated as a direct search, and putting the two in different modules
-    is how the answer that seeds a stored column comes to differ from the
-    answer that generates the rows -- the shape ``_months`` records one module
-    over, where the anchor derivation and the occurrence walk were two copies
-    of one piece of arithmetic.
-
-    **``span_containing`` rather than ``period_containing``, so the answer is
-    TOTAL** -- the same choice ``_resolution._derive_offset_periods`` makes for
-    the phase, and for the same reason: an anchor past the horizon has no SAVED
-    paycheck to take a payday from, and a ``NOT NULL`` column has no shape for
-    the ``None`` that would leave.  It is the walk's first yield wherever the
-    walk yields at all: :func:`_period_walk` skips a paycheck whose
-    ``end_date`` precedes the anchor and one whose index is out of phase, and
-    the span CONTAINING the anchor fails neither test -- periods tile their
-    covered span, so the earliest one not ending before a date is the one
-    containing it, and the phase is read off that same span, which puts it in
-    phase by construction.
-
-    Migration ``f2a94c7e1b60`` carries what D28 measured and why this arc's
-    earlier specification was refuted; it is stated there rather than here
-    because that is the artifact that acts on it.
-
-    Args:
-        resolved: The recurrence's two-axis meaning, from
-            :func:`app.services.recurrence.resolve`.
-        calendar: The owner's pay-period schedule.  Read only by the ``PERIOD``
-            unit, whose occurrences are paydays; a calendar-space cadence names
-            its own first date.
-
-    Returns:
-        The first occurrence date.
-
-    Raises:
-        RecurrenceGenerationError: When a ``PERIOD``-unit anchor has no
-            covering span -- an empty schedule, or an anchor before the opening
-            payday.  Neither is reachable from
-            :func:`app.services.recurrence.resolve`, which refuses the first
-            and returns at least the opening payday for the second, so it is a
-            broken invariant rather than a state to paper over.
-    """
-    if resolved.unit is not RecurrenceUnitEnum.PERIOD:
-        return resolved.anchor_date
-    span = calendar.span_containing(resolved.anchor_date)
-    if span is None:
-        raise RecurrenceGenerationError(
-            f"no pay period spans {resolved.anchor_date} for user "
-            f"{calendar.user_id}, so a pay-period-space recurrence has no "
-            f"first paycheck to name.  ``resolve`` refuses an empty schedule "
-            f"and clamps the anchor to the opening payday, so reaching this "
-            f"means the anchor was not produced by it."
-        )
-    return span.start_date
 
 
 def _unbounded(
@@ -446,9 +370,9 @@ def _unbounded(
     if unit is RecurrenceUnitEnum.PERIOD:
         return _period_walk(resolved, calendar)
     if unit is RecurrenceUnitEnum.WEEK:
-        return _week_walk(resolved.anchor_date, resolved.interval_n)
-    # The day the rule MEANS, read through the ONE accessor that joins the
-    # anchor's day to ``nominal_day`` (plan step R7a).  It was open-coded here
+        return _week_walk(resolved.starts_on, resolved.interval_n)
+    # The day the rule MEANS, read through the ONE accessor that joins
+    # ``starts_on``'s day to ``nominal_day`` (plan step R7a).  It was open-coded here
     # until the display describer needed the same join: two copies of "which of
     # these two fields holds the day" is how a rule comes to fire on the 31st
     # and read as the 30th.  It answers ``None`` for a unit that does not fire
@@ -466,16 +390,19 @@ def _unbounded(
             f"day-of-month cadence without a day would fire it on a "
             f"fabricated one."
         )
-    # The SAME walk ``_resolution._calendar_anchor`` derives the anchor with
-    # (``app.services.recurrence._months``), seeded at the anchor's own month
-    # -- so the first date this yields IS the anchor, by construction rather
-    # than by two implementations agreeing.  **Including the STRIDE**, which
-    # this function used to compute for itself (``interval_n *
-    # MONTHS_PER_YEAR`` for a YEAR cadence) while the anchor took one off the
-    # pattern table: one fact, two spellings, in the two places whose own
-    # docstrings say they are the same walk.  A YEAR cadence is that walk with
-    # a twelve-month stride; there is no separate year arithmetic, so leap-day
-    # clamping is the month clamp and cannot diverge from it.
+    # Seeded at ``starts_on``'s own month, so the first date this yields IS the
+    # authored first occurrence -- by construction rather than by two
+    # implementations agreeing.  **Until plan step R7c-b there WAS a second
+    # implementation**: ``_resolution._calendar_anchor`` walked these same month
+    # ordinals to derive the anchor on every read, and the two agreed because
+    # they shared ``_months``.  The date is authored now, so the derivation is
+    # deleted and there is nothing left to share it with.  **The STRIDE** was a
+    # second copy of its own: this function computed ``interval_n *
+    # MONTHS_PER_YEAR`` for a YEAR cadence while the anchor took one off the
+    # pattern table, so ``months_per_step`` states it once.  A YEAR cadence is
+    # that walk with a twelve-month stride; there is no separate year
+    # arithmetic, so leap-day clamping is the month clamp and cannot diverge
+    # from it.
     #
     # ``months_per_step`` is partial over the enum and is NOT guarded here,
     # because reaching this line already proves membership: ``day_of_month``
@@ -485,7 +412,7 @@ def _unbounded(
     # disagree" is the fence this project removes rather than tests, and an
     # adversarial review of plan step R7b-1 named it: the sets are one now, so
     # the state is unconstructible rather than merely unreached.
-    start = month_ordinal(resolved.anchor_date)
+    start = month_ordinal(resolved.starts_on)
     return walk_months(
         start, month_day, months_per_step(unit, resolved.interval_n),
     )
@@ -533,19 +460,30 @@ def _bounded(
 def _require_generable(resolved: ResolvedRecurrence) -> None:
     """Refuse a resolved value this engine cannot honour, before any walking.
 
-    The three refusals every entry point makes FIRST, in one place so the
+    The refusals every entry point makes FIRST, in one place so the
     composition cannot answer where :func:`occurrences` would raise -- which
     it did until a neutral review measured it: an empty schedule short-circuits
     to ``()`` before any occurrence is generated, so a business-day shift or a
     zero interval was silently accepted there and refused everywhere else.
+
+    **A THIRD refusal left at plan step R7c-b, and it left by becoming
+    UNCONSTRUCTIBLE rather than by being dropped.**  It checked that
+    ``nominal_day`` clamped to the day ``starts_on`` carries -- a pair that says
+    one thing twice, which the schema could not fully express and so a guard
+    stood in for.  That step completes ``ck_recurrence_rules_nominal_day`` with
+    the clamp equality and moves the in-memory half into
+    :meth:`~._resolution.ResolvedRecurrence.__post_init__`, so the value cannot
+    exist and there is no state for a walk-time fence to catch.  A guard whose
+    only reachability condition is "somebody built the pair by hand" is the
+    fence this project removes rather than tests.
 
     Args:
         resolved: The recurrence's two-axis meaning.
 
     Raises:
         RecurrenceGenerationError: When *resolved* asks for a business-day
-            shift (plan step R8 is its first author), when its interval is not
-            positive, or when its ``nominal_day`` disagrees with its anchor.
+            shift (plan step R8 is its first author), or when its interval is
+            not positive.
     """
     if resolved.shift is not BusinessDayShiftEnum.NONE:
         raise RecurrenceGenerationError(
@@ -563,23 +501,6 @@ def _require_generable(resolved: ResolvedRecurrence) -> None:
             f"ck_recurrence_rules_positive_interval and "
             f"app.services.recurrence.resolve both refuse it upstream, so "
             f"only a hand-built value reaches here."
-        )
-    if resolved.nominal_day is None:
-        return
-    anchor = resolved.anchor_date
-    last_day = calendar_module.monthrange(anchor.year, anchor.month)[1]
-    if min(resolved.nominal_day, last_day) != anchor.day:
-        raise RecurrenceGenerationError(
-            f"nominal_day {resolved.nominal_day} clamps to "
-            f"{min(resolved.nominal_day, last_day)} in {anchor:%B %Y}, not to "
-            f"the anchor's own day {anchor.day}.  Presence of a nominal day "
-            f"means the ANCHOR MONTH clamped it (ruling R-R3), so the pair "
-            f"must agree; walking from a disagreeing pair would fire the "
-            f"first occurrence on a day the anchor does not name.  "
-            f"``resolve`` cannot produce this -- ``_month_anchor_day`` "
-            f"records the day only when the anchor lands on its month's last "
-            f"day -- but plan step R7c makes both independently-authored "
-            f"columns whose only constraint is nominal_day BETWEEN 29 AND 31."
         )
 
 
@@ -624,18 +545,17 @@ def occurrences(
     """Return the dates this recurrence fires on, ascending, through *through*.
 
     The forward half of the redesign's generation model.  Walks the rule's own
-    cadence from :attr:`ResolvedRecurrence.anchor_date`, applying the rule's
+    cadence from :attr:`ResolvedRecurrence.starts_on`, applying the rule's
     closing bound and the caller's window.  See the module docstring for what
     an occurrence IS under each unit.
 
-    **"Nothing before the anchor" holds for the calendar units only.**  Under
-    the ``PERIOD`` unit the anchor is a BOUND (ruling R-R8) and the first
-    occurrence is the payday of the paycheck that bound falls in, which is
-    EARLIER than the anchor whenever the bound is mid-period -- deliberately,
-    because that is where the cash leaves (plan step C9a).  So ruling R-R6's
-    "occurrence-bounded" holds on the CLOSING side for every unit and on the
-    opening side for the calendar units; ledger row D6 is the same asymmetry
-    seen from the schema.
+    **"Nothing before ``starts_on``" holds for EVERY unit, since plan step
+    R7c-b.**  It held for the calendar units only while the ``PERIOD`` unit
+    anchored on a BOUND (ruling R-R8) whose paycheck's payday could be earlier
+    -- one field with two meanings, plan ledger row **D6**.  ``resolve``
+    normalises that date onto the paycheck's own payday now, so ruling R-R6's
+    "occurrence-bounded" holds on both sides for all four units and the
+    asymmetry is gone rather than documented.
 
     **There is no LOWER window argument, and each CALLER that has one applies
     it.**  The production paths that state a lower bound narrow generation to a
@@ -774,7 +694,6 @@ def occurrence_placements(
 __all__ = [
     "OccurrencePlacement",
     "RecurrenceGenerationError",
-    "first_occurrence",
     "occurrence_placements",
     "occurrences",
     "place",

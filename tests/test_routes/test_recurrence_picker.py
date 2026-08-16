@@ -39,6 +39,7 @@ the auto-rollback image can still boot (ruling R-R11).
 """
 import json
 import re
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,6 +49,7 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
+    BusinessDayShiftEnum,
     PeriodPlacementEnum,
     RecurrencePatternEnum,
     RecurrenceUnitEnum,
@@ -58,7 +60,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType, RecurrencePattern
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.routes._recurrence_form_helpers import (
+from app.routes._recurrence_form_refusals import (
     UNREPAIRED_CADENCE_CANNOT_BE_CLEARED,
 )
 from app.services import account_service
@@ -74,6 +76,7 @@ from app.services.recurrence import (
     decode_pattern,
     end_bound_options,
     is_authorable,
+    modelled_pattern,
     modelled_placement,
     modelled_unit,
     picker_model,
@@ -230,13 +233,45 @@ def _rule_on_pattern(seed_user, pattern_id, interval_n=1):
     before it writes, so it REFUSES an unmodelled pattern -- which is the guard
     under test.  The row this builds is what a database left behind by plan
     step R2e-3 would hold, and only a direct construction can produce it.
+
+    **The two-axis columns are DERIVED from the pattern, not hard-coded**, and
+    the difference matters more than the fixture's convenience.  They were
+    written as a fixed ``(month, containing_date)`` for every pattern, on the
+    reasoning that only the PATTERN id was under test -- true of the unmodelled
+    guard this exists for, and false of every other caller, because
+    ``pattern_id`` is nothing but the closed set's ENCODING of these two
+    columns.  A row where the two disagree is one no application path can
+    write, and while ``edit_form_cadence`` read the pattern the disagreement
+    was invisible: the sweep below asserted a decoding that was never reading
+    the columns it claimed to.  Deriving them keeps the row COHERENT, so the
+    sweep measures the mapping rather than the fixture.
+
+    An UNMODELLED pattern has no reading to derive, so it keeps the ordinary
+    monthly axes -- which is the honest shape for that case too: what is
+    unmodelled is the pattern id beside them.
     """
+    reading = (
+        decode_pattern(pattern_id, interval_n)
+        if modelled_pattern(pattern_id) is not None else None
+    )
+    unit = RecurrenceUnitEnum.MONTH if reading is None else reading.cadence.unit
+    placement = (
+        PeriodPlacementEnum.CONTAINING_DATE if reading is None
+        else reading.placement
+    )
     rule = RecurrenceRule(
         user_id=seed_user["user"].id,
         pattern_id=pattern_id,
         interval_n=interval_n,
         offset_periods=0,
         day_of_month=1,
+        # Stated because plan step R7c-b made them NOT NULL: a row is
+        # unstorable without them, so leaving them out would make this fixture
+        # fail on the INSERT rather than exercise what it exists for.
+        unit_id=ref_cache.recurrence_unit_id(unit),
+        placement_id=ref_cache.period_placement_id(placement),
+        shift_id=ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE),
+        starts_on=date(2026, 1, 1),
     )
     db.session.add(rule)
     db.session.flush()
@@ -350,33 +385,14 @@ class TestNothingOfferedIsUnstorable:
             assert (3, first_paycheck_id) not in month_offers
             assert (6, first_paycheck_id) not in month_offers
 
-    def test_a_calendar_option_states_its_month_span(self, app):
-        """The facts the form's calendar detail rows are shown FROM.
-
-        The script must not infer them.  An earlier draft read "the interval
-        control is free" as "no day of the month" and "the interval exceeds 1"
-        as "the cycle skips months" -- the second is wrong for an ANNUAL rule,
-        whose interval is 1 and whose cycle is twelve months, so the Month
-        control it needs was hidden.
-        """
-        with app.app_context():
-            spans = {
-                (option.unit_id, option.interval_n): (
-                    option.anchors_day_of_month, option.months_per_unit,
-                )
-                for option in cadence_options()
-            }
-            month_id = ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH)
-            year_id = ref_cache.recurrence_unit_id(RecurrenceUnitEnum.YEAR)
-            period_id = ref_cache.recurrence_unit_id(RecurrenceUnitEnum.PERIOD)
-
-            # A year spans twelve months, so 1 * 12 > 1 and the Month control
-            # shows -- the case the inference got wrong.
-            assert spans[(year_id, 1)] == (True, 12)
-            # A month spans one, so only an interval above 1 shows it.
-            assert spans[(month_id, 1)][1] == 1
-            # A paycheck cadence has no month reading and no day of the month.
-            assert spans[(period_id, None)] == (False, None)
+    # ``test_a_calendar_option_states_its_month_span`` was here until plan
+    # step R7c-b.  It asserted ``months_per_unit`` -- how many calendar months
+    # one unit spans -- which decided whether the form showed a "Month"
+    # control; ruling R-R16 put the cycle's month on ``starts_on``, so the
+    # control, the field and the question are all gone.  The half that
+    # survives is ``anchors_day_of_month``, and the test below grades it keyed
+    # by PLACEMENT, which is the key it is actually a property of: MONTHLY and
+    # MONTHLY_FIRST share ``(month, 1)`` and disagree on it.
 
     def test_a_first_paycheck_month_cadence_reads_no_day_of_month(self, app):
         """``anchors_day_of_month`` belongs to the PAIR, not to the unit.
@@ -395,7 +411,7 @@ class TestNothingOfferedIsUnstorable:
                 PeriodPlacementEnum.CONTAINING_DATE,
             )
             by_placement = {
-                option.placement_id: option.anchors_day_of_month
+                option.placement_id: option.wire.anchors_day_of_month
                 for option in cadence_options()
                 if option.unit_id == month_id and option.interval_n == 1
             }
@@ -424,9 +440,21 @@ class TestTheScriptCanReadWhatTheServerSerialized:
     #: The names the script dereferences off one entry of
     #: ``data-cadence-options``.  Every one of these is a property access on an
     #: option object in ``recurrence_form.js``.
+    #: ``months_per_unit`` LEFT this set at plan step R7c-b, with the Month
+    #: control it fed: ruling R-R16 put the cycle's month on ``starts_on``, so
+    #: there is no control to narrow and no fact for the script to read.
+    #:
+    #: ``has_day_of_month_coordinate`` JOINED it at the same step, and the two
+    #: day facts are deliberately BOTH here rather than one standing for the
+    #: other.  ``anchors_day_of_month`` is keyed on the ``(unit, placement)``
+    #: pair and decides the Due Day row; this one is keyed on the UNIT and
+    #: decides the "repeating on" control.  They disagree for exactly
+    #: ``Monthly First``, and the script reading the pair-keyed fact where it
+    #: needed the unit-keyed one silently erased a month-end rule's
+    #: ``nominal_day`` on an ordinary edit.
     _READ_BY_THE_SCRIPT = frozenset({
-        "unit_id", "interval_n", "placement_id",
-        "anchors_day_of_month", "months_per_unit",
+        "unit_id", "interval_n", "placement_id", "anchors_day_of_month",
+        "has_day_of_month_coordinate",
     })
 
     @staticmethod
@@ -907,8 +935,10 @@ class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
             resp = auth_client.post(f"/templates/{template_id}", data={
                 "name": "Rent",
                 "default_amount": "1200.00",
-                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
-                "day_of_month": "1",
+                **cadence_payload(
+                    unit=RecurrenceUnitEnum.MONTH,
+                    starts_on=date(2026, 9, 1),
+                ),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -918,6 +948,11 @@ class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
             # generated row keeps its lineage.
             assert reloaded.recurrence_rule_id == rule_id
             assert reloaded.recurrence_rule.pattern_id == monthly_id
+            # The repaired rule fires on the date the form stated.  The form
+            # posts ``starts_on`` rather than a day since plan step R7c-b, and
+            # the write door ENCODES the legacy column from it -- so asserting
+            # both is what says the encode still happens.
+            assert reloaded.recurrence_rule.starts_on == date(2026, 9, 1)
             assert reloaded.recurrence_rule.day_of_month == 1
 
 

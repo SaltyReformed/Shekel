@@ -24,12 +24,11 @@ from html.parser import HTMLParser
 
 from app.extensions import db
 from app.utils.dates import display_today
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern, TransactionType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import template_amount_service as tas
-from tests._test_helpers import create_savings_account
+from tests._test_helpers import create_savings_account, make_every_period_rule
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -91,11 +90,9 @@ def _template_with_history(seed_user, amounts, name="Geico"):
 
 def _transfer_template(seed_user, savings_acct, amount="250.00"):
     """Create a recurring transfer template with an Every-Period rule."""
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id, pattern_id=_pattern_id(),
-    )
-    db.session.add(rule)
-    db.session.flush()
+    # Authored through the write door (plan step R7c-b): the two-axis columns
+    # are NOT NULL, so a rule naming only a pattern cannot be stored.
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,

@@ -1365,14 +1365,12 @@ class TestContributionAwareDashboard:
 def _create_transfer_template(db_session, user_id, from_id, to_id,
                                is_active=True):
     """Create a recurring transfer template targeting an account."""
-    from app.enums import RecurrencePatternEnum as RPE
-    from app.models.recurrence_rule import RecurrenceRule
     from app.models.transfer_template import TransferTemplate
+    from tests._test_helpers import make_every_period_rule
 
-    every_id = ref_cache.recurrence_pattern_id(RPE.EVERY_PERIOD)
-    rule = RecurrenceRule(user_id=user_id, pattern_id=every_id)
-    db_session.add(rule)
-    db_session.flush()
+    # Authored through the write door (plan step R7c-b): the two-axis columns
+    # are NOT NULL, so a rule naming only a pattern cannot be stored.
+    rule = make_every_period_rule(db_session, user_id)
     tpl = TransferTemplate(
         user_id=user_id,
         from_account_id=from_id,

@@ -73,7 +73,11 @@ from app.exceptions import ShekelError
 from app.services.pay_calendar import PayCadence
 from app.utils.money import MONTHS_PER_YEAR
 from app.services.recurrence._months import MONTH_SPANNING_UNITS
-from app.services.recurrence._vocabulary import modelled_pattern
+from app.services.recurrence._vocabulary import (
+    modelled_pattern,
+    modelled_placement,
+    modelled_unit,
+)
 
 #: A seven-day pay cadence, used ONLY for its yearly count.
 #:
@@ -641,6 +645,71 @@ def pattern_member(pattern_id: int) -> RecurrencePatternEnum:
 
 
 
+def unit_member(unit_id: int) -> RecurrenceUnitEnum:
+    """Return the cadence unit a STORED ``unit_id`` names, or RAISE.
+
+    :func:`pattern_member`'s twin on the column plan step R7c-b made
+    authoritative.  The read door takes a rule's unit off
+    ``budget.recurrence_rules.unit_id`` from that step, and the column is
+    ``NOT NULL`` with an ``ondelete="RESTRICT"`` FK to ``ref.recurrence_units``
+    -- so an id no enum member names is a ``ref`` row this application does not
+    model, which is a broken invariant rather than user input.  Raised for the
+    same reason :func:`pattern_member` raises: a rule read with a fabricated
+    cadence is worse than a refused read.
+
+    Built on :func:`~app.services.recurrence.modelled_unit`, which owns the
+    lookup, so the SUBMISSION door (which answers ``None`` and flashes) and this
+    one can never disagree about which units the application models.
+
+    Args:
+        unit_id: A stored ``ref.recurrence_units`` id.
+
+    Returns:
+        The matching :class:`~app.enums.RecurrenceUnitEnum` member.
+
+    Raises:
+        RecurrenceResolutionError: When no member names *unit_id*.
+    """
+    member = modelled_unit(unit_id)
+    if member is not None:
+        return member
+    raise RecurrenceResolutionError(
+        f"recurrence unit id {unit_id} matches no RecurrenceUnitEnum member.  "
+        f"budget.recurrence_rules.unit_id is NOT NULL with a RESTRICT foreign "
+        f"key, so a stored id this application does not model means the ref "
+        f"seed and the enum have diverged; deriving a cadence from it would "
+        f"generate rows on a rhythm the rule never named."
+    )
+
+
+def placement_member(placement_id: int) -> PeriodPlacementEnum:
+    """Return the placement a STORED ``placement_id`` names, or RAISE.
+
+    :func:`unit_member`'s twin on the second authored axis; see it for why a
+    stored id is raised on rather than answered.
+
+    Args:
+        placement_id: A stored ``ref.period_placements`` id.
+
+    Returns:
+        The matching :class:`~app.enums.PeriodPlacementEnum` member.
+
+    Raises:
+        RecurrenceResolutionError: When no member names *placement_id*.
+    """
+    member = modelled_placement(placement_id)
+    if member is not None:
+        return member
+    raise RecurrenceResolutionError(
+        f"recurrence placement id {placement_id} matches no "
+        f"PeriodPlacementEnum member.  budget.recurrence_rules.placement_id is "
+        f"NOT NULL with a RESTRICT foreign key, so a stored id this "
+        f"application does not model means the ref seed and the enum have "
+        f"diverged; it decides WHICH PAYCHECK PAYS a bill, so defaulting it "
+        f"would move real money."
+    )
+
+
 def require_positive_interval(interval_n: int, where: str) -> None:
     """Refuse a cadence interval that is not positive.
 
@@ -787,6 +856,39 @@ def encode_cadence(
         f"written -- and nothing offers it, because the picker's own options "
         f"are derived from the same table."
     )
+
+
+def stored_interval(pattern_id: int, interval_n: int) -> int:
+    """Return the cadence INTERVAL a stored rule names.
+
+    **The one value the closed pattern set still owns after plan step R7c-b**,
+    and this function exists to name that boundary rather than leave it implied.
+    The unit and the placement became authored columns at that step and the read
+    door takes them from there; the interval did NOT, because
+    ``encode_cadence`` writes ``1`` for every pattern whose interval is baked
+    into its NAME.  The four live Quarterly and Semi-Annual rules therefore
+    store ``(pattern=Quarterly, interval_n=1)`` beside ``unit_id = month``,
+    which reads as MONTHLY at face value -- 12 occurrences a year where 4 or 2
+    are owed, across the whole projection.
+
+    So a reader must take the interval THROUGH the pattern and never off the
+    column, and ``test_recurrence_authoring.TestTheIntervalIsStillTheClosedSets``
+    asserts that deliberate inequality.  Plan step R7c-c re-points the column in
+    the same migration that drops ``pattern_id``, and deletes this function with
+    :func:`decode_pattern` behind it.
+
+    Args:
+        pattern_id: A ``ref.recurrence_patterns`` id.
+        interval_n: The stored ``budget.recurrence_rules.interval_n``.
+
+    Returns:
+        The two-axis interval -- 3 for Quarterly, 6 for Semi-Annual, the
+        authored count for ``Every N Periods``, 1 elsewhere.
+
+    Raises:
+        RecurrenceResolutionError: See :func:`decode_pattern`.
+    """
+    return decode_pattern(pattern_id, interval_n).cadence.interval_n
 
 
 def cadence_of(pattern_id: int, interval_n: int) -> Cadence:

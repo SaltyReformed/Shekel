@@ -53,10 +53,8 @@ from flask import g
 
 from app.extensions import db
 from app.models.account import Account
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
     AccountType,
-    RecurrencePattern,
     TransactionType,
 )
 from app.models.transaction_template import TransactionTemplate
@@ -70,6 +68,7 @@ from app.utils.session_helpers import (
     SESSION_CREATED_AT_KEY,
     SESSION_LAST_ACTIVITY_KEY,
 )
+from tests._test_helpers import make_every_period_rule
 
 
 _KNOWN_TOTP_SECRET = "JBSWY3DPEHPK3PXP"
@@ -1141,15 +1140,10 @@ class TestHardDeleteTemplateIsNotStepUpGated:
     @staticmethod
     def _create_minimal_template(seed_user):
         """Create a template with no transactions for hard-delete tests."""
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=db.session.query(RecurrencePattern)
-            .filter_by(name="Every Period").one().id,
-            interval_n=1,
-            offset_periods=0,
-        )
-        db.session.add(rule)
-        db.session.flush()
+        # Authored through the write door (plan step R7c-b): the two-axis
+        # columns are NOT NULL, so a rule naming only a pattern cannot be
+        # stored.
+        rule = make_every_period_rule(db.session, seed_user["user"].id)
 
         template = TransactionTemplate(
             user_id=seed_user["user"].id,

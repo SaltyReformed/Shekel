@@ -155,9 +155,12 @@ class TestClassifyPeriodLock:
         It refused to delete a period some rule's ``start_period_id`` pointed
         at, and the hazard was real: that FK is ``ON DELETE SET NULL``, so
         deleting the period silently ERASED the rule's opening bound.  R7b-4
-        folded the FK into ``recurrence_rules.start_date`` -- a DATE, which no
-        schedule operation can cascade -- so the bound now survives the
-        deletion of any period and the lock guarded a loss that cannot happen.
+        folded the FK into a DATE, which no schedule operation can cascade --
+        so the bound now survives the deletion of any period and the lock
+        guarded a loss that cannot happen.  Plan step R7c-b renamed that date
+        to ``starts_on`` and made it the rule's FIRST OCCURRENCE (ruling
+        R-R16); the property here is unchanged, and it is the column the rule
+        actually carries that the case must read.
 
         Asserted rather than merely deleted, because "this period is now
         mutable" is a change to what a DESTRUCTIVE operation is allowed to
@@ -170,13 +173,13 @@ class TestClassifyPeriodLock:
                 RecurrenceSpec(
                     user_id=seed_user["user"].id,
                     unit=RecurrenceUnitEnum.PERIOD,
-                    start_date=periods[3].start_date,
+                    starts_on=periods[3].start_date,
                 ),
                 calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
-            assert rule.start_date == periods[3].start_date
+            assert rule.starts_on == periods[3].start_date
             assert pay_period_locks.classify_period_lock(periods[3]) is None
 
     def test_historical_precedes_settled(self, app, db, seed_user):

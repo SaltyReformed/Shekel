@@ -71,6 +71,50 @@ _SUBTYPE_TABLES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("recurrence_month_anchors", ("nominal_day",)),
 )
 
+#: The SELECT list every rule INSERT below shares: a storable Monthly rule.
+#:
+#: **Plan step R7c-b made ``unit_id``, ``placement_id``, ``shift_id`` and
+#: ``starts_on`` NOT NULL**, so the four-column INSERT these cases used to make
+#: is no longer storable.  Stating them once matters here beyond tidiness: the
+#: cases below assert that a SPECIFIC constraint refuses a row, and a null in
+#: any of the four raises the same ``IntegrityError`` from a different cause --
+#: so six copies drifting apart would let a case pass without ever reaching the
+#: constraint it names.
+#:
+#: The values name an ordinary monthly cadence starting 2026-01-15.  The
+#: migration under test writes no data and reads none of them.
+_STORABLE_RULE_COLUMNS = (
+    "user_id, pattern_id, interval_n, offset_periods, "
+    "unit_id, placement_id, shift_id, starts_on"
+)
+_STORABLE_RULE_VALUES = (
+    ":u, id, 1, 0, "
+    "(SELECT id FROM ref.recurrence_units WHERE name = 'month'), "
+    "(SELECT id FROM ref.period_placements WHERE name = 'containing_date'), "
+    "(SELECT id FROM ref.business_day_shifts WHERE name = 'none'), "
+    "DATE '2026-01-15'"
+)
+
+
+def _insert_rule_sql(extra_columns="", extra_values="", returning=""):
+    """Return an INSERT that lands one storable rule, plus *extra_columns*.
+
+    Args:
+        extra_columns: Columns to append to :data:`_STORABLE_RULE_COLUMNS`,
+            leading comma included.
+        extra_values: The matching SELECT-list entries, leading comma included.
+        returning: A ``RETURNING`` clause, or ``""``.
+
+    Returns:
+        str: The SQL, taking a ``:u`` owner parameter.
+    """
+    return (
+        f"INSERT INTO budget.recurrence_rules "
+        f"  ({_STORABLE_RULE_COLUMNS}{extra_columns}) "
+        f"SELECT {_STORABLE_RULE_VALUES}{extra_values} "
+        f"  FROM ref.recurrence_patterns WHERE name = 'Monthly' {returning}"
+    )
+
 
 class TestMigrationRevisionPair:
     """The migration chains off the R2a vocabulary head."""
@@ -163,26 +207,19 @@ class TestRuleCheckConstraintsReject:
         """
         with app.app_context():
             with pytest.raises(IntegrityError, match="single_end_bound"):
-                db.session.execute(text(
-                    "INSERT INTO budget.recurrence_rules "
-                    "  (user_id, pattern_id, interval_n, offset_periods, "
-                    "   end_date, max_occurrences) "
-                    "SELECT :u, id, 1, 0, DATE '2026-12-31', 12 "
-                    "  FROM ref.recurrence_patterns WHERE name = 'Monthly'"
-                ), {"u": seed_user["user"].id})
+                db.session.execute(text(_insert_rule_sql(
+                    extra_columns=", end_date, max_occurrences",
+                    extra_values=", DATE '2026-12-31', 12",
+                )), {"u": seed_user["user"].id})
             db.session.rollback()
 
     def test_zero_max_occurrences_is_refused(self, app, db, seed_user):
         """A count bound of zero would mean "never", which NULL already means."""
         with app.app_context():
             with pytest.raises(IntegrityError, match="positive_max_occurrences"):
-                db.session.execute(text(
-                    "INSERT INTO budget.recurrence_rules "
-                    "  (user_id, pattern_id, interval_n, offset_periods, "
-                    "   max_occurrences) "
-                    "SELECT :u, id, 1, 0, 0 "
-                    "  FROM ref.recurrence_patterns WHERE name = 'Monthly'"
-                ), {"u": seed_user["user"].id})
+                db.session.execute(text(_insert_rule_sql(
+                    extra_columns=", max_occurrences", extra_values=", 0",
+                )), {"u": seed_user["user"].id})
             db.session.rollback()
 
 
@@ -235,10 +272,7 @@ class TestSubtypeTables:
         """The UNIQUE constraint actually fires on a duplicate."""
         with app.app_context():
             rule_id = db.session.execute(text(
-                "INSERT INTO budget.recurrence_rules "
-                "  (user_id, pattern_id, interval_n, offset_periods) "
-                "SELECT :u, id, 1, 0 FROM ref.recurrence_patterns "
-                " WHERE name = 'Monthly' RETURNING id"
+                _insert_rule_sql(returning="RETURNING id")
             ), {"u": seed_user["user"].id}).scalar()
             db.session.execute(text(
                 "INSERT INTO budget.recurrence_month_anchors "
@@ -255,10 +289,7 @@ class TestSubtypeTables:
         """A subtype row cannot outlive the rule it describes."""
         with app.app_context():
             rule_id = db.session.execute(text(
-                "INSERT INTO budget.recurrence_rules "
-                "  (user_id, pattern_id, interval_n, offset_periods) "
-                "SELECT :u, id, 1, 0 FROM ref.recurrence_patterns "
-                " WHERE name = 'Monthly' RETURNING id"
+                _insert_rule_sql(returning="RETURNING id")
             ), {"u": seed_user["user"].id}).scalar()
             db.session.execute(text(
                 "INSERT INTO budget.recurrence_month_anchors "
@@ -288,10 +319,7 @@ class TestSubtypeTables:
         """
         with app.app_context():
             rule_id = db.session.execute(text(
-                "INSERT INTO budget.recurrence_rules "
-                "  (user_id, pattern_id, interval_n, offset_periods) "
-                "SELECT :u, id, 1, 0 FROM ref.recurrence_patterns "
-                " WHERE name = 'Monthly' RETURNING id"
+                _insert_rule_sql(returning="RETURNING id")
             ), {"u": seed_user["user"].id}).scalar()
             with pytest.raises(IntegrityError, match="nominal_day"):
                 db.session.execute(text(
@@ -315,10 +343,7 @@ class TestSubtypeTables:
         """The nth-weekday domain is enforced by the database, not by hope."""
         with app.app_context():
             rule_id = db.session.execute(text(
-                "INSERT INTO budget.recurrence_rules "
-                "  (user_id, pattern_id, interval_n, offset_periods) "
-                "SELECT :u, id, 1, 0 FROM ref.recurrence_patterns "
-                " WHERE name = 'Monthly' RETURNING id"
+                _insert_rule_sql(returning="RETURNING id")
             ), {"u": seed_user["user"].id}).scalar()
             with pytest.raises(IntegrityError, match=constraint):
                 db.session.execute(text(
@@ -351,10 +376,7 @@ class TestSubtypeTablesAreAudited:
         """An INSERT into each subtype table lands in ``system.audit_log``."""
         with app.app_context():
             rule_id = db.session.execute(text(
-                "INSERT INTO budget.recurrence_rules "
-                "  (user_id, pattern_id, interval_n, offset_periods) "
-                "SELECT :u, id, 1, 0 FROM ref.recurrence_patterns "
-                " WHERE name = 'Monthly' RETURNING id"
+                _insert_rule_sql(returning="RETURNING id")
             ), {"u": seed_user["user"].id}).scalar()
             db.session.execute(text(
                 "INSERT INTO budget.recurrence_month_anchors "

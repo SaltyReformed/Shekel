@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "_form_macros.html" import form_card %}
 {% from "_amount_macros.html" import amount_field, amount_history with context %}
-{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_detail_fields, recurrence_end_bound, recurrence_preview, recurrence_start_date with context %}
+{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_detail_fields, recurrence_end_bound, recurrence_preview, recurrence_starts_on with context %}
 {% from "_nav_macros.html" import back_link %}
 {% block title %}{{ 'Edit' if template else 'New' }} Recurring Transaction -- Shekel{% endblock title %}
 
@@ -101,10 +101,11 @@
              always false here -- nothing derives a transaction template's
              window -- and is passed rather than hardcoded so the two forms
              ask one question. #}
-          {{ recurrence_start_date(recurrence.selected_start_date,
-                                       recurrence.start_date_min,
-                                       recurrence.start_date_max,
-                                       locked=recurrence.bounds_are_derived) }}
+          {{ recurrence_starts_on(recurrence.picker,
+                                   recurrence.selected_start,
+                                   recurrence.starts_on_min,
+                                   recurrence.starts_on_max,
+                                   locked=recurrence.bounds_are_derived) }}
           {{ recurrence_detail_fields(template, include_due_day=true) }}
           {{ recurrence_end_bound(recurrence.picker, recurrence.selected_end_bound,
                                      locked=recurrence.bounds_are_derived) }}

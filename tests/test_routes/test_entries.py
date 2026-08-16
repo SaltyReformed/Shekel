@@ -27,6 +27,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
+    make_every_period_rule,
     append_balance_assertion,
     freeze_today,
     settle_instant_on,
@@ -107,12 +108,7 @@ def _create_visible_tracked_txn(seed_user, seed_periods):
         name="Projected",
     ).one()
 
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     category = seed_user["categories"]["Groceries"]
     template = TransactionTemplate(
@@ -1746,12 +1742,7 @@ class TestEntryTransactionMismatch:
                 Status,
             ).filter_by(name="Projected").one()
 
-            rule2 = RecurrenceRule(
-                user_id=seed_user["user"].id,
-                pattern_id=every_period.id,
-            )
-            db.session.add(rule2)
-            db.session.flush()
+            rule2 = make_every_period_rule(db.session, seed_user["user"].id)
 
             template_hidden = TransactionTemplate(
                 user_id=seed_user["user"].id,
