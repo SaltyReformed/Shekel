@@ -260,6 +260,20 @@ def _apply_field_updates(txn, data):
             continue
         setattr(txn, field, value)
 
+    if "estimated_amount" in data:
+        # A typed figure makes the row's amount its OWN, so the relation that
+        # priced it is CLEARED in the same act (plan step X-au-c2b).
+        # ``ck_transactions_amount_ownership`` pairs the two -- a row states
+        # either a figure or the relation that prices it, never both -- so
+        # writing the column while a relation still claimed the row is an
+        # ``IntegrityError``.  It is a no-op on today's data, because nothing
+        # is declared derived yet, and it is written now because the amount
+        # model's own dispatch already ASSERTS it: "a row a human RE-PRICED
+        # owns its figure because the write door CLEARS its source".  That was
+        # true at one write door of three when an adversarial review counted
+        # them.
+        txn.amount_source_id = None
+
     if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
         txn.is_override = True
 

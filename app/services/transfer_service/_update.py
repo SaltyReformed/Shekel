@@ -458,6 +458,14 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     if "amount" in updates:
         new_amount = _validate_positive_amount(updates["amount"])
         rows.transfer.amount = new_amount
+        # The parent now states its OWN figure, so the relation that priced it
+        # is cleared with it -- ``ck_transfers_amount_ownership`` is the same
+        # pairing ``ck_transactions_amount_ownership`` makes one table over
+        # (plan step X-au-c2b).  ``budget.transfers.amount`` is ALREADY
+        # nullable (X-au-c1), so this door is nearer the constraint than the
+        # transaction one: only the transfer cutover (X-au-f) stands between it
+        # and a row whose column is NULL.  A no-op today; nothing is declared.
+        rows.transfer.amount_source_id = None
         for shadow in rows.shadows:
             shadow.estimated_amount = new_amount
 

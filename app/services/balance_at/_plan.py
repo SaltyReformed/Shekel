@@ -5,7 +5,7 @@ future balance is a fold over the payments it is going to make, in two tiers:
 
 * **PLANNED** -- the loan's PROJECTED transfer shadows
   (:func:`app.services.loan_loaders.projected_income_shadows`), each at its LIVE
-  D3 cash (:func:`app.services.loan_payment_service.live_loan_transfer_amounts` =
+  D3 cash (:meth:`app.services.loan_payment_service.LoanPricing.live_cash` =
   P&I + current escrow + ``extra_principal``, the SAME cash the checking side
   shows leaving).  A record is the evidence a payment will happen; where the
   record's due date has already passed but it has not settled, it is clamped
@@ -43,13 +43,12 @@ from decimal import ROUND_CEILING, Decimal
 
 from app.models.account import Account
 from app.services import escrow_calculator, loan_loaders, loan_resolver
-from app.services.cash_ledger import owned_contribution
+from app.services.cash_ledger import live_amounts, owned_contribution
 from app.services.loan_ledger import (
     confirmed_shadows_through,
     split_payment_cash,
 )
 from app.services.loan_loaders import loan_payment_due_date
-from app.services.loan_payment_service import live_loan_transfer_amounts
 from app.services.rate_period_engine import period_for_date
 from app.utils.dates import add_months
 
@@ -188,7 +187,7 @@ def _planned_from_shadows(
     **The fallback is ``owned_contribution`` rather than the amount resolver, and
     that is a fact about the loan rather than a shortcut** (plan step X-au-c2).
     A loan-side income shadow's amount resolves THROUGH the loan
-    (``loan_payment_service.live_loan_transfer_amounts``), and the loan resolves
+    (``loan_payment_service.LoanPricing``), and the loan resolves
     through ``load_loan_context`` -> ``get_payment_history``, which reads the
     amount of every shadow income row on the account -- so asking the resolver
     here would ask the loan to price the rows its own price is derived from.
@@ -204,7 +203,8 @@ def _planned_from_shadows(
         projected_shadows: The loan's projected income shadows
             (:func:`app.services.loan_loaders.projected_income_shadows`).
         live_cash: ``{transaction_id: live cash}``
-            (:func:`app.services.loan_payment_service.live_loan_transfer_amounts`).
+            (:func:`app.services.cash_ledger.live_amounts` over the pass's own
+            basis).
         fwd: The resolved :class:`_ForwardInputs`.
 
     Returns:
@@ -374,7 +374,12 @@ def loan_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]:
     projected_shadows = loan_loaders.projected_income_shadows(
         account.id, ctx.scenario_id,
     )
-    live_cash = live_loan_transfer_amounts(ctx.scenario_id, projected_shadows)
+    # The pass's OWN loan derivation, not a second one built here: this line
+    # called ``live_loan_transfer_amounts`` directly while the cash fold built a
+    # basis that called it again, so one request resolved the same loan twice
+    # (finding **N-268**'s shape).  Plan step X-au-c2b made the derivation a
+    # read-pass value, so both readers ask the same one.
+    live_cash = live_amounts(ctx.amounts(), projected_shadows)
     planned = _planned_from_shadows(projected_shadows, live_cash, fwd)
 
     # Slots the fold already accounts for and the ESTIMATED tier must NOT

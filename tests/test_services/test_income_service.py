@@ -152,6 +152,24 @@ def _make_txn(
     return txn
 
 
+def _live_net_map(user_id, scenario_id, rows):
+    """The salary override map, as the read-time repair produces it per row.
+
+    Plan step X-au-c2b split ``live_projected_net`` into an owner-scoped
+    DERIVATION (:func:`income_service.salary_pricing`) and a per-row lookup, so
+    the map these tests grade is now something a caller builds rather than
+    something the producer returns.  Assembled here so every assertion below
+    keeps its original shape and figures.
+    """
+    pricing = income_service.salary_pricing(user_id, scenario_id)
+    answers = {}
+    for txn in rows:
+        net = income_service.live_projected_net(txn, pricing)
+        if net is not None:
+            answers[txn.id] = net
+    return answers
+
+
 class TestLiveProjectedNet:
     """Unit tests for ``income_service.live_projected_net`` (Workstream B).
 
@@ -186,9 +204,7 @@ class TestLiveProjectedNet:
             )
             db.session.commit()
 
-            overrides = income_service.live_projected_net(
-                user_id, scenario_id, [txn],
-            )
+            overrides = _live_net_map(user_id, scenario_id, [txn])
 
             # $104,000 profile, no raise, no tax configs seeded -> net =
             # gross = 104000 / 26 = $4,000.00 (hand-computed; the sibling
@@ -249,7 +265,7 @@ class TestLiveProjectedNet:
             )
             db.session.commit()
 
-            overrides = income_service.live_projected_net(
+            overrides = _live_net_map(
                 user_id, scenario_id,
                 [wanted, received, overridden, non_salary, expense],
             )
@@ -265,9 +281,7 @@ class TestLiveProjectedNet:
             user_id = seed_user["user"].id
             scenario_id = seed_user["scenario"].id
             # Empty transaction list.
-            assert income_service.live_projected_net(
-                user_id, scenario_id, [],
-            ) == {}
+            assert _live_net_map(user_id, scenario_id, []) == {}
 
             # An income row whose template has no SalaryProfile -> omitted.
             income_type = (
@@ -289,9 +303,7 @@ class TestLiveProjectedNet:
                 template=unlinked,
             )
             db.session.commit()
-            assert income_service.live_projected_net(
-                user_id, scenario_id, [txn],
-            ) == {}
+            assert _live_net_map(user_id, scenario_id, [txn]) == {}
 
 
 class TestLiveIncomeThroughBalanceResolver:
@@ -688,9 +700,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             # pass vacuously.
             assert net_2027_rate != net_2026_rate
 
-            overrides = income_service.live_projected_net(
-                user_id, scenario_id, [txn],
-            )
+            overrides = _live_net_map(user_id, scenario_id, [txn])
             assert overrides[txn.id] == net_2027_rate
             assert overrides[txn.id] != net_2026_rate
 
@@ -770,14 +780,10 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             db.session.commit()
 
             freeze_today(monkeypatch, date(2026, 6, 1))
-            priced_in_2026 = income_service.live_projected_net(
-                user_id, scenario_id, [txn],
-            )[txn.id]
+            priced_in_2026 = _live_net_map(user_id, scenario_id, [txn])[txn.id]
 
             freeze_today(monkeypatch, date(2027, 6, 1))
-            priced_in_2027 = income_service.live_projected_net(
-                user_id, scenario_id, [txn],
-            )[txn.id]
+            priced_in_2027 = _live_net_map(user_id, scenario_id, [txn])[txn.id]
 
             assert priced_in_2027 == priced_in_2026
 

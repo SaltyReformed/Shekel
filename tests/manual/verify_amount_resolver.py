@@ -7,12 +7,14 @@ projected ones --
 already answers, or the run fails naming the rows where it does not.
 
 **"The answer the app gives today" is not single-valued, so this file names the
-one it grades.**  ``routes/grid/page.py`` publishes ``live_estimated_amount`` as
-``amount_overrides.get(txn.id, txn.estimated_amount)`` while
-``dashboard_service.py:279`` reads the raw column, and that two-answer state IS
-finding **N-224**.  The graded expression is the grid's, and it is the right one
-because it is the ESTIMATE half -- the quantity the resolver answers and the one
-plan step X-au-c makes NULLABLE.
+one it grades.**  It was three answers when this was written: the grid published
+a transient ``live_estimated_amount`` as
+``amount_overrides.get(txn.id, txn.estimated_amount)``, every HTMX fragment fell
+back to the raw column, and ``dashboard_service`` read the column outright --
+which IS finding **N-224**, and which plan step X-au-c2b collapsed into ONE rule
+(``cash_ledger.display_amounts_by_id``).  The graded expression is that rule's,
+and it is the right one because it is the ESTIMATE half -- the quantity the
+resolver answers and the one plan step X-au-c makes NULLABLE.
 
 **It is NOT the expression the balance surfaces fold, and a first draft of this
 paragraph said it was.**  ``cash_ledger.income_amount`` evaluates
@@ -218,8 +220,8 @@ def _grade_group(account, scenario_id, rows):
     Returns:
         A list of per-row record dicts.
     """
-    basis = amount_basis(account.user_id, scenario_id, rows)
-    overrides = live_amounts(basis)
+    basis = amount_basis(account.user_id, scenario_id)
+    overrides = live_amounts(basis, rows)
 
     records = []
     for txn in rows:

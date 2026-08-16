@@ -5021,3 +5021,117 @@ def period_window(periods):
             if period.period_id in wanted
         ),
     )
+
+
+class PlantedPricing:
+    """A stand-in for one of the amount model's live DERIVATIONS.
+
+    Plan step X-au-c2b made :class:`~app.services.cash_ledger.AmountBasis` hold
+    the two derivations behind a row's live figure -- the owner's salary
+    projection and the scenario's loan resolutions -- rather than the
+    ``{transaction_id: Decimal}`` maps they used to produce.  Tests whose
+    subject is a VALUATION rule ("when the basis says X, what does this
+    reduction return") need to plant an answer without seeding a salary profile
+    or a loan, and this is what they plant it with.
+
+    It satisfies both halves of the seam: :meth:`net_for` is what
+    ``income_service.salary_net_for`` asks, and :meth:`live_cash` is what
+    ``loan_payment_service.LoanPricing`` answers with.  Planting by
+    TRANSACTION id therefore lands on the loan half, which
+    ``cash_ledger.live_override`` asks first.
+
+    Use it ONLY where the derivation is an input to the rule under test.  A test
+    OF the amount model builds a real basis (``amount_basis``) and seeds the
+    profile or the loan, because a planted map cannot grade a derivation.
+    """
+
+    def __init__(self, overrides=None):
+        """Plant ``{transaction_id: Decimal}`` as this derivation's answers.
+
+        Args:
+            overrides: The live figures to answer with, or ``None`` for a
+                derivation that answers for nothing -- the common case, and
+                what a row set with no salary row and no loan payment gets.
+        """
+        self._overrides = dict(overrides or {})
+
+    def net_for(self, template_id, pay_period_id):
+        """Answer nothing: a planted figure lands on the LOAN half.
+
+        Args:
+            template_id: Ignored.
+            pay_period_id: Ignored.
+
+        Returns:
+            ``None`` always -- a test that needs a real paycheck seeds a
+            profile and builds a real basis.
+        """
+        return None
+
+    def live_cash(self, txn):
+        """Return the planted figure for *txn*, or ``None``.
+
+        Args:
+            txn: The row being asked about; only its ``id`` is read.
+
+        Returns:
+            The planted ``Decimal``, or ``None`` when nothing was planted for
+            this row.
+        """
+        return self._overrides.get(getattr(txn, "id", None))
+
+
+def planted_basis(*rows, overrides=None):
+    """An :class:`~app.services.cash_ledger.AmountBasis` answering *overrides*.
+
+    The basis a producer would hand a valuation rule, with both live
+    derivations planted (:class:`PlantedPricing`) so no test of a reduction
+    needs a salary profile or a configured loan to reach the override seam.
+
+    Args:
+        rows: The rows this basis will price.  A basis was built OVER a row set
+            until plan step X-au-c2b, and every call site named its rows; they
+            are kept because the first row still decides one thing -- the
+            SCENARIO the basis declares.  ``resolve_transaction_amount`` refuses
+            a row from another scenario, so a double that named the wrong one
+            would grade that refusal instead of the rule under test.
+        overrides: ``{transaction_id: Decimal}`` live figures to plant.
+
+    Returns:
+        The :class:`~app.services.cash_ledger.AmountBasis`.
+    """
+    from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
+        AmountBasis,
+    )
+
+    planted = PlantedPricing(overrides)
+    return AmountBasis(
+        user_id=0,
+        scenario_id=getattr(rows[0], "scenario_id", 0) if rows else 0,
+        salary=planted,
+        loans=planted,
+    )
+
+
+def basis_for(account, scenario):
+    """The read pass's :class:`~app.services.cash_ledger.AmountBasis`.
+
+    What a route or a top-level producer holds and threads into the cash fold
+    since plan step X-au-c2b -- pinned to an owner and a scenario, never to a
+    row set, and lazy, so building one in a fixture costs nothing until a rule
+    asks.  The seam entries take one where they took a bare ``scenario_id``,
+    because the scenario a row set is loaded under and the derivations it is
+    priced through are one decision rather than two a caller could get apart.
+
+    Args:
+        account: Any account of the owner; only ``user_id`` is read.
+        scenario: The scenario whose rows are being valued.
+
+    Returns:
+        The unresolved :class:`~app.services.cash_ledger.AmountBasis`.
+    """
+    from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
+        amount_basis,
+    )
+
+    return amount_basis(account.user_id, scenario.id)

@@ -501,7 +501,7 @@ def load_projection_batch(
     # pass either way -- this only moves where it is asked for.
     balance_ctx = BalanceContext.build(ctx.user_id)
     contributions = load_shadow_income_contributions_for_accounts(
-        ctx.user_id, balance_ctx.scenario_id, account_ids, period_ids,
+        balance_ctx.amounts(), account_ids, period_ids,
     )
 
     # One IN query for the params rows (P2: replaces the per-account

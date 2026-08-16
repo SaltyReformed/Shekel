@@ -702,7 +702,7 @@ def resolve(
         # the value already in hand, so that step edits no signature and no
         # caller.
         _asset_contributions.contribution_events(
-            account, cash.scenario_id, inputs, reconciled_through,
+            account, cash.plan.basis, inputs, reconciled_through,
             calendar.saved(),
         ),
         window,
@@ -762,7 +762,7 @@ def _assemble(
     """
     return resolve(
         account,
-        _cash_fold.assemble(account, ctx.scenario_id, ctx.as_of),
+        _cash_fold.assemble(account, ctx.amounts(), ctx.as_of),
         horizon_end,
         inputs,
         ctx.calendar(),

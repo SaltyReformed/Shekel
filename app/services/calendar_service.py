@@ -303,7 +303,7 @@ def get_month_detail(  # pylint: disable=too-many-arguments
         year=year, account=account, periods=periods,
         transactions=transactions,
         contributions=cash_ledger.contributions_by_id(
-            user_id, balance_ctx.scenario_id, transactions,
+            transactions, balance_ctx.amounts(),
         ),
         large_threshold=large_threshold,
         balance_ctx=balance_ctx, today=today,
@@ -355,7 +355,7 @@ def get_year_overview(
         year=year, account=account, periods=periods,
         transactions=all_txns,
         contributions=cash_ledger.contributions_by_id(
-            user_id, balance_ctx.scenario_id, all_txns,
+            all_txns, balance_ctx.amounts(),
         ),
         large_threshold=large_threshold,
         balance_ctx=balance_ctx, today=None,

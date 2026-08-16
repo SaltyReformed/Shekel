@@ -31,7 +31,11 @@ from decimal import Decimal
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.services import growth_engine
-from app.services.cash_ledger import ReconciledThrough, contributions_by_id
+from app.services.cash_ledger import (
+    AmountBasis,
+    ReconciledThrough,
+    contributions_by_id,
+)
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -136,7 +140,7 @@ class _ContributionPlan:
 
 
 def _recorded_contributions(
-    user_id: int, account_id: int, scenario_id: int,
+    basis: AmountBasis, account_id: int,
 ) -> dict[int, Decimal]:
     """Return the transfer-linked contributions recorded per pay period.
 
@@ -167,17 +171,18 @@ def _recorded_contributions(
     costs two list comprehensions and no query.
 
     Args:
-        user_id: The owner; scopes the amount basis.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`, carrying the owner
+            and the scenario the rows live in.
         account_id: The account receiving the contributions.
-        scenario_id: The budget scenario the rows live in.
 
     Returns:
         ``{pay_period_id: total}`` over what each row CONTRIBUTES -- the
         realized actual for a settled shadow, else its resolved amount.  ``{}``
         for an account with none.
     """
-    rows = query_shadow_income(account_id, scenario_id).all()
-    contributions = contributions_by_id(user_id, scenario_id, rows)
+    rows = query_shadow_income(account_id, basis.scenario_id).all()
+    contributions = contributions_by_id(rows, basis)
     totals: dict[int, Decimal] = {}
     for txn in rows:
         totals[txn.pay_period_id] = (
@@ -187,7 +192,7 @@ def _recorded_contributions(
 
 
 def _plan_for(
-    account: Account, scenario_id: int, inputs: ContributionInputs,
+    account: Account, basis: AmountBasis, inputs: ContributionInputs,
 ) -> "_ContributionPlan | None":
     """Assemble *account*'s modelled contribution plan, or ``None`` if it has none.
 
@@ -200,7 +205,8 @@ def _plan_for(
 
     Args:
         account: The investment account.
-        scenario_id: The budget scenario the recorded contributions live in.
+        basis: The read pass's amount basis, carrying the scenario the recorded
+            contributions live in and the derivations pricing them.
         inputs: The account's :class:`ContributionInputs`.  Its
             ``investment_params`` is not ``None`` -- :func:`contribution_events`
             guards that.
@@ -220,15 +226,13 @@ def _plan_for(
         per_period=per_period,
         employer_params=employer_params,
         annual_limit=inputs.investment_params.annual_contribution_limit,
-        recorded_by_period=_recorded_contributions(
-            account.user_id, account.id, scenario_id,
-        ),
+        recorded_by_period=_recorded_contributions(basis, account.id),
     )
 
 
 def contribution_events(
     account: Account,
-    scenario_id: int,
+    basis: AmountBasis,
     inputs: ContributionInputs,
     reconciled_through: ReconciledThrough,
     periods: PeriodWindow,
@@ -275,7 +279,8 @@ def contribution_events(
             is the pass owner's too, since plan step C2-f2a took the AXIS off
             the context's calendar rather than off this account (the seam's
             standing contract makes them one owner).
-        scenario_id: The budget scenario the recorded contributions live in.
+        basis: The read pass's amount basis, carrying the scenario the
+            recorded contributions live in and the derivations pricing them.
         inputs: The account's :class:`ContributionInputs`.
         reconciled_through: The account's coverage boundary -- the assertion
             :func:`_dated_events` admits an event strictly after (ruling R-Z).
@@ -294,7 +299,7 @@ def contribution_events(
     if (classify_account(account) is not AccountProjectionKind.INVESTMENT
             or inputs.investment_params is None):
         return []
-    plan = _plan_for(account, scenario_id, inputs)
+    plan = _plan_for(account, basis, inputs)
     if plan is None:
         return []
     return _dated_events(plan, periods, reconciled_through)

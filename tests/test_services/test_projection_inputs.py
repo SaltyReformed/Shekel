@@ -42,6 +42,7 @@ from app.services.projection_inputs import (
     load_investment_params_for_accounts,
     load_shadow_income_contributions_for_account,
 )
+from tests._test_helpers import basis_for
 
 
 def _flat_id():
@@ -552,7 +553,11 @@ class TestShadowContributionBoundary:
         # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum
         from app.models.transaction import Transaction
-        from tests._test_helpers import create_transfer, make_investment_account
+        from tests._test_helpers import (
+            basis_for,
+            create_transfer,
+            make_investment_account,
+        )
 
         if account is None:
             account = make_investment_account(
@@ -624,7 +629,7 @@ class TestShadowContributionBoundary:
             db.session.commit()
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [seed_periods[0].id],
             ).records
 
@@ -651,7 +656,7 @@ class TestShadowContributionBoundary:
             period = seed_periods[0]
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [period.id],
             ).records
             result = calculate_investment_inputs(
@@ -681,7 +686,7 @@ class TestShadowContributionBoundary:
             period = seed_periods[0]
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [period.id],
             ).records
             result = calculate_investment_inputs(
@@ -715,7 +720,7 @@ class TestShadowContributionBoundary:
             db.session.commit()
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [p.id for p in periods],
             ).records
             assert len(records) == 3
@@ -750,7 +755,7 @@ class TestShadowContributionBoundary:
             period = seed_periods[0]
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [period.id],
             ).records
             inputs = calculate_investment_inputs(
@@ -794,7 +799,7 @@ class TestShadowContributionBoundary:
             db.session.commit()
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [seed_periods[0].id, seed_periods[1].id],
             ).records
 
@@ -831,7 +836,7 @@ class TestShadowContributionBoundary:
             db.session.commit()
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [seed_periods[0].id],
             ).records
 
@@ -861,7 +866,7 @@ class TestShadowContributionBoundary:
             db.session.commit()
 
             loaded = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [seed_periods[0].id],
             )
 

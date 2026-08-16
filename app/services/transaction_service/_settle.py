@@ -170,7 +170,7 @@ def settle_amount(txn: Transaction) -> Decimal:
     reject_unsettleable(txn)
     if settles_from_entries(txn):
         return compute_actual_from_entries(txn.entries)
-    basis = amount_basis(txn.account.user_id, txn.scenario_id, [txn])
+    basis = amount_basis(txn.account.user_id, txn.scenario_id)
     live = _freshest_amount(txn, basis)
     return contribution_of(txn, basis) if live is None else live
 
@@ -446,7 +446,7 @@ def _reconcile_cached_amount(txn: Transaction) -> None:
             Projected-only, so after it there is never anything fresher.
     """
     live = _freshest_amount(
-        txn, amount_basis(txn.account.user_id, txn.scenario_id, [txn]),
+        txn, amount_basis(txn.account.user_id, txn.scenario_id),
     )
     if live is not None:
         txn.estimated_amount = live
@@ -505,7 +505,8 @@ def _freshest_amount(txn: Transaction, basis) -> Decimal | None:
             caller that also needs the row's contribution
             (:func:`settle_amount`) pays for ONE basis rather than two -- the
             same build-once-and-thread discipline the fold uses over a whole
-            plan.
+            plan.  It is pinned to the row's OWNER and SCENARIO since plan step
+            X-au-c2b, not built over this one row.
 
     Returns:
         The live amount when one exists and disagrees with the cache, else

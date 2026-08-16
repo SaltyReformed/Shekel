@@ -211,13 +211,23 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # both price the SAME rows, and two valuations of one row are how two
     # figures on one screen come to disagree.  Built here rather than per row
     # because the salary producer runs the paycheck engine over the owner's
-    # whole pay-period set (finding **N-228**) -- though on this set it makes
-    # no query at all, every row being an expense.
+    # whole pay-period set (finding **N-228**).  The line that used to sit here
+    # claimed this set "makes no query at all, every row being an expense": the
+    # salary half indeed answers nothing, but the row set carries transfer-out
+    # shadows by design (see the query's own docstring), so the LOAN half is
+    # asked and resolves its config map.
     contributions = cash_ledger.contributions_by_id(
-        user_id, balance_ctx.scenario_id, unpaid_rows,
+        unpaid_rows, balance_ctx.amounts(),
     )
+    # The second question the same rows must answer, off the SAME basis (plan
+    # step X-au-c2b): what an envelope's BUDGET is, which ruling E-21 fixes on
+    # the row's own amount unconditionally -- never the entered actual, never
+    # status-dependent -- so a contribution cannot stand in for it.
+    budgets = cash_ledger.amounts_by_id(unpaid_rows, balance_ctx.amounts())
 
-    due_soon = _pulse_due_soon(unpaid_rows, contributions, current_period)
+    due_soon = _pulse_due_soon(
+        unpaid_rows, contributions, budgets, current_period,
+    )
 
     return {
         # ``current_period`` came from ``get_current_period``, so it is a row
@@ -242,7 +252,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
             forward_periods, end_balances, current_period,
         ),
         "still_due": _pulse_still_due(
-            unpaid_rows, contributions, current_period, next_period,
+            unpaid_rows, contributions, budgets, current_period, next_period,
         ),
         "street": _pulse_street(current_period),
         "due_soon": due_soon,
@@ -564,6 +574,7 @@ def _pulse_extremum(
 def _pulse_still_due(
     rows: list[Transaction],
     contributions: dict[int, Decimal],
+    budgets: dict[int, Decimal],
     current_period: PayPeriod,
     next_period: "DerivedPeriod | None",
 ) -> dict:
@@ -575,7 +586,7 @@ def _pulse_still_due(
         (the row's displayed obligation: actual when populated, else its
         resolved amount; never negative for an expense).
       * Entry-tracked rows contribute their entries-aware remaining
-        (``estimated_amount`` minus the sum of recorded entries) FLOORED
+        (the row's resolved BUDGET minus the sum of recorded entries) FLOORED
         AT ZERO -- an over-budget envelope contributes ``0``, never a
         negative that would understate the total (its overspend already
         left the as-of-today balance).
@@ -598,6 +609,10 @@ def _pulse_still_due(
             shared with :func:`_pulse_due_soon`.  Indexed with ``[]``: a
             row missing from it is a caller that priced a different set,
             and a default here would be a fabricated figure in a total.
+        budgets: ``{transaction_id: Decimal}`` over the same rows, from the
+            caller's one :func:`~app.services.cash_ledger.amounts_by_id` call
+            -- the E-21 base an entry-tracked row's remaining is computed
+            against.  Indexed with ``[]`` for the reason the contributions are.
         current_period: The period containing today.
         next_period: The period after the current one, or ``None``.
 
@@ -613,7 +628,9 @@ def _pulse_still_due(
     current_total = _ZERO
     next_total = _ZERO
     for txn in rows:
-        contribution = _row_still_due(txn, contributions[txn.id])
+        contribution = _row_still_due(
+            txn, contributions[txn.id], budgets[txn.id],
+        )
         if txn.pay_period_id == current_period.id:
             current_total += contribution
         elif next_period is not None and txn.pay_period_id == next_period.period_id:
@@ -631,11 +648,13 @@ def _pulse_still_due(
     }
 
 
-def _row_still_due(txn: Transaction, contribution: Decimal) -> Decimal:
+def _row_still_due(
+    txn: Transaction, contribution: Decimal, budget: Decimal,
+) -> Decimal:
     """Return one row's still-due contribution on the locked basis (B4a).
 
     An entry-tracked (envelope) row contributes its entries-aware
-    remaining (``estimated_amount`` minus the sum of all recorded
+    remaining (its resolved BUDGET minus the sum of all recorded
     entries, via :func:`compute_remaining`) floored at zero -- so an
     over-budget envelope contributes ``0`` rather than a negative.  A
     non-tracked row contributes what the row is WORTH (the obligation the
@@ -651,12 +670,17 @@ def _row_still_due(txn: Transaction, contribution: Decimal) -> Decimal:
             answer for a row whose amount is DERIVED (plan step X-au-c2).
             Read only for a non-tracked row; an envelope answers on its
             E-21 budget base instead.
+        budget: The row's resolved amount -- the E-21 base, from the caller's
+            one :func:`~app.services.cash_ledger.amounts_by_id` call.  Read
+            only for an entry-tracked row.  An ARGUMENT rather than a read of
+            ``txn.estimated_amount`` since plan step X-au-c2b: a derived row
+            stores no figure in that column.
 
     Returns:
         The row's still-due ``Decimal`` contribution (>= 0).
     """
     if txn.tracks_purchases:
-        remaining = compute_remaining(txn.estimated_amount, txn.entries)
+        remaining = compute_remaining(budget, txn.entries)
         return remaining if remaining > _ZERO else _ZERO
     return contribution
 
@@ -697,6 +721,7 @@ def _pulse_street(current_period: PayPeriod) -> dict:
 def _pulse_due_soon(
     rows: list[Transaction],
     contributions: dict[int, Decimal],
+    budgets: dict[int, Decimal],
     current_period: PayPeriod,
 ) -> list[dict]:
     """Build the current period's due-soon rows (the street / mobile list).
@@ -731,6 +756,9 @@ def _pulse_due_soon(
             :func:`~app.services.cash_ledger.contributions_by_id` call and
             shared with :func:`_pulse_still_due`, so a bill's amount cell
             and the still-due total it feeds price the row ONCE.
+        budgets: ``{transaction_id: Decimal}`` over the same rows, shared the
+            same way -- the E-21 base an entry-tracked bill's amount cell and
+            its progress fields both answer on.
         current_period: The period containing today.
 
     Returns:
@@ -743,7 +771,9 @@ def _pulse_due_soon(
     for txn in rows:
         if txn.pay_period_id != current_period.id:
             continue
-        bill = txn_to_bill_dict(txn, today, contributions[txn.id])
+        bill = txn_to_bill_dict(
+            txn, today, contributions[txn.id], budgets[txn.id],
+        )
         if txn.due_date is not None:
             bill["day_offset"] = (txn.due_date - current_period.start_date).days
             bill["undated"] = False

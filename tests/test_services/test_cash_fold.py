@@ -54,6 +54,7 @@ from tests._test_helpers import (
     add_entry,
     add_txn,
     append_balance_assertion,
+    basis_for,
     create_envelope_txn,
     create_savings_account,
     create_settled_cash_transaction,
@@ -96,7 +97,7 @@ def _instant(year, month, day, hour=0, minute=0, second=0):
 
 def _fold(account, scenario, days, as_of=_LATE_AS_OF):
     """Fold *account* at each of *days*, returning ``{date: Decimal}``."""
-    return fold_cash_balances(account, scenario.id, as_of, list(days))
+    return fold_cash_balances(account, basis_for(account, scenario), as_of, list(days))
 
 
 def _opened_at(account, at):
@@ -1240,8 +1241,9 @@ def _drift_oracle(periods):
 def _drift_period_map(seed_user, periods):
     """Return the fold's period-end balance map for the drift shape."""
     return cash_period_balances(
-        seed_user["account"], seed_user["scenario"].id, _DRIFT_AS_OF,
-        period_window(periods),
+        seed_user["account"],
+        basis_for(seed_user["account"], seed_user["scenario"]),
+        _DRIFT_AS_OF, period_window(periods),
     )
 
 
