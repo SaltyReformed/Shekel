@@ -5079,6 +5079,58 @@ def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
 
 
 @contextmanager
+def counting_calls(*targets):
+    """Count calls to each ``(module path, attribute name)`` in *targets*.
+
+    **The ONE instrument for "how many times did this render run that"**,
+    shared by the architecture gate
+    (``tests/test_arch/test_one_read_pass_per_render.py``) and the render
+    harness (``tests/manual/verify_retirement_render.py``) -- the same sharing
+    :func:`counting_read_passes` below states its own case for, and for the
+    same reason: two copies of a measuring instrument is the shape where one is
+    later taught something the other is not, and the one that was not keeps
+    grading the old question.
+
+    Patched on the OWNING module and on every ``app.services`` module that
+    imported the name directly, because a producer that holds its own reference
+    would otherwise go uncounted -- and an undercount reads exactly like the
+    improvement it is supposed to be measuring.
+
+    Args:
+        targets: ``(module path, attribute name)`` pairs, e.g.
+            ``("app.services.retirement_projection", "load_projection_batch")``.
+
+    Yields:
+        A ``{name: int}`` dict whose values are the counts so far; read it
+        after the block exits.
+    """
+    # pylint: disable=import-outside-toplevel
+    import importlib
+    import sys
+
+    counts = {name: 0 for _, name in targets}
+    restore = []
+    for module_path, name in targets:
+        real = getattr(importlib.import_module(module_path), name)
+
+        def counting(*args, _real=real, _name=name, **kwargs):
+            counts[_name] += 1
+            return _real(*args, **kwargs)
+
+        for module in list(sys.modules.values()):
+            if getattr(module, "__name__", "").startswith("app.") and (
+                getattr(module, name, None) is real
+            ):
+                restore.append((module, name, real))
+                setattr(module, name, counting)
+    try:
+        yield counts
+    finally:
+        for module, name, real in restore:
+            setattr(module, name, real)
+
+
+@contextmanager
 def counting_read_passes():
     """Count every ``BalanceContext.build`` while the block runs.
 

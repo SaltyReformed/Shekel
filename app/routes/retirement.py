@@ -7,6 +7,7 @@ and retirement planning settings.
 
 import logging
 from datetime import date
+from decimal import Decimal
 
 from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -30,11 +31,17 @@ from app.schemas.validation import (
 from app.services import (
     retirement_dashboard_service,
     retirement_levers,
+    retirement_plan,
     retirement_readiness,
 )
 from app.services.balance_at import BalanceContext
 
 logger = logging.getLogger(__name__)
+
+# Percentage scaler: the blended return is carried as a fraction (the form the
+# annuity factor and the growth engine take) and the assumptions rail formats
+# it as a percent.  One conversion, at the display boundary.
+_PCT_SCALE = Decimal("100")
 
 # Field allowlists for the retirement update routes: which submitted form
 # fields may be written back to each model via setattr.
@@ -69,9 +76,9 @@ _readiness_query_schema = RetirementReadinessQuerySchema()
 def dashboard():
     """The direction-D retirement readiness page.
 
-    Computes the gap data ONCE and shapes the readiness picture from it
-    (:func:`~app.services.retirement_readiness.readiness_from_gap_data`),
-    closing the P3a double-compute; the levers run their own probe loads.
+    Derives the retirement picture ONCE and shapes the readiness picture
+    from it (:func:`~app.services.retirement_readiness.readiness_from_picture`);
+    the levers run on the same loaded inputs and the same memoized picture.
     The context carries exactly what the rebuilt template consumes: the
     readiness dict, the lever baselines, the per-account projections +
     salary profiles for the accounts table, the blended return for the
@@ -83,42 +90,40 @@ def dashboard():
     context (gap analysis, chart data, SWR slider default) retired with
     the old page (P3c).
 
-    **This route opens the render's ONE read pass** (plan step C2-f2d-1,
-    ledger row **P43**).  Both producers below are handed it: the gap and the
-    levers are two views of one retirement picture and they belong to one
-    owner, one baseline scenario and one day.  Each built a pass of its own
-    until this leaf, so the two cards could be computed against different days
-    -- reproduced on a production clone at ``$4.18`` of after-tax projected
-    savings over projection axes one period apart, across a
-    midnight-into-payday render.
+    **This route opens the render's ONE read pass and LOADS its inputs once**
+    (plan steps C2-f2d-1 and C2-f2d-2, ledger rows **P43** and **P57**).  The
+    readiness verdict and the lever card are two views of ONE retirement
+    picture: they belong to one owner, one baseline scenario, one day and one
+    plan.  Each used to build its own pass AND its own loaded inputs AND its
+    own derivation of that picture -- 86 of the render's 179 queries on a
+    production clone were the second copy, and the lever card's month-0 probe
+    recomputed the verdict the hero had already drawn.
 
-    **What that buys, stated exactly.**  Every figure resolved THROUGH the pass
-    now shares one clock, and a producer below cannot be reached without being
-    handed one, because the parameter has no default to fall through to.  It
-    does not make a second pass unconstructible -- nothing stops a service from
-    calling ``BalanceContext.build`` -- and it does not make this render
-    single-clock: ``compute_pension_summary`` and ``compute_gap_net_biweekly``
-    still read ``date.today().year`` for themselves, once per gap and once per
-    lever probe.  Ledger row **P55** owns that remainder.  The gate for what IS
-    claimed here is ``tests/test_arch/test_one_read_pass_per_render.py``.
+    **What that buys, stated exactly.**  ``picture_at(inputs, STORED_PLAN)``
+    below and the lever solver's own month-0 probe are the SAME object, not two
+    equal ones, so the two cards cannot state different figures for one plan.
+    It does not make this render single-clock: ``compute_pension_summary``,
+    ``compute_gap_net_biweekly`` and ``build_employer_salary_basis`` still read
+    ``date.today().year`` for themselves.  Ledger row **P55** owns that
+    remainder.  The gate for what IS claimed here is
+    ``tests/test_arch/test_one_read_pass_per_render.py``.
     """
-    balance_ctx = BalanceContext.build(current_user.id)
-    data = retirement_dashboard_service.compute_gap_data(balance_ctx)
-    readiness = retirement_readiness.readiness_from_gap_data(data)
+    inputs = retirement_plan.load_retirement_inputs(
+        BalanceContext.build(current_user.id),
+    )
+    picture = retirement_plan.picture_at(inputs, retirement_plan.STORED_PLAN)
+    readiness = retirement_readiness.readiness_from_picture(picture)
     return render_template(
         "retirement/dashboard.html",
-        current_return=(
-            retirement_dashboard_service.compute_slider_defaults(
-                data,
-            )["current_return"]
-        ),
+        # The rail's "Assumed return" row: the rate this page's own projection
+        # actually grew at, scaled to the percent the template formats.  It was
+        # a third derivation of that rate until plan step C2-f2d-2.
+        current_return=picture.blended_return * _PCT_SCALE,
         readiness=readiness,
-        levers=retirement_levers.compute_lever_data(balance_ctx),
-        retirement_account_projections=(
-            data["retirement_account_projections"]
-        ),
-        salary_profiles=data["salary_profiles"],
-        settings=data["settings"],
+        levers=retirement_levers.compute_lever_data(inputs),
+        retirement_account_projections=picture.projections,
+        salary_profiles=inputs.gap.salary_profiles,
+        settings=inputs.gap.settings,
         date_provenance=readiness["date_provenance"],
     )
 
@@ -418,13 +423,14 @@ def readiness_fragment():
     :class:`RetirementReadinessQuerySchema` (bounds -> 422 on garbage).
     Renders the minimal ``_readiness.html`` stub P3b restyles.
 
-    **One read pass for the fragment** (plan step C2-f2d-1), built here and
-    shared by the what-if's two computations and by the levers beside them.
-    This request published up to THREE pictures from three passes: the
-    stored-settings baseline, the override, and the lever outcome -- and the
-    panel's whole purpose is to state the DELTA between the first two, so every
-    input the two halves share had better BE shared.  The pass is; the bare
-    ``date.today()`` reads ledger row **P55** names are not yet.
+    **One read pass and one LOADER for the fragment** (plan steps C2-f2d-1 and
+    C2-f2d-2), built here and shared by the what-if's two pictures and by the
+    levers beside them.  This request published up to three pictures from three
+    passes and three loads -- the stored-settings baseline, the override, and
+    the lever outcome -- and the panel's whole purpose is to state the DELTA
+    between the first two, so every input the halves share had better BE
+    shared.  They are; the bare ``date.today()`` reads ledger row **P55** names
+    are not yet.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("retirement.dashboard"))
@@ -434,18 +440,24 @@ def readiness_fragment():
     except ValidationError as exc:
         return jsonify(errors=exc.messages), 422
 
-    balance_ctx = BalanceContext.build(current_user.id)
-    whatif = retirement_readiness.compute_readiness_whatif(
-        balance_ctx,
+    inputs = retirement_plan.load_retirement_inputs(
+        BalanceContext.build(current_user.id),
+    )
+    point = retirement_plan.PlanPoint(
         swr_override=query_data.get("swr"),
         return_rate_override=query_data.get("return_rate"),
         merit_horizon_override=query_data.get("merit_raise_horizon_years"),
     )
+    whatif = retirement_readiness.compute_readiness_whatif(inputs, point)
     lever_data = None
     if (query_data.get("months") is not None
             or query_data.get("contribution") is not None):
+        # The levers still solve against the STORED plan, not *point*: the
+        # what-if sliders move the hero above them and not this card.  That
+        # asymmetry is ledger row **P59** and plan step C2-f2d-4's subject; it
+        # is preserved here so this step's numbers are provably unchanged.
         lever_data = retirement_levers.compute_lever_data(
-            balance_ctx,
+            inputs,
             contribution_override=query_data.get("contribution"),
             months_override=query_data.get("months"),
         )

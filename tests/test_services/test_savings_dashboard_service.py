@@ -4423,9 +4423,13 @@ class TestNetWorthHorizon:
 
         The P-AC1 ruling's "the cockpit band equals /retirement by
         construction": re-running the SAME engine
-        (``build_projection_context`` + ``project_retirement_accounts``) at
-        the horizon end and summing the projected balances must equal the
-        horizon retirement band's final sample.
+        (``build_projection_context`` + ``load_projection_batch`` +
+        ``project_accounts_with_batch`` over the context's own axis) at the
+        horizon end and summing the projected balances must equal the horizon
+        retirement band's final sample.  The three are spelled out because the
+        convenience entry that wrapped them had no ``app/`` caller left once
+        the retirement picture became the one producer (plan step C2-f2d-2),
+        and this oracle wants a DIFFERENT horizon from the picture's own.
         """
         with app.app_context():
             # pylint: disable=import-outside-toplevel
@@ -4449,9 +4453,13 @@ class TestNetWorthHorizon:
                 BalanceContext.build(uid), all_periods, current,
                 horizon["dates"][-1], None, None,
             )
-            projected = retirement_projection.project_retirement_accounts(ctx)
+            projections = retirement_projection.project_accounts_with_batch(
+                ctx,
+                retirement_projection.load_projection_batch(ctx),
+                retirement_projection.resolve_projection_axis(ctx),
+            )
             expected = sum(
-                (p["projected_balance"] for p in projected.projections),
+                (p["projected_balance"] for p in projections),
                 Decimal("0"),
             )
             # 50k at 7% over a decade grows well past 50k.

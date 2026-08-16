@@ -908,10 +908,15 @@ class TestRetirementProjections:
         # the raise-aware readiness producer's net monthly target exactly
         # (page == service, a strictly stronger pin than the old
         # label-presence check).  The money macro renders "$1,234.56".
-        from app.services import retirement_readiness
+        from app.services import retirement_plan, retirement_readiness
 
-        readiness = retirement_readiness.compute_readiness_data(
-            BalanceContext.build(seed_user["user"].id)
+        readiness = retirement_readiness.readiness_from_picture(
+            retirement_plan.picture_at(
+                retirement_plan.load_retirement_inputs(
+                    BalanceContext.build(seed_user["user"].id),
+                ),
+                retirement_plan.STORED_PLAN,
+            ),
         )
         target = readiness["income_target_net_monthly"]
         assert target > 0
@@ -1655,7 +1660,11 @@ class TestReturnRateClarity:
         as traditional (pre-tax) in the gap analysis projections."""
         from app import ref_cache
         from app.enums import AcctCategoryEnum
-        from app.services.retirement_dashboard_service import compute_gap_data
+        from app.services.retirement_plan import (
+            STORED_PLAN,
+            load_retirement_inputs,
+            picture_at,
+        )
 
         with app.app_context():
             _create_salary_profile(seed_user, db.session)
@@ -1693,9 +1702,15 @@ class TestReturnRateClarity:
             ))
             db.session.commit()
 
-            data = compute_gap_data(BalanceContext.build(seed_user["user"].id))
-            projections = data["retirement_account_projections"]
-            proj = next(p for p in projections if p["account"].id == acct.id)
+            picture = picture_at(
+                load_retirement_inputs(
+                    BalanceContext.build(seed_user["user"].id),
+                ),
+                STORED_PLAN,
+            )
+            proj = next(
+                p for p in picture.projections if p["account"].id == acct.id
+            )
             assert proj["is_traditional"] is True
 
     def test_gap_analysis_posttax_type(
@@ -1704,7 +1719,11 @@ class TestReturnRateClarity:
         """A Retirement type with is_pretax=False is NOT flagged as traditional."""
         from app import ref_cache
         from app.enums import AcctCategoryEnum
-        from app.services.retirement_dashboard_service import compute_gap_data
+        from app.services.retirement_plan import (
+            STORED_PLAN,
+            load_retirement_inputs,
+            picture_at,
+        )
 
         with app.app_context():
             _create_salary_profile(seed_user, db.session)
@@ -1742,20 +1761,35 @@ class TestReturnRateClarity:
             ))
             db.session.commit()
 
-            data = compute_gap_data(BalanceContext.build(seed_user["user"].id))
-            projections = data["retirement_account_projections"]
-            proj = next(p for p in projections if p["account"].id == acct.id)
+            picture = picture_at(
+                load_retirement_inputs(
+                    BalanceContext.build(seed_user["user"].id),
+                ),
+                STORED_PLAN,
+            )
+            proj = next(
+                p for p in picture.projections if p["account"].id == acct.id
+            )
             assert proj["is_traditional"] is False
 
     def test_gap_analysis_no_retirement_accounts(
         self, app, auth_client, seed_user, db,
     ):
         """Gap analysis returns empty projections when no retirement accounts exist."""
-        from app.services.retirement_dashboard_service import compute_gap_data
+        from app.services.retirement_plan import (
+            STORED_PLAN,
+            load_retirement_inputs,
+            picture_at,
+        )
 
         with app.app_context():
-            data = compute_gap_data(BalanceContext.build(seed_user["user"].id))
-            assert data["retirement_account_projections"] == []
+            picture = picture_at(
+                load_retirement_inputs(
+                    BalanceContext.build(seed_user["user"].id),
+                ),
+                STORED_PLAN,
+            )
+            assert picture.projections == []
 
 
 def _seed_underfunded(seed_user, db_session):

@@ -27,7 +27,7 @@ next step re-writes it or skips it.  This is that probe, in the repository.
 * **Property market value / home equity** -- the property's asserted value is
   its market value (``home_equity_service.resolve_home_equity``).
 * **The retirement table's seeds** -- the balances the projection starts from
-  (``retirement_dashboard_service.compute_gap_data``).
+  (``retirement_plan.picture_at``).
 
 **Usage** (from the repository root), the same before/after shape as the seam
 harness::
@@ -75,7 +75,7 @@ from app.services import (
     dashboard_service,
     home_equity_service,
     reconcile_service,
-    retirement_dashboard_service,
+    retirement_plan,
     savings_dashboard_service,
 )
 from app.services.balance_at import BalanceContext
@@ -199,8 +199,11 @@ def _user_surfaces(user_id):
         ),
         "retirement_gap": _guarded(
             "retirement_gap",
-            lambda: retirement_dashboard_service.compute_gap_data(
-                BalanceContext.build(user_id),
+            lambda: retirement_plan.picture_at(
+                retirement_plan.load_retirement_inputs(
+                    BalanceContext.build(user_id),
+                ),
+                retirement_plan.STORED_PLAN,
             ),
         ),
     }

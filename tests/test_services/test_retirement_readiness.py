@@ -1,10 +1,15 @@
 """
 Shekel Budget App -- Retirement Readiness Producer Tests (P1c)
 
-Covers ``retirement_readiness.compute_readiness_data`` and its pure
+Covers ``retirement_readiness.readiness_from_picture`` and its pure
 helpers: the net-frame funded verdict (ruling 2), the F1 missing-tax-rate
 flag, the downsampled flight-path chart series, the countdown facts, and
 the per-account contribution facts.
+
+Every seeded case goes through :func:`_readiness`, which runs the ROUTE's own
+sequence -- load the render's inputs once, derive the picture at a plan point,
+shape the readiness dict from it -- so a test can never exercise a path the
+page does not (plan step C2-f2d-2).
 """
 
 from datetime import date, timedelta
@@ -20,20 +25,49 @@ from app.models.salary_raise import SalaryRaise
 from app.models.user import UserSettings
 from app.services import account_service, retirement_readiness
 from app.services.balance_at import BalanceContext
-from app.services.retirement_gap_calculator import RetirementGapAnalysis
+from app.services.retirement_gap_calculator import (
+    RetirementGapAnalysis,
+    funded_ratio_state,
+)
 from app.services.pension_calculator import PensionBenefit
+from app.services.retirement_plan import (
+    STORED_PLAN,
+    PlanPoint,
+    load_retirement_inputs,
+    picture_at,
+)
 from app.services.retirement_readiness import (
     _build_countdown,
     _build_income_meter,
     _build_pension_lines,
     _downsample_indices,
-    funded_ratio_state,
 )
 from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 from app.utils.dates import add_months
 
 from tests._test_helpers import derived_window
+
+
+def _readiness(user_id, point=STORED_PLAN):
+    """The readiness dict a /retirement render publishes at *point*.
+
+    The route's own three steps, in one place: build the render's inputs from
+    its read pass, derive the picture at the plan point, shape the dict.  A
+    test that spelled those out per case would be free to drift from what the
+    route does -- and the class of defect this arc removes is exactly two
+    spellings of one sequence.
+
+    Args:
+        user_id: The owner to render for.
+        point: The plan point to picture (default: the stored plan).
+
+    Returns:
+        The readiness dict.
+    """
+    return retirement_readiness.readiness_from_picture(
+        picture_at(load_retirement_inputs(BalanceContext.build(user_id)), point),
+    )
 
 
 def _gap_analysis(*, required, after_tax_projected):
@@ -242,9 +276,7 @@ class TestComputeReadinessData:
         """
         with app.app_context():
             acct = _build_scenario(db, seed_user)
-            data = retirement_readiness.compute_readiness_data(
-                BalanceContext.build(seed_user["user"].id)
-            )
+            data = _readiness(seed_user["user"].id)
 
             # F1: missing rate is an explicit 0% with the surfaced flag.
             assert data["tax_rate_missing"] is True
@@ -334,9 +366,7 @@ class TestComputeReadinessData:
                 shadow.status_id = cancelled_id
             db.session.commit()
 
-            data = retirement_readiness.compute_readiness_data(
-                BalanceContext.build(seed_user["user"].id),
-            )
+            data = _readiness(seed_user["user"].id)
 
             fact = next(
                 f for f in data["account_contributions"]
@@ -361,9 +391,7 @@ class TestComputeReadinessData:
         """
         with app.app_context():
             _build_scenario(db, seed_user, tax_rate=Decimal("0.2000"))
-            data = retirement_readiness.compute_readiness_data(
-                BalanceContext.build(seed_user["user"].id)
-            )
+            data = _readiness(seed_user["user"].id)
 
             assert data["tax_rate_missing"] is False
             assert data["estimated_tax_rate"] == Decimal("0.2000")
@@ -409,9 +437,7 @@ class TestExplicitZeroTaxRate:
         """
         with app.app_context():
             _build_scenario(db, seed_user, tax_rate=Decimal("0.0000"))
-            data = retirement_readiness.compute_readiness_data(
-                BalanceContext.build(seed_user["user"].id)
-            )
+            data = _readiness(seed_user["user"].id)
             assert data["tax_rate_missing"] is False
             assert data["estimated_tax_rate"] == Decimal("0.0000")
             # x * (1 - 0) = x on both after-tax figures.
@@ -432,7 +458,9 @@ class TestComputeReadinessWhatif:
         with app.app_context():
             _build_scenario(db, seed_user)
             result = retirement_readiness.compute_readiness_whatif(
-                BalanceContext.build(seed_user["user"].id),
+                load_retirement_inputs(
+                    BalanceContext.build(seed_user["user"].id),
+                ),
             )
             assert result["deltas"] is None
             assert result["readiness"] is result["baseline"]
@@ -453,8 +481,10 @@ class TestComputeReadinessWhatif:
         with app.app_context():
             _build_scenario(db, seed_user)
             result = retirement_readiness.compute_readiness_whatif(
-                BalanceContext.build(seed_user["user"].id),
-                swr_override=Decimal("0.02"),
+                load_retirement_inputs(
+                    BalanceContext.build(seed_user["user"].id),
+                ),
+                PlanPoint(swr_override=Decimal("0.02")),
             )
             baseline = result["baseline"]
             override = result["readiness"]
@@ -508,8 +538,10 @@ class TestComputeReadinessWhatif:
             db.session.commit()
 
             result = retirement_readiness.compute_readiness_whatif(
-                BalanceContext.build(seed_user["user"].id),
-                merit_horizon_override=0,
+                load_retirement_inputs(
+                    BalanceContext.build(seed_user["user"].id),
+                ),
+                PlanPoint(merit_horizon_override=0),
             )
             baseline = result["baseline"]
             override = result["readiness"]
@@ -618,9 +650,7 @@ class TestBuildIncomeMeter:
         """
         with app.app_context():
             _build_scenario(db, seed_user, with_pension=False)
-            data = retirement_readiness.compute_readiness_data(
-                BalanceContext.build(seed_user["user"].id)
-            )
+            data = _readiness(seed_user["user"].id)
             meter = data["income_meter"]
             assert data["pension_net_monthly"] == Decimal("0.00")
             assert meter["uncovered_monthly"] > Decimal("0")
@@ -728,9 +758,7 @@ class TestBuildPensionLines:
             ))
             db.session.commit()
 
-            data = retirement_readiness.compute_readiness_data(
-                BalanceContext.build(seed_user["user"].id)
-            )
+            data = _readiness(seed_user["user"].id)
             lines = data["pension_lines"]
             assert len(lines) == 2
             # The per-line grosses sum EXACTLY to the summed pension row

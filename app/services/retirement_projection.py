@@ -54,14 +54,14 @@ from app.utils.money import round_money
 
 
 @dataclass(frozen=True)
-class _RetirementProjectionContext:  # pylint: disable=too-many-instance-attributes
+class RetirementProjectionContext:  # pylint: disable=too-many-instance-attributes
     """Read-only inputs shared by the per-account projection helpers.
 
     Built by :func:`build_projection_context` and threaded through
-    :func:`_load_projection_batch`, :func:`_resolve_displayed_balances`,
+    :func:`load_projection_batch`, :func:`_resolve_displayed_balances`,
     and :func:`_project_one_account` so the projection takes one
     parameter instead of eight.  All fields are inputs (no derived
-    state); the once-loaded batch data lives in :class:`_ProjectionBatch`.
+    state); the once-loaded batch data lives in :class:`ProjectionBatch`.
 
     **The read pass is the FIRST of those inputs, and it replaced the bare
     ``user_id`` this bundle used to carry** (plan step C2-f2d-1, ledger row
@@ -119,7 +119,7 @@ class _RetirementProjectionContext:  # pylint: disable=too-many-instance-attribu
 
 
 @dataclass(frozen=True)
-class _ProjectionBatch:
+class ProjectionBatch:
     """Per-request data loaded once and reused across every account.
 
     Built by :func:`load_projection_batch` before the per-account loop
@@ -144,8 +144,9 @@ class _ProjectionBatch:
             as the employer-match cap basis.
         balance_map: The model-from-anchor END-of-current-period balance
             keyed by account ID -- the DISPLAYED current balance (and the
-            weight in ``compute_slider_defaults``' return-rate average),
-            read from the :mod:`app.services.balance_at` seam so it agrees
+            weight in the blended-return average
+            :attr:`app.services.retirement_plan.RetirementPicture.blended_return`
+            forms), read from the :mod:`app.services.balance_at` seam so it agrees
             with the /savings net-worth tile and the /investment dashboard
             (an account anchored in the past shows its modeled market
             value, not the flat cash-basis contribution total).
@@ -154,7 +155,7 @@ class _ProjectionBatch:
     was, on the ground that rebuilding it per probe would throw the
     loan-resolution memos away -- which is true, and which needs no field here
     to satisfy: the pass is an INPUT, so it rides on the input bundle
-    (:class:`_RetirementProjectionContext`) that every function taking this one
+    (:class:`RetirementProjectionContext`) that every function taking this one
     already takes beside it.  **The P2b probes do NOT reuse ``ctx`` by identity
     -- they ``dataclasses.replace`` it per candidate horizon -- and the pass
     rides through that replace untouched**, which is the whole reason moving it
@@ -283,7 +284,7 @@ def build_projection_context(  # pylint: disable=too-many-arguments,too-many-pos
     planned_retirement_date: date | None,
     return_rate_override: Decimal | None,
     employer_salary_basis: Callable | None,
-) -> _RetirementProjectionContext:
+) -> RetirementProjectionContext:
     """Load the retirement accounts and assemble the projection context.
 
     Queries the pass owner's active retirement / investment accounts and the
@@ -319,8 +320,8 @@ def build_projection_context(  # pylint: disable=too-many-arguments,too-many-pos
             constant employer-contribution base.
 
     Returns:
-        A :class:`_RetirementProjectionContext` ready for
-        :func:`project_retirement_accounts`.
+        A :class:`RetirementProjectionContext` ready for
+        :func:`load_projection_batch` and :func:`project_accounts_with_batch`.
     """
     retirement_types = (
         account_service.list_retirement_investment_account_types()
@@ -338,7 +339,7 @@ def build_projection_context(  # pylint: disable=too-many-arguments,too-many-pos
         )
         .all()
     )
-    return _RetirementProjectionContext(
+    return RetirementProjectionContext(
         balance_ctx=balance_ctx,
         accounts=accounts,
         all_periods=all_periods,
@@ -350,78 +351,21 @@ def build_projection_context(  # pylint: disable=too-many-arguments,too-many-pos
     )
 
 
-@dataclass(frozen=True)
-class HorizonProjection:
-    """Every account projected to a context's horizon, and WHAT it ran over.
-
-    **The axis and the clock are published rather than left to be rebuilt**
-    (plan step C2-e).  The readiness page needs the axis for three of its own
-    figures -- the "your path" series aligns its per-account rows against it,
-    the "needed path" reverse-projects over it, and the countdown's
-    "paychecks remaining" is its length -- and it used to rebuild the axis by
-    RE-ISSUING the same producer call, with a comment ("Matches the exact
-    ``generate_projection_periods`` call the account projection used") standing
-    in for a guarantee.  Two producers of one value held equal by a comment is
-    the shape this arc exists to remove: the day either call site changed, the
-    chart's rows would have silently mis-aligned against an axis of a different
-    length.
-
-    Attributes:
-        projections: One dict per account (see :func:`_project_one_account`).
-        axis: The :class:`~app.services.pay_calendar.PeriodWindow` every one of
-            those projections ran over.  Each row in a projection's
-            ``projection_rows`` carries its own period as well, so a consumer
-            that has the rows does not need this; a consumer that must size or
-            reverse-walk the axis when NO account projects does.
-        as_of: The read pass's clock -- the day the axis opens after and the
-            day every seed balance is valued against.  Carried so a page that
-            reports "years remaining" beside this projection measures it from
-            the same day the projection did.
-    """
-
-    projections: list[dict]
-    axis: PeriodWindow
-    as_of: date
-
-
-def project_retirement_accounts(
-    ctx: _RetirementProjectionContext,
-) -> HorizonProjection:
-    """Project each retirement / investment account forward to retirement.
-
-    Loads the shared per-request projection inputs once
-    (:func:`load_projection_batch`), resolves the period axis from the
-    context's horizon, then projects each account via
-    :func:`project_accounts_with_batch`.
-
-    Args:
-        ctx: The read-only projection context (accounts + period/horizon
-            inputs).
-
-    Returns:
-        The :class:`HorizonProjection` -- the per-account projection dicts
-        together with the axis and the clock they were computed against.
-    """
-    batch = load_projection_batch(ctx)
-    axis = resolve_projection_axis(ctx)
-    return HorizonProjection(
-        projections=project_accounts_with_batch(ctx, batch, axis),
-        axis=axis,
-        as_of=ctx.balance_ctx.as_of,
-    )
-
-
 def project_accounts_with_batch(
-    ctx: _RetirementProjectionContext,
-    batch: _ProjectionBatch,
+    ctx: RetirementProjectionContext,
+    batch: ProjectionBatch,
     projection_periods: PeriodWindow,
 ) -> list[dict]:
     """Project every account over an explicit period axis.
 
-    The probe-friendly core of :func:`project_retirement_accounts`: the
-    P2b retire-later solver calls this directly with one batch and a
-    different *projection_periods* axis (plus a horizon-shifted context)
-    per probe, so no query re-runs between probes.
+    **The one entry that projects.**  It takes the axis EXPLICITLY rather than
+    resolving one, because its callers differ on exactly that: the retirement
+    picture (:func:`app.services.retirement_plan.picture_at`) hands it
+    :func:`resolve_projection_axis` of a horizon-shifted context, once per
+    candidate retirement date and never re-querying; the /savings horizon band
+    hands it that page's own sampling axis.  A convenience entry that resolved
+    the axis itself lived here until plan step C2-f2d-2 and had no ``app/``
+    caller left once the picture became the one producer.
 
     Args:
         ctx: The read-only projection context.
@@ -442,7 +386,7 @@ def project_accounts_with_batch(
 
 
 def resolve_projection_axis(
-    ctx: _RetirementProjectionContext,
+    ctx: RetirementProjectionContext,
 ) -> PeriodWindow:
     """Resolve the period axis this context's projection runs over.
 
@@ -502,8 +446,8 @@ def resolve_projection_axis(
 
 
 def load_projection_batch(
-    ctx: _RetirementProjectionContext,
-) -> _ProjectionBatch:
+    ctx: RetirementProjectionContext,
+) -> ProjectionBatch:
     """Load the per-request data shared across all account projections.
 
     Runs the deduction, shadow-income, investment-params, salary-gross,
@@ -526,7 +470,7 @@ def load_projection_batch(
             balance read shares.
 
     Returns:
-        A :class:`_ProjectionBatch` with all shared inputs.
+        A :class:`ProjectionBatch` with all shared inputs.
     """
     user_id = ctx.balance_ctx.user_id
     account_ids = [a.id for a in ctx.accounts]
@@ -575,10 +519,10 @@ def load_projection_batch(
     # current period's end (so it agrees with /savings and the /investment
     # dashboard).  The forward projection seeds from the same curve, read a day
     # before its own AXIS opens, which is why the seed is not a field of this
-    # bundle -- see :class:`_ProjectionBatch`.  Both read the pass's one
+    # bundle -- see :class:`ProjectionBatch`.  Both read the pass's one
     # baseline scenario.
     balance_map = _resolve_displayed_balances(ctx)
-    return _ProjectionBatch(
+    return ProjectionBatch(
         deductions_by_account=deductions_by_account,
         contributions=contributions,
         params_by_account=params_by_account,
@@ -588,14 +532,14 @@ def load_projection_batch(
 
 
 def _resolve_displayed_balances(
-    ctx: _RetirementProjectionContext,
+    ctx: RetirementProjectionContext,
 ) -> dict[int, Decimal]:
     """Resolve each account's DISPLAYED current balance.
 
     The model-from-anchor balance from the :mod:`app.services.balance_at` seam
     (:func:`~app.services.balance_at.build_maps`) read at the current period, so
-    the per-account "current balance" (and the weight in
-    ``compute_slider_defaults``' return-rate average) matches the /savings
+    the per-account "current balance" (and the weight in the blended-return
+    average the retirement picture forms) matches the /savings
     net-worth tile and the /investment dashboard (the cross-page invariant: an
     account anchored in the past shows its modeled market value, not the flat
     cash-basis contribution total).
@@ -628,8 +572,8 @@ def _resolve_displayed_balances(
 
 
 def _resolve_seed_balances(
-    ctx: _RetirementProjectionContext,
-    batch: "_ProjectionBatch",
+    ctx: RetirementProjectionContext,
+    batch: "ProjectionBatch",
     projection_periods: PeriodWindow,
 ) -> dict[int, Decimal]:
     """Resolve each account's balance the day BEFORE the window opens.
@@ -727,7 +671,7 @@ def _resolve_seed_balances(
 
 
 def _pick_current_period_balances(
-    ctx: _RetirementProjectionContext,
+    ctx: RetirementProjectionContext,
     maps_by_account: dict[int, dict[int, Decimal]],
 ) -> dict[int, Decimal]:
     """Pick each account's current-period balance from its per-period map.
@@ -772,8 +716,8 @@ def _pick_current_period_balances(
 
 def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     acct: Account,
-    ctx: _RetirementProjectionContext,
-    batch: _ProjectionBatch,
+    ctx: RetirementProjectionContext,
+    batch: ProjectionBatch,
     params: InvestmentParams,
     projection_periods: PeriodWindow,
     seed: Decimal,
@@ -852,8 +796,8 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
 
 def _project_one_account(
     acct: Account,
-    ctx: _RetirementProjectionContext,
-    batch: _ProjectionBatch,
+    ctx: RetirementProjectionContext,
+    batch: ProjectionBatch,
     projection_periods: PeriodWindow,
     seeds: dict[int, Decimal],
 ) -> dict:
