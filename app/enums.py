@@ -148,17 +148,15 @@ class RecurrencePatternEnum(enum.Enum):
     the row with the table; migration ``d4a71f6e30bb`` carries the full
     reasoning.
 
-    Every recurrence surface reads this enum rather than the table
-    (:mod:`app.services.recurrence._vocabulary`), so the surplus row is
-    unreachable.  Since plan step R7b-2 it is unreachable more simply than
-    that: no form posts a pattern id at all -- a submission states
-    ``(interval_n, unit, placement)`` and the write door ENCODES it -- so the
-    row cannot be offered, accepted or previewed because there is no control
-    that speaks its vocabulary.  The one surface that still reads a STORED
-    pattern id is the edit form deciding what to preselect, and
-    ``modelled_pattern`` answers ``None`` for it there.  "Does not recur" is
-    ``recurrence_rule_id IS NULL``, the shape transaction templates always
-    used.
+    **Nothing in ``app/`` reads this enum for a cadence any more, from plan
+    step R7c-c.**  No form posts a pattern id (plan step R7b-2: a submission
+    states ``(interval_n, unit, placement)``), and that step dropped
+    ``budget.recurrence_rules.pattern_id`` along with the encode / decode pair
+    and ``modelled_pattern``, the last reader of a STORED one -- so the enum
+    names a vocabulary no surface speaks in either direction.  What is left is
+    ``ref_cache``, which seeds and caches the ``ref`` rows, and R9 is the step
+    that drops both.  "Does not recur" is ``recurrence_rule_id IS NULL``, the
+    shape transaction templates always used.
     """
 
     EVERY_PERIOD = "Every Period"

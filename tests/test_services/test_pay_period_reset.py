@@ -46,6 +46,8 @@ from app.models.account import Account, AccountAnchorHistory
 from app.models.journal_entry import JournalEntry
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import recurrence_spec, resolve
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
@@ -434,7 +436,10 @@ class TestResetHappyPath:
             template = _make_every_n_template(
                 db.session, seed_user, old_periods[3], interval_n=2,
             )
-            assert template.recurrence_rule.offset_periods == 1
+            rule = template.recurrence_rule
+            assert resolve(
+                recurrence_spec(rule), calendar_for(rule.user_id),
+            ).offset_periods == 1
             db.session.commit()
 
             new_periods = pay_period_admin.reset_pay_periods(

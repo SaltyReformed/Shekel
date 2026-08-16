@@ -46,7 +46,7 @@ from app.schemas.validation import EFFECTIVE_DATE_MAX, EFFECTIVE_DATE_MIN
 from app.services.loan_recurrence_sync import owns_validity_window
 from app.services.recurrence import (
     NEVER_ENDS,
-    UNAVAILABLE_PATTERN_MESSAGE,
+    UNREADABLE_CADENCE_MESSAGE,
     EndBound,
     PickerModel,
     SelectedCadence,
@@ -219,7 +219,7 @@ def edit_form_cadence(template: Any) -> SelectedCadence | None:
     ``<select>``'s first entry is the selected one, so saving the form
     unchanged posts exactly the "Does not repeat" that deletes the rule -- the
     same destruction the trailing option existed to prevent, reached a
-    different way.  What keeps ``UNAVAILABLE_PATTERN_MESSAGE``'s promise is the
+    different way.  What keeps ``UNREADABLE_CADENCE_MESSAGE``'s promise is the
     server-side refusal in :func:`resolve_recurrence_rule_for_update` (see
     :data:`UNREPAIRED_CADENCE_CANNOT_BE_CLEARED`), which is the only layer
     holding both facts the disposition needs.
@@ -232,8 +232,8 @@ def edit_form_cadence(template: Any) -> SelectedCadence | None:
     Returns:
         The :class:`~app.services.recurrence.SelectedCadence` to preselect, or
         ``None`` when there is no template, when the template does not repeat,
-        OR when its rule names a pattern this application no longer models --
-        the last case having flashed the explanation.
+        OR when its rule names a unit or a placement this application does
+        not model -- the last case having flashed the explanation.
 
     """
     rule = None if template is None else template.recurrence_rule
@@ -244,7 +244,7 @@ def edit_form_cadence(template: Any) -> SelectedCadence | None:
     # decoded the unit and the placement out of that pattern, which left the
     # edit form as the ONE reader the step did not move across: every other
     # reader takes them from ``unit_id`` / ``placement_id`` through
-    # ``recurrence_spec``.  ``stored_cadence`` asks about all three at once and
+    # ``recurrence_spec``.  ``stored_cadence`` asks about both at once and
     # is the SAME predicate ``resolve_recurrence_rule_for_update`` refuses the
     # empty submission with -- which matters more than the tidiness, because
     # rendering unset and refusing the clear are two halves of one promise: a
@@ -252,7 +252,7 @@ def edit_form_cadence(template: Any) -> SelectedCadence | None:
     # selected and then be deleted by an unchanged save.
     reading = stored_cadence(rule)
     if reading is None:
-        flash(UNAVAILABLE_PATTERN_MESSAGE, "warning")
+        flash(UNREADABLE_CADENCE_MESSAGE, "warning")
         return None
     return selected_cadence(reading)
 

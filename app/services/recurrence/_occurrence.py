@@ -319,7 +319,8 @@ def _period_walk(
     phase off ``starts_on`` now (``_derive_offset_periods``), the paycheck that
     date falls in is in phase by construction, and the advancing anchor is
     deleted.  ``resolved`` still carries ``offset_periods`` because this walk is
-    the ONE reader of it, and plan step R7c-c drops the column it is written to.
+    the ONE reader of it; plan step R7c-c dropped the COLUMN it used to be
+    written to, so what rides here is a derivation and nothing stores it.
 
     **``starts_on`` is this walk's own first yield, since plan step R7c-b**, and
     that is structural rather than checked: ``_resolution._first_occurrence``

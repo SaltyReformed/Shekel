@@ -573,7 +573,7 @@ class TestTemplateUpdate:
             assert template.sort_order == 0
 
     def test_update_template_validation_error(self, app, auth_client, seed_user):
-        """POST /templates/<id> with invalid data shows error."""
+        """POST /templates/<id> with invalid data shows the error out loud."""
         with app.app_context():
             template = _create_template(seed_user)
 
@@ -587,7 +587,19 @@ class TestTemplateUpdate:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"Please correct the highlighted errors" in resp.data
+            # **The field's OWN message, not the generic banner, since plan
+            # step R7c-c**: ``nominal_day`` joined
+            # ``_form_errors.ACTIONABLE_FLASH_FIELDS`` there, because the pair
+            # rule beside this domain check authors a real sentence naming the
+            # control and it was reaching nobody.  The stock Range message
+            # rides in with it, which is the better of the two answers -- it
+            # states the domain, where the banner states nothing on a redirect
+            # that highlights nothing.  Only a crafted POST sees it: the
+            # control is a ``<select>`` offering 29, 30 and 31.
+            assert (
+                b"Must be greater than or equal to 29 and less than or equal "
+                b"to 31." in resp.data
+            )
 
     def test_update_template_idor(self, app, auth_client, seed_user):
         """POST /templates/<id> for another user's template returns 404 (security)."""
@@ -1428,24 +1440,33 @@ class TestPreviewRecurrence:
             ("months past the calendar", RecurrenceUnitEnum.MONTH, 120_000),
         ],
     )
-    def test_preview_refuses_an_interval_that_walks_off_the_calendar(
+    def test_a_huge_interval_previews_ONE_date_and_not_a_stack_trace(
         self, app, auth_client, seed_user, seed_periods_today,
         label, unit, interval_n,
     ):
-        """A huge interval answers the muted line, not a stack trace.
+        """A cadence whose second occurrence leaves the calendar fires once.
 
         **Opened by plan step R7b-2 and found by an adversarial review of it.**
         Before the step the preview posted a pattern id and ``decode_pattern``
         DISCARDED the submitted interval for every calendar pattern, so only
         the pay-period walk -- which cannot overflow -- ever saw it.  The form
-        now posts the interval as the cadence itself, so the raw query arg
-        reaches ``months_per_step`` and then ``date()``, whose ``ValueError``
-        is not the ``RecurrenceResolutionError`` this endpoint catches.
+        posts the interval as the cadence itself, so the raw query arg reaches
+        ``months_per_step`` and then ``date()``, whose ``ValueError`` is not the
+        ``RecurrenceResolutionError`` this endpoint catches.
 
-        The remedy is not a third bound on this endpoint: it is that the
-        preview refuses what the SAVE would refuse, which is the same
-        ``is_authorable`` question the schema asks.  No calendar unit has a
-        storable interval above 6.
+        **The remedy MOVED at plan step R7c-c, and the expected answer with
+        it.**  It used to be that the preview refuses what the save would
+        refuse -- and the save refused, because no calendar unit had a storable
+        interval above 6.  Freeing the interval is the whole of that step, so
+        ``(10000, YEAR)`` is now perfectly savable, and the overflow it exposed
+        is closed at its own root instead: ``_months.walk_months`` stops at the
+        last month the application's calendar reaches rather than walking off
+        the end of ``date``.
+
+        So the honest answer is ONE occurrence -- the rule does fire once, and
+        names no second date this application can hold -- and the invariant the
+        case was written for still holds: no stack trace, and the preview shows
+        what the save would produce.
         """
         assert seed_periods_today
         resp = auth_client.get(
@@ -1454,46 +1475,30 @@ class TestPreviewRecurrence:
         )
 
         assert resp.status_code == 200, label
-        assert b"No preview" in resp.data, label
+        assert b"Next 1 occurrences" in resp.data, label
 
     def test_preview_refuses_a_cadence_the_save_would_refuse(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """The preview must not show a schedule that cannot be saved.
 
-        ``(2, MONTH)`` walks correctly and has no closed-set pattern to be
-        stored as, so previewing five real dates for it advertises a schedule
-        the save then refuses with a field error.  Not reachable by clicking --
-        the script offers 1 / 3 / 6 for months -- so this is the crafted-args
-        door, pinned because the endpoint's own reasoning about the absent
-        placement stops one case short of it.
-        """
-        assert seed_periods_today
-        resp = auth_client.get(
-            "/templates/preview-recurrence",
-            query_string={
-                **cadence_payload(unit=RecurrenceUnitEnum.MONTH, interval_n=2),
-                "day_of_month": "15",
-            },
-        )
+        **The unsavable cadence MOVED at plan step R7c-c.**  It was
+        ``(2, MONTH)`` -- which walked correctly and had no closed-set pattern
+        to be stored as -- and freeing the interval is exactly what made that
+        savable.  What is unsavable now is a ``(unit, placement)`` pair the
+        resolver has no anchor derivation for: a year-scale cadence deferred
+        onto a month's FIRST paycheck names no cycle month, and plan step R8
+        owns it.
 
-        assert resp.status_code == 200
-        assert b"No preview" in resp.data
-        assert b"occurrences" not in resp.data
-
-    def test_preview_refuses_a_placement_the_pair_cannot_take(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """The same, on the placement axis.
-
-        ``(PERIOD, first paycheck)`` resolves -- the pay-period anchor does not
-        read the placement at all -- so it previewed five dates for a cadence
-        ``encode_cadence`` has no name for.
+        Not reachable by clicking -- the picker offers the YEAR unit with one
+        placement -- so this is the crafted-args door, pinned because the
+        endpoint's own reasoning stops one case short of it.
         """
         assert seed_periods_today
         resp = auth_client.get(
             "/templates/preview-recurrence",
             query_string=cadence_payload(
+                unit=RecurrenceUnitEnum.YEAR,
                 placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
             ),
         )
@@ -1501,6 +1506,76 @@ class TestPreviewRecurrence:
         assert resp.status_code == 200
         assert b"No preview" in resp.data
         assert b"occurrences" not in resp.data
+
+    def test_the_cadence_that_case_refused_is_now_SAVABLE(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """``(2, MONTH)`` previews real dates, because it can now be stored.
+
+        The negative control for the case above, and the one that says plan
+        step R7c-c actually landed rather than merely moving a refusal around:
+        "every other month" is the cadence this whole arc exists for -- it
+        resolved and walked correctly from plan step R3 and had nowhere to be
+        written -- so the preview showing its dates is the arc's own thesis
+        arriving at the surface a user reads.
+        """
+        assert seed_periods_today
+        resp = auth_client.get(
+            "/templates/preview-recurrence",
+            query_string=cadence_payload(
+                unit=RecurrenceUnitEnum.MONTH, interval_n=2,
+            ),
+        )
+
+        assert resp.status_code == 200
+        assert b"No preview" not in resp.data
+        assert b"occurrences" in resp.data
+
+    @pytest.mark.parametrize(
+        ("label", "unit", "placement"),
+        [
+            # Resolves and WALKS -- ``_week_walk`` has existed since plan step
+            # R3 -- so nothing downstream refuses it.  What refuses it is the
+            # offer set, and this is the case that says the preview asks.
+            (
+                "the WEEK unit", RecurrenceUnitEnum.WEEK,
+                PeriodPlacementEnum.CONTAINING_DATE,
+            ),
+            # Resolves too: the pay-period anchor does not read the placement
+            # at all.  Offering it would store a choice the edit form cannot
+            # preselect, which is plan ledger row D32's hazard by another door.
+            (
+                "an inert placement", RecurrenceUnitEnum.PERIOD,
+                PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            ),
+        ],
+    )
+    def test_preview_refuses_a_cadence_the_form_does_not_offer(
+        self, app, auth_client, seed_user, seed_periods_today,
+        label, unit, placement,
+    ):
+        """The preview asks the OFFER SET, not what happens to walk.
+
+        **The load-bearing case of plan step R7c-c's refusal move.**  Both of
+        these resolve and walk perfectly well; what made them unpreviewable
+        before that step was ``encode_cadence``, which the preview inherited by
+        building its transient rule through the write door.  Deleting the
+        encoder deleted that inheritance -- measured, the WEEK unit previewed
+        five real dates for a cadence the schema refuses -- so the door asks
+        ``require_authorable_cadence`` instead, over the same set the picker
+        renders.
+
+        Not reachable by clicking; this is the crafted-args door.
+        """
+        assert seed_periods_today
+        resp = auth_client.get(
+            "/templates/preview-recurrence",
+            query_string=cadence_payload(unit=unit, placement=placement),
+        )
+
+        assert resp.status_code == 200, label
+        assert b"No preview" in resp.data, label
+        assert b"occurrences" not in resp.data, label
 
     def test_preview_ignores_an_unparseable_end_date(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1679,7 +1754,6 @@ class TestPreviewRecurrence:
                 .one()
             )
             assert template.recurrence_rule is not None
-            assert template.recurrence_rule.start_period_id is None
             # The rule starts where THIS owner's submission said, never
             # anywhere the foreign period could put it.  ``starts_on`` is NOT
             # NULL from plan step R7c-b, so "carries no start" is no longer an

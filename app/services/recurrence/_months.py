@@ -37,6 +37,7 @@ from datetime import date
 
 from app.enums import RecurrenceUnitEnum
 from app.exceptions import ShekelError
+from app.utils.dates import CALENDAR_DATE_MAX
 
 #: Months in a year.  The one spelling, for both callers.
 MONTHS_PER_YEAR = 12
@@ -163,15 +164,43 @@ def clamped_day(ordinal: int, nominal_day: int) -> date:
     return date(year, month, min(nominal_day, last_day))
 
 
+#: The last month this walk can name: the one holding
+#: :data:`~app.utils.dates.CALENDAR_DATE_MAX`.
+#:
+#: Read from the application's own calendar vocabulary rather than restated, so
+#: the walk, ``ck_recurrence_rules_starts_on_range`` and
+#: ``_resolution._require_authored_start_window`` all bound the same calendar.
+_LAST_WALKABLE_ORDINAL: int = month_ordinal(CALENDAR_DATE_MAX)
+
+
 def walk_months(
     start_ordinal: int, nominal_day: int, month_step: int,
 ) -> Iterator[date]:
     """Yield *nominal_day* in *start_ordinal*'s month, then every *month_step*.
 
-    Unbounded by design: the anchor derivation takes the first element that
-    clears its bound and the occurrence engine applies the rule's own closing
-    bounds, so a stopping condition here would be a third opinion about when a
-    recurrence ends.
+    **Bounded by the calendar this application reaches, and NOT by anything
+    about the rule.**  The anchor derivation takes the first element that clears
+    its bound and the occurrence engine applies the rule's own closing bounds,
+    so a stopping condition drawn from the RECURRENCE would be a third opinion
+    about when one ends.  The bound here is a different kind of fact: past
+    :data:`~app.utils.dates.CALENDAR_DATE_MAX` there is no date this application
+    can express, so there is no occurrence to name -- which is the same
+    disposition ``_occurrence._bounded`` already takes for its caller's window.
+
+    **It was unbounded until plan step R7c-c, on a claim that step falsified.**
+    The docstring read "walked past year 9999 it raises ``ValueError`` from
+    ``date`` rather than looping, which no caller's window can reach" -- true
+    while a calendar cadence's stride was 1, 3, 6 or 12 months, because the
+    closed pattern set had no name for any other.  R7c-c frees the interval, so
+    ``every 10000 years`` became authorable and its SECOND occurrence overflows
+    ``date``: a ``ValueError`` from outside this package's error hierarchy,
+    which the recurrence preview's handler does not catch, on an endpoint that
+    reads its values from ``request.args`` where no schema stands.  That is the
+    same shape ``ck_recurrence_rules_starts_on_range`` was added for one leaf
+    earlier, arriving through the other authored value.
+
+    The bound is applied to the ORDINAL rather than to the yielded date, so the
+    overflowing ``date`` is never constructed.
 
     Args:
         start_ordinal: The absolute month ordinal to start from.
@@ -180,12 +209,14 @@ def walk_months(
             callers refuse a non-positive interval before walking.
 
     Yields:
-        Occurrence dates, ascending, until the consumer stops pulling.  Walked
-        past year 9999 it raises ``ValueError`` from ``date`` rather than
-        looping, which no caller's window can reach.
+        Occurrence dates, ascending, until the consumer stops pulling or the
+        walk leaves the calendar.  A cadence whose stride carries its second
+        occurrence past that point therefore fires ONCE, which is the honest
+        answer rather than an error: it does fire once, and it names no second
+        date the application can hold.
     """
     ordinal = start_ordinal
-    while True:
+    while ordinal <= _LAST_WALKABLE_ORDINAL:
         yield clamped_day(ordinal, nominal_day)
         ordinal += month_step
 

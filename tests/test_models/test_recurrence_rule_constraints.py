@@ -3,22 +3,23 @@
 Locks the STORAGE tier: what the table itself refuses, with no service, no
 schema and no form in front of it.  Two families live here.
 
-**The legacy anchor columns**, which still carry their ranges: ``day_of_month``
-and ``month_of_year`` fall in 1..31 and 1..12, and ``due_day_of_month`` does the
-same when populated.  Materialised by:
+**The day bound that survives**: ``due_day_of_month`` falls in 1..31 when
+populated, materialised by ``ck_recurrence_rules_due_dom`` (migration
+f15a72a3da6c).  Without it the recurrence engine would translate a value like
+99 into an impossible calendar date, silently dating generated rows on days
+that do not exist and corrupting balance projections downstream.  What the case
+covers is a restore, a hand edit, or a caller that reaches the table without
+the door -- the schema and the write door both refuse it first.
 
-  * ck_recurrence_rules_due_dom -- migration f15a72a3da6c
-  * ck_recurrence_rules_dom -- migration 1702cadcae54 (H-3 fix)
-  * ck_recurrence_rules_moy -- migration 1702cadcae54 (H-3 fix)
-
-Without them the recurrence engine would translate values like day_of_month=99
-into impossible calendar dates, silently generating transactions on dates that
-do not exist and corrupting balance projections downstream.  **Nothing the
-application writes can produce such a row since plan step R7c-b** -- those two
-columns became a storage ENCODING the write door derives from the resolved
-first occurrence -- so what these cases still cover is a restore, a hand edit,
-or a caller that reaches the table without the door.  Plan step R7c-c drops the
-columns and these cases with them.
+**Two SIBLING bounds left at plan step R7c-c with their columns.**
+``ck_recurrence_rules_dom`` and ``ck_recurrence_rules_moy`` (both migration
+1702cadcae54, the H-3 fix) bounded ``day_of_month`` and ``month_of_year``, the
+storage encoding the write door derived from the resolved first occurrence.
+Ruling **R-R16** collapsed both into ``starts_on`` -- a real DATE, which cannot
+hold a 99th day or a 15th month at all -- so the states those CHECKs refused
+are unrepresentable rather than refused, and
+``ck_recurrence_rules_starts_on_range`` is what bounds the value that replaced
+them.  This file's own docstring predicted the retirement one leaf earlier.
 
 **The two CHECKs plan step R7c-b added**, which is the other half of that
 step: with the two-axis columns authored and ``NOT NULL``, the table can state
@@ -59,7 +60,6 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern
 
 #: A first occurrence inside the calendar window, on a day every month holds.
 #:
@@ -68,26 +68,6 @@ from app.models.ref import RecurrencePattern
 #: fixture that happened to sit on one would make the range cases pass for the
 #: wrong reason.
 _A_FIRST_OCCURRENCE = date(2026, 1, 15)
-
-
-def _monthly_pattern_id():
-    """Return the ref.recurrence_patterns id for the Monthly pattern."""
-    return (
-        db.session.query(RecurrencePattern)
-        .filter_by(name="Monthly")
-        .one()
-        .id
-    )
-
-
-def _annual_pattern_id():
-    """Return the ref.recurrence_patterns id for the Annual pattern."""
-    return (
-        db.session.query(RecurrencePattern)
-        .filter_by(name="Annual")
-        .one()
-        .id
-    )
 
 
 def _storable_columns(**overrides):
@@ -110,7 +90,6 @@ def _storable_columns(**overrides):
         dict: The keyword arguments for a :class:`RecurrenceRule`.
     """
     columns = {
-        "pattern_id": _monthly_pattern_id(),
         "unit_id": ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH),
         "placement_id": ref_cache.period_placement_id(
             PeriodPlacementEnum.CONTAINING_DATE,
@@ -149,31 +128,7 @@ def _refused(seed_user, constraint, label="", **columns):
 
 
 class TestRecurrenceRuleRangeConstraints:
-    """Out-of-range day/month values rejected at flush time."""
-
-    def test_day_of_month_above_31_rejected(self, app, db, seed_user):
-        """day_of_month=99 raises IntegrityError on insert.
-
-        A future caller that allowed an out-of-range day to slip past
-        the schema layer would otherwise corrupt the recurrence
-        engine's date arithmetic.
-        """
-        with app.app_context():
-            _refused(
-                seed_user, "ck_recurrence_rules_dom", day_of_month=99,
-            )
-
-    def test_day_of_month_zero_rejected(self, app, db, seed_user):
-        """day_of_month=0 raises IntegrityError on insert.
-
-        Zero would map to "the day before the 1st", which the engine
-        would silently shift into the previous month.  Pinning the
-        lower bound at 1 makes the rejection explicit.
-        """
-        with app.app_context():
-            _refused(
-                seed_user, "ck_recurrence_rules_dom", day_of_month=0,
-            )
+    """Out-of-range day values rejected at flush time."""
 
     def test_due_day_of_month_above_31_rejected(self, app, db, seed_user):
         """due_day_of_month=99 raises IntegrityError on insert.
@@ -187,56 +142,36 @@ class TestRecurrenceRuleRangeConstraints:
         with app.app_context():
             _refused(
                 seed_user, "ck_recurrence_rules_due_dom",
-                day_of_month=15, due_day_of_month=99,
+                due_day_of_month=99,
             )
 
-    def test_month_of_year_above_12_rejected(self, app, db, seed_user):
-        """month_of_year=15 raises IntegrityError on insert.
+    def test_due_day_of_month_zero_rejected(self, app, db, seed_user):
+        """due_day_of_month=0 raises IntegrityError on insert.
 
-        Without this constraint the annual recurrence pattern would
-        treat month=15 as "December plus three months" thanks to
-        Python's date-overflow arithmetic, generating transactions in
-        a year the user did not specify.
+        Zero would map to "the day before the 1st", which the date
+        arithmetic would silently shift into the previous month.  Pinning the
+        lower bound at 1 makes the rejection explicit, and pinning BOTH ends
+        is what stops a predicate that lost its lower branch passing here.
         """
         with app.app_context():
             _refused(
-                seed_user, "ck_recurrence_rules_moy",
-                pattern_id=_annual_pattern_id(),
-                unit_id=ref_cache.recurrence_unit_id(RecurrenceUnitEnum.YEAR),
-                month_of_year=15, day_of_month=1,
+                seed_user, "ck_recurrence_rules_due_dom",
+                due_day_of_month=0,
             )
 
-    def test_month_of_year_zero_rejected(self, app, db, seed_user):
-        """month_of_year=0 raises IntegrityError on insert.
+    def test_interval_n_defaults_non_null(self, app, db, seed_user):
+        """A rule created without ``interval_n`` persists 1, never NULL.
 
-        Zero would shift the annual recurrence into the previous
-        December.  Pinning the lower bound at 1 makes the rejection
-        explicit at the storage tier.
-        """
-        with app.app_context():
-            _refused(
-                seed_user, "ck_recurrence_rules_moy",
-                pattern_id=_annual_pattern_id(),
-                unit_id=ref_cache.recurrence_unit_id(RecurrenceUnitEnum.YEAR),
-                month_of_year=0, day_of_month=1,
-            )
+        The column is NOT NULL with a server_default of 1 plus the model's
+        Python ``default=``, so a rule constructed without setting it lands a
+        real integer once persisted.  The occurrence walk divides and takes a
+        modulus by it and the monthly equivalent divides by it, with NO
+        ``or 1`` coalesce (deep-hunt #65), so this pins the invariant that
+        makes those safe: a persisted rule can never feed them ``None``.
 
-    def test_interval_n_and_offset_periods_default_non_null(
-        self, app, db, seed_user,
-    ):
-        """A rule created without interval_n / offset_periods persists 1 / 0.
-
-        Both columns are NOT NULL with a server_default (1 / 0) plus the
-        model's Python ``default=``, so a rule constructed without setting
-        them lands a real integer once persisted -- never NULL.  The
-        recurrence engine (the PERIOD-unit occurrence walk), the
-        obligations frequency label, and
-        ``obligations_aggregator``'s monthly equivalent reads these directly,
-        through ``recurrence.cadence_of`` --
-        ``interval_n`` as a modulus / division divisor -- with NO
-        ``or 1`` / ``or 0`` coalesce (deep-hunt #65), so this pins the
-        invariant that makes that safe: a persisted rule can never feed
-        them None.
+        **``offset_periods`` left this case at plan step R7c-c** with the
+        column: the cycle phase is derived from the rule's first occurrence on
+        every read, so there is no stored value to default.
         """
         with app.app_context():
             rule = RecurrenceRule(
@@ -245,17 +180,16 @@ class TestRecurrenceRuleRangeConstraints:
             db.session.add(rule)
             db.session.flush()
             assert rule.interval_n == 1
-            assert rule.offset_periods == 0
             db.session.rollback()
 
-    def test_null_day_and_month_allowed(self, app, db, seed_user):
-        """A RecurrenceRule with day_of_month=NULL and month_of_year=NULL inserts.
+    def test_a_rule_with_no_due_day_inserts(self, app, db, seed_user):
+        """``due_day_of_month`` is genuinely optional.
 
-        Patterns like 'every_n_periods' do not need either field.
-        Asserts the CHECK predicates' NULL branches admit the common
-        case so a future regression that tightens the predicates
-        (drops the IS NULL branch) breaks here loudly instead of
-        breaking the every-period pattern silently.
+        Most definitions state no separate due day -- the bill falls on the
+        day the cadence schedules it -- so the CHECK's NULL branch must admit
+        the common case.  A future regression that tightened the predicate
+        (dropping the ``IS NULL`` branch) would break here loudly instead of
+        breaking every ordinary recurring bill silently.
         """
         with app.app_context():
             rule = RecurrenceRule(
@@ -264,8 +198,7 @@ class TestRecurrenceRuleRangeConstraints:
             db.session.add(rule)
             db.session.flush()
             assert rule.id is not None
-            assert rule.day_of_month is None
-            assert rule.month_of_year is None
+            assert rule.due_day_of_month is None
             db.session.rollback()
 
 

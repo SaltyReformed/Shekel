@@ -37,11 +37,12 @@ that subset.  That class of defect is measured in ``GenerationSchedule``'s own
 docstring; the shape here is simply that a window narrows what is WRITTEN and
 never what a recurrence MEANS.
 
-What a definition can say it repeats by is
-:class:`~app.enums.RecurrencePatternEnum` and nothing else; "does not recur"
-is ``recurrence_rule_id IS NULL`` on either template kind, which never reaches
-a resolver (plan step R2e-3 retired the ``Once`` pattern that was the second
-way to say it).
+What a definition can say it repeats by is the ``(interval_n, unit_id,
+placement_id)`` triple ``budget.recurrence_rules`` authors -- plan step R7c-c
+dropped the closed ``RecurrencePatternEnum`` set that used to be the whole
+vocabulary; "does not recur" is ``recurrence_rule_id IS NULL`` on either
+template kind, which never reaches a resolver (plan step R2e-3 retired the
+``Once`` pattern that was the second way to say it).
 
 **A PACKAGE since plan step R10-a**, which took the flat module past the
 1,000-line ceiling when regeneration stopped destroying the rows it maintains.

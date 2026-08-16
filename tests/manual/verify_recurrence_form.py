@@ -201,56 +201,26 @@ def _posted_intervals(page) -> list[str]:
     )
 
 
-def _selected_interval_owner(page) -> str | None:
-    """Return the ``data-unit`` of the fixed select's chosen option.
+def _set_interval(page, interval_n: int) -> None:
+    """Type an interval into the one interval box.
 
-    The fact defect 1 turned on: the chosen option must belong to the chosen
-    UNIT, which its value alone cannot say.
-
-    Args:
-        page: The Playwright page.
-
-    Returns:
-        The owning unit id, or ``None`` when nothing is selected.
-    """
-    return page.evaluate(
-        """() => {
-            const sel = document.getElementById('interval_n_fixed');
-            const opt = sel.options[sel.selectedIndex];
-            return opt ? opt.getAttribute('data-unit') : null;
-        }"""
-    )
-
-
-def _select_interval(page, unit_id: str, interval_n: int) -> None:
-    """Choose the fixed-interval option for one ``(unit, interval)`` PAIR.
-
-    By INDEX, never by value, for the reason defect 1 records: three options
-    carry ``value="1"``.
+    **There were TWO controls posting ``interval_n`` until plan step R7c-c** --
+    a free number box and a ``<select>`` of the month intervals the closed
+    pattern set could name -- and this file carried two helpers to drive the
+    second: one reading the chosen option's ``data-unit`` and one selecting by
+    INDEX, because three options carried ``value="1"`` and choosing by value
+    landed on another unit's entry (defect 1 in this module's docstring).  Every
+    interval is authorable on every unit now, so the ``<select>`` is deleted and
+    that whole class of defect with it.
 
     Args:
         page: The Playwright page.
-        unit_id: The ``ref.recurrence_units`` id.
-        interval_n: The interval to choose.
+        interval_n: The interval to type.
     """
-    index = page.evaluate(
-        """([unitId, n]) => {
-            const sel = document.getElementById('interval_n_fixed');
-            return Array.from(sel.options).findIndex(
-                o => o.getAttribute('data-unit') === String(unitId) &&
-                     o.value === String(n));
-        }""",
-        [unit_id, interval_n],
-    )
-    if index < 0:
-        raise AssertionError(f"no option for unit {unit_id} interval {interval_n}")
+    page.fill("#interval_n", str(interval_n))
     page.evaluate(
-        """(i) => {
-            const sel = document.getElementById('interval_n_fixed');
-            sel.selectedIndex = i;
-            sel.dispatchEvent(new Event('change', {bubbles: true}));
-        }""",
-        index,
+        """() => document.getElementById('interval_n')
+                 .dispatchEvent(new Event('change', {bubbles: true}))"""
     )
     _settle(page)
 
@@ -754,35 +724,57 @@ def _drive_visibility(page, kind: str, url: str) -> None:
                f"{'its value' if shown else 'NOTHING'}",
                (posted != []) == shown, f"posted={posted}")
 
+    def placement_help(label: str, fixed: bool) -> None:
+        """The funding row is SHOWN and says which state the user is in.
+
+        Plan ledger row **D32**, developer ruling 2026-08-16.  The row used to
+        hide itself whenever the cadence admitted one placement, which is how a
+        bill's funding rule came to change with nothing on screen saying so.
+        Rendered HTML cannot tell a row a script left visible from one it hid,
+        which is why this check is here rather than in the suite.
+
+        Args:
+            label: The case letter.
+            fixed: Whether this cadence admits exactly one placement.
+        """
+        _check(f"{kind} {label}: funding row VISIBLE",
+               _visible(page, "field-placement"),
+               "the Funded-from row is hidden, so a funding change is silent")
+        shown_text = page.locator("#placement-help").inner_text().strip()
+        expected = (
+            "This cadence has one funding rule" if fixed
+            else "Which paycheck pays for each occurrence"
+        )
+        _check(f"{kind} {label}: funding help says "
+               f"{'FIXED' if fixed else 'a choice'}",
+               expected in shown_text, shown_text)
+
     # Does not repeat: the form's own empty option, not a cadence.
     unit.select_option("")
     _settle(page)
     _check(f"{kind} A: interval row hidden", not _visible(page, "field-interval"), "shown")
     _check(f"{kind} A: placement row hidden", not _visible(page, "field-placement"), "shown")
+    _check(f"{kind} A: interval box disabled",
+           page.evaluate("() => document.getElementById('interval_n').disabled"),
+           "enabled beside no unit, so half a cadence can post")
     due_day("A", shown=False)
     one_interval("A")
 
-    # Paychecks: a free interval, and ONE placement, so that row stays hidden.
+    # Paychecks: the placement is INERT here, so the row explains itself.
     unit.select_option(units["paychecks"])
     _settle(page)
-    _check(f"{kind} B: free box enabled",
-           page.evaluate("() => !document.getElementById('interval_n_free').disabled"),
+    _check(f"{kind} B: interval box enabled",
+           page.evaluate("() => !document.getElementById('interval_n').disabled"),
            "disabled")
-    _check(f"{kind} B: placement row hidden (one placement offered)",
-           not _visible(page, "field-placement"),
-           "the Funded-from row is shown with a single usable choice")
+    placement_help("B", fixed=True)
     due_day("B", shown=False)
     one_interval("B")
 
     # Months at 1: anchors on the calendar, so the bill's due day applies.
     unit.select_option(units["months"])
     _settle(page)
-    _check(f"{kind} C: the chosen interval belongs to the chosen unit",
-           _selected_interval_owner(page) == units["months"],
-           f"owner={_selected_interval_owner(page)} unit={units['months']}")
-    _select_interval(page, units["months"], 1)
-    _check(f"{kind} C: placement row shown at 1 month",
-           _visible(page, "field-placement"), "hidden")
+    _set_interval(page, 1)
+    placement_help("C", fixed=False)
     due_day("C", shown=True)
     one_interval("C")
 
@@ -804,23 +796,39 @@ def _drive_visibility(page, kind: str, url: str) -> None:
     _settle(page)
     due_day("D", shown=False)
 
-    # Months at 3: no quarterly first-paycheck twin, so the placement row goes
-    # and the cadence anchors on the calendar again.
-    _select_interval(page, units["months"], 3)
-    _check(f"{kind} E: placement row hidden at 3 months",
-           not _visible(page, "field-placement"), "shown")
-    due_day("E", shown=True)
+    # Months at 3, still funded from the month's first paycheck.  **This is
+    # plan ledger row D32's defect ceasing to exist**: the closed set had no
+    # quarterly first-paycheck twin, so raising the interval used to reassign
+    # the placement and HIDE the row.  The choice must survive.
+    _set_interval(page, 3)
+    placement_help("E", fixed=False)
+    _check(f"{kind} E: the first-paycheck funding SURVIVED the interval change",
+           page.evaluate(
+               "() => document.getElementById('recurrence_placement')"
+               ".selectedIndex") == 1,
+           "the funding choice was silently reassigned")
+    due_day("E", shown=False)
     one_interval("E")
 
-    # Years: interval 1, cycle twelve months -- the case an "interval > 1"
-    # inference got wrong.
+    # Months at 2 -- the cadence the closed pattern set could never name, and
+    # the whole point of plan step R7c-c.  Typed rather than chosen, because
+    # there is no <select> left to choose it from.
+    page.evaluate(
+        """() => { const s = document.getElementById('recurrence_placement');
+                   s.selectedIndex = 0;
+                   s.dispatchEvent(new Event('change', {bubbles: true})); }""")
+    _set_interval(page, 2)
+    _check(f"{kind} F: every-other-month posts its own interval",
+           one_interval("F") == ["2"], "the free box lost the typed interval")
+    due_day("F", shown=True)
+
+    # Years: the interval box carries over, so it is typed back to 1.
     unit.select_option(units["years"])
     _settle(page)
-    _check(f"{kind} F: the chosen interval belongs to the chosen unit",
-           _selected_interval_owner(page) == units["years"],
-           f"owner={_selected_interval_owner(page)}")
-    due_day("F", shown=True)
-    _check(f"{kind} F: posts interval 1", one_interval("F") == ["1"], "wrong interval")
+    _set_interval(page, 1)
+    placement_help("G", fixed=True)
+    due_day("G", shown=True)
+    _check(f"{kind} G: posts interval 1", one_interval("G") == ["1"], "wrong interval")
 
     preview = page.locator("#recurrence-preview").inner_text().strip()
     _check(f"{kind}: the live preview answered",

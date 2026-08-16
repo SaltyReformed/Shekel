@@ -18,9 +18,10 @@ Three problems, all of them structural:
   different shapes -- a yearly rule showed month AND day, a quarterly rule
   showed month only, a monthly rule showed day only -- with no reason behind
   the difference beyond who wrote which branch;
-* **the vocabulary itself was the ceiling.**  Cadences plan step R8 makes
-  authorable -- ``(2, MONTH)``, ``(1, WEEK)`` -- have no member of the closed
-  set to name them, so no branch could have been written for them; a rule the
+* **the vocabulary itself was the ceiling.**  Cadences the closed set had no
+  member to name -- ``(2, MONTH)``, which plan step R7c-c made authorable, and
+  ``(1, WEEK)``, which is still plan step R8's -- could have no branch written
+  for them at all; a rule the
   seven did not match fell to a fallback that titled the ``ref`` row's own
   ``name``.  That fallback was the last ``.name``-for-display coupling on THIS
   table, and the only reader of the eager-joined ``RecurrenceRule.pattern``
