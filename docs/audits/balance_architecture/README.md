@@ -325,16 +325,11 @@ four leaves, X-aq, X-as and X-ap -- their records already condensed in `archive/
   SUPERSEDED**, its outcome being what the cutover produces by construction.
   * [ ] **X-f3a** the DECOMPOSED parent of "clearing is a recorded fact", split 2026-08-14 (**R-FQ**).
     Carries **N-273**.
-  * [x] **X-f3a-1** `d6d9692c` a line NAMES the statement that showed it, under composite keys over
-    the account, and `cash_ledger.StatementCoverage` is the one rule every cash consumer asks.
-    Balance-neutral with nothing backfilled. Opened **N-285**-**N-289**.
   * [ ] **X-f3a-2** `feat(reconcile): a walked statement's silence is a fact` -- record that a
     statement was walked LINE BY LINE, so a line it did not show is NOT CLEARED rather than unknown,
     and widen the offer set to every uncleared line. **MOVES MONEY.** Closes **N-273**. **It follows
     X-f3c and R-FQ's theorem is why**: while an assertion RESETS the ledger a line no assertion
     clears reads as `anchor + X` at every later date (**N-285**).
-  * [x] **X-f3d** `98ea657d` a balance assertion's counter leg NAMES what the difference was, by a
-    total dispatch over `classify_account`. Closed **N-276**; opened **N-277**, **N-278**.
   * [x] **X-f3b** `38ffd87b` a purchase carrying a recorded bank posting day is a
     cash movement of its own -- in the walk, in the ledger, and as its own posting source -- and its
     envelope's close books only the remainder (**R-FM**, refined by **R-FR**). 1 of 215 sampled days
@@ -373,6 +368,7 @@ four leaves, X-aq, X-as and X-ap -- their records already condensed in `archive/
   edits `cash_ledger/_events.py` inside this deletion set -- a column rename in a file this step
   deletes from is avoided by ordering rather than by merge.
 *The statement importer moved to its own arc 2026-08-13: `../../plans/implementation_plan_bank_import.md`.*
+*X-f3a-1 and X-f3d were ARCHIVED 2026-08-16 to `archive/x_f3_clearing_as_built_2026-08-16.md`, the completed span that took `steps.md` back under its cap (rule 5). Three sentences above name them for how the code came to be, which rule 15 sanctions.*
 ### Phase X -- the amount model (ruling R-FI)
 
 **What this phase is about, in one sentence: the app stores five amounts it also computes, and each
