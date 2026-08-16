@@ -73,12 +73,14 @@ the calendar from the paydays. C2 is the third NAME for one value, not a third s
 payday is DELETED, and `register_user` now writes a `PaySchedule` row beside the paydays, so C4's
 **P8** backfill is no longer reopened by the next signup.
 
-**C3 and the recurrence arc's R7c share a derivation, not a file.**
-`recurrence_rules.offset_periods` is a phase modulo `interval_n` computed from the start period's
-`period_index` (`recurrence/_resolution.py:896`), so once the index is derived, inserting a payday
-BEFORE an existing one re-phases the `Every N Periods` rules row **P26** names. Ledger row **P11**
-carries the measurement (zero live rules today); R7c derives the phase from the authored anchor,
-which removes it permanently.
+**C3 and the recurrence arc's R7c shared a derivation, not a file, and R7c-c is what discharged
+it.** `recurrence_rules.offset_periods` was a phase modulo `interval_n` computed from the start
+period's `period_index`, so once the index was derived, inserting a payday BEFORE an existing one
+re-phased the `Every N Periods` rules row **P26** names.
+**Ledger row P11 carried that measurement (zero live rules) and CLOSED at `recurrence:R7c-c`**
+(migration `d9f5c1a48b73`), which drops the column: the phase is derived from the rule's first
+occurrence on every read, so there is no stored ordinal left for an inserted payday to re-phase. C3
+inherits nothing here.
 
 ---
 

@@ -21,8 +21,10 @@ them three ledger rows:
 * **D21** / **D24** -- the ``PERIOD`` unit's cycle phase was read from the
   ``offset_periods`` COLUMN on one path and derived from the rule's start period
   on another.  It is now read off ``starts_on`` on every path, by
-  :func:`_derive_offset_periods`, and the column it is written to has no reader
-  at all.
+  :func:`_derive_offset_periods`, and plan step R7c-c DROPPED the column it
+  used to be written to.  The value survives on
+  :class:`ResolvedRecurrence` -- ``_occurrence``'s period walk is its one
+  reader -- as a derivation rather than a stored fact.
 
 **``starts_on`` has ONE meaning for every unit**, which is the whole content of
 the ruling: the first date a calendar cadence fires on, and the payday of the
@@ -34,11 +36,12 @@ NORMALISES it onto the paycheck that hosts it, so the value this module returns
 is a real occurrence by construction rather than by a second function agreeing
 with the walk.
 
-**What the closed set still owns.**  ``interval_n`` is the ONLY value this
-module still takes through the storage encoding: ``encode_cadence`` writes ``1``
-for every pattern whose interval is baked into its NAME, so the read door
-recovers a Quarterly rule's ``3`` from ``decode_pattern`` and never from the
-column.  Plan step R7c-c re-points the column and deletes the pair.
+**The closed set owns nothing here from plan step R7c-c.**  ``interval_n`` was
+the last value this module took through the storage encoding -- the write door
+stored ``1`` for every pattern whose interval was baked into its NAME, so a
+Quarterly rule's ``3`` was recovered from the pattern and never from the column
+-- and migration ``d9f5c1a48b73`` re-points the column and deletes the encode /
+decode pair.  What this module reads is what a caller authored.
 
 **Every cadence this resolves NAMES A REAL RHYTHM, and a consumer may rely on
 that.**  ``Once`` used to be the exception -- it meant "does not recur", so no
@@ -95,8 +98,10 @@ from app.enums import (
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence._bounds import NEVER_ENDS, EndBound
 from app.services.recurrence._frequency import (
+    Cadence,
     RecurrenceResolutionError,
-    require_positive_interval,
+    canonical_cadence,
+    require_authorable_cadence,
 )
 from app.services.recurrence._months import MONTH_SPANNING_UNITS
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
@@ -203,6 +208,52 @@ def has_day_of_month_coordinate(unit: RecurrenceUnitEnum) -> bool:
         occurrences can be month-end clamped.
     """
     return unit in _DAY_OF_MONTH_UNITS
+
+
+def cadence_day_of_month(
+    unit: RecurrenceUnitEnum, starts_on: date, nominal_day: int | None,
+) -> int | None:
+    """Return the day of the month a cadence fires on, from the PAIR.
+
+    **The ONE reader of ``(starts_on, nominal_day)``**, which is one fact stored
+    in two fields: the date holds the day unless its own month was too short to
+    hold it, in which case *nominal_day* holds what the rule meant and the date
+    holds the clamp (ruling R-R3).  The occurrence walk, the display describer
+    and the generated row's due date all need that day, and writing the join
+    three times is how the same rule comes to fire on the 31st and read as the
+    30th.
+
+    **It was a property of :class:`ResolvedRecurrence` alone until plan step
+    R7c-c**, and it became a function because a second caller appeared that
+    holds the pair without holding a resolved value: ``_reading``'s
+    ``scheduling_day_of_month``, which answers what the dropped ``day_of_month``
+    column held for ``recurrence_engine.compute_due_date``.  Resolving a rule
+    there would have required a calendar the pure ``compute_due_date`` does not
+    take; open-coding the join is what this function exists to prevent.  The
+    property remains, delegating here, so no consumer has to change.
+
+    ``is None``, not truthiness: *nominal_day*'s domain is 29-31, but a
+    falsy-day bug here would silently re-clamp every later month.
+
+    Args:
+        unit: The cadence unit.
+        starts_on: The rule's first occurrence.
+        nominal_day: The day the rule means when *starts_on*'s own month was
+            too short to hold it, and ``None`` when the date holds it.
+
+    Returns:
+        The day 1-31 the rule means, month-end clamped per month by the walk
+        itself -- or ``None`` for a unit that does not fire on a day of the
+        month (:data:`_DAY_OF_MONTH_UNITS`).  ``None`` is absence rather than a
+        missing value: a paycheck-space or weekly rule has no day-of-month to
+        name, and answering the date's own day would invent a coordinate the
+        cadence never uses.
+    """
+    if not has_day_of_month_coordinate(unit):
+        return None
+    if nominal_day is None:
+        return starts_on.day
+    return nominal_day
 
 
 def offerable_nominal_days(
@@ -434,24 +485,13 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
     def day_of_month(self) -> int | None:
         """Return the day of the month this recurrence fires on.
 
-        The ONE reader of the ``(starts_on, nominal_day)`` pair, which is one
-        fact stored in two fields: the date holds the day unless its own month
-        was too short to hold it, in which case :attr:`nominal_day` holds what
-        the rule meant and the date holds the clamp (ruling R-R3).  The
-        occurrence walk, the display describer and the write door's legacy
-        encode all need that day, and writing the join three times is how the
-        same rule comes to fire on the 31st and read as the 30th.
-
-        ``is None``, not truthiness: :attr:`nominal_day`'s domain is 29-31, but
-        a falsy-day bug here would silently re-clamp every later month.
+        :func:`cadence_day_of_month` over this value's own pair -- see it for
+        why the join has one implementation and what each answer means.
 
         Returns:
             The day 1-31 the rule means, month-end clamped per month by the
-            walk itself -- or ``None`` for a unit that does not fire on a day
-            of the month (:data:`_DAY_OF_MONTH_UNITS`).  ``None`` is absence
-            rather than a missing value: a paycheck-space or weekly rule has no
-            day-of-month to name, and answering the date's own day would invent
-            a coordinate the cadence never uses.
+            walk itself, or ``None`` for a unit that does not fire on a day of
+            the month.
 
             **The UNIT decides, not the (unit, placement) pair**, and the
             difference is not an oversight.  ``fires_on_day_of_month`` answers
@@ -464,11 +504,9 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
             the same distinction has a name to reach for; see that function for
             the two wrong-money defects that came of reaching for the other one.
         """
-        if not has_day_of_month_coordinate(self.unit):
-            return None
-        if self.nominal_day is None:
-            return self.starts_on.day
-        return self.nominal_day
+        return cadence_day_of_month(
+            self.unit, self.starts_on, self.nominal_day,
+        )
 
 
 @dataclass(frozen=True)
@@ -729,6 +767,18 @@ def _first_occurrence(spec: RecurrenceSpec, calendar: PayCalendar) -> date:
     than a second opinion about it.  A date BELOW the owner's first payday
     names that first paycheck, because there is no earlier one to bill in.
 
+    **What the normalisation does NOT keep is the authored date itself, and
+    that is plan ledger row D39** (opened at plan step R7c-c, owned by R5).
+    For a loan payment billed by PAYCHECK the authored date is the first
+    CONTRACTUAL INSTALLMENT, and what this stores is the payday of the paycheck
+    hosting it -- which selects the same paycheck and generates identically,
+    but leaves the rule's opening bound up to a pay period BEFORE the loan
+    exists, and leaves the installment date unrecoverable from the row.
+    Narrow: both live loan payments fire on a day of the month, where the
+    branch above returns the authored date untouched.  It is a different fact
+    from the asymmetry this function removed, which is why it carries an id of
+    its own rather than reopening **D6**.
+
     ``span_containing`` rather than ``period_containing``, so the answer is
     TOTAL: an authored date past the materialised horizon has no SAVED paycheck
     to take a payday from, and a ``NOT NULL`` column has no shape for the
@@ -770,7 +820,7 @@ def _first_occurrence(spec: RecurrenceSpec, calendar: PayCalendar) -> date:
 
 
 def _derive_offset_periods(
-    spec: RecurrenceSpec, calendar: PayCalendar, starts_on: date,
+    cadence: Cadence, calendar: PayCalendar, starts_on: date,
 ) -> int:
     """Return the ``offset_periods`` phase a recurrence fires on.
 
@@ -799,17 +849,24 @@ def _derive_offset_periods(
     the opening bound.
 
     Args:
-        spec: The authored recurrence.
+        cadence: The recurrence's CANONICAL cadence, from
+            :func:`~app.services.recurrence._frequency.canonical_cadence`.  The
+            canonical one rather than the spec's own so that this phase and the
+            walk that reads it are derived from one pair; the substitution
+            never touches the ``PERIOD`` unit, so the value is the same either
+            way, and taking it from the same place is what keeps it so.
         calendar: The owner's pay-period schedule.
         starts_on: The rule's first occurrence, from :func:`_first_occurrence`.
 
     Returns:
         The phase, always in ``0 .. interval_n - 1``.
     """
-    if spec.unit is not RecurrenceUnitEnum.PERIOD or spec.interval_n == 1:
-        # No other cadence reads the column at all; 0 is its default.
+    if cadence.unit is not RecurrenceUnitEnum.PERIOD or cadence.interval_n == 1:
+        # No other cadence reads the phase at all; 0 is its identity.
         return 0
-    return calendar.span_containing(starts_on).period_index % spec.interval_n
+    return (
+        calendar.span_containing(starts_on).period_index % cadence.interval_n
+    )
 
 
 def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
@@ -831,29 +888,54 @@ def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
 
     Raises:
         RecurrenceResolutionError: When *spec* and *calendar* name different
-            users, when ``interval_n`` is not positive, when
-            ``due_day_of_month`` is outside its column's domain, or when a
-            pay-period cadence is resolved against an owner with no pay
-            periods.  All four are broken invariants: a recurrence read with a
-            fabricated cadence is worse than a refused read.  The
+            users, when the cadence is not one this application can AUTHOR
+            (``interval_n`` not positive, or a ``(unit, placement)`` pair the
+            form does not offer -- see
+            :func:`~app.services.recurrence._frequency.require_authorable_cadence`),
+            when ``due_day_of_month`` or ``starts_on`` is outside its column's
+            domain, or when a pay-period cadence is resolved against an owner
+            with no pay periods.  All are broken invariants: a recurrence read
+            with a fabricated cadence is worse than a refused read.  The
             ``(starts_on, nominal_day)`` pair is refused by
             :class:`RecurrenceSpec` itself, before this function is reached.
+
+            **The cadence refusal ARRIVED at plan step R7c-c**, and it arrived
+            because one left.  ``_authoring._author`` called ``encode_cadence``
+            before this function, which refused a cadence the closed pattern
+            set could not name -- so every caller of the write door, the
+            recurrence PREVIEW included, inherited a completeness check.
+            Deleting the encoder took it with it, and the preview began listing
+            dates for cadences the schema refuses.  Asking it HERE puts it in
+            front of every consumer of a resolved value rather than only the
+            ones that write.
     """
     _require_owner(spec, calendar)
-    require_positive_interval(
-        spec.interval_n,
+    require_authorable_cadence(
+        spec.interval_n, spec.unit, spec.placement,
         f"a {spec.unit!r} recurrence (user {spec.user_id})",
     )
     _require_authored_domains(spec)
+
+    # ONE spelling per rhythm, before anything is derived from the pair
+    # (ruling **R-R17**, plan step R7c-c).  Freeing the interval made
+    # ``(12, MONTH)`` authorable, and it is ``(1, YEAR)``: same month stride,
+    # same anchor family, same yearly count.  Canonicalising HERE rather than in
+    # the write door alone is what keeps the form's live preview, the Recurring
+    # cell and the stored row from wording one rhythm three ways -- the write
+    # door writes what this returns, so the ruling's "at the write door" is
+    # satisfied by the one call every reader already makes.
+    cadence = canonical_cadence(spec.interval_n, spec.unit, spec.placement)
 
     # The first occurrence first, because the phase is a function of it (the
     # ordinal of the paycheck it falls in).  Deriving the two from separate
     # inputs is what let a rule state two cadences before plan step R7b-4.
     starts_on = _first_occurrence(spec, calendar)
     return ResolvedRecurrence(
-        offset_periods=_derive_offset_periods(spec, calendar, starts_on),
-        interval_n=spec.interval_n,
-        unit=spec.unit,
+        offset_periods=_derive_offset_periods(
+            cadence, calendar, starts_on,
+        ),
+        interval_n=cadence.interval_n,
+        unit=cadence.unit,
         starts_on=starts_on,
         placement=spec.placement,
         shift=BusinessDayShiftEnum.NONE,

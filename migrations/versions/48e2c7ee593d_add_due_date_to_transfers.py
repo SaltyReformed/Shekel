@@ -36,14 +36,35 @@ Backfill, two steps:
      ``day_of_month``) resolve to the period start inside the helper, so the
      ``IS DISTINCT FROM`` guard makes those rows a no-op.
 
-     The inputs are read via raw SQL (NOT ORM models) and fed to the shared
-     pure ``compute_due_date`` via lightweight namespaces -- this keeps the
-     date logic single-sourced (DRY) while staying drift-safe: a later
-     migration that adds columns to the involved tables cannot break this
-     migration's replay, because no mapped class is queried.  The raw UPDATEs
-     fire the audit trigger on each changed row (system backfill, NULL
-     ``current_user_id``), matching the prior ``budget.transactions``
-     account_id backfill (``efffcf647644``).
+     The inputs are read via raw SQL (NOT ORM models) and fed to
+     :func:`_due_date_at_this_revision`, this module's FROZEN copy of the
+     arithmetic.  The raw UPDATEs fire the audit trigger on each changed row
+     (system backfill, NULL ``current_user_id``), matching the prior
+     ``budget.transactions`` account_id backfill (``efffcf647644``).
+
+     **The copy replaced an import of the live
+     ``recurrence_engine.compute_due_date`` at plan step R7c-c, and the import
+     was a replay-breaking defect.**  Reading the inputs with raw SQL made this
+     step drift-safe against a later migration ADDING columns; it did nothing
+     about the shared function's own signature moving underneath it, which is
+     what happened.  R7c-c dropped ``budget.recurrence_rules.day_of_month`` and
+     pointed that function at a derivation over ``unit_id`` / ``placement_id``
+     / ``starts_on`` / ``nominal_day``, none of which the namespaces here carry
+     and none of which EXIST at this revision -- so every replay over a
+     non-empty database raised ``AttributeError`` mid-chain and aborted
+     ``flask db upgrade``.  Invisible to CI and to
+     ``scripts/build_test_template.py``, which replay this chain against an
+     EMPTY database where the loop never runs; it fires only on the replay that
+     matters, a restored dump stamped at or before this revision.
+
+     Widening the SELECT could not have fixed it -- the two-axis columns do not
+     exist here -- so the mapping is stated AS IT WAS AT THIS REVISION and the
+     import is deleted.  That is the same rule ``d9f5c1a48b73`` states for its
+     own pattern table: a migration states the mapping as it was at its
+     revision, and an import makes a shipped migration change meaning when a
+     later step edits the code.  Graded by
+     ``tests/test_models/test_transfer_due_date_migration.py``, which drives
+     every branch of the frozen arithmetic.
 
 Purely additive at the schema level: the column is nullable with no CHECK and
 no index (nothing queries transfers by ``due_date`` -- the due-date consumers
@@ -57,7 +78,8 @@ a forward data correction and is intentionally NOT reverted: the pre-migration
 pay-period-start dates were the defect this migration fixes, they were not
 snapshotted, and the recomputed dates remain valid under the current app code.
 """
-from types import SimpleNamespace
+import calendar as cal
+from datetime import date
 
 from alembic import op
 import sqlalchemy as sa
@@ -105,6 +127,78 @@ _UPDATE_SHADOWS = sa.text(
 )
 
 
+def _due_date_at_this_revision(
+    day_of_month, due_day_of_month, start_date, end_date,
+):
+    """Return the due date this revision's step-2 recompute writes.
+
+    ``recurrence_engine.compute_due_date`` as it stood when this revision
+    shipped, frozen here so a replay computes what the revision MEANT rather
+    than whatever that function grew into -- see the module docstring for the
+    replay this froze after breaking.
+
+    Source priority, unchanged from the original:
+
+      1. *due_day_of_month*, when it is set and differs from the scheduling day;
+      2. the scheduling day *day_of_month*, placed in the period's month;
+      3. *start_date*, for a rule that names no day of the month.
+
+    Next-month convention: a due day BELOW the scheduling day falls in the
+    following calendar month -- scheduled on the 22nd and due on the 1st means
+    the 1st of the month after.  Day values above a month's last day are
+    clamped (31 in April becomes 30; 30 in February becomes 28).
+
+    Takes four plain values rather than a rule and a period: the caller reads
+    them with raw SQL, and column names at THIS revision are what the frozen
+    mapping is entitled to name.
+
+    Args:
+        day_of_month: ``budget.recurrence_rules.day_of_month``, or ``None`` for
+            a cadence that names no day (every-paycheck, every-N).
+        due_day_of_month: ``budget.recurrence_rules.due_day_of_month``, or
+            ``None`` when the bill is due on the day it is scheduled.
+        start_date: The assigned pay period's first day.
+        end_date: The assigned pay period's last day.
+
+    Returns:
+        date: The calendar date the transfer is due.
+    """
+    if day_of_month is None:
+        return start_date
+
+    # Which month within the period holds the scheduling-day target.  A pay
+    # period can straddle two months, so both endpoints are tried in order.
+    base_year = start_date.year
+    base_month = start_date.month
+
+    for dt in (start_date, end_date):
+        last_day = cal.monthrange(dt.year, dt.month)[1]
+        target = date(dt.year, dt.month, min(day_of_month, last_day))
+        if start_date <= target <= end_date:
+            base_year = dt.year
+            base_month = dt.month
+            break
+
+    if due_day_of_month is None or due_day_of_month == day_of_month:
+        # No separate due date -- the scheduling day in the base month.
+        last_day = cal.monthrange(base_year, base_month)[1]
+        return date(base_year, base_month, min(day_of_month, last_day))
+
+    if due_day_of_month < day_of_month:
+        if base_month == 12:
+            due_year = base_year + 1
+            due_month = 1
+        else:
+            due_year = base_year
+            due_month = base_month + 1
+    else:
+        due_year = base_year
+        due_month = base_month
+
+    last_day = cal.monthrange(due_year, due_month)[1]
+    return date(due_year, due_month, min(due_day_of_month, last_day))
+
+
 def upgrade():
     """Add nullable due_date to budget.transfers and backfill it."""
     op.add_column(
@@ -127,22 +221,18 @@ def upgrade():
         """
     )
 
-    # Step 2: recompute eligible transfers from the recurrence rule, reusing
-    # the shared pure helper.  Local imports defer app-code loading to upgrade
-    # time.
-    from app.services.recurrence_engine import compute_due_date  # pylint: disable=import-outside-toplevel
-
+    # Step 2: recompute eligible transfers from the recurrence rule, through
+    # this module's frozen copy of the arithmetic (see
+    # :func:`_due_date_at_this_revision`).  It imports no app code: the shared
+    # function it used to call is free to move, and did.
     rows = bind.execute(_RECOMPUTE_SELECT).mappings().all()
     for row in rows:
-        rule = SimpleNamespace(
-            day_of_month=row["day_of_month"],
-            due_day_of_month=row["due_day_of_month"],
+        due = _due_date_at_this_revision(
+            row["day_of_month"],
+            row["due_day_of_month"],
+            row["start_date"],
+            row["end_date"],
         )
-        period = SimpleNamespace(
-            start_date=row["start_date"],
-            end_date=row["end_date"],
-        )
-        due = compute_due_date(rule, period)
         params = {"d": due, "i": row["transfer_id"]}
         bind.execute(_UPDATE_TRANSFER, params)
         bind.execute(_UPDATE_SHADOWS, params)

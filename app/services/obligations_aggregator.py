@@ -198,7 +198,7 @@ def template_monthly_or_none(
     # quotient is inexact for an interval that does not divide its unit's
     # year, and multiplying money by it moved 31,072 displayed cents in a
     # 52,000,000-case sweep, wrongly (see ``Cadence.units_per_year``).
-    cadence = cadence_of(rule.pattern_id, rule.interval_n)
+    cadence = cadence_of(rule)
     return (
         amount * cadence.units_per_year(calendar.cadence)
         / (cadence.interval_n * MONTHS_PER_YEAR)

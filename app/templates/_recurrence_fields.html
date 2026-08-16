@@ -39,21 +39,25 @@
    and a placement select, replacing the single pattern <select>.
 
    ``picker`` is the PickerModel the route resolved from
-   app.services.recurrence.picker_model.  Its ``options`` are the readings the
-   closed pattern set can actually STORE -- derived from the encoder's own
-   table, not from the pattern enum -- so a cadence encode_cadence would refuse
-   is never offered, and that refusal is unreachable through this form rather
-   than fenced behind it (developer ruling 2026-08-12).  ``options_json`` is
-   the same set for recurrence_form.js, which LINKS the three: the unit decides
-   which intervals may show, and the (unit, interval) pair decides which
-   placements may.  That pair dependency is real -- the closed set stores
-   "every 1 month funded from the first paycheck" and has no quarterly twin --
-   so a placement list keyed on the unit alone would offer the unstorable.
+   app.services.recurrence.picker_model.  Its ``options`` are the (unit,
+   placement) pairs a rule can actually be AUTHORED on -- derived from the
+   anchor-family router that would otherwise refuse them -- so a cadence the
+   application cannot resolve is never offered, and that refusal is unreachable
+   through this form rather than fenced behind it (developer ruling
+   2026-08-12).  ``options_json`` is the same set for recurrence_form.js, which
+   LINKS the controls: the chosen unit decides which placements may be picked
+   and what the two day-of-month controls do.
+
+   **The (unit, interval) PAIR dependency left at plan step R7c-c.**  It was
+   real while the closed set stored "every 1 month funded from the first
+   paycheck" and had no quarterly twin, so a placement list keyed on the unit
+   alone would have offered the unstorable; with the interval free, the MONTH
+   unit offers both placements at every interval and the pair is a unit again.
 
    ``selected`` is the SelectedCadence the edit routes resolved through
-   edit_form_cadence, or None on a create form AND for a rule whose stored
-   pattern the application no longer models.  The second case renders the
-   controls unset above a flashed explanation: there is no pattern id left to
+   edit_form_cadence, or None on a create form AND for a rule whose stored unit
+   or placement the application does not model.  The second case renders the
+   controls unset above a flashed explanation: there is no stored id left to
    preserve as a trailing option, so there is nothing for the browser to
    silently replace with the first entry -- the destructive "Does not repeat".
 
@@ -62,23 +66,28 @@
    no rule" and the update routes read as "delete the rule this template had"
    (plan step R2e-1).
 
-   Both interval controls post ``interval_n``, so exactly one is ever enabled;
-   a disabled control does not submit, which is what keeps two spellings of one
-   field from reaching the schema together.  The script owns that toggle, and
-   the server renders the state matching ``selected`` so a form is correct
-   before any script runs. #}
+   The interval box is DISABLED while the definition does not repeat, because a
+   disabled control does not submit and an interval beside no unit states half
+   a cadence.  The script owns that toggle, and the server renders the state
+   matching ``selected`` so a form is correct before any script runs. #}
 {% macro recurrence_cadence_controls(picker, selected) %}
 {% set sel_unit = selected.unit_id if selected else none %}
 {% set sel_interval = selected.interval_n if selected else none %}
 {% set sel_placement = selected.placement_id if selected else none %}
-{# Every projection of the offer set is served ready-made off the PickerModel --
-   picker.units, picker.fixed_intervals, picker.placements, and
-   picker.free_unit_ids (the units taking ANY positive N, which is what selects
-   the number box over the fixed <select>).  They were de-duplicating loops and
-   a selectattr chain here until the interval one shipped a visible defect:
-   MONTHLY and MONTHLY_FIRST are two triples over one (1, MONTH) interval, so it
-   rendered "1 month" twice and marked BOTH selected.  A projection is a
-   computation, and this partial displays. #}
+{# Both projections of the offer set are served ready-made off the PickerModel
+   -- picker.units and picker.placements.  They were de-duplicating loops and a
+   selectattr chain here until one shipped a visible defect: MONTHLY and
+   MONTHLY_FIRST are two offers over one MONTH unit, so an un-projected list
+   rendered the entry twice and marked BOTH selected.  A projection is a
+   computation, and this partial displays.
+
+   **The interval is ONE free box since plan step R7c-c.**  There were two
+   controls posting interval_n -- a number box for the one unit whose interval
+   was a column, and a <select> of 1 / 3 / 6 for the months the closed pattern
+   set could name -- with the script enabling exactly one, because a disabled
+   control does not submit.  Every positive interval is authorable for every
+   unit now, so picker.fixed_intervals and picker.free_unit_ids are gone with
+   the <select> and there is one control to enable. #}
 <div class="mb-3" id="cadence-controls" data-cadence-options="{{ picker.options_json }}">
   <label for="recurrence_unit" class="form-label">Repeats</label>
   <div class="row g-2 align-items-center">
@@ -95,27 +104,42 @@
     <div class="col-auto d-none" id="field-interval">
       <div class="input-group">
         <span class="input-group-text">every</span>
-        {# The free-N box: one unit uses it (paychecks), and R7c widens it to
-           every unit when the authored columns land. #}
-        <input type="number" id="interval_n_free" name="interval_n"
+        <input type="number" id="interval_n" name="interval_n"
                class="form-control interval-box" min="1"
                value="{{ sel_interval if sel_interval is not none else 1 }}"
-               {{ '' if sel_unit in picker.free_unit_ids else 'disabled' }}>
-        {# The fixed set: one entry per (unit, interval), each tagged with the
-           unit that offers it so the script can show only that unit's. #}
-        <select id="interval_n_fixed" name="interval_n" class="form-select"
-                {{ 'disabled' if sel_unit in picker.free_unit_ids or sel_unit is none else '' }}>
-          {% for opt in picker.fixed_intervals %}
-          <option value="{{ opt.interval_n }}" data-unit="{{ opt.unit_id }}"
-            {{ 'selected' if sel_unit == opt.unit_id and sel_interval == opt.interval_n else '' }}>
-            {{ opt.interval_n }} {{ opt.unit_label_one if opt.interval_n == 1 else opt.unit_label_many }}
-          </option>
-          {% endfor %}
-        </select>
+               {{ 'disabled' if sel_unit is none else '' }}>
       </div>
     </div>
   </div>
 </div>
+{# The FUNDING control, and it is OFFERED for every cadence since plan step
+   R7c-c (developer ruling 2026-08-16, plan ledger row D32).
+
+   "Offered", not "rendered unconditionally": the row carries d-none here like
+   every other cadence-dependent row on this form (#field-interval,
+   #field-due-dom, #field-end-bound, #field-start-period), and
+   recurrence_form.js reveals it as soon as a cadence is chosen.  What D32's
+   remedy changed is that syncPlacements reveals it for EVERY cadence instead
+   of hiding it whenever exactly one placement was admissible -- the row no
+   longer disappears at the moment its value is being decided for the user.
+   The pre-script hidden state on an edit form is a property of the whole
+   form and predates this step.
+
+   It used to hide itself whenever the chosen cadence admitted one placement,
+   which is how a bill's funding rule came to change with nothing on screen
+   saying so: the closed set stored "every 1 month funded from the month's
+   first paycheck" and had no quarterly twin, so raising a Monthly First rule's
+   interval silently reassigned the placement and hid the row.  Freeing the
+   interval removes that case entirely -- the MONTH unit offers both placements
+   at every interval -- and two cadences still admit exactly one: PERIOD, where
+   the placement is inert because a payday resolves to its own paycheck either
+   way, and YEAR, whose first-paycheck anchor is plan step R8's.
+
+   So the row stays, the script enables the placements the chosen unit admits,
+   and the help text says which of the two states the user is in.  Both
+   sentences are rendered HERE, as data-* attributes the script swaps between,
+   for the reason every other copy on this form is: templates display and
+   scripts do not author words.  That is the same idiom #starts-on-help uses. #}
 <div class="mb-3 d-none" id="field-placement">
   <label for="recurrence_placement" class="form-label">Funded from</label>
   <select id="recurrence_placement" name="recurrence_placement" class="form-select">
@@ -125,7 +149,14 @@
     </option>
     {% endfor %}
   </select>
-  <div class="form-text">Which paycheck pays for each occurrence.</div>
+  {% set placement_choice_help = "Which paycheck pays for each occurrence." %}
+  {% set placement_fixed_help =
+       "This cadence has one funding rule, so there is nothing to choose." %}
+  <div id="placement-help" class="form-text"
+       data-choice-text="{{ placement_choice_help }}"
+       data-fixed-text="{{ placement_fixed_help }}">
+    {{- placement_choice_help -}}
+  </div>
 </div>
 {% endmacro %}
 

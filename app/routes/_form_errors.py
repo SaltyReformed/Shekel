@@ -38,6 +38,31 @@ from app.routes._redirect_target import RedirectTarget
 #:   be saved yet...").
 #: * ``recurrence_placement`` -- ``PeriodPlacementField``, plus the same
 #:   cross-field rule's refusal of a unit named with no placement.
+#: * ``interval_n`` -- the same cross-field rule's refusal of a unit named with
+#:   no INTERVAL ("Say how often this repeats..."), plan step R7c-c.  Unlike
+#:   its two neighbours this one is NOT rare: the control is a free number box
+#:   from that step, and clearing it is the ordinary way a user reaches the
+#:   refusal.
+#: * ``starts_on`` -- ``validate_recurrence_states_a_start``
+#:   (:data:`~app.schemas.validation.RECURRENCE_NEEDS_A_START`), plan step
+#:   R7c-b.  That constant exists because TWO layers raise it and they must say
+#:   the same thing; only one of the two was audible.
+#:   ``_recurrence_form_helpers.resolve_recurrence_rule_for_update`` flashes it
+#:   DIRECTLY, so the update branch always said it -- while a CREATE, where the
+#:   rule is a money decision (an unstated first occurrence backdated five rows
+#:   of a $2,000.00 rent template into closed pay periods), raised it through
+#:   the schema and reached the generic prompt.
+#: * ``nominal_day`` -- ``validate_nominal_day_fits_the_start``, plan step
+#:   R7c-b.  Its message names the offerable days for the chosen date ("Apr 30,
+#:   2026 cannot mean day 30..."), and no other layer says it, so the whole
+#:   refusal was inaudible.
+#:
+#: **Those last three are the same defect a third, fourth and fifth time**, and
+#: the R7c-c gate below is what stops a sixth: every field name
+#: ``app.schemas.validation._recurrence`` raises a refusal against must be
+#: listed here.  The arm that existed asked only the converse -- that no entry
+#: names a field nothing declares -- so it caught a RENAME and was structurally
+#: blind to an ADDITION, which is how each of these shipped.
 #:
 #: Field errors on these keys from the stock validators are rare in practice
 #: (an HTML ``<select>`` submits only what it rendered) and remain acceptable
@@ -67,11 +92,15 @@ from app.routes._redirect_target import RedirectTarget
 #: That arm loads now.
 #:
 #: ``tests/test_routes/test_form_errors.py`` pins the tuple against the schema
-#: package, so a renamed field cannot silence its own message again.
+#: package BOTH ways, so neither a renamed field nor a new refusal can silence
+#: its own message again.
 ACTIONABLE_FLASH_FIELDS: tuple[str, ...] = (
     "is_envelope",
     "recurrence_unit",
     "recurrence_placement",
+    "interval_n",
+    "starts_on",
+    "nominal_day",
     "recurrence_end_mode",
     "end_date",
     "max_occurrences",

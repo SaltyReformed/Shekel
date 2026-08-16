@@ -74,15 +74,13 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from app import ref_cache
-from app.enums import RecurrencePatternEnum
+from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
     RecurrenceSpec,
     build_transient_rule,
-    decode_pattern,
     end_bound_from_columns,
 )
 # Both imported as MODULES, not as names, and the recurrence producer is
@@ -149,6 +147,88 @@ _DUE_SWEEP_DAYS: tuple[int, ...] = (1, 15, 22, 31)
 
 
 @dataclass(frozen=True)
+class ShapeCadence:
+    """The cadence one shape states, as ``budget.recurrence_rules`` holds it.
+
+    **A shape stated a closed-set PATTERN until plan step R7c-c**, and the
+    seven constants below carry the names those members had, so every call site
+    reads as it always did and every LABEL in the blob is untouched.  What
+    changed underneath is the vocabulary: ``pattern_id`` is dropped, and a rule
+    states its cadence in ``interval_n`` / ``unit_id`` / ``placement_id``.
+
+    That is the same substitution R7c-b made one leaf earlier for the anchor --
+    a shape stated ``(day_of_month, month_of_year, start_date)`` and now states
+    ``starts_on`` -- and it is made the same way, for the same reason: re-keying
+    the labels would make the diff unreadable at exactly the step whose whole
+    evidence is that the diff is EMPTY.
+
+    Attributes:
+        interval_n: The interval this cadence fixes, or ``None`` when the SHAPE
+            states its own -- true of exactly the paycheck-space cadence the
+            ``every_n_periods`` sweep varies.
+        unit: The cadence unit.
+        placement: Which pay period funds an occurrence.
+    """
+
+    interval_n: int | None
+    unit: RecurrenceUnitEnum
+    placement: PeriodPlacementEnum
+
+
+#: The seven cadences the closed pattern set could name, under its own names.
+#:
+#: Verbatim what ``recurrence._frequency.PATTERN_DERIVATIONS`` held before plan
+#: step R7c-c deleted it, which is why the blob does not move: each shape
+#: resolves to the reading its pattern always decoded to.
+EVERY_PERIOD = ShapeCadence(
+    1, RecurrenceUnitEnum.PERIOD, PeriodPlacementEnum.CONTAINING_DATE,
+)
+EVERY_N_PERIODS = ShapeCadence(
+    None, RecurrenceUnitEnum.PERIOD, PeriodPlacementEnum.CONTAINING_DATE,
+)
+MONTHLY = ShapeCadence(
+    1, RecurrenceUnitEnum.MONTH, PeriodPlacementEnum.CONTAINING_DATE,
+)
+MONTHLY_FIRST = ShapeCadence(
+    1, RecurrenceUnitEnum.MONTH,
+    PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+)
+QUARTERLY = ShapeCadence(
+    3, RecurrenceUnitEnum.MONTH, PeriodPlacementEnum.CONTAINING_DATE,
+)
+SEMI_ANNUAL = ShapeCadence(
+    6, RecurrenceUnitEnum.MONTH, PeriodPlacementEnum.CONTAINING_DATE,
+)
+ANNUAL = ShapeCadence(
+    1, RecurrenceUnitEnum.YEAR, PeriodPlacementEnum.CONTAINING_DATE,
+)
+
+#: The seven, under the display names ``ref.recurrence_patterns`` carried.
+#:
+#: **The ONE place in ``tests/`` that says what a closed-set name meant**, and
+#: it lives here because this module is where the hand-checked cases are.
+#: ``tests._test_helpers.make_pattern_rule`` reads it, so a fixture asking for
+#: "a Quarterly rule" and a frozen shape labelled ``quarterly`` cannot come to
+#: mean different cadences.
+#:
+#: Keyed by plain STRING rather than by
+#: :class:`~app.enums.RecurrencePatternEnum`, deliberately: plan step **R9**
+#: deletes that enum with ``ref.recurrence_patterns``, and a test vocabulary
+#: that outlives the column it was named after should not take the enum down
+#: with it.  These are test-side SHORTHAND for a cadence from plan step R7c-c
+#: on, not a thing the application stores.
+CADENCE_BY_LEGACY_NAME: dict[str, ShapeCadence] = {
+    "Every Period": EVERY_PERIOD,
+    "Every N Periods": EVERY_N_PERIODS,
+    "Monthly": MONTHLY,
+    "Monthly First": MONTHLY_FIRST,
+    "Quarterly": QUARTERLY,
+    "Semi-Annual": SEMI_ANNUAL,
+    "Annual": ANNUAL,
+}
+
+
+@dataclass(frozen=True)
 class RuleShape:
     """One rule configuration to freeze the engine's answer for.
 
@@ -174,9 +254,9 @@ class RuleShape:
             keyed on ``moy11.dom01`` still names the shape it always named, and
             re-keying them would have made the diff unreadable at exactly the
             step whose whole evidence is that the diff is empty.
-        pattern: The pattern enum member.  Still the shape's key because the
-            closed set is what the write door ENCODES a cadence into, and
-            because every case here was hand-checked under its name.
+        cadence: What the rule's cadence columns hold, as one of the seven
+            :class:`ShapeCadence` constants above.  Still keyed under the closed
+            set's own names because every case here was hand-checked under one.
         interval_n: ``EVERY_N_PERIODS`` interval; 1 elsewhere.
         starts_on: The rule's FIRST OCCURRENCE (ruling R-R16) -- for a
             paycheck-space cadence a date anywhere in the paycheck it bills in,
@@ -191,7 +271,7 @@ class RuleShape:
     """
 
     label: str
-    pattern: RecurrencePatternEnum
+    cadence: ShapeCadence
     starts_on: date = SCHEDULE_START
     interval_n: int = 1
     nominal_day: int | None = None
@@ -345,15 +425,15 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
     Returns:
         The :class:`~app.services.recurrence.RecurrenceSpec`.
     """
-    reading = decode_pattern(
-        ref_cache.recurrence_pattern_id(shape.pattern), shape.interval_n,
-    )
     return RecurrenceSpec(
         user_id=SHAPE_USER_ID,
-        unit=reading.cadence.unit,
+        unit=shape.cadence.unit,
         starts_on=shape.starts_on,
-        interval_n=reading.cadence.interval_n,
-        placement=reading.placement,
+        interval_n=(
+            shape.interval_n if shape.cadence.interval_n is None
+            else shape.cadence.interval_n
+        ),
+        placement=shape.cadence.placement,
         nominal_day=shape.nominal_day,
         due_day_of_month=shape.due_day_of_month,
         # Read through the same column-to-bound seam the READ DOOR uses
@@ -527,13 +607,13 @@ def _add_period_space_shapes(acc: _ShapeAccumulator) -> None:
     phase is also the stronger sweep, because it exercises the DERIVATION over
     the whole space instead of assuming it.
     """
-    acc.add(RuleShape("every_period", RecurrencePatternEnum.EVERY_PERIOD))
-    acc.add(RuleShape("monthly_first", RecurrencePatternEnum.MONTHLY_FIRST))
+    acc.add(RuleShape("every_period", EVERY_PERIOD))
+    acc.add(RuleShape("monthly_first", MONTHLY_FIRST))
     for interval in range(1, 9):
         for offset in range(interval):
             acc.add(RuleShape(
                 f"every_n_periods.n{interval:02d}.off{offset:02d}",
-                RecurrencePatternEnum.EVERY_N_PERIODS,
+                EVERY_N_PERIODS,
                 interval_n=interval,
                 starts_on=SCHEDULE_START + timedelta(
                     days=SCHEDULE_CADENCE_DAYS * offset,
@@ -553,7 +633,7 @@ def _add_monthly_shapes(acc: _ShapeAccumulator) -> None:
         # is that day of the schedule's opening month and no clamp arises.
         acc.add(RuleShape(
             f"monthly.dom{day:02d}",
-            RecurrencePatternEnum.MONTHLY,
+            MONTHLY,
             starts_on=date(
                 SCHEDULE_START.year, SCHEDULE_START.month, day,
             ),
@@ -568,9 +648,9 @@ def _add_calendar_cycle_shapes(acc: _ShapeAccumulator) -> None:
     docstring justifies branch by branch.
     """
     cycles = (
-        ("quarterly", RecurrencePatternEnum.QUARTERLY, 3),
-        ("semi_annual", RecurrencePatternEnum.SEMI_ANNUAL, 6),
-        ("annual", RecurrencePatternEnum.ANNUAL, 12),
+        ("quarterly", QUARTERLY, 3),
+        ("semi_annual", SEMI_ANNUAL, 6),
+        ("annual", ANNUAL, 12),
     )
     for name, pattern, months_per_cycle in cycles:
         for month in range(1, 13):
@@ -599,7 +679,7 @@ def _add_due_day_shapes(acc: _ShapeAccumulator) -> None:
         for due_dom in range(1, 32):
             acc.add(RuleShape(
                 f"due_sweep.dom{dom:02d}.due{due_dom:02d}",
-                RecurrencePatternEnum.MONTHLY,
+                MONTHLY,
                 starts_on=date(
                     SCHEDULE_START.year, SCHEDULE_START.month, dom,
                 ),
@@ -639,7 +719,7 @@ Both bounds are UNBYPASSABLE by a caller's ``effective_from`` -- the property
     for name, starts_on, end in bounds:
         acc.add(RuleShape(
             f"bounds.{name}",
-            RecurrencePatternEnum.MONTHLY,
+            MONTHLY,
             starts_on=starts_on,
             end_date=end,
         ))
@@ -681,18 +761,18 @@ def _add_anchor_normalisation_shapes(acc: _ShapeAccumulator) -> None:
         ("period.on_period_start", date(2024, 6, 3)),
     ):
         acc.add(RuleShape(
-            f"anchor.{name}", RecurrencePatternEnum.EVERY_PERIOD,
+            f"anchor.{name}", EVERY_PERIOD,
             starts_on=starts_on,
         ))
     acc.add(RuleShape(
         "anchor.period.n03.midperiod_bound",
-        RecurrencePatternEnum.EVERY_N_PERIODS,
+        EVERY_N_PERIODS,
         interval_n=3,
         starts_on=date(2024, 6, 5),
     ))
     acc.add(RuleShape(
         "anchor.monthly.dom31.short_anchor_month",
-        RecurrencePatternEnum.MONTHLY,
+        MONTHLY,
         starts_on=date(2024, 2, 29),
         nominal_day=31,
     ))
@@ -739,12 +819,12 @@ def _add_horizon_bound_shapes(acc: _ShapeAccumulator) -> None:
     """
     acc.add(RuleShape(
         "horizon_bound.monthly_first",
-        RecurrencePatternEnum.MONTHLY_FIRST,
+        MONTHLY_FIRST,
         starts_on=date(2027, 2, 1),
     ))
     acc.add(RuleShape(
         "horizon_bound.long_cadence.monthly_first",
-        RecurrencePatternEnum.MONTHLY_FIRST,
+        MONTHLY_FIRST,
         starts_on=date(2026, 11, 1),
         long_cadence=True,
     ))
@@ -792,14 +872,14 @@ def _add_long_cadence_shapes(acc: _ShapeAccumulator) -> None:
     for day in (1, 15, 31):
         acc.add(RuleShape(
             f"long_cadence.monthly.dom{day:02d}",
-            RecurrencePatternEnum.MONTHLY,
+            MONTHLY,
             starts_on=date(SCHEDULE_START.year, SCHEDULE_START.month, day),
             long_cadence=True,
         ))
     cycles = (
-        ("quarterly", RecurrencePatternEnum.QUARTERLY),
-        ("semi_annual", RecurrencePatternEnum.SEMI_ANNUAL),
-        ("annual", RecurrencePatternEnum.ANNUAL),
+        ("quarterly", QUARTERLY),
+        ("semi_annual", SEMI_ANNUAL),
+        ("annual", ANNUAL),
     )
     for name, pattern in cycles:
         for day in (1, 15):
@@ -815,12 +895,12 @@ def _add_long_cadence_shapes(acc: _ShapeAccumulator) -> None:
             ))
     acc.add(RuleShape(
         "long_cadence.monthly_first",
-        RecurrencePatternEnum.MONTHLY_FIRST,
+        MONTHLY_FIRST,
         long_cadence=True,
     ))
     acc.add(RuleShape(
         "long_cadence.every_period",
-        RecurrencePatternEnum.EVERY_PERIOD,
+        EVERY_PERIOD,
         long_cadence=True,
     ))
 

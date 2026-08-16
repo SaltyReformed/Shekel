@@ -124,6 +124,10 @@ no reconciler.
 - **A guard written against the wrong failure mode can still be a good guard** -- write the reason
   beside it.
 - **A skip is safer to state than a fire**, when the operation being guarded is the one under test.
+- **A GATE OVER A MAPPING NEEDS BOTH ARMS, OR IT CATCHES A RENAME AND MISSES AN ADDITION**, and its
+  docstring will claim otherwise -- read what a gate asserts, not what it says it asserts (R7c-c).
+- **AN ASSERTION ABOUT PERSISTED STATE MUST NAME THE STORE THE CODE UNDER TEST WRITES TO.** A
+  hard-coded database name beside an app pointed at a copy passes with every refusal ACCEPTED.
 
 ## Instruments, oracles and censuses
 
@@ -132,10 +136,8 @@ no reconciler.
   result came back.
 - **A HARNESS THAT ADAPTS TO BOTH SIDES CAN GRADE NEITHER'S CONFIGURATION.** `C2-f2d-1`'s ran a pass
   per producer on both, so 37,295 identical lines said nothing about the SHARING that shipped.
-- **A GATE MUST BE EXERCISED AGAINST THE ARTIFACT IT GRADES, never read or tested only
-  synthetically.** A pattern that matches the real file nowhere passes every synthetic control. Row
-  **P52** is this lesson found live: a docstring-stated `grep` canary whose pattern is line-based
-  against a call site that WRAPS, so it has always matched zero lines and "the gate passes" has
+- **A GATE MUST BE EXERCISED AGAINST THE ARTIFACT IT GRADES**, never only synthetically: row
+  **P52**'s `grep` canary is line-based against a call site that WRAPS, so "the gate passes" has
   always meant "nothing matched".
 - **An ORACLE that states a different rule than the engine lets both be wrong together.**
 - **AN AGREEMENT ORACLE CANNOT SEE A PRODUCER THAT READS THE VALUE IT IS REPLACING.** The control
@@ -154,16 +156,13 @@ no reconciler.
 - **COUNT THE CALL GRAPH, NOT THE CALL SITES.** One finding said four spellings; the tree held 18.
 - **A COUNT IN A DOCSTRING IS A CLAIM, AND THIS ARC KEEPS WRITING IT WRONG.**
 - **BEFORE READING A CLEAN DIFF, CHECK THE FIGURE THE STEP IS ABOUT IS NOT NULL IN IT.** C2-f2c's
-  harness came back byte-identical over 39,939 lines while `retirement_marker_index` -- the one
-  figure its ledger row (**P48**) names -- was `None` on every line, because the clone's owner had
-  set no retirement date. A production clone is a sample of one owner's CHOICES, not of the state
-  space; where it does not exercise the subject, WRITE the state into the clone and re-capture both
-  sides rather than accepting the clean run.
+  harness was byte-identical over 39,939 lines while `retirement_marker_index` -- the one figure its
+  row (**P48**) names -- was `None` on every one. A clone samples one owner's CHOICES, not the state
+  space: WRITE the state in and re-capture both sides.
 - **PLANT THE FIRING CONTROL AT EVERY WIRING SITE, AND CHECK THE PLANTED DEFECT IS REACHABLE ON THE
-  REAL DATA.** C2-f2a's first control dropped the FIRST period from the contribution axis and moved
-  `$0.00` -- every early period sits at or before the account's latest assertion, which that tier
-  skips -- so the harness read as blind when it was not. The same defect at the LAST period moved
-  `-$182.29` and `-$190.39` at the two sites.
+  REAL DATA.** C2-f2a's first dropped the axis's FIRST period and moved `$0.00` -- those periods
+  precede the account's latest assertion -- so the harness read blind when it was not; at the LAST
+  period it moved `-$182.29` and `-$190.39`.
 
 ## Working this plan
 
