@@ -37,6 +37,7 @@ from decimal import Decimal
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
+    AmountBasis,
     CashLedgerWalk,
     live_amounts,
     sum_projected,
@@ -154,7 +155,7 @@ class CashPeriodView:
 
 def cash_period_view(
     account: Account,
-    scenario_id: int,
+    basis: AmountBasis,
     as_of: date,
     window: PeriodWindow,
 ) -> CashPeriodView:
@@ -208,7 +209,10 @@ def cash_period_view(
     Args:
         account: The account to project.  Must be attached to ``db.session``;
             its kind is not consulted.
-        scenario_id: The budget scenario whose rows to group.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`, carrying the
+            scenario whose rows are grouped and the derivations they are priced
+            through (plan step X-au-c2b).
         as_of: The reader's NOW (ruling R-G's clamp floor) -- NOT a valuation
             date; each period is valued at its own ``end_date``.
         window: The pay periods to report, as a slice of the owner's ONE
@@ -227,7 +231,7 @@ def cash_period_view(
         against its folded balance), plus the live override map the projection
         was computed with.
     """
-    return period_view_of(assemble(account, scenario_id, as_of), window)
+    return period_view_of(assemble(account, basis, as_of), window)
 
 
 def period_view_of(
@@ -266,7 +270,7 @@ def period_view_of(
             _cash_sums(folded.walk, folded.day_nets, window),
             _assertion_sums(folded.walk, window),
         ),
-        amount_overrides=live_amounts(folded.plan.basis),
+        amount_overrides=live_amounts(folded.plan.basis, folded.plan.rows),
     )
 
 

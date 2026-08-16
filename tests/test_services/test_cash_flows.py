@@ -48,7 +48,6 @@ from decimal import Decimal
 
 from app.enums import StatusEnum
 from app.models.transaction import Transaction
-from app.services.cash_ledger._amount_source import AmountBasis
 from app.services.cash_ledger import sum_projected
 from tests._test_helpers import (
     add_entry,
@@ -56,6 +55,7 @@ from tests._test_helpers import (
     create_envelope_txn,
     create_savings_account,
     create_transfer,
+    planted_basis,
 )
 
 
@@ -71,16 +71,14 @@ _ZERO = Decimal("0.00")
 def _unreconciled(*rows):
     """The reduction's basis over *rows*, with no live producer and no override.
 
-    A function rather than the module constant it replaced, because since plan
-    step X-au-c2 a basis records the row SET it was built over: the resolver
-    refuses a row outside it, so one shared object would either have to be built
-    over every row in the file or would grade the contract rather than the rule.
+    Both live derivations are planted EMPTY
+    (:class:`~tests._test_helpers.PlantedPricing`), so every row here is worth
+    what its own rule says and nothing supersedes it.  A basis is keyed on an
+    owner and a scenario rather than on a row set since plan step X-au-c2b; the
+    rows are still named at each call site because they record what that test
+    was valuing.
     """
-    return AmountBasis(
-        priced_ids=frozenset(row.id for row in rows),
-        salary_net={},
-        loan_cash={},
-    )
+    return planted_basis(*rows)
 
 
 def _set_status(txn, status_enum):

@@ -68,7 +68,11 @@ class TestApplyConflictDecisions:
             })
 
         kind = RecurrenceConflictKind(
-            model=None, amount_attr="amount", regenerate_fn=None,
+            # The kind's amount RULE, where this was the amount column's NAME
+            # until plan step X-au-c2b: the chooser renders the figure as money
+            # and a derived row carries no column to read.  Unused by the
+            # dispatch under test, so it is the identity here.
+            model=None, resolve_amount=lambda row: row, regenerate_fn=None,
             resolve_fn=fake_resolve, update_endpoint="x",
         )
         conflict = RecurrenceConflict(overridden=[10], deleted=[20])

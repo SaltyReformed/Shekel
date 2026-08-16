@@ -18,19 +18,23 @@ derivation needs the owner's whole pay-period set -- so the figure arrives as an
 ARGUMENT a caller cannot forget.  :func:`contributions_by_id` is the batch a
 reader with a row set uses, and
 :func:`~app.services.row_valuation.owned_contribution` is the cheap accessor
-for a reader that can only ever see rows owning their figure.
+for a reader that can only ever see rows owning their figure.  The BUDGET twins
+of those two are :func:`._amount_source.amounts_by_id` and
+:func:`~app.services.row_valuation.owned_amount`, which answer what a row's
+amount IS rather than what it is worth (ruling E-21, plan step X-au-c2b).
 
 **The arms that need no producer live one module DOWN, in
 :mod:`app.services.row_valuation`** (plan step X-au-c2).  ``fixed_contribution``
 (the status / soft-delete / entered-actual gate), ``own_figure`` (the NULL
-refusal) and ``owned_contribution`` are pure per-row reads.  The loan stack
+refusal) and the pair ``owned_amount`` / ``owned_contribution`` are pure per-row
+reads.  The loan stack
 needs the last of them and cannot name this package without raising pylint's
 ``cyclic-import``, because :mod:`._amount_source` reaches UP into
 ``loan_payment_service`` for rule 4's producer; that module's docstring carries
-the measurement.  Of the three, only ``owned_contribution`` is re-exported from
-this package (``__init__``'s ``__all__``) -- ``fixed_contribution`` is imported
-here for the valuations below and ``own_figure`` into :mod:`._amount_source`
-for its OWN arm, both as internal uses rather than public surface.  There is
+the measurement.  Of the four, ``owned_amount`` and ``owned_contribution`` are
+re-exported from this package (``__init__``'s ``__all__``) -- ``fixed_contribution``
+is imported here for the valuations below and ``own_figure`` only by
+``owned_amount`` itself, both as internal uses rather than public surface.  There is
 still exactly ONE definition of each rule, which is the claim this module
 exists to make.  What is genuinely inverted is that upward reach, and plan step
 X-au-g owns unwinding it.
@@ -40,9 +44,9 @@ Three rule families live here, split by the question they answer.
 What a row is worth while it is still PROJECTED -- a reservation, money not yet
 gone -- is two of them, composing in one direction:
 
-  * :func:`live_override` reads the two live producers' answers out of the
-    basis; it IS the read-time repair ruling R-FI deletes, and the per-kind
-    cutovers take it with the producers it merges; and
+  * :func:`live_override` asks the basis's two live DERIVATIONS what supersedes
+    the row's stored figure; it IS the read-time repair ruling R-FI deletes, and
+    the per-kind cutovers take it with the producers it merges; and
   * :func:`income_amount` / :func:`_expense_amount` CONSUME that lookup, falling
     through to the valuation -- and, for an expense carrying entries, to the
     entries-aware reservation formula :func:`_entry_checking_impact`.
@@ -81,12 +85,20 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.transaction import Transaction
-from app.services.row_valuation import fixed_contribution, owned_contribution
+# ``owned_amount`` is imported for the package's public surface rather than for
+# this module's own use: ``__init__`` re-exports the pair from here so a reader
+# takes both budget accessors from one place (see the module docstring).
+# Pylint: ``unused-import`` -- the re-export IS the use; ``__init__`` names it.
+from app.services.row_valuation import (  # pylint: disable=unused-import
+    fixed_contribution,
+    owned_amount,
+    owned_contribution,
+)
 from app.utils.balance_predicates import is_balance_contributing, is_projected
 
 from ._amount_source import (
     AmountBasis,
-    amount_basis,
+    amounts_by_id,
     resolve_transaction_amount,
 )
 
@@ -245,52 +257,120 @@ def live_override(txn, basis: AmountBasis):
     and outranks everything below it, because moving it would change what a
     balance says before the schema change that makes the new answer structural.
 
-    The two maps are merged HERE rather than in the basis: which rule prices a
-    row is a fact about the row, never about which map its id turned up in
-    (ruling R-FI's refuted discriminator).  The loan half still wins a collision,
-    as the flattened ``{**salary_net, **loan_cash}`` it replaced did.  The key
-    sets are disjoint in practice -- salary income rows against loan-payment
-    transfer shadows -- but that rests on a convention rather than a constraint,
-    which is why the precedence is preserved rather than declared impossible.
+    The two halves are asked HERE rather than merged in the basis: which rule
+    prices a row is a fact about the row, never about which map its id turned up
+    in (ruling R-FI's refuted discriminator).
+
+    **It asks each derivation directly since plan step X-au-c2b**, where it used
+    to index a map :func:`live_amounts` had built for a whole row set.  The LOAN
+    half is asked first, preserving the precedence the flattened
+    ``{**salary_net, **loan_cash}`` had -- **and that precedence is now
+    UNREACHABLE, which an adversarial review of this step established.**  The
+    loan half needs a ``transfer_id`` and the salary half a ``template_id``, and
+    ``ck_transactions_one_pricing_link`` admits at most ONE of the three pricing
+    links per row (plan step X-au-c1, measured at 0 violations over 997 rows).
+    So the two candidate sets are disjoint by CONSTRAINT, where the paragraph
+    this replaces said they rested on a convention.  The order is kept because
+    an unreachable branch written in the safe order costs nothing and stating it
+    is how the next reader learns the constraint is what makes it unreachable --
+    but no test can construct the collision, and none pretends to.
+
+    Each half answers ``None`` from the row's own columns before it touches its
+    derivation, so a row set holding neither kind resolves nothing and issues no
+    query.
 
     Args:
         txn: The Transaction being priced.
-        basis: The account's :class:`~._amount_source.AmountBasis`.
+        basis: The read pass's :class:`~._amount_source.AmountBasis`.
 
     Returns:
-        The override ``Decimal`` when either producer answered for ``txn``,
+        The override ``Decimal`` when either derivation answered for ``txn``,
         else None.
     """
-    return live_amounts(basis).get(txn.id)
+    # Pylint: ``import-outside-toplevel`` -- the paycheck / tax and
+    # loan-resolver stacks stay off this module's load path, the same reason
+    # ``_amount_source.amount_basis`` imports them at call time (finding N-267).
+    # pylint: disable=import-outside-toplevel
+    from app.services.income_service import live_projected_net
+    loan = basis.loans.live_cash(txn)
+    if loan is not None:
+        return loan
+    return live_projected_net(txn, basis.salary)
 
 
-def live_amounts(basis: AmountBasis) -> dict[int, Decimal]:
-    """Return both live producers' answers as ONE ``{transaction_id: Decimal}`` map.
+def live_amounts(basis: AmountBasis, rows) -> dict[int, Decimal]:
+    """Return both live derivations' answers over *rows* as ONE map.
 
-    The map form of :func:`live_override`, and the ONE statement of the merge --
-    which is why that per-row lookup delegates here rather than testing the two
-    maps in its own order.  It exists for the surfaces that want a LOOKUP rather
-    than a per-row question: the grid publishes it so a cell and the balance row
-    beside it read one object (ruling R-Q), and the period figures carry it for
-    the same reason.
+    The map form of :func:`live_override`, and it delegates to that per-row
+    question rather than restating the merge -- which is what keeps the two from
+    coming to disagree about precedence.  It exists for the surfaces that want a
+    LOOKUP rather than a per-row question: the grid publishes it so a cell and
+    the balance row beside it read one object (ruling R-Q), and the period
+    figures carry it for the same reason.
 
-    The basis keeps the two producers APART because which rule prices a row is a
-    fact about the row and never about which map its id turned up in (ruling
-    R-FI's refuted discriminator).  A surface that only wants "is there a live
-    figure for this id" is not asking that question, so merging for it costs
-    nothing -- and the loan half wins a collision, exactly as the
-    ``{**salary_net, **loan_cash}`` this replaced did.  The key sets are
-    disjoint in practice (salary income rows against loan-payment transfer
-    shadows) but that rests on a convention rather than a constraint, so the
-    precedence is preserved rather than declared impossible.
+    **It takes the rows it is a map OVER** (plan step X-au-c2b).  It used to
+    flatten two ``{transaction_id: Decimal}`` maps the basis carried, which is
+    why the basis had to be built per row set at all; a basis now holds the
+    derivations, and a map keyed by row id is something a caller asks for about
+    ITS OWN rows.  Only the rows a live derivation answers for appear, so the
+    result is still the "is there a live figure for this id" lookup its
+    consumers read it as.
 
     Args:
-        basis: The :class:`~._amount_source.AmountBasis` to flatten.
+        basis: The read pass's :class:`~._amount_source.AmountBasis`.
+        rows: The loaded rows to build the map over.
 
     Returns:
-        ``{transaction_id: Decimal}``, empty when neither producer answered.
+        ``{transaction_id: Decimal}``, empty when no row has a live figure.
     """
-    return {**basis.salary_net, **basis.loan_cash}
+    answers: dict[int, Decimal] = {}
+    for txn in rows:
+        live = live_override(txn, basis)
+        if live is not None:
+            answers[txn.id] = live
+    return answers
+
+
+def display_amounts_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
+    """Return ``{transaction_id: the figure a SCREEN shows}`` for *rows*.
+
+    **The ONE rule for what a row's amount displays as** (plan step X-au-c2b):
+    what its amount RESOLVES to (:func:`~._amount_source.amounts_by_id`),
+    superseded by a live recompute where one exists (:func:`live_amounts`).
+    Two questions in one answer, and the composition is the answer -- which is
+    why it is a function rather than two lines each caller writes.
+
+    **It exists because an adversarial review found the two lines written
+    twice, differently.**  The grid published the resolved map with the seam's
+    override map laid over it; every HTMX fragment and the companion view
+    published the resolved map ALONE, under the same context key.  So a
+    projected salary row whose profile had moved past its cached column showed
+    the live net on the grid and the stale column in the quick-edit box the same
+    click opened -- and that box is the one a save posts back from.  Three
+    surfaces, three answers, which is finding **N-224**'s shape reproduced by
+    the very step that set out to give a row ONE figure.
+
+    **The override half is TRANSITIONAL and dies with the cutovers.**  Ruling
+    R-FI deletes the read-time repair: once X-au-d and X-au-g declare their rows
+    DERIVED the resolver answers them from the same producers, :func:`live_amounts`
+    finds nothing, and this collapses into :func:`~._amount_source.amounts_by_id`
+    on its own.  Until then a screen must show the repaired figure, because that
+    is what every balance surface already folds (ruling **R-Q**).
+
+    Args:
+        rows: The rows a surface is about to render.
+        basis: The read pass's :class:`~._amount_source.AmountBasis`.
+
+    Returns:
+        ``{transaction_id: Decimal}`` covering every row.
+
+    Raises:
+        AmountUnresolvable: From the resolver, for a row whose rule cannot
+            answer.  A refusal is never a fallback.
+    """
+    displayed = amounts_by_id(rows, basis)
+    displayed.update(live_amounts(basis, rows))
+    return displayed
 
 
 def contributed_amount(txn, resolved: Decimal) -> Decimal:
@@ -324,17 +404,22 @@ def contributed_amount(txn, resolved: Decimal) -> Decimal:
     return resolved if fixed is None else fixed
 
 
-def contributions_by_id(user_id, scenario_id, rows) -> dict[int, Decimal]:
+def contributions_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
     """Return ``{transaction_id: what the row contributes}`` for *rows*.
 
     **The BATCH valuation every reader that can see a still-projected row uses**
-    (plan step X-au-c2).  It builds ONE
-    :class:`~._amount_source.AmountBasis` over the whole set -- so the paycheck
-    engine runs once per read pass rather than once per row (finding **N-228**)
-    and once per read pass rather than once per ACCOUNT, which is what re-keying
-    the basis on the owner bought -- and then values each row through
+    (plan step X-au-c2).  It values each row through
     :func:`~app.services.row_valuation.fixed_contribution`, resolving only the
-    rows that reach the amount model at all.
+    rows that reach the amount model at all -- so the paycheck engine runs once
+    per read pass rather than once per row (finding **N-228**).
+
+    **It TAKES the basis rather than building one** (plan step X-au-c2b).  A
+    basis is pinned to an owner and a scenario, not to a row set, so a caller
+    that also needs the budget map or the live-override map asks all of them
+    against ONE -- which is how a single request stopped running the paycheck
+    engine once per row set (findings **N-268**, **N-269**).  A caller with a
+    read pass passes ``ctx.amounts()``; one without builds its own with
+    :func:`~._amount_source.amount_basis`.
 
     That ordering is the point rather than an optimisation: an excluded row is
     worth ``$0.00`` and its derived amount has no producer to answer it, so a
@@ -347,10 +432,10 @@ def contributions_by_id(user_id, scenario_id, rows) -> dict[int, Decimal]:
     fabricated figure in a money path.
 
     Args:
-        user_id: The owner of *rows*; scopes the salary producer.
-        scenario_id: The scenario the amounts resolve under.
         rows: The loaded rows to value.  They may span accounts -- the basis is
-            keyed on the owner, not on one account.
+            keyed on the owner, not on one account -- but every one must belong
+            to *basis*'s owner and scenario.
+        basis: The read pass's :class:`~._amount_source.AmountBasis`.
 
     Returns:
         ``{transaction_id: Decimal}`` covering every row.
@@ -360,7 +445,6 @@ def contributions_by_id(user_id, scenario_id, rows) -> dict[int, Decimal]:
             answer.  A refusal is never a fallback (see
             :mod:`app.services.cash_ledger._amount_source`).
     """
-    basis = amount_basis(user_id, scenario_id, rows)
     return {row.id: contribution_of(row, basis) for row in rows}
 
 
@@ -873,7 +957,7 @@ def _expense_amount(txn, basis: AmountBasis):
     The expense-leg analogue of :func:`income_amount`.  When a live producer
     answered for the row -- e.g. a recurring loan-payment transfer whose cash
     debit is derived from the destination loan via
-    :func:`app.services.loan_payment_service.live_loan_transfer_amounts` -- the
+    :meth:`~app.services.loan_payment_service.LoanPricing.live_cash` -- the
     live amount replaces every other answer.  Otherwise it falls to
     :func:`_entry_aware_amount`, preserving the entry-checking formula for
     envelope expenses.

@@ -365,7 +365,7 @@ def track_payment(account_id):
     resets the stored base (``default_amount``) to today's contract so every
     surface that reads it shows the current figure.  No shadow regeneration is
     needed -- a derive payment's projected cash is recomputed LIVE at read time
-    (:func:`app.services.loan_payment_service.live_loan_transfer_amounts`), the
+    (:meth:`~app.services.loan_payment_service.LoanPricing.live_cash`), the
     same mechanism a freshly-created derive transfer relies on -- and the
     recurrence end date is re-synced since a higher tracked payment can move the
     projected payoff.

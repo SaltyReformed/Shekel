@@ -32,11 +32,17 @@
 #}
 {% set t = found.txn if found is defined and found.txn else txn %}
 {% if t %}
-{# Workstream B: projected salary income shows the live net via the
-   route-set transient attribute t.live_estimated_amount; expenses, other
-   income, and render paths that do not set it fall back to the stored
-   estimated_amount, so this is a safe no-op everywhere it is absent. #}
-{% set est_display = t.live_estimated_amount if t.live_estimated_amount is defined else t.estimated_amount %}
+{#- The row's amount comes off the render's ``budgets`` map (plan step
+    X-au-c2b).  It was a transient ``t.live_estimated_amount`` the route
+    annotated onto each row, read behind an ``is defined`` guard that fell back
+    to ``t.estimated_amount``: both halves had to go.  A derived row stores
+    nothing in that column, and a Jinja ``Undefined`` answers silently, so a
+    render path that forgot to set the attribute showed the stale column with
+    nothing on screen to say so.  Indexing a published map is what a template
+    cannot read half of; every entry that renders this partial publishes one
+    (``routes/_render_helpers.render_transaction_cell`` for the fragments, the
+    grid and companion routes for the pages). -#}
+{% set est_display = budgets[t.id] %}
 {% set display_amount = t.actual_amount if t.actual_amount is not none else est_display %}
 {% set es = entry_sums.get(t.id) if entry_sums is defined else none %}
 {% set show_progress = es is not none and t.status_id == STATUS_PROJECTED %}
@@ -71,7 +77,7 @@
      ONCE (polyglot audit TPLB/TPL-10).  aria-label additionally prefixes
      the txn name for screen readers, and the two conflict prefixes differ
      only in punctuation, so those stay inline. #}
-  {% set detail %}{% if show_progress %}{{ money(es.total) }} / {{ money(t.estimated_amount) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ money(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != t.estimated_amount %} (est: {{ money(t.estimated_amount) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}{% endset %}
+  {% set detail %}{% if show_progress %}{{ money(es.total) }} / {{ money(es.budget) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ money(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != est_display %} (est: {{ money(est_display) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}{% endset %}
   <span class="txn-open"
         data-txn-id="{{ t.id }}"
         {% if t.is_expense and t.status_id == STATUS_PROJECTED
@@ -92,12 +98,12 @@
     {# Entry progress display for tracked transactions #}
     {% if show_progress %}
       <span class="font-mono{% if over_budget %} text-danger fw-semibold{% endif %}">
-        {{ "{:,.0f}".format(es.total) }} / {{ "{:,.0f}".format(t.estimated_amount) }}
+        {{ "{:,.0f}".format(es.total) }} / {{ "{:,.0f}".format(es.budget) }}
       </span>
     {# Show crossed-out estimate + actual when they differ #}
-    {% elif t.actual_amount is not none and t.actual_amount != t.estimated_amount %}
+    {% elif t.actual_amount is not none and t.actual_amount != est_display %}
       <span class="text-decoration-line-through small text-muted-shekel">
-        {{ "{:,.0f}".format(t.estimated_amount) }}
+        {{ "{:,.0f}".format(est_display) }}
       </span>
       <span class="fw-semibold font-mono">{{ "{:,.0f}".format(t.actual_amount) }}</span>
     {% else %}

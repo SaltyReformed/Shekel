@@ -42,9 +42,10 @@ from app.utils.dates import DISPLAY_TIMEZONE, display_today, to_display_date
 from tests._test_helpers import (
     add_txn,
     append_balance_assertion,
+    basis_for,
+    create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
-    create_savings_account,
     freeze_today,
     restamp_opening_assertion,
 )
@@ -142,7 +143,7 @@ def _fold_at(account, scenario, day):
     Returns:
         The folded balance as a ``Decimal``.
     """
-    return fold_cash_balances(account, scenario.id, day, [day])[day]
+    return fold_cash_balances(account, basis_for(account, scenario), day, [day])[day]
 
 
 def _replay_terminal_balance(account, scenario):

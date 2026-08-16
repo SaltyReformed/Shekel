@@ -477,7 +477,7 @@ def _load_projection_context(
     deductions = load_active_deductions_for_account(user_id, account.id)
     adapted_deductions = adapt_deductions(deductions)
     acct_contributions = load_shadow_income_contributions_for_account(
-        user_id, balance_ctx.scenario_id,
+        balance_ctx.amounts(),
         account.id, [period.period_id for period in periods],
     ).records
     # Seed for the forward projection: the account's MODELLED balance on the

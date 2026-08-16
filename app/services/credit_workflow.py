@@ -15,6 +15,10 @@ from app.models.category import Category
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.services import posting_service, status_seam
+from app.services.cash_ledger import (
+    amount_basis,
+    resolve_transaction_amount,
+)
 from app.services.pay_calendar import DerivedPeriod, calendar_for
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.balance_predicates import is_credit, is_projected
@@ -359,8 +363,21 @@ def mark_as_credit(transaction_id, user_id):
             "No next pay period exists.  Generate more periods first."
         )
 
-    # Determine the payback amount (use actual if set, else estimated).
-    payback_amount = txn.actual_amount if txn.actual_amount is not None else txn.estimated_amount
+    # Determine the payback amount (use actual if set, else the source row's
+    # RESOLVED amount).  That second term was ``txn.estimated_amount``, the
+    # COLUMN, until plan step X-au-c2b: this runs on a row that is still
+    # Projected -- ``is_projected`` is asserted twenty lines up -- so it is
+    # exactly the state a per-kind cutover declares derived, and the column
+    # would be ``None`` in a money path.  What the payback's own figure SHOULD
+    # be is a different question, and it is plan step X-au-i's (finding
+    # **N-243**): a payback is worth the credit entries it repays, and neither
+    # of this line's two terms is that.
+    payback_amount = (
+        txn.actual_amount if txn.actual_amount is not None
+        else resolve_transaction_amount(
+            txn, amount_basis(txn.account.user_id, txn.scenario_id),
+        )
+    )
 
     # Create the payback transaction via the shared factory (see
     # entry_credit_workflow for the entry-level twin).

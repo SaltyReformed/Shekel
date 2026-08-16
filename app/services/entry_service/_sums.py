@@ -45,6 +45,7 @@ def compute_entry_sums(
 
 def build_entry_sums_dict(
     transactions: list,
+    budgets: dict[int, Decimal],
 ) -> dict[int, dict]:
     """Build a {txn_id: sums_dict} mapping for transactions with entries.
 
@@ -52,13 +53,21 @@ def build_entry_sums_dict(
     entry aggregates for the cell template.  Only transactions with
     non-empty entries are included in the result.
 
-    The dict carries ``remaining`` and ``over_budget`` so the grid
-    cell template renders without inline Jinja arithmetic
+    The dict carries ``budget``, ``remaining`` and ``over_budget`` so the
+    grid cell template renders without inline Jinja arithmetic
     (E-16 / MED-04).  ``remaining`` is computed via
-    :func:`compute_remaining` (the E-21 declared base
-    ``estimated_amount`` minus the sum of all entries), so the cell's
-    over-budget styling is driven by the same single rule that the
-    dashboard bill row sees via ``bill.entry_remaining``.
+    :func:`compute_remaining` (the E-21 declared base minus the sum of all
+    entries), so the cell's over-budget styling is driven by the same single
+    rule that the dashboard bill row sees via ``bill.entry_remaining``.
+
+    **The base arrives as an ARGUMENT** (plan step X-au-c2b).  It was read here
+    as ``txn.estimated_amount``, the COLUMN -- and under the amount model a
+    derived row stores none, so that read would meet a ``None`` in a
+    subtraction on a live screen at the first per-kind cutover.  The caller
+    resolves its whole row set ONCE through
+    :func:`~app.services.cash_ledger.amounts_by_id` and hands the map down, so
+    the cell's numerator, its denominator and the balance row beside it are one
+    figure rather than three reads that agree by luck.
 
     Pure function -- no database access beyond what was already loaded
     on the Transaction objects (expects entries to be accessible, either
@@ -66,12 +75,17 @@ def build_entry_sums_dict(
 
     Args:
         transactions: List of Transaction objects with entries accessible.
+        budgets: ``{transaction_id: Decimal}`` covering every row in
+            *transactions*, from the caller's one
+            :func:`~app.services.cash_ledger.amounts_by_id` call.  Indexed with
+            ``[]``: a row missing from it is a caller that priced a different
+            set, and a default here would be a fabricated budget.
 
     Returns:
         dict mapping transaction ID to {"debit": Decimal, "credit": Decimal,
-        "total": Decimal, "count": int, "remaining": Decimal,
-        "over_budget": bool, "pct": Decimal}.  Empty dict if no transactions
-        have entries.  ``pct`` is the entries-to-estimate ratio clamped
+        "total": Decimal, "count": int, "budget": Decimal,
+        "remaining": Decimal, "over_budget": bool, "pct": Decimal}.  Empty dict
+        if no transactions have entries.  ``pct`` is the entries-to-estimate ratio clamped
         to [0, 100] via :func:`pct_complete`; it drives the mobile
         progress-bar's ``data-progress-pct`` attribute on the unified
         ``render_row_card`` macro per mobile-first v3 plan Commit 13.
@@ -81,22 +95,24 @@ def build_entry_sums_dict(
         if txn.entries:
             debit, credit = compute_entry_sums(txn.entries)
             total = debit + credit
-            estimated = Decimal(str(txn.estimated_amount))
-            remaining = compute_remaining(estimated, txn.entries)
+            budget = budgets[txn.id]
+            remaining = compute_remaining(budget, txn.entries)
             result[txn.id] = {
                 "debit": debit,
                 "credit": credit,
                 "total": total,
                 "count": len(txn.entries),
+                "budget": budget,
                 "remaining": remaining,
                 "over_budget": remaining < Decimal("0"),
-                "pct": pct_complete(total, estimated),
+                "pct": pct_complete(total, budget),
             }
     return result
 
 
 def build_entry_lists_dict(
     transactions: list,
+    budgets: dict[int, Decimal],
 ) -> dict[int, dict]:
     """Build a {txn_id: entry_list_data} mapping for envelope transactions.
 
@@ -128,6 +144,9 @@ def build_entry_lists_dict(
     Args:
         transactions: List of Transaction objects with ``entries`` and
             ``template`` accessible.
+        budgets: ``{transaction_id: Decimal}`` covering every row in
+            *transactions* (see :func:`build_entry_sums_dict`), forwarded to
+            :func:`entry_list_view`.
 
     Returns:
         dict mapping envelope transaction ID to one
@@ -138,14 +157,14 @@ def build_entry_lists_dict(
         template.
     """
     return {
-        txn.id: entry_list_view(txn, list(txn.entries))
+        txn.id: entry_list_view(txn, list(txn.entries), budgets[txn.id])
         for txn in transactions
         if txn.tracks_purchases
     }
 
 
 def entry_list_view(
-    txn: Transaction, entries: list[TransactionEntry],
+    txn: Transaction, entries: list[TransactionEntry], budget: Decimal,
 ) -> dict:
     """Return the WHOLE derived context one envelope's entry list renders from.
 
@@ -177,9 +196,13 @@ def entry_list_view(
     rendered ACCOUNT from every grid render.
 
     Args:
-        txn: The envelope transaction being rendered.  Its
-            ``estimated_amount`` sets the remaining figure and its pay period
-            bounds the out-of-period warning.
+        txn: The envelope transaction being rendered.  Its pay period bounds
+            the out-of-period warning.
+        budget: What the row's amount RESOLVES to -- the E-21 declared base the
+            remaining figure is computed against
+            (:func:`~app.services.cash_ledger.amounts_by_id`).  An argument
+            rather than a read of ``txn.estimated_amount`` since plan step
+            X-au-c2b: a derived row stores no figure in that column.
         entries: The transaction's entries, already loaded and ordered by
             ``purchased_on``.  Taken as an argument rather than read off *txn*
             because the two callers load them differently -- the route through
@@ -191,8 +214,8 @@ def entry_list_view(
         The four keys the template consumes:
 
           - ``entries``: the list as given.
-          - ``remaining`` (Decimal): estimated_amount minus the sum of all
-            entries (debit + credit), via :func:`compute_remaining`.
+          - ``remaining`` (Decimal): the row's resolved budget minus the sum
+            of all entries (debit + credit), via :func:`compute_remaining`.
           - ``out_of_period_ids`` (set[int]): entry IDs whose ``purchased_on``
             falls outside the parent pay period, surfacing the OP-4
             date-awareness warning.
@@ -205,7 +228,7 @@ def entry_list_view(
     """
     return {
         "entries": entries,
-        "remaining": compute_remaining(txn.estimated_amount, entries),
+        "remaining": compute_remaining(budget, entries),
         "out_of_period_ids": {
             e.id for e in entries
             if not check_purchase_date_in_period(e.purchased_on, txn)
@@ -217,39 +240,43 @@ def entry_list_view(
 
 
 def compute_remaining(
-    estimated_amount: Decimal,
+    budget: Decimal,
     entries: list[TransactionEntry],
 ) -> Decimal:
-    """Compute remaining budget: estimated_amount - sum of ALL entries.
+    """Compute remaining budget: the declared base minus the sum of ALL entries.
 
     Uses the sum of ALL entries regardless of payment method (debit +
     credit) because the remaining balance represents budget consumption,
     not checking impact.  Negative values indicate overspending.
 
     Per E-21 (audit MED-03 / F-028 / F-056) the budget base for an
-    entry-tracked bill row is ``estimated_amount`` unconditionally --
+    entry-tracked bill row is the row's own AMOUNT unconditionally --
     never ``actual_amount`` and never status-dependent.  This is why
-    the signature takes ``estimated_amount`` directly rather than the
-    whole ``Transaction``: the base cannot be switched on at runtime;
+    the signature takes that base directly rather than the whole
+    ``Transaction``: the base cannot be switched on at runtime;
     callers that want to display "remaining" against a different base
-    are out of contract and must compute it themselves.  The dashboard
-    bill row, the companion entry data builder, and the entries
-    partial all pass ``txn.estimated_amount`` (verified) so they
-    share one declared base with the row's amount cell and
-    over-budget flag.
+    are out of contract and must compute it themselves.
+
+    **The parameter was named ``estimated_amount`` until plan step X-au-c2b**,
+    and renaming it is the point rather than tidying: a parameter named after a
+    COLUMN invites the next caller to pass that column, and under the amount
+    model a derived row's is ``NULL``.  Every caller now passes what the row's
+    amount RESOLVES to (:func:`~app.services.cash_ledger.amounts_by_id`), so
+    the row's amount cell, its remaining and its over-budget flag share one
+    declared base by construction.
 
     Pure function -- no database access.
 
     Args:
-        estimated_amount: The transaction's budgeted amount -- the
-            E-21 declared base for the row's plan-vs-actual figures.
+        budget: The transaction's resolved amount -- the E-21 declared base for
+            the row's plan-vs-actual figures.
         entries: List of TransactionEntry objects.
 
     Returns:
         Decimal -- the remaining budget (negative means overspent).
     """
     total_spent = sum((e.amount for e in entries), Decimal("0"))
-    return estimated_amount - total_spent
+    return budget - total_spent
 
 
 def pct_complete(total: Decimal, target: Decimal) -> Decimal:

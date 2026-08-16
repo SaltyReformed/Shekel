@@ -21,7 +21,10 @@ from app.models.transaction import Transaction
 from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.ref import Status
-from app.routes._render_helpers import render_transaction_cell
+from app.routes._render_helpers import (
+    fragment_budgets,
+    render_transaction_cell,
+)
 from app.schemas.validation import (
     MarkDoneSchema,
     TransactionUpdateSchema,
@@ -162,12 +165,14 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
                 txn=txn, id_prefix=card_prefix, error=error,
             )
         return render_transaction_cell(txn)
+    budgets = fragment_budgets(txn)
     return render_template(
         "grid/_mobile_card_single.html",
         rk=row_keys[0],
         txn=txn,
-        entry_sums=build_entry_sums_dict([txn]),
-        entry_lists=build_entry_lists_dict([txn]),
+        budgets=budgets,
+        entry_sums=build_entry_sums_dict([txn], budgets),
+        entry_lists=build_entry_lists_dict([txn], budgets),
         can_edit=can_edit,
         id_prefix=card_prefix,
         # The USER's civil day, never the process's.  This reaches

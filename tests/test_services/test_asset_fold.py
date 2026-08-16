@@ -1103,7 +1103,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         )
         boundary = ReconciledThrough(seed_periods[0].start_date)
         before = _asset_contributions.contribution_events(
-            account, seed_user["scenario"].id, inputs, boundary,
+            account, _ctx(seed_user).amounts(), inputs, boundary,
             _ctx(seed_user).reported_periods(),
         )
 
@@ -1127,7 +1127,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         ]
 
         after = _asset_contributions.contribution_events(
-            account, seed_user["scenario"].id, inputs, boundary, window,
+            account, _ctx(seed_user).amounts(), inputs, boundary, window,
         )
 
         assert after == before
@@ -1209,7 +1209,7 @@ class TestAnAccountThatModelsNothingIsItsCashFold:
             for column in _view(account, ctx, seed_periods).values()
         ] == list(
             _cash_fold.cash_period_balances(
-                account, ctx.scenario.id, ctx.as_of,
+                account, ctx.amounts(), ctx.as_of,
                 period_window(seed_periods),
             ).values()
         )
@@ -1275,7 +1275,7 @@ class TestThePerPeriodIdentity:
             gross=Decimal("3631.74"),
         )
         cash = _cash_periods.cash_period_view(
-            account, ctx.scenario.id, ctx.as_of, period_window(seed_periods),
+            account, ctx.amounts(), ctx.as_of, period_window(seed_periods),
         )
         openings = _fold(
             account, ctx,

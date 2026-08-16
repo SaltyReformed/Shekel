@@ -372,7 +372,7 @@ def _payment_drift(template, total_payment):
 
     * no recurring payment (``template is None``);
     * a DERIVE-mode payment, whose projected cash is recomputed to the contract on
-      every read (:func:`app.services.loan_payment_service.live_loan_transfer_amounts`),
+      every read (:meth:`~app.services.loan_payment_service.LoanPricing.live_cash`),
       so it can never drift;
     * a payment at or ABOVE contract -- underpayment-only, so a deliberate
       overpayment never trips it.

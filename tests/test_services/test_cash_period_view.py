@@ -60,6 +60,7 @@ from tests._test_helpers import (
     add_entry,
     add_txn,
     append_balance_assertion,
+    basis_for,
     create_envelope_txn,
     create_settled_cash_transaction,
     mark_purchase_settled,
@@ -85,7 +86,7 @@ def _view(account, scenario, periods, as_of=_EARLY_AS_OF):
     them; ``TestTheViewCarriesTheBasisItWasValuedOn`` grades the map.
     """
     return cash_period_view(
-        account, scenario.id, as_of, period_window(periods),
+        account, basis_for(account, scenario), as_of, period_window(periods),
     ).columns
 
 
@@ -117,7 +118,7 @@ def _identity_holds(account, scenario, periods, as_of=_EARLY_AS_OF):
     figures = _view(account, scenario, periods, as_of=as_of)
     boundaries = [period.start_date - _ONE_DAY for period in window]
     boundaries += [period.end_date for period in window]
-    folded = fold_cash_balances(account, scenario.id, as_of, boundaries)
+    folded = fold_cash_balances(account, basis_for(account, scenario), as_of, boundaries)
     return [
         (
             period,
@@ -210,9 +211,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
             )
             if row.pay_period_id == seed_periods[2].id
         ]
-        basis = cash_ledger.amount_basis(
-            account.user_id, scenario.id, period_rows,
-        )
+        basis = basis_for(account, scenario)
         _, unpaid_only_expense = cash_ledger.sum_projected(period_rows, basis)
         assert unpaid_only_expense == Decimal("75.00")
         assert figures.expense - unpaid_only_expense == Decimal("200.00")
@@ -490,7 +489,7 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         assert figures.balance == Decimal("1000.00")
 
         folded = fold_cash_balances(
-            account, scenario.id, _EARLY_AS_OF,
+            account, basis_for(account, scenario), _EARLY_AS_OF,
             [seed_periods[0].start_date - _ONE_DAY],
         )
         assert folded[seed_periods[0].start_date - _ONE_DAY] == Decimal("1400.00")
@@ -738,7 +737,7 @@ class TestTheIdentityHoldsOnEveryPeriod:
 
         forwards = period_window(seed_periods)
         backwards = PeriodWindow(periods=tuple(reversed(forwards.periods)))
-        folded = assemble(account, scenario.id, _EARLY_AS_OF)
+        folded = assemble(account, basis_for(account, scenario), _EARLY_AS_OF)
 
         assert period_view_of(folded, forwards).columns == period_view_of(
             folded, backwards,
@@ -1052,7 +1051,7 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         stored = db.session.get(PayPeriod, seed_periods[0].id)
         assert stored.end_date == date(2026, 1, 20)
         folded = fold_cash_balances(
-            account, scenario.id, _EARLY_AS_OF,
+            account, basis_for(account, scenario), _EARLY_AS_OF,
             [date(2026, 1, 15), date(2026, 1, 20)],
         )
         # Sampled at the stored end the column reads $750.00; at the derived
@@ -1187,7 +1186,7 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
         db.session.commit()
 
         view = cash_period_view(
-            account, scenario.id, _EARLY_AS_OF, period_window(seed_periods),
+            account, basis_for(account, scenario), _EARLY_AS_OF, period_window(seed_periods),
         )
 
         assert view.amount_overrides == {txn.id: Decimal("4000.00")}
@@ -1208,7 +1207,7 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
         db.session.commit()
 
         view = cash_period_view(
-            account, scenario.id, _EARLY_AS_OF, period_window(seed_periods),
+            account, basis_for(account, scenario), _EARLY_AS_OF, period_window(seed_periods),
         )
 
         assert view.amount_overrides == {}
