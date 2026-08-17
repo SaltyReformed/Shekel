@@ -229,7 +229,23 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     """Compute the canonical paycheck breakdown for the current period.
 
     The single income producer this module uses for any engine-derived
-    income figure (MED-06 / F-032).  Both consumers -- the savings-goal
+    income figure (MED-06 / F-032).
+
+    **A dead ``duplicate-code`` suppression sat on the body of this function
+    and is deleted** (pay-calendar plan step C2-f2d-3).  It justified itself by
+    naming ``dashboard_service`` as running the same resolve-profile ->
+    load-configs -> ``calculate_paycheck`` sequence; that module has neither a
+    ``SalaryProfile`` query nor a ``load_tax_configs_for_year`` call, so the
+    rationale described code that no longer exists and the disable suppressed
+    NOTHING -- measured by deleting it and re-running ``pylint app/``, which
+    stays at 10.00/10 with no ``duplicate-code`` message.  It survived every
+    gate because ``useless-suppression`` cannot see a stale ``duplicate-code``
+    disable, which is finding **N-154**; this is a measured instance of it.
+    **The sequence itself is still written THREE times** -- here,
+    ``retirement_dashboard_service._compute_current_pay`` and
+    ``income_service.get_current_gross_biweekly`` -- which is reported rather
+    than merged here (``CLAUDE.md`` rule 6: collapsing it changes what two
+    other pages produce).  Both consumers -- the savings-goal
     trajectory's net biweekly pay and the DTI denominator's gross
     monthly income -- route through this helper so the page cannot
     silently disagree with the paycheck engine on the same period.
@@ -259,15 +275,6 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     if current_period is None:
         return None
 
-    # Pylint: ``duplicate-code`` -- resolve-active-profile ->
-    # load-tax-configs -> calculate_paycheck.  ``dashboard_service`` runs
-    # the same three steps, but the two return different contracts (that
-    # one keeps only ``net_pay``; this one returns the full
-    # PaycheckBreakdown for the DTI / trajectory math), so they are
-    # deliberately separate surfaces over the same calculator rather than a
-    # shared helper (coding-standards rule 13).  One-sided
-    # ``duplicate-code`` disable (see plan.md Phase 2 notes).
-    # pylint: disable=duplicate-code
     profile = (
         db.session.query(SalaryProfile)
         .filter_by(user_id=user_id, is_active=True)
@@ -284,7 +291,6 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     return paycheck_calculator.calculate_paycheck(
         profile, current_period, all_periods, tax_configs,
     )
-    # pylint: enable=duplicate-code
 
 
 def _checking_account_ids(accounts):
