@@ -121,6 +121,35 @@ a PostgreSQL CHECK cannot reference another table.
 * `CadenceWire.anchors_day_of_month` -> `schedules_on_day_of_month`, through the picker, the script
   and the browser harness.
 
+## The browser pass (2026-08-17)
+
+The arc's standing mandate ran and PASSED: `tests/manual/verify_recurrence_form.py`, against the
+containerized dev app bind-mounted to this worktree, 0 console errors, 0 failures. Three of its
+checks are this step's:
+
+```text
+PASS  transfer G: funding help says a choice        (was "says FIXED" -- the YEAR unit)
+PASS  transfer H: a yearly cadence CAN be funded from a later paycheck
+PASS  the WEEK unit is refused under the DEFERRING placement too
+```
+
+Nothing was persisted: 0 `ZZVERIFY%` templates afterwards, and the 46-rule cadence census is
+byte-identical to the pre-run one.
+
+**The harness itself was a defect this step had to fix first, and an adversarial review is what
+found it.** Its refusal list still POSTed `(1, YEAR, deferred)` expecting "cannot be saved yet" --
+the exact reading R-R24 admits. Those payloads carry a whole create form and `POST /templates`
+GENERATES on create, so the run would have written a template, a recurrence rule and its projected
+rows into a dev database cloned from production, and then failed the pass's own two persistence
+checks -- which is how a real regression comes to be read as "the known year failure". The case was
+replaced by the WEEK unit's other placement, and case G's expectation flipped with the fact it
+asserts.
+
+Two operational notes for the next run, both cost time here: the harness needs the project venv's
+Python (`playwright` is not in the system one), and the dev app will not start in a fresh worktree
+until `state/.seed-complete` exists -- see the `SEED_USER_LAST_PAYDAY` failure the dev compose
+guarantees.
+
 ## The defect this step introduced, and what caught it
 
 Stating `fires_on_day_of_month` directly deleted a refusal `_reading.scheduling_day_of_month`
