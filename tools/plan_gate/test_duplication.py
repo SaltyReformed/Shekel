@@ -87,11 +87,25 @@ class TestTheOrderIsStatedOnlyInStepsMd:
         chain of keys it can resolve: ``R7b`` DECOMPOSED on 2026-08-12, and a
         control naming a retired id would have stopped firing silently -- which
         is the one failure a control exists to make impossible.
+
+        **They are DERIVED from that table at plan step R8-a, because writing
+        them out is the exact rot the paragraph above warns about.**  This case
+        named ``R7b-1``; R8-a ARCHIVED the four R7b leaves out of the index
+        under ``conventions.md`` rule 5, the id stopped resolving, and the
+        control stopped firing -- caught by the gate rather than by anybody
+        re-reading it.  Its sibling above was already derived for the same
+        reason and did not move.
         """
+        idents = [
+            row.ident for row in registry.step_rows()
+            if row.arc == "recurrence"
+        ][:2]
+        assert len(idents) == 2, "the recurrence arc must hold two steps"
+        first, second = idents
         stage_arc(
             "recurrence",
             "## Rulings",
-            "## Rulings\n\nBuild R7b-1, then R7c.\n",
+            f"## Rulings\n\nBuild {first}, then {second}.\n",
         )
         assert duplication.order_restatement_violations()
 

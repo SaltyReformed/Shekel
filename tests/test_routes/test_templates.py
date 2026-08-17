@@ -1482,25 +1482,28 @@ class TestPreviewRecurrence:
     ):
         """The preview must not show a schedule that cannot be saved.
 
-        **The unsavable cadence MOVED at plan step R7c-c.**  It was
-        ``(2, MONTH)`` -- which walked correctly and had no closed-set pattern
-        to be stored as -- and freeing the interval is exactly what made that
-        savable.  What is unsavable now is a ``(unit, placement)`` pair the
-        resolver has no anchor derivation for: a year-scale cadence deferred
-        onto a month's FIRST paycheck names no cycle month, and plan step R8
-        owns it.
+        **The unsavable cadence has MOVED TWICE, and each move closed a real
+        gap.**  It was ``(2, MONTH)`` -- which walked correctly and had no
+        closed-set pattern to be stored as -- until plan step R7c-c freed the
+        interval.  It was then ``(1, YEAR, first paycheck)``, refused because
+        ``anchor_family`` had no first-occurrence derivation for it; plan step
+        **R8-a** measured that refusal stale -- ruling **R-R16** made the first
+        occurrence AUTHORED and deleted the derivation it cited -- and admitted
+        the pair.
 
-        Not reachable by clicking -- the picker offers the YEAR unit with one
-        placement -- so this is the crafted-args door, pinned because the
-        endpoint's own reasoning stops one case short of it.
+        What is unsavable now is the ``WEEK`` unit: a weekly occurrence is
+        neither a payday nor a day of the month, so
+        ``recurrence_engine.compute_due_date`` has nothing to date its
+        generated rows from until plan step **R5**.
+
+        Not reachable by clicking -- the picker never renders the WEEK unit --
+        so this is the crafted-args door, pinned because the endpoint's own
+        reasoning stops one case short of it.
         """
         assert seed_periods_today
         resp = auth_client.get(
             "/templates/preview-recurrence",
-            query_string=cadence_payload(
-                unit=RecurrenceUnitEnum.YEAR,
-                placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
-            ),
+            query_string=cadence_payload(unit=RecurrenceUnitEnum.WEEK),
         )
 
         assert resp.status_code == 200

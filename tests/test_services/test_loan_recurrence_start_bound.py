@@ -724,8 +724,8 @@ class TestAMonthEndLoanKeepsItsMonthEnd:
     :attr:`ResolvedRecurrence.day_of_month` both read.
 
     The producer asked a DIFFERENT question: ``fires_on_day_of_month``, which
-    answers which ANCHOR FAMILY a ``(unit, placement)`` pair derives its first
-    occurrence from.  The two agree everywhere except ``Monthly First``, whose
+    answers whether a generated ROW is dated from a day of the month (it read
+    an ANCHOR FAMILY router until plan step R8-a, which deleted it).  The two agree everywhere except ``Monthly First``, whose
     occurrences ARE days of the month even though its anchor is a paycheck --
     so under that placement the producer recorded no nominal day and the reader
     then answered the CLAMPED day.

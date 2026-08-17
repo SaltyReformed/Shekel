@@ -139,10 +139,13 @@ class TestAnUnmodelledIdIsRefused:
 
         The state is manufacturable for the same reason it is for patterns:
         ``ref_cache.init`` requires every ENUM member to have a row and says
-        nothing about the reverse.  Plan step R8 will add real members for
-        exactly these two shapes -- a WEEK-scale unit and a fund-in-advance
-        placement (plan ledger row **D20**) -- which is what makes a surplus row
-        a state to refuse rather than a hypothetical.
+        nothing about the reverse.  Real members for exactly these two
+        shapes are SCHEDULED -- a WEEK-scale unit at plan step **R8-b**, and a
+        LEAD placement at plan step **R11** (plan ledger row **D40**) -- which
+        is what makes a surplus row a state to refuse rather than a
+        hypothetical.  R8-a re-pointed both: the WEEK unit is R8's leaf rather
+        than R8, and the placement is R11's rather than D20's, because D20's
+        own remedy was measured to be ``CONTAINING_DATE`` under another name.
         """
         with app.app_context():
             assert row_name not in {
@@ -208,8 +211,8 @@ class TestTheModelledCasesStillPass:
         declares the field, while keeping this class's subject to the field.
         Going through ``load()`` would entangle it with the cross-field rule
         two classes down: a lone unit is refused there now, and a ``WEEK`` unit
-        is refused whatever it is paired with, because no closed-set pattern
-        stores it until plan step R8.
+        is refused whatever it is paired with, because a generated row cannot
+        carry the date its occurrences name until plan step R5.
         """
         with app.app_context():
             declared = schema_cls().fields.get(field)
@@ -293,34 +296,30 @@ class TestTheTripleMustBeStorable:
 
     @pytest.mark.parametrize("label,schema_cls", _SCHEMAS)
     @pytest.mark.parametrize(
-        "unit,placement",
-        [
-            # A year-scale cadence deferred onto a month's FIRST paycheck has
-            # no cycle month left to name; plan step R8 owns it.
-            (
-                RecurrenceUnitEnum.YEAR,
-                PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
-            ),
-            # The WEEK unit anchors on a date this vocabulary does not collect.
-            (RecurrenceUnitEnum.WEEK, PeriodPlacementEnum.CONTAINING_DATE),
-            (
-                RecurrenceUnitEnum.WEEK,
-                PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
-            ),
-        ],
+        "placement", list(PeriodPlacementEnum),
     )
-    def test_a_pair_the_resolver_cannot_anchor_is_refused(
+    @pytest.mark.parametrize("unit", [RecurrenceUnitEnum.WEEK])
+    def test_a_reading_the_app_cannot_honour_is_refused(
         self, app, label, schema_cls, unit, placement,
     ):
-        """A cadence with no first occurrence is refused on every schema.
+        """A cadence the app cannot honour is refused on every schema.
 
-        **The refused SET moved at plan step R7c-c.**  It was every month or
-        year INTERVAL the closed pattern set could not name -- ``(2, MONTH)``,
-        ``(4, MONTH)``, ``(2, YEAR)`` -- because storage was the binding
-        constraint.  Every interval is authorable now, so what is left to
-        refuse is a ``(unit, placement)`` pair ``anchor_family`` has no
-        derivation for.  The refusal is attached to ``recurrence_unit``
-        because that is the control the user changes to get out of the state.
+        **The refused SET has moved twice, and each move closed a real gap.**
+        It was every month or year INTERVAL the closed pattern set could not
+        name -- ``(2, MONTH)``, ``(4, MONTH)``, ``(2, YEAR)`` -- because
+        storage was the binding constraint; plan step R7c-c freed the interval.
+        It was then the two ``(unit, placement)`` pairs ``anchor_family``
+        refused, and plan step **R8-a** measured one of those refusals stale --
+        a year-scale cadence deferred onto a later paycheck names its own date,
+        because ruling **R-R16** made the first occurrence authored and deleted
+        the derivation the refusal cited.
+
+        What is left is the ``WEEK`` unit, at EITHER placement: a weekly
+        occurrence is neither a payday nor a day of the month, so
+        ``recurrence_engine.compute_due_date`` has nothing to date its
+        generated rows from.  Plan step **R5** closes it.  The refusal is
+        attached to ``recurrence_unit`` because that is the control the user
+        changes to get out of the state.
         """
         with app.app_context():
             with pytest.raises(ValidationError) as exc:

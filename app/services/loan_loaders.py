@@ -689,7 +689,8 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     **The predicate was a COLUMN and is now a derivation.** It read
     ``recurrence_rules.day_of_month``, which R7c-c drops; the same question is
     :func:`app.services.recurrence.scheduling_day_of_month` answering non-``None``,
-    which is the ``(unit, placement)`` anchor family joined with the rule's
+    which is :func:`app.services.recurrence.fires_on_day_of_month` joined with
+    the rule's
     first occurrence.  The rules that satisfy it are unchanged -- the migration
     graded the two equal on all 46 live rules before dropping the column -- so
     this is the same precondition stated over the columns that survive.

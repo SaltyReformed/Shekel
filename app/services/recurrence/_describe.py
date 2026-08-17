@@ -294,8 +294,9 @@ def _placement_note(resolved: ResolvedRecurrence) -> str | None:
 
     Raises:
         RecurrenceDescriptionError: When the placement is a member with no
-            wording -- plan step R8 adds a third, and it must be worded here
-            rather than silently read as the default.
+            wording -- plan step **R11** adds a third (the LEAD, plan ledger
+            row **D40**), and it must be worded here rather than silently read
+            as the default.
     """
     if resolved.placement is PeriodPlacementEnum.CONTAINING_DATE:
         return None
@@ -321,11 +322,15 @@ def _parenthetical(resolved: ResolvedRecurrence) -> str | None:
     paycheck on or after the 15th -- so it is stated.
 
     **The collapse names the placement it rests on**, because the implication
-    holds for that member and no other.  Plan step R8 adds a fund-in-ADVANCE
-    placement (ledger row D20): "the last paycheck on or BEFORE the 1st" is
-    NOT the month's first paycheck, it is the previous month's last, so a
-    condition keyed only on unit / interval / day would silently delete the
-    coordinate from a rule whose money moves in a different month.
+    holds for that member and no other.  A LEAD placement -- fund from a
+    paycheck EARLIER than the one containing the occurrence -- would break it:
+    "the paycheck before the one covering the 1st" is NOT the month's first
+    paycheck, it is the previous month's last, so a condition keyed only on
+    unit / interval / day would silently delete the coordinate from a rule
+    whose money moves in a different month.  (Plan ledger row **D20** named
+    that member as "the last paycheck on or before the occurrence" and closed
+    at plan step R8-a on the measurement that such a rule is
+    ``CONTAINING_DATE``; the LEAD is what survived it, under its own row.)
 
     **The ``PERIOD`` unit has no parenthetical at all**, and this is the one
     place that says so.  It has no calendar coordinate -- its occurrences are

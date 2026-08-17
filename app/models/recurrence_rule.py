@@ -303,17 +303,22 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
     # the discriminator and its presence is constrained, which
     # ``ck_recurrence_rules_nominal_day`` is what makes true here.
     #
-    # ``weekday_anchor`` is the ONE 0-or-1 subtype left, it is EMPTY, and plan
-    # step R8 is its first writer: two fields with their own domain, and "the
-    # LAST Tuesday" (``nth_week = -1``) is not derivable from a date at all.
+    # ``weekday_anchor`` is the ONE 0-or-1 subtype left, it is EMPTY, and it is
+    # SCHEDULED FOR DELETION unwritten (ruling **R-R25**, 2026-08-16, plan step
+    # **R8-c**).  It was to hold "the third Friday" -- two fields with their own
+    # domain, and "the LAST Tuesday" (``nth_week = -1``) is not derivable from a
+    # date at all -- and those two fields go on THIS table as an exclusive arc
+    # instead, for the reason the ``month_anchor`` paragraph above already
+    # gives: a rule fires on a day-of-month OR an nth-weekday, never both, and
+    # that invariant is only a CHECK while both facts sit on one row.  This
+    # comment claimed it "is a CHECK against ``nominal_day``" with the anchor in
+    # another table, which plan step R8-a measured unbuildable -- a PostgreSQL
+    # CHECK may reference only columns of the row being checked.
     # ``uselist=False`` because the UNIQUE constraint on its
     # ``recurrence_rule_id`` makes at most one row possible; ``lazy="select"``
-    # because nothing reads it until R8, so an eager join would cost every rule
-    # load for no reader; ``passive_deletes`` defers to the FK's ON DELETE
-    # CASCADE rather than loading the child to delete it.  A rule fires on a
-    # day-of-month OR an nth-weekday, never both, and with one table left that
-    # is a CHECK against ``nominal_day`` rather than the cross-table invariant
-    # it used to be; step R8 owns it.
+    # because nothing reads it and nothing will, so an eager join would cost
+    # every rule load for no reader; ``passive_deletes`` defers to the FK's ON
+    # DELETE CASCADE rather than loading the child to delete it.
     weekday_anchor = db.relationship(
         "RecurrenceWeekdayAnchor",
         uselist=False, lazy="select",

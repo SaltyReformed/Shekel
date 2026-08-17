@@ -404,10 +404,14 @@ class TestTheSqlDerivationIsThePythonOne:
         """Where the two implementations part, and why that is not a defect yet.
 
         The SQL ``CASE`` has no ``ELSE``, so an unauthorable cadence -- the
-        WEEK unit, or a year-scale one deferred onto a month's first paycheck
-        -- derives ``NULL``, while ``scheduling_day_of_month`` REFUSES it:
-        ``anchor_family`` has no derivation, and refusing is what stops a row
-        being dated from a cadence nothing can read.
+        WEEK unit -- derives ``NULL``, while ``scheduling_day_of_month``
+        REFUSES it: ``require_row_date_coordinate`` has no date such a row
+        could carry, and refusing is what stops a row being dated from a
+        cadence nothing can express.  **The refused set narrowed at plan step
+        R8-a**, which admitted the year-scale deferred cadence this sentence
+        also named -- its refusal cited a derivation ruling **R-R16** had
+        deleted -- and which is where that refusal stopped being inherited from
+        the anchor-family router and became a rule of its own.
 
         Harmless at this revision, and the boundary is worth pinning rather
         than papering over.  No such row can exist: ``require_authorable_

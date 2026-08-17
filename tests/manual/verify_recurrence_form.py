@@ -689,7 +689,8 @@ def _drive_visibility(page, kind: str, url: str) -> None:
     :func:`_drive_nominal_day`).  What is left cadence-dependent, and what this
     function is now about, is ``field-due-dom``: the bill's separate REAL due
     day, which ``recurrence_form.js`` toggles on the chosen offer's
-    ``anchors_day_of_month``.
+    ``schedules_on_day_of_month`` -- named ``anchors_day_of_month`` until plan
+    step R8-a, for an anchor router that step deleted.
 
     Every visibility check is paired with a POSTED-VALUE check, which is what
     earns the re-point rather than merely keeping the function alive: the row
@@ -842,12 +843,40 @@ def _drive_visibility(page, kind: str, url: str) -> None:
     due_day("F", shown=True)
 
     # Years: the interval box carries over, so it is typed back to 1.
+    #
+    # **``fixed=True`` until plan step R8-a, and the flip is the step.**  The
+    # YEAR unit admitted one placement while ``anchor_family`` refused its
+    # deferring reading -- on a first-occurrence derivation ruling R-R16 had
+    # already deleted -- so the row explained that there was nothing to choose.
+    # It offers both now, so the help text must be the CHOICE sentence, and
+    # this is the one check that reads which of the two the script swapped in.
     unit.select_option(units["years"])
     _settle(page)
     _set_interval(page, 1)
-    placement_help("G", fixed=True)
+    placement_help("G", fixed=False)
     due_day("G", shown=True)
     _check(f"{kind} G: posts interval 1", one_interval("G") == ["1"], "wrong interval")
+
+    # A year-scale cadence funded from the month's FIRST paycheck: the reading
+    # plan step R8-a admitted, driven end to end because a placement the server
+    # OFFERS and the script leaves disabled is invisible to the suite -- and
+    # because this pair was a REFUSAL case in ``_drive_refusals`` until this
+    # step, which is as wrong as it sounds in the other direction.
+    page.evaluate(
+        """() => { const s = document.getElementById('recurrence_placement');
+                   s.selectedIndex = 1;
+                   s.dispatchEvent(new Event('change', {bubbles: true})); }""")
+    _settle(page)
+    _check(f"{kind} H: a yearly cadence CAN be funded from a later paycheck",
+           page.evaluate(
+               "() => document.getElementById('recurrence_placement')"
+               ".selectedIndex") == 1,
+           "the deferring placement is still not selectable on the YEAR unit")
+    placement_help("H", fixed=False)
+    # Its rows are dated from the funding PAYCHECK, exactly as the MONTH twin's
+    # are, so the Due Day row is hidden for it -- ``schedules_on_day_of_month``
+    # is False for every deferring reading.
+    due_day("H", shown=False)
 
     preview = page.locator("#recurrence-preview").inner_text().strip()
     _check(f"{kind}: the live preview answered",
@@ -906,19 +935,34 @@ def _drive_refusals(context, page) -> None:
     rules_before = _sql("SELECT count(*) FROM budget.recurrence_rules")[0]
 
     cases = [
-        # **The unauthorable SET moved at plan step R7c-c**, and this list is
-        # where that shows.  It was every month or year INTERVAL the closed
-        # pattern set could not name -- "every other month", "quarterly funded
-        # from the first paycheck" -- because STORAGE was the binding
-        # constraint.  Freeing the interval is what this arc exists for, so
-        # both of those SAVE now and what is left to refuse is a
-        # ``(unit, placement)`` pair the resolver has no anchor derivation for.
-        ("the WEEK unit has no anchor this vocabulary collects",
+        # **The unauthorable SET has MOVED TWICE, and this list is where that
+        # shows.**  It was every month or year INTERVAL the closed pattern set
+        # could not name -- "every other month", "quarterly funded from the
+        # first paycheck" -- because STORAGE was the binding constraint, and
+        # freeing the interval at R7c-c is what this arc exists for.  It was
+        # then the two ``(unit, placement)`` pairs ``anchor_family`` had no
+        # first-occurrence derivation for, and plan step **R8-a** measured one
+        # of those STALE: ruling R-R16 made the first occurrence AUTHORED at
+        # R7c-b and deleted the derivation the refusal cited, so a year-scale
+        # cadence funded from a later paycheck SAVES now.
+        #
+        # **Leaving that case here would not have been harmless.**  These
+        # payloads carry the whole ``base_form``, and ``POST /templates``
+        # GENERATES on create -- so an accepted "refusal" writes a template, a
+        # rule and its projected rows into whatever database this is pointed
+        # at, and then trips the two persistence checks at the end of this
+        # pass, which is how a real regression comes to be read as "the known
+        # year failure".  It is replaced by the WEEK unit's OTHER placement:
+        # the withholding is a property of the unit
+        # (``_frequency.has_row_date_coordinate``), so both readings must be
+        # refused and a list pinning one would pass against a rule that had
+        # started admitting the other.
+        ("the WEEK unit names no date a generated row can carry",
          {"recurrence_unit": ids["week"], "interval_n": "1",
           "recurrence_placement": ids["covering"]},
          "That repeat schedule cannot be saved yet"),
-        ("a yearly cadence on the first paycheck names no cycle month",
-         {"recurrence_unit": ids["year"], "interval_n": "1",
+        ("the WEEK unit is refused under the DEFERRING placement too",
+         {"recurrence_unit": ids["week"], "interval_n": "2",
           "recurrence_placement": ids["first_pay"]},
          "That repeat schedule cannot be saved yet"),
         # The interval box is a free number input from R7c-c, so a CLEARED one

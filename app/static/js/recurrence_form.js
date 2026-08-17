@@ -197,11 +197,11 @@
   // R7c-c, developer ruling 2026-08-16 on plan ledger row D32).  Hiding it is
   // how a bill's funding rule came to change with nothing on screen saying so:
   // the select is reassigned below whenever the previous choice is not
-  // admissible, which is correct and was invisible.  Two cadences still admit
+  // admissible, which is correct and was invisible.  ONE cadence still admits
   // one -- paychecks, where the placement is inert because a payday resolves to
-  // its own paycheck either way, and years, whose first-paycheck anchor is plan
-  // step R8's -- and for those the row renders with that one option and the
-  // help text explains why there is nothing to choose.
+  // its own paycheck either way -- and for it the row renders with that one
+  // option and the help text explains why there is nothing to choose.  It was
+  // two until plan step R8-a admitted the year unit's deferring reading.
   //
   // Both sentences come from data-* attributes the SERVER rendered; this file
   // states no copy, the same rule syncStartsOnHelp follows.
@@ -342,11 +342,11 @@
   // what keeps this an affordance rather than a rule.
   //
   // ``hasDayCoordinate`` is the offer's has_day_of_month_coordinate, which is
-  // keyed on the UNIT -- never anchors_day_of_month, which is keyed on the
-  // (unit, placement) pair and answers a different question.  Passing the
+  // keyed on the UNIT -- never schedules_on_day_of_month, which is keyed on
+  // the (unit, placement) pair and answers a different question.  Passing the
   // wrong one MOVED MONEY: they disagree for Monthly First, whose occurrences
-  // are days of the month even though its anchor is a paycheck, so this
-  // cleared and disabled a control the server had rendered enabled.  The
+  // are days of the month even though its rows are dated from the paycheck, so
+  // this cleared and disabled a control the server had rendered enabled.  The
   // update door reads nominal_day off the same presence key as starts_on, so
   // changing only "Funded from" on a "last day of every month" rent posted the
   // date without the day, wrote nominal_day = NULL, and moved every later
@@ -394,12 +394,12 @@
   // cadence does not make it wrong -- and the update door reads an ABSENT key
   // as "leave the stored one alone" (RecurrenceFormContext), so a hidden row
   // states nothing rather than erasing what it cannot show.
-  function syncDueDom(anchorsDay) {
+  function syncDueDom(schedulesOnDay) {
     if (!dueDom) return;
-    dueDom.classList.toggle('d-none', !anchorsDay);
+    dueDom.classList.toggle('d-none', !schedulesOnDay);
     Array.prototype.forEach.call(
       dueDom.querySelectorAll('input'),
-      function(input) { input.disabled = !anchorsDay; }
+      function(input) { input.disabled = !schedulesOnDay; }
     );
   }
 
@@ -448,13 +448,14 @@
     // uses the free box, and was never the same fact either way.
     var chosen = currentOption(id, placementSelect.value);
     // Two facts, two questions, and they differ for Monthly First -- see
-    // syncNominalDay.  The DUE DAY row asks about the anchor family, which is
-    // the question it has always asked; the "repeating on" control asks
-    // whether occurrences land on a day of the month at all.
-    var anchorsDay = chosen !== null && chosen.anchors_day_of_month;
+    // syncNominalDay.  The DUE DAY row asks whether a generated row is DATED
+    // from a day of the month, which is the question it has always asked; the
+    // "repeating on" control asks whether occurrences land on a day of the
+    // month at all.
+    var schedulesOnDay = chosen !== null && chosen.schedules_on_day_of_month;
     var hasDayCoordinate =
       chosen !== null && chosen.has_day_of_month_coordinate;
-    syncDueDom(anchorsDay);
+    syncDueDom(schedulesOnDay);
 
     syncStartPeriod(true);
     syncStartsOn(true);
