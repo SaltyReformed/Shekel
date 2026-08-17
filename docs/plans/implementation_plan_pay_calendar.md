@@ -47,6 +47,9 @@ section 3, all owned by **C4**, which changes ONE writer (`pay_period_write`) pl
 | **The modelled fold past the horizon** | **PROJECT the contributions; ruling `balance:R-AG` is SUPERSEDED. Ruled 2026-08-14 (developer)**, and the evidence is what changed rather than the argument: R-AG (2026-07-27) let the fold run a half model because no total calendar existed, `C2-e` built one, and three surfaces already project on it -- so the seam is now the only one that does not and it disagrees with the pages built on it. `C9` is the remedy and it MOVES MONEY (row **P7**, `+$5,427.07` at six months out) |
 | **How a producer gets its READ PASS** | **The ROUTE builds one per request; every producer below takes `balance_ctx` as a REQUIRED parameter and DROPS its `user_id`. Ruled 2026-08-16 (developer)**, row **P43**. A producer holding an id can manufacture a `BalanceContext`, and three did, so `/retirement` held two passes and `/savings` two plus a third calendar derivation -- two clock reads behind two cards on one screen, `$4.18` of after-tax projected savings and one paycheck of countdown apart across a midnight-into-payday render. Dropping the id makes a mismatched (owner, pass) pair unrepresentable rather than discouraged, and a required parameter fails at the call instead of silently opening a pass. It follows the seam's own convention (`balance_at(acct, ctx, day)`) and the required-`PayCalendar` ruling above. Rejected: `user_id` BESIDE the pass (two spellings, nothing reconciling them); an optional `balance_ctx=None` that builds one when absent, which is the pattern that CAUSED this; and fixing only the one leaf P43 named, which leaves the measured contradiction on screen. **It does not make a second pass unconstructible** -- eight service modules still open their own, and the layer predicate that would (row **P56**) waits on the leaves closing those doors |
 | **How a TEST builds a pass over hand-written paydays** | **ONE shared helper, `tests/_test_helpers.read_pass_over_paydays`. Ruled 2026-08-16 (developer)**, row **P54**. The pass derives its calendar into a field its own module declares private; a unit case with no database must seed it, and three sites wanted to. Rejected: a `BalanceContext.for_test(calendar=...)` constructor (a production entry point whose only caller is the suite, `CLAUDE.md` rule 13) and an optional `calendar=` on the real `build` (it hands every production caller a way to supply a calendar the module did not derive, unchecked against the owner). Also rejected, on measurement: making the calendar EAGER like the scenario -- deriving one can RAISE for an owner with no pay schedule, so every render would begin failing over a fact most never read |
+| **How the PAYCHECK ENGINE takes a period** | **A `DerivedPeriod`, and every caller supplies one. Ruled 2026-08-16 (developer)**, on a fork `C2-f2d-3` could not cross without it: the engine reads a period's `start_date` and its ID, `/savings` needed to hand it derived periods, and no adapter is honest. Measured first: an AST census found those two attributes and nothing else, so the move is a retyping over 12 call sites in 10 modules rather than a rewrite, and all 13 `app/` sites trace to a MATERIALISED producer -- which is what makes `PeriodInfo.period_id`'s non-nullability structural where three consumers KEY on it. Rejected: one shared `current_breakdown(balance_ctx)` producer for the three surfaces that each build one (it merges what two OTHER pages publish, so it wants its own ruling -- row **P62**); a narrow ORM load kept inside `savings_dashboard_service` (a second pay-period read on a render whose whole point is one); and leaving the engine alone (`/savings` then keeps an ORM reader the arc exists to delete) |
+| **`retirement_projection`'s two period parameters** | **DELETED; it reads both off the pass it already takes. Ruled 2026-08-16 (developer).** Both callers filled them from that same pass, so the pair could express only a mismatch -- the shape the "How the seam learns WHICH periods to report" ruling removed at `C2-c`. 6 arguments to 4, which retires the `too-many-arguments` / `too-many-positional-arguments` suppression at its root rather than by raising a threshold, and left `_CurrentPay`'s two period fields with ZERO readers, so they went too. Rejected: converting at the `/savings` boundary (a second pay-period read), and keeping the parameters with a new type (the pass and the arguments can still disagree, and the suppression stays) |
+| **`project_balance_horizons`'s two callers** | **Take `accounts/detail.py` onto the pass EARLY, out of `C2-f2e`. Ruled 2026-08-16 (developer).** That helper reads a period's ordinal and its id, and a `PayPeriod` spells the id `.id` where a `DerivedPeriod` spells it `.period_id` -- so its two callers could not hold two types between them for even one commit. Rejected: one module briefly holding both spellings (`accounts/detail.py` would carry a derived `current_period` for this call and an ORM one for its other fifteen reads), and splitting the rule from the lookup so each caller resolves index -> period -> balance itself (the loop written twice) |
 
 ---
 
@@ -303,38 +306,12 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       A contribution carries its PAYDAY (`241b7b40`), which let the period list leave three SHARED
       signatures without moving `/retirement`. Proof: `verify_investment_cutover`'s docstring.
 
-- [x] **C2-f2d -- `/savings` and `/retirement`.** `c95519dd`. The DECOMPOSED parent, ticked with
-      C2-f2d-3, its last leaf. Split into three leaves 2026-08-16 (developer) exactly as its own
-      bullet predicted, and into a FOURTH when C2-f2d-2 made row **P59** visible. The prediction
-      that it was a multi-session step held: four leaves over two days.
-
-- [x] **C2-f2d-1 -- the route opens the render's ONE read pass.** `731f6b3c`. Closed **P43**, ruled
-      **P54**, opened **P55**-**P58**. **P43's `/retirement` half was measured FALSE first**: that
-      page ran on TWO passes, worth `$4.18` and one paycheck of countdown across a
-      midnight-into-payday render. Proof: `verify_retirement_pass_cutover`'s docstring, and
-      `test_one_read_pass_per_render`, which fails on `dev` at 2 / 2 / 3.
-      **A later step must not undo the required parameter** (see the ruling).
-
-- [x] **C2-f2d-2 -- the retirement picture has ONE producer.** `9e479ca5`. Closed **P57**; opened
-      **P59**, **P60**. `retirement_plan.py` replaced the SECOND implementation of "the picture at a
-      candidate plan": a `PlanPoint` says which plan, a `RetirementInputs` is what a render loads
-      once, and a memoized `picture_at` derives it, so the lever baseline IS the hero's object.
-      Byte-identical -- the rendered HTML matches apart from CSRF nonces; 179 -> 87 queries a
-      render. Proof: `verify_retirement_render`'s docstring, and `TestOneLoadPerRender`.
-
-- [x] **C2-f2d-4 -- the levers solve at the assumptions the page SHOWS.** `b84dada4`. Closed
-      **P59**; opened **P60**. The what-if sliders moved the hero and not the lever card, so a page
-      reading "65.3% funded" at a 3.5% withdrawal rate told the owner `$174.76`/paycheck closes the
-      gap when `$273.17` does. Each stepper now carries the OWNER's override alone -- a pre-filled
-      one laundered the previous solved default back as an entry -- and `PlanPoint` became RESOLVED,
-      which is what stops one plan holding two memo keys. Proof: `TestReadinessFragment`.
-
-- [x] **C2-f2d-3 -- `/savings` AND the paycheck engine read the derived calendar.** `c95519dd`. The
-      engine takes `DerivedPeriod` at 12 call sites in 10 modules, `retirement_projection` drops two
-      parameters its own pass answers, and `/savings`'s four entries take a REQUIRED pass. The
-      developer ruled three forks WIDER than the spec 2026-08-17, so this leaf also carries
-      `C2-f2e`'s `/accounts/<id>` half. Closed **P58**; carried **P55**'s `/savings` half and
-      **P56**'s first door; opened **P61**, **P62**. Proof: the commit message.
+- [x] **C2-f2d -- `/savings` and `/retirement`.** `c95519dd`. The container and its four leaves,
+      condensed into `historical/pay_calendar_c2f2d_as_built_2026-08-16.md` under `conventions.md`
+      rule 5, with the THREE shapes a later step must not undo. Closed **P43**, **P57**, **P58**,
+      **P59**; opened **P55**, **P56**, **P60**-**P63**. Its last leaf took three rulings WIDER than
+      its spec (above), so it also carries the paycheck-engine cutover and `C2-f2e`'s
+      `/accounts/<id>` half.
 
 - [ ] **C2-f2e -- the budget dashboard.** `dashboard_service` and `dashboard_pulse_service`.
       **`routes/accounts/detail.py` went EARLY at `C2-f2d-3`** on the developer's 2026-08-17 ruling,

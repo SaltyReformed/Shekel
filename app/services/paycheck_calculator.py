@@ -11,9 +11,9 @@ A pay period here is a :class:`~app.services.pay_calendar.DerivedPeriod`, not a
 as-built record carries the census).  Only ``start_date`` and the period's
 IDENTITY are read; ``end_date`` / ``period_index`` -- the columns plan step
 **C4** drops -- never were.  That identity is never ``None``, structurally
-rather than by a guard: the only producers a caller can get a period from
-(``PayCalendar.saved`` / ``period_containing``) are MATERIALISED-only by their
-own contracts, which matters because three consumers KEY on it.
+rather than by a guard, and it matters because three consumers KEY on it: every
+producer a caller can take a period from (``PayCalendar.saved``,
+``period_containing``, ``period_by_id``) is MATERIALISED-only by contract.
 
 Biweekly rounding residue -- reconciled to the annual aggregate
 ---------------------------------------------------------------

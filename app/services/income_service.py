@@ -40,7 +40,11 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
-from app.services.pay_calendar import PeriodWindow, calendar_for
+from app.services.pay_calendar import (
+    PayCalendar,
+    PeriodWindow,
+    calendar_for,
+)
 from app.services.tax_config_service import (
     load_tax_configs_for_periods,
     load_tax_configs_for_year,
@@ -54,6 +58,7 @@ ZERO = Decimal("0")
 
 def get_current_gross_biweekly(
     user_id: int,
+    calendar: PayCalendar,
     *,
     scenario_id: int | None = None,
     as_of: date | None = None,
@@ -91,9 +96,16 @@ def get_current_gross_biweekly(
             filter is omitted and the user's first ``is_active=True``
             profile across all scenarios is used (the historical
             savings / retirement / investment dashboard behavior).
+        calendar: The OWNER's pay calendar.  Taken rather than derived
+            (pay-calendar plan step C2-f2d-3's fix pass): every caller already
+            holds one -- on a ``BalanceContext``, where it is memoized for the
+            whole render -- and deriving a second here cost `/savings` SEVEN
+            derivations a render against the one the arc exists to leave.  It
+            is the CALENDAR and not the read pass because that is all this
+            function needs, and because a pass would carry an ``as_of`` and a
+            scenario it deliberately does not read (see below).
         as_of: Optional date for which to compute the gross.  Defaults
-            to today.  The period covering it is resolved off the owner's
-            DERIVED calendar
+            to today.  The period covering it is resolved off *calendar*
             (:meth:`~app.services.pay_calendar.PayCalendar.period_containing`).
 
     Returns:
@@ -105,19 +117,14 @@ def get_current_gross_biweekly(
         ``Decimal("0")`` for the missing-profile branch, so the
         substitute preserves the contract.
 
-    Raises:
-        PayCalendarError: The owner's paydays do not define a calendar (plan
-            findings **P8** / **P35**, owned by pay-calendar plan step C4).
-            Reached only for an owner who HAS an active salary profile, since
-            the profile lookup runs first.
-
-    **It derives the calendar rather than being handed one** (pay-calendar plan
-    step C2-f2d-3).  All three callers hold a
-    :class:`~app.services.balance_at.BalanceContext` whose ``calendar()`` memo
-    would answer both questions for free, and two of them do not even pass
-    ``as_of``, so this is one of the doors ledger row **P56** counts.  Taking
-    the pass is ``C2-f3``'s move; the two reads here are the two this function
-    already made.
+    **The CLOCK and the SCENARIO are still this function's own**, and that is
+    deliberate rather than an oversight: two of its three callers pass neither,
+    so the gross resolves against an implicit ``date.today()`` and the owner's
+    first active profile across all scenarios.  Threading the read pass's
+    ``as_of`` and ``scenario_id`` would MOVE MONEY on a historical read, which
+    is ledger row **P56**'s remainder and ``C2-f3``'s to rule.  The calendar is
+    threaded here because it is an owner FACT that cannot change the answer --
+    the same paydays however they are read.
     """
     query = (
         db.session.query(SalaryProfile)
@@ -133,11 +140,11 @@ def get_current_gross_biweekly(
         return ZERO
 
     as_of_date = as_of or date.today()
-    # ONE derivation answers both questions the engine needs -- which paycheck
-    # covers ``as_of``, and the owner's whole schedule for the cumulative and
-    # reconciliation context -- where the two SQL readers this replaced could
-    # answer from two different reads (pay-calendar plan step C2-f2d-3).
-    calendar = calendar_for(user_id)
+    # Both questions the engine needs -- which paycheck covers ``as_of``, and
+    # the owner's whole schedule for the cumulative and reconciliation context
+    # -- come off the CALLER's calendar (pay-calendar plan step C2-f2d-3), so a
+    # render that already derived one pays nothing here.  The two SQL readers
+    # this replaced could answer from two different reads.
     current_period = calendar.period_containing(as_of_date)
     if current_period is None:
         return ZERO
@@ -289,10 +296,14 @@ class SalaryPricing:
                 # (pay-calendar plan step C2-f2d-3), so the periods this
                 # projection reconciles against carry the ends the whole payday
                 # set dictates rather than the stored ``end_date`` column plan
-                # step C4 drops.  A second derivation of a value the read pass
-                # holding this basis already memoizes -- recorded rather than
-                # threaded, because handing the basis a calendar is
-                # ``balance:X-i1``'s input tier and this is a reader move.
+                # step C4 drops.  **This one still DERIVES**, where
+                # :func:`get_current_gross_biweekly` above was given its
+                # calendar: the basis is built by ``cash_ledger.amount_basis``
+                # from an owner and a scenario alone, so there is no calendar to
+                # take without threading one through that constructor -- which
+                # is ``balance:X-au-c2b``'s object and ``X-i1``'s input tier.
+                # It is LAZY, so a pass that prices no paycheck pays nothing;
+                # ledger row **P63** carries the rest.
                 self._periods = calendar_for(self._user_id).saved()
             configs_by_year = load_tax_configs_for_periods(
                 self._user_id, profile, self._periods,

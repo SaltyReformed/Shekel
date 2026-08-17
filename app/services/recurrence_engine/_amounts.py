@@ -126,10 +126,11 @@ def _derive_row_fields(template, rule, salary_profile, period, schedule):
     # The paycheck engine takes DERIVED periods (pay-calendar plan step
     # C2-f2d-3) while the row being written takes the ORM row's id, so the
     # pricing period is looked up on the schedule's own calendar.  It is TOTAL
-    # for this argument rather than merely usually present:
-    # ``GenerationSchedule.__post_init__`` refuses any value whose calendar is
-    # not exactly its ``periods``, and *period* comes from ``write_periods``,
-    # which the same check proves is a subset of those.
+    # for this argument rather than merely usually present, and it takes TWO
+    # of ``GenerationSchedule.__post_init__``'s arms rather than one: the
+    # calendar-IS-the-schedule check makes every ``periods`` id a calendar id,
+    # and the separate stray-window check makes every ``write_periods`` id a
+    # ``periods`` id.  *period* comes from ``write_periods``.
     priced_period = schedule.calendar.period_by_id(period.id)
     return DerivedRowFields(
         account_id=template.account_id,

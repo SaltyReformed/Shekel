@@ -376,6 +376,18 @@ def _current_period(
     Args:
         ctx: The read-only projection context.
 
+    **A DERIVATION, where `savings_dashboard_service` holds the same value in a
+    FIELD, and the difference is the bundle rather than the value** (an
+    adversarial review of pay-calendar plan step C2-f2d-3 asked, correctly, why
+    one commit ruled it both ways).  ``_DashboardCoreData`` is built ONCE by a
+    loader and read by a dozen producers, so holding one answer is what stops
+    two of them pairing one clock with another's calendar.  This context is
+    built once and REPLACED per plan point (``dataclasses.replace`` in
+    ``retirement_plan._derive_picture``), so a field would be copied forward
+    across every retire-later probe and would have to be proven still correct
+    at each -- while the pass it derives from is pinned and cannot move.  The
+    bisect is over a memoized window and costs no query.
+
     Returns:
         The covering :class:`~app.services.pay_calendar.DerivedPeriod`, whose
         ``period_id`` is never ``None``, or ``None`` when the pass's clock
@@ -545,7 +557,7 @@ def load_projection_batch(
     # employer-match cap basis came off a clock read of its own -- twice per
     # ``/retirement`` render, once for the verdict and once for the levers.
     salary_gross_biweekly = income_service.get_current_gross_biweekly(
-        user_id, as_of=ctx.balance_ctx.as_of,
+        user_id, ctx.balance_ctx.calendar(), as_of=ctx.balance_ctx.as_of,
     )
 
     # The displayed per-account balance is the model-from-anchor value at the

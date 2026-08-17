@@ -66,7 +66,7 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
-from app.services.pay_calendar import DerivedPeriod, PayCalendarError
+from app.services.pay_calendar import DerivedPeriod, PayCalendarError, calendar_for
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
@@ -258,7 +258,9 @@ class TestBalanceMapCash:
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
-            gross = income_service.get_current_gross_biweekly(user_id)
+            gross = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
 
             seam = balance_at.balance_map(account, bctx)
             expected = net_worth_kernel.build_account_balance_map(
@@ -290,7 +292,9 @@ class TestBalanceMapCash:
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
-            gross = income_service.get_current_gross_biweekly(user_id)
+            gross = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
 
             seam = balance_at.balance_map(hysa, bctx)
             expected = net_worth_kernel.build_account_balance_map(
@@ -911,10 +915,13 @@ class TestAFeedIsTheSameWhoeverItIsLoadedBeside:
             # non-vacuity assertion below is what caught its absence.
             make_salary_profile(seed_user, db.session)
             db.session.commit()
-            gross = income_service.get_current_gross_biweekly(user_id)
+            gross = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
 
-            alone = _contribution_inputs_for_account(checking)
-            batched = _contribution_inputs_for_accounts([checking, roth])
+            ctx = BalanceContext.build(user_id)
+            alone = _contribution_inputs_for_account(checking, ctx)
+            batched = _contribution_inputs_for_accounts([checking, roth], ctx)
 
             # Non-vacuity: the batch really did fetch a gross to hand out.
             assert gross > Decimal("0")
@@ -952,7 +959,9 @@ class TestBalanceMapInvestment:
             deductions = load_active_deductions_for_accounts(
                 user_id, [inv.id],
             ).get(inv.id, [])
-            gross = income_service.get_current_gross_biweekly(user_id)
+            gross = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
 
             seam = balance_at.balance_map(inv, bctx)
             expected = net_worth_kernel.build_account_balance_map(
@@ -987,7 +996,9 @@ class TestBalanceMapInvestment:
             deductions = load_active_deductions_for_accounts(
                 user_id, [inv.id],
             ).get(inv.id, [])
-            gross = income_service.get_current_gross_biweekly(user_id)
+            gross = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
 
             seam = balance_at.balance_map(inv, bctx)
             expected = net_worth_kernel.build_account_balance_map(
@@ -1190,7 +1201,9 @@ class TestBalanceMapProperty:
                 seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
             )
-            gross = income_service.get_current_gross_biweekly(user_id)
+            gross = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
 
             seam = balance_at.balance_map(prop, bctx)
             expected = net_worth_kernel.build_account_balance_map(
@@ -1280,7 +1293,7 @@ class TestBuildMaps:
                 if inv_ids else {}
             )
             salary_gross_biweekly = income_service.get_current_gross_biweekly(
-                user_id,
+                user_id, calendar_for(user_id),
             )
             # Independent oracle for NON-loan accounts: the kernel dispatch the
             # savings net-worth producer ran inline pre-reroute, fed by the
@@ -1804,7 +1817,9 @@ class TestInvestmentContributions:
             deductions = load_active_deductions_for_accounts(
                 user_id, [inv.id],
             ).get(inv.id, [])
-            gross = income_service.get_current_gross_biweekly(user_id)
+            gross = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
             expected = net_worth_kernel.build_account_balance_map(
                 inv, bctx,
                 ContributionInputs(
@@ -1855,7 +1870,9 @@ class TestInvestmentContributions:
             _add_flat_deduction(db, profile, inv_none, Decimal("200.0000"))
             db.session.commit()
 
-            gross = income_service.get_current_gross_biweekly(user_id)
+            gross = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
             assert gross > Decimal("0.00")  # the match cap basis must be real
 
             match_map = balance_at.balance_map(inv_match, bctx)
@@ -2121,7 +2138,9 @@ class TestCashPreAnchorPeriodsAreAnswered:
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[2], Decimal("5000.00"))
-            gross = income_service.get_current_gross_biweekly(user_id)
+            gross = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
 
             seam = balance_at.balance_map(hysa, bctx)
             expected = net_worth_kernel.build_account_balance_map(

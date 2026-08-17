@@ -459,7 +459,8 @@ class TestGetCurrentGrossBiweekly:
             db.session.commit()
 
             result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id, as_of=_AS_OF_AFTER_RAISE,
+                seed_user["user"].id,
+                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
             )
 
             assert result == _RAISE_APPLIED_GROSS
@@ -481,7 +482,8 @@ class TestGetCurrentGrossBiweekly:
             db.session.commit()
 
             result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id, as_of=_AS_OF_AFTER_RAISE,
+                seed_user["user"].id,
+                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
             )
 
             assert result == _NO_RAISE_GROSS
@@ -498,7 +500,8 @@ class TestGetCurrentGrossBiweekly:
         with app.app_context():
             # No SalaryProfile inserted -- seed_user does not create one.
             result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id, as_of=_AS_OF_AFTER_RAISE,
+                seed_user["user"].id,
+                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
             )
 
             assert result == Decimal("0")
@@ -521,7 +524,8 @@ class TestGetCurrentGrossBiweekly:
             db.session.commit()
 
             result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id, as_of=_AS_OF_BEFORE_RAISE,
+                seed_user["user"].id,
+                calendar_for(seed_user["user"].id), as_of=_AS_OF_BEFORE_RAISE,
             )
 
             assert result == _NO_RAISE_GROSS
@@ -547,6 +551,7 @@ class TestGetCurrentGrossBiweekly:
             # zero -- no profile matches the filter.
             result = income_service.get_current_gross_biweekly(
                 seed_user["user"].id,
+                calendar_for(seed_user["user"].id),
                 scenario_id=seed_user["scenario"].id + 9999,
                 as_of=_AS_OF_AFTER_RAISE,
             )
@@ -555,6 +560,7 @@ class TestGetCurrentGrossBiweekly:
             # Same call with the correct scenario_id resolves the profile.
             result_match = income_service.get_current_gross_biweekly(
                 seed_user["user"].id,
+                calendar_for(seed_user["user"].id),
                 scenario_id=seed_user["scenario"].id,
                 as_of=_AS_OF_AFTER_RAISE,
             )
@@ -589,7 +595,9 @@ class TestConsumerIntegration:
             db.session.commit()
 
             # Producer: the canonical helper itself.
-            canonical = income_service.get_current_gross_biweekly(user_id)
+            canonical = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
             assert canonical == _RAISE_APPLIED_GROSS
 
             # Savings consumer: after the Level-1 balance-seam reroute the
@@ -606,14 +614,16 @@ class TestConsumerIntegration:
                 seed_user, db.session, seed_periods_today[0],
                 Decimal("10000.00"),
             )
-            seam_inputs = balance_at._contribution_inputs_for_account(inv)
+            seam_inputs = balance_at._contribution_inputs_for_account(
+                inv, BalanceContext.build(user_id),
+            )
             assert seam_inputs.salary_gross_biweekly == canonical
 
             # The scoping control: a non-investment account in the same user's
             # set gets NO gross, so the assertion above is pinning the
             # investment-only fetch rather than a value every account carries.
             checking_inputs = balance_at._contribution_inputs_for_account(
-                seed_user["account"],
+                seed_user["account"], BalanceContext.build(user_id),
             )
             assert checking_inputs.salary_gross_biweekly == Decimal("0")
             assert checking_inputs.investment_params is None
@@ -627,7 +637,9 @@ class TestConsumerIntegration:
             # locks the producer/consumer agreement because the
             # investment dashboard now has no intermediate site that
             # could drift.
-            investment_val = income_service.get_current_gross_biweekly(user_id)
+            investment_val = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
             assert investment_val == canonical
 
 
