@@ -4,16 +4,17 @@
    Renders the hero verdict row (figure + plain-dollars caption side by
    side), the flight-path chart canvas, and the what-if delta line.  The
    data contract is retirement_readiness.compute_readiness_whatif
-   (readiness / baseline / deltas) plus an optional
-   retirement_levers.compute_lever_data payload under ``levers``.
+   (readiness / baseline / deltas) plus the
+   retirement_levers.compute_lever_data payload under ``levers``, which is
+   always present since plan step C2-f2d-4.
 
    Swap contract: dashboard.html wraps this include in the stable
    #readiness-region div (innerHTML swaps -- an outerHTML target would
    be detached before htmx:afterSwap and the chart re-init would never
    fire).  When rendered as a standalone fragment (``embedded`` unset)
-   the income panel -- and the lever outcome lines when ``levers`` is
-   present -- ride along as hx-swap-oob siblings so every figure the
-   request changed updates in one response. #}
+   the income panel and the whole LEVER CARD ride along as hx-swap-oob
+   siblings, unconditionally, so every figure the request changed updates in
+   one response. #}
 <div id="readiness-panel">
   {% if readiness.retirement_date is none %}
   <p class="text-muted mb-0" data-readiness="no-horizon">
@@ -103,15 +104,17 @@
   {% endif %}
 </div>
 {% if not embedded|default(false) %}
-{# Out-of-band siblings for the standalone fragment response: the
-   income panel always tracks the readiness picture; the lever outcome
-   lines update only when the request carried stepper values. #}
+{# Out-of-band siblings for the standalone fragment response: every card the
+   request's assumptions moved updates in the same round trip.  The LEVER card
+   joined them at plan step C2-f2d-4 -- it is solved against the assumptions on
+   screen now, so its solved defaults move when a what-if slider does, and a
+   headline left showing the stored-settings answer beside a what-if verdict is
+   the contradiction that step removes.  The whole card body swaps, not just
+   its outcome lines: the solved figures are IN the headline. #}
 <div id="income-panel" hx-swap-oob="innerHTML">
   {% include "retirement/_income.html" %}
 </div>
-{% if levers %}
-{% with lever_oob = true %}
-{% include "retirement/_lever_outcomes.html" %}
+{% with levers_oob = true %}
+{% include "retirement/_levers.html" %}
 {% endwith %}
-{% endif %}
 {% endif %}

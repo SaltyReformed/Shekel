@@ -5023,6 +5023,181 @@ def period_window(periods):
     )
 
 
+def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
+    """Return a :class:`BalanceContext` whose pay calendar is *paydays*.
+
+    **The ONE place a test seeds the read pass's pay-calendar memo**, and that
+    is the whole point of it existing (plan finding **P54**, ruled by the
+    developer 2026-08-16).
+
+    :class:`~app.services.balance_at.BalanceContext` derives the owner's
+    calendar lazily into a field its own module docstring declares PRIVATE,
+    because that module owns the derivation.  A unit test with no database
+    cannot let it derive -- ``calendar_for`` would query -- so it must seed the
+    memo, which means naming that private field.  Three sites wanted to by plan
+    step ``C2-f2d``, and N sites reaching into one private field is how a memo
+    becomes a de-facto public seam.
+
+    **The two alternatives were weighed and refused.**  A named constructor on
+    the seam (``BalanceContext.for_test(calendar=...)``) ships a production
+    entry point whose only caller is this suite, which is ``CLAUDE.md`` rule
+    13's speculative shape.  An optional ``calendar=`` on the real
+    :meth:`~app.services.balance_at.BalanceContext.build` hands EVERY
+    production caller a way to supply a calendar the module did not derive,
+    with nothing checking it even belongs to that owner -- a new way to hold
+    contradictory state, to solve a test-ergonomics problem.  Making the
+    calendar EAGER on the pass was refused on measurement: deriving one can
+    raise for an owner with no pay schedule, so every render would begin
+    failing over a fact most of them never read.
+
+    **Every type here is the real one** -- a real
+    :class:`~app.services.pay_calendar.PayCalendar` derived from real paydays
+    (:func:`derived_window`'s own discipline: the ends and ordinals are the
+    derivation's, so a test cannot express a schedule production could not),
+    and a real frozen :class:`BalanceContext`.  It cannot fail silently either:
+    rename the memo field and the seed misses, the pass falls through to
+    ``calendar_for``, and the query raises outside an app context.
+
+    Args:
+        paydays: The paydays opening each period, in any order.
+        cadence_days: Days between paydays, 1..365.  It sets the LAST period's
+            end and nothing else.
+        as_of: The day this read pass is pinned to.
+        user_id: The owning user (default ``1``).  The calendar is derived for
+            the SAME id the pass carries, so the two cannot disagree -- which
+            is the pairing the seeded memo could otherwise express.
+
+    Returns:
+        A :class:`~app.services.balance_at.BalanceContext` with no baseline
+        scenario and its calendar memo pre-filled.  ``scenario`` is ``None``
+        because a pure unit case has no database to resolve one from; a test
+        that reaches a scenario-scoped seam entry will get that entry's own
+        named refusal rather than a fake.
+
+    Raises:
+        PayCalendarError: Anything the derivation refuses -- a duplicate
+            payday, a cadence outside 1..365, a payday that is not a plain
+            ``date``.
+    """
+    from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
+        BalanceContext,
+    )
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PayCalendar,
+    )
+
+    calendar = PayCalendar.from_paydays(
+        [
+            (index + 1, payday)
+            for index, payday in enumerate(sorted(paydays))
+        ],
+        cadence_days,
+        user_id=user_id,
+    )
+    return BalanceContext(
+        user_id=user_id,
+        scenario=None,
+        as_of=as_of,
+        _calendars={user_id: calendar},
+    )
+
+
+@contextmanager
+def counting_calls(*targets):
+    """Count calls to each ``(module path, attribute name)`` in *targets*.
+
+    **The ONE instrument for "how many times did this render run that"**,
+    shared by the architecture gate
+    (``tests/test_arch/test_one_read_pass_per_render.py``) and the render
+    harness (``tests/manual/verify_retirement_render.py``) -- the same sharing
+    :func:`counting_read_passes` below states its own case for, and for the
+    same reason: two copies of a measuring instrument is the shape where one is
+    later taught something the other is not, and the one that was not keeps
+    grading the old question.
+
+    Patched on the OWNING module and on every ``app.services`` module that
+    imported the name directly, because a producer that holds its own reference
+    would otherwise go uncounted -- and an undercount reads exactly like the
+    improvement it is supposed to be measuring.
+
+    Args:
+        targets: ``(module path, attribute name)`` pairs, e.g.
+            ``("app.services.retirement_projection", "load_projection_batch")``.
+
+    Yields:
+        A ``{name: int}`` dict whose values are the counts so far; read it
+        after the block exits.
+    """
+    # pylint: disable=import-outside-toplevel
+    import importlib
+    import sys
+
+    counts = {name: 0 for _, name in targets}
+    restore = []
+    for module_path, name in targets:
+        real = getattr(importlib.import_module(module_path), name)
+
+        def counting(*args, _real=real, _name=name, **kwargs):
+            counts[_name] += 1
+            return _real(*args, **kwargs)
+
+        for module in list(sys.modules.values()):
+            if getattr(module, "__name__", "").startswith("app.") and (
+                getattr(module, name, None) is real
+            ):
+                restore.append((module, name, real))
+                setattr(module, name, counting)
+    try:
+        yield counts
+    finally:
+        for module, name, real in restore:
+            setattr(module, name, real)
+
+
+@contextmanager
+def counting_read_passes():
+    """Count every ``BalanceContext.build`` while the block runs.
+
+    **The ONE instrument for "how many read passes did this open"**, shared by
+    the architecture gate (``tests/test_arch/test_one_read_pass_per_render.py``)
+    and the cutover harness (``tests/manual/verify_retirement_pass_cutover.py``)
+    -- which is what plan step ``C2-f2d-1``'s adversarial code review asked for
+    after both shipped their own copy of it. Two copies of a measuring
+    instrument is the shape where one is later taught something the other is
+    not, and the one that was not keeps grading the old question.
+
+    Patched on the CLASS rather than on any module's imported name: several
+    producers hold their own reference to ``BalanceContext``, so patching a
+    single module's attribute would count some builds and miss others -- and a
+    counter that undercounts reads exactly like a gate that passes.
+
+    **It counts ``build``, not construction.** A direct
+    ``BalanceContext(user_id=..., scenario=..., as_of=...)`` is invisible to it.
+    Nothing in ``app/`` does that today, but :func:`read_pass_over_paydays`
+    above does, so the path is live in this repository and a producer that took
+    it would go uncounted.
+
+    Yields:
+        A ``{"n": int}`` dict whose ``n`` is the count so far; read it after
+        the block exits.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.services.balance_at import BalanceContext
+
+    counter = {"n": 0}
+    real = BalanceContext.build.__func__
+
+    def counting(cls, user_id, as_of=None):
+        counter["n"] += 1
+        return real(cls, user_id, as_of)
+
+    BalanceContext.build = classmethod(counting)
+    try:
+        yield counter
+    finally:
+        BalanceContext.build = classmethod(real)
+
+
 class PlantedPricing:
     """A stand-in for one of the amount model's live DERIVATIONS.
 

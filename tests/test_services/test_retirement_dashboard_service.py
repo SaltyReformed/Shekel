@@ -1,9 +1,15 @@
 """
 Shekel Budget App -- Retirement Dashboard Service Tests
 
-Unit tests for the retirement_dashboard_service module, verifying that
-the extracted gap analysis and projection logic produces correct
-financial computations independently of the Flask route layer.
+Unit tests for the retirement dashboard's LOADER and RESOLVERS, and for the
+figures the retirement picture publishes from them -- verifying that the gap
+analysis and projection logic produce correct financial computations
+independently of the Flask route layer.
+
+Every seeded case goes through :func:`_picture`, which runs the ROUTE's own
+sequence: load the render's inputs once, then derive the picture at a plan
+point (plan step C2-f2d-2, which made that the ONE producer).  The figures
+these cases assert on did not move -- only the surface they are read from.
 """
 
 from datetime import date, timedelta
@@ -34,70 +40,94 @@ from app.services import (
     pay_period_service,
     paycheck_calculator,
     retirement_dashboard_service,
+    retirement_plan,
 )
+from app.services.retirement_plan import load_retirement_inputs, picture_at
 from tests._test_helpers import make_investment_account, mark_purchase_settled
 
 
-class TestComputeGapData:
-    """Tests for the top-level compute_gap_data orchestrator."""
+def _picture(user_id):
+    """The retirement picture a /retirement render derives at *point*.
 
-    def test_returns_expected_keys(self, app, db, seed_user, seed_periods):
-        """Return dict contains all template context keys.
+    The route's own two steps, in one place: build the render's inputs from its
+    read pass, derive the picture.  Spelling those out per case would let a
+    test drift from what the route does, and two spellings of one sequence is
+    the class of defect this arc removes.
 
-        P1c added the four readiness-input keys (``gap_net_biweekly``,
-        ``swr``, ``planned_retirement_date``, ``estimated_tax_rate``) that
-        ``retirement_readiness`` reads back so it can re-run the net-frame
-        gap and build the chart / countdown without re-deriving them.
-        P3b/P3c: ``pension_benefits`` (the sanctioned D6 per-pension
-        addition) replaced the last-pension-only ``pension_benefit``, and
-        ``chart_data`` retired with the old gap chart.
-        """
+    Args:
+        user_id: The owner to render for.
+
+    Returns:
+        The :class:`~app.services.retirement_plan.RetirementPicture`.
+    """
+    inputs = load_retirement_inputs(BalanceContext.build(user_id))
+    return picture_at(inputs, inputs.stored_plan)
+
+
+class TestThePicturesPublishedSurface:
+    """What one retirement picture carries, and where each fact lives.
+
+    It replaced a fourteen-key dict at plan step C2-f2d-2, and WHERE a fact
+    sits is the assertion worth making: the point-independent ones (settings,
+    pensions, salary profiles, the cadence, the tax rate) are reachable through
+    ``inputs`` and are the SAME on every picture of one render, while the
+    point-dependent ones (the axis, the projections, the pension summary, the
+    net analysis) belong to the picture.  A fact filed on the wrong side is a
+    fact that would be recomputed per point or shared across points wrongly.
+    """
+
+    def test_the_picture_carries_the_point_dependent_facts(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Every figure a render publishes is reachable from one object."""
         with app.app_context():
-            result = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
+            picture = _picture(seed_user["user"].id)
+            # Point-dependent: derived per plan.
+            assert picture.point == picture.inputs.stored_plan
+            assert picture.net is not None
+            assert picture.pension is not None
+            assert picture.axis is not None
+            assert picture.projections == []
+            # Derived, never stored beside their own inputs: the rate the
+            # picture reports IS the rate its own analysis was solved at, so
+            # there is no second copy that could drift from it.
+            assert picture.safe_withdrawal_rate is (
+                picture.net.safe_withdrawal_rate
             )
-            expected_keys = {
-                "gap_analysis", "pension_benefits",
-                "retirement_account_projections", "settings",
-                "salary_profiles", "pensions",
-                "gap_net_biweekly", "swr", "planned_retirement_date",
-                "estimated_tax_rate",
-                # Plan step R7a-2a.  Published for the same reason
-                # ``gap_net_biweekly`` and ``swr`` are: the readiness producer
-                # re-runs this gap in the net frame and must measure income
-                # against the SAME cadence rather than resolve a second one.
-                # Its consumer is ``retirement_readiness._net_frame``.
-                "pay_cadence",
-                # Plan step C2-e, and published for the same reason again:
-                # the readiness producer builds two chart series and a
-                # countdown off the axis these projections ran over and the
-                # clock they ran at, and it used to REBUILD the axis by
-                # re-issuing the producer call instead of being handed one.
-                "projection_axis",
-                "as_of",
-            }
-            assert set(result.keys()) == expected_keys
+            # NOT asserted against ``funded_ratio_state(picture.net)``: the
+            # property IS that call, so the comparison would be a tautology.
+            # Assert the RELATIONSHIP instead -- the ratio the picture reports
+            # is its own projected over its own required.
+            ratio, no_savings_needed = picture.funded_state
+            if picture.net.required_retirement_savings == Decimal("0"):
+                assert (ratio, no_savings_needed) == (None, True)
+            else:
+                assert no_savings_needed is False
+                assert ratio == (
+                    picture.net.after_tax_projected_savings
+                    / picture.net.required_retirement_savings
+                ).quantize(Decimal("0.0001"))
+            # Point-INDEPENDENT: on the inputs, shared by every point.
+            assert picture.as_of == picture.inputs.balance_ctx.as_of
+            assert picture.pay_cadence is picture.inputs.gap.pay_cadence
+            assert picture.inputs.tax_rate_missing is True
 
     def test_user_with_no_accounts_returns_safe_defaults(
         self, app, db, seed_user, seed_periods
     ):
         """User with no retirement accounts gets zero projections."""
         with app.app_context():
-            result = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
-            )
-            assert result["retirement_account_projections"] == []
+            picture = _picture(seed_user["user"].id)
+            assert picture.projections == []
             # No qualifying pension -> no per-pension derivation entries.
-            assert result["pension_benefits"] == []
+            assert picture.pension.per_pension == []
 
     def test_user_with_no_salary_profile(self, app, db, seed_user, seed_periods):
-        """User with no salary profile still returns valid structure."""
+        """User with no salary profile still returns a valid analysis."""
         with app.app_context():
-            result = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
-            )
-            assert result["gap_analysis"] is not None
-            assert result["salary_profiles"] == []
+            picture = _picture(seed_user["user"].id)
+            assert picture.net is not None
+            assert picture.inputs.gap.salary_profiles == []
 
     def test_pensions_list_populated(self, app, db, seed_user, seed_periods):
         """Active pensions are included in the pensions list."""
@@ -129,14 +159,12 @@ class TestComputeGapData:
             db.session.add(pension)
             db.session.commit()
 
-            result = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
-            )
-            assert len(result["pensions"]) == 1
+            picture = _picture(seed_user["user"].id)
+            assert len(picture.inputs.gap.pensions) == 1
             # One qualifying pension -> one per-pension derivation entry
             # carrying its computed benefit (D6 contract).
-            assert len(result["pension_benefits"]) == 1
-            assert result["pension_benefits"][0]["benefit"] is not None
+            assert len(picture.pension.per_pension) == 1
+            assert picture.pension.per_pension[0]["benefit"] is not None
 
 
 class TestComputeGapNetBiweekly:
@@ -239,7 +267,7 @@ class TestComputeGapNetBiweekly:
         assert result == Decimal("1500.00")
 
 
-class TestComputeSliderDefaults:
+class TestTheDisplayedRates:
     """Tests for the slider default computation.
 
     Post-C-45 (F-100 / F-101): the returned ``current_swr`` and
@@ -252,74 +280,64 @@ class TestComputeSliderDefaults:
     def test_default_swr_uses_user_setting_as_decimal(
         self, app, db, seed_user, seed_periods,
     ):
-        """``current_swr`` is a Decimal scaled from the user's stored SWR.
+        """The active SWR is the user's stored rate, as a fraction.
 
-        ``seed_user`` constructs ``UserSettings`` with the model-level
-        default ``safe_withdrawal_rate = Decimal("0.0400")``, so the
-        slider default should round-trip to ``Decimal("4.00")``.
-        Arithmetic: 0.0400 * 100 = 4.00.  Asserts exact equality to
-        catch any future regression that re-introduces a float cast
-        (which would have produced 3.9999... or 4.000000000001 instead).
+        ``seed_user`` constructs ``UserSettings`` with the model-level default
+        ``safe_withdrawal_rate = Decimal("0.0400")``, and the picture reports
+        the rate its own analysis was solved at: ``Decimal("0.04")``.
+
+        **The percent-scaled ``current_swr`` this asserted on is GONE** (plan
+        step C2-f2d-2): ``compute_slider_defaults`` published it and no
+        template, route or producer ever read it, so it was a published figure
+        with no consumer.  The rule it protected is unchanged and is asserted
+        here at the surface that survives -- exact equality, which is what
+        catches a float cast re-appearing (3.9999... or 4.000000000001).
         """
         with app.app_context():
-            data = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
-            )
-            slider = retirement_dashboard_service.compute_slider_defaults(data)
-            assert isinstance(slider["current_swr"], Decimal)
-            assert slider["current_swr"] == Decimal("4.00")
+            picture = _picture(seed_user["user"].id)
+            assert isinstance(picture.safe_withdrawal_rate, Decimal)
+            assert picture.safe_withdrawal_rate == Decimal("0.04")
 
     def test_default_return_when_no_accounts(self, app, db, seed_user, seed_periods):
-        """``current_return`` falls back to Decimal('7.00') with no accounts.
+        """The blended return falls back to 7% with nothing to weight.
 
-        ``seed_user`` does not seed any retirement or investment
-        accounts, so the balance-weighted average has no inputs to
-        weight; the function must return the module-level
-        ``_DEFAULT_RETURN_PCT`` (S&P 500 long-run real return baseline).
-        Asserts type as well as value to keep the Decimal contract
-        pinned (F-100 fix).
+        ``seed_user`` seeds no retirement or investment accounts, so the
+        balance-weighted average has no inputs; the picture must report the
+        documented ``_DEFAULT_RETURN_PCT`` baseline (the S&P 500 long-run real
+        return), as the fraction the growth math takes: ``Decimal("0.07")``.
+        Type is asserted as well as value to keep the Decimal contract pinned
+        (F-100 fix).
         """
         with app.app_context():
-            data = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
-            )
-            slider = retirement_dashboard_service.compute_slider_defaults(data)
-            assert isinstance(slider["current_return"], Decimal)
-            assert slider["current_return"] == Decimal("7.00")
+            picture = _picture(seed_user["user"].id)
+            assert isinstance(picture.blended_return, Decimal)
+            assert picture.blended_return == Decimal("0.07")
 
     def test_default_swr_when_settings_none(self, app, db, seed_user, seed_periods):
-        """``current_swr`` falls back to Decimal('4.00') when settings is None.
+        """The SWR falls back to 4% when the user has no settings row.
 
-        ``compute_slider_defaults`` accepts the dict returned by
-        ``compute_gap_data``; that dict carries ``settings = None``
-        only when the user has no ``UserSettings`` row.  Splicing a
-        ``settings=None`` dict in-place verifies the fallback branch
-        without having to delete + recreate the seeded settings row
-        (which would also need to keep the rest of ``data`` intact).
-        Asserts the result is the unaltered ``_DEFAULT_SWR_PCT``
-        constant (Decimal('4.00'), Trinity Study baseline).
+        Asserted against the resolver directly, because ``settings is None``
+        is the only way to reach this arm and a seeded user always HAS a
+        settings row: the pre-C2-f2d-2 test spliced ``settings = None`` into a
+        producer's returned dict, which the typed record no longer permits and
+        which was never a state the producer could actually be in.  Testing the
+        resolver is testing the branch rather than a dict edit.
         """
         with app.app_context():
-            data = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
-            )
-            data["settings"] = None
-            slider = retirement_dashboard_service.compute_slider_defaults(data)
-            assert isinstance(slider["current_swr"], Decimal)
-            assert slider["current_swr"] == Decimal("4.00")
+            assert retirement_dashboard_service.resolve_swr_fraction(
+                None,
+            ) == Decimal("0.04")
 
     def test_zero_swr_round_trips_as_decimal_zero(
         self, app, db, seed_user, seed_periods,
     ):
-        """An explicit Decimal('0') SWR survives the round-trip as Decimal('0.00').
+        """An explicit Decimal('0') SWR survives as a real zero.
 
         Storing ``safe_withdrawal_rate = Decimal("0")`` is semantically
-        distinct from ``None`` (the F-077 / C-24 CHECK constraint
-        permits both NULL and zero; zero means "explicit zero rate,"
-        NULL means "use the default").  This test pins the boundary:
-        the function must NOT collapse a stored zero to
-        ``_DEFAULT_SWR_PCT``.  Arithmetic: 0.0000 * 100 = 0.0000,
-        quantised to Decimal('0.00').
+        distinct from ``None`` (the F-077 / C-24 CHECK constraint permits both
+        NULL and zero; zero means "explicit zero rate," NULL means "use the
+        default").  This pins the boundary: the rate must NOT collapse to the
+        4% default.
         """
         with app.app_context():
             settings = (
@@ -330,12 +348,9 @@ class TestComputeSliderDefaults:
             settings.safe_withdrawal_rate = Decimal("0")
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(
-                seed_user["user"].id
-            )
-            slider = retirement_dashboard_service.compute_slider_defaults(data)
-            assert isinstance(slider["current_swr"], Decimal)
-            assert slider["current_swr"] == Decimal("0.00")
+            picture = _picture(seed_user["user"].id)
+            assert isinstance(picture.safe_withdrawal_rate, Decimal)
+            assert picture.safe_withdrawal_rate == Decimal("0")
 
 
 # ── C8: retirement projection uses the canonical entries-aware producer ─
@@ -552,10 +567,9 @@ class TestRetirementProjectionEntryAware:
             # Pre-Commit-8 this was 49,500.00.
             assert basis[current_period.id] == Decimal("49545.71")
 
-            result = retirement_dashboard_service.compute_gap_data(user.id)
-            projections = result["retirement_account_projections"]
             target = next(
-                p for p in projections if p["account"].id == acct.id
+                p for p in _picture(user.id).projections
+                if p["account"].id == acct.id
             )
             # The projection reads the MODELLED map, which folds ruling R-Y's
             # anchor-period accrual over the cash basis above.  Read once from
@@ -688,9 +702,8 @@ class TestRetirementAnchorInPastModeledHeadlineDatedSeed:
             )
             assert expected_cash < expected_dated < expected_end
 
-            result = retirement_dashboard_service.compute_gap_data(user.id)
             target = next(
-                p for p in result["retirement_account_projections"]
+                p for p in _picture(user.id).projections
                 if p["account"].id == acct.id
             )
 
@@ -830,32 +843,30 @@ class TestSwrResolverConsistency:
             )
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
-            slider = retirement_dashboard_service.compute_slider_defaults(data)
+            picture = _picture(user.id)
 
-            assert data["gap_analysis"].safe_withdrawal_rate == Decimal("0"), (
+            assert picture.safe_withdrawal_rate == Decimal("0"), (
                 "Resolver fed truthiness fallback into the gap "
                 "calculator (CRIT-04)."
             )
-            assert data["gap_analysis"].projected_total_savings == Decimal(
+            assert picture.net.projected_total_savings == Decimal(
                 "1200000.00"
             )
             # 1,200,000 * 0 / 12 = 0.00, not the pre-fix 4,000.00.
             from app.services import retirement_readiness
 
-            meter = retirement_readiness.readiness_from_gap_data(
-                data,
+            meter = retirement_readiness.readiness_from_picture(
+                picture,
             )["income_meter"]
             assert meter["withdrawals_net_monthly"] == Decimal("0.00"), (
                 "Phantom retirement income from truthiness fallback "
                 "(CRIT-04 / F-042)."
             )
-            assert slider["current_swr"] == Decimal("0.00")
 
-    def test_none_swr_uses_default_on_both_surfaces(
+    def test_none_swr_uses_the_documented_default(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """C20-2: ``None`` SWR -> default applies to slider AND gap.
+        """C20-2: a ``None`` SWR falls back to the documented default.
 
         Splices ``safe_withdrawal_rate = None`` (the column is
         nullable; NULL is the documented "use default" sentinel,
@@ -881,11 +892,7 @@ class TestSwrResolverConsistency:
             settings.safe_withdrawal_rate = None
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
-            slider = retirement_dashboard_service.compute_slider_defaults(data)
-
-            assert data["gap_analysis"].safe_withdrawal_rate == Decimal("0.04")
-            assert slider["current_swr"] == Decimal("4.00")
+            assert _picture(user.id).safe_withdrawal_rate == Decimal("0.04")
 
 
 class TestWeightedReturnZeroIsAValue:
@@ -944,11 +951,8 @@ class TestWeightedReturnZeroIsAValue:
             ))
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
-            slider = retirement_dashboard_service.compute_slider_defaults(data)
-
-            # 100,000*0 + 100,000*0.07 = 7,000; 7,000 / 200,000 * 100 = 3.50.
-            assert slider["current_return"] == Decimal("3.50"), (
+            # 100,000*0 + 100,000*0.07 = 7,000; 7,000 / 200,000 = 0.035.
+            assert _picture(user.id).blended_return == Decimal("0.035"), (
                 "Zero-return account dropped from weighted-return "
                 "denominator (CRIT-04 / F-042 / PA-04)."
             )
@@ -1015,11 +1019,8 @@ class TestWeightedReturnZeroIsAValue:
             ))
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
-            slider = retirement_dashboard_service.compute_slider_defaults(data)
-
-            # (0*0.07 + 100,000*0.05) / (0 + 100,000) * 100 = 5.00.
-            assert slider["current_return"] == Decimal("5.00"), (
+            # (0*0.07 + 100,000*0.05) / (0 + 100,000) = 0.05.
+            assert _picture(user.id).blended_return == Decimal("0.05"), (
                 "Zero-balance account was skipped by the truthiness "
                 "guard the F-11 fix removed (or upstream proj.get "
                 "contract drifted)."
@@ -1056,10 +1057,9 @@ class TestWeightedReturnZeroIsAValue:
             ))
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
-            projections = data["retirement_account_projections"]
             target = next(
-                p for p in projections if p["account"].id == acct_zero.id
+                p for p in _picture(user.id).projections
+                if p["account"].id == acct_zero.id
             )
             assert target["current_balance"] == Decimal("0.00"), (
                 "Upstream proj.get contract drifted: a real zero-balance "
@@ -1109,34 +1109,41 @@ class TestWeightedReturnZeroIsAValue:
             ))
             db.session.commit()
 
-            data = retirement_dashboard_service.compute_gap_data(user.id)
-            slider = retirement_dashboard_service.compute_slider_defaults(data)
-
             # B's explicit zero contributes; A's missing params is
-            # skipped.  Weighted = 0; denom = 100,000 -> 0.00%.
-            assert slider["current_return"] == Decimal("0.00")
+            # skipped.  Weighted = 0; denom = 100,000 -> 0.
+            assert _picture(user.id).blended_return == Decimal("0")
 
 
 class TestSwrResolverSingleDefinition:
     """C20-5: source-text gate against re-introducing the bug.
 
-    The defect was structural -- two truthiness expressions in the
-    same module that disagreed with each other.  This test scans the
-    source for the offending patterns so a future edit cannot
-    silently regress to truthiness on a financial value.
+    The defect was structural -- two truthiness expressions that disagreed
+    with each other.  This test scans the source for the offending patterns so
+    a future edit cannot silently regress to truthiness on a financial value.
+
+    **It scans BOTH modules that now hold those expressions**, and that is the
+    point of this note.  When plan step C2-f2d-2 moved the blended-return fold
+    out of ``retirement_dashboard_service`` into
+    :mod:`app.services.retirement_plan`, a scan of the first module alone would
+    have kept passing while grading a file the pattern had left -- a firing
+    control turned into a tautology by a module split, with nothing red.  A
+    gate that names its subjects has to be re-pointed when a subject moves.
     """
 
     def test_no_truthiness_on_financial_values(self):
         """No ``or "0.04"`` and no ``and X:`` truthiness on financial
         Decimal columns survives in executable code.
 
-        Scans :mod:`app.services.retirement_dashboard_service` line by
-        line; skips comments and docstring lines (their references
-        documenting the historical pattern are intentional).  A failure
-        names the surviving expression so the diagnostic is concrete.
+        Scans the retirement loader / resolver module AND the picture producer
+        line by line; skips comments and docstring lines (their references
+        documenting the historical pattern are intentional).  A failure names
+        the surviving expression so the diagnostic is concrete.
         """
         import inspect  # pylint: disable=import-outside-toplevel
-        source = inspect.getsource(retirement_dashboard_service)
+        source = "\n".join(
+            inspect.getsource(module)
+            for module in (retirement_dashboard_service, retirement_plan)
+        )
         forbidden = (
             'or "0.04"',
             "or 0.04",
@@ -1208,16 +1215,14 @@ class TestTheProjectionAxisIsTheOwnersOwnCalendar:
         # pylint: disable=import-outside-toplevel
         from app.services import retirement_projection
         ctx = retirement_projection.build_projection_context(
-            user_id,
+            BalanceContext.build(user_id),
             pay_period_service.get_all_periods(user_id),
             pay_period_service.get_current_period(user_id),
             horizon,
             None,
             None,
         )
-        return retirement_projection.resolve_projection_axis(
-            ctx, BalanceContext.build(user_id),
-        )
+        return retirement_projection.resolve_projection_axis(ctx)
 
     def test_a_monthly_owner_gets_monthly_paychecks_not_biweekly_ones(
         self, app, db, seed_user,

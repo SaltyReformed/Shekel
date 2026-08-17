@@ -59,7 +59,7 @@ from app.models.user import User
 from app.services import (
     home_equity_service,
     property_equity_chart,
-    retirement_dashboard_service,
+    retirement_plan,
     retirement_levers,
     retirement_readiness,
     savings_dashboard_service,
@@ -192,8 +192,13 @@ def _gap(user_id):
     reader inferring the cause.
     """
     def build():
-        data = retirement_dashboard_service.compute_gap_data(user_id)
-        axis = data.get("projection_axis")
+        picture = retirement_plan.picture_at(
+            retirement_plan.load_retirement_inputs(
+                BalanceContext.build(user_id),
+            ),
+            retirement_plan.STORED_PLAN,
+        )
+        axis = picture.axis
         return {
             # Absent on the HEAD side -- the key is new here.  Its absence in
             # the BEFORE file is the marker for which side is which.
@@ -202,12 +207,12 @@ def _gap(user_id):
                 "head": _plain(list(axis)[:3]),
                 "tail": _plain(list(axis)[-3:]),
             },
-            "as_of": _plain(data.get("as_of")),
-            "gap_analysis": _plain(data["gap_analysis"]),
-            "gap_net_biweekly": _money(data["gap_net_biweekly"]),
-            "planned_retirement_date": _plain(
-                data["planned_retirement_date"],
-            ),
+            "as_of": _plain(picture.as_of),
+            # The NET-frame analysis.  The gross-frame one this dumped went
+            # with ``compute_gap_data`` at plan step C2-f2d-2: it was computed
+            # at the possibly-unset stored tax rate and reached no screen.
+            "gap_analysis": _plain(picture.net),
+            "planned_retirement_date": _plain(picture.retirement_date),
             "projections": [
                 {
                     "account": _plain(proj["account"]),
@@ -235,7 +240,7 @@ def _gap(user_id):
                         )
                     ],
                 }
-                for proj in data["retirement_account_projections"]
+                for proj in picture.projections
             ],
         }
     return _guard("gap", build)
@@ -245,14 +250,25 @@ def _readiness(user_id):
     """The readiness verdict, its two chart series and its countdown."""
     return _plain(_guard(
         "readiness",
-        lambda: retirement_readiness.compute_readiness_data(user_id),
+        lambda: retirement_readiness.readiness_from_picture(
+            retirement_plan.picture_at(
+                retirement_plan.load_retirement_inputs(
+                    BalanceContext.build(user_id),
+                ),
+                retirement_plan.STORED_PLAN,
+            ),
+        ),
     ))
 
 
 def _levers(user_id):
     """Both lever solvers -- the contribution annuity and the retire-later bisect."""
     return _plain(_guard(
-        "levers", lambda: retirement_levers.compute_lever_data(user_id),
+        "levers", lambda: retirement_levers.compute_lever_data(
+            retirement_plan.load_retirement_inputs(
+                BalanceContext.build(user_id),
+            ),
+        ),
     ))
 
 
