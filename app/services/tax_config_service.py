@@ -377,8 +377,11 @@ def load_tax_configs_for_periods(user_id, profile, periods):
         user_id (int): The owning user's ID.
         profile (SalaryProfile): Supplies ``filing_status_id`` and
             ``state_code``.
-        periods (list): PayPeriod objects; ``start_date.year`` selects the
-            tax year for each.
+        periods (Sequence): The pay periods to resolve for -- a
+            :class:`~app.services.pay_calendar.PeriodWindow`, or any sequence
+            of :class:`~app.services.pay_calendar.DerivedPeriod`.  Only
+            ``start_date.year`` is read, so this never depended on the two
+            derived columns pay-calendar plan step C4 drops.
 
     Returns:
         dict: ``{tax_year: {bracket_set, state_config, fica_config}}`` for

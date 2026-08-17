@@ -16,7 +16,8 @@ from flask_login import current_user, login_required
 
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.models.salary_profile import SalaryProfile
-from app.services import paycheck_calculator, pay_period_service, salary_cockpit_service
+from app.services import paycheck_calculator, salary_cockpit_service
+from app.services.pay_calendar import calendar_for
 from app.services.tax_config_service import load_tax_configs_for_periods
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import _get_owned_profile_and_period
@@ -34,9 +35,11 @@ def breakdown(profile_id, period_id):
     'not yours'" rule; account-detail precedent).  The cockpit focuses the
     requested profile and period via its ``?profile=&period=`` params.
     """
-    profile, period = _get_owned_profile_and_period(profile_id, period_id)
+    profile, period = _get_owned_profile_and_period(
+        profile_id, period_id, calendar_for(current_user.id),
+    )
     return redirect(url_for(
-        "salary.cockpit", profile=profile.id, period=period.id,
+        "salary.cockpit", profile=profile.id, period=period.period_id,
     ))
 
 
@@ -57,11 +60,13 @@ def breakdown_current(profile_id):
     if profile is None:
         abort(404)
 
-    current_period = pay_period_service.get_current_period(current_user.id)
+    current_period = calendar_for(current_user.id).period_containing(
+        date.today(),
+    )
     if current_period is None:
         return redirect(url_for("salary.cockpit", profile=profile.id))
     return redirect(url_for(
-        "salary.cockpit", profile=profile.id, period=current_period.id,
+        "salary.cockpit", profile=profile.id, period=current_period.period_id,
     ))
 
 
@@ -74,7 +79,7 @@ def projection(profile_id):
     if profile is None:
         abort(404)
 
-    periods = pay_period_service.get_all_periods(current_user.id)
+    periods = calendar_for(current_user.id).saved()
     # Resolve tax configs PER period year (DH-#30): the ~2-year horizon
     # spans multiple tax years, so each period uses its own year's
     # brackets/FICA -- substituting the latest CONFIGURED year at or before
@@ -94,7 +99,8 @@ def projection(profile_id):
     # The calculator badges raise_event on every period of a raise month, so
     # the ledger flags the raise badge/row-tint only on each run's first
     # paycheck -- the step -- not on every paycheck of the month (P-SA1,
-    # projection surface).  The template checks ``period.id in`` this set.
+    # projection surface).  The template checks ``period.period_id in`` this
+    # set.
     raise_run_start_ids = salary_cockpit_service.raise_run_start_period_ids(
         projection_data,
     )

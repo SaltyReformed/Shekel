@@ -44,6 +44,7 @@ from app.services import (
 )
 from app.services.loan_resolver._periods import _replay_from_anchor
 from app.utils.money import round_money
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
@@ -232,7 +233,9 @@ def _savings_debt_card_total_debt(user_id):
     helper the route calls, then reads ``debt_summary.total_debt``
     -- the Decimal that backs the "Total Debt" tile.
     """
-    data = savings_dashboard_service.compute_dashboard_data(user_id)
+    data = savings_dashboard_service.compute_dashboard_data(
+        BalanceContext.build(user_id),
+    )
     summary = data["debt_summary"]
     assert summary is not None, "Expected at least one loan account"
     return summary.total_debt

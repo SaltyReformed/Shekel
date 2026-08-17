@@ -39,7 +39,8 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
-from app.services import pay_period_service, paycheck_calculator
+from app.services import paycheck_calculator
+from app.services.pay_calendar import PeriodWindow, calendar_for
 from app.services.tax_config_service import (
     load_tax_configs_for_periods,
     load_tax_configs_for_year,
@@ -91,9 +92,9 @@ def get_current_gross_biweekly(
             profile across all scenarios is used (the historical
             savings / retirement / investment dashboard behavior).
         as_of: Optional date for which to compute the gross.  Defaults
-            to today.  Passed to
-            :func:`pay_period_service.get_current_period` for period
-            resolution.
+            to today.  The period covering it is resolved off the owner's
+            DERIVED calendar
+            (:meth:`~app.services.pay_calendar.PayCalendar.period_containing`).
 
     Returns:
         The paycheck engine's
@@ -103,6 +104,20 @@ def get_current_gross_biweekly(
         covers ``as_of`` -- both pre-fix call sites returned
         ``Decimal("0")`` for the missing-profile branch, so the
         substitute preserves the contract.
+
+    Raises:
+        PayCalendarError: The owner's paydays do not define a calendar (plan
+            findings **P8** / **P35**, owned by pay-calendar plan step C4).
+            Reached only for an owner who HAS an active salary profile, since
+            the profile lookup runs first.
+
+    **It derives the calendar rather than being handed one** (pay-calendar plan
+    step C2-f2d-3).  All three callers hold a
+    :class:`~app.services.balance_at.BalanceContext` whose ``calendar()`` memo
+    would answer both questions for free, and two of them do not even pass
+    ``as_of``, so this is one of the doors ledger row **P56** counts.  Taking
+    the pass is ``C2-f3``'s move; the two reads here are the two this function
+    already made.
     """
     query = (
         db.session.query(SalaryProfile)
@@ -118,13 +133,16 @@ def get_current_gross_biweekly(
         return ZERO
 
     as_of_date = as_of or date.today()
-    current_period = pay_period_service.get_current_period(
-        user_id, as_of=as_of_date,
-    )
+    # ONE derivation answers both questions the engine needs -- which paycheck
+    # covers ``as_of``, and the owner's whole schedule for the cumulative and
+    # reconciliation context -- where the two SQL readers this replaced could
+    # answer from two different reads (pay-calendar plan step C2-f2d-3).
+    calendar = calendar_for(user_id)
+    current_period = calendar.period_containing(as_of_date)
     if current_period is None:
         return ZERO
 
-    all_periods = pay_period_service.get_all_periods(user_id)
+    all_periods = calendar.saved()
     # Resolved for the RESOLVED PERIOD's own tax year rather than the clock's,
     # which is the key ``live_projected_net`` below already uses for every
     # period it prices -- so a caller reading one period and a caller reading
@@ -190,7 +208,7 @@ class SalaryPricing:
         self._user_id = user_id
         self._scenario_id = scenario_id
         self._profiles: "dict[int, SalaryProfile] | None" = None
-        self._periods: list | None = None
+        self._periods: PeriodWindow | None = None
         self._net_by_profile: "dict[int, dict[int, Decimal]]" = {}
 
     def net_for(
@@ -267,9 +285,15 @@ class SalaryPricing:
         """
         if profile.id not in self._net_by_profile:
             if self._periods is None:
-                self._periods = pay_period_service.get_all_periods(
-                    self._user_id,
-                )
+                # The owner's saved schedule off the DERIVED calendar
+                # (pay-calendar plan step C2-f2d-3), so the periods this
+                # projection reconciles against carry the ends the whole payday
+                # set dictates rather than the stored ``end_date`` column plan
+                # step C4 drops.  A second derivation of a value the read pass
+                # holding this basis already memoizes -- recorded rather than
+                # threaded, because handing the basis a calendar is
+                # ``balance:X-i1``'s input tier and this is a reader move.
+                self._periods = calendar_for(self._user_id).saved()
             configs_by_year = load_tax_configs_for_periods(
                 self._user_id, profile, self._periods,
             )

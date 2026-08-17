@@ -13,11 +13,10 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import GoalModeEnum
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator, savings_goal_service
-from app.services.pay_calendar import PayCalendar
+from app.services.pay_calendar import PayCalendar, PeriodWindow
 from app.services.savings_goal_service import GoalTargetSpec, GoalTrajectory
 from app.utils.money import percent_complete
 
@@ -40,8 +39,11 @@ class _GoalInputs:
     in a test without a ``BalanceContext`` and an account list it never reads.
 
     Attributes:
-        all_periods: All of the owner's pay periods, for the
-            periods-until-target count.
+        all_periods: The owner's saved schedule as a
+            :class:`~app.services.pay_calendar.PeriodWindow`, for the
+            periods-until-target count.  Off the read pass since pay-calendar
+            plan step C2-f2d-3, so it is the same window the account balances
+            beside it were reported over.
         net_biweekly_pay: Current projected net pay for one paycheck, from the
             canonical paycheck engine.  ``Decimal("0.00")`` when the owner has
             no salary configured, which is what
@@ -54,11 +56,17 @@ class _GoalInputs:
             step R7b-3).  It was the bare
             :class:`~app.services.pay_calendar.PayCadence` until then, which
             could answer the first and not the second.
+        as_of: The read pass's day -- ``balance_ctx.as_of``.  The build's ONE
+            clock (pay-calendar plan step C2-f2d-3, ledger row **P55**): the
+            committed-contribution filter and the periods-until-target count
+            both resolve against a day, and reading it twice let one goal card
+            answer from two.
     """
 
-    all_periods: list[PayPeriod]
+    all_periods: PeriodWindow
     net_biweekly_pay: Decimal
     calendar: PayCalendar
+    as_of: date
 
 
 @dataclass(frozen=True)
@@ -266,7 +274,7 @@ def _build_goal_datum(
     )
 
     remaining_periods = savings_goal_service.count_periods_until(
-        goal.target_date, inputs.all_periods
+        goal.target_date, inputs.all_periods, inputs.as_of,
     )
     required = savings_goal_service.calculate_required_contribution(
         acct_balance, resolved_target, remaining_periods,
@@ -358,8 +366,15 @@ def _compute_goal_progress(
         # /obligations page applies; pre-Commit-23 this loop omitted the
         # expired-rule guard and inflated per-goal floors indefinitely.
         acct_templates = templates_by_account.get(goal.account_id, [])
+        # The PASS's day, not a bare clock read (pay-calendar plan step
+        # C2-f2d-3, ledger row **P55**).  ``committed_monthly`` decides whether
+        # a bounded template still commits anything AS OF the day it is given,
+        # so reading ``date.today()`` here put this figure on a different day
+        # from the balances beside it on the same card across a midnight
+        # render -- and from the emergency-fund floor, which asks the same
+        # producer the same question.
         monthly_contribution = obligations_aggregator.committed_monthly(
-            acct_templates, date.today(), inputs.calendar,
+            acct_templates, inputs.as_of, inputs.calendar,
         )
 
         goal_data.append(_build_goal_datum(

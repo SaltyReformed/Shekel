@@ -15,7 +15,7 @@ from app.models.escrow_line import EscrowLine
 from app.models.interest_params import InterestParams
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
-from app.services import cash_ledger, pay_period_service
+from app.services import cash_ledger
 from app.services.projection_inputs import (
     load_investment_params_for_accounts,
 )
@@ -57,10 +57,12 @@ def _load_dashboard_core_data(balance_ctx):
 
     Returns:
         A :class:`_DashboardCoreData` with active accounts (ordered for
-        display), the balance context, all pay periods, and the current
-        period.  **Not the owner's pay cadence** -- see that class's docstring
-        for why a loader every narrow producer runs must not resolve a fact
-        those producers may return before using.
+        display), the balance context, and the current period.  **Not the
+        owner's pay cadence** -- see that class's docstring for why a loader
+        every narrow producer runs must not resolve a fact those producers may
+        return before using.  **Not the period SET either**, for the reason
+        that class now gives: it is the pass's ``reported_periods()``, memoized
+        twice over, and a field would be a memo of a memo.
     """
     user_id = balance_ctx.user_id
     accounts = (
@@ -73,14 +75,16 @@ def _load_dashboard_core_data(balance_ctx):
     return _DashboardCoreData(
         accounts=accounts,
         balance_ctx=balance_ctx,
-        all_periods=pay_period_service.get_all_periods(user_id),
-        # The period containing the PASS's day, which is what
-        # ``_DashboardCoreData.current_period`` has always claimed to be and
-        # was not: ``get_current_period``'s ``as_of`` defaults to
-        # ``date.today()``, so the field answered a clock this bundle does not
-        # carry (plan step C2-f2d-1, corrected by its adversarial code review).
-        current_period=pay_period_service.get_current_period(
-            user_id, as_of=balance_ctx.as_of,
+        # The period containing the PASS's day, off the pass's OWN calendar
+        # (plan step C2-f2d-3).  It was ``get_current_period``, whose ``as_of``
+        # defaults to ``date.today()`` -- so the field answered a clock this
+        # bundle does not carry until plan step C2-f2d-1 threaded the pass's
+        # day into it, and answered from a second read of the schedule until
+        # this one.  The period SET left the bundle entirely: it is
+        # ``balance_ctx.reported_periods()``, which is the domain the seam
+        # already reports over.
+        current_period=balance_ctx.calendar().period_containing(
+            balance_ctx.as_of,
         ),
     )
 

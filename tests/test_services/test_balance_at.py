@@ -4492,7 +4492,7 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
             assert resolved_loan(auto, bctx).params.original_principal == self.AUTO
 
             summary = savings_dashboard_service.compute_debt_summary(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             # The auto loan is originated and never paid: 0 of 100,000 repaid.
             # The mortgage is in NEITHER sum -- it has not been borrowed.

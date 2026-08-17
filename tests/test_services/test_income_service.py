@@ -34,6 +34,7 @@ from app.models.salary_raise import SalaryRaise
 from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.services.pay_calendar import calendar_for
 from app.services import (
     balance_at,
     income_service,
@@ -306,6 +307,19 @@ class TestLiveProjectedNet:
             assert _live_net_map(user_id, scenario_id, [txn]) == {}
 
 
+
+def _derived(user_id):
+    """The owner's saved schedule AS THE PAYCHECK ENGINE takes it.
+
+    That engine moved onto :class:`~app.services.pay_calendar.DerivedPeriod`
+    at pay-calendar plan step C2-f2d-3, and ``income_service`` derives this
+    same window internally -- so the oracles below are handed the shape the
+    producer under test uses, while the ORM rows beside them stay for the
+    fixtures that WRITE a ``pay_period_id``.
+    """
+    return calendar_for(user_id).saved()
+
+
 class TestLiveIncomeThroughBalanceResolver:
     """Workstream B integration: balance surfaces recompute projected salary
     income live, so a stale stored ``estimated_amount`` never reaches a
@@ -353,7 +367,8 @@ class TestLiveIncomeThroughBalanceResolver:
                 user_id, profile, period.start_date.year,
             )
             breakdowns = paycheck_calculator.project_salary(
-                profile, periods, tax_configs, calibration=profile.calibration,
+                profile, _derived(user_id), tax_configs,
+                calibration=profile.calibration,
             )
             expected_net = {
                 bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
@@ -683,7 +698,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             net_2027_rate = {
                 bd.period.period_id: bd.earnings.net_pay
                 for bd in paycheck_calculator.project_salary(
-                    profile, periods,
+                    profile, _derived(user_id),
                     load_tax_configs(user_id, profile, tax_year=2027),
                     calibration=profile.calibration,
                 )
@@ -691,7 +706,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             net_2026_rate = {
                 bd.period.period_id: bd.earnings.net_pay
                 for bd in paycheck_calculator.project_salary(
-                    profile, periods,
+                    profile, _derived(user_id),
                     load_tax_configs(user_id, profile, tax_year=2026),
                     calibration=profile.calibration,
                 )
@@ -818,12 +833,16 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
                 p for p in periods if p.start_date.year == 2027
             )
 
+            derived = _derived(user_id)
+            derived_2027 = next(
+                p for p in derived if p.start_date.year == 2027
+            )
             resolved = paycheck_calculator.calculate_paycheck(
-                profile, period_2027, periods,
+                profile, derived_2027, derived,
                 load_tax_configs_for_year(user_id, profile, 2027),
             )
             unresolved = paycheck_calculator.calculate_paycheck(
-                profile, period_2027, periods,
+                profile, derived_2027, derived,
                 load_tax_configs(user_id, profile, 2027),
             )
 

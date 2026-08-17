@@ -895,22 +895,24 @@ def compute_tracks_section(user_id: int) -> dict:
     # ONE read pass for both producers: each loan is resolved once for the
     # whole section rather than once per producer (they used to start
     # independent passes, so a two-loan user paid for four resolutions here).
+    # Both producers REQUIRE it since pay-calendar plan step C2-f2d-3 (ledger
+    # row **P58**), so sharing is structural rather than a courtesy this
+    # section extends -- there is no owner id left for either of them to open a
+    # second pass from.  **This module still opens its own pass**, which is
+    # ledger row **P56**'s door for the budget dashboard and closes at
+    # ``C2-f2e``.
     # The pass is shared; the LOADS behind it are not -- each producer still
     # runs its own ``_load_dashboard_core_data``, which is the input-tier memo
     # plan step X-i1 owns (finding N-72), not something this section can fix
     # without a second sharing channel beside the context.
     balance_ctx = BalanceContext.build(user_id)
 
-    goal_data = savings_dashboard_service.compute_goal_progress(
-        user_id, balance_ctx,
-    )
+    goal_data = savings_dashboard_service.compute_goal_progress(balance_ctx)
     goals = [_track_goal_datum(gd) for gd in goal_data]
 
     return {
         "goals": goals,
-        "debt": savings_dashboard_service.compute_debt_summary(
-            user_id, balance_ctx,
-        ),
+        "debt": savings_dashboard_service.compute_debt_summary(balance_ctx),
     }
 
 

@@ -22,9 +22,9 @@ from app.models.escrow_line import EscrowLine
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.loan_params import LoanParams
-from app.models.pay_period import PayPeriod
 from app.services.balance_at import LoanFigures
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import DerivedPeriod
 from app.enums import AcctCategoryEnum
 
 
@@ -32,11 +32,22 @@ from app.enums import AcctCategoryEnum
 class _DashboardCoreData:
     """Read-pass data loaded once at the start of the dashboard build.
 
-    Bundles the accounts, the balance-seam context, and the pay periods so the
-    orchestrator passes one object to the projection step instead of a
+    Bundles the accounts, the balance-seam context, and the current pay period
+    so the orchestrator passes one object to the projection step instead of a
     long positional parameter list.  Per-account balances come from the
     :mod:`app.services.balance_at` seam (which loads its own transactions),
     so no pre-loaded transaction set rides here.
+
+    **The owner's period SET is deliberately NOT a field** (pay-calendar plan
+    step C2-f2d-3, following the ruling C2-f2c recorded at
+    ``investment_dashboard_service._context._ProjectionContext``).  It was
+    ``pay_period_service.get_all_periods(user_id)`` -- ORM rows carrying the
+    two derived columns plan step **C4** drops -- and it is
+    :meth:`~app.services.balance_at.BalanceContext.reported_periods` off
+    :attr:`balance_ctx` now, which is the SAME window the balance seam reports
+    every per-period figure on this page over.  Two reads of one schedule was
+    two chances for the hero and the columns beneath it to disagree; there is
+    one derivation per render and no second spelling to reconcile.
 
     **The owner's pay CADENCE is deliberately NOT here** (plan step R7a-2a).
     It was, for one draft, and the draft was wrong in a way worth recording:
@@ -59,15 +70,21 @@ class _DashboardCoreData:
             now shares this object, which is what collapsed a ``/savings``
             render from eleven loan resolutions to one per loan.  Read
             ``balance_ctx.scenario`` where the scenario itself is wanted.
-        all_periods: All of the user's pay periods.
-        current_period: The period containing ``balance_ctx.as_of``, or
-            ``None``.
+        current_period: The
+            :class:`~app.services.pay_calendar.DerivedPeriod` containing
+            ``balance_ctx.as_of``, or ``None`` when the pass's day falls
+            before the owner's first payday or past their horizon.  It is a
+            FIELD where the period SET is not, and the asymmetry is the one
+            plan step C2-f2c ruled one package over: the set is memoized twice
+            over (``saved()`` on the calendar, the calendar on the pass), so a
+            field would be a memo of a memo, while this is an unmemoized bisect
+            and holding one answer per build is what stops two readers here
+            pairing one clock with another's calendar.
     """
 
     accounts: list[Account]
     balance_ctx: BalanceContext
-    all_periods: list[PayPeriod]
-    current_period: PayPeriod | None
+    current_period: DerivedPeriod | None
 
 
 @dataclass(frozen=True)
@@ -97,17 +114,30 @@ class _ProjectionContext:
     """Loop-invariant inputs shared across the per-account projection loop.
 
     Every account in ``_compute_account_projections`` projects against
-    the same periods, current period, loaded parameter maps, and balance
+    the same current period, loaded parameter maps, and balance
     context; bundling them keeps the per-account helpers to a small,
     cohesive argument list.  The ``balance_ctx`` (not a bare scenario) is held
     because the :mod:`app.services.balance_at` seam every tile reads through
     takes the context -- and because carrying the SAME context the rest of the
     build uses is what guarantees a loan the tile renders and the same loan in
     the net-worth trend came from one resolution, not two that happen to agree.
+
+    **The period SET left with :class:`_DashboardCoreData`'s** (pay-calendar
+    plan step C2-f2d-3); the one reader that needed it takes
+    ``balance_ctx.reported_periods()``, which is the domain the seam built the
+    per-account maps over in the first place.
+
+    Attributes:
+        current_period: The
+            :class:`~app.services.pay_calendar.DerivedPeriod` covering
+            ``balance_ctx.as_of``, or ``None``.  Copied from
+            :attr:`_DashboardCoreData.current_period` so the tile balances, the
+            horizons and the trend all place "today" in one paycheck.
+        params: The batch-loaded :class:`_AccountParams`.
+        balance_ctx: The render's read pass.
     """
 
-    all_periods: list[PayPeriod]
-    current_period: PayPeriod | None
+    current_period: DerivedPeriod | None
     params: _AccountParams
     balance_ctx: BalanceContext
 

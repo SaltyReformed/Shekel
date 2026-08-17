@@ -3595,7 +3595,7 @@ class TestHorizonSerialization:
             )
             db.session.commit()
             horizon = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"].horizon
             assert horizon is not None
             # The unmutated payload serializes, so a failure below is the
@@ -3877,7 +3877,7 @@ class TestCockpitSection:
             # The loan's own figures, read off the SAME producer the page
             # renders, so this cannot go stale against an amortization change.
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             loan_ad = next(
                 ad for ad in data["account_data"] if ad.account.id == loan.id
