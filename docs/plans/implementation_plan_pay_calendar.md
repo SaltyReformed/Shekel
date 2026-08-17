@@ -3,23 +3,23 @@
 ## Where this stands
 
 **Built:** **C1**, **C2-a**, **C2-b** (both leaves, which also ticked **C5a** and the recurrence
-arc's **R-F10**), **C2-c**-**C2-e**, **C2-f1**, **C2-f2a**-**C2-f2c**, **C2-f2d-1**, **C2-f2d-2**,
-**C2-f2d-4** and **C3** -- section 4 carries each one's commit, and what reached `main` is a
-MEASUREMENT (`git log --oneline origin/main..dev`).
+arc's **R-F10**), **C2-c**-**C2-e**, **C2-f1**, **C2-f2a**-**C2-f2c**, **C2-f2d** (all four leaves)
+and **C3** -- section 4 carries each one's commit, and what reached `main` is a MEASUREMENT
+(`git log --oneline origin/main..dev`).
 
-**Both engines, every forward PROJECTION, the WHOLE balance seam, the GRID and `/investment` read
-the DERIVED calendar.** **C2-f DECOMPOSED into three leaves 2026-08-14**,
-**`C2-f2` into five the same day**, **`C2-f2d` into three on 2026-08-16** plus a FOURTH when
-C2-f2d-2 made row **P59** visible; `C2-f2d-3`, `C2-f2e` and `C2-f3` carry the **34** `app/` call
-sites left of the 60 it opened with.
+**Both engines, every forward PROJECTION, the WHOLE balance seam, the GRID, `/investment`,
+`/savings`, `/accounts/<id>` and the PAYCHECK ENGINE read the DERIVED calendar.**
+**C2-f DECOMPOSED into three leaves 2026-08-14** and **`C2-f2` into five the same day**; `C2-f2e`
+(the budget dashboard) and `C2-f3` (everything else, which deletes the last two readers) carry what
+is left of the 60 `app/` call sites C2-f opened with, and each entry names its own set.
 
-**`/retirement` and `/savings` each run on ONE read pass** since `C2-f2d-1`, and `/retirement` loads
-its inputs and derives each plan once since `C2-f2d-2`. A pass is not a clock: six bare
-`date.today()` reads survive there (row **P55**) and eight modules still open their own (**P56**).
-Where a stored column disagrees with the derivation every consumer believes the derivation -- those
-shapes are in `recurrence/_occurrence.py` and section 3, all owned by **C4**, which changes ONE
-writer (`pay_period_write`) plus its readers. **A cold session starts at section 4**; the shared
-registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
+**A pass is not a clock, and one pass is not one calendar**: three bare `date.today()` reads survive
+on `/retirement` (**P55**), modules still open their own pass (**P56**), and `/` opens TWO, so it
+derives the calendar twice a render (**P61**). Where a stored column disagrees with the derivation
+every consumer believes the derivation -- those shapes are in `recurrence/_occurrence.py` and
+section 3, all owned by **C4**, which changes ONE writer (`pay_period_write`) plus its readers.
+**A cold session starts at section 4**; the shared registries are `ledger.md`, `steps.md`,
+`conventions.md` and `verification.md`.
 
 ## Rulings
 
@@ -303,13 +303,10 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       A contribution carries its PAYDAY (`241b7b40`), which let the period list leave three SHARED
       signatures without moving `/retirement`. Proof: `verify_investment_cutover`'s docstring.
 
-- [ ] **C2-f2d -- `/savings` and `/retirement`** -- the DECOMPOSED parent, split into three leaves
-      2026-08-16 (developer) exactly as its own bullet predicted, and into a FOURTH when C2-f2d-2
-      made row **P59** visible. Ten modules, **99** downstream `all_periods` / `current_period`
-      references and a type change on two bundle dataclasses in
-      `savings_dashboard_service/_types.py` is a multi-session step by `lessons.md`'s own rule. The
-      split is the one that bullet named: the read pass first, then `/retirement`, then `/savings`.
-      Ticks with its last leaf.
+- [x] **C2-f2d -- `/savings` and `/retirement`.** `c95519dd`. The DECOMPOSED parent, ticked with
+      C2-f2d-3, its last leaf. Split into three leaves 2026-08-16 (developer) exactly as its own
+      bullet predicted, and into a FOURTH when C2-f2d-2 made row **P59** visible. The prediction
+      that it was a multi-session step held: four leaves over two days.
 
 - [x] **C2-f2d-1 -- the route opens the render's ONE read pass.** `731f6b3c`. Closed **P43**, ruled
       **P54**, opened **P55**-**P58**. **P43's `/retirement` half was measured FALSE first**: that
@@ -332,15 +329,24 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       one laundered the previous solved default back as an entry -- and `PlanPoint` became RESOLVED,
       which is what stops one plan holding two memo keys. Proof: `TestReadinessFragment`.
 
-- [ ] **C2-f2d-3 -- `/savings`'s readers and its four signatures.** The `all_periods` /
-      `current_period` cutover for `savings_dashboard_service`, whose two bundle dataclasses change
-      type; the same commit takes all four public entries onto the read pass, deleting the
-      `_pass_for` reconciler and the last `BalanceContext.build` in the package. Ticks `C2-f2d`.
-      Closes **P58**; carries **P55**'s `/savings` half and **P56**'s first door.
+- [x] **C2-f2d-3 -- `/savings` AND the paycheck engine read the derived calendar.** `c95519dd`. The
+      engine takes `DerivedPeriod` at 12 call sites in 10 modules, `retirement_projection` drops two
+      parameters its own pass answers, and `/savings`'s four entries take a REQUIRED pass. The
+      developer ruled three forks WIDER than the spec 2026-08-17, so this leaf also carries
+      `C2-f2e`'s `/accounts/<id>` half. Closed **P58**; carried **P55**'s `/savings` half and
+      **P56**'s first door; opened **P61**, **P62**. Proof: the commit message.
 
-- [ ] **C2-f2e -- the budget dashboard and `/accounts/<id>` detail.** The last two
-      `BalanceContext`-holding surfaces: `dashboard_service`, `dashboard_pulse_service` and
-      `routes/accounts/detail.py` with its templates. Ticks `C2-f2`, and with it **P36**.
+- [ ] **C2-f2e -- the budget dashboard.** `dashboard_service` and `dashboard_pulse_service`.
+      **`routes/accounts/detail.py` went EARLY at `C2-f2d-3`** on the developer's 2026-08-17 ruling,
+      taking `app/utils/period_projections.project_balance_horizons` with it: that helper's two
+      callers could not hold two period types between them and the alternative was a second copy.
+      What is left here is the PASS. `/` opens TWO -- one in `compute_pulse_section` through
+      `dashboard_service._resolve_section_context`, one in `compute_tracks_section` -- so it derives
+      the owner's calendar TWICE a render, measured at `calendar_for` 1 -> 2 across C2-f2d-3 while
+      every other render stayed at 1. That is row **P61**, and this step closes it: the ROUTE opens
+      one pass and hands it to both producers, `_resolve_section_context` takes it rather than
+      building one, and `compute_balance_section`'s own route does the same. Ticks `C2-f2`, and with
+      it **P36**.
 
 - [ ] **C2-f3 -- the rest, and the module's last two readers.** Every remaining site loads
       `calendar_for` ONCE per producer and threads it; the three write-path reads in
