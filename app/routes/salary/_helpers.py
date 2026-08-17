@@ -17,7 +17,7 @@ from flask import abort, redirect, render_template, request, url_for
 from flask_login import current_user
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.utils.auth_helpers import get_or_404
+from app.utils.auth_helpers import get_or_404, log_refused_lookup
 from app.utils.dates import display_today
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
@@ -113,6 +113,13 @@ def _get_owned_profile_and_period(profile_id, period_id, calendar):
     paydays, so another owner's id is not found-and-rejected here; it is
     absent, and the 404 falls out of the lookup rather than out of a
     comparison a later edit could drop.
+    **What that move COST, and what pays it back**: ``get_or_404`` emits an
+    access event on each of its two denial branches, and for one commit the
+    calendar's refusal emitted nothing, so a cross-user id probe against these
+    two routes was silent in the audit log (adversarial code review, 2026-08-16).
+    :func:`~app.utils.auth_helpers.log_refused_lookup` restores the trail at the
+    one severity the ambiguity supports -- see that function for why it does not
+    claim CROSS_USER.
 
     Args:
         profile_id: Primary key of the requested salary profile.
@@ -138,6 +145,10 @@ def _get_owned_profile_and_period(profile_id, period_id, calendar):
         abort(404)
     period = calendar.period_by_id(period_id)
     if period is None:
+        # See :func:`~app.utils.auth_helpers.log_refused_lookup`: the calendar
+        # cannot tell "no such period" from "not yours", and the refusal is
+        # logged anyway so a cross-user probe still leaves a trail.
+        log_refused_lookup("PayPeriod", period_id)
         abort(404)
     return profile, period
 

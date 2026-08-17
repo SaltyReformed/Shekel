@@ -10,10 +10,8 @@ A pay period here is a :class:`~app.services.pay_calendar.DerivedPeriod`, not a
 ``budget.pay_periods`` ORM row (pay-calendar plan step **C2-f2d-3**, whose
 as-built record carries the census).  Only ``start_date`` and the period's
 IDENTITY are read; ``end_date`` / ``period_index`` -- the columns plan step
-**C4** drops -- never were.  That identity is never ``None``, structurally
-rather than by a guard, and it matters because three consumers KEY on it: every
-producer a caller can take a period from (``PayCalendar.saved``,
-``period_containing``, ``period_by_id``) is MATERIALISED-only by contract.
+**C4** drops -- never were.  See :class:`PeriodInfo` for why that identity is
+never ``None``.
 
 Biweekly rounding residue -- reconciled to the annual aggregate
 ---------------------------------------------------------------
@@ -150,8 +148,10 @@ class PeriodInfo:
     """Pay-period identity and per-paycheck event flags.
 
     Attributes:
-        period_id: ``budget.pay_periods.id`` for this paycheck.  Never
-            ``None`` -- see the module docstring.
+        period_id: ``budget.pay_periods.id``.  **Never ``None`` structurally**
+            -- three consumers KEY on it.  Its three producers are safe two
+            ways: ``saved`` / ``period_containing`` FILTER to materialised
+            periods; ``period_by_id`` keys on a non-``None`` int.
         is_third_paycheck: Whether this is the third paycheck starting in its
             calendar month, which is what a 24-per-year deduction skips.
         raise_event: The raise taking effect in this period, as the label

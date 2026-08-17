@@ -108,12 +108,18 @@ def projection(profile_id):
     # Summary framing above the ledger (restyled in P3): the next raise,
     # the next third paycheck, and the per-calendar-year net totals.  All
     # Decimal, derived from the same breakdowns the table renders (DRY).
+    # ONE clock read for the page.  It was two, so a render crossing midnight
+    # could answer "the next raise" from one day and "the next third paycheck"
+    # from the next -- the defect pay-calendar plan step C2-f2d-3 fixed on the
+    # cockpit, in the same package and outside ledger row **P55**'s census,
+    # which is scoped to ``app/services/**`` and cannot see a ROUTE.
+    today = date.today()
     projection_summary = {
         "next_raise": salary_cockpit_service.next_raise_after(
-            projection_data, date.today(),
+            projection_data, today,
         ),
         "next_third": salary_cockpit_service.next_third_after(
-            projection_data, date.today(),
+            projection_data, today,
         ),
         "yearly_nets": salary_cockpit_service.yearly_net_totals(projection_data),
     }

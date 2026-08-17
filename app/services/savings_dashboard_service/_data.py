@@ -57,12 +57,13 @@ def _load_dashboard_core_data(balance_ctx):
 
     Returns:
         A :class:`_DashboardCoreData` with active accounts (ordered for
-        display), the balance context, and the current period.  **Not the
-        owner's pay cadence** -- see that class's docstring for why a loader
-        every narrow producer runs must not resolve a fact those producers may
-        return before using.  **Not the period SET either**, for the reason
-        that class now gives: it is the pass's ``reported_periods()``, memoized
-        twice over, and a field would be a memo of a memo.
+        display) and the balance context -- and NOTHING derived from the
+        latter.  **Not the owner's pay cadence, not the period SET, and not the
+        current period**: every one of those is a fact a narrow producer may
+        return before using, and a loader every narrow producer runs must not
+        resolve one.  That rule was learned by the cadence at plan step
+        R7a-2a and re-learned by the current period at C2-f2d-3, both on this
+        function; see :class:`_DashboardCoreData`.
     """
     user_id = balance_ctx.user_id
     accounts = (
@@ -72,21 +73,12 @@ def _load_dashboard_core_data(balance_ctx):
         .all()
     )
 
-    return _DashboardCoreData(
-        accounts=accounts,
-        balance_ctx=balance_ctx,
-        # The period containing the PASS's day, off the pass's OWN calendar
-        # (plan step C2-f2d-3).  It was ``get_current_period``, whose ``as_of``
-        # defaults to ``date.today()`` -- so the field answered a clock this
-        # bundle does not carry until plan step C2-f2d-1 threaded the pass's
-        # day into it, and answered from a second read of the schedule until
-        # this one.  The period SET left the bundle entirely: it is
-        # ``balance_ctx.reported_periods()``, which is the domain the seam
-        # already reports over.
-        current_period=balance_ctx.calendar().period_containing(
-            balance_ctx.as_of,
-        ),
-    )
+    # NEITHER period question is resolved here (plan step C2-f2d-3): the SET is
+    # ``balance_ctx.reported_periods()``, the domain the seam already reports
+    # over, and the current period is a PROPERTY on the bundle -- see that
+    # class for the legacy owner this loader raised for when it derived one
+    # eagerly for two producers that return before reading it.
+    return _DashboardCoreData(accounts=accounts, balance_ctx=balance_ctx)
 
 
 def _load_loan_params_and_escrow(accounts):

@@ -22,7 +22,7 @@ from datetime import date
 from flask import abort, render_template, request
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.auth_helpers import get_or_404, require_owner, log_refused_lookup
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
@@ -112,7 +112,9 @@ def _select_period(calendar, current_period):
     THIS owner's calendar, which holds their paydays and nobody else's, so a
     cross-user id is not "found and rejected" -- it is absent.  Same 404 for
     both "not found" and "not yours", reached without a query that could see
-    another owner's row at all.
+    another owner's row at all.  The forensic trail ``get_or_404`` emitted is
+    kept by :func:`~app.utils.auth_helpers.log_refused_lookup`; it went missing
+    for one commit, which an adversarial code review caught.
 
     Args:
         calendar: The owner's
@@ -130,6 +132,11 @@ def _select_period(calendar, current_period):
         )
     period = calendar.period_by_id(requested)
     if period is None:
+        # The calendar holds ONE owner's paydays, so it cannot tell "no such
+        # period" from "not yours" -- which is the point.  The refusal is still
+        # logged, because a cross-user id probe used to leave a trail through
+        # ``get_or_404`` and must not stop leaving one.
+        log_refused_lookup("PayPeriod", requested)
         abort(404)
     return period
 

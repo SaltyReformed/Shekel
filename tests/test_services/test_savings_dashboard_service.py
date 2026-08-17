@@ -4100,7 +4100,6 @@ class TestNetWorthHorizon:
             core = _DashboardCoreData(
                 accounts=[],
                 balance_ctx=BalanceContext.build(bare_user["user"].id),
-                current_period=None,
             )
             assert build_horizon(core, []) is None
 
@@ -4133,6 +4132,59 @@ class TestNetWorthHorizon:
             assert savings_dashboard_service.compute_debt_summary(
                 BalanceContext.build(user_id),
             ) is None
+
+    def test_the_narrow_producers_do_not_need_a_CALENDAR_they_never_use(
+        self, app, db, seed_user,
+    ):
+        """An owner whose paydays cannot define a calendar still gets ``/``.
+
+        **The case above CANNOT fire on this defect and that is why this one
+        exists** (adversarial code review of pay-calendar plan step C2-f2d-3).
+        ``bare_user`` has no periods at all, so ``derive_periods((), None)``
+        answers the empty calendar and nothing is refused -- the arm is never
+        reached.  The state that reaches it is an owner who HAS a payday whose
+        span exceeds the 1..365 cadence range: ``derive_periods`` refuses it,
+        and every producer that touches the calendar raises.
+
+        That owner is reachable rather than contrived: ``pay_schedule`` did not
+        exist before plan step X-ad-a, so a period stored before it carries
+        whatever span it was generated with, and ``resolve_cadence``'s legacy
+        fallback infers the cadence from the periods themselves.
+
+        The defect this pins was live for one commit: C2-f2d-3 resolved the
+        current period inside ``_load_dashboard_core_data``, so
+        ``compute_debt_summary`` RAISED where it had answered ``None``.  It is
+        the pay cadence's defect from R7a-2a, on the same loader, through the
+        same two producers, one fact over -- which is why the remedy is the
+        same: the loader resolves neither, and the bundle derives on demand.
+        """
+        # pylint: disable=import-outside-toplevel
+        from datetime import timedelta
+
+        from app.models.pay_period import PayPeriod
+        from app.services.pay_calendar import PayCalendarError
+
+        with app.app_context():
+            user_id = seed_user["user"].id
+            period = (
+                db.session.query(PayPeriod).filter_by(user_id=user_id)
+                .order_by(PayPeriod.start_date).first()
+            )
+            period.end_date = period.start_date + timedelta(days=545)
+            db.session.commit()
+
+            # The premise, asserted rather than assumed: this owner's calendar
+            # really is unbuildable, so the two assertions below are about a
+            # producer NOT reaching it rather than about a benign state.
+            with pytest.raises(PayCalendarError):
+                BalanceContext.build(user_id).calendar()
+
+            assert savings_dashboard_service.compute_debt_summary(
+                BalanceContext.build(user_id),
+            ) is None
+            assert savings_dashboard_service.compute_goal_progress(
+                BalanceContext.build(user_id),
+            ) == []
 
     def test_publishes_only_the_keys_the_page_reads(
         self, app, db, seed_user, seed_periods_today,

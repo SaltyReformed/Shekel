@@ -70,21 +70,42 @@ class _DashboardCoreData:
             now shares this object, which is what collapsed a ``/savings``
             render from eleven loan resolutions to one per loan.  Read
             ``balance_ctx.scenario`` where the scenario itself is wanted.
-        current_period: The
-            :class:`~app.services.pay_calendar.DerivedPeriod` containing
-            ``balance_ctx.as_of``, or ``None`` when the pass's day falls
-            before the owner's first payday or past their horizon.  It is a
-            FIELD where the period SET is not, and the asymmetry is the one
-            plan step C2-f2c ruled one package over: the set is memoized twice
-            over (``saved()`` on the calendar, the calendar on the pass), so a
-            field would be a memo of a memo, while this is an unmemoized bisect
-            and holding one answer per build is what stops two readers here
-            pairing one clock with another's calendar.
     """
 
     accounts: list[Account]
     balance_ctx: BalanceContext
-    current_period: DerivedPeriod | None
+
+    @property
+    def current_period(self) -> "DerivedPeriod | None":
+        """The period containing the pass's day, or ``None`` outside the schedule.
+
+        **A PROPERTY, not a field, and the reason is this class's own recorded
+        lesson one paragraph up.**  It was a field for one commit
+        (pay-calendar plan step C2-f2d-3), and deriving it in the loader made
+        :func:`~.._orchestrator.compute_debt_summary` RAISE
+        ``PayCalendarError`` for a legacy owner -- a 546-day stored period and
+        no ``budget.pay_schedule`` row -- where it had answered ``None``.  That
+        owner has no loans, so the producer returns before any period is read:
+        exactly the "a page must not fail for a fact it never uses" defect the
+        pay cadence made at plan step R7a-2a, on the same bundle, through the
+        same two narrow producers.  A property is derived where it is ASKED, so
+        an early return costs nothing.
+
+        **It cannot answer twice differently**, which is what a field was
+        holding: both terms are pinned on a frozen
+        :class:`~app.services.balance_at.BalanceContext` -- ``as_of`` and the
+        memoized calendar -- so the bisect is a pure function of state nothing
+        can move mid-build.  Memoizing it would buy a dict lookup over a bisect
+        of a memoized window and cost this class a mutable slot.
+
+        Returns:
+            The covering :class:`~app.services.pay_calendar.DerivedPeriod`,
+            whose ``period_id`` is never ``None``, or ``None`` when the pass's
+            day precedes the owner's first payday or lies past their horizon.
+        """
+        return self.balance_ctx.calendar().period_containing(
+            self.balance_ctx.as_of,
+        )
 
 
 @dataclass(frozen=True)
