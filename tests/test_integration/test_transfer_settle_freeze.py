@@ -52,22 +52,23 @@ from datetime import timedelta
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import SettlementBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
     account_service,
+    posting_service,
     transfer_service,
     transfer_recurrence,
 )
 from app.services.generation_schedule import GenerationSchedule
 from app.utils.dates import attribution_date, display_today
-from tests._test_helpers import create_transfer
+from tests._test_helpers import create_transfer, settlement_basis_id
 from tests.test_integration.test_loan_transfer_live_amount import (
     _build_derived_loan_transfer,
 )
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import owned_contribution, settled_figure
 
 #: P&I 1,199.10 + escrow 300.00, the figure the freeze captures.
 _LIVE_PITI = Decimal("1499.10")
@@ -176,7 +177,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
                 assert owned_contribution(shadow) == _LIVE_PITI
                 # Where the freeze lands today (N-241 is the open question
                 # about which column that should be; X-au-c owns it).
-                assert shadow.actual_amount == _LIVE_PITI
+                assert shadow.settled_amount == _LIVE_PITI
                 # The stored estimate is UNTOUCHED, which is what keeps the
                 # freeze idempotent: ``_manual_shadow_amount`` reads this
                 # column as its base, so a settle that wrote it would make a
@@ -198,13 +199,13 @@ class TestTheSettleFreezeIsTheSERVICEs:
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
-                actual_amount=Decimal("1512.44"),
+                settled_amount=Decimal("1512.44"),
             )
             db.session.commit()
 
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
-                assert shadow.actual_amount == Decimal("1512.44")
+                assert shadow.settled_amount == Decimal("1512.44")
                 assert owned_contribution(shadow) == Decimal("1512.44")
 
     def test_an_ECHOED_prefill_is_not_written(
@@ -228,48 +229,36 @@ class TestTheSettleFreezeIsTheSERVICEs:
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
-                actual_amount=Decimal("250.00"),
+                settled_amount=Decimal("250.00"),
             )
             db.session.commit()
 
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
-                assert shadow.actual_amount is None
+                # An uncorrected settle RECORDS what it booked on the
+                # ``derived`` basis (plan step X-au-c3).  This asserted a NULL
+                # figure until that step, because a NULL was the only signal
+                # that no human had typed one; the basis carries that now, so
+                # the record can state the figure AND stay distinguishable.
+                assert shadow.settled_basis_id == settlement_basis_id(
+                    SettlementBasisEnum.DERIVED,
+                )
+                assert settled_figure(shadow) == Decimal("250.00")
                 assert owned_contribution(shadow) == Decimal("250.00")
 
-    def test_an_explicit_None_still_CLEARS_a_typed_actual(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Clearing the Actual box while marking Paid is not "no figure".
-
-        The two ``None``s are different acts and the dispatch tells them apart:
-        a caller that supplied nothing gets the row left alone, and a caller
-        that explicitly cleared the box is saying the typed figure was wrong.
-        Without the distinction this edit would silently keep `$310.00`.
-        """
-        with app.app_context():
-            xfer = _plain_transfer(seed_user, seed_periods)
-            db.session.commit()
-
-            transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id,
-                actual_amount=Decimal("310.00"),
-            )
-            db.session.commit()
-            db.session.expire_all()
-            assert _shadows(xfer.id)[0].actual_amount == Decimal("310.00")
-
-            transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-                actual_amount=None,
-            )
-            db.session.commit()
-
-            db.session.expire_all()
-            for shadow in _shadows(xfer.id):
-                assert shadow.actual_amount is None
-                assert owned_contribution(shadow) == Decimal("250.00")
+    # ``test_an_explicit_None_still_CLEARS_a_typed_actual`` lived here until
+    # plan step X-au-c3, and BOTH halves of its premise are gone.  It wrote
+    # ``actual_amount = 310.00`` onto an UNSETTLED transfer -- a figure now
+    # RECORDS a settle, so the service refuses that outright -- and then had an
+    # explicit ``None`` clear it, which was a distinct act only while a settled
+    # transfer carrying no figure was a legal state.  A settled row always
+    # records what moved, so a ``None`` means what an empty box means (nobody
+    # typed one) and there is no clearing act for it to request;
+    # ``_update._fields_the_settle_left`` and ``_apply_remaining_fields``
+    # document the same removal on the app side.  The act that DOES release a
+    # record is leaving the settled band, graded by
+    # ``test_transfer_service.TestUpdateTransfer.
+    # test_a_REVERT_is_what_clears_a_settled_transfers_figure``.
 
     def test_is_override_in_the_SAME_call_suppresses_the_freeze(
         self, app, db, seed_user, seed_periods,
@@ -298,7 +287,12 @@ class TestTheSettleFreezeIsTheSERVICEs:
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
                 assert shadow.estimated_amount == Decimal("1325.00")
-                assert shadow.actual_amount is None
+                # An uncorrected settle RECORDS what it booked on the
+                # ``derived`` basis (plan step X-au-c3).  This asserted a NULL
+                # figure until that step, because a NULL was the only signal
+                # that no human had typed one; the basis carries that now, so
+                # the record can state the figure AND stay distinguishable.
+                assert settled_figure(shadow) == Decimal("1325.00")
                 assert owned_contribution(shadow) == Decimal("1325.00")
 
     def test_a_re_settle_does_not_rewrite_the_frozen_figure(
@@ -322,7 +316,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             )
             db.session.commit()
             db.session.expire_all()
-            assert _shadows(xfer.id)[0].actual_amount == _LIVE_PITI
+            assert _shadows(xfer.id)[0].settled_amount == _LIVE_PITI
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id, status_id=done_id,
@@ -331,7 +325,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
 
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
-                assert shadow.actual_amount == _LIVE_PITI
+                assert shadow.settled_amount == _LIVE_PITI
                 assert owned_contribution(shadow) == _LIVE_PITI
 
     def test_settle_amount_publishes_what_a_tick_WILL_book(
@@ -358,7 +352,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
 
             db.session.expire_all()
             assert owned_contribution(_shadows(xfer.id)[0]) == offered
-            assert _shadows(xfer.id)[0].actual_amount == offered
+            assert _shadows(xfer.id)[0].settled_amount == offered
 
 
 class TestEveryDoorReachesTheSameFigure:
@@ -383,7 +377,7 @@ class TestEveryDoorReachesTheSameFigure:
         with app.app_context():
             for shadow in _shadows(xfer_id):
                 assert owned_contribution(shadow) == _LIVE_PITI
-                assert shadow.actual_amount == _LIVE_PITI
+                assert shadow.settled_amount == _LIVE_PITI
 
     def test_the_grid_shadow_mark_done_still_freezes(
         self, app, db, auth_client, seed_user, seed_periods,
@@ -403,7 +397,7 @@ class TestEveryDoorReachesTheSameFigure:
         with app.app_context():
             for row in _shadows(xfer_id):
                 assert owned_contribution(row) == _LIVE_PITI
-                assert row.actual_amount == _LIVE_PITI
+                assert row.settled_amount == _LIVE_PITI
 
     def test_the_transfer_full_edit_status_dropdown_freezes(
         self, app, db, auth_client, seed_user, seed_periods,
@@ -451,7 +445,7 @@ class TestEveryDoorReachesTheSameFigure:
         with app.app_context():
             for row in _shadows(xfer_id):
                 assert owned_contribution(row) == _LIVE_PITI
-                assert row.actual_amount == _LIVE_PITI
+                assert row.settled_amount == _LIVE_PITI
 
     def test_a_transaction_PATCH_landing_on_a_shadow_freezes(
         self, app, db, auth_client, seed_user, seed_periods,
@@ -490,7 +484,7 @@ class TestEveryDoorReachesTheSameFigure:
         with app.app_context():
             for row in _shadows(xfer_id):
                 assert owned_contribution(row) == _LIVE_PITI
-                assert row.actual_amount == _LIVE_PITI
+                assert row.settled_amount == _LIVE_PITI
 
     def test_the_reconcile_panels_tick_freezes_and_dates_by_the_STATEMENT(
         self, app, db, auth_client, seed_user, seed_periods,
@@ -533,7 +527,7 @@ class TestEveryDoorReachesTheSameFigure:
         with app.app_context():
             for row in _shadows(xfer_id):
                 assert owned_contribution(row) == _LIVE_PITI
-                assert row.actual_amount == _LIVE_PITI
+                assert row.settled_amount == _LIVE_PITI
                 assert row.settled_on == observed
 
 
@@ -575,18 +569,25 @@ class TestTheNamedVerbItself:
                 nothing_typed.id, owner,
             ) is False
             assert transfer_service.settle_transfer(
-                echoed.id, owner, actual_amount=Decimal("120.00"),
+                echoed.id, owner, submitted=Decimal("120.00"),
             ) is False
             assert transfer_service.settle_transfer(
-                corrected.id, owner, actual_amount=Decimal("95.50"),
+                corrected.id, owner, submitted=Decimal("95.50"),
             ) is True
 
             db.session.commit()
             db.session.expire_all()
-            # And the column follows the same three-way decision.
-            assert _shadows(nothing_typed.id)[0].actual_amount is None
-            assert _shadows(echoed.id)[0].actual_amount is None
-            assert _shadows(corrected.id)[0].actual_amount == Decimal("95.50")
+            # And the RECORD follows the same three-way decision: the two
+            # uncorrected settles book what they resolved on the ``derived``
+            # basis, the corrected one books the human's figure and says so.
+            derived_id = settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert _shadows(nothing_typed.id)[0].settled_basis_id == derived_id
+            assert _shadows(echoed.id)[0].settled_basis_id == derived_id
+            assert _shadows(echoed.id)[0].settled_amount == Decimal("120.00")
+            assert _shadows(corrected.id)[0].settled_basis_id == (
+                settlement_basis_id(SettlementBasisEnum.CORRECTED)
+            )
+            assert _shadows(corrected.id)[0].settled_amount == Decimal("95.50")
 
     def test_settling_an_ALREADY_settled_transfer_writes_nothing(
         self, app, db, seed_user, seed_periods,
@@ -621,15 +622,20 @@ class TestTheNamedVerbItself:
             # A stale tab replays the settle, carrying a figure and a later day.
             assert transfer_service.settle_transfer(
                 xfer.id, owner,
-                actual_amount=Decimal("999.99"),
+                submitted=Decimal("999.99"),
                 settled_on=display_today(),
             ) is False
             db.session.commit()
 
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
-                # The echoed-past-the-rule write did not happen ...
-                assert shadow.actual_amount is None
+                # The echoed-past-the-rule write did not happen: the record
+                # still says ``derived`` at what the FIRST settle booked, not
+                # ``corrected`` at the replayed $999.99.
+                assert shadow.settled_basis_id == settlement_basis_id(
+                    SettlementBasisEnum.DERIVED,
+                )
+                assert settled_figure(shadow) == Decimal("250.00")
                 assert owned_contribution(shadow) == Decimal("250.00")
                 # ... and the day the money moved was not moved.
                 assert shadow.settled_on == first_day
@@ -673,7 +679,7 @@ class TestTheNamedVerbItself:
             with caplog.at_level(logging.INFO):
                 transfer_service.settle_transfer(
                     xfer.id, seed_user["user"].id,
-                    actual_amount=Decimal("1512.44"),
+                    submitted=Decimal("1512.44"),
                 )
                 db.session.commit()
 
@@ -681,3 +687,134 @@ class TestTheNamedVerbItself:
             record for record in caplog.records
             if getattr(record, "event", None) == "transfer_amount_frozen"
         ]
+
+
+class TestATransfersOfferIsWhatItsReSettleBOOKS:
+    """The TRANSFER half of finding **C1**, which nothing graded.
+
+    ``transaction_service.settle_amount`` and ``transfer_service.settle_amount``
+    both answer a retained ``corrected`` record before they price anything, so
+    the reconcile panel's PREFILL equals what a tick BOOKS on either kind of
+    row.  The transaction half is pinned by
+    ``test_full_edit_settle_door.TestWhatAReSettleBooksIsWhatTheOfferSHOWED``;
+    the transfer half was pinned by nothing.
+
+    **Measured 2026-08-17 by an adversarial mutation pass**: deleting the
+    ``honoured_correction`` arm from ``transfer_service._settle.settle_amount``
+    left the whole 9,626-test suite GREEN.  ``settle()`` reads the retained
+    correction independently, so the mutant separates the two -- the panel
+    offers the row's derived figure and the tick books the retained one, which
+    is exactly the defect the transaction side documents and refuses.
+    """
+
+    def test_the_offer_equals_the_booking_on_a_reverted_transfer(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A reverted transfer offers the figure it will re-book, not its plan.
+
+        Shown to FIRE: dropping ``settle_amount``'s ``honoured_correction`` arm
+        makes the offer ``$250.00`` while the settle still books ``$95.50``.
+        """
+        with app.app_context():
+            xfer = _plain_transfer(seed_user, seed_periods, amount="250.00")
+            db.session.commit()
+            owner = seed_user["user"].id
+            xfer_id = xfer.id
+
+            # Settle at a HUMAN's figure, then revert -- the round trip the
+            # full-edit card instructs.
+            assert transfer_service.settle_transfer(
+                xfer_id, owner, submitted=Decimal("95.50"),
+            ) is True
+            db.session.commit()
+            transfer_service.update_transfer(
+                xfer_id, owner,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+            db.session.expire_all()
+
+            expense = _shadows(xfer_id)[0]
+            # The record SURVIVES the revert and the assertion does not.
+            assert expense.settled_amount == Decimal("95.50")
+            assert expense.settled_on is None
+
+            # THE CLAIM: what the panel would offer is what a tick will book.
+            offered = transfer_service.settle_amount(expense)
+            assert offered == Decimal("95.50"), (
+                f"the panel would offer {offered} for a transfer whose "
+                "re-settle books its retained correction"
+            )
+
+            transfer_service.settle_transfer(xfer_id, owner)
+            db.session.commit()
+            db.session.expire_all()
+            assert _shadows(xfer_id)[0].settled_amount == offered
+
+
+class TestOneBrokenPairCannotStopTheDeployResync:
+    """``resync_all_cash_postings`` skips a drifted pair instead of aborting.
+
+    **The refusal that made this necessary is correct, and its blast radius was
+    not** (developer ruling, 2026-08-17).  ``posting_service._settle_effective``
+    gained a settled-status predicate at plan step X-au-c3 and raises
+    ``PostingError`` when the income shadow is not settled -- right for a single
+    write path, where a caller asking what one transfer settled at must not be
+    handed a fabricated figure.
+
+    But this batch selects transfers by the PARENT's status and runs at
+    container start (``scripts/init_database.py``) with no isolation, so one
+    Transfer-Invariant-4 drift -- the exact corruption ``restore_transfer``
+    exists to repair -- made the app unbootable for every user, and the operator
+    could not reach the screen that would name the row.  Before the predicate it
+    would have posted a figure and carried on.
+    """
+
+    def test_it_skips_the_broken_pair_and_still_posts_the_healthy_one(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """One drifted pair beside one sound pair: the sound one still syncs.
+
+        Shown to FIRE: without the per-transfer isolation this raises
+        ``PostingError`` out of the batch and the healthy transfer is never
+        reached, which is the container-start failure.
+        """
+        with app.app_context():
+            broken = _plain_transfer(
+                seed_user, seed_periods, amount="60.00",
+                destination="Savings",
+            )
+            healthy = _plain_transfer(
+                seed_user, seed_periods, amount="45.00",
+                destination="Vacation",
+            )
+            db.session.commit()
+            owner = seed_user["user"].id
+            broken_id, healthy_id = broken.id, healthy.id
+
+            transfer_service.settle_transfer(broken_id, owner)
+            transfer_service.settle_transfer(healthy_id, owner)
+            db.session.commit()
+
+            # Drift the INCOME leg out of the settled band, behind the seam's
+            # back -- which is how the real corruption arises (a bulk UPDATE, a
+            # half-applied migration).  The PARENT stays settled, so the batch
+            # still selects it and still asks for its settled effect.
+            income = [
+                s for s in _shadows(broken_id) if not s.is_expense
+            ][0]
+            income.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            db.session.commit()
+
+            # The batch completes rather than raising, which is the claim.
+            transactions_changed, transfers_changed = (
+                posting_service.resync_all_cash_postings()
+            )
+            db.session.commit()
+
+            assert isinstance(transfers_changed, int)
+            assert isinstance(transactions_changed, int)
+
+            # And the sound pair was still reached: it is at target, so a
+            # further pass reports nothing to do for it.
+            assert posting_service.resync_all_cash_postings()[1] == 0

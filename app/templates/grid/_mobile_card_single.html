@@ -21,5 +21,5 @@
    transaction sits in is not something its card renders.
 #}
 {% from "grid/_grid_row_macros.html" import render_one_card %}
-{{ render_one_card(rk, txn, entry_sums, budgets, can_edit, id_prefix, entry_lists, today,
+{{ render_one_card(rk, txn, entry_sums, budgets, settled, retained, can_edit, id_prefix, entry_lists, today,
                    error=error if error is defined else none) }}

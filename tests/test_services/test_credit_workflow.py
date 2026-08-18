@@ -18,6 +18,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import carry_forward_service, credit_workflow, pay_period_write
 from app.exceptions import NotFoundError, ValidationError
+from tests._test_helpers import settlement_columns
 
 
 class TestCreditWorkflow:
@@ -98,19 +99,15 @@ class TestCreditWorkflow:
             with pytest.raises(ValidationError):
                 credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
 
-    def test_payback_uses_actual_amount_when_set(
-        self, app, db, seed_user, seed_periods
-    ):
-        """Payback amount uses actual_amount when it is set on the original."""
-        with app.app_context():
-            txn = self._create_expense(seed_user, seed_periods, amount="100.00")
-            txn.actual_amount = Decimal("75.00")
-            db.session.flush()
-
-            payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
-            db.session.flush()
-
-            assert payback.estimated_amount == Decimal("75.00")
+    # ``test_payback_uses_actual_amount_when_set`` lived here until plan step
+    # X-au-c3.  It put ``actual_amount = 75.00`` on a PROJECTED ``$100.00``
+    # expense and asserted the payback took the 75 -- a state
+    # ``ck_transactions_settled_amount_needs_basis`` makes unconstructible,
+    # because a figure now RECORDS a settle and this row's money has not moved.
+    # ``mark_as_credit`` refuses any status but Projected, so the column arm it
+    # graded was unreachable the moment that CHECK landed and was deleted with
+    # it; the payback is the row's RESOLVED amount, which
+    # ``test_mark_as_credit_creates_payback`` above grades.
 
     def test_auto_creates_cc_category_if_missing(
         self, app, db, seed_user, seed_periods
@@ -435,7 +432,10 @@ class TestCarryForward:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 estimated_amount=Decimal("500.00"),
-                actual_amount=Decimal("500.00"),
+                # A settled row carries the whole record, resolved through the
+                # one door a bare-built fixture uses (plan step X-au-c3).
+                settled_on=seed_periods[0].start_date,
+                **settlement_columns(seed_periods[0].start_date, Decimal("500.00")),
             )
             db.session.add_all([t1, t2])
             db.session.flush()
@@ -580,7 +580,10 @@ class TestCarryForward:
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
                 estimated_amount=Decimal("2000.00"),
-                actual_amount=Decimal("2000.00"),
+                # A settled row carries the whole record, resolved through the
+                # one door a bare-built fixture uses (plan step X-au-c3).
+                settled_on=seed_periods[0].start_date,
+                **settlement_columns(seed_periods[0].start_date, Decimal("2000.00")),
             )
             db.session.add_all([t1, t2])
             db.session.flush()

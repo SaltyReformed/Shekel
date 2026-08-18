@@ -25,6 +25,7 @@ from app.extensions import db
 from app.services import status_seam
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
+from tests._test_helpers import settlement_if_settling
 
 
 def _create_projected_expense(seed_user, seed_periods_today):
@@ -67,9 +68,9 @@ def _walk_to_settled(txn):
     """
     done_id = ref_cache.status_id(StatusEnum.DONE)
     settled_id = ref_cache.status_id(StatusEnum.SETTLED)
-    status_seam.apply_status_change(txn, done_id)
+    status_seam.apply_status_change(txn, done_id, settlement=settlement_if_settling(txn, done_id))
     db.session.commit()
-    status_seam.apply_status_change(txn, settled_id)
+    status_seam.apply_status_change(txn, settled_id, settlement=settlement_if_settling(txn, settled_id))
     db.session.commit()
 
 
@@ -177,7 +178,7 @@ class TestPatchAcceptsLegalTransition:
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
             # Walk to Done first.
-            status_seam.apply_status_change(txn, done_id)
+            status_seam.apply_status_change(txn, done_id, settlement=settlement_if_settling(txn, done_id))
             db.session.commit()
 
             response = auth_client.patch(
@@ -224,7 +225,7 @@ class TestPatchRejectsFinalisedFieldEdit:
         stored amount is unchanged (the headline silent-rewrite gap)."""
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE))
+            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE), settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)))
             db.session.commit()
 
             response = auth_client.patch(
@@ -287,7 +288,7 @@ class TestPatchRejectsFinalisedFieldEdit:
         amount is refused -- archiving is not a revert, so the lock holds."""
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE))
+            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE), settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)))
             db.session.commit()
             settled_id = ref_cache.status_id(StatusEnum.SETTLED)
 
@@ -329,7 +330,7 @@ class TestPatchAllowsEditableField:
         money / period / category / due-date fields are locked."""
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE))
+            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE), settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)))
             db.session.commit()
 
             response = auth_client.patch(
@@ -347,7 +348,7 @@ class TestPatchAllowsEditableField:
         allowed -- the escape hatch the lock deliberately preserves."""
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE))
+            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE), settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)))
             db.session.commit()
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
@@ -375,7 +376,7 @@ class TestPatchAllowsEditableField:
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
             done_id = ref_cache.status_id(StatusEnum.DONE)
-            status_seam.apply_status_change(txn, done_id)
+            status_seam.apply_status_change(txn, done_id, settlement=settlement_if_settling(txn, done_id))
             db.session.commit()
 
             response = auth_client.patch(

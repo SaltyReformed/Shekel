@@ -22,9 +22,15 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import SettlementBasisEnum, StatusEnum
+from app.exceptions import ValidationError
 
-from tests._test_helpers import freeze_today, make_every_period_rule
+from app.services.row_valuation import settled_figure
+from tests._test_helpers import (
+    freeze_today,
+    make_every_period_rule,
+    settlement_basis_id,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -139,8 +145,14 @@ def _create_non_tracked_txn(seed_user, seed_periods):
 # ── Mark-Paid with Entries ───────────────────────────────────────
 
 
-class TestMarkPaidAutoActual:
-    """Tests for auto-populating actual_amount from entries on mark-paid."""
+class TestMarkPaidRecordsThePurchases:
+    """Mark-paid on a tracked row records the ``purchases`` basis.
+
+    Its figure is not stored: the row's own entries state it, and
+    ``row_valuation.settled_figure`` is the accessor (plan step X-au-c3).  The
+    expected NUMBERS are unchanged from when this class read the column --
+    what moved is where the answer comes from.
+    """
 
     def test_mark_done_auto_populates_actual(
         self, app, auth_client, seed_user, seed_periods,
@@ -163,7 +175,7 @@ class TestMarkPaidAutoActual:
             assert resp.status_code == 200
 
             txn = db.session.get(Transaction, txn_id)
-            assert txn.actual_amount == Decimal("400.00")
+            assert settled_figure(txn) == Decimal("400.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
 
     def test_mark_done_actual_includes_credit_entries(
@@ -189,7 +201,7 @@ class TestMarkPaidAutoActual:
 
             txn = db.session.get(Transaction, txn_id)
             # 300 + 100 = 400 total spending.
-            assert txn.actual_amount == Decimal("400.00")
+            assert settled_figure(txn) == Decimal("400.00")
 
     def test_mark_done_no_entries_manual_actual(
         self, app, auth_client, seed_user, seed_periods,
@@ -197,7 +209,7 @@ class TestMarkPaidAutoActual:
         """Tracked transaction with no entries accepts manual actual from form.
 
         Setup: Entry-capable template, no entries created.
-        Expected: manual actual_amount=350 is accepted (fall-through).
+        Expected: manual settled_amount=350 is accepted (fall-through).
         """
         with app.app_context():
             txn = _create_tracked_txn(seed_user, seed_periods)
@@ -205,37 +217,47 @@ class TestMarkPaidAutoActual:
 
             resp = auth_client.post(
                 f"/transactions/{txn_id}/mark-done",
-                data={"actual_amount": "350.00"},
+                data={"settled_amount": "350.00"},
             )
             assert resp.status_code == 200
 
             txn = db.session.get(Transaction, txn_id)
-            assert txn.actual_amount == Decimal("350.00")
+            assert txn.settled_amount == Decimal("350.00")
 
-    def test_mark_done_no_entries_no_actual(
+    def test_mark_done_no_entries_records_the_derived_figure(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Tracked transaction with no entries and no form actual keeps None.
+        """A tracked row with no entries records what it BOOKED, not nothing.
 
         Setup: Entry-capable template, no entries, no form data.
-        Expected: actual_amount remains None.
+
+        **This asserted ``actual_amount is None`` until plan step X-au-c3.**  An
+        envelope with no entries takes the MANUAL branch (ruling **R-FJ**: a
+        door has relocated nothing, so pressing Paid books the budget rather
+        than ``$0.00``), and before this step that branch recorded no figure at
+        all -- so the row read back its PLAN.  It now records the figure it
+        booked, on the ``derived`` basis because the app resolved it and nobody
+        typed a correction.  The figure is the same ``$500.00`` the old
+        fall-back answered.
         """
         with app.app_context():
             txn = _create_tracked_txn(seed_user, seed_periods)
             txn_id = txn.id
+            planned = txn.estimated_amount
 
             resp = auth_client.post(f"/transactions/{txn_id}/mark-done")
             assert resp.status_code == 200
 
             txn = db.session.get(Transaction, txn_id)
-            assert txn.actual_amount is None
+            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert settled_figure(txn) == planned
 
     def test_mark_done_entries_override_form_actual(
         self, app, auth_client, seed_user, seed_periods,
     ):
         """Entry sum overrides manual actual_amount from the form.
 
-        Setup: Entries sum to $400, form submits actual_amount=999.
+        Setup: Entries sum to $400, form submits settled_amount=999.
         Expected: actual_amount = $400 (entries win).
         """
         with app.app_context():
@@ -249,13 +271,13 @@ class TestMarkPaidAutoActual:
 
             resp = auth_client.post(
                 f"/transactions/{txn_id}/mark-done",
-                data={"actual_amount": "999.00"},
+                data={"settled_amount": "999.00"},
             )
             assert resp.status_code == 200
 
             txn = db.session.get(Transaction, txn_id)
             # Entry sum (200 + 200 = 400) overrides form value (999).
-            assert txn.actual_amount == Decimal("400.00")
+            assert settled_figure(txn) == Decimal("400.00")
 
     def test_non_tracked_mark_done_unchanged(
         self, app, auth_client, seed_user, seed_periods,
@@ -271,12 +293,12 @@ class TestMarkPaidAutoActual:
 
             resp = auth_client.post(
                 f"/transactions/{txn_id}/mark-done",
-                data={"actual_amount": "175.00"},
+                data={"settled_amount": "175.00"},
             )
             assert resp.status_code == 200
 
             txn = db.session.get(Transaction, txn_id)
-            assert txn.actual_amount == Decimal("175.00")
+            assert txn.settled_amount == Decimal("175.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
 
 
@@ -337,121 +359,111 @@ class TestCreditStatusGuard:
 
 
 class TestPostPaidEntryMutation:
-    """Tests for actual_amount updates when entries change on Paid txns."""
+    """A Paid row's purchases are CLOSED: all three doors refuse (X-au-c3).
 
-    def test_entry_added_after_paid_updates_actual(
+    **This class asserted the opposite until plan step X-au-c3** -- adding,
+    deleting or re-pricing a purchase on a Paid envelope re-derived its
+    ``actual_amount`` from the new entry sum.  That is withdrawn (developer
+    ruling, 2026-08-17) and the reason is carry-forward: it rolls the
+    envelope's unspent remainder into the NEXT period's row and settles the
+    source at what was spent, so a purchase recorded against the closed source
+    afterwards raises its cost while the later row still holds the
+    rolled-forward money -- the same dollars counted twice.  Re-deriving also
+    moves money in the optimistic direction with no human act: one back-filled
+    purchase against a close at the row's estimate crashes the recorded cost to
+    that purchase and hands the difference back to the projection.
+
+    The service-level negative controls live in
+    ``test_entry_service.TestASettledRowsPurchasesAreClosed``; these grade the
+    same rule on a row closed through the real ``mark-done`` route, and assert
+    the second half of it -- the RECORDED figure does not move either.
+    """
+
+    @staticmethod
+    def _paid_envelope_at_300(auth_client, seed_user, seed_periods):
+        """Return (txn_id, entry_ids) for a tracked row closed at $300."""
+        txn = _create_tracked_txn(seed_user, seed_periods)
+        txn_id = txn.id
+        user_id = seed_user["user"].id
+        first = _make_entry(
+            txn_id, user_id, amount="150.00", description="Kroger",
+        )
+        second = _make_entry(
+            txn_id, user_id, amount="150.00", description="Target",
+        )
+        entry_ids = (first.id, second.id)
+        db.session.commit()
+
+        auth_client.post(f"/transactions/{txn_id}/mark-done")
+        txn = db.session.get(Transaction, txn_id)
+        assert settled_figure(txn) == Decimal("300.00")
+        return txn_id, entry_ids
+
+    def test_entry_added_after_paid_is_refused(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Adding an entry to a Paid transaction recalculates actual_amount.
-
-        Setup: Tracked transaction marked Paid with entries summing to $300.
-               Then a $50 entry is added.
-        Expected: actual_amount updates to 300 + 50 = $350.
-        """
+        """A late purchase against a Paid row is refused and changes nothing."""
         with app.app_context():
-            txn = _create_tracked_txn(seed_user, seed_periods)
-            txn_id = txn.id
-            user_id = seed_user["user"].id
+            txn_id, _ = self._paid_envelope_at_300(
+                auth_client, seed_user, seed_periods,
+            )
 
-            _make_entry(txn_id, user_id, amount="150.00", description="Kroger")
-            _make_entry(txn_id, user_id, amount="150.00", description="Target")
-            db.session.commit()
+            with pytest.raises(ValidationError, match="has settled"):
+                entry_service.create_entry(
+                    transaction_id=txn_id,
+                    user_id=seed_user["user"].id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Late purchase",
+                        purchased_on=date(2026, 1, 10),
+                    ),
+                )
 
-            auth_client.post(f"/transactions/{txn_id}/mark-done")
             txn = db.session.get(Transaction, txn_id)
-            assert txn.actual_amount == Decimal("300.00")
-
-            # Add a late entry via the service.
-            entry_service.create_entry(
+            assert settled_figure(txn) == Decimal("300.00")
+            assert db.session.query(TransactionEntry).filter_by(
                 transaction_id=txn_id,
-                user_id=user_id,
-                details=entry_service.EntryDetails(
-                    amount=Decimal("50.00"),
-                    description="Late purchase",
-                    purchased_on=date(2026, 1, 10),
-                ),
-            )
-            db.session.commit()
+            ).count() == 2
 
-            txn = db.session.get(Transaction, txn_id)
-            # 150 + 150 + 50 = 350.
-            assert txn.actual_amount == Decimal("350.00")
-
-    def test_entry_deleted_after_paid_updates_actual(
+    def test_entry_deleted_after_paid_is_refused(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Deleting an entry from a Paid transaction recalculates actual.
-
-        Setup: Tracked transaction with entries summing to $400, marked Paid.
-               Then delete a $100 entry.
-        Expected: actual_amount updates to 400 - 100 = $300.
-        """
+        """Removing a purchase from a Paid row is refused and changes nothing."""
         with app.app_context():
-            txn = _create_tracked_txn(seed_user, seed_periods)
-            txn_id = txn.id
-            user_id = seed_user["user"].id
-
-            _make_entry(txn_id, user_id, amount="200.00", description="Kroger")
-            del_entry = _make_entry(
-                txn_id, user_id, amount="100.00",
-                description="Gas station",
+            txn_id, entry_ids = self._paid_envelope_at_300(
+                auth_client, seed_user, seed_periods,
             )
-            del_entry_id = del_entry.id
-            _make_entry(txn_id, user_id, amount="100.00", description="Target")
-            db.session.commit()
 
-            auth_client.post(f"/transactions/{txn_id}/mark-done")
-            txn = db.session.get(Transaction, txn_id)
-            # 200 + 100 + 100 = 400.
-            assert txn.actual_amount == Decimal("400.00")
-
-            # Delete the $100 "Gas station" entry.
-            entry_service.delete_entry(
-                entry_id=del_entry_id,
-                user_id=user_id,
-            )
-            db.session.commit()
+            with pytest.raises(ValidationError, match="has settled"):
+                entry_service.delete_entry(
+                    entry_id=entry_ids[0], user_id=seed_user["user"].id,
+                )
 
             txn = db.session.get(Transaction, txn_id)
-            # 200 + 100 = 300 (deleted $100 removed).
-            assert txn.actual_amount == Decimal("300.00")
+            assert settled_figure(txn) == Decimal("300.00")
+            assert db.session.get(TransactionEntry, entry_ids[0]) is not None
 
-    def test_entry_updated_after_paid_updates_actual(
+    def test_entry_updated_after_paid_is_refused(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Updating an entry amount on a Paid transaction recalculates actual.
-
-        Setup: Tracked transaction with entries summing to $400, marked Paid.
-               Then change one $200 entry to $250.
-        Expected: actual_amount updates to 250 + 200 = $450.
-        """
+        """Re-pricing a purchase on a Paid row is refused and changes nothing."""
         with app.app_context():
-            txn = _create_tracked_txn(seed_user, seed_periods)
-            txn_id = txn.id
-            user_id = seed_user["user"].id
-
-            edit_entry = _make_entry(
-                txn_id, user_id, amount="200.00", description="Kroger",
+            txn_id, entry_ids = self._paid_envelope_at_300(
+                auth_client, seed_user, seed_periods,
             )
-            edit_entry_id = edit_entry.id
-            _make_entry(txn_id, user_id, amount="200.00", description="Target")
-            db.session.commit()
 
-            auth_client.post(f"/transactions/{txn_id}/mark-done")
-            txn = db.session.get(Transaction, txn_id)
-            assert txn.actual_amount == Decimal("400.00")
-
-            # Update the Kroger entry from $200 to $250.
-            entry_service.update_entry(
-                entry_id=edit_entry_id,
-                user_id=user_id,
-                amount=Decimal("250.00"),
-            )
-            db.session.commit()
+            with pytest.raises(ValidationError, match="has settled"):
+                entry_service.update_entry(
+                    entry_id=entry_ids[0],
+                    user_id=seed_user["user"].id,
+                    amount=Decimal("250.00"),
+                )
 
             txn = db.session.get(Transaction, txn_id)
-            # 250 + 200 = 450.
-            assert txn.actual_amount == Decimal("450.00")
+            assert settled_figure(txn) == Decimal("300.00")
+            assert db.session.get(
+                TransactionEntry, entry_ids[0],
+            ).amount == Decimal("150.00")
 
     def test_projected_entry_mutation_does_not_set_actual(
         self, app, auth_client, seed_user, seed_periods,
@@ -468,7 +480,7 @@ class TestPostPaidEntryMutation:
 
             # Transaction is in PROJECTED status.
             assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
-            assert txn.actual_amount is None
+            assert txn.settled_amount is None
 
             entry_service.create_entry(
                 transaction_id=txn_id,
@@ -483,4 +495,4 @@ class TestPostPaidEntryMutation:
 
             txn = db.session.get(Transaction, txn_id)
             # actual_amount must remain None for projected transactions.
-            assert txn.actual_amount is None
+            assert txn.settled_amount is None

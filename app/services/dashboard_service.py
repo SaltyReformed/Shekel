@@ -279,7 +279,7 @@ def txn_to_bill_dict(
         contribution: What this row contributes, from the caller's
             :func:`~app.services.cash_ledger.contributions_by_id` map --
             ``0`` for a row that contributes nothing, the entered
-            ``actual_amount`` where there is one, else the row's resolved
+            figure a SETTLED row RECORDED as moved, else the row's resolved
             amount.  Read only for a non-entry-tracked row; an envelope
             answers on its E-21 budget base instead.
         budget: What the row's amount RESOLVES to, from the caller's

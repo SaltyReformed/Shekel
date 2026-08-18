@@ -49,6 +49,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services import pay_period_service, transfer_service
 from app.services.auth_service import hash_password
+from app.services.row_valuation import settled_figure
 from app.services import account_service
 from tests._test_helpers import make_every_period_rule
 
@@ -583,7 +584,7 @@ class TestCarryForwardPreviewReadOnly:
                 src = db.session.get(Transaction, source.id)
                 tgt = db.session.get(Transaction, target.id)
                 return (
-                    src.status_id, src.actual_amount, src.settled_on,
+                    src.status_id, src.settled_amount, src.settled_on,
                     src.estimated_amount, src.is_override,
                     tgt.estimated_amount, tgt.is_override,
                     tgt.status_id,
@@ -708,7 +709,7 @@ class TestCarryForwardPreviewEndToEnd:
             db.session.refresh(source)
             done_id = ref_cache.status_id(StatusEnum.DONE)
             assert source.status_id == done_id
-            assert source.actual_amount == Decimal("65.00")
+            assert settled_figure(source) == Decimal("65.00")
 
             # Engine auto-generated the canonical at the current
             # period's default ($100) and the carry-forward bumped

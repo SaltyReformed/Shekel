@@ -5,7 +5,7 @@ doors themselves (create, update, delete), the owner resolution they share, and
 the re-derivation every one of them triggers.  What a set of purchases ADDS UP
 TO, and the screen contexts built from those sums, is the sibling leaf
 (:mod:`._sums`); the arrow runs one way -- this module reads
-:func:`~._sums.compute_actual_from_entries` and that module reads nothing here.
+the reductions in :mod:`._sums`, and that module reads nothing here.
 
 Architecture:
   - No Flask imports.  Receives plain data, returns ORM objects or
@@ -29,7 +29,7 @@ from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
-from app.utils.balance_predicates import is_archived, is_cancelled
+from app.utils.balance_predicates import is_cancelled
 # ``is_credit`` from balance_predicates collides with the
 # ``is_credit: bool`` keyword argument on this module's
 # ``create_entry`` / ``update_entry`` functions.  Aliasing the
@@ -45,7 +45,6 @@ from app.utils.log_events import (
     log_event,
 )
 
-from ._sums import compute_actual_from_entries
 
 logger = logging.getLogger(__name__)
 
@@ -54,66 +53,153 @@ _UPDATABLE_FIELDS = frozenset({
     "amount", "description", "purchased_on", "settled_on", "is_credit",
 })
 
+#: The purchase facts that change what its PARENT ROW COST -- every field a
+#: purchase carries except ``settled_on``.
+#:
+#: ``settled_on`` is the day the BANK took this purchase, and it is the one
+#: fact about a purchase that is an OBSERVATION rather than a restatement of
+#: what was spent: recording it moves that purchase's cash out of its
+#: envelope's close and onto its own day
+#: (``cash_ledger.settled_cash_leg``'s third term, ruling **R-FM**), and the
+#: two always sum to the same total.  That is the SAME split this whole step is
+#: built on -- ``settled_on`` / ``reconciled_by_id`` are the ASSERTION and
+#: ``settled_amount`` / ``settled_basis_id`` are WHAT MOVED -- read one level
+#: down, on the purchase instead of on the row.
+_COST_BEARING_FIELDS = _UPDATABLE_FIELDS - {"settled_on"}
 
-def _reject_archived_parent(txn: Transaction) -> None:
-    """Refuse an entry mutation against an ARCHIVED (terminal ``Settled``) row.
 
-    **Finding N-229's door half.**  A row in ``StatusEnum.SETTLED`` is a
-    historical record: the state machine gives it no outgoing edge but identity,
-    so what the books say it cost can never be reopened and re-derived.
-    Recording, editing or deleting a purchase against one is therefore either
-    inert or a retroactive rewrite of history, and neither is what the user
-    meant -- so all three doors refuse it, rather than the create door alone.
+def _reject_settled_parent(
+    txn: Transaction, changing: "frozenset[str]",
+) -> None:
+    """Refuse an entry mutation that RE-COSTS a row whose money has MOVED.
 
-    It is the ARCHIVE status, not the settled band: a Paid envelope must keep
-    accepting late-posting purchases, which is the whole reason
-    :func:`_resync_after_entry_change` exists.  See
-    :func:`app.utils.balance_predicates.is_archived` for why that distinction
-    gets a name.
+    **Finding N-229's door half, widened to the settled BAND at plan step
+    X-au-c3** (developer ruling, 2026-08-17).  A settled envelope's purchases
+    are closed: the user has said this money moved, and every one of the three
+    doors would move it again.  Adding a purchase grows what the row cost,
+    deleting one shrinks it, and re-pricing one does either -- so all three
+    refuse, on Paid and Received as well as on the terminal ``Settled``.
+
+    **The reason it is the BAND and not the archive is carry-forward, and it is
+    the argument that decides this.**  ``carry_forward_service`` rolls an
+    envelope's UNSPENT remainder (``estimated - Sigma(entries)``) into the next
+    period's row and then settles the source at what was spent.  So the moment
+    an envelope closes, its leftover has already moved on and is sitting in a
+    LATER row.  A purchase recorded against the closed source afterwards would
+    raise its cost while that later row still holds the rolled-forward money --
+    the same dollars counted twice, in two periods, with nothing to reconcile
+    them.  A forgotten purchase belongs in the period that now holds the money.
+
+    **What a user does instead**: put the row back to Projected, record the
+    purchase, and close it again.  That is the same act the refusal names, and
+    it is honest about what happened -- the close was premature, so the settle
+    day it stamped and the statement it was reconciled against were premature
+    too.  Leaving the settled band releases the ASSERTION -- the settle day and
+    the statement link, in ``status_seam.apply_status_change`` -- and KEEPS what
+    the row recorded, which is correct rather than a cost: the purchases are
+    what the figure is made of, so a re-close restates it from them on the day
+    the money really moved.
+
+    **The rejected alternative, and why**: letting a settled envelope re-derive
+    its figure from a late purchase is what the deleted
+    ``_update_actual_if_paid`` did (``actual_amount = Sigma(entries)`` on any
+    settled row with entries).  It moves money in the OPTIMISTIC direction
+    without a human act -- one ``$50`` purchase back-filled into a ``$500``
+    close crashes the recorded cost to ``$50`` and hands ``$450`` of
+    already-spent money back to the projection.  That is precisely the failure
+    :func:`~app.services.status_seam.reject_future_settle_day` exists to
+    prevent, and the reason ``TransactionEntry.settled_on`` deliberately bounds
+    only from below: where the app must guess, it keeps the balance LOW.
+
+    **It is FIELD-AWARE, and the one field it admits is ``settled_on``**
+    (developer ruling, 2026-08-17).  Everything above is an argument about what
+    the row COST; the day the BANK took a purchase is not that.  Recording it
+    changes no total -- it moves that purchase's cash out of the envelope's
+    close and onto its own day, and ``settled_cash_leg`` subtracts exactly what
+    the purchase's own leg books, so the two always sum to the row's whole debit
+    total.  Refusing it would leave already-spent money dated on the day the
+    envelope happened to be closed with no door to correct it: measured on the
+    2026-08-17 production dump, 28 closed envelopes hold 61 debit purchases
+    with no posting day recorded, totalling ``$4,360.07``.
+
+    That split is this step's own three-lifetime model read one level down.  A
+    purchase's amount is WHAT MOVED and its posting day is an ASSERTION about
+    when -- the same two facts ``settled_amount`` and ``settled_on`` are on the
+    parent, with the same answer: the assertion may be recorded, corrected and
+    withdrawn long after the figure is final.
+
+    ``Status.is_settled`` is the band -- Paid, Received AND the terminal
+    ``Settled`` -- where :func:`~app.utils.balance_predicates.is_archived` is
+    that last status alone.  The band is what this rule is about, so it reads
+    the band; the archive keeps its own predicate because other readers mean it.
 
     Args:
         txn: The parent transaction the entry belongs (or would belong) to.
+            Its ``status`` relationship is read (``lazy="joined"``).
+        changing: The purchase facts this act writes.  The create and delete
+            doors pass :data:`_COST_BEARING_FIELDS` -- a purchase appearing or
+            vanishing changes every one of them -- and the update door passes
+            the fields it was actually given, which is what lets a posting-day
+            edit through where a re-price is refused.
 
     Raises:
-        ValidationError: When *txn* is in the terminal ``Settled`` status.
+        ValidationError: When *txn* is in a settled status and *changing*
+            touches any cost-bearing field.
     """
-    if is_archived(txn):
-        raise ValidationError(
-            f"Transaction {txn.id} is archived (Settled); its purchases are "
-            "a historical record and cannot be added to, changed, or removed."
-        )
+    if txn.status is None or not txn.status.is_settled:
+        return
+    if not changing & _COST_BEARING_FIELDS:
+        return
+    raise ValidationError(
+        f"Transaction {txn.id} has settled; its purchases are closed and "
+        "cannot be added, removed, or re-priced. Doing so would change what "
+        "the row cost after its money moved -- and a carry-forward has "
+        "already rolled its leftover into a later period, so the same dollars "
+        "would be counted twice. Set the row back to Projected to change a "
+        "purchase, then mark it paid again. Recording the day your bank took "
+        "a purchase is still allowed: that says when this money moved, not "
+        "how much of it did."
+    )
 
 
 def _resync_after_entry_change(txn: Transaction) -> None:
-    """Re-derive an envelope's actual and its postings after an entry change.
+    """Reconcile an envelope's postings after an entry change.
 
-    **ONE door for what used to be two, and the split was finding N-229.**
-    This was ``_update_actual_if_paid`` (gated on ``is_done`` -- exactly Paid)
-    followed by ``_resync_postings_if_settled`` (gated on the settled BAND), so
-    the two halves of one act graded the same row differently: on any settled
-    status that is not Paid the actual was NOT recomputed while the postings
-    WERE reconciled -- to the stale figure.  The books moved and
-    the figure they were derived from did not.  Two predicates for one act is
-    two answers, and one door with one answer per half is what replaced them.
+    **It writes no figure, and losing that half is plan step X-au-c3's doing.**
+    It re-derived ``actual_amount = sum(entries)`` for a settled envelope, and a
+    settled envelope now records the ``purchases`` basis and stores no figure at
+    all -- its amount IS the sum of its entries, answered on read by
+    ``row_valuation.settled_figure``.  A stored copy is what needed a reconciler;
+    with the copy gone the reconciler has nothing left to reconcile, and the
+    entries and the figure they add up to cannot drift because there is only one
+    of them.
 
-    Both halves, in the order they must run:
+    **Its whole gate was ``if settled and txn.entries``, and BOTH halves of that
+    gate are gone.**  The figure it would have written no longer exists to
+    write, and the ``settled`` half stopped being a question this function may
+    ask: a settled parent DOES reach here, through the one entry edit
+    :func:`_reject_settled_parent` admits on such a row -- recording the day
+    the bank took a purchase -- and re-dating that purchase's cash is the whole
+    point of the reconcile below.  Two defects went with the deleted arm:
 
-      1. ``actual_amount = sum(entries)`` -- the late-posting case (scope doc
-         section 4.2: once entries exist, the entry sum takes precedence over
-         any manually entered actual).  Gated on the settled BAND, because a
-         Projected envelope's actual is not yet a fact.  Skipped for an EMPTY
-         entry list, which is the deliberate part: deleting the last purchase
-         from a Paid envelope leaves the previous figure rather than silently
-         rewriting a settled row's cost to ``$0.00``.
-      2. the ledger reconcile (Build-Order Step 3), which must read the actual
-         act 1 just wrote.  An entry mutation changes the row's confirmed cash
-         effect (``owned_contribution - Sigma(credit entries) - Sigma(posted
-         purchases)``): adding a debit purchase grows the checking outflow,
-         flipping an entry to or from credit moves the credit-excluded portion,
-         deleting one shrinks it, and recording a posting day moves that
-         purchase's amount out of the close and into its own dated leg.
+      * deleting the LAST purchase from a settled envelope left the previous
+        figure standing -- deliberately, because rewriting the close to ``$0.00``
+        looked worse than a stale number.  Neither state is reachable now: the
+        delete is refused, and a ``purchases`` row that was closed empty answers
+        ``$0.00`` because that is what its records say;
+      * adding a purchase to a settled row whose figure was a HUMAN's correction
+        overwrote that correction with the entry sum.  The add is refused, and
+        ruling **R-FB**'s rule -- a figure somebody read off a statement is a
+        fact -- finally holds on this path too.
 
-    **Act 2 is UNGATED since plan step X-f3b, and that is ruling R-FM.**  It ran
+    What remains is the ledger reconcile (Build-Order Step 3).  An entry mutation
+    changes the row's confirmed cash effect (``settled figure - Sigma(credit
+    entries) - Sigma(posted purchases)``): adding a debit purchase grows the
+    checking outflow, flipping an entry to or from credit moves the
+    credit-excluded portion, deleting one shrinks it, and recording a posting day
+    moves that purchase's amount out of the close and into its own dated leg.
+
+    **It is UNGATED since plan step X-f3b, and that is ruling R-FM.**  It ran
     only on the settled band, on the premise that "a Projected envelope has no
     postings" -- false once a purchase carrying a recorded bank posting day
     books its own leg whatever its envelope's status is.  One call reconciles
@@ -125,15 +211,26 @@ def _resync_after_entry_change(txn: Transaction) -> None:
     (the reconcile flushes but does not commit, matching this module's
     contract).
 
+    **``settled`` is read off the ROW rather than passed as ``False``, and that
+    choice has already paid for itself.**  The reconcile's parameter is a
+    question about the row -- does its own cash leg belong in the ledger -- and
+    the row is the one thing that answers it.  While ``_reject_settled_parent``
+    refused every mutation on a settled row the constant would have been
+    correct, and hardcoding it would have moved that guard's guarantee into a
+    second module; the developer's 2026-08-17 ruling then widened the door to
+    admit a posting-day edit, so ``True`` reaches here now and a hardcoded
+    ``False`` would have silently stopped booking those rows' own cash legs --
+    exactly the lie no test could see.  Reading it costs an already-joined
+    relationship.
+
     Args:
         txn: The parent envelope transaction whose entries changed.  Its
-            ``status`` relationship is read to gate act 1 and to tell act 2
-            whether the row's OWN cash leg belongs in the ledger.
+            ``status`` relationship is read to tell the reconcile whether the
+            row's OWN cash leg belongs in the ledger.
     """
-    settled = txn.status.is_settled
-    if settled and txn.entries:
-        txn.actual_amount = compute_actual_from_entries(txn.entries)
-    posting_service.sync_transaction_postings(txn, settled=settled)
+    posting_service.sync_transaction_postings(
+        txn, settled=txn.status.is_settled,
+    )
 
 
 def resolve_owner_id(user_id: int) -> int:
@@ -376,8 +473,8 @@ def create_entry(
         NotFoundError: Transaction not found or not accessible by this
             user.
         ValidationError: Transaction not entry-capable, is a transfer,
-            is income, or has a blocked status (Cancelled, Credit, or the
-            terminal Settled -- see :func:`_reject_archived_parent`).
+            is income, or has a blocked status (Cancelled, Credit, or any
+            SETTLED status -- see :func:`_reject_settled_parent`).
     """
     owner_id = resolve_owner_id(user_id)
 
@@ -426,11 +523,13 @@ def create_entry(
             "Cannot add entries to a transaction with Credit status. "
             "Entry-capable transactions handle credit at the entry level."
         )
-    # ARCHIVED (terminal Settled) is the third refusal, and it is finding
-    # **N-229**: it used to be accepted, persisted, and silently inert -- the
-    # actual was not recomputed (that half graded ``is_done``) while the
-    # postings were reconciled anyway (that half graded the settled BAND).
-    _reject_archived_parent(txn)
+    # A SETTLED parent is the third refusal, and it is finding **N-229**: an
+    # entry on such a row used to be accepted, persisted, and silently inert --
+    # the actual was not recomputed (that half graded ``is_done``) while the
+    # postings were reconciled anyway (that half graded the settled BAND).  A
+    # new purchase states every cost-bearing fact at once, so it is refused on
+    # the whole set rather than on any subset the caller happened to supply.
+    _reject_settled_parent(txn, _COST_BEARING_FIELDS)
 
     # Content guard, after the ownership and transaction guards so a
     # non-owner still gets the 404 rather than a validation message that
@@ -494,8 +593,11 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     Raises:
         NotFoundError: Entry not found or not accessible.
         ValidationError: If no valid fields provided, unknown fields are
-            passed, or the parent row is archived
-            (:func:`_reject_archived_parent`).
+            passed, or the parent row has SETTLED and this update touches
+            anything that changes what the row cost
+            (:func:`_reject_settled_parent`).  An update touching only
+            ``settled_on`` is admitted on a settled parent: it records when the
+            bank took the purchase, not how much of it moved.
     """
     unknown = set(kwargs) - _UPDATABLE_FIELDS
     if unknown:
@@ -517,10 +619,14 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     if entry.transaction.pay_period.user_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
-    # An archived row's purchases are history (finding **N-229**).  Checked
-    # after ownership so a non-owner still gets the 404 rather than a message
-    # confirming the row exists, exactly as the create door orders its guards.
-    _reject_archived_parent(entry.transaction)
+    # A settled row's purchases are closed to RE-PRICING (finding **N-229**),
+    # and this is the door that passes what it was actually asked to write:
+    # a submission touching only ``settled_on`` records when the bank took the
+    # purchase and is admitted, where anything cost-bearing is refused.
+    # Checked after ownership so a non-owner still gets the 404 rather than a
+    # message confirming the row exists, exactly as the create door orders its
+    # guards.
+    _reject_settled_parent(entry.transaction, frozenset(valid_updates))
 
     # The same boundary the create door applies, and only when the caller is
     # actually moving the date -- a partial update that leaves ``purchased_on``
@@ -622,8 +728,8 @@ def delete_entry(entry_id: int, user_id: int) -> int:
 
     Raises:
         NotFoundError: Entry not found or not accessible.
-        ValidationError: If the parent row is archived
-            (:func:`_reject_archived_parent`).
+        ValidationError: If the parent row has settled
+            (:func:`_reject_settled_parent`).
     """
     entry = db.session.get(TransactionEntry, entry_id)
     if entry is None:
@@ -634,9 +740,10 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     if entry.transaction.pay_period.user_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
-    # An archived row's purchases are history (finding **N-229**), and removing
-    # one would rewrite what the books already say the row cost.
-    _reject_archived_parent(entry.transaction)
+    # A settled row's purchases are history (finding **N-229**), and removing
+    # one would rewrite what the books already say the row cost -- every
+    # cost-bearing fact of it at once, which is the set passed here.
+    _reject_settled_parent(entry.transaction, _COST_BEARING_FIELDS)
 
     txn = entry.transaction
     transaction_id = entry.transaction_id

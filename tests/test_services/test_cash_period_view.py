@@ -281,7 +281,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         txn = create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("80.00"),
-            actual_amount=Decimal("50.00"),
+            settled_amount=Decimal("50.00"),
             settled_on=date(2026, 2, 5), name="Groceries",
         )
         db.session.add(TransactionEntry(

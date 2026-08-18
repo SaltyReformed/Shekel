@@ -42,8 +42,8 @@ the split that made `pay_period_locks` (**N-156**), `anchor_service`
 rows says the same thing: three lines of headroom is not a design, and the
 structural answer is a package with one private leaf per verb.  Plan step
 X-f2-c3 is the change that had to buy the room -- it publishes
-:func:`is_correction`, the settle's own echo rule, so the reconcile writer can
-stop counting machine writes as hand-typed corrections (**N-231**) -- so it
+:func:`settle_amount`, the figure a tick will book, so the panel and the verb
+cannot show and book two different numbers (**N-231**) -- so it
 makes the shape rather than shaving prose a fifth time.
 
 Three leaves, cut by what each DECIDES rather than by size:
@@ -58,10 +58,13 @@ Three leaves, cut by what each DECIDES rather than by size:
 **The public surface is this module and ``__all__`` is it.**
 """
 
-from app.services.transaction_service._door import apply_requested_status
+from app.services.transaction_service._door import (
+    apply_requested_status,
+)
 from app.services.transaction_service._settle import (
-    is_correction,
+    fixed_settle_amount,
     reject_unsettleable,
+    retained_settle_amounts_by_id,
     settle_amount,
     settle_from_entries,
     settle_transaction,
@@ -76,10 +79,11 @@ from app.services.transaction_service._status_rules import (
 
 __all__ = [
     "apply_requested_status",
-    "is_correction",
+    "fixed_settle_amount",
     "offerable_status_ids",
     "reject_mismatched_settled_status",
     "reject_unsettleable",
+    "retained_settle_amounts_by_id",
     "settle_amount",
     "settle_from_entries",
     "settle_transaction",

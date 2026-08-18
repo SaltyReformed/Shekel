@@ -444,7 +444,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
         settled = db.session.get(Transaction, income_shadow_id)
         assert settled.status.is_settled is True
         # Capture-on-settle froze the LIVE PITI, not the $1.00 estimate.
-        assert settled.actual_amount == Decimal("1499.10")
+        assert settled.settled_amount == Decimal("1499.10")
         assert owned_contribution(settled) == Decimal("1499.10")
         assert settled.estimated_amount == Decimal("1.00")
         # Both legs mirror the captured actual (Transfer Invariant 3).
@@ -456,7 +456,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
             )
             .one()
         )
-        assert expense.actual_amount == Decimal("1499.10")
+        assert expense.settled_amount == Decimal("1499.10")
 
         # cash == split: the genesis split reads the frozen cash and subtracts
         # the same escrow, leaving principal = P&I.
@@ -515,7 +515,7 @@ def test_settled_loan_payment_freeze_is_one_shot(
         db.session.expire_all()
         settled = db.session.get(Transaction, income_shadow_id)
         assert settled.status.is_settled is True
-        assert settled.actual_amount == Decimal("1499.10")
+        assert settled.settled_amount == Decimal("1499.10")
 
         # The freeze is one-shot: the derivation returns None for a settled
         # shadow, so the settle capture can never fire a second time.
@@ -530,7 +530,7 @@ def test_settled_loan_payment_freeze_is_one_shot(
         assert resp2.status_code == 200, resp2.data
         db.session.expire_all()
         replayed = db.session.get(Transaction, income_shadow_id)
-        assert replayed.actual_amount == Decimal("1499.10")
+        assert replayed.settled_amount == Decimal("1499.10")
         assert owned_contribution(replayed) == Decimal("1499.10")
 
 
@@ -626,52 +626,22 @@ def test_manual_payment_with_extra_gets_base_plus_extra(
         assert all(v == Decimal("1599.10") for v in overrides.values())
 
 
-def test_manual_extra_keys_to_recurring_base_not_a_typed_actual(
-    app, db, seed_user, seed_periods,
-):
-    """The manual extra rides the RECURRING base, ignoring a pre-settle typed actual.
-
-    A grid full-edit can leave a projected shadow with an operator-typed
-    ``actual_amount`` while still ``is_projected`` and NOT ``is_override``.  The
-    extra must key to the recurring ``estimated_amount`` (1,499.10), NOT
-    ``effective_amount`` (which would return the typed 1,550.00), or the extra
-    would stack on a per-instance value: override = 1,499.10 + 100.00 = 1,599.10,
-    NOT 1,650.00.  This keeps manual mode coherent with derive mode (which also
-    ignores a pre-settle typed actual and recomputes from config).
-    """
-    with app.app_context():
-        loan, _escrow, scenario_id, template, _rule, _periods = (
-            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
-        )
-        template.settings.derive_from_loan = False
-        template.settings.extra_principal = Decimal("100.00")
-        template.default_amount = Decimal("1499.10")
-        db.session.flush()
-        transfer_recurrence.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, seed_periods), scenario_id,
-        )
-        db.session.commit()
-
-        # Operator types a known actual on a projected shadow (grid full-edit
-        # path -- is_override stays False, status stays Projected).
-        shadow = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.transfer_id.isnot(None),
-                Transaction.scenario_id == scenario_id,
-            )
-            .order_by(Transaction.id)
-            .first()
-        )
-        shadow.actual_amount = Decimal("1550.00")
-        db.session.commit()
-        assert shadow.is_override is False
-        assert owned_contribution(shadow) == Decimal("1550.00")
-
-        shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = _live_overrides(scenario_id, shadows)
-        # Extra on the recurring base (1499.10 + 100), NOT on the typed actual.
-        assert overrides[shadow.id] == Decimal("1599.10")
+# ``test_manual_extra_keys_to_recurring_base_not_a_typed_actual`` lived here
+# until plan step X-au-c3, and the DISCRIMINATOR it needed no longer exists.
+# It put an operator-typed ``actual_amount`` on a PROJECTED, non-override loan
+# shadow -- the one state where ``estimated_amount`` and the row's CONTRIBUTION
+# gave different answers -- and proved ``_manual_shadow_amount`` keys the
+# standing extra to the recurring base rather than to the per-instance figure.
+#
+# A figure RECORDS a settle now, so ``ck_transactions_settled_amount_needs_basis``
+# makes that row unconstructible, and ``LoanPricing.live_cash`` gates on
+# ``is_projected`` -- so no row this producer can see carries a settled figure at
+# all.  The two expressions therefore answer the same number for every
+# constructible input, and a test written against the difference cannot fail,
+# which is not a test (finding **N-184**'s rule).  What survives is the extra
+# riding the recurring base, which
+# ``test_manual_payment_with_extra_gets_base_plus_extra`` above grades on the
+# row shape that is still reachable.
 
 
 def test_manual_payment_without_extra_gets_no_override(
@@ -745,7 +715,7 @@ def test_settling_with_extra_lands_the_extra_in_principal(
         db.session.expire_all()
         settled = db.session.get(Transaction, income_shadow_id)
         # Frozen cash carries P&I + escrow + extra.
-        assert settled.actual_amount == Decimal("1599.10")
+        assert settled.settled_amount == Decimal("1599.10")
 
         # The genesis split routes the extra into principal (cash == split).
         splits = loan_ledger.compute_loan_payment_splits(
@@ -799,7 +769,7 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
 
         db.session.expire_all()
         settled = db.session.get(Transaction, income_shadow_id)
-        assert settled.actual_amount == Decimal("1599.10")
+        assert settled.settled_amount == Decimal("1599.10")
         # The manual BASE is untouched, so a second settle would freeze the
         # same 1,599.10 rather than 1,699.10: the derivation must never read
         # its own output.

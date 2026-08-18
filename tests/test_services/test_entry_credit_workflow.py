@@ -22,7 +22,8 @@ from app.models.transaction_entry import TransactionEntry
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
-from app.services import credit_workflow, entry_service
+from app.services import credit_workflow, entry_service, transaction_service
+from app.services.row_valuation import settled_figure
 from app.services.entry_credit_workflow import sync_entry_payback
 
 
@@ -1336,3 +1337,148 @@ class TestSessionState:
 
             db.session.expire(payback)
             assert payback.estimated_amount == Decimal("50.00")
+
+
+class TestASettledPaybackCannotBeReDerived:
+    """A settled payback records what moved; a later purchase cannot rewrite it.
+
+    **The control for a regression plan step X-au-c3 introduced and this guard
+    closes.**  ``sync_entry_payback`` rewrites the payback's
+    ``estimated_amount`` from the source's credit entries.  While a settled
+    row's value was ``COALESCE(actual_amount, estimated_amount)`` that write
+    moved the money, because an uncorrected settled payback carried a NULL
+    actual and fell through to its plan.  A settled row is now worth what it
+    RECORDED, so the same write became inert -- and the liability the user had
+    just added left the projection with nothing booking it.
+
+    Measured on the shape below before the guard existed: a payback settled at
+    ``$100.00``, a later ``$50.00`` card purchase, ``estimated_amount`` moved to
+    ``$150.00``, and every balance went on reading ``$100.00``.
+    """
+
+    def test_a_later_card_purchase_is_refused_not_silently_dropped(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The $50 that used to disappear is a designed 400 instead."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+
+            entry_service.create_entry(
+                transaction_id=txn.id, user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"), description="Card buy",
+                    purchased_on=date(2026, 1, 5), is_credit=True,
+                ),
+            )
+            payback = sync_entry_payback(txn.id, user.id)
+            db.session.flush()
+
+            transaction_service.settle_transaction(payback)
+            # COMMITTED, so the rollback below undoes only the refused act and
+            # not the setup -- otherwise the payback the assertion re-reads was
+            # never persisted and the test fails on its own fixture.
+            db.session.commit()
+            payback_id = payback.id
+            assert settled_figure(payback) == Decimal("100.00")
+
+            # The second card purchase would take the payback to $150.00.
+            with pytest.raises(ValidationError, match="has settled at"):
+                entry_service.create_entry(
+                    transaction_id=txn.id, user_id=user.id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"), description="Later card buy",
+                        purchased_on=date(2026, 1, 9), is_credit=True,
+                    ),
+                )
+
+            # Nothing moved: the record stands and the plan was not rewritten.
+            db.session.rollback()
+            reloaded = db.session.get(Transaction, payback_id)
+            assert settled_figure(reloaded) == Decimal("100.00")
+            assert reloaded.estimated_amount == Decimal("100.00")
+
+    def test_a_sync_that_changes_NOTHING_is_still_allowed(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The guard compares against what the payback RECORDED, not its plan.
+
+        Without this case the refusal could be written as "any sync touching a
+        settled payback", which would fail every re-sync the source triggers for
+        an unrelated reason -- a description edit, a debit entry added beside the
+        credit one -- none of which changes what the payback owes.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+
+            entry_service.create_entry(
+                transaction_id=txn.id, user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"), description="Card buy",
+                    purchased_on=date(2026, 1, 5), is_credit=True,
+                ),
+            )
+            payback = sync_entry_payback(txn.id, user.id)
+            db.session.flush()
+            transaction_service.settle_transaction(payback)
+            db.session.flush()
+
+            # A DEBIT entry does not change the credit total.
+            entry_service.create_entry(
+                transaction_id=txn.id, user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("25.00"), description="Cash buy",
+                    purchased_on=date(2026, 1, 9), is_credit=False,
+                ),
+            )
+            assert settled_figure(payback) == Decimal("100.00")
+
+    def test_removing_the_last_card_purchase_cannot_DELETE_a_settled_payback(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The DELETE arm's twin of the refusal above, and the larger harm.
+
+        **The guard above shipped without this one, and two independent
+        adversarial reviews found the asymmetry** (2026-08-17): the same
+        function refused to RE-DERIVE a payback whose money had moved while
+        going on to DESTROY one outright the moment the last credit purchase
+        was removed.  Deleting a settled row erases a record of money that left
+        the account -- strictly worse than re-pricing it -- and it happened with
+        no refusal and an INFO log line as the only trace.
+
+        The source row stays PROJECTED throughout, which is what makes this
+        reachable: ``_reject_settled_parent`` guards the SOURCE's entries and
+        has nothing to say about the payback's own status.
+
+        Shown to FIRE: replacing the refusal with ``pass`` deletes the payback
+        and this reads ``None``.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+
+            entry = entry_service.create_entry(
+                transaction_id=txn.id, user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("100.00"), description="Card buy",
+                    purchased_on=date(2026, 1, 5), is_credit=True,
+                ),
+            )
+            payback = sync_entry_payback(txn.id, user.id)
+            db.session.flush()
+            transaction_service.settle_transaction(payback)
+            db.session.commit()
+            payback_id, entry_id = payback.id, entry.id
+            assert settled_figure(payback) == Decimal("100.00")
+
+            with pytest.raises(ValidationError, match="cannot be removed"):
+                entry_service.delete_entry(entry_id, user.id)
+
+            db.session.rollback()
+            reloaded = db.session.get(Transaction, payback_id)
+            assert reloaded is not None, (
+                "a SETTLED payback was hard-deleted: $100.00 that had already "
+                "left the account, erased with no refusal"
+            )
+            assert settled_figure(reloaded) == Decimal("100.00")

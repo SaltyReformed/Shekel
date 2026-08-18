@@ -160,7 +160,7 @@ class TestSettleWiringAutoPosts:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[_P1], amount=Decimal("100.00"),
-                actual_amount=Decimal("1000.00"),
+                settled_amount=Decimal("1000.00"),
             )
             db.session.commit()
 

@@ -66,9 +66,10 @@ logger = logging.getLogger(__name__)
 # The PATCH fields whose change can alter a transaction's posted double-entry
 # ledger effect, so a change to any triggers a posting reconcile (Build-Order
 # Step 3, the transaction analog of ``transfer_service._POSTING_RELEVANT_FIELDS``).
-# ``status_id`` flips the settled/unsettled target; ``estimated_amount`` /
-# ``actual_amount`` together set what the row is WORTH
-# (``COALESCE(actual, estimated)``) -- the magnitude posted; ``category_id``
+# ``status_id`` flips the settled/unsettled target; ``estimated_amount`` is the
+# row's PLAN and ``settled_amount`` what it RECORDED, and the status decides
+# which one is the magnitude posted (``row_valuation.settled_figure``, plan step
+# X-au-c3 -- it was ``COALESCE(actual, estimated)``); ``category_id``
 # moves which counter (category) ledger account the expense/income leg books
 # into.
 #
@@ -104,7 +105,7 @@ logger = logging.getLogger(__name__)
 # no-op; this set is the cheap pre-filter that avoids a ledger round-trip on a
 # pure metadata edit.
 _POSTING_RELEVANT_FIELDS = frozenset({
-    "status_id", "estimated_amount", "actual_amount", "category_id",
+    "status_id", "estimated_amount", "settled_amount", "category_id",
     "settled_on", "pay_period_id",
 })
 
@@ -119,7 +120,16 @@ _POSTING_RELEVANT_FIELDS = frozenset({
 # to be re-run on the transaction side by this step's own edit door (finding
 # **N-185**).  Naming the pair here is what keeps the loop from growing a third
 # member silently.
-_SEAM_OWNED_FIELDS = frozenset({"status_id", "settled_on"})
+#: The fields the STATUS SEAM owns, excluded from the field-application loop
+#: so it cannot become a second writer of any of them.  ``settled_amount``
+#: joined at plan step X-au-c3: it states WHAT MOVED, so a bare ``setattr``
+#: could book money on a row that never settled and could do it beside a basis
+#: saying something else.  It reaches the record only through
+#: ``apply_requested_status``, which hands it to the settle verb or refuses it
+#: with a designed 400 when no settle is happening.
+_SEAM_OWNED_FIELDS = frozenset(
+    {"status_id", "settled_on", "settled_amount"}
+)
 
 
 def _resolve_status_change(txn, data):
@@ -278,7 +288,7 @@ def _apply_field_updates(txn, data):
         txn.is_override = True
 
     if (
-        data.get("actual_amount") is not None
+        data.get("settled_amount") is not None
         and transaction_service.settles_from_entries(txn)
     ):
         return _error_transaction_response(
@@ -440,9 +450,28 @@ def _apply_regular_update(txn, txn_id, data):
         settle_day = status_seam.settle_day_for_status(
             current_user.id, new_status_id, data.get("settled_on"),
         )
-        if "status_id" in data or settle_day is not None:
+        # **A submitted FIGURE is a third reason to enter the status arm**, and
+        # without it the door never saw one (found by two independent
+        # adversarial reviews, 2026-08-17).  ``apply_requested_status`` decides
+        # what a figure MEANS -- a correction on a row already settled, a
+        # dropped echo on the way out of the band, a refusal for a figure the
+        # user CHANGED beside a revert -- but this dispatch reached it only when
+        # a STATUS or a DAY arrived too, so a PATCH carrying ``settled_amount``
+        # alone answered 200 having discarded it.  ``new_status_id`` defaults to
+        # the row's CURRENT status (above), so such a request is an identity
+        # move.  **The route no longer grades the figure itself** (2026-08-18):
+        # it called ``settled_amount_for_status``, which read the STATUS alone
+        # and so could not tell an untouched prefill from a number the user had
+        # just retyped.  That rule needs the row, and the door has it.
+        submitted_figure = data.get("settled_amount")
+        if (
+            "status_id" in data
+            or settle_day is not None
+            or submitted_figure is not None
+        ):
             transaction_service.apply_requested_status(
                 txn, new_status_id, settled_on=settle_day,
+                submitted=submitted_figure,
             )
         elif _POSTING_RELEVANT_FIELDS & data.keys():
             # Posting ledger reconcile (Build-Order Step 3) for the edit that
@@ -663,7 +692,7 @@ def delete_transaction(txn_id):
     return "", 200, {"HX-Trigger": "balanceChanged"}
 
 
-def _mark_done_regular(txn, txn_id, actual_amount, target):
+def _mark_done_regular(txn, txn_id, submitted, target):
     """Settle a regular (non-shadow) transaction.
 
     **The rule this used to hold is now a SERVICE verb** --
@@ -705,10 +734,11 @@ def _mark_done_regular(txn, txn_id, actual_amount, target):
     Args:
         txn: The Transaction being settled.
         txn_id: The transaction's id, for stale-conflict logging.
-        actual_amount: Optional manual actual amount from the form, or
-            ``None`` to leave ``actual_amount`` untouched.  The verb ignores
-            it for an envelope-tracked row with entries, whose entries ARE
-            the record of what it cost.
+        submitted: The figure a human typed for what moved.  ``None`` does NOT
+            mean "leave the record alone": it means nobody typed one, and the
+            settle then RECORDS what it resolved on the ``derived`` basis.  The
+            verb ignores it for an envelope-tracked row with entries, whose
+            entries ARE the record of what it cost.
         target: The :class:`_RenderTarget` describing the response
             surface (mobile card vs desktop cell).
 
@@ -719,7 +749,7 @@ def _mark_done_regular(txn, txn_id, actual_amount, target):
     """
     try:
         transaction_service.settle_transaction(
-            txn, actual_amount=actual_amount,
+            txn, submitted=submitted,
         )
         db.session.commit()
     except ValidationError as exc:
@@ -760,9 +790,9 @@ def mark_done(txn_id):
     shadows and the parent transfer are updated atomically.
 
     Automatically picks the correct status based on transaction type.
-    For entry-capable transactions with entries, auto-computes
-    actual_amount from the entry sum.  For all others, accepts an
-    optional actual_amount from the form -- parsed via
+    For entry-capable transactions with entries, the settle records the
+    ``purchases`` basis and the entries state the figure.  For all others, it
+    accepts an optional ``settled_amount`` from the form -- parsed via
     :class:`MarkDoneSchema` so a malformed numeric value returns a
     clean 422 with the Marshmallow per-field message instead of the
     legacy ``"Invalid actual amount"`` translation, and a negative
@@ -796,13 +826,14 @@ def mark_done(txn_id):
     card_can_edit = request.form.get("can_edit") == "1"
     target = _RenderTarget(render_mode, card_prefix, card_can_edit)
 
-    # Validate the optional ``actual_amount`` form field once,
+    # Validate the optional ``settled_amount`` form field once,
     # before branching on transfer detection, so both code paths
     # apply identical validation.  ``MarkDoneSchema`` strips empty
     # strings via its pre_load hook so the missing-field UX (a
-    # button click with no body) yields ``actual_amount`` absent
-    # from the loaded dict; that branches into "leave the column
-    # untouched" below, matching the legacy behaviour.
+    # button click with no body) yields it absent from the loaded
+    # dict -- which means "nobody typed a figure", and the settle
+    # then records what it resolved rather than leaving the row
+    # unrecorded (plan step X-au-c3).
     try:
         mark_done_data = _mark_done_schema.load(request.form)
     except MarshmallowValidationError as exc:
@@ -812,7 +843,7 @@ def mark_done(txn_id):
         return _error_transaction_response(
             txn.id, flatten_schema_errors(exc.messages), target, status=422,
         )
-    actual_amount = mark_done_data.get("actual_amount")
+    submitted = mark_done_data.get("settled_amount")
 
     # The income/expense status pick is NOT made here.  It used to be, and
     # ``transaction_service.settle_from_entries`` re-derived the same id from
@@ -825,10 +856,10 @@ def mark_done(txn_id):
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
-        return _mark_done_shadow(txn, txn_id, actual_amount, target)
+        return _mark_done_shadow(txn, txn_id, submitted, target)
     # --- End guard ---
 
-    return _mark_done_regular(txn, txn_id, actual_amount, target)
+    return _mark_done_regular(txn, txn_id, submitted, target)
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-credit", methods=["POST"])

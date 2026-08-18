@@ -349,8 +349,8 @@ def live_projected_net(txn, pricing: SalaryPricing) -> "Decimal | None":
       * income with a template, and priced by an active profile in this
         scenario for its own period (:func:`salary_net_for`);
       * Projected (:func:`~app.utils.balance_predicates.is_projected` --
-        Received / Settled income carries a realized ``actual_amount`` that is a
-        historical fact, never a recomputable projection);
+        Received / Settled income RECORDS what moved, a historical fact and
+        never a recomputable projection);
       * NOT user-overridden (``is_override`` -- a manual amount the user
         deliberately set is respected, mirroring the recurrence engine),
 

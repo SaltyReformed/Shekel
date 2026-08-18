@@ -2516,7 +2516,7 @@ def create_transfer(
 
 def create_settled_transfer(
     seed_user, db_session, from_account, to_account, period,
-    amount=Decimal("100.00"), actual_amount=None,
+    amount=Decimal("100.00"), settled_amount=None,
     settled_on=_UNSET_SETTLED_ON, name=None, scenario=None,
 ):
     """Create an ad-hoc transfer and settle it (Paid), returning the parent.
@@ -2588,8 +2588,8 @@ def create_settled_transfer(
     update_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
     if settled_on is not _UNSET_SETTLED_ON:
         update_kwargs["settled_on"] = settled_on
-    if actual_amount is not None:
-        update_kwargs["actual_amount"] = actual_amount
+    if settled_amount is not None:
+        update_kwargs["settled_amount"] = settled_amount
     transfer_service.update_transfer(
         transfer.id, seed_user["user"].id, **update_kwargs
     )
@@ -2599,7 +2599,7 @@ def create_settled_transfer(
 def create_settled_cash_transaction(
     seed_user, db_session, period, amount,
     *, account=None, scenario=None, is_income=False,
-    category=None, actual_amount=None, name="Cash Txn",
+    category=None, settled_amount=None, name="Cash Txn",
     settled_on=_UNSET_SETTLED_ON,
 ):
     """Create an ordinary (non-transfer) transaction and settle it go-forward.
@@ -2689,13 +2689,22 @@ def create_settled_cash_transaction(
     # stamps settled_on, the optional manual actual is applied AFTER (as the route
     # does), and the builder reconciles the ledger to the confirmed effect last.
     settled_status = StatusEnum.RECEIVED if is_income else StatusEnum.DONE
+    # A settle RECORDS what moved (plan step X-au-c3), and this goes through
+    # :func:`settlement_if_settling` rather than calling
+    # ``Settlement.from_settle`` directly so the ECHO rule applies here too: a
+    # ``settled_amount`` equal to the row's own figure is the panel's prefill
+    # coming back untouched, which the app records as ``derived``.  Calling
+    # ``from_settle`` with the raw submission recorded ``corrected`` for it --
+    # two fixture doors answering one rule two ways, which is the drift this
+    # helper exists to prevent (found by adversarial review, 2026-08-17).
     status_seam.apply_status_change(
         txn, ref_cache.status_id(settled_status),
+        settlement=settlement_if_settling(
+            txn, ref_cache.status_id(settled_status), settled_amount,
+        ),
     )
     if settled_on is not _UNSET_SETTLED_ON:
         txn.settled_on = settled_on
-    if actual_amount is not None:
-        txn.actual_amount = actual_amount
     posting_service.sync_transaction_postings(txn, settled=True)
     return txn
 
@@ -3016,11 +3025,163 @@ def default_settle_day(period, status_id):
     return period.start_date if status_id in settled_status_ids() else None
 
 
+def settlement_if_settling(txn, new_status_id, submitted=None):
+    """Return the :class:`Settlement` a fixture owes the seam, or ``None``.
+
+    A fixture that drives ``status_seam.apply_status_change`` directly is
+    settling a row the long way round, and since plan step X-au-c3 a settle
+    states WHAT MOVED as well as when.  This answers what such a fixture means
+    -- and it answers ARM FOR ARM the way the real verbs do, because a fixture
+    producing a record no door can write builds a row the app could never have
+    created, and every test over that row grades the wrong branch in silence.
+
+    The three arms, mirroring
+    ``transaction_service._settle.settle_transaction`` and
+    ``transfer_service._settle.settle``:
+
+      * an ENVELOPE (``settles_from_entries``) records the ``purchases`` basis
+        and stores NO figure -- its own entries state it.  Taking the
+        ``derived`` arm here stored the PLAN instead, so
+        ``row_valuation.settled_figure`` answered a stored column for every
+        fixture-built settled envelope where the app answers from its children;
+      * a RETAINED ``corrected`` record outlives the settle that made it and a
+        re-settle honours it, so it is threaded into
+        :meth:`~app.services.status_seam.Settlement.from_settle`;
+      * the ECHO rule (finding **N-231**): a *submitted* figure equal to what
+        the row would book anyway is not a correction, so it records
+        ``derived`` rather than manufacturing a human's figure nobody typed.
+
+    ``None`` for a move that does not ENTER the settled band, which the seam
+    requires: a record offered beside a Projected / Credit / Cancelled status is
+    refused, and leaving the band releases the ASSERTION while KEEPING the
+    record.
+
+    The row's own ``estimated_amount`` stands in for the resolver's answer,
+    which is what a bare-built fixture row means by "what this settle books":
+    such rows own their plan, so the two agree.
+
+    Args:
+        txn: The row being moved, at its PRE-move status.
+        new_status_id: The status the fixture is moving it to.
+        submitted: A figure a human typed, when the fixture is exercising a
+            correction.
+
+    Returns:
+        The ``Settlement`` to hand the seam, or ``None``.
+    """
+    # pylint: disable=import-outside-toplevel  -- the lazy-app-import
+    # convention every helper in this module follows.
+    from app.enums import SettlementBasisEnum
+    from app.services.status_seam import (
+        Settlement,
+        honoured_correction,
+        recorded_settlement,
+    )
+    from app.services.transaction_service import settles_from_entries
+    from app.utils.balance_predicates import enters_settled_band
+
+    if not enters_settled_band(txn, new_status_id):
+        return None
+    if settles_from_entries(txn):
+        return Settlement(amount=None, basis=SettlementBasisEnum.PURCHASES)
+    held = honoured_correction(txn)
+    booked = txn.estimated_amount if held is None else held
+    correction = (
+        submitted if submitted is not None and submitted != booked else None
+    )
+    return Settlement.from_settle(booked, correction, recorded_settlement(txn))
+
+
+def settlement_basis_id(basis):
+    """Return one ``ref.settlement_bases`` id, for a fixture that states it.
+
+    The narrow companion of :func:`settlement_columns`, for a fixture building a
+    row whose settle day it is already setting itself and which only needs to
+    name the basis.  Resolved through ``ref_cache`` like every other ref value,
+    so a fixture names the BASIS and never an id.
+
+    **It took ``corrected: bool`` until plan step X-au-c3's second pass**, which
+    was a two-valued parameter for a three-valued fact: ``purchases`` is a basis
+    a fixture must be able to name, because a settled ENVELOPE records it and
+    stores no figure at all, and no boolean can say so.  A fixture that could
+    not express it built a row the app cannot write.
+
+    Args:
+        basis: The :class:`app.enums.SettlementBasisEnum` member to resolve.
+
+    Returns:
+        The ``ref.settlement_bases.id``.
+    """
+    # pylint: disable=import-outside-toplevel  -- the lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+
+    return ref_cache.settlement_basis_id(basis)
+
+
+def settlement_columns(settled_on, amount, submitted=None):
+    """Return the settlement-record kwargs for a DIRECTLY-constructed row.
+
+    **The one door a bare-built fixture row goes through** (plan step X-au-c3).
+    A row that asserts a settle DAY always records WHAT moved and how the
+    figure is known -- ``ck_transactions_settle_day_needs_basis`` and
+    ``ck_transactions_settled_amount_needs_basis`` are the two implications that
+    make that true of the bare constructor as well as of the seam.  (The reverse
+    does NOT hold and must not: a row may carry the record with no day, which is
+    what a revert leaves behind.)
+    A fixture that filled one column and not the others is not a fixture with a
+    small omission -- it is a row the database refuses -- so the three are
+    resolved together here rather than spelled out per factory.
+
+    ``settled_on`` is the discriminator because a factory has already resolved
+    it from the status (:func:`default_settle_day`), and the two are one fact: a
+    row carries the day its money moved if and only if it has settled.
+
+    **It cannot express the ``purchases`` basis, and that is correct for its ONE
+    caller rather than a gap.**  :func:`add_txn` builds a BARE row -- it creates
+    no ``TransactionEntry`` and sets no ``is_envelope`` -- so
+    ``settles_from_entries`` is False for everything it makes and the app would
+    record ``derived`` or ``corrected`` for exactly these rows too.  A caller
+    that wants a settled ENVELOPE must settle it through the seam with
+    :func:`settlement_if_settling`, which has the third arm; building one here
+    and adding entries afterwards would produce a row no door in the app can
+    write.
+
+    Args:
+        settled_on: The row's resolved settle day, ``None`` when it has not
+            settled.
+        amount: The row's own plan figure, which is what a settle records when
+            nobody typed anything.
+        submitted: A figure the fixture wants recorded as a human's CORRECTION,
+            or ``None``.
+
+    Returns:
+        ``{"settled_amount": ..., "settled_basis_id": ...}`` -- both ``None``
+        for an unsettled row.
+    """
+    # pylint: disable=import-outside-toplevel  -- the lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import SettlementBasisEnum
+
+    if settled_on is None:
+        return {"settled_amount": None, "settled_basis_id": None}
+    figure = amount if submitted is None else submitted
+    basis = (
+        SettlementBasisEnum.DERIVED if submitted is None
+        else SettlementBasisEnum.CORRECTED
+    )
+    return {
+        "settled_amount": Decimal(str(figure)),
+        "settled_basis_id": ref_cache.settlement_basis_id(basis),
+    }
+
+
 def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     db_session, seed_user, period, name, amount,
     status_enum=None, is_income=False,
     due_date=None, category_key=None, is_deleted=False,
-    actual_amount=None, account=None, scenario=None,
+    settled_amount=None, account=None, scenario=None,
     settled_on=_UNSET_SETTLED_ON,
 ):
     """Create a projected (default) transaction on the seed user's account.
@@ -3114,10 +3275,18 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         category_id=cat_id,
         transaction_type_id=type_id,
         estimated_amount=Decimal(str(amount)),
-        actual_amount=Decimal(str(actual_amount)) if actual_amount is not None else None,
         due_date=due_date,
         is_deleted=is_deleted,
         settled_on=settled_on,
+        # The settlement RECORD, complete or absent (plan step X-au-c3).  A
+        # settled row states what moved -- the typed figure when the caller gave
+        # one, else the row's own -- and a row built WITHOUT a settle day states
+        # nothing here, which keeps every bare-built row on the same side of
+        # ``ck_transactions_settle_day_needs_basis`` as the seam's own writes.
+        # (A row that carries the record with no day is legal -- it is the
+        # RETAINED state -- but no factory MEANS that; a fixture wanting it
+        # settles a row and then reverts it, as the app does.)
+        **settlement_columns(settled_on, amount, settled_amount),
     )
     db_session.add(txn)
     db_session.flush()

@@ -40,6 +40,7 @@ from tests._test_helpers import (
     create_hysa_account,
     create_loan_account,
     freeze_today,
+    settlement_columns,
 )
 
 
@@ -1330,10 +1331,14 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
                     estimated_amount=Decimal("10.00"),
-                    # A settled row carries the day its money moved; this bare
-                    # fixture states the day its readers would otherwise refuse
-                    # to guess (plan step X-f1).
+                    # A settled row carries the day its money moved AND the
+                    # record of what moved -- one fact in three columns (plan
+                    # steps X-f1 / X-au-c3), resolved by the one door a
+                    # bare-built fixture uses.
                     settled_on=period.start_date,
+                    **settlement_columns(
+                        period.start_date, Decimal("10.00"),
+                    ),
                 )
                 db.session.add(txn)
 
@@ -1402,6 +1407,9 @@ class TestEmergencyFundCommittedBaseline:
                     transaction_type_id=expense_type_id,
                     estimated_amount=Decimal("120.00"),
                     settled_on=period.start_date,
+                    **settlement_columns(
+                        period.start_date, Decimal("120.00"),
+                    ),
                 ))
                 db.session.add(Transaction(
                     account_id=savings.id,
@@ -1413,6 +1421,9 @@ class TestEmergencyFundCommittedBaseline:
                     transaction_type_id=expense_type_id,
                     estimated_amount=Decimal("300.00"),
                     settled_on=period.start_date,
+                    **settlement_columns(
+                        period.start_date, Decimal("300.00"),
+                    ),
                 ))
             db.session.commit()
 

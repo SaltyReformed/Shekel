@@ -33,15 +33,21 @@ What these pin, in the order the request runs them:
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import SettlementBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
 from app.services import transaction_service
 from app.services.state_machine import allowed_transitions
 from app.utils.dates import display_today
-from tests._test_helpers import add_entry, create_envelope_txn
-from app.services.row_valuation import owned_contribution
+from tests._test_helpers import (
+    add_entry,
+    create_envelope_txn,
+    net_posted_by_day,
+    settlement_basis_id,
+)
+from app.services import status_seam, transaction_service
+from app.services.row_valuation import owned_contribution, settled_figure
 
 
 def _gas_envelope(seed_user, period):
@@ -140,9 +146,11 @@ class TestTheDropdownBooksWhatTheRowCost:
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
             assert reloaded.status_id == ref_cache.status_id(StatusEnum.DONE)
-            assert reloaded.actual_amount == Decimal("48.98")
+            # A ``purchases`` record stores NO figure -- the row's own entries
+            # state it (plan step X-au-c3) -- so the accessor is what answers,
+            # and the row's PLAN is untouched beside it.
+            assert settled_figure(reloaded) == Decimal("48.98")
             assert reloaded.estimated_amount == Decimal("80.00")
-            # effective_amount = COALESCE(actual, estimated) = 48.98
             assert owned_contribution(reloaded) == Decimal("48.98")
             assert reloaded.settled_on == display_today()
             # The ledger books what the row cost, not what it budgeted.
@@ -178,7 +186,7 @@ class TestTheDropdownBooksWhatTheRowCost:
             dropdown_row = db.session.get(Transaction, dropdown_id)
             button_row = db.session.get(Transaction, button_id)
             assert owned_contribution(dropdown_row) == owned_contribution(button_row)
-            assert dropdown_row.actual_amount == button_row.actual_amount
+            assert dropdown_row.settled_amount == button_row.settled_amount
             assert dropdown_row.status_id == button_row.status_id
             assert _cash_leg(
                 dropdown_id, seed_user["account"].id,
@@ -249,7 +257,7 @@ class TestTheDropdownBooksWhatTheRowCost:
             assert archived.status_id == ref_cache.status_id(
                 StatusEnum.SETTLED,
             )
-            assert archived.actual_amount == Decimal("48.98")
+            assert settled_figure(archived) == Decimal("48.98")
             assert archived.settled_on == settled_day
 
 
@@ -285,10 +293,22 @@ class TestTheFieldWritesFlushInsideTheExceptionNet:
         ``IntegrityError`` raised above the net -- an unhandled 500 on an
         ordinary edit.
 
-        The submitted ``actual_amount`` is what reaches the lazy load at all:
-        the guard short-circuits on ``data.get("actual_amount") is not None``,
-        and the popover prefills that box from the stored figure, so any row
-        carrying an actual submits one on every Save.
+        The submitted figure is what reaches the lazy load at all: the guard
+        short-circuits on ``data.get("settled_amount") is not None``, and the
+        popover prefills that box from the row's RECORD, so any row that has
+        settled submits one on every Save.  A crafted or stale form reaches it
+        on an unsettled row too, which is the request this case makes.
+
+        **The save now SETTLES the row as it moves it** (plan step X-au-c3),
+        and that is what keeps the ordering exercised rather than a rewrite of
+        what the case is about.  A figure records a settle, so an unsettled row
+        can neither carry one nor be handed one -- the seam refuses a settlement
+        offered beside a Projected status with a 400, which would end the
+        request before the move.  A full-edit save that moves the period AND
+        marks the row paid is one ordinary user action, it is the only shape
+        that legitimately carries a figure past the guard, and the destination
+        period is not locked because the LOCK reads the row's current status,
+        which is still Projected when the save arrives.
 
         Shown to FIRE: moving ``is_override`` back below the guard raises
         ``IntegrityError`` out of the handler.
@@ -299,7 +319,6 @@ class TestTheFieldWritesFlushInsideTheExceptionNet:
                 "Electricity", Decimal("300.00"),
             )
             source.template.is_envelope = False
-            source.actual_amount = Decimal("45.00")
             # The destination period already holds this template's generated
             # row, non-override -- the state every future period is in.
             occupant = Transaction(
@@ -319,9 +338,9 @@ class TestTheFieldWritesFlushInsideTheExceptionNet:
 
             resp = _full_edit_save(
                 auth_client, source,
-                ref_cache.status_id(StatusEnum.PROJECTED),
+                ref_cache.status_id(StatusEnum.DONE),
                 pay_period_id=str(seed_periods_today[4].id),
-                actual_amount="45.00",
+                settled_amount="45.00",
             )
 
             assert resp.status_code == 200, resp.data[:300]
@@ -329,7 +348,7 @@ class TestTheFieldWritesFlushInsideTheExceptionNet:
             moved = db.session.get(Transaction, source_id)
             assert moved.pay_period_id == seed_periods_today[4].id
             assert moved.is_override is True
-            assert moved.actual_amount == Decimal("45.00")
+            assert settled_figure(moved) == Decimal("45.00")
 
 
 class TestARevertTakesBackWhatTheSettleDerived:
@@ -368,7 +387,7 @@ class TestARevertTakesBackWhatTheSettleDerived:
 
             db.session.expire_all()
             paid = db.session.get(Transaction, txn_id)
-            assert paid.actual_amount == Decimal("48.98")
+            assert settled_figure(paid) == Decimal("48.98")
 
             resp = _full_edit_save(
                 auth_client, paid, ref_cache.status_id(StatusEnum.PROJECTED),
@@ -377,23 +396,37 @@ class TestARevertTakesBackWhatTheSettleDerived:
             assert resp.status_code == 200
             db.session.expire_all()
             reverted = db.session.get(Transaction, txn_id)
-            assert reverted.actual_amount is None
+            assert reverted.settled_amount is None
             assert reverted.settled_on is None
             assert owned_contribution(reverted) == Decimal("80.00")
             # The settle's postings reverse with it: nothing is left booked.
             assert _cash_leg(txn_id, seed_user["account"].id) == Decimal("0.00")
 
-    def test_a_BILLs_hand_typed_actual_survives_a_revert(
+    def test_a_BILLs_hand_typed_figure_SURVIVES_the_revert_round_trip(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """Only the DERIVED kind is released, and this is the control for it.
+        """A human's figure outlives the settle that recorded it (ruling R-FB).
 
-        A bill's ``actual_amount`` is a figure a HUMAN read off a statement
-        (ruling **R-FB**).  Clearing that on a revert would delete the user's
-        own correction -- so the release is gated on the same predicate the
-        settle branches on and the edit doors offer a box on.
+        **The whole round trip, because the round trip is the point.**  The
+        full-edit popover TELLS the user to set Status to Projected in order to
+        edit the amounts, so reverting has to be lossless or the app's own
+        instruction is a trap.
 
-        A $500.00 bill corrected to $245.32 keeps $245.32 through the revert.
+        A $500.00 bill corrected to $245.32: the revert withdraws the ASSERTION
+        (the day, the clearing link) and the row projects at its $500.00 plan
+        again, because the STATUS decides which figure governs.  What it does
+        NOT do is un-know what the bank took -- the $245.32 and its ``corrected``
+        basis stay on the row, and settling again books them rather than
+        re-deriving $500.00 over them
+        (``status_seam.Settlement.from_settle``).
+
+        **A draft of plan step X-au-c3 released all three columns together**,
+        under ``ck_transactions_settlement_recorded``, which paired the settle
+        day with the figure's provenance.  That welded two facts with different
+        lifetimes into one -- finding **N-241**'s shape rebuilt one level up, in
+        the step meant to remove it -- and cost the user the $245.32 for
+        following the instruction on screen.  The constraint is deleted
+        (developer, 2026-08-17).
         """
         with app.app_context():
             txn = create_envelope_txn(
@@ -406,12 +439,12 @@ class TestARevertTakesBackWhatTheSettleDerived:
 
             assert auth_client.post(
                 f"/transactions/{txn_id}/mark-done",
-                data={"actual_amount": "245.32"},
+                data={"settled_amount": "245.32"},
             ).status_code == 200
             db.session.expire_all()
-            assert db.session.get(
-                Transaction, txn_id,
-            ).actual_amount == Decimal("245.32")
+            assert settled_figure(
+                db.session.get(Transaction, txn_id),
+            ) == Decimal("245.32")
 
             paid = db.session.get(Transaction, txn_id)
             assert _full_edit_save(
@@ -419,9 +452,32 @@ class TestARevertTakesBackWhatTheSettleDerived:
             ).status_code == 200
 
             db.session.expire_all()
-            assert db.session.get(
-                Transaction, txn_id,
-            ).actual_amount == Decimal("245.32")
+            reverted = db.session.get(Transaction, txn_id)
+            # The ASSERTION is withdrawn ...
+            assert reverted.settled_on is None
+            assert reverted.reconciled_by_id is None
+            # ... WHAT MOVED is kept, still flagged as the human's figure ...
+            assert reverted.settled_amount == Decimal("245.32")
+            assert reverted.settled_basis_id == settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
+            # ... and the row is nonetheless worth its PLAN again, because the
+            # STATUS decides which figure governs, not the columns.
+            assert settled_figure(reverted) is None
+            assert owned_contribution(reverted) == Decimal("500.00")
+
+            # THE RETURN LEG: settling again books the human's figure rather
+            # than re-deriving the plan over it. Without this the retention
+            # would only delay the loss by one step.
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+            ).status_code == 200
+            db.session.expire_all()
+            resettled = db.session.get(Transaction, txn_id)
+            assert settled_figure(resettled) == Decimal("245.32")
+            assert resettled.settled_basis_id == settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
 
 
 class TestASettledStatusMustMatchTheRowsType:
@@ -454,7 +510,7 @@ class TestASettledStatusMustMatchTheRowsType:
             assert reloaded.status_id == ref_cache.status_id(
                 StatusEnum.PROJECTED,
             )
-            assert reloaded.actual_amount is None
+            assert reloaded.settled_amount is None
 
     def test_the_dropdown_still_offers_the_ARCHIVE_from_a_paid_row(
         self, app, db, auth_client, seed_user, seed_periods_today,
@@ -535,19 +591,28 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
             resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
 
             assert resp.status_code == 200
-            assert b'name="actual_amount"' not in resp.data
+            assert b'name="settled_amount"' not in resp.data
             assert b"Actual comes from the purchases below" in resp.data
 
-    def test_an_entry_less_envelope_still_renders_it(
+    def test_the_box_appears_ONLY_once_there_is_a_figure_to_correct(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """Correctable is about the BRANCH, not about being an envelope.
+        """Before the settle there is nothing to state; after it, there is.
 
-        An envelope with no purchases takes the verb's MANUAL branch, so a
-        figure typed here IS honoured -- and the reconcile panel offers the
-        same row a correction box for the same reason.  Removing the input for
-        every tracked row would have made the two doors disagree again, one
-        step after making them agree.
+        **This asserted the box was absent in BOTH states until the developer's
+        2026-08-17 ruling**, and the reasoning behind that was backwards.  A
+        draft of plan step X-au-c3 drew the box gated on ``locked`` -- and since
+        every ``is_settled`` status is also ``is_immutable`` (``ref_seeds``:
+        Paid, Received, Settled) it rendered ``disabled`` on 100% of the rows it
+        appeared on, so the box was deleted as unreachable.  But being disabled
+        WAS the defect: the estimate and the actual are two different facts, a
+        lock protects BUDGET DECISIONS from being rewritten, and what the bank
+        took is an OBSERVED FACT -- the same argument the "Money moved on" date
+        beside it has always made for not being disabled.
+
+        Both states are asserted because a box that renders where nothing has
+        moved and a box missing where something has fail the same user in
+        opposite directions.
         """
         with app.app_context():
             txn = create_envelope_txn(
@@ -555,11 +620,85 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
                 "Kayla's Spending Money", Decimal("100.00"),
             )
             db.session.commit()
+            txn_id = txn.id
 
-            resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
-
+            # Projected: no money has moved, so there is nothing to state.
+            resp = auth_client.get(f"/transactions/{txn_id}/full-edit")
             assert resp.status_code == 200
-            assert b'name="actual_amount"' in resp.data
+            assert b'name="settled_amount"' not in resp.data
+
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+            ).status_code == 200
+            db.session.expire_all()
+
+            # Settled through the MANUAL branch: the figure exists, so the box
+            # does -- and it is NOT disabled, which is the whole point.  A
+            # disabled input is not submitted, so a box that rendered locked
+            # would be the dead control this ruling removed.
+            resp = auth_client.get(f"/transactions/{txn_id}/full-edit")
+            assert resp.status_code == 200
+            assert b'name="settled_amount"' in resp.data
+            body = resp.data.decode()
+            box = body[body.index('name="settled_amount"'):]
+            box = box[:box.index(">")]
+            assert "disabled" not in box, (
+                "the Actual box rendered disabled, which is the defect that "
+                "got the box deleted the first time"
+            )
+
+    def test_correcting_the_actual_records_it_without_reverting(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The ruling's whole point: no revert needed to fix what moved.
+
+        A bill settled at its ``$500.00`` plan, then corrected to ``$245.32``
+        through the popover alone.  The row stays Paid throughout -- the user
+        never touches the Status dropdown -- and the record says a HUMAN
+        supplied the figure.
+
+        **The estimate is NOT touched by this**, which is the half the developer
+        named: the two boxes are two facts, and editing one may not move the
+        other.
+        """
+        with app.app_context():
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods_today[3],
+                "Electricity", Decimal("500.00"),
+            )
+            # A plain BILL, not an envelope: an envelope's actual is the sum of
+            # its purchases and is not correctable (ruling R-FF).
+            txn.template.is_envelope = False
+            db.session.commit()
+            txn_id = txn.id
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+            ).status_code == 200
+            db.session.commit()
+            db.session.expire_all()
+
+            paid_status = db.session.get(Transaction, txn_id).status_id
+            resp = auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={
+                    "version_id": db.session.get(Transaction, txn_id).version_id,
+                    "status_id": str(paid_status),
+                    "settled_amount": "245.32",
+                },
+            )
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            reloaded = db.session.get(Transaction, txn_id)
+            assert settled_figure(reloaded) == Decimal("245.32")
+            assert reloaded.settled_basis_id == settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
+            # Still Paid: correcting an observation is not a status change.
+            assert reloaded.status_id == paid_status
+            assert reloaded.settled_on is not None
+            # And the PLAN is untouched -- two boxes, two facts.
+            assert reloaded.estimated_amount == Decimal("500.00")
 
     def test_a_submitted_actual_on_a_derived_row_is_refused(
         self, app, db, auth_client, seed_user, seed_periods_today,
@@ -576,7 +715,7 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
 
             resp = _full_edit_save(
                 auth_client, txn, ref_cache.status_id(StatusEnum.DONE),
-                actual_amount="60.00",
+                settled_amount="60.00",
             )
 
             assert resp.status_code == 400
@@ -586,7 +725,7 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
             assert reloaded.status_id == ref_cache.status_id(
                 StatusEnum.PROJECTED,
             )
-            assert reloaded.actual_amount is None
+            assert reloaded.settled_amount is None
 
     def test_an_empty_actual_box_is_not_a_figure(
         self, app, db, auth_client, seed_user, seed_periods_today,
@@ -603,11 +742,371 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
 
             resp = _full_edit_save(
                 auth_client, txn, ref_cache.status_id(StatusEnum.DONE),
-                actual_amount="",
+                settled_amount="",
             )
 
             assert resp.status_code == 200
             db.session.expire_all()
-            assert db.session.get(
-                Transaction, txn_id,
-            ).actual_amount == Decimal("48.98")
+            assert settled_figure(
+                db.session.get(Transaction, txn_id),
+            ) == Decimal("48.98")
+
+
+class TestWhatAReSettleBooksIsWhatTheOfferSHOWED:
+    """The panel's offer and the verb's booking are ONE expression.
+
+    **Both cases here are regressions a first draft of the retention rule
+    shipped, and an adversarial review found them** (2026-08-17).
+    ``Settlement.from_settle`` honoured a retained ``corrected`` record while
+    ``settle_amount`` -- what the reconcile panel PREFILLS from -- went on
+    pricing the row's PLAN.  Measured end to end: a ``$500.00`` bill corrected
+    to ``$245.32`` and then reverted was OFFERED at ``$500.00`` and BOOKED at
+    ``$245.32``.
+
+    That broke two things at once, and the second is worse than the drift.  The
+    figure a tick booked was one the screen had never shown; and because a
+    submitted figure counts as a correction only when it DIFFERS from the offer
+    (``transaction_service._settle._is_correction``), no input the user could
+    give meant "book the plan".  ``status_seam.honoured_correction`` answers
+    both sides now, so the offer equals the booking and any other number is a
+    genuine correction.
+    """
+
+    def _reverted_bill(self, seed_user, period):
+        """A $500.00 bill corrected to $245.32, then reverted to Projected."""
+        txn = create_envelope_txn(
+            seed_user, db.session, period, "Electricity", Decimal("500.00"),
+        )
+        txn.template.is_envelope = False
+        db.session.commit()
+        transaction_service.settle_transaction(
+            txn, submitted=Decimal("245.32"),
+        )
+        db.session.commit()
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.PROJECTED),
+        )
+        db.session.commit()
+        return txn
+
+    def test_an_untouched_tick_books_the_figure_the_panel_offered(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The drift control: offer and booking must be the same number.
+
+        The reconcile panel offers a PROJECTED row, prefills its box from
+        ``settle_amount``, and an untouched tick posts exactly that figure back.
+        Asserting the two are equal is the claim ``settle_amount``'s docstring
+        makes -- *"there is no shape in which the displayed figure and the
+        booked one can drift"* -- which was false for a reverted row.
+        """
+        with app.app_context():
+            txn = self._reverted_bill(seed_user, seed_periods_today[3])
+            txn_id = txn.id
+
+            offered = transaction_service.settle_amount(txn)
+            transaction_service.settle_transaction(txn, submitted=offered)
+            db.session.commit()
+
+            booked = settled_figure(db.session.get(Transaction, txn_id))
+            assert offered == booked
+            # And the offer is the RETAINED figure, not the plan: what the bank
+            # took survives the revert and is what a re-settle books.
+            assert booked == Decimal("245.32")
+
+    def test_typing_the_plan_DISPLACES_the_retained_correction(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The user can still say "no, it really was the $500.00".
+
+        The half that makes the retained figure a default rather than a trap.
+        While the offer was the plan, submitting the plan was an ECHO -- so the
+        one number the user most plausibly wants to book was the one number they
+        could not express, and they would have had to type $499.99 and correct
+        it afterwards.
+        """
+        with app.app_context():
+            txn = self._reverted_bill(seed_user, seed_periods_today[3])
+            txn_id = txn.id
+
+            transaction_service.settle_transaction(
+                txn, submitted=Decimal("500.00"),
+            )
+            db.session.commit()
+
+            reloaded = db.session.get(Transaction, txn_id)
+            assert settled_figure(reloaded) == Decimal("500.00")
+            assert reloaded.settled_basis_id == settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
+
+
+class TestAFigureArrivingALONEAtTheTransactionPATCH:
+    """A PATCH carrying ONLY ``settled_amount`` must still record it.
+
+    **The dispatch clause this grades had no firing control** (neutral review,
+    2026-08-18).  ``routes/transactions/mutations`` enters the status arm when a
+    status, a day OR a figure arrives; without the third term a PATCH carrying
+    the figure alone fell to the ``elif _POSTING_RELEVANT_FIELDS & data.keys()``
+    branch -- ``settled_amount`` is in that set -- and answered 200 having
+    discarded the user's typed money value.
+
+    Every other route test that submits a figure also submits a status, because
+    the popover's Save posts the whole form; the case that reaches this clause
+    is the box edited on its own, which is what the transfer door already grades
+    and this one did not.
+    """
+
+    def test_a_settled_row_records_a_figure_submitted_with_no_status(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Correct the Actual, touch nothing else, and the record moves.
+
+        Hand arithmetic: a `$500.00` bill settles at its plan, so the cash
+        account is `$500.00` down. The statement says `$245.32`, so the
+        corrected record re-books that and the ledger nets to `$245.32` on the
+        day the money moved -- not `$500.00`, and not `$745.32`.
+        """
+        with app.app_context():
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods_today[3],
+                "Electricity", Decimal("500.00"),
+            )
+            txn.template.is_envelope = False
+            db.session.commit()
+            txn_id = txn.id
+
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+            ).status_code == 200
+            db.session.expire_all()
+            settled = db.session.get(Transaction, txn_id)
+            assert settled_figure(settled) == Decimal("500.00")
+            day = settled.settled_on
+
+            response = auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={
+                    "settled_amount": "245.32",
+                    "version_id": str(settled.version_id),
+                },
+            )
+
+            assert response.status_code == 200, response.get_data(as_text=True)
+            db.session.expire_all()
+            reloaded = db.session.get(Transaction, txn_id)
+            assert settled_figure(reloaded) == Decimal("245.32"), (
+                "a figure submitted alone was discarded and the save still "
+                "answered 200"
+            )
+            assert reloaded.settled_basis_id == settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
+            assert reloaded.status_id == ref_cache.status_id(StatusEnum.DONE)
+            assert reloaded.settled_on == day, (
+                "a figure correction moved the day the money moved"
+            )
+            assert net_posted_by_day(
+                JournalEntry.transaction_id == txn_id,
+            ) == {day: Decimal("245.32")}
+
+    def test_a_SECOND_correction_replaces_the_first(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Correcting an already-CORRECTED record, which no test covered.
+
+        Every echo test starts from a ``derived`` record, so nothing graded the
+        comparison when the row already holds a human's figure -- the state a
+        user is in the moment they re-open the popover after correcting once.
+        The second figure must displace the first rather than be read as an echo
+        of the PLAN, and the ledger must land on the second, not the sum.
+        """
+        with app.app_context():
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods_today[3],
+                "Electricity", Decimal("500.00"),
+            )
+            txn.template.is_envelope = False
+            db.session.commit()
+            txn_id = txn.id
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+                data={"settled_amount": "245.32"},
+            ).status_code == 200
+
+            db.session.expire_all()
+            first = db.session.get(Transaction, txn_id)
+            assert settled_figure(first) == Decimal("245.32")
+            day = first.settled_on
+
+            assert auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={
+                    "settled_amount": "251.08",
+                    "version_id": str(first.version_id),
+                },
+            ).status_code == 200
+
+            db.session.expire_all()
+            second = db.session.get(Transaction, txn_id)
+            assert settled_figure(second) == Decimal("251.08")
+            assert second.settled_basis_id == settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
+            assert net_posted_by_day(
+                JournalEntry.transaction_id == txn_id,
+            ) == {day: Decimal("251.08")}
+
+    def test_re_posting_a_CORRECTED_figure_unchanged_writes_nothing(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The echo rule, asked of a record that is already a correction.
+
+        The firing control for the test above: the box is prefilled with what
+        the row records, so re-saving must be a no-op even when what it records
+        is itself a human's figure.  Graded on the version counter, because the
+        columns look identical either way -- a write that changed nothing is
+        still a write, and it is what a lost-update race is made of.
+        """
+        with app.app_context():
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods_today[3],
+                "Electricity", Decimal("500.00"),
+            )
+            txn.template.is_envelope = False
+            db.session.commit()
+            txn_id = txn.id
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+                data={"settled_amount": "245.32"},
+            ).status_code == 200
+
+            db.session.expire_all()
+            before = db.session.get(Transaction, txn_id)
+            version_before = before.version_id
+
+            assert auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={
+                    "settled_amount": "245.32",
+                    "version_id": str(version_before),
+                },
+            ).status_code == 200
+
+            db.session.expire_all()
+            after = db.session.get(Transaction, txn_id)
+            assert settled_figure(after) == Decimal("245.32")
+            assert after.version_id == version_before, (
+                "an echoed prefill wrote the row anyway"
+            )
+
+
+class TestAChangedFigureBesideARevert:
+    """A retyped Actual submitted with Projected is REFUSED, not discarded.
+
+    **The measured defect** (neutral review, 2026-08-18): the submission rule
+    read the STATUS alone, so it could not tell an untouched prefill from a
+    number the user had just typed and dropped both.  End to end, exactly as a
+    user meets it: a bill settled at a hand-typed `$245.32`, re-read off the
+    statement as `$214.37`, corrected and reverted in one Save -- HTTP 200, no
+    message, and the row still recording `$245.32`.
+
+    That is worse than the settle DAY's analogue ruling **R-EG** was written
+    for.  A revert CLEARS the day, so a dropped day changes nothing; a revert
+    RETAINS the figure, and ``Settlement.from_settle`` deliberately re-books a
+    retained correction -- so the dropped figure became a silently WRONG
+    booking on the next settle, promised on the grid by the re-book notice.
+
+    The two halves of the rule are graded together here, because it is the
+    DIFFERENCE between them that was missing: an echo still drops (the unlock
+    path must keep working) and a change is refused.
+    """
+
+    @staticmethod
+    def _settled_at(auth_client, seed_user, session, period, figure):
+        """Return the id of a plain bill settled at a hand-typed *figure*."""
+        txn = create_envelope_txn(
+            seed_user, session, period, "Electricity", Decimal("500.00"),
+        )
+        txn.template.is_envelope = False
+        session.commit()
+        txn_id = txn.id
+        assert auth_client.post(
+            f"/transactions/{txn_id}/mark-done",
+            data={"settled_amount": figure},
+        ).status_code == 200
+        session.expire_all()
+        return txn_id
+
+    def test_a_CHANGED_figure_beside_a_revert_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The user typed $214.37 and picked Projected. Neither is guessed at.
+
+        Refused with the sentence that names both acts, and the row is left
+        exactly as it was -- still Paid, still recording `$245.32` -- so the
+        user can correct the figure and then revert, in that order.
+        """
+        with app.app_context():
+            txn_id = self._settled_at(
+                auth_client, seed_user, db.session,
+                seed_periods_today[3], "245.32",
+            )
+            settled = db.session.get(Transaction, txn_id)
+
+            response = auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={
+                    "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
+                    "settled_amount": "214.37",
+                    "version_id": str(settled.version_id),
+                },
+            )
+
+            assert response.status_code == 400, (
+                "a figure the user CHANGED was swallowed by the revert"
+            )
+            assert "has nothing to record" in response.get_data(as_text=True)
+            db.session.expire_all()
+            after = db.session.get(Transaction, txn_id)
+            assert after.status_id == ref_cache.status_id(StatusEnum.DONE), (
+                "a refused request reverted the row anyway"
+            )
+            assert after.settled_amount == Decimal("245.32")
+
+    def test_an_UNTOUCHED_box_beside_a_revert_still_unlocks(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The firing control, and ruling R-EG's whole point.
+
+        The popover PREFILLS the box with what the row records and submits every
+        input it renders, so the ordinary revert carries `$245.32` back.  That
+        is not an assertion that this much moved -- the user picked Projected --
+        and refusing it would break the documented unlock path on every settled
+        row.  Without this case the test above passes against a rule that
+        refuses every figure.
+        """
+        with app.app_context():
+            txn_id = self._settled_at(
+                auth_client, seed_user, db.session,
+                seed_periods_today[3], "245.32",
+            )
+            settled = db.session.get(Transaction, txn_id)
+
+            response = auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={
+                    "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
+                    "settled_amount": "245.32",
+                    "version_id": str(settled.version_id),
+                },
+            )
+
+            assert response.status_code == 200, response.get_data(as_text=True)
+            db.session.expire_all()
+            after = db.session.get(Transaction, txn_id)
+            assert after.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            # The ASSERTION is withdrawn and WHAT MOVED is kept, so the
+            # revert / edit / re-settle round trip stays lossless.
+            assert after.settled_on is None
+            assert after.settled_amount == Decimal("245.32")

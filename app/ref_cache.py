@@ -35,6 +35,7 @@ from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
     AmountSourceEnum,
+    SettlementBasisEnum,
     BusinessDayShiftEnum,
     CalcMethodEnum,
     CompoundingFrequencyEnum,
@@ -219,6 +220,7 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(PeriodPlacementEnum, ref_models.PeriodPlacement),
         _RefSpec(BusinessDayShiftEnum, ref_models.BusinessDayShift),
         _RefSpec(AmountSourceEnum, ref_models.AmountSource),
+        _RefSpec(SettlementBasisEnum, ref_models.SettlementBasis),
     ]
 
 
@@ -918,3 +920,36 @@ def amount_source_id(member):
     """
     _require_init()
     return _cache.enum_ids[AmountSourceEnum][member]
+
+
+def settlement_basis_id(member):
+    """Return the integer primary key for a SettlementBasisEnum member.
+
+    The settlement record's discriminator (plan step **X-au-c3**): HOW a settled
+    row's recorded figure is known, stamped on
+    ``budget.transactions.settled_basis_id`` by the settle and read by the one
+    accessor that answers what a settled row recorded
+    (``row_valuation.settled_figure``) -- always via the integer ID, never the
+    string ``name``.  Matches the project-wide IDs-for-logic invariant.
+
+    **There is deliberately no accessor for the NOT-SETTLED state**, for the
+    reason :func:`amount_source_id` states about OWN: it is not a member but the
+    ABSENCE of one, so "has this row ever recorded a settle" is a NULL test on
+    the column and needs no cache read -- and no ref id is frozen into the
+    schema.  **It is NOT how a reader asks whether the row is settled**: a
+    revert keeps what moved, so the column outlives the settle it recorded and
+    the STATUS is what decides (``row_valuation.settled_figure``).
+
+    Args:
+        member: A ``SettlementBasisEnum`` member
+                (e.g. ``SettlementBasisEnum.PURCHASES``).
+
+    Returns:
+        int -- the ``ref.settlement_bases.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid SettlementBasisEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[SettlementBasisEnum][member]

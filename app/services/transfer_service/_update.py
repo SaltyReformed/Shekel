@@ -17,11 +17,12 @@ Flask-isolated like the rest of the package: plain data in, ORM rows out, no
 
 import logging
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
+
+from sqlalchemy.orm.attributes import flag_modified
 
 from app import ref_cache
 from app.enums import StatusEnum
-from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.ref import Status
 from app.models.transfer import Transfer
@@ -35,6 +36,11 @@ from app.services.transfer_service._loan_posting import (
 from app.services.transfer_service._ownership import (
     _get_owned_category,
     _get_owned_period,
+)
+from app.services.row_valuation import recorded_figure
+from app.services.status_seam import (
+    correction_record,
+    figure_for_status,
 )
 from app.services.transfer_service._status import (
     apply_settle_day_correction,
@@ -90,37 +96,8 @@ logger = logging.getLogger(__name__)
 # harmless no-op; this set is the cheap pre-filter that avoids a ledger
 # round-trip on a pure metadata edit.
 _POSTING_RELEVANT_FIELDS = frozenset(
-    {"status_id", "amount", "actual_amount", "pay_period_id", "due_date"}
+    {"status_id", "amount", "settled_amount", "pay_period_id", "due_date"}
 )
-
-
-def _apply_actual_amount(rows: TransferRows, raw: object) -> None:
-    """Mirror an ``actual_amount`` update onto both shadow transactions.
-
-    The ``Transfer`` model has no ``actual_amount`` column, so this kwarg
-    updates the two shadows directly.  ``None`` clears the settled
-    amount; any other value is coerced to ``Decimal`` (a parse failure
-    is a caller bug -> ``ValidationError``).
-
-    Args:
-        rows: The transfer and both shadows.
-        raw: The submitted actual amount (``None`` or Decimal-coercible).
-
-    Raises:
-        ValidationError: If *raw* is not None and cannot be parsed as a
-            Decimal.
-    """
-    if raw is not None:
-        try:
-            actual = Decimal(str(raw))
-        except (InvalidOperation, TypeError, ValueError) as exc:
-            raise ValidationError(
-                f"Invalid actual_amount: {raw!r}."
-            ) from exc
-    else:
-        actual = None
-    for shadow in rows.shadows:
-        shadow.actual_amount = actual
 
 
 #: The kwargs a SETTLE owns outright when one runs.  Each is an input to
@@ -130,7 +107,7 @@ def _apply_actual_amount(rows: TransferRows, raw: object) -> None:
 #: exactly what this module did until plan step X-f2-c3, where every reconcile
 #: tick stamped ``settled_on`` with the derived day and then rewrote it with the
 #: statement's through ruling **R-ED**'s CORRECTION door.
-_SETTLE_OWNED_FIELDS = frozenset({"status_id", "actual_amount", "settled_on"})
+_SETTLE_OWNED_FIELDS = frozenset({"status_id", "settled_amount", "settled_on"})
 
 
 def _fields_the_settle_left(
@@ -138,27 +115,26 @@ def _fields_the_settle_left(
 ) -> "dict[str, object]":
     """Return the kwargs still owed an application after a settle ran.
 
-    :data:`_SETTLE_OWNED_FIELDS`, minus the two of them that arrived as an
-    explicit ``None``.  **A settle consumes a VALUE; a ``None`` is not one --
-    it is a request to CLEAR the column**, which is a different act with its own
-    door, and a settle that swallowed it would perform neither.
+    :data:`_SETTLE_OWNED_FIELDS`, minus a ``settled_on`` that arrived as an
+    explicit ``None``.  **A settle consumes a VALUE; that ``None`` is not one --
+    it is a request to CLEAR the day**, which is a different act with its own
+    door, and a settle that swallowed it would perform neither.  Left here it
+    reaches
+    :func:`~app.services.transfer_service._status.apply_settle_day_correction`,
+    which refuses it in a sentence a user can act on; consumed instead, that
+    designed refusal would silently become "the settle used today's date".  It
+    cannot arrive from a route -- both PATCH schemas declare ``settled_on``
+    non-nullable, so an empty input loads as ABSENT -- but a service caller can
+    send it, and the refusal is the reason a settled transfer always carries the
+    day its money moved.
 
-    * ``settled_on=None`` asks for a settled transfer carrying no record of when
-      its money moved.  The balance walk REFUSES such a row, so it is a 500 on
-      the grid rather than a bad value; left here, it reaches
-      :func:`~app.services.transfer_service._status.apply_settle_day_correction`,
-      which refuses it in a sentence a user can act on.  Consumed instead, that
-      designed refusal would silently become "the settle used today's date".
-    * ``actual_amount=None`` says the figure a human typed was wrong.  Left
-      here, :func:`_apply_actual_amount` clears both legs.  Consumed instead,
-      the settle would read it as "nobody typed one" and leave a figure the
-      caller had just withdrawn.
-
-    Neither can arrive from a route: both PATCH schemas declare ``settled_on``
-    non-nullable, so an empty input loads as ABSENT, and no form posts an
-    ``actual_amount`` for a transfer at all.  A service caller can send both,
-    and the two refusals are the reason a settled transfer always carries a day
-    and the reason a withdrawn figure stays withdrawn.
+    **``settled_amount=None`` no longer needs an exception, and losing it is
+    plan step X-au-c3's** (see :func:`_apply_remaining_fields`' figure arm).  It
+    used to mean "clear the column", because a settled transfer carrying no
+    figure was a legal state -- every reader fell back to the row's plan.  A
+    settled row now always records what moved, so there is no clearing act for a
+    ``None`` to request: it means what a form means by an empty box, which is
+    that nobody typed one.
 
     Args:
         updates: The update kwargs as submitted.
@@ -169,9 +145,61 @@ def _fields_the_settle_left(
     return {
         key: value for key, value in updates.items()
         if key not in _SETTLE_OWNED_FIELDS or (
-            value is None and key != "status_id"
+            value is None and key == "settled_on"
         )
     }
+
+
+def _grade_submitted_figure(
+    rows: TransferRows, updates: "dict[str, object]",
+) -> None:
+    """Read what a submitted FIGURE means, and refuse a real conflict.
+
+    **Asked before any field is written**, which is the whole reason it is a
+    separate gate rather than an arm among the writes: a refused request must
+    leave the transfer and both shadows untouched, and ``is_override`` and
+    ``amount`` are already staged by the time :func:`_apply_remaining_fields`
+    runs.  It is the transfer twin of the ordering
+    ``transaction_service._door._correction_for_status`` keeps.
+
+    The reading is :func:`app.services.status_seam.figure_for_status`, shared
+    with the transaction door so the two tables cannot come to phrase one money
+    rule two ways.  What is graded is the status this update LEAVES, not the one
+    it starts from: a figure riding a settle is legal (the settle owns it), a
+    figure on a pair that stays settled is a CORRECTION, and a figure on
+    anything else is asking to record money that has not moved.
+
+    **An ECHO is DROPPED rather than refused, and that is why this mutates
+    *updates* instead of only raising.**  Both full-edit forms re-submit the
+    whole row, and the documented way to unlock a finalised transfer is to set
+    Status to Projected in that same form -- so a revert arrives carrying the
+    Actual box's untouched contents.  Refusing that would break the unlock path
+    on every settled transfer, which is the trap ruling **R-EG** removed for the
+    settle day.  A figure the user CHANGED is a different thing and is refused.
+
+    The record is read off the EXPENSE leg, the leg the correction writes first
+    and the leg :func:`._settle.settle` resolves its figures from; the parent
+    carries no record at all.
+
+    Args:
+        rows: The transfer and both shadows, at their pre-update status.
+        updates: The update kwargs as submitted.  Mutated in place: an echoed
+            ``settled_amount`` has its key removed.
+
+    Raises:
+        ValidationError: When a ``settled_amount`` DIFFERING from what the pair
+            records arrives beside a status that settles nothing.
+    """
+    if updates.get("settled_amount") is None:
+        return
+    figure = figure_for_status(
+        rows.transfer,
+        updates.get("status_id", rows.transfer.status_id),
+        updates["settled_amount"],
+        recorded_figure(rows.expense),
+    )
+    if figure is None:
+        del updates["settled_amount"]
 
 
 def _dispatch_settle(
@@ -219,7 +247,7 @@ def _dispatch_settle(
         return None
     return _settle.settle(
         rows, updates["status_id"],
-        submitted=updates.get("actual_amount"),
+        submitted=updates.get("settled_amount"),
         settled_on=updates.get("settled_on"),
     )
 
@@ -300,7 +328,7 @@ def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object])
 
 
 def _apply_remaining_fields(
-    rows: TransferRows, user_id: int, updates: "dict[str, object]",
+    rows: TransferRows, updates: "dict[str, object]",
 ) -> None:
     """Apply every field a SETTLE does not own, mirroring it across the rows.
 
@@ -311,38 +339,88 @@ def _apply_remaining_fields(
     is held by the list being in one place, and half a mirroring in a second
     module is how a shadow drifts.
 
-    The three fields it does NOT hold are :data:`_SETTLE_OWNED_FIELDS`, which
-    have already been written as one act when this update settles; a
-    ``status_id`` or ``settled_on`` that reaches the arms below therefore
-    belongs to a NON-settling change, and each arm says what that means.
+    :data:`_SETTLE_OWNED_FIELDS` reach it only when this update did NOT settle,
+    because a settle writes all three as one act and they are dropped before
+    this runs.  So a ``status_id``, a ``settled_on`` or a ``settled_amount``
+    among the arms below belongs to a non-settling change -- a revert, a cancel,
+    an archive, or a CORRECTION to what a pair already recorded -- and each arm
+    says what that means.
 
     Args:
         rows: The transfer and both shadows.
-        user_id: The owner, for the period and category ownership checks.
         updates: The kwargs left for this function to apply.
 
+    Note:
+        It takes no ``user_id``: the two ownership refusals it used to make now
+        run before the first write (:func:`_reject_unowned_references`), so what
+        is left here is assignment only.
+
     Raises:
-        ValidationError: From an ownership check, a malformed
-            ``actual_amount``, or the settle-day correction door.
+        ValidationError: From an ownership check, an illegal transition, or
+            the settle-day correction door.
         NotFoundError: From an unowned period or category.
+        AmountUnresolvable: From the correction's echo comparison, for a
+            settled leg whose settlement record is incomplete.
     """
-    # ── status_id ──────────────────────────────────────────────────
-    # A status change that does NOT settle: a cancel, a revert out of the
-    # settled band, or an archive of a row whose money already moved.  All three
-    # transitions are verified before any propagation, then applied through the
-    # ONE status seam, which owns the F-048 defense-in-depth ``settled_on``
-    # synchronization and the ``status`` expire; see
+    # ── status_id + the settlement RECORD ─────────────────────────
+    # ONE seam pass carrying both, mirroring
+    # :func:`app.services.transaction_service._door.apply_requested_status` one
+    # table over -- a status change and a figure correction are INDEPENDENT
+    # facts, and a door that treats them as alternatives drops whichever it
+    # decides against.  That is not hypothetical: the transaction door returned
+    # early after recording a figure, so a row moving Paid -> Settled while
+    # carrying a corrected Actual recorded the figure and never archived.
+    #
+    # The status half is a change that does NOT settle: a cancel, a revert out
+    # of the settled band, or an archive of a pair whose money already moved.
+    # All three transitions are verified before any propagation, then applied
+    # through the ONE status seam, which owns the F-048 defense-in-depth
+    # ``settled_on`` synchronization and the ``status`` expire; see
     # :func:`app.services.transfer_service._status.apply_status_to_all_three`
     # for the full audit rationale.  No day is passed: the seam CLEARS the
     # column on the way out of the band, and there is no way in from here --
     # :func:`_dispatch_settle` has already taken every such move.
-    if "status_id" in updates:
-        apply_status_to_all_three(rows, updates["status_id"])
+    #
+    # The RECORD half is the Actual box's write door (developer ruling,
+    # 2026-08-17).  **A transfer's DAY was correctable in place and its FIGURE
+    # was not**, which is the exact asymmetry that ruling objects to: the day
+    # travels through :func:`apply_settle_day_correction` and the figure was
+    # REFUSED outright, so the only way to restate what the bank took was to
+    # revert the transfer, edit, and settle it again -- and a revert RETAINS
+    # the recorded figure, so the re-settle silently re-booked the old number
+    # over the re-planned one.  The lock produced a wrong figure, not friction.
+    #
+    # ``new_status_id`` defaults to the pair's CURRENT status, so a figure
+    # arriving alone reaches the seam as an identity transition -- the same
+    # shape :func:`apply_settle_day_to_pair` uses for a day correction, and the
+    # reason the seam stays the single writer of the settlement columns.
+    #
+    # The record goes to both SHADOWS and to neither the parent, which
+    # ``apply_status_to_all_three`` owns: a transfer's money moves on its two
+    # legs, so each leg records its own and the two are equal by Transfer
+    # Invariant 3, exactly as their settle day is.
+    new_status_id = updates.get("status_id", rows.transfer.status_id)
+    # Resolved from the EXPENSE leg, the same leg :func:`._settle.settle` reads
+    # its figures from and for the same reason: both legs carry the same record
+    # (Transfer Invariant 3), so naming one means the choice is not made twice.
+    # A figure only ever reaches here as a CORRECTION -- a settling one is the
+    # settle's (:data:`_SETTLE_OWNED_FIELDS`), and one on an unsettled pair was
+    # refused before any field was written (:func:`_grade_submitted_figure`).
+    submitted = updates.get("settled_amount")
+    correction = (
+        None if submitted is None
+        else correction_record(rows.expense, submitted)
+    )
+    if "status_id" in updates or correction is not None:
+        apply_status_to_all_three(
+            rows, new_status_id, settlement=correction,
+        )
 
     # ── pay_period_id ──────────────────────────────────────────────
+    # Ownership was refused before the first write
+    # (:func:`_reject_unowned_references`); this arm only assigns.
     if "pay_period_id" in updates:
         new_period_id = updates["pay_period_id"]
-        _get_owned_period(new_period_id, user_id)
         rows.transfer.pay_period_id = new_period_id
         for shadow in rows.shadows:
             shadow.pay_period_id = new_period_id
@@ -352,8 +430,6 @@ def _apply_remaining_fields(
     # appears under the user-selected category in both account grids.
     if "category_id" in updates:
         new_cat_id = updates["category_id"]
-        if new_cat_id is not None:
-            _get_owned_category(new_cat_id, user_id)
         rows.transfer.category_id = new_cat_id
         for shadow in rows.shadows:
             shadow.category_id = new_cat_id
@@ -369,14 +445,6 @@ def _apply_remaining_fields(
     # carry independent notes.
     if "notes" in updates:
         rows.transfer.notes = updates["notes"]
-
-    # ── actual_amount ──────────────────────────────────────────────
-    # A correction to a row that is ALREADY settled -- the user re-read the
-    # statement.  A figure arriving with a settle is the settle's
-    # (:data:`_SETTLE_OWNED_FIELDS`), which is what keeps the echo rule and this
-    # verbatim write from both landing on one column in one call.
-    if "actual_amount" in updates:
-        _apply_actual_amount(rows, updates["actual_amount"])
 
     # ── due_date ──────────────────────────────────────────────────
     # The parent transfer is canonical; mirror to both shadows so the
@@ -403,6 +471,87 @@ def _apply_remaining_fields(
     # had already moved, which is what this door has always been for.
     if "settled_on" in updates:
         apply_settle_day_correction(rows, updates["settled_on"])
+
+
+def _reject_unowned_references(
+    user_id: int, updates: "dict[str, object]",
+) -> None:
+    """Refuse an unowned period or category BEFORE any field is written.
+
+    The two user-scoped FKs :func:`update_transfer` accepts, checked with the
+    other pre-write gates rather than at the arm that assigns them.  They ran
+    inside :func:`_apply_remaining_fields`, which is AFTER
+    :func:`_dispatch_settle` has written the status, the pair's day and the
+    settlement record to both shadows -- so an unowned id raised with the
+    settlement already staged, and the route's ``NotFoundError`` exit returns
+    404 without rolling back (unlike ``_error_transfer_response``, which does).
+    Nothing persists today, because Flask-SQLAlchemy's teardown removes the
+    session, but it made this module's own rule -- every refusal before the
+    first write -- untrue of two of its refusals (neutral review, 2026-08-18).
+
+    Ownership is re-checked at the route boundary too (commit C-27 / F-043);
+    this is the service tier's own, so a caller that skips the route cannot
+    write across an ownership line.
+
+    Args:
+        user_id: The owner every referenced row must belong to.
+        updates: The update kwargs as submitted.
+
+    Raises:
+        NotFoundError: If a submitted ``pay_period_id`` or ``category_id`` is
+            not *user_id*'s.  The security response rule collapses "not found"
+            and "not yours" to one answer.
+    """
+    if "pay_period_id" in updates:
+        _get_owned_period(updates["pay_period_id"], user_id)
+    if updates.get("category_id") is not None:
+        _get_owned_category(updates["category_id"], user_id)
+
+
+def _bump_parent_version_if_a_leg_moved(rows: TransferRows) -> None:
+    """Move the PARENT's optimistic-lock counter when a shadow-only write lands.
+
+    **A transfer and its two shadows are ONE thing, so the aggregate's version
+    is what a stale form must be caught by** (developer ruling, 2026-08-18).
+    Both full-edit popovers pin ``Transfer.version_id``, but the two facts they
+    can correct in place -- the settle DAY (ruling **R-ED**) and the settled
+    FIGURE -- live on the shadows alone.  SQLAlchemy bumps a version counter
+    only for a row it actually UPDATEs, so those saves left the parent's counter
+    untouched and the C-18 conflict cell could not fire.
+
+    **Measured before the fix, on the live route**: two tabs open on one settled
+    transfer, both holding ``version_id = 2``.  Tab A corrects the figure to
+    ``$214.37`` -- 200 OK, parent still ``2``.  Tab B then saves its prefilled
+    ``$200.00`` against the same pin -- 200 OK, both legs now record
+    ``$200.00``.  A lost update on a money figure, reported as success, with the
+    figure the user read off their statement gone and no conflict shown.
+
+    **Gated on a NET change, not on "a write was attempted".**
+    ``Session.is_modified`` compares each attribute against its committed value,
+    so an echoed prefill -- which ``correction_record`` already resolves to "no
+    record to write" -- bumps nothing.  A version that moved when nothing did
+    would turn every second tab into a spurious 409.
+
+    ``flag_modified`` is what forces the parent into the flush: the row has no
+    field of its own to change, and an assignment of an unchanged value is
+    dropped from the UPDATE (SQLAlchemy's ``_collect_update_commands`` skips a
+    net-zero change), which is the same rule that hid the defect.  It writes
+    ``status_id`` back at its current value -- chosen because it is the one
+    column every path through this module has already loaded, and
+    ``flag_modified`` REFUSES an attribute absent from the object state (which
+    ``updated_at`` is on a freshly-expired instance, measured).  The row's
+    ``updated_at`` still refreshes, because the mixin's ``onupdate`` fires for
+    any UPDATE of the row.
+
+    Args:
+        rows: The transfer and both shadows, after every field write.
+    """
+    if not any(db.session.is_modified(shadow) for shadow in rows.shadows):
+        return
+    if db.session.is_modified(rows.transfer):
+        # The parent is already in the flush, so its counter moves anyway.
+        return
+    flag_modified(rows.transfer, "status_id")
 
 
 def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False):
@@ -437,6 +586,18 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # R-C: refuse an edit that would move a loan payment before its loan, before
     # any field is applied.  See :func:`_reject_installment_move_before_loan`.
     _reject_installment_move_before_loan(rows.transfer, user_id, updates)
+
+    # The FIGURE's own gate, in the same place and for the same reason: a
+    # refused request must leave all three rows untouched, and the first field
+    # write is two statements below.  It also DROPS an echoed box here, so the
+    # settle dispatch and the field arms below both see the payload the user
+    # actually meant.
+    _grade_submitted_figure(rows, updates)
+
+    # The two OWNERSHIP refusals, hoisted here for the same rule.  They ran at
+    # the arms that assign them, which is after the settle has already written
+    # both shadows.
+    _reject_unowned_references(user_id, updates)
 
     # ── is_override ────────────────────────────────────────────────
     # Applied FIRST, and the position is load-bearing rather than tidy: the
@@ -493,7 +654,9 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     else:
         remaining = updates
 
-    _apply_remaining_fields(rows, user_id, remaining)
+    _apply_remaining_fields(rows, remaining)
+
+    _bump_parent_version_if_a_leg_moved(rows)
 
     db.session.flush()
 
@@ -519,7 +682,7 @@ def settle_transfer(
     transfer_id,
     user_id,
     *,
-    actual_amount: Decimal | None = None,
+    submitted: Decimal | None = None,
     settled_on: date | None = None,
 ) -> bool:
     """Settle a transfer: both legs and the parent, on the day the money moved.
@@ -549,7 +712,7 @@ def settle_transfer(
     Args:
         transfer_id: The transfer to settle.
         user_id: The expected owner (defense-in-depth).
-        actual_amount: The figure a HUMAN supplied, when a door collected one --
+        submitted: The figure a HUMAN supplied, when a door collected one --
             the reconcile panel's amount box.  ``None`` means nobody typed one,
             and the settle then books what the row is worth.
         settled_on: The civil day the money moved, when the caller knows it --
@@ -557,7 +720,7 @@ def settle_transfer(
             rule in force (the user's today on a first settle).
 
     Returns:
-        Whether the settle booked *actual_amount* as a human's CORRECTION --
+        Whether the settle booked *submitted* as a human's CORRECTION --
         False when nobody typed one, and False when the figure was an echo of
         what the row would book anyway.  A transfer ALREADY in the settled band
         is an idempotent no-op that writes nothing and returns False: a settle
@@ -571,8 +734,8 @@ def settle_transfer(
         PostingError: From the ledger reconcile, on a broken invariant.
     """
     updates = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
-    if actual_amount is not None:
-        updates["actual_amount"] = actual_amount
+    if submitted is not None:
+        updates["settled_amount"] = submitted
     if settled_on is not None:
         updates["settled_on"] = settled_on
     _, corrected = _apply_transfer_updates(
@@ -601,9 +764,19 @@ def update_transfer(transfer_id, user_id, **kwargs):
         category_id    -- New category (expense shadow only).
         name           -- New display name (transfer only, not shadows).
         notes          -- New notes (transfer only, not shadows).
-        actual_amount  -- Actual settled amount (both shadows only;
-                          the Transfer model has no actual_amount
-                          column).
+        settled_amount -- What MOVED, recorded on both shadows only: a
+                          transfer's money moves on its two legs and the parent
+                          carries no such column.  A figure arriving WITH a
+                          settling ``status_id`` is the settle's own, subject to
+                          its echo rule (:data:`_SETTLE_OWNED_FIELDS`).  One
+                          arriving on a pair that is ALREADY settled is a
+                          CORRECTION to what it recorded -- the Actual box --
+                          and is applied in the same seam pass as the status,
+                          because what the bank took is an observed fact and an
+                          observation gets corrected when the statement
+                          disagrees (developer ruling, 2026-08-17).  One
+                          arriving on any other status is REFUSED: an amount
+                          states what MOVED, and this pair's money has not.
         due_date       -- Due date for the transfer and both shadows
                           (Date or None).
         settled_on     -- The civil day the money moved, for both shadows

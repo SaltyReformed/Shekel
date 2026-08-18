@@ -37,12 +37,10 @@ Architecture (``CLAUDE.md``):
     look at"; a first draft looked, said the writers "share their ORDER (the
     route's) and nothing else", and shipped that order as two statements in a
     route handler.  **That sentence concedes a shared body and files it under
-    the wrong tier.**  The order is a rule ABOUT THE ARMS -- the purchase arm's
-    scope requires a PROJECTED parent, which the transaction arm's writer
-    destroys -- so writing the close first silently drops every purchase tick
-    on that block, and nothing but statement order was stopping it.
-    :func:`record_reconciliation` owns it, which is why it is not a
-    passthrough: it carries an invariant no caller can see.
+    the wrong tier.**  The order was a rule ABOUT THE ARMS, and the rule it
+    encoded has since been REPEALED -- see :func:`record_reconciliation`, which
+    still owns the order and now says plainly that it is a convention rather
+    than an invariant.
 """
 
 from dataclasses import replace
@@ -328,17 +326,29 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
     (ruling **R-FA**); what lives here is the rule that spans them, and it is
     not an HTTP concern:
 
-    **Purchases are stamped BEFORE the source rows settle, because the purchase
-    arm's scope requires a PROJECTED parent** and settling an envelope's close
-    is exactly what takes that parent out of it.  Reversed, every purchase
-    ticked on a block whose close was also ticked is silently skipped -- the
-    call reports success, the panel re-renders, and the entries still read
-    outstanding.  Ticking a whole block at once is how a statement is walked,
-    so this is the ordinary case rather than an exotic one.
+    **Purchases are stamped BEFORE the source rows settle, and the reason that
+    was an INVARIANT has been repealed** (plan step X-au-c3, developer
+    2026-08-17).  It held because the purchase arm's scope required a PROJECTED
+    parent and settling an envelope's close took that parent out of it, so the
+    reversed order silently skipped every purchase ticked on a block whose close
+    was also ticked.  :func:`app.services.reconcile_service._purchases._outstanding_scope`
+    no longer requires a projected parent, so that cannot happen: a settled
+    parent's purchases stay in scope, which is the whole point of the widening.
+
+    **The order is KEPT and is now a CONVENTION, and saying which it is is the
+    point.**  Nothing this step could establish still depends on it -- an
+    envelope's settled figure is the sum of ALL its entries whatever their
+    posting days, and the ledger reconcile each arm runs is idempotent and
+    order-free (``_post_stamped_purchases`` reconciles the whole family, so both
+    orders converge on the same legs).  A rule whose reason has been deleted
+    must not go on presenting itself as an invariant: the next reader would
+    defend it for a cause that no longer exists, which is the shape this arc's
+    own stale citations are made of.  If a later step finds a real dependency,
+    it belongs here with its measurement.
 
     It was two statements in a route handler until an adversarial review named
-    it: an invariant enforced by the order of two lines, in a tier that owns
-    neither arm, with nothing able to fail if a later edit swapped them.
+    it: an order in a tier that owns neither arm, with nothing able to fail if a
+    later edit swapped them.
 
     **The transfer arm's position is FREE and is fixed anyway.**  Its scope is
     the complement of the transaction arm's and disjoint from the purchase

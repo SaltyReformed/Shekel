@@ -29,6 +29,8 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
+from app.services.row_valuation import settled_figure
+from tests._test_helpers import settlement_if_settling
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -561,13 +563,19 @@ class TestMarkDoneIntegration:
         html = resp.data.decode()
         assert "Paid" in html
 
-    def test_companion_mark_done_auto_populates_actual_from_entries(
+    def test_companion_mark_done_records_the_entry_sum(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """Mark-done on tracked transaction with entries auto-computes actual.
+        """Mark-done on a tracked transaction settles it at its purchases.
 
         Arithmetic: entries = $100 + $50 = $150.
-        actual_amount should be set to $150 after mark-done.
+
+        **What it reads changed at plan step X-au-c3 and the FIGURE did not.**
+        The close used to COPY the entry sum into ``actual_amount``; a
+        ``purchases`` settlement stores no figure at all, because the row's own
+        entries state it and a stored copy would need a reconciler to keep the
+        two in step.  So the assertion asks the accessor rather than the
+        column, and still asks for $150.
         """
         template = _make_template(
             seed_user, companion_visible=True, track=True, name="Groceries",
@@ -593,7 +601,7 @@ class TestMarkDoneIntegration:
         assert resp.status_code == 200
 
         db.session.refresh(txn)
-        assert txn.actual_amount == Decimal("150.00")
+        assert settled_figure(txn) == Decimal("150.00")
 
 
 # ── Entry Data in Response HTML ──────────────────────────────────────
@@ -846,7 +854,7 @@ class TestMarkPaidButtonVisibility:
             seed_user, companion_visible=True, name="Groceries",
         )
         txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
-        status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE))
+        status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE), settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)))
         db.session.commit()
 
         comp = _login_companion(app)

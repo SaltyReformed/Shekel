@@ -24,6 +24,7 @@ from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.services import account_service, pay_period_write
 
+from tests._test_helpers import default_settle_day, settlement_columns
 from tests._test_helpers import create_settled_cash_transaction, freeze_today
 
 
@@ -80,8 +81,11 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
         transaction_type_id=expense_type_id,
         name=name,
         estimated_amount=amount,
-        actual_amount=amount,
         category_id=cat.id if cat else None,
+        # A settled row carries the whole record -- day, figure and basis --
+        # through the one door a bare-built fixture uses (plan step X-au-c3).
+        settled_on=seed_periods[0].start_date,
+        **settlement_columns(seed_periods[0].start_date, amount),
     )
     db.session.add(txn)
     db.session.commit()
@@ -1871,12 +1875,17 @@ def _settled_spending_txn(db, seed_user, period, name, category_key,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
         estimated_amount=Decimal(estimated),
-        actual_amount=Decimal(actual) if actual is not None else None,
         category_id=cat.id if cat else None,
         due_date=due_date,
-        # A settled row carries the day its money moved; this bare fixture
-        # states it rather than leaving a row the readers refuse (X-f1).
+        # A settled row carries the day its money moved AND the record of what
+        # moved -- one fact in three columns (plan steps X-f1 / X-au-c3),
+        # resolved through the one door a bare-built fixture uses.  *actual* is
+        # a figure a HUMAN typed, which makes the record ``corrected``.
         settled_on=due_date or period.start_date,
+        **settlement_columns(
+            due_date or period.start_date, Decimal(estimated),
+            submitted=Decimal(actual) if actual is not None else None,
+        ),
     )
     db.session.add(txn)
     db.session.flush()

@@ -542,14 +542,14 @@ class TestMarkDoneDoubleSubmit:
             # First mark-done with actual_amount.
             resp1 = auth_client.post(
                 f"/transactions/{txn_id}/mark-done",
-                data={"actual_amount": "115.50"},
+                data={"settled_amount": "115.50"},
             )
             assert resp1.status_code == 200
 
             # Second mark-done -- same operation again.
             resp2 = auth_client.post(
                 f"/transactions/{txn_id}/mark-done",
-                data={"actual_amount": "115.50"},
+                data={"settled_amount": "115.50"},
             )
             assert resp2.status_code == 200
 
@@ -557,7 +557,7 @@ class TestMarkDoneDoubleSubmit:
             db.session.expire_all()
             txn = db.session.get(Transaction, txn_id)
             assert txn.status.name == "Paid"
-            assert txn.actual_amount == Decimal("115.50")
+            assert txn.settled_amount == Decimal("115.50")
             assert txn.estimated_amount == Decimal("120.00")
 
 

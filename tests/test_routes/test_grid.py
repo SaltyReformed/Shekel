@@ -12,7 +12,7 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.routes._render_helpers import fragment_budgets
+from app.routes._render_helpers import fragment_amounts
 from app.models.account import Account
 from app.models.category import Category
 from app.models.scenario import Scenario
@@ -21,6 +21,8 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
+from app import ref_cache
+from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
 from app.services import (
     account_service,
     balance_at,
@@ -28,6 +30,8 @@ from app.services import (
     pay_period_service,
     pay_period_write,
     posting_service,
+    status_seam,
+    transaction_service,
 )
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.services.balance_at import BalanceContext
@@ -36,6 +40,9 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    settlement_if_settling,
+    settlement_basis_id,
+    settlement_columns,
     append_balance_assertion,
     create_hysa_account,
     field_is_disabled,
@@ -45,7 +52,7 @@ from tests._test_helpers import (
     posted_loan_balance_at,
     settle_instant_on,
 )
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import owned_contribution, settled_figure
 
 #: Where the grid route's source lives, for the three STATIC guards below.
 #: It was the single file ``app/routes/grid.py`` until plan step C2-f2b split
@@ -735,10 +742,24 @@ class TestTransactionCRUD:
     def test_full_edit_locks_money_fields_on_finalised_row(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """The full-edit popover disables the money / period / due-date inputs
-        on a finalised row and shows the revert notice, while the Status
-        dropdown and Notes stay editable so the user can revert to Projected
-        and then edit (#26)."""
+        """The finalised lock covers BUDGET DECISIONS and nothing else.
+
+        The estimate, the period and the due date are decisions the user made,
+        locked so a paid movement cannot be retroactively rewritten (#26).  The
+        Status dropdown and Notes stay editable, and so do the two OBSERVED
+        FACTS -- what the bank took and the day it took it -- because a lock
+        protects a decision and an observation gets corrected when the statement
+        disagrees (developer ruling, 2026-08-17).
+
+        **The Actual assertion here was the opposite until that ruling**: it
+        asserted the box was not drawn at all.  A draft of plan step X-au-c3 had
+        rendered it gated on ``locked``, so it appeared ``disabled`` on every
+        settled row -- every settled status is also immutable -- and a disabled
+        input is never submitted.  The box was deleted as unreachable, and the
+        reasoning had the defect backwards: being disabled WAS the defect, and
+        the consequence was that correcting a figure required reverting the row,
+        which silently re-booked the retained figure over a re-planned amount.
+        """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
             auth_client.post(f"/transactions/{txn.id}/mark-done")
@@ -749,9 +770,15 @@ class TestTransactionCRUD:
             assert "This transaction is finalised" in html
             # Locked money / period / due-date fields.
             assert field_is_disabled(html, "estimated_amount")
-            assert field_is_disabled(html, "actual_amount")
             assert field_is_disabled(html, "pay_period_id")
             assert field_is_disabled(html, "due_date")
+            # ``settled_amount`` IS drawn and is NOT disabled: it is what the
+            # bank took, an observation rather than a budget decision, so it is
+            # correctable in place.  Both halves are asserted -- a box that is
+            # absent and a box that is present-but-disabled fail the user the
+            # same way, and the second is the shape that shipped once already.
+            assert 'name="settled_amount"' in html
+            assert not field_is_disabled(html, "settled_amount")
             # The revert path and display fields stay editable.
             assert not field_is_disabled(html, "status_id")
             assert not field_is_disabled(html, "notes")
@@ -792,8 +819,20 @@ class TestTransactionCRUD:
             assert "Mark as paid" in projected_html
 
             # Settled: the Paid action is suppressed (mark_done would 400).
+            # Driven through the SEAM rather than by assigning ``status_id``:
+            # since plan step X-au-c3 a settle records what moved in the same
+            # call, and a raw column write produces a settled row that records
+            # nothing -- a state no door can create and one
+            # ``row_valuation.settled_figure`` refuses outright, so the page
+            # under test would 500 on a row the app could never have.
             settled = db.session.query(Status).filter_by(name="Settled").one()
-            txn.status_id = settled.id
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(
+                    txn, ref_cache.status_id(StatusEnum.DONE),
+                ),
+            )
+            status_seam.apply_status_change(txn, settled.id)
             db.session.commit()
             settled_html = auth_client.get(
                 f"/transactions/{txn.id}/full-edit"
@@ -845,13 +884,13 @@ class TestTransactionCRUD:
 
             response = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
-                data={"actual_amount": "120.00"},
+                data={"settled_amount": "120.00"},
             )
             assert response.status_code == 200
 
             db.session.refresh(txn)
             assert txn.status.name == "Paid"
-            assert txn.actual_amount == Decimal("120.00")
+            assert txn.settled_amount == Decimal("120.00")
 
     def test_mark_income_received(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done sets status to received for income."""
@@ -874,7 +913,7 @@ class TestTransactionCRUD:
 
             response = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
-                data={"actual_amount": "2050.00"},
+                data={"settled_amount": "2050.00"},
             )
             assert response.status_code == 200
 
@@ -919,17 +958,33 @@ class TestTransactionCRUD:
             # Ad-hoc transaction should be fully deleted.
             assert db.session.get(Transaction, txn_id) is None
 
-    def test_mark_done_without_actual_amount(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /transactions/<id>/mark-done without actual_amount sets status only."""
+    def test_mark_done_without_a_correction_records_the_derived_figure(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Mark-done with nothing typed still RECORDS what moved.
+
+        **This asserted the opposite until plan step X-au-c3** -- "sets status
+        only", with ``actual_amount`` left NULL -- and that was the defect the
+        step removes rather than a contract it breaks.  A settled row whose
+        record was empty sent every reader to its PLAN, and a plan is a
+        derivation that can move after the money has not.  A settle now always
+        states the figure it booked and how that figure is known: ``derived``,
+        because the app resolved it and no human corrected it.
+
+        The figure is the row's own amount, which is what the old fall-back
+        answered for it, so no balance moves.
+        """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
+            planned = txn.estimated_amount
 
             response = auth_client.post(f"/transactions/{txn.id}/mark-done")
             assert response.status_code == 200
 
             db.session.refresh(txn)
             assert txn.status.name == "Paid"
-            assert txn.actual_amount is None
+            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert settled_figure(txn) == planned
 
     def test_cancel_transaction(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/cancel sets status to cancelled."""
@@ -1626,12 +1681,12 @@ class TestTransactionNegativePaths:
 
             resp = auth_client.post(
                 f"/transactions/{txn_id}/mark-done",
-                data={"actual_amount": "not_a_number"},
+                data={"settled_amount": "not_a_number"},
             )
             assert resp.status_code == 422
             assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
             body = resp.data.decode()
-            assert "actual_amount" in body
+            assert "settled_amount" in body
             assert "txn-chip" in body
 
             # ``MarkDoneSchema`` runs before the route's status
@@ -1642,7 +1697,7 @@ class TestTransactionNegativePaths:
             db.session.expire_all()
             txn_after = db.session.get(Transaction, txn_id)
             assert txn_after.status.name == "Projected"
-            assert txn_after.actual_amount is None
+            assert txn_after.settled_amount is None
 
     def test_mark_done_with_negative_actual_amount(
         self, app, auth_client, seed_user, seed_periods_today
@@ -1667,7 +1722,7 @@ class TestTransactionNegativePaths:
 
             resp = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
-                data={"actual_amount": "-50.00"},
+                data={"settled_amount": "-50.00"},
             )
             assert resp.status_code == 422
 
@@ -4091,7 +4146,8 @@ class TestTooltipContent:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 estimated_amount=Decimal("500.00"),
-                actual_amount=Decimal("487.32"),
+                settled_amount=Decimal("487.32"),
+                settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4127,7 +4183,8 @@ class TestTooltipContent:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 estimated_amount=Decimal("500.00"),
-                actual_amount=Decimal("500.00"),
+                settled_amount=Decimal("500.00"),
+                settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4164,7 +4221,8 @@ class TestTooltipContent:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 estimated_amount=Decimal("100.00"),
-                actual_amount=Decimal("100.00"),
+                settled_amount=Decimal("100.00"),
+                settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4513,39 +4571,44 @@ class TestSubtotalDecimalPrecision:
 
 
 class TestGridSubtotalsRegressionBaseline:
-    """Regression baseline: per-period subtotal reflects actual_amount.
+    """Regression baseline: the per-period subtotal reflects what MOVED.
 
     Pre-Commit-10 the grid subtotal was an inline ``sum(...
     effective_amount ...)`` loop in ``app/routes/grid/``.  The subtotal now
     comes off the seam's ``GridColumn`` (plan steps X-c2b1 / X-c2b2), which
-    uses ``effective_amount`` for income and the entries-aware reduction for
-    expenses; for income with no entries the ``effective_amount`` rule is
-    unchanged, so this 5A.1-era regression baseline continues to hold
-    (Projected income with ``actual_amount`` populated still reports the
-    actual on screen).
+    values income from the row itself and expenses through the entries-aware
+    reduction; for income with no entries the rule is the row's valuation, so
+    this 5A.1-era baseline continues to hold.
+
+    **The ROW it grades changed at plan step X-au-c3, and the FIGURE did
+    not.**  It was a PROJECTED income row carrying ``actual_amount = 400``
+    against a ``500`` estimate -- a state the settlement record makes
+    unconstructible, and the exact state migration ``e4b8a71c0f36`` promoted
+    into the plan on the five production rows that were in it.  The regression
+    is about a subtotal reporting the corrected figure rather than the
+    forecast, so it is retargeted onto the row that can still hold both: a
+    SETTLED income row whose record is a human's ``400`` against its own
+    ``500`` plan.  Same ``$400`` on screen, same defect caught.
     """
 
-    def test_subtotals_reflect_actual_for_projected(
+    def test_subtotals_reflect_the_recorded_figure(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Projected income with estimated=500, actual=400: subtotal
-        reflects actual_amount (400).
+        """Income planned at 500 and RECORDED at 400: the subtotal shows 400.
 
         Originally a Commit #0 regression baseline asserting the D-1 bug
-        (subtotal showed estimated).  Updated in Commit 5A.1 to assert
-        the corrected behavior: effective_amount now returns actual when
-        populated, so the grid subtotal automatically shows 400.
-        The subtotal now comes off the seam's ``GridColumn`` (plan steps
-        X-c2b1 / X-c2b2), whose income leg still uses ``effective_amount``, so
-        the assertion is unchanged.
+        (the subtotal showed the estimate).  Commit 5A.1 asserted the
+        correction, and plan step X-au-c3 moved the corrected figure into the
+        settlement record -- so the subtotal must read the record, not the
+        plan beside it.
         """
         with app.app_context():
             scenario = seed_user["scenario"]
             bctx = BalanceContext.build(seed_user["user"].id)
             account = seed_user["account"]
 
-            projected = db.session.query(Status).filter_by(
-                name="Projected",
+            received = db.session.query(Status).filter_by(
+                name="Received",
             ).one()
             income_type = db.session.query(TransactionType).filter_by(
                 name="Income",
@@ -4563,12 +4626,16 @@ class TestGridSubtotalsRegressionBaseline:
                 pay_period_id=current.id,
                 scenario_id=scenario.id,
                 account_id=account.id,
-                status_id=projected.id,
+                status_id=received.id,
                 name="Regression Subtotal Income",
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
                 estimated_amount=Decimal("500.00"),
-                actual_amount=Decimal("400.00"),
+                settled_on=current.start_date,
+                **settlement_columns(
+                    current.start_date, Decimal("500.00"),
+                    submitted=Decimal("400.00"),
+                ),
             )
             db.session.add(txn)
             db.session.commit()
@@ -4577,11 +4644,12 @@ class TestGridSubtotalsRegressionBaseline:
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # 5A.1 fix: subtotal uses effective_amount which now returns
-            # actual (400).  Grid formats subtotals as "${:,.0f}".
+            # The subtotal values the row from its SETTLEMENT RECORD (400),
+            # not from the plan beside it.  Grid formats subtotals as
+            # "${:,.0f}".
             assert "$400" in html, (
-                "Income subtotal should reflect actual_amount (400) "
-                "for Projected transactions when actual is populated"
+                "Income subtotal should reflect the RECORDED figure (400), "
+                "not the 500 the row planned"
             )
             assert "subtotal-row-income" in html, (
                 "Income subtotal row must be present in grid"
@@ -5538,6 +5606,7 @@ class TestSettleDayLifecycle:
                 txn,
                 ref_cache.status_id(StatusEnum.DONE),
                 settled_on=settled_a_week_ago,
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             posting_service.sync_transaction_postings(txn, settled=True)
             db.session.commit()
@@ -5621,6 +5690,7 @@ class TestSettleDayLifecycle:
                 txn,
                 ref_cache.status_id(StatusEnum.DONE),
                 settled_on=settled_a_week_ago,
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             posting_service.sync_transaction_postings(txn, settled=True)
             db.session.commit()
@@ -5685,6 +5755,7 @@ class TestSettleDayLifecycle:
         txn = self._create_test_txn(seed_user, seed_periods_today)
         status_seam.apply_status_change(
             txn, ref_cache.status_id(StatusEnum.DONE), settled_on=day,
+            settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
         )
         posting_service.sync_transaction_postings(txn, settled=True)
         db.session.commit()
@@ -6572,8 +6643,11 @@ class TestMobileCardActionBar:
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 estimated_amount=Decimal("42.00"),
-                # A settled row carries the day its money moved.
+                # A settled row carries the day its money moved and a RECORD
+                # of what moved (plan step X-au-c3); a bare fixture states both
+                # through the one door, ``settlement_columns``.
                 settled_on=current.start_date,
+                **settlement_columns(current.start_date, Decimal("42.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -6609,8 +6683,11 @@ class TestMobileCardActionBar:
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 estimated_amount=Decimal("42.00"),
-                # A settled row carries the day its money moved.
+                # A settled row carries the day its money moved and a RECORD
+                # of what moved (plan step X-au-c3); a bare fixture states both
+                # through the one door, ``settlement_columns``.
                 settled_on=current.start_date,
+                **settlement_columns(current.start_date, Decimal("42.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -6653,8 +6730,11 @@ class TestMobileCardActionBar:
                 category_id=salary_cat.id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
                 estimated_amount=Decimal("2500.00"),
-                # A settled row carries the day its money moved.
+                # A settled row carries the day its money moved and a RECORD
+                # of what moved (plan step X-au-c3); a bare fixture states both
+                # through the one door, ``settlement_columns``.
                 settled_on=current.start_date,
+                **settlement_columns(current.start_date, Decimal("2500.00")),
             )
             db.session.add(txn)
             db.session.commit()
@@ -6882,25 +6962,30 @@ class TestMobileCardActionBar:
             # ``txn.live_estimated_amount`` behind an ``is defined`` guard.
             # Resolved through the app's own door so the figure rendered here
             # is the one the grid would show.
-            budgets = fragment_budgets(txn)
+            # ``settled`` beside it since plan step X-au-c3: the card shows
+            # what a row RECORDED when its money has moved, so the macro takes
+            # both maps and this render supplies both from the same door.
+            amounts = fragment_amounts(txn)
+            budgets, settled = amounts.budgets, amounts.settled
+            retained = amounts.retained
             tmpl = app.jinja_env.from_string(
                 "{% from 'grid/_grid_row_macros.html'"
                 " import render_row_card %}"
-                "{{ render_row_card(rk, period, matched, {}, budgets,"
-                " can_edit, prefix) }}",
+                "{{ render_row_card(rk, period, matched, {}, budgets, settled,"
+                " retained, can_edit, prefix) }}",
             )
             with app.test_request_context("/"):
                 no_prefix = tmpl.render(
                     rk=rk, period=period, matched=matched, budgets=budgets,
-                    can_edit=True, prefix="",
+                    settled=settled, retained=retained, can_edit=True, prefix="",
                 )
                 tp_prefix = tmpl.render(
                     rk=rk, period=period, matched=matched, budgets=budgets,
-                    can_edit=True, prefix="tp",
+                    settled=settled, retained=retained, can_edit=True, prefix="tp",
                 )
                 plan_prefix = tmpl.render(
                     rk=rk, period=period, matched=matched, budgets=budgets,
-                    can_edit=True, prefix="plan",
+                    settled=settled, retained=retained, can_edit=True, prefix="plan",
                 )
 
             assert f'id="card-expansion-{txn.id}"' in no_prefix
@@ -7388,7 +7473,7 @@ class TestMobilePlanTab:
                 group_name="Housing",
             )
             txn_exp = SimpleNamespace(
-                id=1, name="Rent", actual_amount=None,
+                id=1, name="Rent", settled_amount=None,
                 estimated_amount=Decimal("1200.00"),
                 status=SimpleNamespace(is_settled=False),
                 status_id=99, transfer_id=None,
@@ -7411,6 +7496,13 @@ class TestMobilePlanTab:
                 # STRUCTURAL -- which sections render, how many rows -- so what
                 # the map contains is not the subject.
                 budgets={txn_exp.id: txn_exp.estimated_amount},
+                # What the row RECORDED, beside what it plans (plan step
+                # X-au-c3).  Unsettled here, so it recorded nothing.
+                settled={txn_exp.id: None},
+                # And what a tick would RE-BOOK -- nothing here, for the same
+                # reason: these rows have never settled, so they retain no
+                # record for a re-settle to honour (plan step X-au-c3).
+                retained={txn_exp.id: None},
                 plan_columns={
                     period.period_id: balance_at.GridColumn(
                         balance=Decimal("3000.00"),
@@ -7459,7 +7551,7 @@ class TestMobilePlanTab:
                 group_name="Income",
             )
             txn_inc = SimpleNamespace(
-                id=2, name="Salary", actual_amount=None,
+                id=2, name="Salary", settled_amount=None,
                 estimated_amount=Decimal("2500.00"),
                 status=SimpleNamespace(is_settled=False),
                 status_id=99, transfer_id=None,
@@ -7482,6 +7574,10 @@ class TestMobilePlanTab:
                 # STRUCTURAL -- which sections render, how many rows -- so what
                 # the map contains is not the subject.
                 budgets={txn_inc.id: txn_inc.estimated_amount},
+                # What the row RECORDED, beside what it plans (plan step
+                # X-au-c3).  Unsettled here, so it recorded nothing.
+                settled={txn_inc.id: None},
+                retained={txn_inc.id: None},
                 plan_columns={
                     period.period_id: balance_at.GridColumn(
                         balance=Decimal("3000.00"),
@@ -7531,14 +7627,14 @@ class TestMobilePlanTab:
                 group_name="Food",
             )
             txn_a = SimpleNamespace(
-                id=10, name="Groceries", actual_amount=None,
+                id=10, name="Groceries", settled_amount=None,
                 estimated_amount=Decimal("100.00"),
                 status=SimpleNamespace(is_settled=False),
                 status_id=99, transfer_id=None,
                 credit_payback_for_id=None,
             )
             txn_b = SimpleNamespace(
-                id=11, name="Groceries", actual_amount=None,
+                id=11, name="Groceries", settled_amount=None,
                 estimated_amount=Decimal("25.00"),
                 status=SimpleNamespace(is_settled=False),
                 status_id=99, transfer_id=None,
@@ -7564,6 +7660,10 @@ class TestMobilePlanTab:
                     txn_a.id: txn_a.estimated_amount,
                     txn_b.id: txn_b.estimated_amount,
                 },
+                # What each row RECORDED, beside what it plans (plan step
+                # X-au-c3).  Both are unsettled, so both recorded nothing.
+                settled={txn_a.id: None, txn_b.id: None},
+                retained={txn_a.id: None, txn_b.id: None},
                 plan_columns={
                     period.period_id: balance_at.GridColumn(
                         balance=Decimal("3000.00"),
@@ -9084,11 +9184,23 @@ class TestTheAddPurchaseFormReadsTheUsersClock:
     ):
         """The rendered add-purchase input comes from ``display_today``.
 
-        The card is re-rendered through the real ``mark-done`` route with
-        ``render=mobile_card``, which is the request ``_render_mobile_card``
-        serves.  Its add-purchase input must read ``value`` and ``max`` off the
+        ``_render_mobile_card`` is driven directly, on a PROJECTED envelope.
+        Its add-purchase input must read ``value`` and ``max`` off the
         substituted ``display_today``, and must not carry the process's own
         ``date.today()``.
+
+        **It drove the ``mark-done`` ROUTE until plan step X-au-c3, and the
+        route had to go rather than the assertion.**  ``render=mobile_card`` is
+        served by that one route, and marking an envelope paid now CLOSES its
+        purchases -- a settled row's add form is withdrawn
+        (``_transaction_entries.html``, the developer's 2026-08-17 field-aware
+        ruling), so the card that route returns carries no ``purchased_on``
+        input at all and there is no clock left in it to read.  Calling the
+        helper is what keeps the SUBJECT: the negative control below names that
+        function, the ``today`` it passes is the fact under test, and the
+        route's own wiring of ``render=mobile_card`` is covered by
+        ``TestMobileCardActionBar``.  The row stays Projected, which is the
+        state an add form belongs to.
 
         Both halves are asserted.  The positive alone would pass a build that
         rendered the sentinel somewhere unrelated; the negative alone would
@@ -9101,28 +9213,20 @@ class TestTheAddPurchaseFormReadsTheUsersClock:
         # pylint: disable=import-outside-toplevel
         from app.routes.transactions import _helpers
 
-        with app.app_context():
+        # The premise: the sentinel is not what any real clock answers, so a
+        # render reading ``date.today()`` cannot produce it by coincidence.
+        assert date.today() != self._SENTINEL
+        monkeypatch.setattr(_helpers, "display_today", lambda: self._SENTINEL)
+
+        with app.app_context(), app.test_request_context("/"):
             period = pay_period_service.get_current_period(
                 seed_user["user"].id,
             )
             assert period is not None
-            txn_id = self._envelope_txn(seed_user, period).id
-
-        # The premise: the sentinel is not what any real clock answers, so a
-        # route reading ``date.today()`` cannot produce it by coincidence.
-        assert date.today() != self._SENTINEL
-        monkeypatch.setattr(_helpers, "display_today", lambda: self._SENTINEL)
-
-        resp = auth_client.post(
-            f"/transactions/{txn_id}/mark-done",
-            data={
-                "render": "mobile_card",
-                "card_prefix": "tp",
-                "can_edit": "1",
-            },
-        )
-        assert resp.status_code == 200
-        html = resp.data.decode()
+            txn = self._envelope_txn(seed_user, period)
+            html = _helpers._render_mobile_card(
+                txn, card_prefix="tp", can_edit=True,
+            )
 
         assert 'name="purchased_on"' in html, (
             "the add-purchase form must actually have rendered"
@@ -9130,3 +9234,128 @@ class TestTheAddPurchaseFormReadsTheUsersClock:
         assert f'value="{self._SENTINEL.isoformat()}"' in html
         assert f'max="{self._SENTINEL.isoformat()}"' in html
         assert date.today().isoformat() not in html
+
+
+class TestARevertedRowShowsWhatARePayWillBook:
+    """The developer's 2026-08-17 rule: one figure, shown everywhere.
+
+    A row reverted out of the settled band KEEPS what it recorded and a
+    re-settle honours it, so its PLAN is what the balance counts and its
+    RETAINED figure is what marking it paid will book.  Those are two different
+    numbers about one row, and until this the second was visible on no surface
+    but the reconcile panel: the grid and the full-edit popover both showed a
+    ``$500.00`` plan for a row that would book ``$245.32``.
+
+    Both surfaces are driven through their real routes, because the map has to
+    reach each of them and they build their context differently -- the page
+    assembles it and the popover fragment takes it from
+    :class:`app.routes._render_helpers.RenderAmounts`.
+    """
+
+    @staticmethod
+    def _reverted_corrected_row(seed_user, period):
+        """Settle a bill at a human's figure, then revert it -- through the doors."""
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            name="Reverted Bill",
+            category_id=seed_user["categories"]["Rent"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            estimated_amount=Decimal("500.00"),
+        )
+        db.session.add(txn)
+        db.session.flush()
+        transaction_service.settle_transaction(
+            txn, submitted=Decimal("245.32"),
+        )
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.PROJECTED),
+        )
+        db.session.commit()
+        return txn
+
+    def test_the_grid_cell_shows_the_retained_figure(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The plan is still the row's value; the retained figure is beside it.
+
+        The plan is what the balance column counts, so it stays in the money
+        slot -- replacing it with a figure no balance uses would make the cell
+        disagree with the column it sits in.  The retained figure rides as its
+        own badge, captioned with what a tick will do.
+        """
+        with app.app_context():
+            period = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            self._reverted_corrected_row(seed_user, period)
+
+        html = auth_client.get("/grid").data.decode()
+
+        assert "245.32" in html, (
+            "the grid never showed the figure a re-pay will book"
+        )
+        assert "Marking this paid will record" in html
+        # **And the PLAN is still the row's value in the money slot.**  Without
+        # this half a build that swapped one figure for the other passes -- and
+        # that build is wrong: the balance column counts the plan, so a cell
+        # showing the retained figure as the row's amount would disagree with
+        # the column it sits in.  (Rendered by ``money(..., cents=false)``, so
+        # the desktop cell reads ``500`` rather than ``500.00``.)
+        assert "500" in html, (
+            "the plan left the money slot: the cell now disagrees with the "
+            "balance column beside it"
+        )
+
+    def test_the_full_edit_popover_shows_the_retained_figure(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The surface that TELLS the user to revert must say what that costs.
+
+        This card's own hint reads "Set Status to Projected to edit the
+        amounts", so the row a user is most likely looking at here is exactly
+        the one carrying a retained figure.
+        """
+        with app.app_context():
+            period = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            txn_id = self._reverted_corrected_row(seed_user, period).id
+
+        resp = auth_client.get(f"/transactions/{txn_id}/full-edit")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        assert "245.32" in html
+        assert "Marking this paid will record" in html
+
+    def test_an_ordinary_projected_row_shows_no_such_marker(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The negative control: the marker is drawn for a REAL gap only.
+
+        Without this, a build that rendered the badge unconditionally -- or one
+        that put the plan in it -- would pass the two cases above while adding
+        noise to every row on the grid.
+        """
+        with app.app_context():
+            period = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            txn = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=period.id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Ordinary Bill",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("500.00"),
+            )
+            db.session.add(txn)
+            db.session.commit()
+
+        html = auth_client.get("/grid").data.decode()
+        assert "Marking this paid will record" not in html

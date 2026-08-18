@@ -62,7 +62,7 @@ from app.extensions import db
 from app.models.ref import AmountSource, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from tests._test_helpers import load_migration_module
+from tests._test_helpers import load_migration_module, settlement_columns
 from app.services.cash_ledger import resolve_transfer_amount
 from app.services.row_valuation import owned_contribution
 
@@ -540,26 +540,43 @@ class TestTheCheapAccessorRefusesADerivedRow:
             ):
                 _ = resolve_transfer_amount(xfer)
 
-    def test_a_humans_actual_answers_for_a_derived_row(
+    def test_a_settlement_record_answers_for_a_derived_row(
         self, app, db, seed_user, seed_periods
     ):
-        """A derived row carrying an entered actual answers WITH it, not a refusal.
+        """A derived row that has SETTLED answers from its record, not a refusal.
 
-        The ruling plan step X-au-c owed and this leaf makes structural: a
-        figure a human read off a statement OUTRANKS a derivation (ruling
-        **R-FH** reserves ``actual_amount`` for exactly that), so the refusal arm
-        sits BELOW it.  Getting the order wrong would refuse the one row on the
-        production clone that has both -- a Projected, non-override template row
-        carrying an operator-typed actual.
+        The ruling plan step X-au-c owed and this leaf makes structural: what a
+        row RECORDED as having moved outranks any derivation of what it was
+        expected to be, so the refusal arm sits BELOW it.  Getting the order
+        wrong would refuse every settled row a per-kind cutover
+        (X-au-d..X-au-i) has emptied the plan of.
+
+        **The row it grades changed at plan step X-au-c3.**  It was a PROJECTED
+        derived row carrying ``actual_amount = 412.55`` -- the shape the
+        production clone had -- and the five rows in that state were promoted
+        into their PLAN by migration ``e4b8a71c0f36``, because a figure now
+        RECORDS a settle.  The state is not UNCONSTRUCTIBLE, and saying it was
+        (of ``ck_transactions_settled_amount_needs_basis``, corrected after
+        adversarial review 2026-08-17) misread that CHECK: it pairs a figure
+        with its provenance and says nothing about status, so an unsettled row
+        carrying BOTH is legal and is what a revert leaves behind.  Such a row
+        is worth its PLAN, which is the status gate's doing.  The ORDER under test is the same one, on
+        the row that can still hold both: a settled row whose plan is DERIVED
+        (no ``estimated_amount``) and whose record states ``$412.55``.
         """
         with app.app_context():
+            settled_on = seed_periods[0].start_date
             txn = _make_transaction(
                 seed_user, seed_periods,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
                 estimated_amount=None,
                 amount_source_id=ref_cache.amount_source_id(
                     AmountSourceEnum.TEMPLATE
                 ),
-                actual_amount=Decimal("412.55"),
+                settled_on=settled_on,
+                **settlement_columns(
+                    settled_on, None, submitted=Decimal("412.55"),
+                ),
             )
             db.session.add(txn)
             db.session.flush()

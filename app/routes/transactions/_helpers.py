@@ -22,7 +22,7 @@ from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.ref import Status
 from app.routes._render_helpers import (
-    fragment_budgets,
+    fragment_amounts,
     render_transaction_cell,
 )
 from app.schemas.validation import (
@@ -69,9 +69,20 @@ _INVALID_REFERENCE_MSG = INVALID_REFERENCE_MSG
 # Tuesday" would be inexpressible.  It is the same line ``TransactionEntry``
 # draws one table over (``purchased_on`` guarded, ``settled_on`` freely
 # editable on the inline form).
+#
+# ``settled_amount`` is NOT here either, and it sits on exactly the same side
+# of that line as ``settled_on`` (developer ruling, 2026-08-17).  A draft of
+# plan step X-au-c3 locked it, reasoning that "re-stating what a settle recorded
+# is not an edit" -- but the two facts a settle records are the FIGURE and the
+# DAY, both observations about the bank, and locking one while exempting the
+# other split a pair that belongs together.  The estimate and the actual are
+# different facts and get different boxes: the estimate is the budget decision
+# the lock protects, and the actual is what the statement says.  Locking it made
+# the only correction path revert-and-re-settle, which silently re-booked a
+# retained figure over a re-planned amount -- so the lock did not merely
+# inconvenience, it produced a wrong number.
 _LOCKED_EDIT_FIELDS = frozenset({
-    "estimated_amount", "actual_amount", "category_id",
-    "pay_period_id", "due_date",
+    "estimated_amount", "category_id", "pay_period_id", "due_date",
 })
 
 logger = logging.getLogger(__name__)
@@ -81,9 +92,11 @@ _update_schema = TransactionUpdateSchema()
 _create_schema = TransactionCreateSchema()
 _inline_create_schema = InlineTransactionCreateSchema()
 
-# Schema for the optional ``actual_amount`` form field on
-# ``mark_done``.  Single instance per process (Marshmallow contract);
-# replaces the per-branch raw ``Decimal(request.form.get("actual_amount"))``
+# Schema for the optional ``settled_amount`` form field on
+# ``mark_done`` (the field was ``actual_amount`` until plan step X-au-c3
+# replaced that column with a settlement record).  Single instance per
+# process (Marshmallow contract); replaces the per-branch raw
+# ``Decimal(request.form.get(...))``
 # parse the route used before commit C-27 / F-042 / F-162 of the
 # 2026-04-15 security remediation plan.
 _mark_done_schema = MarkDoneSchema()
@@ -165,12 +178,15 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
                 txn=txn, id_prefix=card_prefix, error=error,
             )
         return render_transaction_cell(txn)
-    budgets = fragment_budgets(txn)
+    amounts = fragment_amounts(txn)
+    budgets = amounts.budgets
     return render_template(
         "grid/_mobile_card_single.html",
         rk=row_keys[0],
         txn=txn,
         budgets=budgets,
+        settled=amounts.settled,
+        retained=amounts.retained,
         entry_sums=build_entry_sums_dict([txn], budgets),
         entry_lists=build_entry_lists_dict([txn], budgets),
         can_edit=can_edit,

@@ -19,6 +19,7 @@ from app.extensions import db
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.services import account_service
+from tests._test_helpers import settlement_if_settling
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -47,15 +48,31 @@ def _create_projected_expense(seed_user, seed_periods_today, period_index=0):
 
 
 def _walk_to(txn, status_name):
-    """Drive a freshly-projected row to *status_name* via direct writes.
+    """Drive a freshly-projected row to *status_name* through the SEAM.
 
-    Bypasses the route layer so the test bodies stay short.  The
-    route-layer transitions used here are themselves covered by the
-    legal-transition tests in ``test_c21_state_machine_routes.py`` and
-    the existing grid-test suite.
+    Bypasses the ROUTE layer so the test bodies stay short -- the route-layer
+    transitions used here are themselves covered by the legal-transition tests
+    in ``test_c21_state_machine_routes.py`` and the grid suite -- but not the
+    service layer beneath it.
+
+    **It used to assign ``status_id`` directly, and that made every row it
+    built illegal** (plan step X-au-c3).  ``status_seam.apply_status_change`` is
+    the ONE door that writes a status, and since that step it writes what the
+    row RECORDS as having moved in the same call; a raw column write produced a
+    settled row that recorded nothing, which no door can create and which
+    ``row_valuation.settled_figure`` now refuses outright rather than valuing at
+    the row's PLAN.  Seven fixtures across the suite were in that state and the
+    refusal is what found them.  A test that grades a refusal against an
+    impossible row grades nothing.
     """
+    # pylint: disable=import-outside-toplevel  -- test-module local import.
+    from app.services import status_seam
+
     target = db.session.query(Status).filter_by(name=status_name).one()
-    txn.status_id = target.id
+    status_seam.apply_status_change(
+        txn, target.id,
+        settlement=settlement_if_settling(txn, target.id),
+    )
     db.session.commit()
 
 
