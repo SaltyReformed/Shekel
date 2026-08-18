@@ -101,32 +101,10 @@ from app.services.recurrence._frequency import (
     Cadence,
     RecurrenceResolutionError,
     canonical_cadence,
+    has_day_of_month_coordinate,
     require_authorable_cadence,
 )
-from app.services.recurrence._months import MONTH_SPANNING_UNITS
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
-
-#: The units that fire on a DAY OF THE MONTH, and therefore the only ones whose
-#: first occurrence can have been month-end clamped.
-#:
-#: Named for what it decides rather than for the clamp: it answers both
-#: :attr:`ResolvedRecurrence.day_of_month` ("does this cadence have such a day
-#: at all") and :func:`_require_nominal_day_pair` ("can this rule carry a
-#: nominal day").  The clamp is a consequence of firing on a day of the month,
-#: not a separate property, so one constant is honest for both readers.
-#:
-#: **Read it through :func:`has_day_of_month_coordinate`, never directly**, and
-#: that accessor exists because a membership test is easy to write from memory
-#: with the WRONG set: three producers reached for
-#: ``_frequency.fires_on_day_of_month`` instead, which asks about the
-#: ``(unit, placement)`` anchor family and answers differently for
-#: ``Monthly First``.  Two of those three moved money.
-#:
-#: **DERIVED from the month-span table rather than written out**, which an
-#: adversarial review of plan step R7b-1 required: a literal ``(MONTH, YEAR)``
-#: here is a second statement of :data:`~._months.MONTH_SPANNING_UNITS`, and the
-#: only way for the two to be reached apart is for them to disagree.
-_DAY_OF_MONTH_UNITS = MONTH_SPANNING_UNITS
 
 #: The domain ``ck_recurrence_rules_due_dom`` bounds its column to.  Named once,
 #: so the door and the table state one domain rather than two that happen to
@@ -169,47 +147,6 @@ def _last_day_of_month(day: date) -> int:
     return calendar_module.monthrange(day.year, day.month)[1]
 
 
-def has_day_of_month_coordinate(unit: RecurrenceUnitEnum) -> bool:
-    """Return whether a cadence measured in *unit* fires on a day of the month.
-
-    **The one statement of the question three producers and one reader ask**,
-    and making it one is plan step R7c-b's fix for a wrong-money defect the
-    step itself introduced.  Every consumer below used to reach for whichever
-    of the two nearby predicates was in scope:
-
-    * :func:`offerable_nominal_days` and
-      :attr:`ResolvedRecurrence.day_of_month` ask THIS question -- the unit's;
-    * ``_frequency.fires_on_day_of_month`` asks a DIFFERENT one -- which anchor
-      FAMILY a ``(unit, placement)`` pair derives its first occurrence from --
-      and the two differ for exactly one cadence, ``Monthly First``.
-
-    They differ because a MONTH-unit rule funded from a month's FIRST paycheck
-    still fires on a day of the month; only its ANCHOR is measured in paycheck
-    space.  The occurrence walk reads
-    :attr:`ResolvedRecurrence.day_of_month` for it like any other MONTH rule,
-    so its nominal day is meaningful -- and asking the anchor-family question
-    where this one belongs is what let a "last day of every month" rent lose
-    its ``nominal_day`` and move to the 30th forever
-    (``recurrence_form.js``), and a month-end loan payment bill a day early for
-    the life of the loan (``loan_recurrence_sync.loan_cadence_start``).
-
-    Public rather than underscore-private for the reason
-    :func:`~app.services.recurrence._frequency.fires_on_day_of_month` is: the
-    recurrence FORM needs a name to ask it with, and a second hand-written list
-    of which cadences carry a day is precisely the duplication this arc
-    removes.
-
-    Args:
-        unit: The cadence unit.
-
-    Returns:
-        ``True`` for the units measured in whole months
-        (:data:`_DAY_OF_MONTH_UNITS`), which are the only ones whose
-        occurrences can be month-end clamped.
-    """
-    return unit in _DAY_OF_MONTH_UNITS
-
-
 def cadence_day_of_month(
     unit: RecurrenceUnitEnum, starts_on: date, nominal_day: int | None,
 ) -> int | None:
@@ -244,7 +181,8 @@ def cadence_day_of_month(
     Returns:
         The day 1-31 the rule means, month-end clamped per month by the walk
         itself -- or ``None`` for a unit that does not fire on a day of the
-        month (:data:`_DAY_OF_MONTH_UNITS`).  ``None`` is absence rather than a
+        month (:func:`~app.services.recurrence.has_day_of_month_coordinate`).
+        ``None`` is absence rather than a
         missing value: a paycheck-space or weekly rule has no day-of-month to
         name, and answering the date's own day would invent a coordinate the
         cadence never uses.
@@ -495,7 +433,7 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
 
             **The UNIT decides, not the (unit, placement) pair**, and the
             difference is not an oversight.  ``fires_on_day_of_month`` answers
-            which ANCHOR FAMILY derives a first occurrence, which is a
+            whether a generated ROW is dated from that day, which is a
             different question: a MONTH rule funded from a month's FIRST
             paycheck still fires on a day of the month, and the describer names
             it -- "Monthly (day 15, first paycheck)" -- suppressing only day 1,
@@ -919,12 +857,15 @@ def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
     # ONE spelling per rhythm, before anything is derived from the pair
     # (ruling **R-R17**, plan step R7c-c).  Freeing the interval made
     # ``(12, MONTH)`` authorable, and it is ``(1, YEAR)``: same month stride,
-    # same anchor family, same yearly count.  Canonicalising HERE rather than in
-    # the write door alone is what keeps the form's live preview, the Recurring
-    # cell and the stored row from wording one rhythm three ways -- the write
-    # door writes what this returns, so the ruling's "at the write door" is
-    # satisfied by the one call every reader already makes.
-    cadence = canonical_cadence(spec.interval_n, spec.unit, spec.placement)
+    # same day-of-month coordinate, same yearly count.  Canonicalising HERE
+    # rather than in the write door alone is what keeps the form's live
+    # preview, the Recurring cell and the stored row from wording one rhythm
+    # three ways -- the write door writes what this returns, so the ruling's
+    # "at the write door" is satisfied by the one call every reader already
+    # makes.  It takes no PLACEMENT from plan step R8-a: the guard that needed
+    # one existed because a year-scale deferred cadence was unauthorable, and
+    # that refusal was a fossil of a derivation R7c-b deleted.
+    cadence = canonical_cadence(spec.interval_n, spec.unit)
 
     # The first occurrence first, because the phase is a function of it (the
     # ordinal of the paycheck it falls in).  Deriving the two from separate

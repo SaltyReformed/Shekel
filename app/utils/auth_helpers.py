@@ -179,6 +179,42 @@ def get_or_404(model, pk, user_id_field="user_id"):
     return record
 
 
+
+def log_refused_lookup(model_name: str, pk) -> None:
+    """Log a refused id lookup where the two denial states are indistinguishable.
+
+    **The forensic half of an owner-scoped lookup** (pay-calendar plan step
+    C2-f2d-3's fix pass).  :func:`get_or_404` reads the global table and
+    compares the owner afterwards, so it can tell "no such row" from "not
+    yours" and emits a different event for each.  A lookup against a value that
+    holds ONE owner's data -- ``PayCalendar.period_by_id`` -- cannot: an id
+    belonging to somebody else is simply absent, which is the stronger
+    security property and is why those call sites moved.
+
+    What it is NOT is a reason to stop logging.  Cross-user id probing left a
+    trail through ``get_or_404`` and briefly left none through the calendar;
+    this restores it, at the one severity the ambiguity supports.
+
+    ``EVT_ACCESS_DENIED_CROSS_USER`` is deliberately NOT used: it asserts that
+    the row exists and belongs to another user, which this caller cannot know,
+    and an event that over-claims is worse for an investigation than one that
+    says less.  The pk and the path are enough to correlate a probe.
+
+    Args:
+        model_name: What was being looked up, e.g. ``"PayPeriod"``.
+        pk: The primary key the request supplied.
+    """
+    log_event(
+        logger, logging.INFO,
+        EVT_RESOURCE_NOT_FOUND, ACCESS,
+        "Owner-scoped lookup found no such record for this user",
+        user_id=_safe_user_id(),
+        model=model_name,
+        pk=pk,
+        path=request.path,
+    )
+
+
 def get_owned_via_parent(model, pk, parent_attr,
                          parent_user_id_attr="user_id"):
     """Load a record by PK and verify ownership through its parent.

@@ -34,7 +34,7 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
     CalcMethod, DeductionTiming, FilingStatus,
-    RaiseType, RecurrencePattern, TransactionType,
+    RaiseType, TransactionType,
 )
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
@@ -69,7 +69,6 @@ def _create_profile(seed_user):
     """Create a salary profile with linked template and recurrence."""
     filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
     income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-    every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
     cat = (
         db.session.query(Category)

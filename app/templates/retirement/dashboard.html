@@ -3,13 +3,6 @@
 {% block title %}Retirement Planning -- Shekel{% endblock title %}
 
 {% block content %}
-{# The page's partial-state blocker: no planned retirement date, or no
-   projectable take-home pay.  Each dependent card names the missing
-   input and links to where it is set (the old unreachable empty branch
-   is gone -- audit Surface 7). #}
-{% set blocker = 'date' if readiness.retirement_date is none
-   else ('salary' if readiness.income_target_net_monthly <= 0 else none) %}
-
 <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
   <div>
     <h4 class="mb-0"><i class="bi bi-briefcase"></i> Retirement</h4>
@@ -32,16 +25,18 @@
     <div class="card h-100">
       <div class="card-body">
         <h6 class="retire-card-title">Retirement readiness</h6>
-        {# Hidden refresh triggers: retirement_controls.js dispatches the
-           debounced events on body; each trigger fires ONE readiness GET
-           with its include set (what-ifs alone stay cheap; the lever
-           refresh also recomputes both solvers). #}
+        {# ONE hidden refresh trigger: retirement_controls.js dispatches the
+           debounced events on body and both land here with the SAME include
+           set.  There were two until plan step C2-f2d-4 -- a what-if trigger
+           sending only the assumption fields, and a lever trigger sending
+           those plus the steppers -- because the levers ignored the what-ifs
+           and a slider move had no lever answer to refresh.  They do not
+           ignore them any more, so a slider move must carry the stepper values
+           too or the card would come back with the owner's entries reset; two
+           triggers with one include set is one trigger. #}
         <div hx-get="{{ url_for('retirement.readiness_fragment') }}"
-             hx-trigger="shekel:readiness-whatif from:body"
-             hx-target="#readiness-region" hx-swap="innerHTML"
-             hx-include=".whatif-param"></div>
-        <div hx-get="{{ url_for('retirement.readiness_fragment') }}"
-             hx-trigger="shekel:lever-refresh from:body"
+             hx-trigger="shekel:readiness-whatif from:body,
+                         shekel:lever-refresh from:body"
              hx-target="#readiness-region" hx-swap="innerHTML"
              hx-include=".whatif-param, .lever-param"></div>
         <div id="readiness-region">
@@ -100,69 +95,7 @@
     <div class="card h-100">
       <div class="card-body">
         <h6 class="retire-card-title">Close the gap -- two levers</h6>
-        {% if blocker == 'date' or levers.no_horizon %}
-        <p class="text-muted mb-0">
-          Set a planned retirement date -- in the assumptions panel or on a
-          <a href="{{ url_for('retirement.pension_list') }}">pension</a> --
-          to explore these levers.
-        </p>
-        {% elif blocker == 'salary' %}
-        <p class="text-muted mb-0">
-          No projectable take-home pay yet --
-          <a href="{{ url_for('salary.cockpit') }}">set up a salary profile</a>
-          to explore these levers.
-        </p>
-        {% else %}
-        {% set c = levers.contribution %}
-        {% set r = levers.retire_later %}
-        <div class="retire-lever-pair">
-          <div class="retire-lever-opt">
-            {# Cents precision matches the stepper prefill and the outcome
-               line below -- a rounded hero beside an exact stepper made
-               the figure and its caption disagree (polish audit P-RT5). #}
-            <div class="retire-lever-num">
-              {%- if c.state == 'solved' -%}
-              +{{ money(c.solved_amount) }}<span class="retire-lever-unit"> /paycheck</span>
-              {%- else -%}
-              --
-              {%- endif -%}
-            </div>
-            <p class="retire-lever-sub">contributed from now to
-              {{ levers.baseline.retirement_date.isoformat() }} closes the gap</p>
-            <div class="retire-stepper">
-              <button type="button" data-step="-25" data-step-target="lever-contribution"
-                      aria-label="Decrease extra contribution by 25 dollars">-</button>
-              <input type="number" id="lever-contribution" name="contribution"
-                     class="lever-param js-lever-input" step="0.01" min="0" max="100000"
-                     value="{{ "%.2f"|format(c.amount) if c.amount is not none else "" }}"
-                     aria-label="Extra contribution per paycheck (dollars)">
-              <button type="button" data-step="25" data-step-target="lever-contribution"
-                      aria-label="Increase extra contribution by 25 dollars">+</button>
-            </div>
-          </div>
-          <div class="retire-lever-opt">
-            <div class="retire-lever-num">
-              {%- if r.state == 'solved' -%}
-              +{{ r.solved_months }}<span class="retire-lever-unit"> months</span>
-              {%- else -%}
-              --
-              {%- endif -%}
-            </div>
-            <p class="retire-lever-sub">retire later, no new contributions</p>
-            <div class="retire-stepper">
-              <button type="button" data-step="-1" data-step-target="lever-months"
-                      aria-label="Decrease the delay by one month">-</button>
-              <input type="number" id="lever-months" name="months"
-                     class="lever-param js-lever-input" step="1" min="0" max="180"
-                     value="{{ r.months if r.months is not none else 0 }}"
-                     aria-label="Retirement delay (months)">
-              <button type="button" data-step="1" data-step-target="lever-months"
-                      aria-label="Increase the delay by one month">+</button>
-            </div>
-          </div>
-        </div>
-        {% include "retirement/_lever_outcomes.html" %}
-        {% endif %}
+        {% include "retirement/_levers.html" %}
       </div>
     </div>
   </div>

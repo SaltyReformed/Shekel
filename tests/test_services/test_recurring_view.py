@@ -26,9 +26,15 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.extensions import db
-from tests._test_helpers import make_pattern_rule
+from tests._test_helpers import make_cadence_rule
+from tests.oracles.recurrence_baseline import (
+    EVERY_PERIOD,
+    MONTHLY,
+    QUARTERLY,
+    ANNUAL,
+)
 from app.models.ref import AccountType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
@@ -84,15 +90,15 @@ def _calendar(periods):
     return calendar_for(periods[0].user_id)
 
 
-def _create_rule(seed_user, pattern_enum, *, interval_n=1,
+def _create_rule(seed_user, cadence, *, interval_n=1,
                  day_of_month=None, month_of_year=None, end_date=None):
     """Author and flush a RecurrenceRule for the seed user.
 
     Through the write door since plan step R7c-b, which made the two-axis
     columns NOT NULL: a rule naming only a pattern no longer produces a row.
     """
-    return make_pattern_rule(
-        seed_user["user"].id, pattern_enum,
+    return make_cadence_rule(
+        seed_user["user"].id, cadence,
         interval_n=interval_n,
         fires_on_day=day_of_month,
         fires_in_month=month_of_year,
@@ -173,7 +179,7 @@ class TestUnitEquivalents:
         """A $100 every-paycheck expense: monthly = 100 * 26 / 12 = $216.67,
         per-paycheck = that monthly re-expressed = exactly $100.00.
         """
-        rule = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        rule = _create_rule(seed_user, EVERY_PERIOD)
         tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
 
         view = recurring_view.build_view(
@@ -190,7 +196,7 @@ class TestUnitEquivalents:
         per-paycheck = 500 * 12 / 26 = 230.7692... -> $230.77.
         """
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=15,
+            seed_user, MONTHLY, day_of_month=15,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("500.00"))
 
@@ -207,7 +213,7 @@ class TestUnitEquivalents:
         per-paycheck = 1200 / 26 = 46.1538... -> $46.15.
         """
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.ANNUAL,
+            seed_user, ANNUAL,
             day_of_month=1, month_of_year=6,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("1200.00"))
@@ -237,9 +243,9 @@ class TestSubtotals:
 
         $100 biweekly (216.67) + $500 monthly (500.00) = $716.67.
         """
-        rule_bw = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        rule_bw = _create_rule(seed_user, EVERY_PERIOD)
         rule_mo = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=15,
+            seed_user, MONTHLY, day_of_month=15,
         )
         e1 = _create_expense(seed_user, rule_bw, Decimal("100.00"), name="A")
         e2 = _create_expense(seed_user, rule_mo, Decimal("500.00"), name="B")
@@ -262,9 +268,9 @@ class TestSubtotals:
         Full monthly total = 100*26/12 + 500 = 716.6667;
         per-paycheck = 716.6667 * 12 / 26 = 330.769... -> $330.77.
         """
-        rule_bw = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        rule_bw = _create_rule(seed_user, EVERY_PERIOD)
         rule_mo = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=15,
+            seed_user, MONTHLY, day_of_month=15,
         )
         e1 = _create_expense(seed_user, rule_bw, Decimal("100.00"), name="A")
         e2 = _create_expense(seed_user, rule_mo, Decimal("500.00"), name="B")
@@ -304,7 +310,7 @@ class TestNonRecurringRows:
         """A rule-less expense appears as a row with a blank equivalent
         and no next date, and adds $0 to the subtotal.
         """
-        recurring = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        recurring = _create_rule(seed_user, EVERY_PERIOD)
         once = _create_expense(seed_user, None, Decimal("999.00"), name="OneTime")
         real = _create_expense(seed_user, recurring, Decimal("100.00"), name="Real")
 
@@ -360,7 +366,7 @@ class TestNonRecurringRows:
         nothing to the subtotal (it is no longer a future commitment).
         """
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+            seed_user, EVERY_PERIOD,
             end_date=date.today() - timedelta(days=1),
         )
         tmpl = _create_expense(seed_user, rule, Decimal("1500.00"), name="Expired")
@@ -392,9 +398,9 @@ class TestSummaryBand:
         net per-paycheck = 1500.00 - 100.00 - 230.77 = 1169.23
         """
         savings = _create_savings(seed_user)
-        rule_bw = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        rule_bw = _create_rule(seed_user, EVERY_PERIOD)
         rule_mo = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=1,
+            seed_user, MONTHLY, day_of_month=1,
         )
         income = _create_income(seed_user, rule_bw, Decimal("1500.00"))
         expense = _create_expense(seed_user, rule_bw, Decimal("100.00"))
@@ -418,7 +424,7 @@ class TestSummaryBand:
         self, seed_user, seed_periods_today,
     ):
         """With no income, the expenses-percent-of-income chip is None."""
-        rule = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        rule = _create_rule(seed_user, EVERY_PERIOD)
         expense = _create_expense(seed_user, rule, Decimal("100.00"))
 
         view = recurring_view.build_view(
@@ -450,9 +456,9 @@ class TestSharesAndOrdering:
         share A = 216.6667 / 716.6667 * 100 = 30.2326 -> 30.2
         share B = 500 / 716.6667 * 100      = 69.7674 -> 69.8
         """
-        rule_bw = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        rule_bw = _create_rule(seed_user, EVERY_PERIOD)
         rule_mo = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=15,
+            seed_user, MONTHLY, day_of_month=15,
         )
         _create_expense(seed_user, rule_bw, Decimal("100.00"), name="Small")
         _create_expense(seed_user, rule_mo, Decimal("500.00"), name="Big")
@@ -477,7 +483,7 @@ class TestSharesAndOrdering:
         would put it first; it sorts last because a rule-less definition has
         no monthly equivalent at all.
         """
-        rule = _create_rule(seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=1)
+        rule = _create_rule(seed_user, MONTHLY, day_of_month=1)
         _create_expense(seed_user, rule, Decimal("300.00"), name="Mid")
         _create_expense(seed_user, rule, Decimal("900.00"), name="High")
         _create_expense(seed_user, rule, Decimal("100.00"), name="Low")
@@ -505,7 +511,7 @@ class TestNextDates:
         """
         today = date.today()
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=15,
+            seed_user, MONTHLY, day_of_month=15,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
 
@@ -538,7 +544,7 @@ class TestNextDates:
         after today (the current period's start is already past).
         """
         today = date.today()
-        rule = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        rule = _create_rule(seed_user, EVERY_PERIOD)
         tmpl = _create_expense(seed_user, rule, Decimal("50.00"))
 
         view = recurring_view.build_view(
@@ -591,7 +597,7 @@ class TestTheRecurrenceDescription:
         holds neither of.
         """
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=22,
+            seed_user, MONTHLY, day_of_month=22,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
 
@@ -634,7 +640,7 @@ class TestTheRecurrenceDescription:
         """
         end = date(2029, 9, 15)
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY,
+            seed_user, MONTHLY,
             day_of_month=22, end_date=end,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
@@ -650,7 +656,7 @@ class TestTheRecurrenceDescription:
     ):
         """The transfers section takes the same producer, not a second one."""
         savings = _create_savings(seed_user)
-        rule = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        rule = _create_rule(seed_user, EVERY_PERIOD)
         tmpl = _create_transfer(seed_user, rule, Decimal("50.00"), savings)
 
         view = recurring_view.build_view(
@@ -674,10 +680,10 @@ class TestTheRecurrenceDescription:
         re-export proves only that the harness reads what it reads.
         """
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=22,
+            seed_user, MONTHLY, day_of_month=22,
         )
         expense = _create_expense(seed_user, rule, Decimal("100.00"))
-        income_rule = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
+        income_rule = _create_rule(seed_user, EVERY_PERIOD)
         income = _create_income(seed_user, income_rule, Decimal("2000.00"))
 
         calls = []
@@ -716,7 +722,7 @@ class TestTheArchivedDrawer:
     ):
         """The drawer shows how a definition repeated before it was archived."""
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.ANNUAL,
+            seed_user, ANNUAL,
             day_of_month=1, month_of_year=11,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("400.00"))
@@ -775,7 +781,7 @@ class TestTheArchivedDrawer:
         the defect ledger row D26 names, one surface over.
         """
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=9,
+            seed_user, MONTHLY, day_of_month=9,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("50.00"))
         tmpl.is_active = False
@@ -824,7 +830,7 @@ class TestNoneMeansDoesNotRepeat:
     ):
         """A repeating definition is never described as non-repeating."""
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.QUARTERLY,
+            seed_user, QUARTERLY,
             day_of_month=2, month_of_year=3,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("60.00"))
@@ -840,7 +846,7 @@ class TestNoneMeansDoesNotRepeat:
     ):
         """Both row kinds reach the same discriminator."""
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=9,
+            seed_user, MONTHLY, day_of_month=9,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("25.00"))
         tmpl.is_active = False
@@ -934,7 +940,7 @@ class TestAnAbsentCadenceIsRefused:
         would pass if the property were removed from the value entirely.
         """
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=9,
+            seed_user, MONTHLY, day_of_month=9,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("25.00"))
         tmpl.is_active = False
@@ -970,7 +976,7 @@ class TestTheValuesCannotDisagree:
         is what ``OccurrencePlacement.__post_init__`` exists to stop repeating.
         """
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+            seed_user, EVERY_PERIOD,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("10.00"))
 
@@ -984,7 +990,7 @@ class TestTheValuesCannotDisagree:
     ):
         """The other direction, so the check is a biconditional not a guard."""
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+            seed_user, EVERY_PERIOD,
         )
         tmpl = _create_expense(seed_user, rule, Decimal("10.00"))
         reading = read_rule(rule, _calendar(seed_periods_today))

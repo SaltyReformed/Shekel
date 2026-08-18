@@ -1450,7 +1450,7 @@ class TestTracksGoals:
             )
             sav = next(
                 gd for gd in savings_dashboard_service.compute_goal_progress(
-                    seed_user["user"].id,
+                    BalanceContext.build(seed_user["user"].id),
                 )
                 if gd.goal.account_id == acct.id
             )
@@ -1529,7 +1529,7 @@ class TestTracksDebt:
             # control therefore plants its defect in ``total_debt``, which the
             # fixture does populate.
             assert debt == savings_dashboard_service.compute_debt_summary(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             # The honest fraction is present and is a Decimal in [0, 1].
             fraction = debt.principal_paid_fraction

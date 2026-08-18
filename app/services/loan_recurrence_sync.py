@@ -214,7 +214,7 @@ def loan_cadence_start(
     #
     # **Restating the conditions here was a wrong-money defect** (plan step
     # R7c-b).  This asked ``fires_on_day_of_month(unit, placement)``, which
-    # answers which ANCHOR FAMILY a cadence derives its first occurrence from,
+    # answers whether a generated ROW is dated from that day,
     # while ``ResolvedRecurrence.day_of_month`` keys on the UNIT alone -- and
     # they differ for exactly ``Monthly First``.  Measured against the real
     # functions, a servicer's day-31 payment first billing in a 30-day month::

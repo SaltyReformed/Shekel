@@ -76,6 +76,7 @@ from app.services.recurrence._frequency import (
     RecurrenceResolutionError,
     fires_on_day_of_month,
     placement_member,
+    require_row_date_coordinate,
     unit_member,
 )
 from app.services.recurrence._vocabulary import (
@@ -238,8 +239,9 @@ def scheduling_day_of_month(rule: RecurrenceRule) -> int | None:
     It is ``_authoring._author``'s own expression, moved rather than restated:
     the day the cadence fires on
     (:attr:`~app.services.recurrence.ResolvedRecurrence.day_of_month`, the join
-    of ``starts_on``'s day with ``nominal_day``), gated on the ANCHOR FAMILY
-    rather than on the unit.  Measured on a 2026-08-16 production clone: 0 of
+    of ``starts_on``'s day with ``nominal_day``), gated on the ``(unit,
+    placement)`` PAIR rather than on the unit alone.  Measured on a 2026-08-16
+    production clone: 0 of
     46 live rules disagree with the stored column, and the migration that drops
     it asserts the same equality in SQL before the ``ALTER TABLE``.
 
@@ -258,20 +260,34 @@ def scheduling_day_of_month(rule: RecurrenceRule) -> int | None:
     lets ``compute_due_date`` stay the pure function of a rule and a period
     that its callers, the frozen baseline included, take it as.
 
+    **``None`` means "date this row from its PAYCHECK", so a unit that cannot
+    be dated either way is REFUSED rather than answered** -- plan step R8-a's
+    :func:`~app.services.recurrence._frequency.require_row_date_coordinate`,
+    which restates a refusal this function used to inherit.  Until that step
+    ``fires_on_day_of_month`` RAISED for the ``WEEK`` unit (it read the
+    anchor-family router, which had no derivation for it); stating that
+    predicate directly made it answer ``False``, and ``False`` here dates every
+    weekly row on the funding payday with the authored weekday discarded.  The
+    refusal is asked FIRST, before the placement is consulted, because it is a
+    property of the unit alone.
+
     Args:
         rule: The stored (or transient) recurrence rule.
 
     Returns:
         The day 1-31 the rule's rows are scheduled on, or ``None`` for a
-        cadence whose anchor is not derived from a day of the month -- a
-        pay-period cadence, or a monthly one funded from the month's first
-        paycheck.
+        cadence whose rows are dated from their PAYCHECK -- a pay-period
+        cadence, or a calendar one funded from a later paycheck.
 
     Raises:
         RecurrenceResolutionError: When the row names a unit or a placement
-            this application does not model -- see :func:`cadence_of`.
+            this application does not model (see :func:`cadence_of`), or a unit
+            whose occurrences a generated row cannot carry the date of (see
+            :func:`~app.services.recurrence._frequency
+            .require_row_date_coordinate`).
     """
     unit = unit_member(rule.unit_id)
+    require_row_date_coordinate(unit, f"recurrence rule {rule.id}")
     placement = placement_member(rule.placement_id)
     if not fires_on_day_of_month(unit, placement):
         return None

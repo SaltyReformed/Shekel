@@ -325,7 +325,6 @@ def _zero_series(frame: _HorizonFrame) -> list[Decimal]:
 
 
 def _retirement_investment_bands(
-    user_id: int,
     core: "_DashboardCoreData",
     account_data: list[AccountProjection],
     frame: _HorizonFrame,
@@ -360,10 +359,32 @@ def _retirement_investment_bands(
     no retirement or investment account, so a loan- or cash-only user pays
     for none of its queries.
 
+    **It reuses the page's OWN read pass** (plan step C2-f2d-1, ledger row
+    **P43**).  The engine used to build a second
+    :class:`~app.services.balance_at.BalanceContext` from a ``user_id`` this
+    function was handed beside ``core``, so a ``/savings`` render held two
+    passes and derived the owner's pay calendar three times.  The owner is
+    ``core.balance_ctx.user_id``, so the id parameter went with the second pass.
+
+    **The second pass reached the DOLLARS here by two channels**, and an earlier
+    report of this leaf said it reached none (adversarial design review,
+    2026-08-16).  The AXIS was never one of them -- ``frame.axis`` is built from
+    the page's pass and handed to ``project_accounts_with_batch`` directly, so
+    ``resolve_projection_axis`` never ran.  But the second pass's ``as_of`` was
+    the VALUATION date behind ``projection["current_balance"]`` whenever no
+    period contains today (``_pick_current_period_balances``), and that figure
+    is this band's index-0 point while ``frame.today`` came from the other pass
+    -- against the module's own "index 0 equals the net-worth hero" invariant.
+    And ruling R-G's forward clamp (``_cash_fold.assemble``) dates every still
+    -projected row from ``as_of``, so the balance map is a function of it too.
+    Both priced ``$0.00`` on the developer's data only because the three
+    investment accounts hold zero transaction rows (ruling R-R's measurement),
+    which is conventions rule 8's case rather than an argument.
+
     Args:
-        user_id: The authenticated user's id (the engine loads its own
-            retirement / investment accounts for this user).
-        core: The loaded dashboard core data (periods + current period).
+        core: The loaded dashboard core data (periods + current period), whose
+            ``balance_ctx`` is the render's one read pass -- it names the owner
+            whose retirement / investment accounts the engine loads.
         account_data: The per-account projections; each carries its own
             resolved :attr:`~.._types.AccountProjection.category`, which this
             reconciles the ENGINE's account set against (see above).
@@ -387,8 +408,7 @@ def _retirement_investment_bands(
     # both None: no slider override, and the constant employer base every
     # net-worth consumer uses (the ruled oracle; see the docstring).
     ctx = retirement_projection.build_projection_context(
-        user_id, core.all_periods, core.current_period,
-        frame.horizon_end, None, None,
+        core.balance_ctx, frame.horizon_end, None, None,
     )
     batch = retirement_projection.load_projection_batch(ctx)
     projections = retirement_projection.project_accounts_with_batch(
@@ -785,7 +805,6 @@ def _build_milestones(
 
 
 def _assemble_composition(
-    user_id: int,
     core: "_DashboardCoreData",
     account_data: list[AccountProjection],
     frame: _HorizonFrame,
@@ -823,8 +842,9 @@ def _assemble_composition(
     three producers' BANDS are disjoint and exhaust the composition.
 
     Args:
-        user_id: The authenticated user's id.
-        core: The loaded dashboard core data.
+        core: The loaded dashboard core data (its ``balance_ctx`` is the
+            render's one read pass, which every band producer here reads
+            through).
         account_data: The per-account projections.
         frame: The horizon time frame.
 
@@ -833,7 +853,7 @@ def _assemble_composition(
     """
     composition = {band: _zero_series(frame) for band in _COMPOSITION_BANDS}
     engine_bands = _retirement_investment_bands(
-        user_id, core, account_data, frame,
+        core, account_data, frame,
     )
     asset_bands = _asset_bands(account_data, frame)
     for band, series in {**engine_bands, **asset_bands}.items():
@@ -846,7 +866,6 @@ def _assemble_composition(
 
 
 def build_horizon(
-    user_id: int,
     core: "_DashboardCoreData",
     account_data: list[AccountProjection],
 ) -> dict | None:
@@ -883,9 +902,10 @@ def build_horizon(
     is".
 
     Args:
-        user_id: The authenticated user's id (for the /retirement engine
-            reuse).
-        core: The loaded dashboard core data.
+        core: The loaded dashboard core data, whose ``balance_ctx`` is the
+            render's one read pass -- the clock this frame opens at, the
+            calendar its axis comes from, and the pass the /retirement engine
+            reuse runs in (plan step C2-f2d-1).
         account_data: The per-account projections from
             ``_compute_account_projections``, each carrying its own resolved
             :attr:`~.._types.AccountProjection.category` -- which is what every
@@ -899,7 +919,7 @@ def build_horizon(
         ``milestones`` (the ``{date, label}`` flags).  ``None`` when the
         user has no pay periods (no axis to project over).
     """
-    if not core.all_periods:
+    if not core.balance_ctx.reported_periods():
         return None
 
     today = core.balance_ctx.as_of
@@ -915,7 +935,7 @@ def build_horizon(
     )
 
     composition = _assemble_composition(
-        user_id, core, account_data, frame,
+        core, account_data, frame,
     )
     net = _net_series(composition, len(frame.sample_dates))
     milestones = _build_milestones(account_data, net, debt_free_date, frame)

@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
 
+# Four-decimal quantum for the funded ratio (after-tax projected /
+# required).  Preserves the tenth-of-a-percent the direction-D hero shows
+# ("56.5% funded") while keeping the encoded value bounded.
+_RATIO_QUANTUM = Decimal("0.0001")
+
 
 @dataclass
 class RetirementGapAnalysis:  # pylint: disable=too-many-instance-attributes
@@ -43,6 +48,58 @@ class RetirementGapAnalysis:  # pylint: disable=too-many-instance-attributes
     safe_withdrawal_rate: Decimal
     after_tax_projected_savings: Decimal = None
     after_tax_surplus_or_shortfall: Decimal = None
+
+
+def funded_ratio_for(projected: Decimal, required: Decimal):
+    """The after-tax funded ratio for one projected / required pair.
+
+    **The ONE definition of the ratio and of its zero-requirement guard.**  It
+    was written twice until plan step C2-f2d-2: once in the readiness
+    producer's ``funded_ratio_state`` and once in the contribution lever's
+    ``_contribution_outcome``, which asks the same question of a projection
+    with extra contributions added to it.  Two copies of a division and a
+    quantum is two places a rounding rule can be changed in one of them, and
+    the lever's copy is what the "contribute $X per period" caption is checked
+    against -- so a divergence would show a solved amount that the hero above
+    it does not agree closes the gap.
+
+    Args:
+        projected: The after-tax projected savings at the horizon.
+        required: The net-frame required retirement savings.
+
+    Returns:
+        ``(funded_ratio, no_savings_needed)``: the quantized ratio with
+        ``no_savings_needed`` False; or ``(None, True)`` when the requirement
+        is zero -- reported as a distinct state, never as a division.
+    """
+    if required == ZERO:
+        return None, True
+    return (projected / required).quantize(_RATIO_QUANTUM), False
+
+
+def funded_ratio_state(net: "RetirementGapAnalysis"):
+    """Compute an analysis's after-tax funded ratio.
+
+    **It lives here, beside the type it reads, since plan step C2-f2d-2.**  It
+    was a public name in :mod:`app.services.retirement_readiness`, which is a
+    CONSUMER of the analysis rather than its owner, and both the readiness
+    producer and the lever solver called it across that boundary.  Moving it
+    beside :class:`RetirementGapAnalysis` is what lets the one producer of the
+    retirement picture (:mod:`app.services.retirement_plan`) compute the ratio
+    without importing the readiness module -- an import the readiness module
+    would then have to make back, which is a cycle.  A pure function of one
+    record belongs with that record.
+
+    Args:
+        net: The net-frame :class:`RetirementGapAnalysis`.
+
+    Returns:
+        ``(funded_ratio, no_savings_needed)`` for the analysis's own projected
+        and required figures -- see :func:`funded_ratio_for`.
+    """
+    return funded_ratio_for(
+        net.after_tax_projected_savings, net.required_retirement_savings,
+    )
 
 
 def _sum_projected_balances(projections: list[dict]) -> Decimal:

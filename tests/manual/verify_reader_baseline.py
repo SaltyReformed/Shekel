@@ -283,8 +283,12 @@ def _spending(user_id, account_id):
 
 def _savings(user_id):
     """The savings dashboard's emergency-fund metrics (the settled-spend feed)."""
-    return _plain(_guard("savings", lambda: savings_dashboard_service
-                         .compute_dashboard_data(user_id)))
+    return _plain(_guard(
+        "savings",
+        lambda: savings_dashboard_service.compute_dashboard_data(
+            BalanceContext.build(user_id),
+        ),
+    ))
 
 
 def _investment(user_id, accounts):
@@ -301,25 +305,32 @@ def _investment(user_id, accounts):
 def _retirement(user_id):
     """The retirement projection's per-account results (the cross-account batch).
 
-    Only the PROJECTIONS are dumped, not the whole
-    :class:`~app.services.retirement_projection.HorizonProjection` that carries
-    them: pay-calendar plan step C2-e made that entry publish the axis and the
-    clock beside the per-account dicts, and both are new facts rather than
-    moved ones.  The axis has its own harness
+    Only the PROJECTIONS are dumped, not the axis or the clock beside them:
+    pay-calendar plan step C2-e made those published facts, and both are new
+    rather than moved.  The axis has its own harness
     (:mod:`tests.manual.verify_projection_axis`); this one keeps grading the
     figures it was written for.
+
+    The three entries are composed here rather than called through one
+    convenience wrapper because plan step C2-f2d-2 deleted that wrapper: it had
+    no ``app/`` caller once the retirement picture became the one producer, and
+    a public entry whose only callers are harnesses is dead production surface.
     """
     periods = pay_period_service.get_all_periods(user_id)
     current = pay_period_service.get_current_period(user_id)
-    result = _guard(
-        "retirement",
-        lambda: retirement_projection.project_retirement_accounts(
-            retirement_projection.build_projection_context(
-                user_id, periods, current, None, None, None,
-            ),
-        ).projections,
-    )
-    return _plain(result)
+
+    def _project():
+        ctx = retirement_projection.build_projection_context(
+            BalanceContext.build(user_id), periods, current,
+            None, None, None,
+        )
+        return retirement_projection.project_accounts_with_batch(
+            ctx,
+            retirement_projection.load_projection_batch(ctx),
+            retirement_projection.resolve_projection_axis(ctx),
+        )
+
+    return _plain(_guard("retirement", _project))
 
 
 def _loans(user_id, scenario_id, accounts):

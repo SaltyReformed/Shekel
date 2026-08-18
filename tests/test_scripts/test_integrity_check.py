@@ -6,7 +6,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern, Status, TransactionType
+from app.models.ref import Status, TransactionType
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -208,9 +208,6 @@ class TestOrphanDetection:
 
     def test_or02_detects_unused_recurrence_rule(self, app, db, seed_user):
         """OR-02 detects a recurrence rule not referenced by any template."""
-        pattern = db.session.query(RecurrencePattern).filter_by(
-            name="Every Period"
-        ).one()
         rule = make_every_period_rule(db.session, seed_user["user"].id)
 
         results = check_orphaned_records(db.session)

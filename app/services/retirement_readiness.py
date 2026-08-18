@@ -1,5 +1,5 @@
 """
-Shekel Budget App -- Retirement Readiness Producer (P1c)
+Shekel Budget App -- Retirement Readiness Shaping (P1c)
 
 Template-ready plain data for the Fable 5 retirement rebuild's direction-D
 page: the readiness hero (net-frame funded verdict), the savings
@@ -8,40 +8,47 @@ after-tax frame so the chart never disagrees with the after-tax verdict
 beside it -- Gate A ruling 2), the countdown facts, and the per-account
 contribution facts.
 
-Split out of :mod:`app.services.retirement_dashboard_service` (which owns
-``compute_gap_data`` / ``compute_slider_defaults`` and stayed at the
-1000-line ceiling before this rebuild) so the readiness feature is one
-cohesive module, mirroring the
-:mod:`app.services.year_end_summary_service` package precedent.
+**It re-derives no figure the picture already carries, since plan step
+C2-f2d-2.**  Everything below is shaped from one
+:class:`~app.services.retirement_plan.RetirementPicture` -- the page's one
+producer.  It used to re-run the gap in the net frame from a fourteen-key dict
+it read by string key across a module boundary (``_net_frame``), which was a
+second call to ``calculate_gap`` over inputs that call had already been given;
+the picture carries the net analysis itself now.
 
-The CURRENT ``/retirement`` page does NOT consume this producer -- it is
-wired in P3 -- so nothing here rewires the existing route or templates.
-The net-frame figures reuse the one
-:func:`app.services.retirement_gap_calculator.calculate_gap` formula, and
-the blended chart return reuses ``compute_slider_defaults``, so no gap /
-return math is duplicated.
+**It does still COMPUTE**, and saying otherwise would be an overclaim
+(adversarial design review, 2026-08-16): the "needed path" runs a full
+:func:`~app.services.growth_engine.reverse_project_balance`, the income meter
+derives the monthly withdrawal income at the SWR, the footer nets each
+pension's benefit, and "your path" folds the after-tax portfolio per period.
+What is true is narrower and is the property that matters: every one of those
+reads the picture's own figures, so none of them can disagree with the verdict
+they are rendered beside.  ``_build_needed_path``'s frame note records a known
+approximation in one of them.
+
+Split out of :mod:`app.services.retirement_dashboard_service` (which stayed at
+the 1000-line ceiling before this rebuild) so the readiness feature is one
+cohesive module, mirroring the :mod:`app.services.year_end_summary_service`
+package precedent.
 
 No Flask imports.
 """
 
 from decimal import ROUND_HALF_UP, Decimal
 
-from app.services import growth_engine, retirement_gap_calculator
-from app.services.retirement_dashboard_service import (
-    compute_gap_data,
-    compute_slider_defaults,
-    resolve_retirement_date_provenance,
+from app.services import growth_engine
+from app.services.retirement_plan import (
+    PlanPoint,
+    RetirementInputs,
+    RetirementPicture,
+    picture_at,
 )
 from app.utils.money import MONTHS_PER_YEAR, round_money
 
-# Percentage scaler: ``compute_slider_defaults`` returns the blended
-# return as a percent (10.50); the reverse projection wants the fraction.
+# Percentage scaler for the income meter's segment widths: the covered shares
+# of the monthly income target are computed here (templates never compute
+# money) and echoed into ``data-progress-pct`` as CSS widths.
 _PCT_SCALE = Decimal("100")
-
-# Four-decimal quantum for the funded ratio (after-tax projected /
-# required).  Preserves the tenth-of-a-percent the direction-D hero shows
-# ("56.5% funded") while keeping the encoded value bounded.
-_RATIO_QUANTUM = Decimal("0.0001")
 
 # One-decimal quantum for the years-to-retirement countdown ("19.9 years")
 # and the day divisor matching
@@ -60,89 +67,38 @@ _MAX_CHART_POINTS = 48
 _METER_PCT_QUANTUM = Decimal("0.1")
 
 
-def compute_readiness_data(
-    user_id,
-    swr_override=None,
-    return_rate_override=None,
-    merit_horizon_override=None,
-):
-    """Assemble the direction-D readiness data for the retirement page (P1c).
+def readiness_from_picture(picture: RetirementPicture) -> dict:
+    """Shape the readiness dict from one retirement picture.
 
-    Net frame (Gate A ruling 2).  Everything is stated after the estimated
-    retirement tax so the verdict compares like-for-like: the income
-    target is the net final-year monthly path; the pension is shown gross
-    AND net; the monthly gap is net income target minus net pension; the
-    required savings follow that net gap at the SWR; projected savings are
-    reported pre-tax AND after-tax (the existing traditional/Roth split);
-    ``funded_ratio`` is after-tax projected / required (guarded against a
-    zero requirement -- the "no savings needed" state, not a division).
+    **Shaping only.**  Every figure below is read off *picture* -- the page's
+    one producer (:func:`app.services.retirement_plan.picture_at`) -- and the
+    only arithmetic here is display arithmetic: rounding, meter widths, chart
+    downsampling and the keep-fraction on the pension footer lines.
 
-    Fork F1 (ratified).  A missing ``estimated_retirement_tax_rate`` is
-    treated as an explicit ``Decimal("0")`` rate with a ``tax_rate_missing``
-    flag the assumptions panel surfaces -- never a truthiness fallback and
-    never skipping the after-tax block.
+    It took ``compute_gap_data``'s fourteen-key dict until plan step C2-f2d-2
+    and re-ran the gap in the net frame from it, which was a SECOND call to
+    ``calculate_gap`` over inputs that call had already been given.  The
+    picture carries the net analysis, so that call is gone with the dict.
 
     Args:
-        user_id: The user's integer ID.
-        swr_override: Optional Decimal fractional SWR what-if replacing
-            the stored rate (P3a assumptions panel).
-        return_rate_override: Optional Decimal fractional annual-return
-            what-if applied uniformly to every account (also drives the
-            chart's needed-path blended return, so the two series stay in
-            one return frame).
-        merit_horizon_override: Optional int merit-raise horizon what-if
-            replacing the stored ``merit_raise_horizon_years``.
+        picture: The :class:`~app.services.retirement_plan.RetirementPicture`
+            to render -- the stored plan's, or a what-if's.
 
     Returns:
-        dict with the net-frame figures, the ``tax_rate_missing`` flag, the
-        two downsampled string-Decimal chart series under ``chart``, the
-        countdown facts (``periods_remaining``, ``years_remaining``,
+        dict with the net-frame figures, the ``tax_rate_missing`` flag, the two
+        downsampled string-Decimal chart series under ``chart``, the countdown
+        facts (``periods_remaining``, ``years_remaining``,
         ``retirement_date``), the per-account contribution facts under
-        ``account_contributions``, the income-composition display facts
-        under ``income_meter`` (:func:`_build_income_meter`), and the
-        per-pension derivation lines under ``pension_lines``
-        (:func:`_build_pension_lines`).
+        ``account_contributions``, the income-composition display facts under
+        ``income_meter`` (:func:`_build_income_meter`), and the per-pension
+        derivation lines under ``pension_lines`` (:func:`_build_pension_lines`).
     """
-    return readiness_from_gap_data(
-        compute_gap_data(
-            user_id,
-            swr_override=swr_override,
-            return_rate_override=return_rate_override,
-            merit_horizon_override=merit_horizon_override,
-        ),
-        return_rate_override=return_rate_override,
-    )
-
-
-def readiness_from_gap_data(data, return_rate_override=None):
-    """Shape the readiness dict from an already-computed gap-data dict.
-
-    The compute-free half of :func:`compute_readiness_data`, split out so
-    the dashboard route -- which needs BOTH the gap data (projections,
-    salary profiles, blended return) and the readiness picture -- runs
-    :func:`~app.services.retirement_dashboard_service.compute_gap_data`
-    exactly once (the P3a-noted double-compute retired in P3c).
-
-    Args:
-        data: The dict returned by ``compute_gap_data``.
-        return_rate_override: The fractional annual-return what-if that
-            produced *data*, when one did -- threaded to the chart so the
-            needed path reverses under the same return frame.
-
-    Returns:
-        The readiness dict (see :func:`compute_readiness_data`).
-    """
-    projections = data["retirement_account_projections"]
-    net, tax_rate_missing, effective_tax_rate = _net_frame(data)
-    funded_ratio, no_savings_needed = funded_ratio_state(net)
-    # The axis and the clock the projections above were computed against,
-    # HANDED OVER rather than rebuilt (plan step C2-e).  This used to re-issue
-    # the axis producer with a comment claiming the two calls matched; the
-    # chart's per-account rows are aligned 1:1 against this window, so a
-    # rebuild that came back a different length would have mis-plotted every
-    # series with nothing raising.
-    axis = data["projection_axis"]
-
+    net = picture.net
+    projections = picture.projections
+    # The tax facts are the INPUTS', not the picture's: no plan point varies
+    # them, so every picture on this render is computed at the one rate.
+    effective_tax_rate = picture.inputs.effective_tax_rate
+    funded_ratio, no_savings_needed = picture.funded_state
     return {
         "income_target_net_monthly": net.pre_retirement_net_monthly,
         "pension_gross_monthly": net.monthly_pension_income,
@@ -155,23 +111,17 @@ def readiness_from_gap_data(data, return_rate_override=None):
         "no_savings_needed": no_savings_needed,
         "surplus_or_shortfall_after_tax": net.after_tax_surplus_or_shortfall,
         "estimated_tax_rate": effective_tax_rate,
-        "tax_rate_missing": tax_rate_missing,
-        "safe_withdrawal_rate": data["swr"],
+        "tax_rate_missing": picture.inputs.tax_rate_missing,
+        "safe_withdrawal_rate": picture.safe_withdrawal_rate,
         # Acceptance-drive fix 1: who owns the resolved date.  A
         # pension-owned date makes the assumptions rail's date row
         # read-only with provenance (a settings save cannot move the
         # horizon while a pension date exists).
-        "date_provenance": resolve_retirement_date_provenance(
-            data["pensions"], data["settings"],
-        ),
-        "chart": _build_readiness_chart(
-            data, projections, axis,
-            net.required_retirement_savings, effective_tax_rate,
-            return_rate_override,
-        ),
-        "income_meter": _build_income_meter(net, data["swr"]),
+        "date_provenance": picture.inputs.date_provenance,
+        "chart": _build_readiness_chart(picture, effective_tax_rate),
+        "income_meter": _build_income_meter(net, picture.safe_withdrawal_rate),
         "pension_lines": _build_pension_lines(
-            data["pension_benefits"], effective_tax_rate,
+            picture.pension.per_pension, effective_tax_rate,
         ),
         "account_contributions": [
             {
@@ -183,52 +133,57 @@ def readiness_from_gap_data(data, return_rate_override=None):
             for proj in projections
         ],
         **_build_countdown(
-            data["planned_retirement_date"], axis, data["as_of"],
+            picture.retirement_date, picture.axis, picture.as_of,
         ),
     }
 
 
 def compute_readiness_whatif(
-    user_id,
-    *,
-    swr_override=None,
-    return_rate_override=None,
-    merit_horizon_override=None,
-):
+    inputs: RetirementInputs, point: PlanPoint | None = None,
+) -> dict:
     """Readiness at the stored settings plus the what-if deltas (P3a).
 
     The assumptions panel's data producer: the STORED-settings picture is
-    always the baseline; when any override is supplied the picture is
-    recomputed with it and the panel's delta facts are derived
-    (:func:`_whatif_deltas` -- funded-ratio delta in percentage points,
-    shortfall delta in dollars).  With no overrides the displayed state IS
-    the baseline and ``deltas`` is ``None`` (no delta chips render).
+    always the baseline; when *point* differs from it the picture is recomputed
+    at *point* and the panel's delta facts are derived (:func:`_whatif_deltas`
+    -- funded-ratio delta in percentage points, shortfall delta in dollars).
+    At the owner's stored plan the displayed state IS the baseline and
+    ``deltas`` is ``None`` (no delta chips render).  **That comparison is by
+    VALUE and it is why the point is resolved**: the merit-horizon input
+    submits the stored value on every request, so a point built from overrides
+    would never equal the baseline and the panel would derive one plan twice
+    and report a delta of zero.
+
+    **Both pictures come from ONE loader and ONE producer** (plan step
+    C2-f2d-2, and C2-f2d-1 before it for the read pass).  The two computations
+    are legitimately different -- that is what a what-if is -- but the delta
+    between them must be the POINT's effect and nothing else, so every input
+    they do not vary had better be the same object rather than two equal loads.
+    A panel rendered across midnight used to report a day's drift as a what-if
+    delta; one rendered across a NEW YEAR still can, because
+    ``compute_pension_summary``, ``compute_gap_net_biweekly`` and
+    ``build_employer_salary_basis`` each read ``date.today().year`` for
+    themselves.  Ledger row **P55** owns that remainder.
 
     Args:
-        user_id: The user's integer ID.
-        swr_override: Optional Decimal fractional SWR what-if.
-        return_rate_override: Optional Decimal fractional return what-if.
-        merit_horizon_override: Optional int merit-horizon what-if.
+        inputs: The render's
+            :class:`~app.services.retirement_plan.RetirementInputs`, built once
+            by the route.
+        point: The :class:`~app.services.retirement_plan.PlanPoint` the panel
+            is displaying; ``None`` for the stored plan, in which case the
+            baseline is the displayed state and no picture is derived twice --
+            the memo answers the second ask.
 
     Returns:
-        dict with ``readiness`` (the displayed -- possibly what-if --
-        state), ``baseline`` (always the stored-settings state), and
-        ``deltas`` (``None`` when no override is present).
+        dict with ``readiness`` (the displayed -- possibly what-if -- state),
+        ``baseline`` (always the stored-settings state), and ``deltas``
+        (``None`` when *point* is the stored plan).
     """
-    baseline = compute_readiness_data(user_id)
-    overrides_present = any(
-        value is not None
-        for value in (swr_override, return_rate_override,
-                      merit_horizon_override)
-    )
-    if not overrides_present:
+    stored = inputs.stored_plan
+    baseline = readiness_from_picture(picture_at(inputs, stored))
+    if point is None or point == stored:
         return {"readiness": baseline, "baseline": baseline, "deltas": None}
-    override = compute_readiness_data(
-        user_id,
-        swr_override=swr_override,
-        return_rate_override=return_rate_override,
-        merit_horizon_override=merit_horizon_override,
-    )
+    override = readiness_from_picture(picture_at(inputs, point))
     return {
         "readiness": override,
         "baseline": baseline,
@@ -270,40 +225,6 @@ def _whatif_deltas(baseline, override):
             - baseline["surplus_or_shortfall_after_tax"]
         ),
     }
-
-
-def _net_frame(data):
-    """Re-run the gap in the explicit net frame (ruling 2 + fork F1).
-
-    Reuses the one
-    :func:`~app.services.retirement_gap_calculator.calculate_gap` formula
-    at the explicit (possibly 0%) tax rate so the after-tax pension /
-    projected / surplus fields are ALWAYS populated -- ``calculate_gap``
-    otherwise leaves them ``None`` when the rate is unset.
-
-    Args:
-        data: The dict returned by ``compute_gap_data`` (carries the
-            projections, the gross-pension gap analysis, the net pay for one
-            paycheck and the cadence it arrives at, the SWR, and the stored
-            estimated tax rate).
-
-    Returns:
-        ``(net_analysis, tax_rate_missing, effective_tax_rate)``.
-    """
-    stored_tax_rate = data["estimated_tax_rate"]
-    tax_rate_missing = stored_tax_rate is None
-    effective_tax_rate = (
-        stored_tax_rate if stored_tax_rate is not None else Decimal("0")
-    )
-    net = retirement_gap_calculator.calculate_gap(
-        net_biweekly_pay=data["gap_net_biweekly"],
-        pay_cadence=data["pay_cadence"],
-        monthly_pension_income=data["gap_analysis"].monthly_pension_income,
-        retirement_account_projections=data["retirement_account_projections"],
-        safe_withdrawal_rate=data["swr"],
-        estimated_tax_rate=effective_tax_rate,
-    )
-    return net, tax_rate_missing, effective_tax_rate
 
 
 def _build_income_meter(net, swr):
@@ -370,9 +291,9 @@ def _build_pension_lines(pension_benefits, effective_tax_rate):
     explicit, possibly zero, estimated tax rate).
 
     Args:
-        pension_benefits: The ``per_pension`` entries from
-            ``compute_gap_data`` (``name``, ``benefit_multiplier``,
-            ``consecutive_high_years``, ``benefit``).
+        pension_benefits: The picture's ``pension.per_pension`` entries
+            (``name``, ``benefit_multiplier``, ``consecutive_high_years``,
+            ``benefit``).
         effective_tax_rate: The explicit (possibly F1 zero) fractional
             estimated retirement tax rate.
 
@@ -403,27 +324,6 @@ def _build_pension_lines(pension_benefits, effective_tax_rate):
     return lines
 
 
-def funded_ratio_state(net):
-    """Compute the after-tax funded ratio, guarding a zero requirement.
-
-    Args:
-        net: The net-frame :class:`RetirementGapAnalysis`.
-
-    Returns:
-        ``(funded_ratio, no_savings_needed)``: the ratio (after-tax
-        projected / required, quantized) with ``no_savings_needed`` False;
-        or ``(None, True)`` when the requirement is zero (the pension fully
-        covers the gap -- reported as a distinct state, not a division).
-    """
-    required = net.required_retirement_savings
-    if required == Decimal("0"):
-        return None, True
-    return (
-        (net.after_tax_projected_savings / required).quantize(_RATIO_QUANTUM),
-        False,
-    )
-
-
 def _build_countdown(planned_retirement_date, axis, as_of):
     """Build the countdown facts for the readiness header.
 
@@ -436,9 +336,9 @@ def _build_countdown(planned_retirement_date, axis, as_of):
 
     Args:
         planned_retirement_date: The resolved retirement date, or ``None``.
-        axis: The projection axis from ``compute_gap_data`` -- the owner's
-            paychecks from the read pass's clock to the retirement date.  Its
-            LENGTH is the remaining-paychecks fact.
+        axis: The picture's projection axis -- the owner's paychecks from
+            the read pass's clock to the retirement date.  Its LENGTH is the
+            remaining-paychecks fact.
         as_of: The read pass's clock, the same one the axis opens after, so
             "years remaining" and "paychecks remaining" are measured from one
             day rather than from two clock reads.
@@ -465,10 +365,7 @@ def _build_countdown(planned_retirement_date, axis, as_of):
     }
 
 
-def _build_readiness_chart(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    data, projections, axis, required_target, effective_tax_rate,
-    return_rate_override=None,
-):
+def _build_readiness_chart(picture, effective_tax_rate):
     """Build the two downsampled string-Decimal chart series (after-tax frame).
 
     BOTH series are stated in the after-tax frame so the chart agrees with
@@ -478,58 +375,45 @@ def _build_readiness_chart(  # pylint: disable=too-many-arguments,too-many-posit
     estimated retirement tax applied to the traditional portion
     (:func:`_build_your_path`); "needed path" is
     :func:`~app.services.growth_engine.reverse_project_balance` from the
-    net-frame required target back to today under the blended return
-    (reused from ``compute_slider_defaults`` so it matches the accounts
-    table's return) and the aggregate current contribution schedule.  Both
-    series are downsampled with the SAME index set
-    (:func:`_downsample_indices`, first and last always kept) so they plot
-    on one axis, and each value is encoded as a string Decimal for the
-    template's ``data-*`` attributes.
+    net-frame required target back to today under the blended return and the
+    aggregate current contribution schedule.  Both series are downsampled with
+    the SAME index set (:func:`_downsample_indices`, first and last always
+    kept) so they plot on one axis, and each value is encoded as a string
+    Decimal for the template's ``data-*`` attributes.
+
+    **The blended return is the PICTURE's** since plan step C2-f2d-2 -- the
+    same rate the accounts table displays and the same one the contribution
+    lever divides the shortfall by.  This site used to derive its own from a
+    dict, applying the what-if override where present (a uniform override IS
+    the blend, since every account's weight then carries the same rate) and
+    re-querying every account's ``InvestmentParams`` where not.  Both arms are
+    now :attr:`~app.services.retirement_plan.RetirementPicture.blended_return`.
 
     Args:
-        data: The dict returned by ``compute_gap_data`` (for the blended
-            return via ``compute_slider_defaults``).
-        projections: The per-account projection dicts (each carrying
-            ``projection_rows``, ``is_traditional``, and the contribution
-            facts).
-        axis: The projection axis published by ``compute_gap_data`` -- the
-            owner's paychecks from the read pass's clock to retirement (empty
-            when there is no horizon).
-        required_target: The net-frame required savings figure the needed
-            path reverse-projects from.
+        picture: The :class:`~app.services.retirement_plan.RetirementPicture`
+            being rendered -- its axis, its per-account projections, its
+            required target and the return frame all of them ran in.
         effective_tax_rate: The explicit (possibly F1 zero) estimated
             retirement tax rate applied to the traditional portion of
-            "your path".
-        return_rate_override: Optional fractional annual-return what-if.
-            A uniform override IS the blended return (every account's
-            weight carries the same rate), so the needed path reverses
-            under it too -- otherwise the two series would mix return
-            frames.  ``None`` keeps the stored blended average.
-
-    Pylint: ``too-many-arguments`` (6/5) / ``too-many-positional-arguments``
-    (6/5) -- these six are the chart's independent inputs (the request
-    data, the account projections, the axis, the target, and the two
-    optional what-if knobs); bundling them into an object would be stamp
-    coupling for one internal call site.
+            "your path".  Passed rather than re-read so the chart and the
+            verdict above it cannot state two frames.
 
     Returns:
         dict with ``your_path`` / ``needed_path`` (lists of string
         Decimals) and ``dates`` (ISO end-date of each plotted period);
         all empty when there is no horizon.
     """
+    axis = picture.axis
     if not axis:
         return {"your_path": [], "needed_path": [], "dates": []}
 
-    blended_return = (
-        return_rate_override
-        if return_rate_override is not None
-        else compute_slider_defaults(data)["current_return"] / _PCT_SCALE
-    )
+    projections = picture.projections
     your_path = _build_your_path(
         projections, axis, effective_tax_rate,
     )
     needed_path = _build_needed_path(
-        required_target, projections, axis, blended_return,
+        picture.net.required_retirement_savings, projections, axis,
+        picture.blended_return,
     )
     indices = _downsample_indices(len(axis))
     return {

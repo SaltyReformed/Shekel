@@ -18,7 +18,7 @@ import pytest
 from app import ref_cache
 from app.enums import (
     CompoundingFrequencyEnum, EmployerContributionTypeEnum,
-    GoalModeEnum, IncomeUnitEnum, RecurrencePatternEnum,
+    GoalModeEnum, IncomeUnitEnum,
     StatusEnum, TxnTypeEnum,
 )
 from app.extensions import db
@@ -36,11 +36,18 @@ from app.services import balance_at, pay_period_write, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
-    make_pattern_rule,
+    make_cadence_rule,
     create_hysa_account,
     create_loan_account,
     freeze_today,
     settlement_columns,
+    transient_cadence_rule,
+)
+from tests.oracles.recurrence_baseline import (
+    EVERY_PERIOD,
+    EVERY_N_PERIODS,
+    MONTHLY,
+    ANNUAL,
 )
 
 
@@ -274,19 +281,21 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
     return acct, params, profile, deduction
 
 
-def _create_recurrence_rule(seed_user, pattern_enum, interval_n=1):
+def _create_recurrence_rule(seed_user, cadence, interval_n=1):
     """Create a recurrence rule for the test user.
 
     Args:
         seed_user: The seed user fixture dict.
-        pattern_enum: RecurrencePatternEnum member.
-        interval_n: Interval for every_n_periods (default 1).
+        cadence: A ``tests.oracles.recurrence_baseline`` cadence
+            constant.
+        interval_n: Interval for the every-N-paychecks cadence
+            (default 1).
 
     Returns:
         RecurrenceRule: the new rule, flushed for id assignment.
     """
-    return make_pattern_rule(
-        seed_user["user"].id, pattern_enum, interval_n=interval_n,
+    return make_cadence_rule(
+        seed_user["user"].id, cadence, interval_n=interval_n,
     )
 
 
@@ -1277,7 +1286,7 @@ class TestEmergencyFundCommittedBaseline:
 
             # Transfer template: checking -> savings, every period.
             rule = _create_recurrence_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, EVERY_PERIOD,
             )
             _create_test_transfer_template(
                 seed_user, savings, rule, Decimal("1500.00"),
@@ -1344,7 +1353,7 @@ class TestEmergencyFundCommittedBaseline:
 
             # Transfer template with higher committed amount.
             rule = _create_recurrence_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, EVERY_PERIOD,
             )
             _create_test_transfer_template(
                 seed_user, savings, rule, Decimal("1500.00"),
@@ -1465,7 +1474,7 @@ class TestEmergencyFundCommittedBaseline:
 
             # Monthly expense template = $2,000/month.
             rule = _create_recurrence_rule(
-                seed_user, RecurrencePatternEnum.MONTHLY,
+                seed_user, MONTHLY,
             )
             _create_expense_template(
                 seed_user, rule, Decimal("2000.00"),
@@ -1518,7 +1527,7 @@ class TestEmergencyFundCommittedBaseline:
         """
         with app.app_context():
             rule = _create_recurrence_rule(
-                seed_user, RecurrencePatternEnum.MONTHLY,
+                seed_user, MONTHLY,
             )
             tmpl = _create_expense_template(
                 seed_user, rule, Decimal("500.00"),
@@ -1549,7 +1558,7 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             every_rule = _create_recurrence_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, EVERY_PERIOD,
             )
             recurring_tmpl = _create_expense_template(
                 seed_user, every_rule, Decimal("100.00"),
@@ -1590,7 +1599,7 @@ class TestEmergencyFundCommittedBaseline:
 
             # Inactive template -- excluded by route query.
             rule1 = _create_recurrence_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, EVERY_PERIOD,
             )
             _create_expense_template(
                 seed_user, rule1, Decimal("999.00"),
@@ -1599,7 +1608,7 @@ class TestEmergencyFundCommittedBaseline:
 
             # Active template -- included.
             rule2 = _create_recurrence_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, EVERY_PERIOD,
             )
             _create_expense_template(
                 seed_user, rule2, Decimal("1500.00"),
@@ -1624,31 +1633,36 @@ class TestEmergencyFundCommittedBaseline:
         self, app, seed_user,
     ):
         """Templates with default_amount=None are skipped without error.
-        The column is NOT NULL in the schema, but the function handles
-        it defensively for robustness.
-        """
-        import types  # pylint: disable=import-outside-toplevel
 
+        The column is NOT NULL in the schema, but the function handles it
+        defensively for robustness, so the row is built UNSAVED rather than
+        flushed.
+
+        **Both halves are real model instances from plan step R9**, where the
+        rule half was a ``SimpleNamespace`` carrying four hand-listed
+        attributes -- one of them ``pattern_id``, a column dropped at R7c-c
+        that nothing had read since.  A stand-in that lists what the reader
+        happens to touch stops being a stand-in the moment the reader touches
+        something else, and it cannot fail loud when it does: the shape it
+        mirrors has no constraint to violate.  An unsaved
+        ``TransactionTemplate`` holding a rule authored through the real door
+        costs no flush and cannot drift from either model.
+        """
         with app.app_context():
-            # Mock template with None amount (cannot be persisted to DB).
-            mock_rule = types.SimpleNamespace(
-                pattern_id=ref_cache.recurrence_pattern_id(
-                    RecurrencePatternEnum.EVERY_PERIOD,
-                ),
-                interval_n=1,
-                # Both closing-bound columns, because the filter reads the
-                # PAIR since plan step R7b-3 -- a stand-in carrying only the
-                # date would not be a stand-in for a rule.
-                end_date=None,
-                max_occurrences=None,
-            )
-            mock_template = types.SimpleNamespace(
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                name="No amount",
                 default_amount=None,
-                recurrence_rule=mock_rule,
+                recurrence_rule=transient_cadence_rule(
+                    seed_user["user"].id, EVERY_PERIOD,
+                ),
             )
 
             result = obligations_aggregator.committed_monthly(
-                [mock_template], date.today(),
+                [template], date.today(),
                 calendar_for(seed_user["user"].id),
             )
             assert result == Decimal("0.00"), (
@@ -1663,7 +1677,7 @@ class TestEmergencyFundCommittedBaseline:
         """
         with app.app_context():
             rule = _create_recurrence_rule(
-                seed_user, RecurrencePatternEnum.EVERY_N_PERIODS,
+                seed_user, EVERY_N_PERIODS,
                 interval_n=2,
             )
             tmpl = _create_expense_template(
@@ -1685,7 +1699,7 @@ class TestEmergencyFundCommittedBaseline:
         """An annual template with $1,200 contributes $100.00 per month."""
         with app.app_context():
             rule = _create_recurrence_rule(
-                seed_user, RecurrencePatternEnum.ANNUAL,
+                seed_user, ANNUAL,
             )
             tmpl = _create_expense_template(
                 seed_user, rule, Decimal("1200.00"),
@@ -2901,8 +2915,8 @@ class TestTrajectoryDisplay:
         with app.app_context():
             acct = _create_savings_account(seed_user)
 
-            rule = make_pattern_rule(
-                seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+            rule = make_cadence_rule(
+                seed_user["user"].id, MONTHLY,
             )
 
             template = TransferTemplate(
@@ -3017,8 +3031,8 @@ class TestTrajectoryDisplay:
         with app.app_context():
             acct = _create_savings_account(seed_user)
 
-            rule = make_pattern_rule(
-                seed_user["user"].id, RecurrencePatternEnum.EVERY_PERIOD,
+            rule = make_cadence_rule(
+                seed_user["user"].id, EVERY_PERIOD,
             )
 
             template = TransferTemplate(
@@ -3142,7 +3156,6 @@ class TestDebtSummaryDisplay:
         """
         # pylint: disable=import-outside-toplevel
         from tests._test_helpers import (
-    make_pattern_rule,
             create_account_of_type, create_loan_account,
         )
 
@@ -3606,7 +3619,7 @@ class TestHorizonSerialization:
             )
             db.session.commit()
             horizon = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"].horizon
             assert horizon is not None
             # The unmutated payload serializes, so a failure below is the
@@ -3888,7 +3901,7 @@ class TestCockpitSection:
             # The loan's own figures, read off the SAME producer the page
             # renders, so this cannot go stale against an amortization change.
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             loan_ad = next(
                 ad for ad in data["account_data"] if ad.account.id == loan.id

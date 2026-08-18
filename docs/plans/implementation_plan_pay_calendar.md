@@ -2,24 +2,24 @@
 
 ## Where this stands
 
-**Built:** **C1**, **C2-a**, **C2-b1**, **C2-b** (both leaves, which also ticked **C5a** and the
-recurrence arc's **R-F10**), **C2-c**, **C2-d**, **C2-e**, **C2-f1**, **C2-f2a**, **C2-f2b**,
-**C2-f2c**, and **C3** (both leaves) -- section 4 carries each one's commit. What reached `main` and
-production is a MEASUREMENT (`git log --oneline origin/main..dev`,
-`docker inspect shekel-prod-app`).
+**Built:** **C1**, **C2-a**, **C2-b** (both leaves, which also ticked **C5a** and the recurrence
+arc's **R-F10**), **C2-c**-**C2-e**, **C2-f1**, **C2-f2a**-**C2-f2c**, **C2-f2d** (all four leaves)
+and **C3** -- section 4 carries each one's commit, and what reached `main` is a MEASUREMENT
+(`git log --oneline origin/main..dev`).
 
-**Both engines, every forward PROJECTION, the WHOLE balance seam, the GRID and `/investment` read
-the DERIVED calendar** -- since C2-b2, C2-c, C2-e, C2-f1, C2-f2a, C2-f2b and C2-f2c respectively,
-C2-f2b taking the COMPANION with it. **C2-f DECOMPOSED into three leaves 2026-08-14** (developer)
-and **`C2-f2` into five the same day**; `C2-f2d`, `C2-f2e` and `C2-f3` carry the **34** `app/` call
-sites left of the 60 it opened with. Where a stored column disagrees with the derivation every
-consumer believes the derivation; those shapes are named in `recurrence/_occurrence.py` and section
-3, all owned by **C4**.
+**Both engines, every forward PROJECTION, the WHOLE balance seam, the GRID, `/investment`,
+`/savings`, `/accounts/<id>` and the PAYCHECK ENGINE read the DERIVED calendar.**
+**C2-f DECOMPOSED into three leaves 2026-08-14** and **`C2-f2` into five the same day**; `C2-f2e`
+(the budget dashboard) and `C2-f3` (everything else, which deletes the last two readers) carry what
+is left of the 60 `app/` call sites C2-f opened with, and each entry names its own set.
 
-**The writer is ONE module** -- `pay_period_write` -- so C4 changes one file plus those readers.
-**R-PC1's coverage half was DELETED 2026-08-11** (developer), leaving the floor as this arc's only
-write refusal and **P33** open. **A cold session starts at section 4**; the shared registries are
-`ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
+**A pass is not a clock, and one pass is not one calendar**: three bare `date.today()` reads survive
+on `/retirement` (**P55**), modules still open their own pass (**P56**), and `/` opens TWO, so it
+derives the calendar twice a render (**P61**). Where a stored column disagrees with the derivation
+every consumer believes the derivation -- those shapes are in `recurrence/_occurrence.py` and
+section 3, all owned by **C4**, which changes ONE writer (`pay_period_write`) plus its readers.
+**A cold session starts at section 4**; the shared registries are `ledger.md`, `steps.md`,
+`conventions.md` and `verification.md`.
 
 ## Rulings
 
@@ -45,6 +45,11 @@ write refusal and **P33** open. **A cold session starts at section 4**; the shar
 | **`C2-f2`'s shape** | **DECOMPOSED into FIVE leaves, split by PACKAGE. Ruled 2026-08-14 (developer)**, on a measurement the parent decomposition did not have: the **20** call sites at a surface holding a `BalanceContext` (AST census over the seven packages) feed **23** `app/` modules -- those calling one of the three readers or carrying its rows onward -- and **12** templates, being those reading a period's `id`, `start_date`, `end_date`, `period_index` or `label`; every one of the 12 is the grid's. One commit over that is the shape the `C2's shape` ruling already refused. **The by-READER axis its parent used is UNAVAILABLE here, which is why the split is by package** (adversarial design review, 2026-08-14): six of the seven surfaces read `get_current_period` and `get_all_periods` inside ONE function, so a reader split yields exactly two leaves -- `get_periods_in_range` (3 sites, all grid) and everything else (17 sites, 7 packages) -- and the second is the leaf this ruling exists to refuse. Each leaf's end state is a GRADED predicate rather than a grep: `a` closes **P37**, `b` DELETES `get_periods_in_range` whole, `c` closes **P48**, `d` closes **P43**, `e` closes **P36**. The SEAM goes first: it is the only leaf touching money-shaped logic (the annual-limit accumulation order) and the smallest diff, so it gets a review of its own. Rejected: three leaves (the middle one is 17 modules, the same objection one size down) and one commit |
 | **How the CONTRIBUTION tier learns its periods** | **A REQUIRED `PayCalendar` parameter on `_asset_fold.resolve`, which derives the window itself. Ruled 2026-08-14 (developer)**, ledger row **P37**; the type was `PeriodWindow` until an adversarial design review of `C2-f2a` refuted it the same day. That function deliberately takes no `BalanceContext` -- a fold assembled at one scenario beside a context carrying another loads the modelled tier against rows the cash tiers never saw -- and a calendar carries neither a scenario nor a clock, so passing one reintroduces nothing. **The CALENDAR and not the window, on three counts the window loses.** The tier's precondition is the owner's WHOLE schedule (the annual limit is a calendar-year accumulation, so a slice restarts the year-to-date total mid-year and uncaps it) and `PeriodWindow` cannot say whether `saved()`, `window()` or `axis()` produced it, so a window put that precondition in a docstring one call from the grid's six-period slice; the calendar keeps the OWNER on the value where a period list drops it; and **C9**, which projects this tier past the horizon on `projection_axis`, becomes a one-line change inside `resolve` rather than a sixth parameter, which `max-args` and `max-positional-arguments` (both 5, and this signature is at 5) would refuse. *The superseded window ruling claimed its two callers held two DIFFERENT windows; they did not -- both were `reported_periods()`, which is the argument ruling "How the seam learns WHICH periods to report" deleted, at a smaller scale.* Rejected: a field on `ContributionInputs` (its `absent()` token would carry an empty window, the silent failure made reachable) and a field on `AssembledCashFold` (an OWNER value copied onto a per-ACCOUNT record, and an argument every cash reader pays for that only the modelled tier reads -- two of its four callers discard everything but `.walk`) |
 | **The modelled fold past the horizon** | **PROJECT the contributions; ruling `balance:R-AG` is SUPERSEDED. Ruled 2026-08-14 (developer)**, and the evidence is what changed rather than the argument: R-AG (2026-07-27) let the fold run a half model because no total calendar existed, `C2-e` built one, and three surfaces already project on it -- so the seam is now the only one that does not and it disagrees with the pages built on it. `C9` is the remedy and it MOVES MONEY (row **P7**, `+$5,427.07` at six months out) |
+| **How a producer gets its READ PASS** | **The ROUTE builds one per request; every producer below takes `balance_ctx` as a REQUIRED parameter and DROPS its `user_id`. Ruled 2026-08-16 (developer)**, row **P43**. A producer holding an id can manufacture a `BalanceContext`, and three did, so `/retirement` held two passes and `/savings` two plus a third calendar derivation -- two clock reads behind two cards on one screen, `$4.18` of after-tax projected savings and one paycheck of countdown apart across a midnight-into-payday render. Dropping the id makes a mismatched (owner, pass) pair unrepresentable rather than discouraged, and a required parameter fails at the call instead of silently opening a pass. It follows the seam's own convention (`balance_at(acct, ctx, day)`) and the required-`PayCalendar` ruling above. Rejected: `user_id` BESIDE the pass (two spellings, nothing reconciling them); an optional `balance_ctx=None` that builds one when absent, which is the pattern that CAUSED this; and fixing only the one leaf P43 named, which leaves the measured contradiction on screen. **It does not make a second pass unconstructible** -- eight service modules still open their own, and the layer predicate that would (row **P56**) waits on the leaves closing those doors |
+| **How a TEST builds a pass over hand-written paydays** | **ONE shared helper, `tests/_test_helpers.read_pass_over_paydays`. Ruled 2026-08-16 (developer)**, row **P54**. The pass derives its calendar into a field its own module declares private; a unit case with no database must seed it, and three sites wanted to. Rejected: a `BalanceContext.for_test(calendar=...)` constructor (a production entry point whose only caller is the suite, `CLAUDE.md` rule 13) and an optional `calendar=` on the real `build` (it hands every production caller a way to supply a calendar the module did not derive, unchecked against the owner). Also rejected, on measurement: making the calendar EAGER like the scenario -- deriving one can RAISE for an owner with no pay schedule, so every render would begin failing over a fact most never read |
+| **How the PAYCHECK ENGINE takes a period** | **A `DerivedPeriod`, and every caller supplies one. Ruled 2026-08-16 (developer)**, on a fork `C2-f2d-3` could not cross without it: the engine reads a period's `start_date` and its ID, `/savings` needed to hand it derived periods, and no adapter is honest. Measured first: an AST census found those two attributes and nothing else, so the move is a retyping over 12 call sites in 10 modules rather than a rewrite, and all 13 `app/` sites trace to a MATERIALISED producer -- which is what makes `PeriodInfo.period_id`'s non-nullability structural where three consumers KEY on it. Rejected: one shared `current_breakdown(balance_ctx)` producer for the three surfaces that each build one (it merges what two OTHER pages publish, so it wants its own ruling -- row **P62**); a narrow ORM load kept inside `savings_dashboard_service` (a second pay-period read on a render whose whole point is one); and leaving the engine alone (`/savings` then keeps an ORM reader the arc exists to delete) |
+| **`retirement_projection`'s two period parameters** | **DELETED; it reads both off the pass it already takes. Ruled 2026-08-16 (developer).** Both callers filled them from that same pass, so the pair could express only a mismatch -- the shape the "How the seam learns WHICH periods to report" ruling removed at `C2-c`. 6 arguments to 4, which retires the `too-many-arguments` / `too-many-positional-arguments` suppression at its root rather than by raising a threshold, and left `_CurrentPay`'s two period fields with ZERO readers, so they went too. Rejected: converting at the `/savings` boundary (a second pay-period read), and keeping the parameters with a new type (the pass and the arguments can still disagree, and the suppression stays) |
+| **`project_balance_horizons`'s two callers** | **Take `accounts/detail.py` onto the pass EARLY, out of `C2-f2e`. Ruled 2026-08-16 (developer).** That helper reads a period's ordinal and its id, and a `PayPeriod` spells the id `.id` where a `DerivedPeriod` spells it `.period_id` -- so its two callers could not hold two types between them for even one commit. Rejected: one module briefly holding both spellings (`accounts/detail.py` would carry a derived `current_period` for this call and an ORM one for its other fifteen reads), and splitting the rule from the lookup so each caller resolves index -> period -> balance itself (the loop written twice) |
 
 ---
 
@@ -301,18 +306,24 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       A contribution carries its PAYDAY (`241b7b40`), which let the period list leave three SHARED
       signatures without moving `/retirement`. Proof: `verify_investment_cutover`'s docstring.
 
-- [ ] **C2-f2d -- `/savings` and `/retirement` together, and EXPECT IT TO DECOMPOSE.** Ten modules,
-      ONE leaf because both run through `retirement_projection.load_projection_batch`, which builds
-      a SECOND `BalanceContext` with its own clock read (`retirement_projection.py:502`); threading
-      the pass's context there is the fix for both and has three call sites. Measured by an
-      adversarial review 2026-08-14 at **99** downstream `all_periods` / `current_period` references
-      plus a type change on two bundle dataclasses in `savings_dashboard_service/_types.py`, which
-      is a multi-session leaf by `lessons.md`'s own rule; the likely split is the P43 fix, then
-      `/retirement`, then `/savings`. Closes **P43**.
+- [x] **C2-f2d -- `/savings` and `/retirement`.** `c95519dd`. The container and its four leaves,
+      condensed into `historical/pay_calendar_c2f2d_as_built_2026-08-16.md` under `conventions.md`
+      rule 5, with the THREE shapes a later step must not undo. Closed **P43**, **P57**, **P58**,
+      **P59**; opened **P55**, **P56**, **P60**-**P63**. Its last leaf took three rulings WIDER than
+      its spec (above), so it also carries the paycheck-engine cutover and `C2-f2e`'s
+      `/accounts/<id>` half.
 
-- [ ] **C2-f2e -- the budget dashboard and `/accounts/<id>` detail.** The last two
-      `BalanceContext`-holding surfaces: `dashboard_service`, `dashboard_pulse_service` and
-      `routes/accounts/detail.py` with its templates. Ticks `C2-f2`, and with it **P36**.
+- [ ] **C2-f2e -- the budget dashboard.** `dashboard_service` and `dashboard_pulse_service`.
+      **`routes/accounts/detail.py` went EARLY at `C2-f2d-3`** on the developer's 2026-08-17 ruling,
+      taking `app/utils/period_projections.project_balance_horizons` with it: that helper's two
+      callers could not hold two period types between them and the alternative was a second copy.
+      What is left here is the PASS. `/` opens TWO -- one in `compute_pulse_section` through
+      `dashboard_service._resolve_section_context`, one in `compute_tracks_section` -- so it derives
+      the owner's calendar TWICE a render, measured at `calendar_for` 1 -> 2 across C2-f2d-3 while
+      every other render stayed at 1. That is row **P61**, and this step closes it: the ROUTE opens
+      one pass and hands it to both producers, `_resolve_section_context` takes it rather than
+      building one, and `compute_balance_section`'s own route does the same. Ticks `C2-f2`, and with
+      it **P36**.
 
 - [ ] **C2-f3 -- the rest, and the module's last two readers.** Every remaining site loads
       `calendar_for` ONCE per producer and threads it; the three write-path reads in
@@ -321,21 +332,11 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       Deletes `get_current_period` and `get_all_periods`, leaving `pay_period_service` holding
       `earliest_recordable_day` alone. Closes **P19**, **P45**, **P49**.
 
-- [x] **C3 -- the writer writes paydays, forward-only.** `7e3fb33b`. The DECOMPOSED parent; ticked
-      with C3-b, its last leaf.
-
-- [x] **C3-a -- the destructive form stops keying on an ordinal.** `5f1e2bd6`.
-      `keep_through_period_id`, a `RowId` resolved against the owner's own periods; anything else is
-      `PayPeriodUnresolved`, with both F-144 branches logged. The tail is selected by PAYDAY, so no
-      part of the operation reads a column C4 drops. The lock classifier moved to `pay_period_locks`
-      (developer ruling). Closed **P13**; opened **P29**, **P30**.
-
-- [x] **C3-b -- the writer materialises the derivation.** `7e3fb33b`. `pay_period_write` is the one
-      place in `app/` that constructs or deletes a pay period, writing `derive_periods` over the
-      WHOLE payday list every time. R-PC1's floor is one full CADENCE; its coverage half is DELETED
-      (developer 2026-08-11: a stranded settle day cancels on both sides of R-K, and
-      `integrity_check` BA-06 asks it as a query). Closed **P2**'s writer half, **P12**, **P29**,
-      **N-127**; opened **P31**, **P32**; found **P33**.
+- [x] **C3 -- the writer writes paydays, forward-only.** `7e3fb33b`. Both leaves and the container,
+      condensed into `historical/pay_calendar_as_built_2026-08-16.md` under `conventions.md` rule 5.
+      `pay_period_write` is the ONE place in `app/` that constructs or deletes a pay period, and
+      R-PC1's coverage half is DELETED -- neither may be undone by a later step. Closed **P2**'s
+      writer half, **P12**, **P13**, **P29**, **N-127**; opened **P31**, **P32**; found **P33**.
 
 - [ ] **C4 -- drop the derived columns.**
 

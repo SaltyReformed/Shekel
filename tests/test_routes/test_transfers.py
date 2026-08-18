@@ -20,7 +20,7 @@ from app.models.transfer import Transfer
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.user import User, UserSettings
 from app.models.scenario import Scenario
-from app.models.ref import AccountType, RecurrencePattern, Status
+from app.models.ref import AccountType, Status
 from app.services import balance_at, pay_period_write
 from app.services.balance_at import BalanceContext
 from app.services import transfer_service
@@ -62,7 +62,6 @@ def _create_template(seed_user, savings_acct, with_rule=True):
     """Helper: create a transfer template with optional recurrence rule."""
     rule = None
     if with_rule:
-        every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
         rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransferTemplate(

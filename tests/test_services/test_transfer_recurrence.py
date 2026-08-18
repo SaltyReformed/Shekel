@@ -29,7 +29,11 @@ from app.exceptions import (
 from app.services import account_service
 from app.utils.log_events import EVT_TRANSFER_HARD_DELETED
 from app.services.generation_schedule import GenerationSchedule
-from tests._test_helpers import make_pattern_rule, open_calendar_hole
+from tests._test_helpers import make_cadence_rule, open_calendar_hole
+from tests.oracles.recurrence_baseline import (
+    EVERY_PERIOD,
+    MONTHLY,
+)
 
 
 def _assert_shadows_valid(xfer):
@@ -65,7 +69,7 @@ def _assert_shadows_valid(xfer):
 class TestTransferGeneration:
     """Tests for generate_for_template()."""
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + transfer template."""
         savings_type = (
             db.session.query(AccountType)
@@ -84,8 +88,8 @@ class TestTransferGeneration:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence,
             interval_n=rule_kwargs.get("interval_n", 1),
             fires_on_day=rule_kwargs.get("day_of_month"),
             fires_in_month=rule_kwargs.get("month_of_year"),
@@ -109,7 +113,7 @@ class TestTransferGeneration:
         """every_period creates a transfer in every pay period."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -143,7 +147,7 @@ class TestTransferGeneration:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Monthly", day_of_month=15,
+                seed_user, MONTHLY, day_of_month=15,
             )
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -212,7 +216,7 @@ class TestTransferGeneration:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             # Both sides plus the row itself, exactly as
             # ``_recurrence_form_helpers._clear_recurrence_rule`` does: the
@@ -236,7 +240,7 @@ class TestTransferGeneration:
         """Does not create duplicates for periods that already have entries."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             first_run = transfer_recurrence.generate_for_template(
@@ -254,7 +258,7 @@ class TestTransferGeneration:
         """Overridden and soft-deleted entries are not duplicated on re-generation."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = transfer_recurrence.generate_for_template(
@@ -312,7 +316,7 @@ class TestTransferGenerationSharesTheOccurrencePairs:
             )
             db.session.flush()
             template = TestTransferGeneration()._make_template_with_rule(
-                seed_user, "Monthly", day_of_month=15,
+                seed_user, MONTHLY, day_of_month=15,
             )
 
             with pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
@@ -388,7 +392,7 @@ class TestTransferGenerationSharesTheOccurrencePairs:
                 db.session, seed_periods[-1], last_covered,
             )
             template = TestTransferGeneration()._make_template_with_rule(
-                seed_user, "Monthly", day_of_month=15,
+                seed_user, MONTHLY, day_of_month=15,
             )
 
             with caplog.at_level(
@@ -425,7 +429,7 @@ class TestTransferGenerationSharesTheOccurrencePairs:
 class TestTransferRegeneration:
     """Tests for regenerate_for_template()."""
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + transfer template."""
         savings_type = (
             db.session.query(AccountType)
@@ -444,8 +448,8 @@ class TestTransferRegeneration:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence,
             interval_n=rule_kwargs.get("interval_n", 1),
             fires_on_day=rule_kwargs.get("day_of_month"),
             fires_in_month=rule_kwargs.get("month_of_year"),
@@ -471,7 +475,7 @@ class TestTransferRegeneration:
         """Regenerate with changed amount deletes old entries and creates new."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = transfer_recurrence.generate_for_template(
@@ -515,7 +519,7 @@ class TestTransferRegeneration:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Monthly", day_of_month=15,
+                seed_user, MONTHLY, day_of_month=15,
             )
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -547,7 +551,7 @@ class TestTransferRegeneration:
         """Regenerate with overridden entry raises RecurrenceConflict."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = transfer_recurrence.generate_for_template(
@@ -574,7 +578,7 @@ class TestTransferRegeneration:
         """Done transfers survive regeneration with original amount."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = transfer_recurrence.generate_for_template(
@@ -607,7 +611,7 @@ class TestTransferRegeneration:
 class TestTransferResolveConflicts:
     """Tests for resolve_conflicts()."""
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + transfer template."""
         savings_type = (
             db.session.query(AccountType)
@@ -626,8 +630,8 @@ class TestTransferResolveConflicts:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence,
             interval_n=rule_kwargs.get("interval_n", 1),
             fires_on_day=rule_kwargs.get("day_of_month"),
             fires_in_month=rule_kwargs.get("month_of_year"),
@@ -651,7 +655,7 @@ class TestTransferResolveConflicts:
         """action='keep' leaves overridden transfer unchanged."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = transfer_recurrence.generate_for_template(
@@ -680,7 +684,7 @@ class TestTransferResolveConflicts:
         """action='update' clears flags and applies new_amount."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = transfer_recurrence.generate_for_template(
@@ -721,7 +725,7 @@ class TestTransferResolveConflicts:
         """update with wrong user_id silently skips the transfer."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -751,7 +755,7 @@ class TestTransferResolveConflicts:
         """keep with wrong user_id leaves transfer unchanged."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -780,7 +784,7 @@ class TestTransferResolveConflicts:
         """update with correct user_id modifies the transfer."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -810,7 +814,7 @@ class TestTransferResolveConflicts:
         with app.app_context():
             # Create transfer for user A.
             template_a = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created_a = transfer_recurrence.generate_for_template(
                 template_a, GenerationSchedule.for_periods(template_a.user_id, seed_periods), seed_user["scenario"].id,
@@ -828,7 +832,7 @@ class TestTransferResolveConflicts:
                 num_periods=10, cadence_days=14,
             )
             template_b = self._make_template_with_rule(
-                second_user, "Every Period"
+                second_user, EVERY_PERIOD
             )
             created_b = transfer_recurrence.generate_for_template(
                 template_b, GenerationSchedule.for_periods(template_b.user_id, periods_b), second_user["scenario"].id,
@@ -865,7 +869,7 @@ class TestNegativePaths:
     periods, and immutable status preservation during regeneration.
     """
 
-    def _make_template_with_rule(self, seed_user, pattern_name,
+    def _make_template_with_rule(self, seed_user, cadence,
                                   default_amount=Decimal("100.00"),
                                   from_account_id=None, to_account_id=None,
                                   **rule_kwargs):
@@ -890,8 +894,8 @@ class TestNegativePaths:
             db.session.flush()
             to_account_id = savings.id
 
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence,
             interval_n=rule_kwargs.get("interval_n", 1),
             fires_on_day=rule_kwargs.get("day_of_month"),
             fires_in_month=rule_kwargs.get("month_of_year"),
@@ -926,7 +930,7 @@ class TestNegativePaths:
         with app.app_context():
             with pytest.raises(SAIntegrityError):
                 self._make_template_with_rule(
-                    seed_user, "Every Period", default_amount=Decimal("0.00")
+                    seed_user, EVERY_PERIOD, default_amount=Decimal("0.00")
                 )
             # Rollback the failed transaction so subsequent tests can use the session.
             db.session.rollback()
@@ -948,7 +952,7 @@ class TestNegativePaths:
             same_account_id = seed_user["account"].id
             with pytest.raises(SAIntegrityError):
                 self._make_template_with_rule(
-                    seed_user, "Every Period",
+                    seed_user, EVERY_PERIOD,
                     from_account_id=same_account_id,
                     to_account_id=same_account_id,
                 )
@@ -966,7 +970,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, []), seed_user["scenario"].id,
@@ -988,7 +992,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = transfer_recurrence.generate_for_template(
@@ -1040,7 +1044,7 @@ class TestNegativePaths:
         with app.app_context():
             with pytest.raises(SAIntegrityError):
                 self._make_template_with_rule(
-                    seed_user, "Every Period",
+                    seed_user, EVERY_PERIOD,
                     default_amount=Decimal("-100.00"),
                 )
             # Rollback the failed transaction so subsequent tests can use the session.
@@ -1067,7 +1071,7 @@ class TestNegativePaths:
         with app.app_context():
             with pytest.raises(SADataError):
                 self._make_template_with_rule(
-                    seed_user, "Every Period",
+                    seed_user, EVERY_PERIOD,
                     default_amount=Decimal("10000000000.00"),
                 )
             db.session.rollback()
@@ -1086,7 +1090,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
                 default_amount=Decimal("9999999999.99"),
             )
             db.session.flush()
@@ -1102,7 +1106,7 @@ class TestNegativePaths:
 class TestShadowTransactionCreation:
     """Tests verifying shadow transaction creation through the recurrence engine."""
 
-    def _make_template(self, seed_user, pattern_name, category_id=None,
+    def _make_template(self, seed_user, cadence, category_id=None,
                        **rule_kwargs):
         """Helper: create savings account + rule + template with optional category."""
         savings_type = db.session.query(AccountType).filter_by(
@@ -1120,8 +1124,8 @@ class TestShadowTransactionCreation:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence,
             interval_n=rule_kwargs.get("interval_n", 1),
             fires_on_day=rule_kwargs.get("day_of_month"),
             fires_in_month=rule_kwargs.get("month_of_year"),
@@ -1146,7 +1150,7 @@ class TestShadowTransactionCreation:
     ):
         """Every recurrence-generated transfer has exactly 2 shadows."""
         with app.app_context():
-            template, _ = self._make_template(seed_user, "Every Period")
+            template, _ = self._make_template(seed_user, EVERY_PERIOD)
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
@@ -1163,7 +1167,7 @@ class TestShadowTransactionCreation:
         with app.app_context():
             rent_cat = seed_user["categories"]["Rent"]
             template, _ = self._make_template(
-                seed_user, "Every Period", category_id=rent_cat.id
+                seed_user, EVERY_PERIOD, category_id=rent_cat.id
             )
 
             created = transfer_recurrence.generate_for_template(
@@ -1189,7 +1193,7 @@ class TestShadowTransactionCreation:
     ):
         """Regeneration hard-deletes old transfers; CASCADE removes shadows."""
         with app.app_context():
-            template, _ = self._make_template(seed_user, "Every Period")
+            template, _ = self._make_template(seed_user, EVERY_PERIOD)
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
@@ -1228,7 +1232,7 @@ class TestShadowTransactionCreation:
     ):
         """No shadow transactions reference non-existent transfers after regen."""
         with app.app_context():
-            template, _ = self._make_template(seed_user, "Every Period")
+            template, _ = self._make_template(seed_user, EVERY_PERIOD)
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
@@ -1257,7 +1261,7 @@ class TestShadowTransactionCreation:
     ):
         """resolve_conflicts(update) syncs new_amount to shadow transactions."""
         with app.app_context():
-            template, _ = self._make_template(seed_user, "Every Period")
+            template, _ = self._make_template(seed_user, EVERY_PERIOD)
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
@@ -1295,7 +1299,7 @@ class TestResolveConflictsServiceRouting:
     Closes L1 from transfer_rework_verification.md.
     """
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + template."""
         savings_type = (
             db.session.query(AccountType)
@@ -1314,8 +1318,8 @@ class TestResolveConflictsServiceRouting:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence,
             interval_n=rule_kwargs.get("interval_n", 1),
         )
 
@@ -1342,7 +1346,7 @@ class TestResolveConflictsServiceRouting:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -1392,7 +1396,7 @@ class TestResolveConflictsServiceRouting:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -1439,7 +1443,7 @@ class TestResolveConflictsServiceRouting:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -1473,7 +1477,7 @@ class TestResolveConflictsServiceRouting:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -1506,7 +1510,7 @@ class TestResolveConflictsServiceRouting:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -1598,7 +1602,7 @@ class TestRegenerateDeletionRoutedThroughService:
     completeness, not arithmetic correctness.
     """
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + transfer template."""
         savings_type = (
             db.session.query(AccountType)
@@ -1616,8 +1620,8 @@ class TestRegenerateDeletionRoutedThroughService:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence,
             interval_n=rule_kwargs.get("interval_n", 1),
             fires_on_day=rule_kwargs.get("day_of_month"),
             fires_in_month=rule_kwargs.get("month_of_year"),
@@ -1646,7 +1650,7 @@ class TestRegenerateDeletionRoutedThroughService:
         service path is the writer.
         """
         with app.app_context():
-            template = self._make_template_with_rule(seed_user, "Every Period")
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
 
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -1699,7 +1703,7 @@ class TestRegenerateDeletionRoutedThroughService:
         ``== 0`` proves the FK CASCADE behaved as expected.
         """
         with app.app_context():
-            template = self._make_template_with_rule(seed_user, "Every Period")
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )
@@ -1738,7 +1742,7 @@ class TestRegenerateDeletionRoutedThroughService:
         Locks the no-balance-drift property the commit promises.
         """
         with app.app_context():
-            template = self._make_template_with_rule(seed_user, "Every Period")
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
             )

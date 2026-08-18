@@ -40,10 +40,12 @@ def _rec_globals_referenced_by_templates() -> set[str]:
     bill would take the wrong branch), and a global nothing reads (dead
     apparatus a later reader would take for a live contract).
 
-    Deriving the expected set from ``RecurrencePatternEnum`` is what this
-    replaced, and plan step R7a is why: with the ``recurrence_cell`` macro's
-    per-pattern branches gone, two members legitimately have no global, so an
-    enum-derived assertion would have demanded that dead code be kept.
+    Deriving the expected set from the closed pattern set's enum is what
+    this replaced, and plan step R7a is why: with the ``recurrence_cell``
+    macro's per-pattern branches gone, two members legitimately had no
+    global, so an enum-derived assertion would have demanded that dead code
+    be kept.  That enum is deleted from plan step R9, so the scan is the
+    only statement of the set that is left.
 
     Returns:
         The ``REC_*`` identifiers appearing anywhere under ``app/templates``.

@@ -26,7 +26,7 @@ from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.journal_entry import JournalEntry
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern, Status, TransactionType
+from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
@@ -79,10 +79,6 @@ def _make_envelope_template(seed_user, *, txn_type_name="Expense",
     Mirrors the seed_entry_template fixture but parameterizes the
     transaction type so the income-side branch can be exercised.
     """
-    every_period = (
-        db.session.query(RecurrencePattern)
-        .filter_by(name="Every Period").one()
-    )
     txn_type = (
         db.session.query(TransactionType)
         .filter_by(name=txn_type_name).one()
@@ -430,10 +426,6 @@ class TestSettleFromEntriesPreconditions:
     ):
         """Templates with is_envelope=False are not entry-tracked."""
         with app.app_context():
-            every_period = (
-                db.session.query(RecurrencePattern)
-                .filter_by(name="Every Period").one()
-            )
             expense_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()

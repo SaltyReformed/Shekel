@@ -50,7 +50,6 @@ from app.enums import (
     PostingKindEnum,
     PostingSourceEnum,
     RaiseTypeEnum,
-    RecurrencePatternEnum,
     RecurrenceUnitEnum,
     RoleEnum,
     StatusEnum,
@@ -199,7 +198,6 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(TxnTypeEnum, ref_models.TransactionType),
         _RefSpec(AcctTypeEnum, ref_models.AccountType, builtin_only=True),
         _RefSpec(AcctCategoryEnum, ref_models.AccountTypeCategory),
-        _RefSpec(RecurrencePatternEnum, ref_models.RecurrencePattern),
         _RefSpec(DeductionTimingEnum, ref_models.DeductionTiming),
         _RefSpec(CalcMethodEnum, ref_models.CalcMethod),
         _RefSpec(TaxTypeEnum, ref_models.TaxType),
@@ -476,24 +474,6 @@ def acct_category_member(category_id):
     """
     _require_init()
     return _cache.acct_category_members.get(category_id)
-
-
-def recurrence_pattern_id(member):
-    """Return the integer primary key for a RecurrencePatternEnum member.
-
-    Args:
-        member: A ``RecurrencePatternEnum`` member
-                (e.g. ``RecurrencePatternEnum.MONTHLY``).
-
-    Returns:
-        int -- the ``ref.recurrence_patterns.id`` value.
-
-    Raises:
-        RuntimeError: If the cache has not been initialized.
-        KeyError: If *member* is not a valid RecurrencePatternEnum member.
-    """
-    _require_init()
-    return _cache.enum_ids[RecurrencePatternEnum][member]
 
 
 def recurrence_unit_id(member):

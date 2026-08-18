@@ -92,6 +92,12 @@ _SUBTYPE_TABLES: tuple[tuple[str, tuple[str, ...]], ...] = (
 #:
 #: The values name an ordinary monthly cadence starting 2026-01-15.  The
 #: migration under test writes no data and reads none of them.
+#:
+#: **They were a SELECT list until plan step R9**, over a one-row
+#: ``FROM ref.recurrence_patterns WHERE name = 'Monthly'`` used for nothing but
+#: producing exactly one row.  R9 dropped that table; a ``VALUES`` clause is
+#: what the statement always meant, and the scalar subqueries below are legal
+#: there unchanged.
 _STORABLE_RULE_COLUMNS = (
     "user_id, interval_n, unit_id, placement_id, shift_id, starts_on"
 )
@@ -110,7 +116,7 @@ def _insert_rule_sql(extra_columns="", extra_values="", returning=""):
     Args:
         extra_columns: Columns to append to :data:`_STORABLE_RULE_COLUMNS`,
             leading comma included.
-        extra_values: The matching SELECT-list entries, leading comma included.
+        extra_values: The matching VALUES entries, leading comma included.
         returning: A ``RETURNING`` clause, or ``""``.
 
     Returns:
@@ -119,8 +125,7 @@ def _insert_rule_sql(extra_columns="", extra_values="", returning=""):
     return (
         f"INSERT INTO budget.recurrence_rules "
         f"  ({_STORABLE_RULE_COLUMNS}{extra_columns}) "
-        f"SELECT {_STORABLE_RULE_VALUES}{extra_values} "
-        f"  FROM ref.recurrence_patterns WHERE name = 'Monthly' {returning}"
+        f"VALUES ({_STORABLE_RULE_VALUES}{extra_values}) {returning}"
     )
 
 

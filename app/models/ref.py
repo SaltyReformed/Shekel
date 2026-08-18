@@ -206,8 +206,10 @@ class Status(db.Model):
     status names:
 
         is_settled          -- The real-world transaction has completed
-                               (Paid, Received, Settled).  The balance
-                               calculator uses actual_amount for these.
+                               (Paid, Received, Settled).  Such a row RECORDS
+                               what moved, and the balance counts that record
+                               rather than the row's plan (plan step X-au-c3;
+                               it read actual_amount until then).
         is_immutable        -- The recurrence engine must not overwrite
                                this transaction (Paid, Received, Credit,
                                Cancelled, Settled).
@@ -238,34 +240,16 @@ class Status(db.Model):
         return f"<Status {self.name}>"
 
 
-class RecurrencePattern(db.Model):
-    """Recurrence pattern reference: Every Period, Monthly, Annual, etc.
-
-    The closed eight-name set the recurrence redesign replaces with the
-    two-axis ``(interval_n, unit)`` model (:class:`RecurrenceUnit` +
-    :class:`PeriodPlacement` below).  Still authoritative through plan step
-    R4; step R9 drops this table once every reader has moved.
-    """
-
-    __tablename__ = "recurrence_patterns"
-    __table_args__ = {"schema": "ref"}
-
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(20), unique=True, nullable=False)
-
-    def __repr__(self):
-        return f"<RecurrencePattern {self.name}>"
-
-
 class RecurrenceUnit(db.Model):
     """Recurrence cadence-unit reference: period, week, month, year.
 
     The first axis of the two-axis recurrence model (redesign step R2): a
     rule recurs every ``budget.recurrence_rules.interval_n`` units of this
-    kind.  Four of :class:`RecurrencePattern`'s names were one idea with a
+    kind.  Four of the closed pattern set's names were one idea with a
     different integer baked into the name (every 1 / 3 / 6 / 12 months);
     moving that integer into a column is what makes "every other month" and
-    "every two years" expressible.
+    "every two years" expressible.  That set lived in ``ref.recurrence_patterns``
+    until plan step **R9** dropped the table.
 
     Application code resolves these via ``ref_cache.recurrence_unit_id`` and
     compares against the integer ID -- never the string ``name`` -- matching

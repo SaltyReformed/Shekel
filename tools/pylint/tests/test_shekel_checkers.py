@@ -629,7 +629,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         drifts silently because nothing resolves it.
         """
         node = self._function_def(
-            "def build_horizon(user_id, core, account_data, category):\n"
+            "def build_horizon(core, account_data):\n"
             "    return {}\n",
             "app.services.savings_dashboard_service._horizon",
         )

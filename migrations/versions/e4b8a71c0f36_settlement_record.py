@@ -143,7 +143,14 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "e4b8a71c0f36"
-down_revision = "d9f5c1a48b73"
+# RE-POINTED at the dev merge of 2026-08-18.  It was authored on
+# ``d9f5c1a48b73`` and so was ``b2e9a47c3f18`` (plan step R9, which drops
+# ``ref.recurrence_patterns``), leaving two Alembic heads sharing one parent.
+# Whoever merges second re-points, and that is this branch.  The two touch
+# disjoint tables -- a settlement record on ``budget.transactions`` against a
+# recurrence lookup in ``ref`` -- so the order between them is arbitrary and
+# neither backfill can see the other's rows.
+down_revision = "b2e9a47c3f18"
 branch_labels = None
 depends_on = None
 

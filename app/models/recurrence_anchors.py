@@ -41,10 +41,21 @@ against a probe table on the dev database, 2026-08-05).  An ``id`` primary key
 with ``UNIQUE (recurrence_rule_id)`` enforces the same 0-or-1 cardinality, and
 matches every other table in the schema.
 
-**A rule anchors on a day-of-month OR on an nth-weekday, never both.**  With
-one table left that is a CHECK against ``recurrence_rules.nominal_day`` rather
-than the "at most one row across two tables" invariant DDL could not express;
-step R8, this table's first writer, owns it.
+**THIS TABLE IS SCHEDULED FOR DELETION, UNWRITTEN, and it will never gain a
+writer** (ruling **R-R25**, 2026-08-16, plan step **R8-c**).  A rule anchors on
+a day-of-month OR on an nth-weekday, never both, and this module used to say
+that invariant becomes "a CHECK against ``recurrence_rules.nominal_day``" --
+which plan step R8-a measured UNBUILDABLE.  A PostgreSQL CHECK may reference
+only columns of the row being checked, so a constraint spanning this table and
+``budget.recurrence_rules`` cannot be written at all; the alternatives are a
+trigger or a write-door fence, and both are apparatus for an invariant the
+column form makes structural.
+
+So ``nth_week`` and ``weekday`` go ON ``budget.recurrence_rules`` as an
+EXCLUSIVE ARC under one CHECK -- the same move ruling **R-R16** made for
+``nominal_day`` and plan step R7c-c made for the unwritten
+``recurrence_month_anchors``, which this module's own paragraph above already
+records.  R8-c drops this table in the migration that adds those columns.
 """
 
 from app.extensions import db
@@ -59,9 +70,11 @@ class RecurrenceWeekdayAnchor(db.Model):
     date alone cannot: "the 15th" is a stable day number, "the third Friday"
     is not.
 
-    **Created empty, and step R8 is its first writer.**  No rule references it
-    before then, so a NULL-safe reader is not needed -- the absence of a row
-    simply means the rule anchors on a day of the month.
+    **Created empty and DELETED empty.**  It was written to gain its first
+    writer at plan step R8; ruling **R-R25** put those two fields on the rule
+    instead, so no rule will ever reference it and plan step **R8-c** drops it.
+    See the module docstring for why -- the exclusivity invariant it exists to
+    sit under is not expressible as a CHECK across two tables.
 
     Attributes:
         nth_week: Which occurrence of ``weekday`` within the month.  ``1``-``5``

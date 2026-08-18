@@ -88,8 +88,12 @@ What lives where
 
 * ``_frequency`` -- what a cadence means with NO schedule: :class:`Cadence`,
   the pattern table both readings share, the yearly counts every monthly
-  equivalent rests on, and (since plan step R7b-2) the anchor-family router
-  that says WHICH derivation a ``(unit, placement)`` uses.  Split out at plan
+  equivalent rests on, and (since plan step R8-a) the OFFER SET and the two
+  predicates it is derived from -- whether a unit's occurrences can be dated
+  onto a generated row, and whether the placement can change which paycheck
+  funds one.  That gate was a three-valued ``anchor_family`` router until R8-a,
+  selecting between first-occurrence derivations ruling **R-R16** had deleted.
+  Split out at plan
   step R7a-2b because ``obligations_aggregator`` and the calendar's infrequent
   badge ask "how often" and hold no calendar, so they could not use the
   two-axis vocabulary at all while it was fused to the anchor derivation.
@@ -178,6 +182,7 @@ from app.services.recurrence._frequency import (
     authorable_cadences,
     canonical_cadence,
     emits_period_starts,
+    has_day_of_month_coordinate,
     is_authorable,
 )
 from app.services.recurrence._describe import (
@@ -209,7 +214,6 @@ from app.services.recurrence._resolution import (
     RecurrenceSpec,
     ResolvedRecurrence,
     cadence_day_of_month,
-    has_day_of_month_coordinate,
     is_offerable_nominal_day,
     offerable_nominal_days,
     resolve,

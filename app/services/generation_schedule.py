@@ -80,8 +80,12 @@ class GenerationSchedule:
 
     Attributes:
         periods: The owner's whole schedule as ORM rows, in ``period_index``
-            order.  This is what the paycheck calculator means by
-            ``all_periods``.
+            order -- what the GENERATE pass writes into, since a written row
+            needs the id a ``pay_period_id`` points at.  It was also what the
+            paycheck calculator meant by ``all_periods`` until pay-calendar
+            plan step C2-f2d-3 moved that engine onto :attr:`calendar`; the two
+            halves describe the same periods in the same order, which
+            :meth:`__post_init__` refuses any value that breaks.
         calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
             loaded through that package's one door.  It USED to be built from
             *periods* rather than loaded, on the ground that two reads could

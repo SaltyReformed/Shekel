@@ -72,11 +72,16 @@ on the ``create_all`` + ``seed_reference_data`` fresh-init path (dev/test
 bootstrap, the production deploy reseed), at ``ref_cache.init()`` time.  The
 source-level check here catches it in the suite instead.
 
-:class:`TestDeliberateRefSeedSurplus` is the mirror image of leg 3, and the
-reason ``RecurrencePatternEnum`` is absent from the registration tuples: its
-reseed list is deliberately a SUPERSET of the enum during an expand/contract
-window.  Registering it above would fail on that surplus, and removing the
-surplus would break the deploy's rollback image.
+**One enum was deliberately UNREGISTERED here until plan step R9**, and its
+mirror-image guard sat below: the closed pattern set's reseed list carried a
+SUPERSET of its enum -- the ``Once`` row plan step R2e-3 retired from the
+member set while keeping the row, so the image ``shekel-deploy`` rolls back to
+could still boot.  Registering it above would have failed on that surplus.
+R9 dropped ``ref.recurrence_patterns``, the enum and the reseed entry together,
+so the exception is gone with its subject.  (The tuples below register the
+dual-seeded family only -- the enums whose values a MIGRATION inline-seeds.
+``_REF_TABLE_SEEDS`` carries other model keys, such as ``TransactionType``,
+that this scan has never covered and does not claim to.)
 
 These are SOURCE-level guards.  The complementary RUNTIME guarantee -- that
 the seeded database actually contains a row for every member -- is enforced
@@ -101,7 +106,6 @@ from app.enums import (
     PeriodPlacementEnum,
     PostingKindEnum,
     PostingSourceEnum,
-    RecurrencePatternEnum,
     RecurrenceUnitEnum,
 )
 from app.ref_seeds import _REF_TABLE_SEEDS
@@ -416,71 +420,3 @@ class TestRefSeedsEnumParity:
                 f"enum -- add the missing value to _REF_TABLE_SEEDS (or remove "
                 f"the stray one) so all three dual-seed legs agree."
             )
-
-
-class TestDeliberateRefSeedSurplus:
-    """The ``Once`` reseed entry outlives its enum member, on purpose.
-
-    The mirror image of :class:`TestRefSeedsEnumParity`, and the reason
-    ``RecurrencePatternEnum`` is NOT registered in the tuples above: plan step
-    R2e-3 of ``docs/plans/implementation_plan_recurrence_redesign.md`` deleted
-    the ``Once`` member while deliberately KEEPING the row and its
-    ``_REF_TABLE_SEEDS`` entry, until plan step R9 drops the table (ruling
-    R-R11).
-
-    **This is an expand/contract guard, and the failure it prevents is a
-    broken DEPLOY, not a wrong number.**  ``ref_cache.init`` raises
-    ``RuntimeError`` for an enum member with no row and says nothing about the
-    reverse, so an image that still carries the member -- which is exactly the
-    image ``shekel-deploy`` auto-rolls back to when a deploy comes up
-    unhealthy -- cannot boot without this row.  The container entrypoint runs
-    migrations BEFORE the seed, so the seed list is what would put it back.
-    Deleting the entry as "dead" turns a failed deploy into "rollback
-    container also unhealthy; manual intervention required".
-
-    Both halves are asserted together: the entry is present AND no member
-    names it.  Either alone passes for the wrong reason -- the first would go
-    on holding if the member came back, and the second is satisfied by
-    deleting the entry, which is the failure itself.
-    """
-
-    #: The ``ref.recurrence_patterns`` seed value with no enum member.
-    RETIRED_PATTERN_NAME = "Once"
-
-    def test_the_retired_pattern_is_still_reseeded(self):
-        """``_REF_TABLE_SEEDS`` still carries the row R9 will drop."""
-        seeded = _seed_value_set(_REF_SEEDS_BY_MODEL["RecurrencePattern"])
-
-        assert self.RETIRED_PATTERN_NAME in seeded, (
-            f"app/ref_seeds.py must keep seeding "
-            f"'{self.RETIRED_PATTERN_NAME}' until plan step R9 drops "
-            f"ref.recurrence_patterns.  RecurrencePatternEnum no longer names "
-            f"it (plan step R2e-3), but ref_cache.init() in the PREVIOUS "
-            f"image -- the one shekel-deploy rolls back to -- still does, and "
-            f"raises RuntimeError without the row."
-        )
-
-    def test_no_enum_member_names_the_retired_pattern(self):
-        """The member really is gone, so the entry is a surplus not a mirror."""
-        assert self.RETIRED_PATTERN_NAME not in {
-            member.value for member in RecurrencePatternEnum
-        }
-
-    def test_every_other_seeded_pattern_has_a_member(self):
-        """``Once`` is the ONLY surplus; a second one is a real drift.
-
-        Without this the class would license any number of unmodelled rows.
-        The picker, the write doors and ``resolve`` are all enum-driven, so a
-        second surplus is a row nothing can author and nothing can read.
-        """
-        seeded = _seed_value_set(_REF_SEEDS_BY_MODEL["RecurrencePattern"])
-        members = {member.value for member in RecurrencePatternEnum}
-
-        assert members <= seeded, (
-            f"every RecurrencePatternEnum member must be reseeded; "
-            f"missing {sorted(members - seeded)}"
-        )
-        assert seeded - members == {self.RETIRED_PATTERN_NAME}, (
-            f"unexpected unmodelled recurrence-pattern seed value(s): "
-            f"{sorted(seeded - members - {self.RETIRED_PATTERN_NAME})}"
-        )

@@ -20,7 +20,6 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern
 from app import ref_cache
 from app.enums import SettlementBasisEnum, StatusEnum
 from app.exceptions import ValidationError
@@ -80,10 +79,6 @@ def _create_tracked_txn(seed_user, seed_periods):
     Creates a minimal template with is_envelope=True
     and a projected expense transaction linked to it.
     """
-    every_period = (
-        db.session.query(RecurrencePattern)
-        .filter_by(name="Every Period").one()
-    )
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )

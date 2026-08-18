@@ -7,7 +7,7 @@ pipeline including deductions, taxes, 3rd-paycheck detection, inflation,
 cumulative wages, and project_salary().
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 import pytest
@@ -35,6 +35,7 @@ from app.services.paycheck_calculator import (
 )
 from app import ref_cache
 from app.enums import DeductionTimingEnum
+from app.services.pay_calendar import DerivedPeriod
 
 
 def _timing_id(name):
@@ -65,12 +66,29 @@ class FakeRaise:
         self.raise_type = FakeRaiseType()
 
 
-class FakePeriod:
-    """Minimal stand-in for a PayPeriod ORM object."""
+def _period(start_date, period_id=1):
+    """A REAL :class:`DerivedPeriod` for the engine under test.
 
-    def __init__(self, start_date, period_id=1):
-        self.start_date = start_date
-        self.id = period_id
+    It was a ``FakePeriod`` stand-in carrying ``start_date`` and ``id`` until
+    pay-calendar plan step C2-f2d-3 moved this engine onto the derived
+    calendar.  Building the production value rather than a duck type is what
+    makes these cases grade the attributes the engine actually reads: a
+    stand-in with the old ``id`` spelling would have kept passing while every
+    production caller broke.
+
+    ``end_date`` and ``period_index`` are filled to be internally consistent
+    with a biweekly rhythm; the engine reads neither (AST-censused before the
+    move -- ``start_date`` and the id are its whole period surface), so they
+    are here because the frozen value requires them, not because anything
+    under test consults them.
+    """
+    return DerivedPeriod(
+        period_id=period_id,
+        period_index=period_id - 1,
+        start_date=start_date,
+        end_date=start_date + timedelta(days=13),
+        end_is_projected=False,
+    )
 
 
 class FakeDeductionTiming:
@@ -223,12 +241,12 @@ def base_profile():
 
 @pytest.fixture
 def biweekly_periods():
-    """26 FakePeriod objects for 2026, starting Jan 2."""
+    """26 derived pay periods for 2026, starting Jan 2."""
     start = date(2026, 1, 2)
     periods = []
     for i in range(26):
         d = date.fromordinal(start.toordinal() + i * 14)
-        periods.append(FakePeriod(start_date=d, period_id=i + 1))
+        periods.append(_period(start_date=d, period_id=i + 1))
     return periods
 
 
@@ -245,7 +263,7 @@ class TestRecurringRaiseCompounding:
             raises=[FakeRaise(percentage="0.03", effective_month=3,
                               effective_year=2026, is_recurring=True)],
         )
-        period = FakePeriod(start_date=date(2026, 2, 1))
+        period = _period(start_date=date(2026, 2, 1))
         result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         assert result == Decimal("100000.00")
 
@@ -256,7 +274,7 @@ class TestRecurringRaiseCompounding:
             raises=[FakeRaise(percentage="0.03", effective_month=3,
                               effective_year=2026, is_recurring=True)],
         )
-        period = FakePeriod(start_date=date(2026, 3, 1))
+        period = _period(start_date=date(2026, 3, 1))
         result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03 = 103000
         assert result == Decimal("103000.00")
@@ -268,7 +286,7 @@ class TestRecurringRaiseCompounding:
             raises=[FakeRaise(percentage="0.03", effective_month=3,
                               effective_year=2026, is_recurring=True)],
         )
-        period = FakePeriod(start_date=date(2026, 6, 1))
+        period = _period(start_date=date(2026, 6, 1))
         result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         assert result == Decimal("103000.00")
 
@@ -279,7 +297,7 @@ class TestRecurringRaiseCompounding:
             raises=[FakeRaise(percentage="0.03", effective_month=3,
                               effective_year=2026, is_recurring=True)],
         )
-        period = FakePeriod(start_date=date(2027, 1, 1))
+        period = _period(start_date=date(2027, 1, 1))
         result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # Only 1 full year passed (2027 - 2026 = 1), but month not reached
         assert result == Decimal("103000.00")
@@ -291,7 +309,7 @@ class TestRecurringRaiseCompounding:
             raises=[FakeRaise(percentage="0.03", effective_month=3,
                               effective_year=2026, is_recurring=True)],
         )
-        period = FakePeriod(start_date=date(2027, 4, 1))
+        period = _period(start_date=date(2027, 4, 1))
         result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03 * 1.03 = 106090
         assert result == Decimal("106090.00")
@@ -303,7 +321,7 @@ class TestRecurringRaiseCompounding:
             raises=[FakeRaise(percentage="0.03", effective_month=3,
                               effective_year=2026, is_recurring=True)],
         )
-        period = FakePeriod(start_date=date(2028, 6, 1))
+        period = _period(start_date=date(2028, 6, 1))
         result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03^3 = 109272.70
         expected = (Decimal("100000") * Decimal("1.03") ** 3).quantize(Decimal("0.01"))
@@ -317,7 +335,7 @@ class TestRecurringRaiseCompounding:
                               effective_year=2026, is_recurring=False)],
         )
         # Check in 2027 -- still just one application.
-        period = FakePeriod(start_date=date(2027, 6, 1))
+        period = _period(start_date=date(2027, 6, 1))
         result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         assert result == Decimal("105000.00")
 
@@ -328,7 +346,7 @@ class TestRecurringRaiseCompounding:
             raises=[FakeRaise(flat_amount="5000", effective_month=1,
                               effective_year=2026, is_recurring=True)],
         )
-        period = FakePeriod(start_date=date(2028, 6, 1))
+        period = _period(start_date=date(2028, 6, 1))
         result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 3 applications: 100000 + 5000 + 5000 + 5000 = 115000
         assert result == Decimal("115000.00")
@@ -347,7 +365,7 @@ class TestRecurringRaiseCompounding:
             raises=[FakeRaise(percentage="0.03", effective_month=3,
                               effective_year=2026, is_recurring=True)],
         )
-        period = FakePeriod(start_date=date(2027, 3, 1))
+        period = _period(start_date=date(2027, 3, 1))
         result = apply_raises(profile.annual_salary, profile.raises, period.start_date)
         # 100000 * 1.03^2 = 106090
         assert result == Decimal("106090.00")
@@ -464,7 +482,7 @@ class TestCalculatePaycheckPipeline:
           net: 2307.69 - 173.08 - 103.85 - 143.08 - 33.46
              = 1854.22
         """
-        period = FakePeriod(
+        period = _period(
             start_date=date(2026, 1, 16), period_id=1
         )
         all_periods = [period]
@@ -513,7 +531,7 @@ class TestCalculatePaycheckPipeline:
 
     def test_net_pay_formula(self, base_profile, simple_tax_configs):
         """net = gross - pre_tax - fed - state - ss - medicare - post_tax."""
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
         all_periods = [period]
 
         r = calculate_paycheck(base_profile, period, all_periods,
@@ -545,7 +563,7 @@ class TestCalculatePaycheckPipeline:
     def test_gross_biweekly_calculation(self, simple_tax_configs):
         """annual / 26, quantized to 2 places."""
         profile = FakeProfile(annual_salary=75000, created_at=date(2026, 1, 1))
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(profile, period, [period], simple_tax_configs)
 
@@ -564,7 +582,7 @@ class TestCalculatePaycheckPipeline:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(profile, period, [period], simple_tax_configs)
 
@@ -573,7 +591,7 @@ class TestCalculatePaycheckPipeline:
     def test_no_bracket_set_zero_federal(self, nc_state_config, standard_fica):
         """bracket_set=None → federal=0."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
         configs = {
             "bracket_set": None,
             "state_config": nc_state_config,
@@ -587,7 +605,7 @@ class TestCalculatePaycheckPipeline:
     def test_no_state_config_zero_state(self, simple_bracket_set, standard_fica):
         """state_config=None → state=0."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
         configs = {
             "bracket_set": simple_bracket_set,
             "state_config": None,
@@ -601,7 +619,7 @@ class TestCalculatePaycheckPipeline:
     def test_no_fica_config_zero_fica(self, simple_bracket_set, nc_state_config):
         """fica_config=None → ss=0, medicare=0."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
         configs = {
             "bracket_set": simple_bracket_set,
             "state_config": nc_state_config,
@@ -616,7 +634,7 @@ class TestCalculatePaycheckPipeline:
     def test_all_tax_configs_none(self):
         """All None → only gross minus deductions."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
         configs = {
             "bracket_set": None,
             "state_config": None,
@@ -642,7 +660,7 @@ class TestCalculatePaycheckPipeline:
           50000*0.10+4999.94*0.22=6099.99
           (6099.99/26)+50=284.615->284.62
         """
-        period = FakePeriod(
+        period = _period(
             start_date=date(2026, 1, 16), period_id=1
         )
 
@@ -684,7 +702,7 @@ class TestDeductionCalculation:
         base_profile.deductions = [
             FakeDeduction(name="401k", amount="200", deduction_timing="pre_tax"),
         ]
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(base_profile, period, [period],
                                     simple_tax_configs)
@@ -698,7 +716,7 @@ class TestDeductionCalculation:
         base_profile.deductions = [
             FakeDeduction(name="Roth", amount="150", deduction_timing="post_tax"),
         ]
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(base_profile, period, [period],
                                     simple_tax_configs)
@@ -712,7 +730,7 @@ class TestDeductionCalculation:
             FakeDeduction(name="401k", amount="0.06", calc_method="percentage",
                           deduction_timing="pre_tax"),
         ]
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(base_profile, period, [period],
                                     simple_tax_configs)
@@ -727,7 +745,7 @@ class TestDeductionCalculation:
         base_profile.deductions = [
             FakeDeduction(name="Old Plan", amount="200", is_active=False),
         ]
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(base_profile, period, [period],
                                     simple_tax_configs)
@@ -740,7 +758,7 @@ class TestDeductionCalculation:
             FakeDeduction(name="401k", amount="200", deduction_timing="pre_tax"),
             FakeDeduction(name="Roth", amount="100", deduction_timing="post_tax"),
         ]
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(base_profile, period, [period],
                                     simple_tax_configs)
@@ -762,9 +780,9 @@ class TestDeductionCalculation:
             ],
         )
         # Build a month with 3 paychecks
-        p1 = FakePeriod(start_date=date(2026, 1, 2), period_id=1)
-        p2 = FakePeriod(start_date=date(2026, 1, 16), period_id=2)
-        p3 = FakePeriod(start_date=date(2026, 1, 30), period_id=3)
+        p1 = _period(start_date=date(2026, 1, 2), period_id=1)
+        p2 = _period(start_date=date(2026, 1, 16), period_id=2)
+        p3 = _period(start_date=date(2026, 1, 30), period_id=3)
         all_periods = [p1, p2, p3]
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
@@ -784,8 +802,8 @@ class TestDeductionCalculation:
                               deductions_per_year=12),
             ],
         )
-        p1 = FakePeriod(start_date=date(2026, 2, 13), period_id=4)
-        p2 = FakePeriod(start_date=date(2026, 2, 27), period_id=5)
+        p1 = _period(start_date=date(2026, 2, 13), period_id=4)
+        p2 = _period(start_date=date(2026, 2, 27), period_id=5)
         all_periods = [p1, p2]
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
@@ -806,8 +824,8 @@ class TestDeductionCalculation:
                               deductions_per_year=12),
             ],
         )
-        p1 = FakePeriod(start_date=date(2026, 2, 13), period_id=4)
-        p2 = FakePeriod(start_date=date(2026, 2, 27), period_id=5)
+        p1 = _period(start_date=date(2026, 2, 13), period_id=4)
+        p2 = _period(start_date=date(2026, 2, 27), period_id=5)
         all_periods = [p1, p2]
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
@@ -840,7 +858,7 @@ class TestDeductionCalculation:
                               deduction_timing="pre_tax"),
             ],
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = _calculate_deductions(
             _DeductionContext(profile, period, [period], Decimal("0.00"), False),
@@ -868,7 +886,7 @@ class TestDeductionCalculation:
                               deduction_timing="post_tax"),
             ],
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = _calculate_deductions(
             _DeductionContext(profile, period, [period], Decimal("0.00"), False),
@@ -915,10 +933,10 @@ class TestDeductionAnnualCap:
         # Four 2026 periods; deductions_per_year defaults to 26 (no cadence
         # skip), so only the cap zeroes the later periods.
         periods = [
-            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
-            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
-            FakePeriod(start_date=date(2026, 1, 30), period_id=3),
-            FakePeriod(start_date=date(2026, 2, 13), period_id=4),
+            _period(start_date=date(2026, 1, 2), period_id=1),
+            _period(start_date=date(2026, 1, 16), period_id=2),
+            _period(start_date=date(2026, 1, 30), period_id=3),
+            _period(start_date=date(2026, 2, 13), period_id=4),
         ]
         # P1: YTD 0 -> full 600.  P2: YTD 600, room 400 -> 400 (lands on cap).
         # P3, P4: YTD 1200 >= cap -> 0.  Sum of applied == 1000 exactly.
@@ -934,8 +952,8 @@ class TestDeductionAnnualCap:
                                       annual_cap="100000")],
         )
         periods = [
-            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
-            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
+            _period(start_date=date(2026, 1, 2), period_id=1),
+            _period(start_date=date(2026, 1, 16), period_id=2),
         ]
         # 200/period never approaches a $100k cap -> unchanged.
         assert self._amounts_over(profile, periods) == [
@@ -950,9 +968,9 @@ class TestDeductionAnnualCap:
                                       annual_cap="1000")],
         )
         periods = [
-            FakePeriod(start_date=date(2026, 12, 4), period_id=1),
-            FakePeriod(start_date=date(2026, 12, 18), period_id=2),
-            FakePeriod(start_date=date(2027, 1, 1), period_id=3),
+            _period(start_date=date(2026, 12, 4), period_id=1),
+            _period(start_date=date(2026, 12, 18), period_id=2),
+            _period(start_date=date(2027, 1, 1), period_id=3),
         ]
         # 2026 exhausts the cap (600 then 400); the 2027 period counts only
         # same-year prior periods (none), so the cap is fresh -> full 600.
@@ -969,9 +987,9 @@ class TestDeductionAnnualCap:
                                       annual_cap="400")],
         )
         periods = [
-            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
-            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
-            FakePeriod(start_date=date(2026, 1, 30), period_id=3),
+            _period(start_date=date(2026, 1, 2), period_id=1),
+            _period(start_date=date(2026, 1, 16), period_id=2),
+            _period(start_date=date(2026, 1, 30), period_id=3),
         ]
         # gross 60000/26 = 2307.69; 10% = 230.77/period.  P1: 230.77.
         # P2: room 400-230.77 = 169.23 -> 169.23.  P3: cap exhausted -> 0.
@@ -992,9 +1010,9 @@ class TestDeductionAnnualCap:
                                       annual_cap="1000")],
         )
         periods = [
-            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
-            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
-            FakePeriod(start_date=date(2026, 1, 30), period_id=3),
+            _period(start_date=date(2026, 1, 2), period_id=1),
+            _period(start_date=date(2026, 1, 16), period_id=2),
+            _period(start_date=date(2026, 1, 30), period_id=3),
         ]
         configs = {"bracket_set": None, "state_config": None, "fica_config": None}
         nets = [
@@ -1012,26 +1030,26 @@ class TestThirdPaycheckDetection:
 
     def test_month_with_two_paychecks_returns_false(self):
         """Standard month with 2 paychecks → False."""
-        p1 = FakePeriod(start_date=date(2026, 2, 13), period_id=1)
-        p2 = FakePeriod(start_date=date(2026, 2, 27), period_id=2)
+        p1 = _period(start_date=date(2026, 2, 13), period_id=1)
+        p2 = _period(start_date=date(2026, 2, 27), period_id=2)
         all_periods = [p1, p2]
 
         assert _is_third_paycheck(p2, all_periods) is False
 
     def test_third_paycheck_returns_true(self):
         """Month with 3 start dates → 3rd is True."""
-        p1 = FakePeriod(start_date=date(2026, 1, 2), period_id=1)
-        p2 = FakePeriod(start_date=date(2026, 1, 16), period_id=2)
-        p3 = FakePeriod(start_date=date(2026, 1, 30), period_id=3)
+        p1 = _period(start_date=date(2026, 1, 2), period_id=1)
+        p2 = _period(start_date=date(2026, 1, 16), period_id=2)
+        p3 = _period(start_date=date(2026, 1, 30), period_id=3)
         all_periods = [p1, p2, p3]
 
         assert _is_third_paycheck(p3, all_periods) is True
 
     def test_first_period_of_month_returns_false(self):
         """First period in a 3-paycheck month is not a 3rd paycheck."""
-        p1 = FakePeriod(start_date=date(2026, 1, 2), period_id=1)
-        p2 = FakePeriod(start_date=date(2026, 1, 16), period_id=2)
-        p3 = FakePeriod(start_date=date(2026, 1, 30), period_id=3)
+        p1 = _period(start_date=date(2026, 1, 2), period_id=1)
+        p2 = _period(start_date=date(2026, 1, 16), period_id=2)
+        p3 = _period(start_date=date(2026, 1, 30), period_id=3)
         all_periods = [p1, p2, p3]
 
         assert _is_third_paycheck(p1, all_periods) is False
@@ -1041,15 +1059,15 @@ class TestFirstPaycheckOfMonth:
     """Tests for _is_first_paycheck_of_month()."""
 
     def test_first_period_in_month_returns_true(self):
-        p1 = FakePeriod(start_date=date(2026, 3, 6), period_id=1)
-        p2 = FakePeriod(start_date=date(2026, 3, 20), period_id=2)
+        p1 = _period(start_date=date(2026, 3, 6), period_id=1)
+        p2 = _period(start_date=date(2026, 3, 20), period_id=2)
         all_periods = [p1, p2]
 
         assert _is_first_paycheck_of_month(p1, all_periods) is True
 
     def test_second_period_in_month_returns_false(self):
-        p1 = FakePeriod(start_date=date(2026, 3, 6), period_id=1)
-        p2 = FakePeriod(start_date=date(2026, 3, 20), period_id=2)
+        p1 = _period(start_date=date(2026, 3, 6), period_id=1)
+        p2 = _period(start_date=date(2026, 3, 20), period_id=2)
         all_periods = [p1, p2]
 
         assert _is_first_paycheck_of_month(p2, all_periods) is False
@@ -1068,7 +1086,7 @@ class TestInflationAdjustment:
                               inflation_effective_month=1),
             ],
         )
-        period = FakePeriod(start_date=date(2026, 6, 1), period_id=1)
+        period = _period(start_date=date(2026, 6, 1), period_id=1)
 
         years = _inflation_years(period, profile, 1)
         assert years == 1
@@ -1095,7 +1113,7 @@ class TestInflationAdjustment:
                               inflation_effective_month=1),
             ],
         )
-        period = FakePeriod(start_date=date(2026, 6, 1), period_id=1)
+        period = _period(start_date=date(2026, 6, 1), period_id=1)
 
         years = _inflation_years(period, profile, 1)
         assert years == 2
@@ -1132,7 +1150,7 @@ class TestInflationAdjustment:
                               inflation_effective_month=1),
             ],
         )
-        period = FakePeriod(start_date=date(2026, 6, 1), period_id=1)
+        period = _period(start_date=date(2026, 6, 1), period_id=1)
         result = _calculate_deductions(
             _DeductionContext(
                 profile, period, [period], Decimal("1000.49"), False,
@@ -1155,7 +1173,7 @@ class TestInflationAdjustment:
             annual_salary=60000, created_at=date(2025, 1, 1),
             deductions=[FakeDeduction(name="HSA", amount="500.1234")],
         )
-        period = FakePeriod(start_date=date(2026, 6, 1), period_id=1)
+        period = _period(start_date=date(2026, 6, 1), period_id=1)
         result = _calculate_deductions(
             _DeductionContext(
                 profile, period, [period], Decimal("2307.69"), False,
@@ -1168,7 +1186,7 @@ class TestInflationAdjustment:
         """period_month < eff_month → years - 1."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2024, 1, 1))
         # Period is in March, effective month is June
-        period = FakePeriod(start_date=date(2026, 3, 1), period_id=1)
+        period = _period(start_date=date(2026, 3, 1), period_id=1)
 
         years = _inflation_years(period, profile, 6)
         # 2026 - 2024 = 2, but month 3 < 6 → 2 - 1 = 1
@@ -1177,7 +1195,7 @@ class TestInflationAdjustment:
     def test_created_at_none_zero_years(self):
         """profile.created_at=None → no inflation."""
         profile = FakeProfile(annual_salary=60000, created_at=None)
-        period = FakePeriod(start_date=date(2026, 6, 1), period_id=1)
+        period = _period(start_date=date(2026, 6, 1), period_id=1)
 
         years = _inflation_years(period, profile, 1)
         assert years == 0
@@ -1185,7 +1203,7 @@ class TestInflationAdjustment:
     def test_same_year_as_creation_zero_years(self):
         """Year 0 = no inflation."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        period = FakePeriod(start_date=date(2026, 6, 1), period_id=1)
+        period = _period(start_date=date(2026, 6, 1), period_id=1)
 
         years = _inflation_years(period, profile, 1)
         assert years == 0
@@ -1197,9 +1215,9 @@ class TestCumulativeWages:
     def test_sums_prior_periods_in_same_year(self):
         """Adds gross for earlier periods."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        p1 = FakePeriod(start_date=date(2026, 1, 2), period_id=1)
-        p2 = FakePeriod(start_date=date(2026, 1, 16), period_id=2)
-        p3 = FakePeriod(start_date=date(2026, 1, 30), period_id=3)
+        p1 = _period(start_date=date(2026, 1, 2), period_id=1)
+        p2 = _period(start_date=date(2026, 1, 16), period_id=2)
+        p3 = _period(start_date=date(2026, 1, 30), period_id=3)
         all_periods = [p1, p2, p3]
 
         result = _get_cumulative_wages(profile, p3, all_periods)
@@ -1211,7 +1229,7 @@ class TestCumulativeWages:
     def test_first_period_zero_cumulative(self):
         """First period → 0."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        p1 = FakePeriod(start_date=date(2026, 1, 2), period_id=1)
+        p1 = _period(start_date=date(2026, 1, 2), period_id=1)
 
         result = _get_cumulative_wages(profile, p1, [p1])
         assert result == ZERO
@@ -1219,8 +1237,8 @@ class TestCumulativeWages:
     def test_different_year_periods_excluded(self):
         """Prior year periods skipped."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2025, 1, 1))
-        p_prev = FakePeriod(start_date=date(2025, 12, 19), period_id=25)
-        p1 = FakePeriod(start_date=date(2026, 1, 2), period_id=1)
+        p_prev = _period(start_date=date(2025, 12, 19), period_id=25)
+        p1 = _period(start_date=date(2026, 1, 2), period_id=1)
         all_periods = [p_prev, p1]
 
         result = _get_cumulative_wages(profile, p1, all_periods)
@@ -1234,9 +1252,9 @@ class TestProjectSalary:
                                               simple_tax_configs):
         """len(result) == len(periods)."""
         periods = [
-            FakePeriod(start_date=date(2026, 1, 2), period_id=1),
-            FakePeriod(start_date=date(2026, 1, 16), period_id=2),
-            FakePeriod(start_date=date(2026, 1, 30), period_id=3),
+            _period(start_date=date(2026, 1, 2), period_id=1),
+            _period(start_date=date(2026, 1, 16), period_id=2),
+            _period(start_date=date(2026, 1, 30), period_id=3),
         ]
 
         result = project_salary(base_profile, periods, simple_tax_configs)
@@ -1253,9 +1271,9 @@ class TestProjectSalary:
             created_at=date(2026, 1, 1),
         )
         periods = [
-            FakePeriod(start_date=date(2026, 2, 13), period_id=1),
-            FakePeriod(start_date=date(2026, 3, 13), period_id=2),
-            FakePeriod(start_date=date(2026, 4, 10), period_id=3),
+            _period(start_date=date(2026, 2, 13), period_id=1),
+            _period(start_date=date(2026, 3, 13), period_id=2),
+            _period(start_date=date(2026, 4, 10), period_id=3),
         ]
 
         result = project_salary(profile, periods, simple_tax_configs)
@@ -1281,9 +1299,9 @@ class TestProjectSalary:
         )
         # Before the effective year: no event anywhere in 2026, salary flat.
         periods_2026 = [
-            FakePeriod(start_date=date(2026, 2, 13), period_id=1),
-            FakePeriod(start_date=date(2026, 3, 13), period_id=2),
-            FakePeriod(start_date=date(2026, 4, 10), period_id=3),
+            _period(start_date=date(2026, 2, 13), period_id=1),
+            _period(start_date=date(2026, 3, 13), period_id=2),
+            _period(start_date=date(2026, 4, 10), period_id=3),
         ]
         result_2026 = project_salary(profile, periods_2026, simple_tax_configs)
         assert all(r.period.raise_event == "" for r in result_2026)
@@ -1293,8 +1311,8 @@ class TestProjectSalary:
         # shows at March 2027 and is absent the month before, so the fix
         # gates on the year without over-suppressing the legitimate event.
         periods_2027 = [
-            FakePeriod(start_date=date(2027, 2, 12), period_id=27),
-            FakePeriod(start_date=date(2027, 3, 12), period_id=28),
+            _period(start_date=date(2027, 2, 12), period_id=27),
+            _period(start_date=date(2027, 3, 12), period_id=28),
         ]
         result_2027 = project_salary(profile, periods_2027, simple_tax_configs)
         assert result_2027[0].period.raise_event == ""
@@ -1331,8 +1349,8 @@ class TestProjectSalary:
             },
         }
         periods = [
-            FakePeriod(start_date=date(2026, 6, 5), period_id=1),
-            FakePeriod(start_date=date(2027, 6, 4), period_id=2),
+            _period(start_date=date(2026, 6, 5), period_id=1),
+            _period(start_date=date(2027, 6, 4), period_id=2),
         ]
 
         result = project_salary(
@@ -1346,7 +1364,7 @@ class TestProjectSalary:
         self, base_profile, simple_tax_configs,
     ):
         """ValueError when neither or both config sources are supplied."""
-        periods = [FakePeriod(start_date=date(2026, 1, 2), period_id=1)]
+        periods = [_period(start_date=date(2026, 1, 2), period_id=1)]
         with pytest.raises(ValueError, match="exactly one"):
             project_salary(base_profile, periods)
         with pytest.raises(ValueError, match="exactly one"):
@@ -1823,7 +1841,7 @@ class TestEdgeCases:
             annual_salary=0,
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(
+        period = _period(
             start_date=date(2026, 1, 16), period_id=1
         )
 
@@ -1868,7 +1886,7 @@ class TestEdgeCases:
             annual_salary=-10000,
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(
+        period = _period(
             start_date=date(2026, 1, 16), period_id=1
         )
 
@@ -1898,7 +1916,7 @@ class TestNegativeAndBoundaryPaths:
         Why: Division by zero in the paycheck pipeline would crash grid load
         for any user with a misconfigured salary profile.
         """
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         profile_zero = FakeProfile(
             annual_salary=60000,
@@ -1955,7 +1973,7 @@ class TestNegativeAndBoundaryPaths:
             pay_periods_per_year=1,
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
         tax_configs = {
             "bracket_set": simple_bracket_set,
             "state_config": nc_state_config,
@@ -2017,7 +2035,7 @@ class TestNegativeAndBoundaryPaths:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(profile, period, [period], simple_tax_configs)
 
@@ -2046,7 +2064,7 @@ class TestNegativeAndBoundaryPaths:
             pay_periods_per_year=26,
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(profile, period, [period], simple_tax_configs)
 
@@ -2086,7 +2104,7 @@ class TestNegativeAndBoundaryPaths:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(profile, period, [period], simple_tax_configs)
 
@@ -2182,7 +2200,7 @@ class TestPreTaxDeductionTaxImpact:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         with_ded = calculate_paycheck(
             profile, period, [period], simple_tax_configs
@@ -2258,7 +2276,7 @@ class TestPreTaxDeductionTaxImpact:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
             no_ded_profile, period, [period], simple_tax_configs
@@ -2329,7 +2347,7 @@ class TestPreTaxDeductionTaxImpact:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
             profile, period, [period], simple_tax_configs
@@ -2408,9 +2426,9 @@ class TestPreTaxDeductionTaxImpact:
             created_at=date(2026, 1, 1),
         )
         # 3 periods in January to trigger 3rd paycheck detection.
-        p1 = FakePeriod(start_date=date(2026, 1, 2), period_id=1)
-        p2 = FakePeriod(start_date=date(2026, 1, 16), period_id=2)
-        p3 = FakePeriod(start_date=date(2026, 1, 30), period_id=3)
+        p1 = _period(start_date=date(2026, 1, 2), period_id=1)
+        p2 = _period(start_date=date(2026, 1, 16), period_id=2)
+        p3 = _period(start_date=date(2026, 1, 30), period_id=3)
         all_periods = [p1, p2, p3]
 
         normal = calculate_paycheck(
@@ -2512,7 +2530,7 @@ class TestPreTaxDeductionTaxImpact:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
             profile, period, [period], simple_tax_configs
@@ -2578,7 +2596,7 @@ class TestPreTaxDeductionTaxImpact:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
             no_ded_profile, period, [period], simple_tax_configs
@@ -2646,7 +2664,7 @@ class TestPreTaxDeductionTaxImpact:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
             profile, period, [period], simple_tax_configs
@@ -2721,7 +2739,7 @@ class TestPreTaxDeductionTaxImpact:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
             no_ded_profile, period, [period], configs
@@ -2772,7 +2790,7 @@ class TestPreTaxDeductionTaxImpact:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         r = calculate_paycheck(
             profile, period, [period], simple_tax_configs
@@ -2849,7 +2867,7 @@ class TestPreTaxDeductionTaxImpact:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
             no_ded_profile, period, [period], simple_tax_configs
@@ -2913,7 +2931,7 @@ class TestCalibrationIntegration:
           medicare = 0.01450 -> 2307.69 * 0.0145 = $33.46
         """
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         cal = FakeCalibration(
             federal_rate="0.10000",
@@ -3020,7 +3038,7 @@ class TestCalibrationIntegration:
             deductions=deductions,
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
             profile, period, [period], simple_tax_configs,
@@ -3053,7 +3071,7 @@ class TestCalibrationIntegration:
         This proves the calibration path is actually being used.
         """
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         # Bracket-based calculation.
         bracket_result = calculate_paycheck(
@@ -3084,7 +3102,7 @@ class TestCalibrationIntegration:
     ):
         """When calibration.is_active is False, bracket-based taxes are used."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         # Bracket-based (no calibration).
         bracket_result = calculate_paycheck(
@@ -3115,7 +3133,7 @@ class TestCalibrationIntegration:
     ):
         """calibration=None (default) produces the same result as omitting it."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result_omitted = calculate_paycheck(
             profile, period, [period], simple_tax_configs,
@@ -3148,7 +3166,7 @@ class TestCalibrationIntegration:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         cal = FakeCalibration(
             federal_rate="0.10000",
@@ -3185,7 +3203,7 @@ class TestCalibrationIntegration:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         cal = FakeCalibration(
             federal_rate="0.10000",
@@ -3237,7 +3255,7 @@ class TestCalibrationIntegration:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         cal = FakeCalibration(
             federal_rate="0.10000",
@@ -3289,9 +3307,9 @@ class TestCalibrationIntegration:
             created_at=date(2026, 1, 1),
         )
         # 3 periods in January to trigger 3rd paycheck detection.
-        p1 = FakePeriod(start_date=date(2026, 1, 2), period_id=1)
-        p2 = FakePeriod(start_date=date(2026, 1, 16), period_id=2)
-        p3 = FakePeriod(start_date=date(2026, 1, 30), period_id=3)
+        p1 = _period(start_date=date(2026, 1, 2), period_id=1)
+        p2 = _period(start_date=date(2026, 1, 16), period_id=2)
+        p3 = _period(start_date=date(2026, 1, 30), period_id=3)
         all_periods = [p1, p2, p3]
 
         cal = FakeCalibration(
@@ -3343,7 +3361,7 @@ class TestCalibrationIntegration:
             ],
             created_at=date(2026, 1, 1),
         )
-        period = FakePeriod(start_date=date(2026, 2, 13), period_id=2)
+        period = _period(start_date=date(2026, 2, 13), period_id=2)
 
         cal = FakeCalibration(
             federal_rate="0.10000",
@@ -3378,9 +3396,9 @@ class TestCalibrationIntegration:
         """project_salary passes calibration to every period's calculation."""
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
         periods = [
-            FakePeriod(start_date=date(2026, 1, 16), period_id=1),
-            FakePeriod(start_date=date(2026, 1, 30), period_id=2),
-            FakePeriod(start_date=date(2026, 2, 13), period_id=3),
+            _period(start_date=date(2026, 1, 16), period_id=1),
+            _period(start_date=date(2026, 1, 30), period_id=2),
+            _period(start_date=date(2026, 2, 13), period_id=3),
         ]
 
         cal = FakeCalibration(
@@ -3528,7 +3546,7 @@ class TestBiweeklyResidueReconciliation:
         quantisation.  $60k / 26 -> $2307.69 (half-up) regardless of
         which calendar position the period occupies.
         """
-        period = FakePeriod(start_date=date(2026, 1, 16), period_id=1)
+        period = _period(start_date=date(2026, 1, 16), period_id=1)
         result = calculate_paycheck(
             base_profile, period, [period], simple_tax_configs,
         )
@@ -3700,7 +3718,7 @@ class TestCalibrationSSCapIntegration:
         """26 biweekly periods starting 2026-01-02."""
         start = date(2026, 1, 2)
         return [
-            FakePeriod(
+            _period(
                 start_date=date.fromordinal(
                     start.toordinal() + i * 14
                 ),

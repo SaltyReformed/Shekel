@@ -1,0 +1,103 @@
+{% from "_money_macros.html" import money %}
+{# The "close the gap" lever card body (P2c data contract, P3b styling).
+
+   Split out of dashboard.html at plan step C2-f2d-4, and the reason is the
+   whole point of that step: the levers are now solved against the ASSUMPTIONS
+   THE PAGE IS SHOWING, so when a what-if slider moves, the solved defaults in
+   this card's headline move with it.  A headline solved under the stored
+   settings beside a verdict solved under a what-if is the two-figures-one-screen
+   contradiction the C2-f2d arc exists to remove, so the headline has to be
+   re-renderable -- which means it has to be a partial.
+
+   ``#levers-region`` is the stable swap target; the readiness fragment
+   re-renders this whole body out-of-band, INCLUDING the outcome lines nested
+   below (which is why _lever_outcomes.html no longer carries an out-of-band
+   flag of its own -- one swap, not two).
+
+   **Each stepper carries the OWNER'S OVERRIDE and nothing else** -- empty when
+   they have not set one, exactly as the assumptions rail's "Assumed return"
+   row does, and for the reason that row states: a field pre-filled with a
+   derived figure is indistinguishable over HTTP from one the owner typed, so
+   the next refresh submits it back as an override.  Pre-filling these with the
+   SOLVED defaults did precisely that -- the headline re-solved to the what-if
+   while the outcome line beneath it evaluated the stale pre-fill, two
+   per-paycheck contributions for one plan, which is the defect C2-f2d-4
+   exists to remove.  The solved default is the HEADLINE's job; the stepper
+   answers "what if I did this instead".
+
+   ``hx-preserve`` keeps each input's node across the out-of-band swap, so a
+   value being typed survives the debounced refresh it triggers -- caret and
+   focus included.  Without it the swap replaces the element the owner is
+   typing into, 500 ms after they started. #}
+{% set blocker = 'date' if readiness.retirement_date is none
+   else ('salary' if readiness.income_target_net_monthly <= 0 else none) %}
+{# The opening tag is ONE line on purpose: the out-of-band attribute is the
+   single token this whole card's live-update hangs on, and a test can only
+   grade it as one string if it renders as one. #}
+<div id="levers-region"{% if levers_oob|default(false) %} hx-swap-oob="innerHTML"{% endif %}>
+  {% if blocker == 'date' or levers.no_horizon %}
+  <p class="text-muted mb-0">
+    Set a planned retirement date -- in the assumptions panel or on a
+    <a href="{{ url_for('retirement.pension_list') }}">pension</a> --
+    to explore these levers.
+  </p>
+  {% elif blocker == 'salary' %}
+  <p class="text-muted mb-0">
+    No projectable take-home pay yet --
+    <a href="{{ url_for('salary.cockpit') }}">set up a salary profile</a>
+    to explore these levers.
+  </p>
+  {% else %}
+  {% set c = levers.contribution %}
+  {% set r = levers.retire_later %}
+  <div class="retire-lever-pair">
+    <div class="retire-lever-opt">
+      {# Cents precision matches the stepper prefill and the outcome
+         line below -- a rounded hero beside an exact stepper made
+         the figure and its caption disagree (polish audit P-RT5). #}
+      <div class="retire-lever-num">
+        {%- if c.state == 'solved' -%}
+        +{{ money(c.solved_amount) }}<span class="retire-lever-unit"> /paycheck</span>
+        {%- else -%}
+        --
+        {%- endif -%}
+      </div>
+      <p class="retire-lever-sub">contributed from now to
+        {{ levers.baseline.retirement_date.isoformat() }} closes the gap</p>
+      <div class="retire-stepper">
+        <button type="button" data-step="-25" data-step-target="lever-contribution"
+                aria-label="Decrease extra contribution by 25 dollars">-</button>
+        <input type="number" id="lever-contribution" name="contribution"
+               class="lever-param js-lever-input" step="0.01" min="0" max="100000"
+               placeholder="what-if" hx-preserve="true"
+               value="{{ "%.2f"|format(c.entered) if c.entered is not none else "" }}"
+               aria-label="Extra contribution per paycheck (dollars)">
+        <button type="button" data-step="25" data-step-target="lever-contribution"
+                aria-label="Increase extra contribution by 25 dollars">+</button>
+      </div>
+    </div>
+    <div class="retire-lever-opt">
+      <div class="retire-lever-num">
+        {%- if r.state == 'solved' -%}
+        +{{ r.solved_months }}<span class="retire-lever-unit"> months</span>
+        {%- else -%}
+        --
+        {%- endif -%}
+      </div>
+      <p class="retire-lever-sub">retire later, no new contributions</p>
+      <div class="retire-stepper">
+        <button type="button" data-step="-1" data-step-target="lever-months"
+                aria-label="Decrease the delay by one month">-</button>
+        <input type="number" id="lever-months" name="months"
+               class="lever-param js-lever-input" step="1" min="0" max="180"
+               placeholder="what-if" hx-preserve="true"
+               value="{{ r.entered if r.entered is not none else "" }}"
+               aria-label="Retirement delay (months)">
+        <button type="button" data-step="1" data-step-target="lever-months"
+                aria-label="Increase the delay by one month">+</button>
+      </div>
+    </div>
+  </div>
+  {% include "retirement/_lever_outcomes.html" %}
+  {% endif %}
+</div>

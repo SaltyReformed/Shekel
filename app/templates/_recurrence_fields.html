@@ -40,11 +40,14 @@
 
    ``picker`` is the PickerModel the route resolved from
    app.services.recurrence.picker_model.  Its ``options`` are the (unit,
-   placement) pairs a rule can actually be AUTHORED on -- derived from the
-   anchor-family router that would otherwise refuse them -- so a cadence the
-   application cannot resolve is never offered, and that refusal is unreachable
+   placement) pairs a rule can actually be AUTHORED on -- derived from the two
+   rules that would otherwise refuse them (whether a generated row can be
+   DATED from the cadence, and whether the placement can change which paycheck
+   funds one) -- so a cadence the application cannot honour is never offered,
+   and that refusal is unreachable
    through this form rather than fenced behind it (developer ruling
-   2026-08-12).  ``options_json`` is the same set for recurrence_form.js, which
+   2026-08-12; the gate was an anchor-family router until plan step R8-a
+   replaced it).  ``options_json`` is the same set for recurrence_form.js, which
    LINKS the controls: the chosen unit decides which placements may be picked
    and what the two day-of-month controls do.
 
@@ -131,9 +134,10 @@
    first paycheck" and had no quarterly twin, so raising a Monthly First rule's
    interval silently reassigned the placement and hid the row.  Freeing the
    interval removes that case entirely -- the MONTH unit offers both placements
-   at every interval -- and two cadences still admit exactly one: PERIOD, where
+   at every interval -- and ONE cadence still admits exactly one: PERIOD, where
    the placement is inert because a payday resolves to its own paycheck either
-   way, and YEAR, whose first-paycheck anchor is plan step R8's.
+   way.  It was two until plan step R8-a admitted the YEAR unit's deferring
+   reading, whose refusal named an anchor derivation R7c-b had deleted.
 
    So the row stays, the script enables the placements the chosen unit admits,
    and the help text says which of the two states the user is in.  Both

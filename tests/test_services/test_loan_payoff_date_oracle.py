@@ -35,7 +35,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.enums import AcctTypeEnum, RecurrencePatternEnum
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app import ref_cache
 from app.models.loan_payment_settings import LoanPaymentSettings
@@ -63,9 +63,10 @@ from tests._test_helpers import (
     create_loan_account,
     insert_trueup_event,
     loan_params_for,
-    make_pattern_rule,
+    make_cadence_rule,
     seam_confirmed_view,
 )
+from tests.oracles.recurrence_baseline import MONTHLY
 
 _PRINCIPAL = Decimal("300000.00")
 _RATE = Decimal("0.06000")
@@ -201,8 +202,8 @@ def _attach_derive_extra(seed_user, loan_account, extra):
     # Authored through the write door (plan step R7c-b): the day the rule
     # fires on is its first occurrence's own day, so "the 1st" is stated as a
     # DATE the fixture schedule reaches rather than as a separate column.
-    rule = make_pattern_rule(
-        user.id, RecurrencePatternEnum.MONTHLY, fires_on_day=1,
+    rule = make_cadence_rule(
+        user.id, MONTHLY, fires_on_day=1,
     )
     template = TransferTemplate(
         user_id=user.id,

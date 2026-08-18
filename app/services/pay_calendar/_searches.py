@@ -183,14 +183,19 @@ def period_by_id(
     ``PeriodCalendar`` at plan step C2-b1 for the reason every other primitive
     here is shared: two implementations of one question drift, and this one
     answered a WRITE question -- which stored row a rule's authored start
-    period named -- until plan step R7b-4 folded that FK into a date and left
-    this without an ``app/`` caller.  The pay-calendar arc rules on whether it
-    survives; see :meth:`~._calendar.PayCalendar.period_by_id`.
+    period named -- until plan step R7b-4 folded that FK into a date.  **The
+    note left then said it had no ``app/`` caller and that its survival was
+    open; both were false by 2026-08-16** and the method's own docstring now
+    carries the correction and the five callers.
 
-    Linear rather than a map built at construction, and deliberately: a
-    calendar is built once per request and the lookup runs once per rule, so an
-    index would be a second derived value to keep in step with :attr:`periods`
-    for no measured gain (61 paydays against 46 live rules on production).
+    Linear rather than a map built at construction, and the justification
+    NARROWED at pay-calendar plan step C2-f2d-3: it used to be "once per rule"
+    (61 paydays against 46 live rules on production), and the recurrence
+    engine's pricing lookup now runs it once per generated ROW.  A full
+    regenerate is therefore up to 46 x 61 scans of 61 elements -- microseconds,
+    and measured nowhere near a hot path, so the second derived value an index
+    would be is still not worth keeping in step with :attr:`periods`.  Stated
+    because the old sentence described a call pattern that has changed.
 
     Args:
         periods: The owner's periods, in any order.  Identity is not a search

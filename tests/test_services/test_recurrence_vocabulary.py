@@ -92,15 +92,16 @@ class TestAnUnmodelledRowIsInvisible:
 
         **This test used to insert a surplus PATTERN row, and an adversarial
         review of plan step R7b-2 showed that could not fail.**  Before plan
-        step R2e-2 the picker was
-        ``db.session.query(RecurrencePattern).all()``, so a surplus pattern row
-        would have been offered and the assertion was load-bearing.  Since
+        step R2e-2 the picker read every ``ref.recurrence_patterns`` row
+        directly, so a surplus pattern row would have been offered and the
+        assertion was load-bearing.  Since
         R7b-2 they were derived from ``PATTERN_DERIVATIONS``, an ENUM-keyed
         table, and ``_picker`` did not import the pattern model at all -- so
         inserting into that table could not move the answer whatever the
         producer did.  Plan step R7c-c deleted that table with the closed set;
         the options come from ``_frequency.authorable_cadences`` now, which is
-        derived from the anchor router and reads no ``ref`` table either.
+        derived from two predicates over the ENUM members (plan step R8-a; it
+        was the anchor router until then) and reads no ``ref`` table either.
 
         The UNIT table is where the same mistake is now available: a picker
         that offered ``db.session.query(RecurrenceUnit).all()`` would offer
@@ -123,9 +124,10 @@ class TestAnUnmodelledRowIsInvisible:
 
         The property the surplus-row test above stands in for, asked of a
         member that really exists: ``RecurrenceUnitEnum.WEEK`` has a ``ref``
-        row and an enum member, and ``anchor_family`` has no first-occurrence
-        derivation for it until plan step R8.  A table-driven offer set would
-        offer it and the write door would refuse the save.
+        row and an enum member, and a generated row cannot carry the date its
+        occurrences name until plan step **R5** (``has_row_date_coordinate``,
+        plan step R8-a).  A table-driven offer set would offer it and the write
+        door would refuse the save.
         """
         with app.app_context():
             week_id = ref_cache.recurrence_unit_id(RecurrenceUnitEnum.WEEK)

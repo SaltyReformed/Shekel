@@ -98,7 +98,7 @@ def balance_map(
     # instead lives with that handler.
     _require_scenario(ctx)
     return _account_balance_map(
-        account, ctx, _contribution_inputs_for_account(account),
+        account, ctx, _contribution_inputs_for_account(account, ctx),
     )
 
 
@@ -154,7 +154,7 @@ def build_maps(
             the step that removes it.
     """
     _require_scenario(ctx)
-    feeds = _contribution_inputs_for_accounts(accounts)
+    feeds = _contribution_inputs_for_accounts(accounts, ctx)
     return {
         account.id: _account_balance_map(
             account, ctx, feeds[account.id],
@@ -198,7 +198,7 @@ def _modelled_scalar(
         PayCalendarError: See :func:`._asset_fold._assemble`.
     """
     return _asset_fold.fold_asset_balances(
-        account, ctx, [as_of], _contribution_inputs_for_account(account),
+        account, ctx, [as_of], _contribution_inputs_for_account(account, ctx),
     )[as_of]
 
 
@@ -360,7 +360,7 @@ def investment_growth_since_anchor(
             which surfaces the widening reached.  The loan arm does not.
     """
     _require_scenario(ctx)
-    inputs = _contribution_inputs_for_account(account)
+    inputs = _contribution_inputs_for_account(account, ctx)
     # Read off the account's OWN feed, not out of a batch map keyed by id: the
     # bundle handed to the producer below and the bundle this decision is made
     # on are then the same object rather than two readings of one load.

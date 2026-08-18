@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 from app.services import balance_at, savings_goal_service
 from app.services.balance_at import BalanceContext
 from app.services.account_category import is_liability_account
-from app.services.pay_calendar import cadence_for, calendar_for
+from app.services.pay_calendar import cadence_for
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
     _load_archived_accounts,
@@ -109,7 +109,6 @@ def _build_projection_context(
     # each non-loan tile reads through takes the Scenario; the loan path
     # derives ``scenario.id`` for the resolver.
     return _ProjectionContext(
-        all_periods=core.all_periods,
         current_period=core.current_period,
         params=params,
         balance_ctx=core.balance_ctx,
@@ -120,7 +119,7 @@ def _debt_summary_with_dti(
     account_data: list[AccountProjection],
     escrow_map: dict[int, list],
     current_breakdown: PaycheckBreakdown | None,
-    user_id: int,
+    balance_ctx: BalanceContext,
 ) -> DebtSummary | None:
     """Resolve the engine gross and build the debt summary from it.
 
@@ -142,9 +141,14 @@ def _debt_summary_with_dti(
         escrow_map: account_id -> list of EscrowLine with versions (PITI).
         current_breakdown: The engine ``PaycheckBreakdown`` for the
             current period, or ``None`` with no salary configured.
-        user_id: The owner, read ONLY to resolve their pay cadence -- and only
-            when there is a gross to convert.  See the comment below for why
-            this takes an id rather than the cadence itself.
+        balance_ctx: The render's read pass.  Its ``user_id`` resolves the
+            owner's pay cadence, and only when there is a gross to convert;
+            see the comment below for why this takes the pass rather than a
+            resolved cadence.  Its ``as_of`` is the day each loan's escrow
+            version is resolved at (plan step C2-f2d-3, ledger row **P55**).
+            It is the PASS rather than a bare id (plan step C2-f2d-1) so this
+            conversion and the calendar the rest of the render measures against
+            name one owner.
 
     Returns:
         The :class:`~.._metrics.DebtSummary`, or ``None`` when no loan
@@ -169,22 +173,25 @@ def _debt_summary_with_dti(
     # records, one guard further in, and an adversarial review of this step
     # found it.
     gross_monthly = (
-        round_money(cadence_for(user_id).per_paycheck_to_monthly(gross_biweekly))
+        round_money(
+            cadence_for(balance_ctx.user_id)
+            .per_paycheck_to_monthly(gross_biweekly)
+        )
         if gross_biweekly > Decimal("0.00")
         else Decimal("0.00")
     )
-    return _compute_debt_summary(account_data, escrow_map, gross_monthly)
+    return _compute_debt_summary(
+        account_data, escrow_map, gross_monthly, balance_ctx.as_of,
+    )
 
 
-def compute_debt_summary(
-    user_id: int, balance_ctx: BalanceContext | None = None,
-) -> DebtSummary | None:
+def compute_debt_summary(balance_ctx: BalanceContext) -> DebtSummary | None:
     """Compute only the debt summary + DTI for the budget dashboard card.
 
     The narrow producer behind the dashboard's debt track
     (``dashboard_pulse_service.compute_tracks_section``; deep-hunt #82's
     efficiency/SRP half).  Identical figures to
-    ``compute_dashboard_data(user_id)["debt_summary"]`` by construction:
+    ``compute_dashboard_data(balance_ctx)["debt_summary"]`` by construction:
     it runs the same loaders and the same per-account projection
     dispatch -- restricted to the accounts the debt summary reads (its loans, plus
     the other liabilities its ``revolving_debt`` figure names; per-account
@@ -215,12 +222,13 @@ def compute_debt_summary(
     two paths to one number this arc exists to remove.
 
     Args:
-        user_id: Integer ID of the current user.
-        balance_ctx: An existing read pass's
-            :class:`~app.services.balance_at.BalanceContext` to share, or
-            ``None`` to start one.  The budget dashboard's tracks section runs
-            this beside :func:`compute_goal_progress`, so it passes ONE context
-            and each loan is resolved once for the pair.
+        balance_ctx: The render's read pass, REQUIRED (plan step C2-f2d-3,
+            ledger row **P58**).  It took an owner id beside an OPTIONAL pass
+            and opened one when none arrived -- the shape the read-pass ruling
+            rejects, because a producer that can open a second pass by omission
+            is how ``/retirement`` came to hold two.  The budget dashboard's
+            tracks section runs this beside :func:`compute_goal_progress` and
+            passes ONE context, so each loan is resolved once for the pair.
 
     Returns:
         The :class:`~.._metrics.DebtSummary`, or ``None``
@@ -238,7 +246,7 @@ def compute_debt_summary(
             figure here that converts (plan step R7a-2a; see
             :func:`app.services.pay_calendar.cadence_for`).
     """
-    core = _load_dashboard_core_data(user_id, balance_ctx)
+    core = _load_dashboard_core_data(balance_ctx)
     params = _load_account_params(core.accounts)
     if not any(acct.id in params.loan_params_map for acct in core.accounts):
         # No loans: the summary is ``None`` (a user whose only liability is a
@@ -258,22 +266,21 @@ def compute_debt_summary(
     account_data = _compute_account_projections(debt_accounts, ctx)
 
     current_breakdown = _get_current_paycheck_breakdown(
-        user_id, core.all_periods, core.current_period,
+        core.balance_ctx.user_id, core.balance_ctx.reported_periods(),
+        core.current_period,
     )
     return _debt_summary_with_dti(
-        account_data, params.escrow_map, current_breakdown, user_id,
+        account_data, params.escrow_map, current_breakdown, core.balance_ctx,
     )
 
 
-def compute_goal_progress(
-    user_id: int, balance_ctx: BalanceContext | None = None,
-) -> list[GoalProgress]:
+def compute_goal_progress(balance_ctx: BalanceContext) -> list[GoalProgress]:
     """Compute only the savings-goal progress for the budget dashboard card.
 
     The narrow producer behind the dashboard's savings tracks
     (``dashboard_pulse_service.compute_tracks_section``), mirroring
     :func:`compute_debt_summary`'s pattern.  Identical figures
-    to ``compute_dashboard_data(user_id)["goal_data"]`` by construction:
+    to ``compute_dashboard_data(balance_ctx)["goal_data"]`` by construction:
     it runs the same loaders, the same per-account projection dispatch
     (restricted to the accounts that back an active goal -- per-account
     projections are independent, so the restriction cannot change any
@@ -292,9 +299,9 @@ def compute_goal_progress(
     page report the same numbers for the same goal.
 
     Args:
-        user_id: Integer ID of the current user.
-        balance_ctx: An optional shared read-pass context (see
-            :func:`compute_debt_summary`).
+        balance_ctx: The render's read pass, REQUIRED -- see
+            :func:`compute_debt_summary` for why the owner id and the optional
+            pass both went (plan step C2-f2d-3, ledger row **P58**).
 
     Returns:
         One :class:`~.._goals.GoalProgress` per active goal (see
@@ -309,9 +316,9 @@ def compute_goal_progress(
             are both conversions against how often they are paid (plan step R7a-2a; see
             :func:`app.services.pay_calendar.cadence_for`).
     """
-    core = _load_dashboard_core_data(user_id, balance_ctx)
+    core = _load_dashboard_core_data(balance_ctx)
 
-    active_goals = _load_active_goals(user_id)
+    active_goals = _load_active_goals(core.balance_ctx.user_id)
     if not active_goals:
         return []
 
@@ -325,7 +332,8 @@ def compute_goal_progress(
     account_data = _compute_account_projections(goal_accounts, ctx)
 
     current_breakdown = _get_current_paycheck_breakdown(
-        user_id, core.all_periods, core.current_period,
+        core.balance_ctx.user_id, core.balance_ctx.reported_periods(),
+        core.current_period,
     )
     net_biweekly_pay = (
         current_breakdown.earnings.net_pay if current_breakdown is not None
@@ -333,26 +341,36 @@ def compute_goal_progress(
     )
 
     return _compute_goal_progress(
-        user_id,
+        core.balance_ctx.user_id,
         account_data,
         _GoalInputs(
-            all_periods=core.all_periods,
+            all_periods=core.balance_ctx.reported_periods(),
             net_biweekly_pay=net_biweekly_pay,
             # After the no-goals early return above, for the reason
             # ``compute_debt_summary`` resolves it after ITS early return.
             # The WHOLE schedule rather than the cadence since plan step
             # R7b-3: the contribution filter has to tell whether a
             # count-bounded template has spent its count, which depends on
-            # when the paychecks fall.  Two queries instead of one, paid only
-            # by an owner who HAS goals.
-            calendar=calendar_for(user_id),
+            # when the paychecks fall.
+            #
+            # Off the PASS since plan step C2-f2d-1, not through
+            # ``calendar_for``: this producer already holds a read pass whose
+            # whole job is to derive that calendar once, and calling the loader
+            # beside it derived a second copy of the same value -- measured at
+            # two derivations per ``compute_goal_progress`` call on a
+            # production clone.  The memo makes a second ask free rather than
+            # cheap, so the early return above still costs an owner with no
+            # goals nothing.
+            calendar=core.balance_ctx.calendar(),
+            # The build's ONE day (plan step C2-f2d-3, ledger row **P55**).
+            as_of=core.balance_ctx.as_of,
         ),
         active_goals,
     )
 
 
 def compute_account_balance_cell(
-    user_id: int, account_id: int,
+    balance_ctx: BalanceContext, account_id: int,
 ) -> AccountProjection | None:
     """Compute one active account's cockpit balance cell.
 
@@ -380,9 +398,10 @@ def compute_account_balance_cell(
     the revert and the cell it replaces cannot diverge by construction.
 
     Args:
-        user_id: Integer ID of the current user (the owner; the caller has
-            already verified ownership of *account_id* via the route's
-            ``get_or_404``).
+        balance_ctx: The render's read pass, opened by the route (plan step
+            C2-f2d-3, ledger row **P58**).  Its ``user_id`` is the owner; the
+            fragment's own account gate is the ``None`` return below rather
+            than a ``get_or_404``, so the pass is what scopes it.
         account_id: Integer ID of the account whose balance cell to render.
 
     Returns:
@@ -391,7 +410,7 @@ def compute_account_balance_cell(
         archived between page load and the revert), which the caller turns
         into a 404.
     """
-    core = _load_dashboard_core_data(user_id)
+    core = _load_dashboard_core_data(balance_ctx)
     acct = next(
         (a for a in core.accounts if a.id == account_id), None,
     )
@@ -436,7 +455,8 @@ def _build_trend_window(
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
     return build_trend_periods(
-        core.accounts, core.all_periods, core.current_period,
+        core.accounts, core.balance_ctx.reported_periods(),
+        core.current_period,
         balance_at.debt_schedule_rows(loan_accounts, core.balance_ctx),
     )
 
@@ -459,7 +479,7 @@ def _compute_card_sparklines(
         ``{account_id: [Decimal, ...]}`` for each informative account.
     """
     forward_periods = [
-        p for p in core.all_periods
+        p for p in core.balance_ctx.reported_periods()
         if core.current_period is not None
         and p.period_index >= core.current_period.period_index
     ]
@@ -470,7 +490,6 @@ def _compute_net_worth_section(
     core: _DashboardCoreData,
     params: _AccountParams,
     account_data: list[AccountProjection],
-    user_id: int,
 ) -> tuple[NetWorthRegion, dict[int, list[Decimal]]]:
     """Assemble the cockpit's net-worth region, sparklines, and Horizon range.
 
@@ -525,8 +544,6 @@ def _compute_net_worth_section(
         params: The batch-loaded :class:`_AccountParams`.
         account_data: The per-account projections already computed for the
             page (the today figures + the asset / liability horizon bands).
-        user_id: The current user's id (for the Horizon range's /retirement
-            engine reuse).
 
     Returns:
         ``(region, sparklines)`` -- the :class:`~.._net_worth.NetWorthRegion` and
@@ -553,7 +570,7 @@ def _compute_net_worth_section(
     )
 
     sparklines = _compute_card_sparklines(core, account_data)
-    horizon = build_horizon(user_id, core, account_data)
+    horizon = build_horizon(core, account_data)
 
     return NetWorthRegion(
         today=today, series=series, horizon=horizon,
@@ -604,7 +621,6 @@ def _compute_cockpit_grid_section(
 
 
 def _compute_emergency_fund_section(
-    user_id: int,
     core: _DashboardCoreData,
     account_data: list[AccountProjection],
     calendar: PayCalendar,
@@ -631,9 +647,9 @@ def _compute_emergency_fund_section(
     own commit.
 
     Args:
-        user_id: Integer ID of the current user.
         core: The loaded :class:`_DashboardCoreData` (its accounts, periods and
-            scenario scope the expense baseline).
+            read pass scope the expense baseline; the owner is
+            ``core.balance_ctx.user_id``).
         account_data: The per-account projections (the liquid balances).
         calendar: The owner's whole pay-period schedule.  BOTH figures here
             rest on it -- the expense baseline converts a per-period average
@@ -650,7 +666,7 @@ def _compute_emergency_fund_section(
         ``total_savings`` and ``avg_monthly_expenses``.
     """
     avg_monthly_expenses = _compute_avg_monthly_expenses(
-        user_id, core, calendar,
+        core.balance_ctx.user_id, core, calendar,
     )
     total_savings = _sum_liquid_balances(account_data)
     return {
@@ -662,7 +678,7 @@ def _compute_emergency_fund_section(
     }
 
 
-def compute_dashboard_data(user_id):
+def compute_dashboard_data(balance_ctx: BalanceContext):
     """Compute all data needed by the savings dashboard template.
 
     Loads accounts, projects balances per account type, computes
@@ -670,7 +686,12 @@ def compute_dashboard_data(user_id):
     accounts by category for display.
 
     Args:
-        user_id: Integer ID of the current user.
+        balance_ctx: The render's read pass, opened by the route (plan step
+            C2-f2d-3, ledger row **P58**).  This took an owner id and built its
+            own, which made it the render's DOOR by accident -- true only while
+            ``/savings`` had exactly one producer, and the day it grows a second
+            the fix would be a signature change rather than a wiring one, which
+            is precisely how ``/retirement`` acquired two passes.
 
     Returns:
         dict with keys matching the render_template context:
@@ -686,7 +707,7 @@ def compute_dashboard_data(user_id):
             every render, so the page cannot be built without the cadence (plan step R7a-2a; see
             :func:`app.services.pay_calendar.cadence_for`).
     """
-    core = _load_dashboard_core_data(user_id)
+    core = _load_dashboard_core_data(balance_ctx)
 
     # ── How often this owner is paid ────────────────────────────
     # Resolved ONCE for this build and threaded (plan step R7a-2a, section
@@ -709,7 +730,16 @@ def compute_dashboard_data(user_id):
     # both, which is what ``cadence_for``'s own docstring says a caller
     # holding a calendar must do -- reading ``calendar.cadence`` rather than
     # querying the schedule row a second time.
-    calendar = calendar_for(user_id)
+    #
+    # Read off the PASS since plan step C2-f2d-1.  ``calendar_for`` here was a
+    # THIRD derivation of one value on this render -- the pass memoizes the
+    # calendar and the seam's per-period entries below ask it for one, so this
+    # line went to the database for a value the very next producer then derived
+    # again.  Asking the pass FILLS that memo instead, which is why it stays
+    # here (before the projections) rather than moving: same position, same
+    # ``PayCalendarError`` for an owner whose cadence cannot be resolved, one
+    # derivation for the whole render.
+    calendar = core.balance_ctx.calendar()
 
     # ── Load account-type-specific parameters ───────────────────
     params = _load_account_params(core.accounts)
@@ -729,7 +759,8 @@ def compute_dashboard_data(user_id):
     # a 3% recurring raise saw a DTI denominator ~$260/mo too low (audit
     # worked example: $8,666.67 vs $8,926.67, 27.7% vs 26.9%).
     current_breakdown = _get_current_paycheck_breakdown(
-        user_id, core.all_periods, core.current_period,
+        core.balance_ctx.user_id, core.balance_ctx.reported_periods(),
+        core.current_period,
     )
     net_biweekly_pay = (
         current_breakdown.earnings.net_pay if current_breakdown is not None
@@ -738,14 +769,16 @@ def compute_dashboard_data(user_id):
 
     # ── Savings goals ───────────────────────────────────────────
     goal_data = _compute_goal_progress(
-        user_id,
+        core.balance_ctx.user_id,
         account_data,
         _GoalInputs(
-            all_periods=core.all_periods,
+            all_periods=core.balance_ctx.reported_periods(),
             net_biweekly_pay=net_biweekly_pay,
             calendar=calendar,
+            # The build's ONE day (plan step C2-f2d-3, ledger row **P55**).
+            as_of=core.balance_ctx.as_of,
         ),
-        _load_active_goals(user_id),
+        _load_active_goals(core.balance_ctx.user_id),
     )
 
     # ── Template helpers ────────────────────────────────────────
@@ -758,7 +791,7 @@ def compute_dashboard_data(user_id):
 
     # ── Debt summary and DTI ───────────────────────────────────
     debt_summary = _debt_summary_with_dti(
-        account_data, params.escrow_map, current_breakdown, user_id,
+        account_data, params.escrow_map, current_breakdown, core.balance_ctx,
     )
 
     # ── Net-worth cockpit region + per-account sparklines ──────
@@ -767,7 +800,7 @@ def compute_dashboard_data(user_id):
     # (slice 3c), AND the Horizon range (P-AC1 Loop B P1) -- all from this one
     # dashboard load, so the /savings request never re-loads for the horizon.
     net_worth, sparklines = _compute_net_worth_section(
-        core, params, account_data, user_id,
+        core, params, account_data,
     )
 
     return {
@@ -780,10 +813,10 @@ def compute_dashboard_data(user_id):
         # The coverage figures and the two figures its caption names as their
         # basis, from one helper (plan step X-z2).
         **_compute_emergency_fund_section(
-            user_id, core, account_data, calendar,
+            core, account_data, calendar,
         ),
         "savings_accounts": savings_accounts,
-        "archived_accounts": _load_archived_accounts(user_id),
+        "archived_accounts": _load_archived_accounts(core.balance_ctx.user_id),
         "debt_summary": debt_summary,
         "net_worth": net_worth,
         "sparklines": sparklines,

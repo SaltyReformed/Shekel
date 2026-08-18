@@ -39,7 +39,12 @@ from app.services.recurrence import (
 # resolves at CALL time; patching this file's import would prove only that the
 # harness reads what it reads.
 from app.services.recurrence import _reading
-from tests.oracles.recurrence_baseline import CADENCE_BY_LEGACY_NAME
+from tests.oracles.recurrence_baseline import (
+    BASELINE_CADENCES,
+    EVERY_PERIOD,
+    EVERY_N_PERIODS,
+    MONTHLY,
+)
 from tests.test_services.test_recurrence_resolution import build_calendar
 
 _USER_ID = 1
@@ -52,8 +57,8 @@ _USER_ID = 1
 _A_FIRST_OCCURRENCE = date(2026, 4, 22)
 
 
-def _rule(cadence_name, starts_on=_A_FIRST_OCCURRENCE, **columns):
-    """Return an unsaved rule of *cadence_name*, as R7c-c stores one.
+def _rule(cadence, starts_on=_A_FIRST_OCCURRENCE, **columns):
+    """Return an unsaved rule of *cadence*, as R7c-c stores one.
 
     Transient by design: the read door takes a rule row and issues no query,
     so nothing here needs the rule to exist in a table.
@@ -61,14 +66,13 @@ def _rule(cadence_name, starts_on=_A_FIRST_OCCURRENCE, **columns):
     **It states the SIX cadence columns and nothing else** (plan step R7c-c).
     ``interval_n``, ``unit_id`` and ``placement_id`` are what
     :func:`~app.services.recurrence.recurrence_spec` reads a rule's cadence
-    off, and four of the six are ``NOT NULL``.  The seven closed-set names are
-    test-side SHORTHAND from that step, defined once in
-    ``tests.oracles.recurrence_baseline`` -- so a rule built for this file
-    carries exactly what the write door would write for a shape the frozen
-    baseline labels with the same name.
+    off, and four of the six are ``NOT NULL``.  A cadence is one of the
+    baseline oracle's own constants -- so a rule built for this file carries
+    exactly what the write door would write for the frozen shape built from
+    that same constant.
 
     Args:
-        cadence_name: One of :data:`CADENCE_BY_LEGACY_NAME`'s keys.
+        cadence: One of :data:`BASELINE_CADENCES`.
         starts_on: The rule's first occurrence.  Defaults to
             :data:`_A_FIRST_OCCURRENCE`, which the shared
             :func:`build_calendar` schedule reaches.
@@ -77,10 +81,9 @@ def _rule(cadence_name, starts_on=_A_FIRST_OCCURRENCE, **columns):
     Returns:
         The unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
-    cadence = CADENCE_BY_LEGACY_NAME[cadence_name]
     defaults = {
         "user_id": _USER_ID,
-        # 1 rather than the shorthand's own interval, because one case below
+        # 1 rather than the cadence's own interval, because one case below
         # deliberately stores the value
         # ``ck_recurrence_rules_positive_interval`` refuses and every other
         # assertion here is about the anchor rather than the rhythm.  A caller
@@ -102,7 +105,7 @@ class TestOneComposition:
         """The meaning and the placements, from one call."""
         with app.app_context():
             calendar = build_calendar()
-            rule = _rule("Monthly")
+            rule = _rule(MONTHLY)
 
             reading = read_rule(rule, calendar)
 
@@ -122,14 +125,14 @@ class TestOneComposition:
         with app.app_context():
             calendar = build_calendar()
 
-            for cadence_name in CADENCE_BY_LEGACY_NAME:
+            for cadence in BASELINE_CADENCES:
                 rule = _rule(
-                    cadence_name, starts_on=date(2026, 6, 15),
+                    cadence, starts_on=date(2026, 6, 15),
                 )
 
                 assert rule_occurrences(rule, calendar) == (
                     read_rule(rule, calendar).placements
-                ), cadence_name
+                ), cadence
 
     def test_rule_occurrences_walks_the_cadence_exactly_once(
         self, app, monkeypatch,
@@ -142,7 +145,7 @@ class TestOneComposition:
         """
         with app.app_context():
             calendar = build_calendar()
-            rule = _rule("Monthly")
+            rule = _rule(MONTHLY)
 
             calls = []
             real = _reading.occurrence_placements
@@ -172,7 +175,7 @@ class TestTheMeaningAlone:
         """
         with app.app_context():
             calendar = build_calendar()
-            rule = _rule("Monthly")
+            rule = _rule(MONTHLY)
 
             def fail_if_called(*_args, **_kwargs):
                 raise AssertionError("the meaning-only read placed occurrences")
@@ -190,14 +193,14 @@ class TestTheMeaningAlone:
         with app.app_context():
             calendar = build_calendar()
 
-            for cadence_name in CADENCE_BY_LEGACY_NAME:
+            for cadence in BASELINE_CADENCES:
                 rule = _rule(
-                    cadence_name, starts_on=date(2026, 6, 15),
+                    cadence, starts_on=date(2026, 6, 15),
                 )
 
                 assert resolved_recurrence(rule, calendar) == (
                     read_rule(rule, calendar).resolved
-                ), cadence_name
+                ), cadence
 
 
 class TestTheEmptySchedule:
@@ -214,7 +217,7 @@ class TestTheEmptySchedule:
             empty = PayCalendar.from_paydays(
                 paydays=(), cadence_days=None, user_id=_USER_ID,
             )
-            rule = _rule("Monthly")
+            rule = _rule(MONTHLY)
 
             assert resolved_recurrence(rule, empty) is None
 
@@ -224,7 +227,7 @@ class TestTheEmptySchedule:
             empty = PayCalendar.from_paydays(
                 paydays=(), cadence_days=None, user_id=_USER_ID,
             )
-            rule = _rule("Every Period")
+            rule = _rule(EVERY_PERIOD)
 
             reading = read_rule(rule, empty)
 
@@ -237,7 +240,7 @@ class TestTheEmptySchedule:
             empty = PayCalendar.from_paydays(
                 paydays=(), cadence_days=None, user_id=_USER_ID,
             )
-            rule = _rule("Every Period")
+            rule = _rule(EVERY_PERIOD)
 
             assert rule_occurrences(rule, empty) == ()
 
@@ -254,7 +257,7 @@ class TestItSwallowsNothingElse:
         fires.
 
         **The unreadable column moved at plan step R7c-c**: this planted a
-        ``pattern_id`` no ``RecurrencePatternEnum`` member named, and that
+        ``pattern_id`` the closed pattern set's enum did not name, and that
         column is dropped.  The state it leaves behind is a ``unit_id`` naming
         a ``ref.recurrence_units`` row the enums do not model -- the same class
         of broken invariant (a seed the enums have diverged from, a hand edit,
@@ -266,7 +269,7 @@ class TestItSwallowsNothingElse:
                 ref_cache.recurrence_unit_id(member)
                 for member in RecurrenceUnitEnum
             )
-            rule = _rule("Monthly")
+            rule = _rule(MONTHLY)
             rule.unit_id = highest + 1000
 
             with pytest.raises(RecurrenceResolutionError, match="matches no"):
@@ -286,7 +289,7 @@ class TestItSwallowsNothingElse:
         """
         with app.app_context():
             other = build_calendar(user_id=_USER_ID + 1)
-            rule = _rule("Monthly")
+            rule = _rule(MONTHLY)
 
             with pytest.raises(RecurrenceResolutionError, match="cannot be"):
                 resolved_recurrence(rule, other)
@@ -295,7 +298,7 @@ class TestItSwallowsNothingElse:
         """``ck_recurrence_rules_positive_interval``'s reader-side refusal."""
         with app.app_context():
             calendar = build_calendar()
-            rule = _rule("Every N Periods", interval_n=0)
+            rule = _rule(EVERY_N_PERIODS, interval_n=0)
 
             with pytest.raises(RecurrenceResolutionError, match="positive"):
                 resolved_recurrence(rule, calendar)
@@ -311,7 +314,7 @@ class TestItSwallowsNothingElse:
         """
         with app.app_context():
             calendar = build_calendar()
-            rule = _rule("Monthly", due_day_of_month=99)
+            rule = _rule(MONTHLY, due_day_of_month=99)
 
             with pytest.raises(
                 RecurrenceResolutionError, match="due_day_of_month",
@@ -331,7 +334,7 @@ class TestItSwallowsNothingElse:
         with app.app_context():
             calendar = build_calendar()
             rule = _rule(
-                "Monthly", starts_on=date(9999, 12, 31),
+                MONTHLY, starts_on=date(9999, 12, 31),
             )
 
             with pytest.raises(RecurrenceResolutionError, match="starts_on"):
