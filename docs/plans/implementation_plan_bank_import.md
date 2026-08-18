@@ -76,13 +76,13 @@ the payback rows do not reconcile to what was actually paid to the card.
           production clone (9 accounts, 434 grid cells, 6,076 daily points byte-identical with 306
           real lines). **What a LATER leaf must obey**: identity is positional and its ordinal is
           UNMEASURED (see R-FU's amendment), the restatement guard compares only the description,
-          and a refusal has no repair door -- **N-301**, **N-302**, **N-303**.
+          and a refusal has no repair door -- **N-313**, **N-302**, **N-303**.
     - [x] **X-f6a-2** `267cb75e` a bank line IS these rows: `budget.statement_matches` and its
           members hold the correspondence over an exclusive arc, the proposer offers it, and an
-          accepted match writes the bank's posted day onto every member -- settling a Projected row
-          and correcting a wrongly-dated one. Closed **N-173**; opened **N-304**-**N-306**.
-          **What a LATER step must obey**: no clearing link is written from a match (**R-FV**), an
-          unbalanced group is refused rather than apportioned, and a group's day is its LATEST.
+          accepted match writes the bank's posted day onto every member. Closed **N-173**; opened
+          **N-305**, **N-306** and **N-314**. **What a LATER step must obey**: no clearing link is
+          written from a match (**R-FV**), an unbalanced group is refused rather than apportioned,
+          and a group's day is its LATEST.
 
     - [ ] **X-f6a-4** `feat(import): an import can be undone` -- the repair door finding **N-302**
           says a refusal owes. A `StatementLineConflict` is TERMINAL today: no door in `app/`

@@ -29,9 +29,10 @@ partition over ``template_id`` / ``transfer_id`` -- ruling R-FI refuted that
 discriminator by tracing -- because two of them are SUBSETS of two others:
 
   1. **OWN** -- the row states its own figure, and SAYS SO by carrying
-     ``amount_source_id IS NULL``.  An ad-hoc row, a CC payback, a row a human
-     re-priced, and every row whose settle FROZE its figure (plan step X-aq,
-     which plan step X-au-c3 formalises).
+     ``amount_source_id IS NULL``.  An ad-hoc row, a CC payback, and a row a
+     human re-priced.  **A settled row is NOT automatically one of them**: plan
+     step X-au-c3 records what MOVED in its own columns and writes no plan
+     column at all, so a settled row's plan keeps whatever ownership it had.
   2. **SALARY** -- a paycheck, priced by the salary profile driving its
      template (``income_service.live_projected_net``).  A SUBSET of rule 3:
      ``SalaryProfile.template_id`` names an ordinary transaction template.
@@ -323,9 +324,11 @@ def amount_rule(txn) -> AmountRule:
       source and stores the typed amount, not because ``is_override`` is set --
       so the flag can go on carrying its other three facts (finding **N-238**,
       plan step X-au-h) without touching pricing;
-    * a SETTLED row owns its figure because the settle FROZE it (plan step X-aq,
-      formalised at X-au-c3), not because it left Projected.  Until that leaf
-      lands no row is declared derived, so no settled row can reach a derived arm.
+    * a SETTLED row is priced by this dispatch like any other, because plan step
+      X-au-c3 writes NO plan column at a settle -- what moved is recorded beside
+      the plan, not into it.  No money reader asks this about a settled row:
+      ``row_valuation.fixed_contribution`` answers from the record first, and the
+      dispatch is reached only for a row whose money has not moved.
 
     **Soft deletion does not change the answer, deliberately.**  Being deleted is
     a statement about whether the row counts, and making it flip the rule would
@@ -449,8 +452,8 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     balance surface folds.
 
     **It is UNWIRED as of this step.**  Nothing in ``app/`` calls it yet; plan
-    step X-au-c2 routes the readers through it and X-au-c3 turns the settle
-    refresh into the freeze.
+    step X-au-c2 routes the readers through it, and X-au-c3 makes a settled row
+    RECORD what moved so no settled row is priced here at all.
 
     **A caller resolving many rows should eager-load SEVEN relationships**, and
     an adversarial review counted them after a first draft named two: per row,
@@ -523,13 +526,13 @@ def amounts_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
     The two answer different questions and a reader wants one or the other:
 
       * a CONTRIBUTION is what the row is worth to a balance -- ``0`` for an
-        excluded row, the entered ``actual_amount`` when a human read one off a
-        statement, else the resolved amount;
+        excluded row, what the row RECORDED as having moved once it has settled
+        (``row_valuation.settled_figure``), else the resolved amount;
       * an AMOUNT is what the row's budget IS, unconditionally.
 
     **Ruling E-21 is why the second exists.**  An entry-tracked bill row's
-    budget base is ``estimated_amount`` -- never ``actual_amount``, never
-    status-dependent -- so the row's three figures (the amount cell, the
+    budget base is ``estimated_amount`` -- never what the row recorded as
+    having moved, never status-dependent -- so the row's three figures (the amount cell, the
     remaining, the over-budget flag) all answer one question.  A contribution
     would break both halves of that: it answers ``$0.00`` for a Cancelled
     envelope, whose budget is still its budget, and it answers the entered

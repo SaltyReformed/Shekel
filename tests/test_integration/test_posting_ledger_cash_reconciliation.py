@@ -15,7 +15,10 @@ plan Section 6:
      combined effect of A's settled, non-deleted transfer shadows AND ordinary
      transactions.  The transaction term is the signed
      ``effective - Sigma(credit entries)`` (``+`` income / ``-`` expense), where
-     ``effective = COALESCE(actual, estimated)``.
+     ``effective`` is what the row RECORDED as having moved
+     (``posting_reads.settled_figure_clause``) -- it was
+     ``COALESCE(actual_amount, estimated_amount)`` until plan step X-au-c3 made
+     a settled row's figure its own record rather than a fallback to its plan.
   2. **Per counter account (category / fallback / orphan).**  For each non-linked
      (Income/Expense) ledger account CA, ``SUM(postings on CA)`` equals the
      negation of the signed effects of the transactions whose legs CURRENTLY
@@ -125,6 +128,7 @@ from app.utils.balance_predicates import (
     settled_status_ids,
 )
 from tests._test_helpers import (
+    settlement_if_settling,
     add_txn,
     create_account_of_type,
     create_envelope_txn,
@@ -250,7 +254,7 @@ def _independent_transfer_shadow_effect(
     """
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     effective = _db.func.coalesce(
-        Transaction.actual_amount, Transaction.estimated_amount
+        Transaction.settled_amount, Transaction.estimated_amount
     )
     signed = case(
         (Transaction.transaction_type_id == income_type_id, effective),
@@ -285,7 +289,7 @@ def _independent_cash_txn_effect(account_id: int, scenario_id: int) -> Decimal:
     """
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     effective = _db.func.coalesce(
-        Transaction.actual_amount, Transaction.estimated_amount
+        Transaction.settled_amount, Transaction.estimated_amount
     )
     credit_sum = (
         _db.session.query(
@@ -1033,7 +1037,7 @@ class TestEverySettledTransactionPosts:
             all_credit = add_txn(
                 db.session, seed_user, period, "All Credit", "75.00",
                 status_enum=StatusEnum.DONE, category_key="Groceries",
-                actual_amount="75.00",
+                settled_amount="75.00",
             )
             db.session.add(TransactionEntry(
                 transaction_id=all_credit.id, account_id=all_credit.account_id, user_id=user_id,
@@ -1432,6 +1436,7 @@ class TestRevertedTransactionReconcilesAtZero:
             # Revert to Projected via the real primitives (seam, then reconcile).
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.PROJECTED)),
             )
             posting_service.sync_transaction_postings(txn, settled=False)
             db.session.commit()
@@ -1650,10 +1655,14 @@ class TestOracleIsNotVacuous:
                 checking.id, scenario_id,
             )
 
-            # Tamper the estimate (transactions carry no balance trigger, so this
-            # commits); with no actual, effective becomes 999.
+            # Tamper the RECORDED figure, not the estimate (plan step
+            # X-au-c3): a settled row's effect is what it recorded as having
+            # moved, and its plan is beside that rather than behind it -- so
+            # moving the estimate on a settled row is now inert, which is the
+            # substitution this step exists to remove.  Transactions carry no
+            # balance trigger, so the tamper commits.
             db.session.execute(_db.text(
-                "UPDATE budget.transactions SET estimated_amount = 999 "
+                "UPDATE budget.transactions SET settled_amount = 999 "
                 "WHERE id = :i"
             ), {"i": txn_id})
             db.session.commit()

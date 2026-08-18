@@ -189,7 +189,7 @@ def compute_debt_summary(balance_ctx: BalanceContext) -> DebtSummary | None:
     """Compute only the debt summary + DTI for the budget dashboard card.
 
     The narrow producer behind the dashboard's debt track
-    (``dashboard_pulse_service.compute_tracks_section``; deep-hunt #82's
+    (``dashboard_service.compute_tracks_section``; deep-hunt #82's
     efficiency/SRP half).  Identical figures to
     ``compute_dashboard_data(balance_ctx)["debt_summary"]`` by construction:
     it runs the same loaders and the same per-account projection
@@ -278,7 +278,7 @@ def compute_goal_progress(balance_ctx: BalanceContext) -> list[GoalProgress]:
     """Compute only the savings-goal progress for the budget dashboard card.
 
     The narrow producer behind the dashboard's savings tracks
-    (``dashboard_pulse_service.compute_tracks_section``), mirroring
+    (``dashboard_service.compute_tracks_section``), mirroring
     :func:`compute_debt_summary`'s pattern.  Identical figures
     to ``compute_dashboard_data(balance_ctx)["goal_data"]`` by construction:
     it runs the same loaders, the same per-account projection dispatch

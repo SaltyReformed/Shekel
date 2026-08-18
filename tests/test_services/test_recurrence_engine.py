@@ -23,6 +23,7 @@ from app import ref_cache
 from app.enums import (
     BusinessDayShiftEnum,
     RecurrenceUnitEnum,
+    SettlementBasisEnum,
     StatusEnum,
 )
 from app.services import (
@@ -30,6 +31,7 @@ from app.services import (
     pay_period_service,
     pay_period_write,
     recurrence_engine,
+    status_seam,
 )
 from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.recurrence import (
@@ -60,6 +62,8 @@ from tests._test_helpers import (
     make_every_period_rule,
     make_cadence_rule,
     open_calendar_hole,
+    settlement_basis_id,
+    settlement_if_settling,
 )
 
 
@@ -409,10 +413,14 @@ class TestRecurrenceGeneration:
             )
             db.session.flush()
 
-            # Mark the first one as done.
+            # Mark the first one as done, through the real seam: it writes the
+            # whole settlement record in one act (plan step X-au-c3), and a
+            # bare status assign leaves a state the record's own CHECKs refuse.
             done_status = db.session.query(Status).filter_by(name="Paid").one()
-            created[0].status_id = done_status.id
-            created[0].actual_amount = Decimal("95.00")
+            status_seam.apply_status_change(
+                created[0], done_status.id,
+                settlement=settlement_if_settling(created[0], done_status.id),
+            )
             db.session.flush()
 
             # Regenerate -- should not delete the done transaction.
@@ -421,9 +429,12 @@ class TestRecurrenceGeneration:
             )
             db.session.flush()
 
-            # The done transaction should still exist unchanged.
+            # The done transaction should still exist unchanged: the settle
+            # recorded the row's own plan on the ``derived`` basis, and the
+            # regenerate touched neither.
             db.session.refresh(created[0])
-            assert created[0].actual_amount == Decimal("95.00")
+            assert created[0].settled_amount == Decimal("100.00")
+            assert created[0].settled_basis_id is not None
 
 
 # --- Pure Pattern Matching Tests ---------------------------------------------
@@ -2399,15 +2410,20 @@ class TestRegenerateForTemplate:
                     "was created beside the owner's"
                 )
 
-    def test_an_actual_amount_alone_retains_an_orphaned_row(
+    def test_a_settlement_record_alone_retains_an_orphaned_row(
         self, app, db, seed_user, seed_periods
     ):
         """The third arm of the records predicate, which was untested.
 
-        Neutering it passed the full suite.  It is also the arm production hits
-        most: recording a purchase stamps the parent's ``actual_amount``
-        through ``entry_service``'s own resync, so the live shape is "entries
-        AND actual_amount" rather than either alone.
+        Neutering it passed the full suite.
+
+        **The arm reads the settlement RECORD since plan step X-au-c3**, where
+        it read ``actual_amount is not None``.  That column meant "a human typed
+        a figure" only because it carried both the settled figure and the fact
+        that a human had supplied it; a row that has SETTLED records what moved
+        whoever said so, and that is the fact worth holding a row for.  The
+        fixture settles the row rather than writing a figure onto a projected
+        one, which the record's CHECKs now refuse.
         """
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
@@ -2421,7 +2437,26 @@ class TestRegenerateForTemplate:
 
             priced, blank = created[0], created[1]
             priced_id, blank_id = priced.id, blank.id
-            priced.actual_amount = Decimal("41.10")
+            # The RETAINED state, which is what a REVERT leaves behind: the
+            # record kept, the ASSERTION released (``settled_on`` cleared, and
+            # ``reconciled_by_id`` with it).
+            # ``status_seam.apply_status_change`` writes exactly this shape on
+            # the way OUT of the settled band.
+            #
+            # **That is a LIVE path, not a structural backstop.**  A settled
+            # status is immutable to this sweep, so before plan step X-au-c3 --
+            # when leaving the band destroyed the record along with the
+            # assertion -- no row this pass could see ever carried one and the
+            # arm was unreachable.  Retention put a real row in front of it: the
+            # owner settled this row, read a figure off a statement, and set it
+            # back to Projected in order to edit it.  Retiring it now would
+            # delete that figure, which is what retention exists to keep.
+            #
+            # The columns satisfy ``ck_transactions_settle_day_needs_basis``: a
+            # record without a day is precisely what that implication admits.
+            priced.settled_on = None
+            priced.settled_amount = Decimal("41.10")
+            priced.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
             db.session.flush()
 
             template.recurrence_rule = None

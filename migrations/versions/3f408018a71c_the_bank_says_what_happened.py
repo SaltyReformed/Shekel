@@ -88,7 +88,16 @@ loses only recorded statement lines.  No app figure depends on them at this
 leaf, so a downgraded database renders every number it rendered before.
 
 Revision ID: 3f408018a71c
-Revises: b2e9a47c3f18
+**Re-parented onto ``e4b8a71c0f36`` when this branch merged `origin/dev`
+2026-08-18.**  The settlement record (plan step ``balance:X-au-c3``) shipped
+while the bank-import arc was out, and both chains forked from
+``b2e9a47c3f18`` -- two Alembic heads.  The arc's THREE migrations move
+together and keep their own order; only the root re-points.  The steps are
+independent (that one adds settlement columns to ``budget.transactions``, these
+create the import and match tables), so the order between them carries no
+meaning and the linearisation costs nothing.
+
+Revises: e4b8a71c0f36
 Create Date: 2026-08-16
 """
 from alembic import op
@@ -96,7 +105,7 @@ import sqlalchemy as sa
 
 # Revision identifiers, used by Alembic.
 revision = '3f408018a71c'
-down_revision = 'b2e9a47c3f18'
+down_revision = 'e4b8a71c0f36'
 branch_labels = None
 depends_on = None
 

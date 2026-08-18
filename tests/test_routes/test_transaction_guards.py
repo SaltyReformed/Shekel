@@ -113,24 +113,36 @@ class TestUpdateShadowGuard:
             assert expense.estimated_amount == Decimal("500.00")
             assert income.estimated_amount == Decimal("500.00")
 
-    def test_update_shadow_actual_amount(
+    def test_a_settled_figure_on_an_UNSETTLED_shadow_is_refused(
         self, app, db, auth_client, seed_user, seed_periods_today
     ):
-        """actual_amount change on shadow propagates to both shadows."""
+        """A figure records a settle, so an unsettled pair cannot be handed one.
+
+        **This asserted the opposite until plan step X-au-c3** -- the PATCH
+        wrote ``actual_amount`` onto a PROJECTED shadow and mirrored it to its
+        sibling.  A figure now RECORDS what moved, and
+        ``ck_transactions_settled_amount_needs_basis`` keeps one off a row whose
+        money has not; the seam refuses the offer before the column is reached,
+        so the request is a designed 400 rather than an ``IntegrityError``.  No
+        form can reach it: the correction box renders only on a settled row.
+
+        To correct a transfer's figure, settle it -- the same act that records
+        one -- or correct an already-settled pair.
+        """
         with app.app_context():
             xfer, expense, income = _create_test_transfer(seed_user, seed_periods_today)
 
             resp = auth_client.patch(
                 f"/transactions/{expense.id}",
-                data={"actual_amount": "290.00"},
+                data={"settled_amount": "290.00"},
             )
 
-            assert resp.status_code == 200
+            assert resp.status_code == 400
             db.session.expire_all()
             expense = db.session.get(Transaction, expense.id)
             income = db.session.get(Transaction, income.id)
-            assert expense.actual_amount == Decimal("290.00")
-            assert income.actual_amount == Decimal("290.00")
+            assert expense.settled_amount is None
+            assert income.settled_amount is None
 
     def test_update_shadow_status(
         self, app, db, auth_client, seed_user, seed_periods_today

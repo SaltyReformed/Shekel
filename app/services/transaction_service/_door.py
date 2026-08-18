@@ -3,8 +3,10 @@ Shekel Budget App -- Transaction Service: what a DOOR's requested status means
 
 The route layer's ONE status entry point.  A door states the status the USER
 asked for; :func:`apply_requested_status` decides what applying it means --
-dispatching a settle to the verb, taking back what a settle derived on the way
-out, and reconciling the posted ledger either way.
+dispatching a settle to the verb, and reconciling the posted ledger either way.
+What a REVERT undoes is the status seam's, in one statement with the status
+itself (plan step X-au-c3): leaving the settled band releases the whole
+settlement record.
 
 **It exists because a ROUTE was making that decision, and making it wrong**
 (finding **N-219**, plan step X-ap): the transaction PATCH handler called the
@@ -16,10 +18,18 @@ Flask-isolated: plain data and ORM rows in, mutations applied in place, no
 """
 
 from datetime import date
+from decimal import Decimal
 
+from app.exceptions import ValidationError
 from app.services import posting_service
 from app.models.transaction import Transaction
-from app.services.status_seam import apply_status_change
+from app.services.row_valuation import recorded_figure
+from app.services.status_seam import (
+    Settlement,
+    apply_status_change,
+    correction_record,
+    figure_for_status,
+)
 from app.services.transaction_service._settle import (
     settle_transaction,
     settles_from_entries,
@@ -27,51 +37,7 @@ from app.services.transaction_service._settle import (
 from app.services.transaction_service._status_rules import (
     reject_mismatched_settled_status,
 )
-from app.utils.balance_predicates import (
-    enters_settled_band,
-    leaves_settled_band,
-)
-
-
-def _release_derived_actual(txn: Transaction) -> None:
-    """Drop an envelope's DERIVED actual when the row stops being settled.
-
-    **A settle writes ``actual_amount`` for an envelope; a revert must take it
-    back**, because what that column holds for such a row is not a fact the
-    user authored -- it is ``sum(entries)`` at the moment of the settle, which
-    :func:`._settle.settle_from_entries` wrote in the same statement as the status and
-    the settle day.  The seam already clears ``settled_on`` on the way out, on
-    exactly this reasoning; the derived amount is the same kind of value and was
-    being left behind.
-
-    **Measured, and it is why this exists rather than being argued.**
-    Production row 2281 *Groceries* is Projected today carrying
-    ``actual_amount = 533.08`` against a `$500.00` budget -- written by
-    ``settle_from_entries`` (audit_log id 2978, one statement with ``status_id``
-    and ``settled_on``) and left behind by a later revert.  The valuation
-    is ``COALESCE(actual, estimated)``, so that row projects at its SPEND rather
-    than its budget, and a purchase deleted while it is Projected does not move
-    the figure: :func:`app.services.entry_service._resync_settled_envelope` is
-    gated on the settled band, correctly, because a Projected row's actual is
-    not yet a fact.  The result is a stored derived value with nothing that can
-    re-derive it.
-
-    **Only the DERIVED kind is released**, which is what makes this narrow
-    enough to be right: a BILL's ``actual_amount`` is a figure a HUMAN read off
-    a statement (ruling **R-FB**), and clearing that on a revert would delete
-    the user's own correction.  :func:`._settle.settles_from_entries` is the same
-    predicate the settle branches on and the same one the edit doors offer an
-    amount box on (ruling **R-FF**), so a row's amount is derived, correctable
-    and released by ONE rule rather than three.
-
-    Mutates in place; does NOT flush or commit.
-
-    Args:
-        txn: The row leaving the settled band, still in its settled status.
-            Read for ``tracks_purchases`` and ``entries``.
-    """
-    if settles_from_entries(txn):
-        txn.actual_amount = None
+from app.utils.balance_predicates import enters_settled_band
 
 
 def apply_requested_status(
@@ -79,6 +45,7 @@ def apply_requested_status(
     new_status_id: int,
     *,
     settled_on: date | None = None,
+    submitted: Decimal | None = None,
 ) -> None:
     """Apply the status a DOOR requested, and reconcile the ledger to it.
 
@@ -127,6 +94,12 @@ def apply_requested_status(
         settled_on: The civil day the money moved, when the door knows it, after
             the door's own :func:`app.services.status_seam.settle_day_for_status`
             reading of the submission.  ``None`` leaves the seam's rule in force.
+        submitted: The figure a HUMAN supplied, when the door collected one.
+            Read only by the SETTLE arm, which decides whether it is a
+            correction to record; ``None`` means nobody typed one, and the
+            settle records what it resolved instead.  Every other status change
+            ignores it, because a figure records what MOVED and nothing else
+            here moves money.
 
     Raises:
         ValidationError: From an illegal transition or the seam's settle-day
@@ -137,24 +110,127 @@ def apply_requested_status(
     """
     # THE DISPATCH, and it is the whole of finding **N-219**'s fix.  Moving a
     # row INTO the settled band is a SETTLE, which decides an amount before it
-    # decides a status; every other status change is the mechanics alone.  The
-    # verb reconciles the ledger itself, so this arm returns rather than falling
-    # through to a second reconcile of the same row.
+    # decides a status; every other status change is the mechanics plus
+    # whatever the caller stated about what moved.  The verb reconciles the
+    # ledger itself, so this arm returns rather than falling through to a
+    # second reconcile of the same row.
     if enters_settled_band(txn, new_status_id):
         reject_mismatched_settled_status(txn, new_status_id)
-        settle_transaction(txn, settled_on=settled_on)
+        settle_transaction(txn, submitted=submitted, settled_on=settled_on)
         return
-    # The other direction is the settle's own act undone: an envelope's
-    # ``actual_amount`` was DERIVED from its entries by the settle, so leaving
-    # the band takes it back.  Read BEFORE the seam and applied AFTER it, and
-    # both halves of that matter -- the predicate is about the status the row
-    # is LEAVING, and a refused transition must leave the row untouched (the
-    # ordering ``apply_status_change`` uses for its own three refusals).  It
-    # lands before the reconcile below, which reads the row's contribution.
-    releases_derived_actual = leaves_settled_band(txn, new_status_id)
-    apply_status_change(txn, new_status_id, settled_on=settled_on)
-    if releases_derived_actual:
-        _release_derived_actual(txn)
+    # Everything else is ONE seam pass carrying every fact the door was given:
+    # the status, the day, and what the row records as having moved.
+    #
+    # **It was two passes with an early return between them, and that dropped
+    # status changes on the floor** -- measured, not reasoned: a row moving
+    # Paid -> Settled (the archive) while carrying a corrected figure recorded
+    # the figure, returned, and left the row Paid, answering 200.  The archive
+    # is offered by the popover's own Status dropdown beside the Actual box, so
+    # a user correcting a figure on the way to filing the row away silently got
+    # only half of what they asked for.  The revert direction failed the same
+    # way one step further out: a service caller reverting a settled row while
+    # naming a figure recorded it, posted the ledger difference, and never
+    # reverted -- booking money for a row it had just been told had not moved.
+    #
+    # The cause was treating a CORRECTION and a STATUS CHANGE as alternatives.
+    # They are independent facts, and the seam already takes both in one call
+    # -- which is what makes "a settled row states what moved" its property
+    # rather than a convention each door keeps.  Composing them also collapses
+    # what used to be two ledger reconciles into the one this function always
+    # promised.
+    #
+    # **A figure on a row STAYING in the settled band is a CORRECTION to what
+    # it recorded**, and it is applied rather than refused (developer ruling,
+    # 2026-08-17).  The estimate and the actual are two different facts about a
+    # row and get two different boxes: editing the estimate is a budget
+    # decision and touches nothing that moved, and editing the actual states
+    # what the bank really took.  Correcting a figure therefore does not
+    # require reverting the row -- which matters beyond convenience, because
+    # revert-then-re-settle was the ONLY path and it silently re-booked a
+    # retained correction over a re-planned amount.
+    #
+    # This function used to own the other half of the revert too, clearing an
+    # envelope's derived ``actual_amount`` through ``_release_derived_actual``
+    # while deliberately sparing a bill's correction, because the two shared a
+    # column and only a predicate could tell them apart.  They no longer share
+    # one, and the predicate went with the sharing: nothing here is released BY
+    # KIND, because nothing here is released at all.
+    settlement = _correction_for_status(txn, new_status_id, submitted)
+    apply_status_change(
+        txn, new_status_id, settled_on=settled_on, settlement=settlement,
+    )
     posting_service.sync_transaction_postings(
         txn, settled=txn.status.is_settled,
     )
+
+
+def _correction_for_status(
+    txn: Transaction, new_status_id: int, submitted: Decimal | None,
+) -> Settlement | None:
+    """Return the record a submitted figure makes on *txn*, or ``None``.
+
+    **The Actual box's write rule for a plain row** (developer ruling,
+    2026-08-17): a settled row's figure is an observation about the bank, and
+    an observation gets corrected when the statement disagrees.  Its sibling
+    for the other half of the same assertion is
+    :func:`app.services.transfer_service._status.apply_settle_day_correction`,
+    which corrects the DAY on the identical argument.
+
+    **It resolves rather than writes**, and that is what lets the caller hand
+    the status and the record to the seam in ONE pass.  An earlier shape wrote
+    the record itself and returned, so a status change arriving in the same
+    request was never applied at all -- see :func:`apply_requested_status` for
+    the two measured failures.
+
+    **Every refusal is asked BEFORE the caller's seam call**, so a refused
+    request leaves the row untouched.  That ordering is the reason this is a
+    separate function rather than three guards inlined among the writes.
+
+    The echo rule and the ``corrected`` basis are
+    :func:`app.services.status_seam.correction_record`'s, stated once for both
+    tables; the two refusals below are this table's.
+
+    Args:
+        txn: The row the figure arrived for.
+        new_status_id: The ``ref.statuses.id`` the row is moving to -- the
+            SUBMITTED status when the form carried one, else the row's own.
+        submitted: The figure a human supplied, or ``None`` when nobody typed
+            one.
+
+    Returns:
+        A ``corrected`` :class:`~app.services.status_seam.Settlement`, or
+        ``None`` when no figure arrived or the one that did is an echo of what
+        the row already records.
+
+    Raises:
+        ValidationError: When the status settles nothing (propagated from
+            :func:`~app.services.status_seam.reject_figure_without_settled_status`),
+            or when the row takes its figure from its own purchases.
+    """
+    # The SUBMISSION's own reading, echo-aware: a figure counts where the row
+    # settles or stays settled, an untouched box on the way OUT of the band is
+    # dropped (ruling **R-EG**), and a figure the user CHANGED beside a revert
+    # is refused rather than discarded.  It lives at the door rather than at the
+    # route because only here is the row in hand, and the comparison is against
+    # what the row RECORDS -- which is what the box was prefilled from.
+    figure = figure_for_status(
+        txn, new_status_id, submitted, recorded_figure(txn),
+    )
+    if figure is None:
+        return None
+    submitted = figure
+    # **The door owns its own precondition**, which is the rule
+    # :func:`._settle.reject_unsettleable` states for the settle verbs: an
+    # envelope's figure IS the sum of its purchases (ruling **R-FF**), so a
+    # typed one would be written and then contradicted by the row's own
+    # children.  The PATCH handler refuses it first with a message naming the
+    # purchase list; this is the service-tier backstop, so a caller that skips
+    # the route cannot write a ``corrected`` record onto a row whose figure is
+    # derived.
+    if settles_from_entries(txn):
+        raise ValidationError(
+            f"Transaction {txn.id} takes its figure from the purchases "
+            "recorded against it, so it has no separate actual to correct. "
+            "Record the purchase, or correct one that is already there.",
+        )
+    return correction_record(txn, submitted)

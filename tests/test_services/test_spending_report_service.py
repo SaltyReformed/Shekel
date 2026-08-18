@@ -35,6 +35,7 @@ from app.services.spending_report_service import (
     SpendingWindow,
     compute_spending_report,
 )
+from tests._test_helpers import default_settle_day, settlement_columns
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -45,11 +46,25 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     *, actual=None, status_enum=StatusEnum.DONE, is_income=False,
     is_deleted=False, due_date=None, settled_on=None,
 ):
-    """Create one transaction for report testing (settled expense by default)."""
+    """Create one transaction for report testing (settled expense by default).
+
+    A row in a SETTLED status carries the whole record -- the day, the figure
+    and how that figure is known -- resolved through the one door a bare-built
+    fixture uses (``_test_helpers.settlement_columns``, plan step X-au-c3).
+    *actual* is a figure a HUMAN typed, which makes the record ``corrected``;
+    with none the record is ``derived`` at the row's own plan, which is what a
+    settle with nothing to correct books.  The settle DAY defaults to the
+    period's start where the caller names none, because a settled row carries
+    one and the pairing CHECK refuses a record without it.
+    """
     cat_id = (
         seed_user["categories"][category_key].id if category_key else None
     )
     type_enum = TxnTypeEnum.INCOME if is_income else TxnTypeEnum.EXPENSE
+    planned = Decimal(str(estimated))
+    settled_day = settled_on or default_settle_day(
+        period, ref_cache.status_id(status_enum),
+    )
     txn = Transaction(
         account_id=seed_user["account"].id,
         pay_period_id=period.id,
@@ -58,11 +73,14 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         name=name,
         category_id=cat_id,
         transaction_type_id=ref_cache.txn_type_id(type_enum),
-        estimated_amount=Decimal(str(estimated)),
-        actual_amount=Decimal(str(actual)) if actual is not None else None,
+        estimated_amount=planned,
         due_date=due_date or period.start_date,
         is_deleted=is_deleted,
-        settled_on=settled_on,
+        settled_on=settled_day,
+        **settlement_columns(
+            settled_day, planned,
+            submitted=Decimal(str(actual)) if actual is not None else None,
+        ),
     )
     db.session.add(txn)
     db.session.flush()

@@ -222,7 +222,8 @@
         {% endif %}
 
         {{ render_row_cells(rk, periods, matched_by_row_period,
-                             entry_sums, budgets, TXN_TYPE_INCOME, account, today,
+                             entry_sums, budgets, settled, retained,
+                             TXN_TYPE_INCOME, account, today,
                              current_period_id=current_period.period_id,
                              band=ns.band % 2) }}
         {% set ns.band = ns.band + 1 %}
@@ -285,7 +286,8 @@
         {% endif %}
 
         {{ render_row_cells(rk, periods, matched_by_row_period,
-                             entry_sums, budgets, TXN_TYPE_EXPENSE, account, today,
+                             entry_sums, budgets, settled, retained,
+                             TXN_TYPE_EXPENSE, account, today,
                              current_period_id=current_period.period_id,
                              band=ns2.band % 2) }}
         {% set ns2.band = ns2.band + 1 %}

@@ -24,7 +24,7 @@ signpost.
 | | | detail |
 |---|---|---|
 | **just landed** | **X-au-c2b** -- a row's BUDGET is RESOLVED, not read off `estimated_amount`, at 14 readers and in every template; ONE rule says what a row DISPLAYS as, where the grid, the HTMX fragments and the companion had three; and under them an `AmountBasis` pinned to `(user_id, scenario_id)` rather than to a ROW SET, which is what a pricing pass was always scoped by. `priced_ids` and the two duplicate loan producers are deleted, a scenario refusal replaces the membership guard, and `BalanceContext.amounts()` memoizes one basis per read pass. Byte-identical across four harnesses on a 1,012-row clone, before AND after four adversarial reviews. Closed **N-268**, **N-269**, **N-270**, **N-271**; opened **N-294**-**N-298** | Section 5 |
-| **in flight** | Nothing. **X-au-c3** (the settle FREEZE) is the amount model's next leaf and inherits four obligations named in its entry; the cutover cluster still waits on `bank_import:X-f6a`. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app` | Section 5 |
+| **in flight** | Nothing. **X-au-c3** shipped at `3d1379d1`, so the FIVE cutovers (X-au-d / e / g / f / i) and **X-au-j** are all unblocked; the cutover cluster still waits on `bank_import:X-f6a`. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app` | Section 5 |
 | **what changed the plan** | **X-f3 DECOMPOSED and X-f6 moved AHEAD of the cutover** (developer, 2026-08-13), because two of R-EB's premises were refuted by measurement against the developer's own YTD bank exports: the residual it would classify is dominated by date misplacement rather than by spending (lag-1 autocorrelation `-0.306`; bank-anchored untracked spend `$2,096.37`, not the `$15,413.71` gross), and an assertion is **not** the closing balance for its civil day (17 of 55 equal the bank's closing; only 30% of 110 matched movements carry the day the bank posted them). What X-f3 needed was never the import surface but CLEARING FACTS -- rulings **R-FL**..**R-FO** here and **R-FP** in the import arc. **X-f5 is superseded** by X-f3c | Section 3.3, Section 4 |
 | **blocked on you** | What to do next is `../../plans/steps.md`'s first row, never this section. Six `developer-decision` / `operator` rows carry this arc's open questions (`ledger.md`); the one this change ADDS is **R-FO**, the modelled half of the cutover -- whether a Roth / Traditional / 401(k) / Property true-up books to a per-account `investment_return` account (`$10,623.66` measured) or stays on `anchor_equity` with its own step. Stated as a recommendation, not a decision. Outside this arc, the recurrence arc's X-an-a sequencing ruling is still open | Section 4, R-FO |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it: the recurrence redesign (block 9) and the pay calendar (block 10). **The pay calendar's `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, so whoever builds it must satisfy all three specifications | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md` |
@@ -54,7 +54,7 @@ closed at X-g2b. Both records are in the archive.
    cannot drift. Plan step **X-d**.
 2. **A derived value is read as a source of truth.** **Its named instance is GONE and the SHAPE is
    not** -- the number is kept because `app/` cites it (`cash_ledger/_walk.py`,
-   `status_seam.py` x3) and renumbering would break those. `Account.current_anchor_*` was a
+   `status_seam/` x3) and renumbering would break those. `Account.current_anchor_*` was a
    denormalized copy of the latest `AccountAnchorHistory` row that `resolve_anchor` detected
    diverging and only LOGGED; X-f1c3a re-pointed every reader at the resolver and X-f1c3c dropped
    both columns (2026-08-04, archived). What survives is the general rule the code cites at the
@@ -450,29 +450,12 @@ hides.
     **A LATER leaf must obey**: rules 2 and 4 read no STATUS; `amounts_by_id` has no gate above the
     resolve; the basis pins `date.today()` and moving it to `ctx.as_of` is X-i2's money move; every
     door writing an amount CLEARS `amount_source_id`. Closed **N-268**-**N-271**; opened **N-294**-**N-298**.
-  * [ ] **X-au-c3** `fix(cash): a settle freezes what the row is worth` -- the FREEZE and its
-    INVERSE, closing **N-241**, **N-242**, **N-282** and **N-259**. **It inherits X-aq's obligation**
-    (`9cabc206`, amended `c4932746`), carried here when that step was archived: a settle already
-    books the freshest derivation into the CACHE, and this leaf FORMALISES that write rather than
-    undoing it. At settle the resolved figure is
-    written to the row's OWN amount column and the declaration is dropped, so the row owns it from
-    then on; leaving the settled band hands the declaration back and releases the figure, which is
-    `_release_derived_actual`'s rule generalised from an envelope's actual to every derived amount.
-    **The freeze must be TOTAL over derived rows**, and `live_loan_payment_amount:778` is why: it
-    answers `None` for a manual payment with no standing extra because "its stored estimate already
-    IS the cash", and once that estimate is NULL a `None` means the settle writes nothing and the row
-    lands settled with no figure at all. **N-259 is the measured blocker** that withdrew R-FH's
-    column move from X-f2-c3: `_manual_shadow_amount` derives from `shadow.estimated_amount`, so a
-    freeze written there compounds the extra (`$1,599.10` -> `$1,699.10` -> `$1,799.10`), and the
-    remedy is the resolver's own manual arm, which reads the definition's series instead.
-    **N-257's transfer-side release is a PRECONDITION rather than a neighbour**: `effective_amount`
-    is `COALESCE(actual, estimated)`, so a leftover `actual_amount` outranks a frozen figure and the
-    panel would offer one number while the settle books another. **And this leaf is a
-    precondition of every cutover for a reason worth recording**: the SQL-tier readers cannot
-    refuse. `posting_reads.py` folds `COALESCE(actual, estimated)` inside a `SUM`, so a NULL figure
-    is DROPPED from a total rather than raising -- the silent undercount the model's refusal arms
-    exist to prevent. Both sites stay safe only because they filter to settled statuses, which own
-    their figure once the freeze lands.
+  * [x] **X-au-c3** `3d1379d1` a settle RECORDS what moved rather than refreshing an amount:
+    `settled_amount` + `settled_basis_id` + `settled_on` are ONE record, the seam is its only
+    writer, and a revert releases the ASSERTION while KEEPING the fact -- so `actual_amount`, one
+    column answering two questions, is gone. Both popovers correct a figure IN PLACE, transfers too.
+    **A LATER leaf must obey**: a lock protects a DECISION and an observation is CORRECTED; a figure
+    and a status change are independent facts one seam call applies. Closed **N-241**, **N-242**, **N-257**, **N-259**, **N-265**, **N-282**, **N-298**; opened **N-301**-**N-304**.
 * [ ] **X-au-d** `refactor(salary): a projected paycheck is not stored` -- the SALARY cutover. The
   recurrence engine stops pricing salary rows, the 51 live rows go NULL, and
   `income_service.live_projected_net`, `transaction_service._freshest_amount` and
@@ -502,6 +485,15 @@ hides.
   while `loan_payment_service._manual_shadow_amount:660` reads `shadow.estimated_amount` under a
   docstring asserting that column is "NOT NULL, always the generated base" -- manual-mode loan
   payments would be broken for the whole interval between the two leaves.
+* [ ] **X-au-j** `perf(reconcile): the panel holds ONE amount basis for the pass` -- closing
+  **N-295**. `reconcile_service` prices each offered row through `transaction_service.settle_amount`
+  / `transfer_service.settle_amount`, and each builds its own `amount_basis`; a settle builds three.
+  X-au-c2b made a basis SHAREABLE within one call and closed N-268 / N-269 there, and this is the
+  same shape one tier up -- the PANEL is the caller that can hold one. It waited for X-au-c3 because
+  that step rebuilt the settle doors, and threading a basis into a signature about to change is work
+  done twice. `$0.00`: every basis answers the same figure, so what it costs is K profile lookups
+  and, once a loan payment derives, K loan resolves per panel render.
+
 * [ ] **X-au-h** `refactor(transactions): is_override says one thing` -- closes **N-238**. The flag
   carries FOUR facts, not the two the first draft named, and an adversarial review found the other
   two. (1) the user RE-PRICED the row and (2) the user MOVED it to another period -- both written at

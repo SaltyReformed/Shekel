@@ -57,12 +57,21 @@ logger = logging.getLogger(__name__)
 # requires a coordinated edit across all three sites.
 _TRANSFER_ADHOC_UNIQUE_INDEX = "uq_transfers_adhoc_dedupe"
 
-# Money / period / category / due-date fields the finalised-row edit lock
-# (#26) protects.  Names match :class:`TransferUpdateSchema` (the route's
-# loaded ``data`` dict); it exposes no ``actual_amount`` -- a transfer's
-# actual is recorded only via the mark-done flow.  ``name`` / ``notes``
-# stay editable; the ``status_id`` transition is guarded by the service's
-# :func:`verify_transition` call.
+# The BUDGET DECISIONS the finalised-row edit lock (#26) protects: the
+# amount, the category, the period and the due date.  Names match
+# :class:`TransferUpdateSchema` (the route's loaded ``data`` dict).
+#
+# **The two OBSERVED FACTS are deliberately absent** (developer ruling,
+# 2026-08-17): ``settled_on``, the day the bank moved the money, and
+# ``settled_amount``, what it took.  A lock protects a decision from being
+# rewritten; an observation gets corrected when the statement disagrees, and
+# neither correction requires reverting the transfer.  That matters beyond
+# convenience for the figure: revert-then-re-settle was the only path, and a
+# revert RETAINS the recorded figure, so the re-settle silently re-booked the
+# old number over the re-planned one.
+#
+# ``name`` / ``notes`` stay editable; the ``status_id`` transition is guarded
+# by the service's :func:`verify_transition` call.
 _LOCKED_EDIT_FIELDS = frozenset({
     "amount", "category_id", "pay_period_id", "due_date",
 })
@@ -216,6 +225,10 @@ def update_transfer(xfer_id):
     # too-many-returns threshold.  ``or`` preserves precedence: a settle day the
     # schedule cannot hold is reported before the lock speaks, because the day
     # is not one of the fields the lock protects.
+    # The Actual box's figure is graded by the SERVICE, not here: the rule is
+    # echo-aware and the comparison needs the pair's own record, which only the
+    # service has loaded.  A route-tier version read the STATUS alone and so
+    # discarded a figure the user had just retyped (2026-08-18).
     error_response = (
         _grade_submitted_settle_day(xfer, data)
         or _reject_finalised_transfer_edit(xfer, data)

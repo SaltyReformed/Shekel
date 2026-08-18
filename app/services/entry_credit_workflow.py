@@ -21,6 +21,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
+from app.services.row_valuation import settled_figure
 from app.services.pay_calendar import calendar_for
 from app.services.credit_workflow import (
     create_cc_payback_transaction,
@@ -125,6 +126,31 @@ def sync_entry_payback(
     if total_credit > 0:
         if existing_payback is None:
             return _create_payback(txn, owner_id, credit_entries, total_credit)
+        # **REFUSED when the payback has already SETTLED and the new total
+        # would change what it recorded** (plan step X-au-c3).  A settled row is
+        # worth what it RECORDED, not what its plan says, so the
+        # ``estimated_amount`` write below is inert for money once the payback
+        # closes -- and the liability the user just added would leave the
+        # projection with nothing booking it.  Measured before this guard: a
+        # payback settled at ``$100.00``, a later ``$50.00`` card purchase, and
+        # ``estimated_amount`` moved to ``$150.00`` while every balance went on
+        # reading ``$100.00``.
+        #
+        # It is the sibling of the rule the developer ruled for the SOURCE row
+        # (``entry_service._doors._reject_settled_parent``, 2026-08-17): money
+        # that has moved is a record, and a record is changed by reverting the
+        # row and settling it again, never by re-deriving it underneath.  The
+        # comparison is against what the payback RECORDED rather than against
+        # its plan, so a sync that changes nothing still passes.
+        recorded = settled_figure(existing_payback)
+        if recorded is not None and recorded != total_credit:
+            raise ValidationError(
+                f"Payback {existing_payback.id} has settled at {recorded}, so "
+                f"it cannot be re-derived to {total_credit}: a settled row "
+                "records what MOVED. Set the payback back to Projected, then "
+                "record this purchase -- the figure it recorded is kept, and "
+                "marking it paid again books the new total.",
+            )
         # UPDATE: adjust the payback amount and link any new entries.
         previous_amount = existing_payback.estimated_amount
         existing_payback.estimated_amount = total_credit
@@ -151,6 +177,35 @@ def sync_entry_payback(
 
     # total_credit == 0
     if existing_payback is not None:
+        # **A SETTLED payback is not DELETED either, and this refusal is the
+        # other half of the one above** (plan step X-au-c3, second pass).  That
+        # guard refuses to RE-DERIVE a payback whose money has moved; without
+        # this one the same function went on to DESTROY such a payback outright
+        # the moment the last credit purchase was removed -- the larger harm
+        # performed in silence beside the smaller one refused.
+        #
+        # Measured: a source row Projected with one ``$100.00`` credit purchase,
+        # its payback created and marked Paid (the money really left the
+        # account), then that purchase deleted or un-credited on the
+        # still-Projected source.  A settled row carrying a ``derived``
+        # ``$100.00`` record was hard-deleted and its postings reversed --
+        # ``$100.00`` that had moved, erased with no refusal and no trace.
+        #
+        # The delete branch predates this step.  What makes it a defect NOW is
+        # that the payback carries a settlement RECORD for the delete to throw
+        # away, and that the developer's 2026-08-17 ruling states the rule it
+        # breaks: money that has moved is a record, and a record is undone by
+        # reverting the row, never underneath it.  The remedy named here is the
+        # one the source row's own refusal names
+        # (``entry_service._doors._reject_settled_parent``).
+        recorded = settled_figure(existing_payback)
+        if recorded is not None:
+            raise ValidationError(
+                f"Payback {existing_payback.id} has settled at {recorded}, so "
+                "it cannot be removed: that money has already left the "
+                "account. Set the payback back to Projected first -- the "
+                "figure it recorded is kept -- and then remove the purchase.",
+            )
         # DELETE: clear entry links before deleting the payback.
         deleted_payback_id = existing_payback.id
         for entry in txn.entries:

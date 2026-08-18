@@ -31,6 +31,7 @@ from app.services import (
     carry_forward_service,
     credit_workflow,
     recurrence_engine,
+    transaction_service,
     transfer_recurrence,
 )
 from app.services import balance_at
@@ -979,9 +980,13 @@ class TestFullBudgetWorkflow:
             db.session.commit()
             txn1_id, txn2_id, txn3_id = txn1.id, txn2.id, txn3.id
 
-            # Step 2: Mark Rent as 'done' with actual_amount != estimated.
-            txn1.status_id = done.id
-            txn1.actual_amount = Decimal("1195.00")
+            # Step 2: Mark Rent as 'done' with a CORRECTION -- the figure a
+            # human read off a statement, which the settle records as
+            # ``corrected`` (plan step X-au-c3).  Through the real verb, because
+            # a bare status assign leaves a state the record's CHECKs refuse.
+            transaction_service.settle_transaction(
+                txn1, submitted=Decimal("1195.00"),
+            )
             db.session.commit()
 
             # Step 3: Mark Dining Out as 'credit' → payback in period 1.
@@ -1010,7 +1015,7 @@ class TestFullBudgetWorkflow:
             by_name_p0 = {t.name: t for t in period0_txns}
             assert by_name_p0["Rent"].status.name == "Paid"
             assert by_name_p0["Rent"].estimated_amount == Decimal("1200.00")
-            assert by_name_p0["Rent"].actual_amount == Decimal("1195.00")
+            assert by_name_p0["Rent"].settled_amount == Decimal("1195.00")
             assert by_name_p0["Dining Out"].status.name == "Credit"
             assert by_name_p0["Dining Out"].estimated_amount == Decimal("75.00")
             assert owned_contribution(by_name_p0["Dining Out"]) == Decimal("0")

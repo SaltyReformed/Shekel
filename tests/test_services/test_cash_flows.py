@@ -48,6 +48,7 @@ from decimal import Decimal
 
 from app.enums import StatusEnum
 from app.models.transaction import Transaction
+from app.services import transaction_service
 from app.services.cash_ledger import sum_projected
 from tests._test_helpers import (
     add_entry,
@@ -164,8 +165,10 @@ class TestOnlyProjectedRowsContribute:
                 db.session, seed_user, seed_periods[1], "Groceries", "500.00",
                 [("450.00", False)],
             )
-            _set_status(txn, StatusEnum.DONE)
-            txn.actual_amount = Decimal("450.00")
+            # Through the real verb, which picks the entries branch itself and
+            # records the ``purchases`` basis -- whose figure IS those entries
+            # (plan step X-au-c3), so nothing is hand-written here.
+            transaction_service.settle_transaction(txn)
             db.session.commit()
 
             assert sum_projected([txn], _unreconciled(txn)) == (_ZERO, _ZERO)

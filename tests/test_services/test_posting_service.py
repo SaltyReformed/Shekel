@@ -94,6 +94,7 @@ from app.services.posting_service import PostingError
 from app.exceptions import ValidationError
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    settlement_if_settling,
     add_txn,
     create_account_of_type,
     create_envelope_txn,
@@ -361,7 +362,7 @@ class TestSyncSettlePostsBalancedEntry:
             transfer = create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
-                actual_amount=Decimal("97.50"),
+                settled_amount=Decimal("97.50"),
             )
             _db.session.commit()
             checking_ledger = _ledger_id(seed_user["account"])
@@ -721,7 +722,7 @@ class TestReconciliationHelpers:
             transfer = create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
-                actual_amount=Decimal("97.50"),
+                settled_amount=Decimal("97.50"),
             )
             _db.session.commit()
             posting_service.sync_transfer_postings(transfer, settled=True)
@@ -973,7 +974,7 @@ class TestTransactionSettlePostsBalancedEntry:
             txn = add_txn(
                 _db.session, seed_user, period, "Groceries", "50.00",
                 status_enum=StatusEnum.DONE, category_key="Groceries",
-                actual_amount="45.00",
+                settled_amount="45.00",
             )
             _db.session.commit()
             cash_ledger = _ledger_id(seed_user["account"])
@@ -1014,8 +1015,9 @@ class TestTransactionSettlePostsBalancedEntry:
             # Simulate settle_from_entries: actual = sum(all entries), Paid.
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
-            txn.actual_amount = Decimal("150.00")
+            txn.settled_amount = Decimal("150.00")
             _db.session.commit()
             cash_ledger = _ledger_id(seed_user["account"])
             groceries_ledger = _resolve_category_ledger(
@@ -1054,8 +1056,9 @@ class TestTransactionAllCreditNoop:
             _add_txn_entry(seed_user, txn, "40.00", is_credit=True)
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
-            txn.actual_amount = Decimal("40.00")
+            txn.settled_amount = Decimal("40.00")
             _db.session.commit()
 
             result = posting_service.sync_transaction_postings(
@@ -1074,7 +1077,7 @@ class TestEnvelopeCreditDominatesKeepsExpenseSign:
     the credit entries able to exceed ``effective`` the effect would flip sign,
     posting an expense as a net cash INFLOW.  Two structural invariants forbid
     it: ``TransactionEntry.amount`` is ``CHECK (amount > 0)`` and a settled
-    envelope's ``actual_amount`` is ``compute_actual_from_entries`` = the sum of
+    envelope's ``actual_amount`` is ``purchases_total`` = the sum of
     ALL entries, so ``effective - Sigma(credit) = Sigma(debit) >= 0`` always
     (zero only for an all-credit envelope, covered by
     :class:`TestTransactionAllCreditNoop`).  This pins that even when the credit
@@ -1105,8 +1108,9 @@ class TestEnvelopeCreditDominatesKeepsExpenseSign:
             # Simulate settle_from_entries: actual = sum(all entries), Paid.
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
-            txn.actual_amount = Decimal("100.00")
+            txn.settled_amount = Decimal("100.00")
             _db.session.commit()
             cash_ledger = _ledger_id(seed_user["account"])
             groceries_ledger = _resolve_category_ledger(
@@ -1559,8 +1563,9 @@ class TestSettledTransactionEffect:
             _add_txn_entry(seed_user, txn, "40.00", is_credit=True)
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
-            txn.actual_amount = Decimal("150.00")
+            txn.settled_amount = Decimal("150.00")
             _db.session.commit()
 
             assert posting_service.settled_transaction_effect(
@@ -1592,8 +1597,9 @@ class TestSettledTransactionEffect:
             _add_txn_entry(seed_user, envelope, "40.00", is_credit=True)
             status_seam.apply_status_change(
                 envelope, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(envelope, ref_cache.status_id(StatusEnum.DONE)),
             )
-            envelope.actual_amount = Decimal("150.00")
+            envelope.settled_amount = Decimal("150.00")
             add_txn(
                 _db.session, seed_user, period, "Rent", "30.00",
                 status_enum=StatusEnum.DONE, category_key="Rent",
@@ -1665,6 +1671,7 @@ class TestPeriodAttribution:
             txn.pay_period_id = moved_to.id
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.PROJECTED)),
             )
             _db.session.flush()
             assert txn.settled_on is None
@@ -1693,6 +1700,7 @@ class TestPeriodAttribution:
             # the row's budget period and its cash day are allowed to disagree.
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             _db.session.flush()
             [resettle] = posting_service.sync_transaction_postings(

@@ -45,13 +45,14 @@ zero whether a leg lands on an asset or a liability ledger account.  The
 builder never branches on account class (see the
 :mod:`app.models.journal_entry` module docstring).
 
-**The amount is the SHADOW's effective amount, not ``transfers.amount``.**
+**The amount is what the SHADOW RECORDED, not ``transfers.amount``.**
 A settled transfer's effect is read as the income shadow's
-``COALESCE(actual_amount, estimated_amount)`` -- the exact value the balance
-calculator and the Commit-3 historical backfill use, and the value the
-Commit-6 reconciliation oracle reconciles against.  The two differ when a
-shadow carries an ``actual_amount`` (the grid shadow-edit path forwards one
-through ``transfer_service.update_transfer``); posting ``transfers.amount``
+:func:`~app.services.posting_reads.settled_figure_clause` -- the same
+expression the balance calculator and the reconciliation oracle read, and the
+one the Python tier answers through ``row_valuation.settled_figure`` (plan step
+X-au-c3; it was ``COALESCE(actual_amount, estimated_amount)``).  The two differ
+whenever a settle books a figure the parent's own amount does not hold, which a
+correction and a derive-mode loan payment both do; posting ``transfers.amount``
 instead would silently desynchronise the go-forward postings from both the
 backfill and the oracle.
 """
@@ -110,44 +111,74 @@ posted_purchase_effect = posting_reads.posted_purchase_effect
 
 
 def _settle_effective(xfer: Transfer) -> Decimal:
-    """Return the effective amount entering the transfer's to-account.
+    """Return what the transfer's income leg RECORDED as having moved.
 
     The income shadow lives on the to-account (``_build_shadow`` in
-    ``transfer_service``); its effective amount is
-    ``COALESCE(actual_amount, estimated_amount)`` -- the money that actually
-    moved, the value the balance calculator and the reconciliation oracle
-    use.  ``settled`` callers pass a settled status, so the shadow is
-    non-excluded and ``COALESCE`` is its effective contribution (matching the
-    Commit-3 backfill's ``COALESCE`` on the same shadow).
+    ``transfer_service``), and what it recorded is
+    :func:`~app.services.posting_reads.settled_figure_clause` -- the same
+    expression the two reconciliation folds read and the Python tier answers
+    through ``row_valuation.settled_figure``, so the ledger and the balance
+    cannot come to price one leg two ways.
+
+    **Its query states its own preconditions now, and that is findings N-242 and
+    N-298** (plan step X-au-c3).  It filtered on ``transfer_id`` /
+    ``account_id`` / ``is_deleted`` alone, and its settled-ness was a CALLER
+    convention its own docstring named -- while the balance README carried the
+    stronger claim that every SQL-tier reader of the settled figure was safe
+    because it filtered to settled statuses, which was true of
+    ``posting_reads`` and not of this one.  Two consequences it could not
+    distinguish, and both are now impossible rather than merely unobserved:
+
+    * **no status predicate.**  An unsettled shadow records nothing, so the
+      expression above answered ``0`` for one -- a silent zero where a caller
+      asked what moved.  The predicate makes the query answer only about a row
+      that has settled, and the refusal below turns "nothing to answer" into an
+      error rather than a zero.  Since that expression became a ``CASE`` on the
+      basis it answers ``NULL`` rather than ``0`` for a row recording nothing,
+      so the two ways this lookup comes back empty -- no such shadow, and a
+      shadow with no record -- arrive as one ``None`` and the refusal names
+      both;
+    * **no ``.limit(1)``.**  A second active shadow on the to-account raises
+      ``MultipleResultsFound`` from ``.scalar()``; the sibling reader at
+      ``models/transfer.py`` added ``.limit(1)`` for exactly that.  Transfer
+      Invariant 1 makes two shadows a broken state rather than a supported one,
+      so this takes the first deterministically -- by ``id``, so a repeated read
+      answers the same leg -- and leaves surfacing the breakage to the invariant's
+      own repair path instead of failing here with an error about SQL.
 
     Args:
         xfer: The transfer being posted.
 
     Returns:
-        The income shadow's effective amount as a ``Decimal``.
+        The income shadow's recorded figure as a ``Decimal``.
 
     Raises:
-        PostingError: If the transfer has no active income shadow on its
-            to-account (a Transfer-Invariant-1 violation -- a settled
-            transfer must have its two shadows).
+        PostingError: If the transfer has no SETTLED, active income shadow on
+            its to-account -- a Transfer-Invariant-1 violation, or a caller
+            posting a settled effect for a pair that has not settled -- or if
+            that shadow records no settlement, which
+            ``ck_transactions_settle_day_needs_basis`` makes unstorable.
     """
     effective = (
-        db.session.query(
-            db.func.coalesce(
-                Transaction.actual_amount, Transaction.estimated_amount
-            )
-        )
+        db.session.query(posting_reads.settled_figure_clause())
         .filter(
             Transaction.transfer_id == xfer.id,
             Transaction.account_id == xfer.to_account_id,
             Transaction.is_deleted.is_(False),
+            Transaction.status_id.in_(settled_status_ids()),
         )
+        .order_by(Transaction.id)
+        .limit(1)
         .scalar()
     )
     if effective is None:
         raise PostingError(
-            f"Transfer {xfer.id} has no active income shadow on account "
-            f"{xfer.to_account_id}; cannot post its settled effect."
+            f"Transfer {xfer.id} has no settled, active income shadow on "
+            f"account {xfer.to_account_id} that records what moved; cannot "
+            "post its settled effect. Either no such shadow exists (Transfer "
+            "Invariant 1), or the one that does carries no settlement record "
+            "-- a state ck_transactions_settle_day_needs_basis refuses to "
+            "store and status_seam.apply_status_change refuses to create."
         )
     return effective
 
@@ -900,9 +931,34 @@ def resync_all_cash_postings() -> tuple[int, int]:
         .order_by(Transfer.id)
         .all()
     )
-    transfers_changed = sum(
-        1 for xfer in transfers
-        if sync_transfer_postings(xfer, settled=True)
-    )
+    # **A broken PAIR is skipped and reported, not allowed to abort the batch**
+    # (developer ruling, 2026-08-17).  This selects transfers by the PARENT's
+    # status and tells :func:`sync_transfer_postings` the pair is settled;
+    # ``_settle_effective`` then refuses -- correctly -- when the income shadow
+    # is not settled or records nothing, which is a Transfer-Invariant-4 drift
+    # that ``restore_transfer`` exists to repair.
+    #
+    # That refusal is right for a SINGLE write path, where a caller asking about
+    # one transfer must not get a fabricated figure.  It is wrong for a batch
+    # self-heal that walks every row in the database and runs at container start
+    # (``scripts/init_database.py``): one repairable row would make the app
+    # unbootable for every user, and the operator could not even reach the
+    # screen that shows which row it was.  Skipping keeps the failure loud in
+    # the log and bounded to the pair that caused it.
+    transfers_changed = 0
+    skipped: list[int] = []
+    for xfer in transfers:
+        try:
+            if sync_transfer_postings(xfer, settled=True):
+                transfers_changed += 1
+        except PostingError:
+            skipped.append(xfer.id)
+    if skipped:
+        logger.warning(
+            "Cash posting resync skipped %d transfer(s) whose shadow pair is "
+            "broken: %s.  Each is a Transfer Invariant 3/4 drift -- repair it "
+            "with transfer_service.restore_transfer, then re-run the resync.",
+            len(skipped), skipped,
+        )
 
     return transactions_changed, transfers_changed

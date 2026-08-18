@@ -174,7 +174,7 @@ def _independent_txn_effect(account_id: int, scenario_id: int) -> Decimal:
     """
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     effective = _db.func.coalesce(
-        Transaction.actual_amount, Transaction.estimated_amount
+        Transaction.settled_amount, Transaction.estimated_amount
     )
     signed = case(
         (Transaction.transaction_type_id == income_type_id, effective),
@@ -510,7 +510,7 @@ class TestPerAccountReconciliation:
             create_settled_transfer(
                 seed_user, _db.session, checking, savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
-                actual_amount=Decimal("97.50"),
+                settled_amount=Decimal("97.50"),
             )
             _db.session.commit()
 
@@ -847,10 +847,12 @@ class TestOracleIsNotVacuous:
                 savings.id, scenario_id,
             )
 
-            # Tamper the income shadow's estimated amount (transactions carry no
-            # balance trigger, so this commits); effective becomes 999.
+            # Tamper the income shadow's RECORDED figure, not its estimate
+            # (plan step X-au-c3): a settled row's effect is what it recorded as
+            # having moved, so moving the plan on one is now inert.
+            # Transactions carry no balance trigger, so the tamper commits.
             _db.session.execute(_db.text(
-                "UPDATE budget.transactions SET estimated_amount = 999 "
+                "UPDATE budget.transactions SET settled_amount = 999 "
                 "WHERE account_id = :a AND transfer_id IS NOT NULL "
                 "  AND transaction_type_id = :t"
             ), {

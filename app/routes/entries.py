@@ -20,7 +20,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.routes._render_helpers import (
-    fragment_budgets,
+    fragment_amounts,
     render_transaction_cell,
 )
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
@@ -147,7 +147,7 @@ def _render_entry_list(
     # posted-purchase indicator -- so every initial render showed already-posted
     # purchases as outstanding while the projection had released them.  A
     # caller that cannot name the keys cannot forget one.
-    budgets = fragment_budgets(txn)
+    budgets = fragment_amounts(txn).budgets
     view = entry_service.entry_list_view(txn, entries, budgets[txn.id])
     return render_template(
         "grid/_transaction_entries.html",
@@ -387,8 +387,8 @@ def create_entry(txn_id):
     """Create a new entry and return the updated entry list.
 
     Validates input via EntryCreateSchema, delegates to
-    entry_service.create_entry (which syncs CC payback and
-    updates actual_amount if Paid), then commits atomically.
+    entry_service.create_entry (which syncs CC payback; a
+    settled parent's purchases are closed, so no figure is re-derived), then commits atomically.
     Returns the refreshed entry list with a balanceChanged trigger
     (plus, on the desktop popover surface, the OOB grid-cell
     re-render -- see :func:`_entry_mutation_response`).

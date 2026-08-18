@@ -18,7 +18,7 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
@@ -27,6 +27,7 @@ from app.services.balance_at import BalanceContext
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import display_today
 
+from tests._test_helpers import settlement_if_settling
 from tests._test_helpers import freeze_today
 
 #: A civil day whose EVENING in ``America/New_York`` falls on the PREVIOUS UTC
@@ -82,6 +83,7 @@ class TestApplyStatusChangeSettleDay:
             expected = display_today()
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             db.session.commit()
 
@@ -130,6 +132,7 @@ class TestApplyStatusChangeSettleDay:
 
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             db.session.commit()
 
@@ -153,6 +156,7 @@ class TestApplyStatusChangeSettleDay:
 
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE), settled_on=explicit,
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             db.session.commit()
 
@@ -181,6 +185,7 @@ class TestApplyStatusChangeSettleDay:
             with pytest.raises(TypeError) as exc:
                 status_seam.apply_status_change(
                     txn, done_id, settled_on=instant,
+                    settlement=settlement_if_settling(txn, done_id),
                 )
             assert "must be a date" in str(exc.value)
             # Refused BEFORE any mutation: the check runs ahead of the
@@ -208,6 +213,7 @@ class TestApplyStatusChangeSettleDay:
             with pytest.raises(ValidationError) as exc:
                 status_seam.apply_status_change(
                     txn, projected_id, settled_on=date(2026, 3, 15),
+                    settlement=settlement_if_settling(txn, projected_id),
                 )
             assert "not a settled status" in str(exc.value)
             assert txn.settled_on is None
@@ -240,6 +246,7 @@ class TestApplyStatusChangeSettleDay:
             settled_a_month_ago = display_today() - timedelta(days=30)
             status_seam.apply_status_change(
                 txn, done_id, settled_on=settled_a_month_ago,
+                settlement=settlement_if_settling(txn, done_id),
             )
             db.session.commit()
             db.session.refresh(txn)
@@ -251,7 +258,7 @@ class TestApplyStatusChangeSettleDay:
 
             # Re-settle (identity transition, allowed) with NO explicit day --
             # the shape an edit form's unchanged-status re-submit produces.
-            status_seam.apply_status_change(txn, done_id)
+            status_seam.apply_status_change(txn, done_id, settlement=settlement_if_settling(txn, done_id))
             db.session.commit()
             db.session.refresh(txn)
             assert txn.settled_on == settled_a_month_ago, (
@@ -269,6 +276,7 @@ class TestApplyStatusChangeSettleDay:
             )
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             db.session.commit()
             db.session.refresh(txn)
@@ -276,6 +284,7 @@ class TestApplyStatusChangeSettleDay:
 
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.PROJECTED)),
             )
             db.session.commit()
             db.session.refresh(txn)
@@ -292,6 +301,7 @@ class TestApplyStatusChangeSettleDay:
             )
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.CANCELLED),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.CANCELLED)),
             )
             db.session.commit()
             db.session.refresh(txn)
@@ -320,6 +330,7 @@ class TestApplyStatusChangeTransition:
             with pytest.raises(ValidationError):
                 status_seam.apply_status_change(
                     txn, ref_cache.status_id(StatusEnum.CANCELLED),
+                    settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.CANCELLED)),
                 )
             # status_id is unchanged -- verify_transition runs before the assign.
             assert txn.status_id == done_id
@@ -342,7 +353,7 @@ class TestApplyStatusChangeTransition:
             assert txn.status.id == ref_cache.status_id(StatusEnum.PROJECTED)
 
             done_id = ref_cache.status_id(StatusEnum.DONE)
-            status_seam.apply_status_change(txn, done_id)
+            status_seam.apply_status_change(txn, done_id, settlement=settlement_if_settling(txn, done_id))
 
             # No commit: the fresh value comes from the seam's expire, not
             # expire_on_commit.
@@ -361,6 +372,7 @@ class TestApplyStatusChangeTransition:
 
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
 
@@ -497,6 +509,7 @@ class TestSettleDayForStatus:
                 try:
                     status_seam.apply_status_change(
                         txn, status_id, settled_on=day,
+                        settlement=settlement_if_settling(txn, status_id),
                     )
                 except ValidationError as exc:
                     # The seam raises ``ValidationError`` for BOTH the day rule
@@ -547,6 +560,7 @@ class TestRejectFutureSettleDay:
                     txn,
                     ref_cache.status_id(StatusEnum.DONE),
                     settled_on=display_today() + timedelta(days=1),
+                    settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
                 )
             assert "has not happened yet" in str(exc.value)
             assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
@@ -577,6 +591,7 @@ class TestRejectFutureSettleDay:
                 )
                 status_seam.apply_status_change(
                     txn, ref_cache.status_id(StatusEnum.DONE), settled_on=day,
+                    settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
                 )
                 assert txn.settled_on == day
 
@@ -614,6 +629,7 @@ class TestRejectFutureSettleDay:
                     txn,
                     ref_cache.status_id(StatusEnum.DONE),
                     settled_on=_UTC_DAY_AT_AN_EASTERN_EVENING,
+                    settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
                 )
             assert "has not happened yet" in str(exc.value)
 
@@ -632,6 +648,7 @@ class TestRejectFutureSettleDay:
             )
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             assert txn.settled_on == display_today()
 
@@ -731,5 +748,108 @@ class TestTheSettleDayFloor:
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
                 settled_on=before_the_schedule,
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             assert txn.settled_on == before_the_schedule
+
+
+class TestASettleDayNeedsARecord:
+    """``ck_transactions_settle_day_needs_basis``, said in words at the door.
+
+    The constraint is the surviving half of a repealed biconditional: a row
+    asserting the day its money moved must record WHAT moved, while a record
+    with no day is the legal RETAINED state a revert leaves.
+
+    **The guard exists because the constraint was the only thing saying it, and
+    a CHECK cannot hold a conversation.**  The full-edit popover offers the
+    settle-day box to an UNDATED settled row deliberately -- that row is the one
+    that most needs to state the real day (finding **N-181**).  But a row from
+    BEFORE the settlement record carries no record either, so stating the day
+    alone violated the CHECK and surfaced as an ``IntegrityError`` rendered to
+    the user as "invalid reference": a message naming nothing they could act on,
+    for a save no amount of re-typing would have fixed.
+    """
+
+    def test_a_day_alone_on_a_recordless_settled_row_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The legacy shape: settled, recording nothing, asked for a day.
+
+        Refused with the repair in the message, and the row untouched -- the
+        guard is ordered with the seam's other pre-mutation refusals for exactly
+        that reason.
+        """
+        with app.app_context():
+            txn = _make_txn(seed_user, seed_periods[0], status=StatusEnum.DONE)
+            # The legacy shape, reproduced the only way it can be: straight at
+            # the columns.  The seam refuses to CREATE one.
+            txn.settled_on = None
+            txn.settled_amount = None
+            txn.settled_basis_id = None
+            db.session.flush()
+
+            with pytest.raises(ValidationError) as exc:
+                status_seam.apply_status_change(
+                    txn, txn.status_id, settled_on=display_today(),
+                )
+
+            assert "records nothing that moved" in str(exc.value)
+            assert txn.settled_on is None, "a refused call wrote the day anyway"
+
+    def test_the_same_day_lands_when_the_record_arrives_WITH_it(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The firing control, and the repair the message names.
+
+        Identical call plus a settlement: both halves of the assertion in one
+        act, which is what the Actual box beside the day box makes expressible.
+        Without this the test above would pass against a guard that refused
+        every day.
+        """
+        with app.app_context():
+            txn = _make_txn(seed_user, seed_periods[0], status=StatusEnum.DONE)
+            txn.settled_on = None
+            txn.settled_amount = None
+            txn.settled_basis_id = None
+            db.session.flush()
+
+            status_seam.apply_status_change(
+                txn, txn.status_id, settled_on=display_today(),
+                settlement=status_seam.Settlement(
+                    amount=Decimal("50.00"),
+                    basis=SettlementBasisEnum.CORRECTED,
+                ),
+            )
+            db.session.flush()
+
+            assert txn.settled_on == display_today()
+            assert txn.settled_amount == Decimal("50.00")
+
+    def test_an_ordinary_day_correction_is_untouched_by_the_guard(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A row that ALREADY records something corrects its day as before.
+
+        The second firing control, and the one that matters most: ruling
+        **R-ED**'s door is the commonest path through this code, and a guard
+        that caught it would break every settle-day correction in the app.
+        """
+        with app.app_context():
+            txn = _make_txn(
+                seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
+            )
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=status_seam.Settlement(
+                    amount=Decimal("50.00"),
+                    basis=SettlementBasisEnum.DERIVED,
+                ),
+            )
+            db.session.flush()
+            yesterday = display_today() - timedelta(days=1)
+
+            status_seam.apply_status_change(
+                txn, txn.status_id, settled_on=yesterday,
+            )
+
+            assert txn.settled_on == yesterday

@@ -127,10 +127,13 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     Credit Card account).
 
     For a plain transaction both entry sums are zero and the effect collapses to
-    ``+/-effective_amount``.  For an ENVELOPE at settle ``effective_amount``
-    equals the sum of ALL its entries (``compute_actual_from_entries`` sets
-    ``actual_amount`` so), and subtracting the two collapses the result to the
-    UNPOSTED debit outflow -- with no branch on "is this an envelope".
+    ``+/-effective_amount``.  For an ENVELOPE at settle the first term equals the
+    sum of ALL its entries -- since plan step **X-au-c3** because that is what
+    the row's ``purchases``-basis settlement RECORDS
+    (:func:`app.services.row_valuation.settled_figure`), where it used to be
+    because a deleted hook wrote the sum into ``actual_amount`` -- and
+    subtracting the two collapses the result to the UNPOSTED debit outflow, with
+    no branch on "is this an envelope".
 
     **The third term is ruling R-FM** (plan step X-f3b), and it is what makes
     "an envelope's close books only what its purchases did not" one expression
@@ -161,6 +164,13 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     the same sum in SQL and deliberately stays independent: it is the Step-3
     reconciliation oracle's own window onto the ledger, and an oracle that
     shared this implementation could not grade it.
+    **That independence narrowed at plan step X-au-c3** (adversarial review,
+    2026-08-17): this rule is the transaction writer's in Python and the
+    oracle's is in SQL, so those two still grade each other, but the transfer
+    writer (``posting_service._settle_effective``) spelled its figure inline and
+    now shares ``posting_reads.settled_figure_clause`` with its own oracle.
+    What was lost is a transcription check between two copies of one expression;
+    what was gained is one statement of a money rule.
 
     **TOTAL: a non-contributing row is worth exactly zero.**  A soft-deleted or
     Credit / Cancelled row has an ``effective_amount`` of zero, but its ENTRIES

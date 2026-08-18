@@ -14,6 +14,7 @@ from app.schemas.validation._helpers import (
     EFFECTIVE_DATE_MIN,
     BaseSchema,
     RowId,
+    _NON_NEGATIVE_MONETARY,
     _normalize_empty_inputs,
 )
 from app.schemas.validation._recurrence import RecurrenceFormFieldsMixin
@@ -209,6 +210,38 @@ class TransferUpdateSchema(BaseSchema):
     # the balance walk REFUSES a settled row with no day -- and the way to
     # remove one is to revert the transfer to Projected.
     settled_on = fields.Date()
+
+    # WHAT MOVED, for BOTH shadows (developer ruling, 2026-08-17).  The Actual
+    # box: what the bank really took, which is a DIFFERENT fact from the
+    # ``amount`` above and gets its own input rather than overwriting the plan.
+    #
+    # Editable on a finalised transfer for the reason ``settled_on`` above is,
+    # and the two are one assertion's two halves: the #26 lock protects BUDGET
+    # DECISIONS from being rewritten, and what the bank took is an OBSERVED
+    # FACT, corrected when the statement disagrees.  Until this field existed a
+    # transfer's DAY was correctable in place and its FIGURE was not, so
+    # restating what moved meant reverting -- and a revert RETAINS the recorded
+    # figure, so the re-settle re-booked the old number over the re-planned one.
+    #
+    # A figure riding a settling ``status_id`` is the settle's; one on a pair
+    # that stays settled is a CORRECTION; one on any other status is refused by
+    # ``transfer_service._update._grade_submitted_figure`` with a designed
+    # 400.  ``allow_none`` because an HTML form submits every input including
+    # the empty ones, and an empty box means nobody typed a figure.
+    #
+    # **``_NON_NEGATIVE_MONETARY`` rather than a bare lower bound**, and the
+    # ceiling is the load-bearing half: ``settled_amount`` is ``Numeric(12, 2)``,
+    # so a figure at or above `10 ** 10` validates, reaches the seam, and dies at
+    # the DATABASE with a ``DataError`` -- which is NOT a subclass of the
+    # ``IntegrityError`` this route catches, so it surfaces as a 500 and the
+    # user's Save appears to do nothing.  Plan step X-f2-c3 measured exactly
+    # that on ``MarkDoneSchema`` and fixed it there; this field and its
+    # transaction twin were declared with a bare ``Range(min=0)`` and inherited
+    # the hole (found by adversarial review, 2026-08-18).
+    settled_amount = fields.Decimal(
+        places=2, as_string=True, allow_none=True,
+        validate=_NON_NEGATIVE_MONETARY,
+    )
 
     # Optimistic-locking pin (commit C-18).
     version_id = RowId(validate=validate.Range(min=1))

@@ -21,7 +21,7 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import SettlementBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
@@ -45,14 +45,19 @@ from app.services import (
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import owned_contribution, settled_figure
+from tests._test_helpers import (
+    default_settle_day,
+    settlement_basis_id,
+    settlement_columns,
+)
 from tests._test_helpers import make_every_period_rule
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
                         status_name="Projected", template_id=None,
                         is_deleted=False, name="Test Expense",
-                        amount="100.00", actual_amount=None):
+                        amount="100.00", settled_amount=None):
     """Create a test transaction in the given period.
 
     Args:
@@ -71,6 +76,7 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
     """
     status = db.session.query(Status).filter_by(name=status_name).one()
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+    _settle_day = default_settle_day(seed_periods[period_index], status.id)
 
     txn = Transaction(
         pay_period_id=seed_periods[period_index].id,
@@ -81,7 +87,12 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
         category_id=seed_user["categories"]["Groceries"].id,
         transaction_type_id=expense_type.id,
         estimated_amount=Decimal(amount),
-        actual_amount=Decimal(actual_amount) if actual_amount else None,
+        # A settled row carries the day its money moved AND the record of what
+        # moved, or it carries neither -- the pair is one fact in three columns
+        # (plan step X-au-c3), resolved by the shared helper rather than spelled
+        # out here.
+        settled_on=_settle_day,
+        **settlement_columns(_settle_day, amount, settled_amount),
         template_id=template_id,
         is_deleted=is_deleted,
     )
@@ -141,33 +152,16 @@ class TestCarryForwardUnpaid:
             db.session.refresh(txn)
             assert txn.pay_period_id == original_period_id
 
-    def test_actual_amount_preserved_after_carry_forward(
-        self, app, db, seed_user, seed_periods
-    ):
-        """Both estimated_amount and actual_amount are unchanged after carry forward.
-
-        Existing tests verify estimated_amount preservation. This test
-        explicitly checks actual_amount as well, since the service modifies
-        pay_period_id and potentially is_override but must not touch amounts.
-        """
-        with app.app_context():
-            txn = _create_transaction(
-                seed_user, seed_periods,
-                name="Partial Payment",
-                amount="1234.56",
-                actual_amount="1200.00",
-            )
-
-            carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
-            )
-            db.session.flush()
-
-            db.session.refresh(txn)
-            assert txn.estimated_amount == Decimal("1234.56")
-            assert txn.actual_amount == Decimal("1200.00")
-            assert txn.pay_period_id == seed_periods[1].id
+    # ``test_actual_amount_preserved_after_carry_forward`` lived here until
+    # plan step X-au-c3 and has no state left to describe.  It carried a
+    # PROJECTED row holding ``actual_amount = 1200.00`` beside a ``1234.56``
+    # estimate, and asserted the carry left both alone.  A figure now RECORDS a
+    # settle, so an unsettled row cannot carry one -- and carry-forward moves
+    # UNPAID rows, so no row it touches has a record to preserve.  What the
+    # carry must not disturb is the row's OWN amount, and the envelope suites
+    # below grade exactly that: ``TestCarryForwardEnvelopePartialSpend`` and
+    # its five siblings assert the source's and the target's
+    # ``estimated_amount`` on every branch.
 
     def test_scenario_id_preserved_after_carry_forward(
         self, app, db, seed_user, seed_periods
@@ -391,20 +385,31 @@ class TestCarryForwardStatusRecheck:
                 # version_id mirrors the optimistic-lock contract a
                 # real concurrent commit would honor.
                 #
-                # It writes ``settled_on`` in the SAME statement as
-                # ``status_id`` because that is what the seam does, and a
-                # settled row without a day is a state every reader refuses
-                # (plan step X-f1).  ``CURRENT_DATE`` rather than an instant:
-                # the column is a civil DAY.
+                # It writes the WHOLE settlement record in the SAME statement
+                # as ``status_id`` because that is what the seam does: the day
+                # the money moved, the figure that moved, and how that figure
+                # is known (plan steps X-f1 / X-au-c3).  A day without the
+                # record is a state ``ck_transactions_settle_day_needs_basis``
+                # refuses, so a race simulated with a partial record would fail
+                # on the database rather than on the contract under test.
+                # ``CURRENT_DATE`` rather than an instant: the column is a
+                # civil DAY.  The basis is ``derived`` -- a concurrent
+                # mark-done with nothing typed books what the row was worth.
                 db.session.execute(
                     text(
                         "UPDATE budget.transactions "
                         "SET status_id = :paid, "
                         "    settled_on = CURRENT_DATE, "
+                        "    settled_amount = estimated_amount, "
+                        "    settled_basis_id = :basis, "
                         "    version_id = version_id + 1 "
                         "WHERE id = :tid"
                     ),
-                    {"paid": paid_status_id, "tid": loser_id},
+                    {
+                        "paid": paid_status_id,
+                        "basis": settlement_basis_id(SettlementBasisEnum.DERIVED),
+                        "tid": loser_id,
+                    },
                 )
                 db.session.commit()
                 return ctx
@@ -1342,15 +1347,29 @@ def _create_envelope_template(
 def _create_envelope_txn(
     seed_user, period, template, *,
     estimated_amount=None, status_name="Projected",
-    is_override=False,
+    is_override=False, settled_amount=None,
 ):
     """Create a single envelope transaction owned by the template.
 
     Mirrors the recurrence engine's per-period generation for tests
     that hand-place rows rather than driving the engine.  Defaults to
     the template's default amount and Projected status.
+
+    A row built in a SETTLED status carries the whole record -- the day, the
+    figure and how that figure is known -- through the one door a bare-built
+    fixture uses (``_test_helpers.settlement_columns``); *settled_amount* is a
+    figure a human typed, which makes it a ``corrected`` record, and with none
+    the record is ``derived`` at the row's own plan.  Building the settle DAY
+    without the record is a state ``ck_transactions_settle_day_needs_basis``
+    refuses, and building the STATUS without either is one
+    ``row_valuation.settled_figure`` refuses to value (plan step X-au-c3).
     """
     status = db.session.query(Status).filter_by(name=status_name).one()
+    planned = Decimal(
+        estimated_amount if estimated_amount is not None
+        else str(template.default_amount)
+    )
+    settled_on = default_settle_day(period, status.id)
     txn = Transaction(
         template_id=template.id,
         pay_period_id=period.id,
@@ -1360,10 +1379,9 @@ def _create_envelope_txn(
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
-        estimated_amount=Decimal(
-            estimated_amount if estimated_amount is not None
-            else str(template.default_amount)
-        ),
+        estimated_amount=planned,
+        settled_on=settled_on,
+        **settlement_columns(settled_on, planned, submitted=settled_amount),
         is_override=is_override,
     )
     db.session.add(txn)
@@ -1409,7 +1427,7 @@ class TestCarryForwardEnvelopePartialSpend:
 
         Expected:
           source.status_id      == DONE
-          source.actual_amount  == 65.00
+          settled_figure(source)  == 65.00
           source.estimated      == 100.00 (untouched)
           source.pay_period_id  == seed_periods[0].id (NOT moved)
           source.is_override    == False (envelope source is settled,
@@ -1444,7 +1462,7 @@ class TestCarryForwardEnvelopePartialSpend:
             done_id = ref_cache.status_id(StatusEnum.DONE)
             assert source.status_id == done_id
             # Worked example: 65 of 100 spent.
-            assert source.actual_amount == Decimal("65.00")
+            assert settled_figure(source) == Decimal("65.00")
             assert source.estimated_amount == Decimal("100.00")
             assert source.pay_period_id == seed_periods[0].id
             assert source.is_override is False
@@ -1474,7 +1492,7 @@ class TestCarryForwardEnvelopePartialSpend:
     ):
         """Credit entries count toward entries_sum (mirrors helper contract).
 
-        compute_actual_from_entries sums BOTH debit and credit entries
+        purchases_total sums BOTH debit and credit entries
         for analytics correctness.  That is the contract the carry-
         forward branch inherits.
 
@@ -1504,7 +1522,7 @@ class TestCarryForwardEnvelopePartialSpend:
             db.session.refresh(source)
             db.session.refresh(target)
             # 40 + 25 = 65, leftover = 100 - 65 = 35.
-            assert source.actual_amount == Decimal("65.00")
+            assert settled_figure(source) == Decimal("65.00")
             assert target.estimated_amount == Decimal("135.00")
             assert target.is_override is True
 
@@ -1520,7 +1538,7 @@ class TestCarryForwardEnvelopeZeroEntries:
         Setup: $200 envelope, no entries against source.
         Expected:
           source.status         == DONE
-          source.actual_amount  == 0.00 (NOT a fallback to estimated)
+          settled_figure(source)  == 0.00 (NOT a fallback to estimated)
           target.estimated      == 200 + 200 = 400.00
           target.is_override    == True
         """
@@ -1546,7 +1564,7 @@ class TestCarryForwardEnvelopeZeroEntries:
             db.session.refresh(target)
             done_id = ref_cache.status_id(StatusEnum.DONE)
             assert source.status_id == done_id
-            assert source.actual_amount == Decimal("0.00")
+            assert settled_figure(source) == Decimal("0.00")
             # 200 + (200 - 0) = 400.
             assert target.estimated_amount == Decimal("400.00")
             assert target.is_override is True
@@ -1562,7 +1580,7 @@ class TestCarryForwardEnvelopeOverspend:
 
         Setup: $80 + $40 = $120 entries against $100 envelope.
         Expected:
-          source.actual_amount  == 120.00 (truth, not clamped)
+          settled_figure(source)  == 120.00 (truth, not clamped)
           target.estimated      == 100.00 (untouched)
           target.is_override    == False (untouched)
         """
@@ -1593,7 +1611,7 @@ class TestCarryForwardEnvelopeOverspend:
             db.session.refresh(source)
             db.session.refresh(target)
             # 80 + 40 = 120 -- exceeds the 100 estimate.
-            assert source.actual_amount == Decimal("120.00")
+            assert settled_figure(source) == Decimal("120.00")
             # Target is untouched because leftover = max(0, 100-120) = 0.
             assert target.estimated_amount == target_estimated_before
             assert target.is_override == target_is_override_before
@@ -1629,7 +1647,7 @@ class TestCarryForwardEnvelopeOverspend:
 
             db.session.refresh(source)
             db.session.refresh(target)
-            assert source.actual_amount == Decimal("100.00")
+            assert settled_figure(source) == Decimal("100.00")
             assert target.estimated_amount == Decimal("100.00")
             assert target.is_override is False
 
@@ -1731,7 +1749,7 @@ class TestCarryForwardEnvelopeMissingTarget:
             source_after = db.session.get(Transaction, source_id)
             done_id = ref_cache.status_id(StatusEnum.DONE)
             assert source_after.status_id == done_id
-            assert source_after.actual_amount == Decimal("30.00")
+            assert settled_figure(source_after) == Decimal("30.00")
 
             # A single fresh override row carries the $70 leftover.
             target_rows = (
@@ -1776,8 +1794,8 @@ class TestCarryForwardEnvelopeSettledTarget:
             target = _create_envelope_txn(
                 seed_user, seed_periods[1], template,
                 status_name="Paid",
+                settled_amount=Decimal("100.00"),
             )
-            target.actual_amount = Decimal("100.00")
             _add_entry(source, seed_user, "40.00")
             db.session.commit()
 
@@ -1796,13 +1814,13 @@ class TestCarryForwardEnvelopeSettledTarget:
             source_after = db.session.get(Transaction, source_id)
             done_id = ref_cache.status_id(StatusEnum.DONE)
             assert source_after.status_id == done_id
-            assert source_after.actual_amount == Decimal("40.00")
+            assert settled_figure(source_after) == Decimal("40.00")
 
             # The pre-existing Paid row is untouched.
             target_after = db.session.get(Transaction, target_id)
             assert target_after.status_id == done_id
             assert target_after.estimated_amount == Decimal("100.00")
-            assert target_after.actual_amount == Decimal("100.00")
+            assert settled_figure(target_after) == Decimal("100.00")
             assert target_after.is_override is False
 
             # A separate Projected override row carries the $60 leftover.
@@ -1872,7 +1890,7 @@ class TestCarryForwardEnvelopeMultiHop:
             done_id = ref_cache.status_id(StatusEnum.DONE)
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             assert row_a.status_id == done_id
-            assert row_a.actual_amount == Decimal("0.00")
+            assert settled_figure(row_a) == Decimal("0.00")
             # B got the full $100 leftover from A.
             assert row_b.estimated_amount == Decimal("200.00")
             assert row_b.is_override is True
@@ -1888,7 +1906,7 @@ class TestCarryForwardEnvelopeMultiHop:
             db.session.refresh(row_b)
             db.session.refresh(row_c)
             assert row_b.status_id == done_id
-            assert row_b.actual_amount == Decimal("0.00")
+            assert settled_figure(row_b) == Decimal("0.00")
             # C absorbs B's full $200.
             assert row_c.estimated_amount == Decimal("300.00")
             assert row_c.is_override is True
@@ -2079,7 +2097,7 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
             source_after = db.session.get(Transaction, source_id)
             done_id = ref_cache.status_id(StatusEnum.DONE)
             assert source_after.status_id == done_id
-            assert source_after.actual_amount == Decimal("0.00")
+            assert settled_figure(source_after) == Decimal("0.00")
 
             # The full $100 lands in one fresh override row.
             target_rows = (
@@ -2116,8 +2134,8 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
             paid = _create_envelope_txn(
                 seed_user, seed_periods[2], template,
                 status_name="Paid",
+                settled_amount=Decimal("100.00"),
             )
-            paid.actual_amount = Decimal("100.00")
             db.session.commit()
             paid_id_pk = paid.id
 
@@ -2276,7 +2294,7 @@ class TestCarryForwardEnvelopeMixedBatch:
             db.session.refresh(envelope_target)
             done_id = ref_cache.status_id(StatusEnum.DONE)
             assert envelope_source.status_id == done_id
-            assert envelope_source.actual_amount == Decimal("40.00")
+            assert settled_figure(envelope_source) == Decimal("40.00")
             assert envelope_source.pay_period_id == seed_periods[0].id
             # 100 + (100 - 40) = 160.
             assert envelope_target.estimated_amount == Decimal("160.00")
@@ -2376,7 +2394,7 @@ class TestCarryForwardEnvelopeMixedBatch:
             )
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             assert envelope_after.status_id == projected_id
-            assert envelope_after.actual_amount is None
+            assert envelope_after.settled_amount is None
 
 
 class TestCarryForwardEnvelopeBalanceInvariant:
@@ -2544,7 +2562,7 @@ class TestCarryForwardEnvelopeIncomeFalse:
             )
             # actual_amount must NOT have been set: discrete branch
             # never calls settle_from_entries.
-            assert source.actual_amount is None
+            assert source.settled_amount is None
             assert source.settled_on is None
 
             # No new rows generated in target -- the source itself is
@@ -2924,8 +2942,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             target = _create_envelope_txn(
                 seed_user, seed_periods[1], template,
                 status_name="Paid",
+                settled_amount=Decimal("100.00"),
             )
-            target.actual_amount = Decimal("100.00")
             _add_entry(source, seed_user, "40.00")
             db.session.commit()
 

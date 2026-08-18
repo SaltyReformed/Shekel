@@ -10,7 +10,7 @@ the anchor true-up (the click-to-edit balance), whose Cancel / Escape
 revert target is :func:`balance_section`.
 
 Route-layer serialization lives here, NOT in the producer
-(``dashboard_pulse_service``, which is Flask-free and money-precise):
+(``dashboard_service._pulse``, which is Flask-free and money-precise):
 ``float`` exists only at this Chart.js boundary -- the projected
 end-balance series and threshold are serialized to a JSON string for the
 ``data-chart`` attribute, and the debt track's principal-paid fraction is
@@ -24,12 +24,8 @@ from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app.extensions import db
-from app.services import (
-    dashboard_pulse_service,
-    dashboard_service,
-    pay_period_admin,
-)
-from app.services.account_resolver import resolve_grid_account
+from app.services import dashboard_service, pay_period_admin
+from app.services.balance_at import BalanceContext
 from app.services.savings_dashboard_service import DebtSummary
 from app.utils.auth_helpers import require_owner
 
@@ -198,6 +194,25 @@ def page():
     ``None`` and the page renders the "No pay period covers today"
     generate-periods CTA; the position tracks still render.
 
+    **THIS ROUTE OPENS THE RENDER'S ONE READ PASS** (pay-calendar plan step
+    C2-f2e, ledger rows **P56** and **P61**).  Both producers used to open one
+    of their own, so ``/`` held two passes and derived the owner's pay calendar
+    TWICE per render where ``/grid``, ``/savings`` and ``/retirement`` each
+    derive it once.  Two figures published on one screen out of two passes are
+    two figures computed against two clocks; there is one pass, one clock and
+    one calendar here, and nothing under
+    ``app/services/dashboard_service/`` can start a second.
+
+    **The pass is built AFTER the rolling-window top-up, and the order is
+    load-bearing**: ``top_up_rolling_window`` can CREATE pay periods and
+    commit them, and the pass memoizes the calendar it derives from those very
+    rows.  Building it first would serve this render a schedule one paycheck
+    short of the one the database now holds.
+
+    ``has_account`` and the pulse region read ONE account resolution
+    (:func:`~app.services.dashboard_service.resolve_section`); the route
+    resolved its own and the producer resolved another before this step.
+
     Route-layer serialization (the Chart.js / rail boundary) is applied
     here: the pulse chart series to a JSON string and the debt track's
     principal-paid fraction to a percent.
@@ -208,20 +223,19 @@ def page():
     if pay_period_admin.top_up_rolling_window(current_user.id):
         db.session.commit()
 
-    has_account = resolve_grid_account(
-        current_user.id, current_user.settings,
-    ) is not None
+    balance_ctx = BalanceContext.build(current_user.id)
+    section = dashboard_service.resolve_section(balance_ctx)
 
     pulse = _serialize_pulse(
-        dashboard_pulse_service.compute_pulse_section(current_user.id)
+        dashboard_service.compute_pulse_section(section)
     )
     tracks = _serialize_tracks(
-        dashboard_pulse_service.compute_tracks_section(current_user.id)
+        dashboard_service.compute_tracks_section(balance_ctx)
     )
 
     return render_template(
         "dashboard/dashboard.html",
-        has_account=has_account,
+        has_account=section is not None,
         pulse=pulse,
         tracks=tracks,
     )
@@ -254,7 +268,11 @@ def pulse_section():
         return redirect(url_for("dashboard.page"))
 
     pulse = _serialize_pulse(
-        dashboard_pulse_service.compute_pulse_section(current_user.id)
+        dashboard_service.compute_pulse_section(
+            dashboard_service.resolve_section(
+                BalanceContext.build(current_user.id),
+            ),
+        )
     )
     if pulse is None:
         return render_template("dashboard/_no_period.html")
@@ -284,5 +302,9 @@ def balance_section():
     if not request.headers.get("HX-Request"):
         return redirect(url_for("dashboard.page"))
 
-    data = dashboard_service.compute_balance_section(current_user.id)
+    data = dashboard_service.compute_balance_section(
+        dashboard_service.resolve_section(
+            BalanceContext.build(current_user.id),
+        ),
+    )
     return render_template("dashboard/_pulse_balance.html", pulse=data)

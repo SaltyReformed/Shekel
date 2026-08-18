@@ -25,6 +25,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import carry_forward_service
+from app.services.row_valuation import settled_figure
 
 
 def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False,
@@ -139,7 +140,9 @@ class TestAdhocPurchaseTracking:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.actual_amount == Decimal("50.00")  # 30.00 + 20.00
+            # A ``purchases`` record stores no figure: the row's entries state
+            # it (plan step X-au-c3).
+            assert settled_figure(txn) == Decimal("50.00")  # 30.00 + 20.00
             done_id = ref_cache.status_id(StatusEnum.DONE)
             assert txn.status_id == done_id
 

@@ -12,7 +12,12 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatementSourceEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    SettlementBasisEnum,
+    StatementSourceEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.extensions import db
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.transaction import Transaction
@@ -38,7 +43,15 @@ def a_transaction(
         name: The row's name; also its template's, so each call is distinct.
         amount: Its estimated amount, as a string.
         income: Whether it is an income row (positive into the account).
-        settled_on: Its recorded settle day, or ``None``.
+        settled_on: Its recorded settle day, or ``None``.  A row carrying one
+            also gets the SETTLEMENT RECORD the schema now requires beside it
+            (plan step ``balance:X-au-c3``): ``ck_transactions_settle_day_needs
+            _basis`` refuses a settle day with no basis, so a fixture writing
+            the day alone is a row production cannot produce.  ``derived`` is
+            the basis a settle through the ordinary door writes, and the figure
+            is the row's own estimate -- which is what
+            ``transaction_service.settle_transaction`` resolves for a row that
+            owns its amount.
         status: Its status.
         is_envelope: Whether it tracks purchases.
         period: The pay period to file it under; the bootstrap one by default.
@@ -72,6 +85,11 @@ def a_transaction(
         estimated_amount=Decimal(amount),
         is_envelope=is_envelope,
         settled_on=settled_on,
+        settled_amount=Decimal(amount) if settled_on else None,
+        settled_basis_id=(
+            ref_cache.settlement_basis_id(SettlementBasisEnum.DERIVED)
+            if settled_on else None
+        ),
     )
     db.session.add(txn)
     db.session.flush()

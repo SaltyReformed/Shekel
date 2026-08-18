@@ -38,6 +38,7 @@ from app.enums import (
     PostingKindEnum,
     PostingSourceEnum,
     RecurrenceUnitEnum,
+    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -57,6 +58,7 @@ from app.models.ref import (
 )
 from app.models.transaction import Transaction
 from app.services.row_valuation import owned_contribution
+from tests._test_helpers import settlement_basis_id
 
 
 class TestRefCacheStatuses:
@@ -277,7 +279,8 @@ class TestEffectiveAmount:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 estimated_amount=Decimal("500.00"),
-                actual_amount=Decimal("487.00"),
+                settled_amount=Decimal("487.00"),
+                settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
                 # A settled row carries the day its money moved.
                 settled_on=seed_periods[0].start_date,
             )

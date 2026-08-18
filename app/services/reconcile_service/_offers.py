@@ -187,7 +187,7 @@ class OutstandingTransaction:
             `$40`.  The LEDGER was right either way -- ``settled_cash_leg``
             subtracts the credit sum -- and only the panel's figure was, so the
             fix is to print both rather than to change what a tick books:
-            ``actual_amount`` legitimately IS total spend.
+            the RECORDED figure legitimately IS total spend.
         is_income: Whether this row is money ARRIVING.  The panel counts
             deposits separately from payments (ruling **R-FD**) because a
             deposit and a bill do not sum to anything a reader wants.

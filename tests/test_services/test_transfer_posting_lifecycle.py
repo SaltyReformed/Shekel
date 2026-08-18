@@ -504,7 +504,7 @@ class TestSettleWithActualSameCall:
             _db.session.commit()
 
             # Settle and record the actual in ONE call (the trap).
-            _settle(transfer, user_id, actual_amount=Decimal("88.00"))
+            _settle(transfer, user_id, settled_amount=Decimal("88.00"))
             _db.session.commit()
 
             entries = _entries_for_transfer(transfer.id)

@@ -371,7 +371,7 @@ class TestDashboardPulseRendering:
             cur = pay_period_service.get_current_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "Already Paid", "500.00",
-                status_enum=StatusEnum.DONE, actual_amount="500.00",
+                status_enum=StatusEnum.DONE, settled_amount="500.00",
                 due_date=cur.start_date,
             )
             db.session.commit()
@@ -822,11 +822,14 @@ class TestDashboardDegraded:
     """The two degraded states the page renders instead of the pulse."""
 
     def test_no_account_neutral_empty_state(self, app, auth_client, seed_user, db):
-        """No resolvable account -> the neutral 'Set up an account' copy.
+        """No projectable account -> the setup copy, and no pulse region.
 
-        Deactivate the only account; the page must render the neutral
-        empty state (no account exists to name -- Gate B7) rather than the
-        pulse region.
+        Deactivate the only account; the page must render the empty state
+        (Gate B7) rather than the pulse region.
+
+        **The copy names the KIND that is missing since ledger row P65**
+        (2026-08-18): "an account" was false for the owner this state is
+        actually reachable by, who has entered one and had it refused.
         """
         # pylint: disable=import-outside-toplevel
         from app.models.account import Account
@@ -839,8 +842,49 @@ class TestDashboardDegraded:
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "Set up an account to see your dashboard" in html
+            assert "Add a spending account to see your dashboard" in html
             assert "End of this period" not in html
+
+    def test_a_loan_only_owner_still_sees_their_debt_position(
+        self, app, auth_client, seed_user, seed_periods_today, db,
+    ):
+        """One mortgage, no spending account -> the setup card AND the tracks.
+
+        **Ledger row P65, ruled 2026-08-18 (developer)**, and measured on both
+        sides of pay-calendar plan step C2-f2e, so it is a defect this page had
+        rather than one that step introduced.  ``has_account`` is
+        ``resolve_grid_account``, which REFUSES an amortizing account by design
+        (ruling D4) because this page renders a cash-flow balance -- so an owner
+        who has entered a mortgage and nothing else was told to set up an
+        account, while ``compute_tracks_section`` computed their whole debt
+        position and the template threw it away.
+
+        The position tier reads no grid account and no pay period, which is why
+        it can render beside the card rather than instead of it.  The figures
+        are the loan's own: a $200,000.00 principal, so the debt track states
+        that total.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.models.account import Account
+        from tests._test_helpers import create_loan_account
+
+        with app.app_context():
+            create_loan_account(
+                seed_user, db.session, name="Only Mortgage",
+                principal=Decimal("200000.00"),
+            )
+            account = db.session.get(Account, seed_user["account"].id)
+            account.is_active = False
+            db.session.commit()
+
+            resp = auth_client.get("/dashboard")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The page still cannot project, so the card and no pulse region.
+            assert "Add a spending account to see your dashboard" in html
+            assert "End of this period" not in html
+            # And the position the owner HAS entered is on the page.
+            assert "$200,000.00" in html
 
     def test_account_no_current_period_generate_cta(self, app, auth_client, seed_user):
         """Account but no pay period covers today -> the generate CTA.

@@ -145,7 +145,7 @@ def _settle_payment(seed_user, loan, period, cash, actual=None, settled_on=None)
     C2 keys a payment's visibility on its SETTLED date.  Left ``None`` it keeps
     the fixture's realistic "settled today" default.
     """
-    kwargs = {"amount": cash, "actual_amount": actual}
+    kwargs = {"amount": cash, "settled_amount": actual}
     if settled_on is not None:
         kwargs["settled_on"] = settled_on
     xfer = create_settled_transfer(

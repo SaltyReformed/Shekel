@@ -24,9 +24,10 @@ is this arc's own root cause 1.
 
 **Nothing here decides what a tick BOOKS, whether the panel may offer a box for
 it, or whether a submitted figure is a CORRECTION.**  All three are the verb's,
-published as ``transaction_service.settle_amount``,
-``transaction_service.settles_from_entries`` and
-``transaction_service.is_correction``, and read from here.  A panel showing a
+published as ``transaction_service.settle_amount`` and
+``transaction_service.settles_from_entries``, and ANSWERED BY THE ACT for the
+third: ``settle_transaction`` returns whether it booked a human's figure, so the
+count and the write cannot disagree.  A panel showing a
 figure the verb would not book, an input for a value the verb would ignore, or
 a telemetry count of corrections the verb never made, are the same defect one
 tier up.
@@ -159,13 +160,17 @@ def _settle_one(
             default of the user's today.
 
     Returns:
-        Whether the verb booked *submitted* as a correction -- asked of its own
-        published predicate BEFORE the settle, because the settle mutates the
-        figures the question is about (finding **N-231**).
+        Whether the verb booked *submitted* as a correction -- **answered by the
+        verb itself** (developer ruling, 2026-08-17), which is the shape
+        ``transfer_service._settle.settle`` already had.  This asked
+        ``transaction_service.is_correction`` separately (now private), and it
+        re-resolved the row's amount to make its comparison, so one ticked row
+        paid for the profile lookup, the loan resolve and the paycheck engine
+        twice -- and the count and the write were two answers to one question
+        (finding **N-231**), which is the shape they can no longer be.
     """
-    corrected = transaction_service.is_correction(txn, submitted)
-    transaction_service.settle_transaction(
-        txn, actual_amount=submitted, settled_on=statement.observed_on,
+    corrected = transaction_service.settle_transaction(
+        txn, submitted=submitted, settled_on=statement.observed_on,
     )
     # WHICH statement showed this row (ruling **R-FL**), recorded HERE rather
     # than inside ``settle_transaction`` -- and that placement is the rule.  The

@@ -27,6 +27,7 @@ from app.services import (
     pay_period_write,
     pay_schedule_service,
 )
+from tests._test_helpers import settlement_columns
 from tests._test_helpers import default_settle_day, make_cadence_rule
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
@@ -73,7 +74,7 @@ def _expense_type_id(db_session):
 def _add_transaction(
     db_session, seed_user, period, name, amount,
     is_income=False, due_date=None, template=None,
-    is_deleted=False, status=StatusEnum.PROJECTED, actual_amount=None,
+    is_deleted=False, status=StatusEnum.PROJECTED, settled_amount=None,
 ):
     """Create a transaction for testing.
 
@@ -118,8 +119,8 @@ def _add_transaction(
         category_id=None,
         transaction_type_id=type_id,
         estimated_amount=Decimal(str(amount)),
-        actual_amount=(
-            Decimal(str(actual_amount)) if actual_amount is not None else None
+        **settlement_columns(
+            default_settle_day(period, status_id), amount, settled_amount,
         ),
         due_date=due_date,
         is_deleted=is_deleted,
@@ -1339,7 +1340,7 @@ class TestBalanceContributingPredicate:
             _add_transaction(
                 db.session, seed_user, p0, "Settled Bill", "200.00",
                 due_date=date(2026, 1, 5),
-                status=StatusEnum.SETTLED, actual_amount="200.00",
+                status=StatusEnum.SETTLED, settled_amount="200.00",
             )
             db.session.commit()
 
@@ -1384,7 +1385,7 @@ class TestBalanceContributingPredicate:
             _add_transaction(
                 db.session, seed_user, p0, "Settled Bill", "200.00",
                 due_date=date(2026, 1, 5),
-                status=StatusEnum.SETTLED, actual_amount="200.00",
+                status=StatusEnum.SETTLED, settled_amount="200.00",
             )
             _add_transaction(
                 db.session, seed_user, p0, "Cancelled Bill", "100.00",
@@ -1459,7 +1460,7 @@ class TestBalanceContributingPredicate:
             _add_transaction(
                 db.session, seed_user, p0, "Settled Bill", "200.00",
                 due_date=date(2026, 1, 5),
-                status=StatusEnum.SETTLED, actual_amount="200.00",
+                status=StatusEnum.SETTLED, settled_amount="200.00",
             )
             _add_transaction(
                 db.session, seed_user, p0, "Cancelled Bill", "100.00",
@@ -1522,7 +1523,7 @@ class TestBalanceContributingPredicate:
             _add_transaction(
                 db.session, seed_user, p0, "Settled Bill", "200.00",
                 due_date=date(2026, 1, 5),
-                status=StatusEnum.SETTLED, actual_amount="200.00",
+                status=StatusEnum.SETTLED, settled_amount="200.00",
             )
             _add_transaction(
                 db.session, seed_user, p0, "Cancelled Bill", "100.00",

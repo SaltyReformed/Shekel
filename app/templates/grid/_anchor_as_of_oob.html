@@ -13,7 +13,7 @@
    loader:
 
    * the dashboard's copy is inside ``#pulse-section`` and is re-rendered from
-     ``pulse.hero.last_updated_date``, which ``dashboard_pulse_service`` reads
+     ``pulse.hero.last_updated_date``, which ``dashboard_service._pulse`` reads
      through ``cash_ledger.reconciled_through`` -- provably the same value this
      snippet carries (``MAX(observed_on)`` against the last element of the same
      ordering, pinned by a test);

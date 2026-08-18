@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from sqlalchemy.orm import selectinload
+
 from app import ref_cache
 from app.enums import AcctTypeEnum, TxnTypeEnum
 from app.extensions import db
@@ -105,7 +107,7 @@ class DebtSummary:
     THE shape of the debt summary, stated ONCE (plan step X-s3, ruling R-BD,
     finding N-106).  It was a dict assembled across four modules -- six keys
     here, three more mutated in by the DTI applier, a tenth added by a copy in
-    ``dashboard_pulse_service``, an eleventh mutated in by the dashboard route
+    ``dashboard_service._pulse``, an eleventh mutated in by the dashboard route
     -- so no single place said what a consumer could read, and the contract
     lived in a comment at the top of ``dashboard/_tracks.html`` because there
     was nowhere else to put it.
@@ -384,7 +386,8 @@ def _recent_settled_expenses_monthly(
     # row away from the amount read, so the accessor's precondition rested on a
     # conditional a later edit could reorder rather than on the query.  Asking
     # here makes it structural -- ``owned_contribution`` below can only ever see
-    # a row that has been through the settle freeze -- and loads only the rows
+    # a row that has SETTLED, which answers from the settlement it RECORDED
+    # (plan step X-au-c3) rather than from its plan -- and loads only the rows
     # that are summed.  ``settled_status_ids()`` is exactly the ``is_settled``
     # set it replaces (``ref_seeds``: Paid, Received, Settled).
     recent_txns = (
@@ -399,6 +402,12 @@ def _recent_settled_expenses_monthly(
             ),
             Transaction.status_id.in_(settled_status_ids()),
         )
+        # ``owned_contribution`` resolves through
+        # ``row_valuation.settled_figure``, which sums a ``purchases``-basis
+        # row's OWN entries rather than reading a stored copy (plan step
+        # X-au-c3).  Without this the metric issues one SELECT per settled
+        # envelope where it used to read a column.
+        .options(selectinload(Transaction.entries))
         .all()
     )
 

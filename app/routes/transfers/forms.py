@@ -17,6 +17,7 @@ from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
 from app.routes._period_options import period_move_options
+from app.routes._render_helpers import transfer_settlement_amounts
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import _get_owned_transfer
 
@@ -54,6 +55,19 @@ def get_full_edit(xfer_id):
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
         return "Not found", 404
+    # A soft-deleted transfer has no edit surface, and since plan step X-au-c3
+    # it has no popover either: this form now resolves the pair's recorded and
+    # retained figures, and ``load_transfer_rows`` REFUSES a deleted parent --
+    # so without this the request 500'd where it used to render an edit form
+    # over a deleted row.  404 rather than a message, per the project security
+    # response rule: "not found" and "not yours" are indistinguishable, and a
+    # deleted row is invisible to normal operations
+    # (``transfer_service._validation._get_transfer_or_raise``).  The OTHER
+    # transfer routes still admit a deleted parent -- notably the idempotent
+    # DELETE, which needs to -- so the refusal is scoped to the edit doors
+    # rather than pushed into ``_get_owned_transfer``.
+    if xfer.is_deleted:
+        return "Not found", 404
     statuses = db.session.query(Status).all()
     categories = category_service.list_active_categories(current_user.id)
     # Current + future periods power the in-popover period-move selector,
@@ -61,9 +75,15 @@ def get_full_edit(xfer_id):
     # a past period stays selected.  The service re-validates ownership of
     # the submitted id and moves the transfer plus both shadows together.
     periods = period_move_options(current_user.id, xfer.pay_period_id)
+    # What the pair RECORDED and what a re-settle would RE-BOOK (plan step
+    # X-au-c3).  Both render sites for this template call the one helper, so the
+    # popover opened from the transfers page and the one opened from a grid
+    # shadow cell cannot show different figures for the same transfer.
+    amounts = transfer_settlement_amounts(xfer, current_user.id)
     return render_template(
         "transfers/_transfer_full_edit.html",
         xfer=xfer, statuses=statuses, categories=categories, periods=periods,
+        settled=amounts.settled, retained=amounts.retained,
         # The settle-day correction's bounds -- ``max`` from ruling R-EJ,
         # ``min`` from ruling R-EL.  The USER's today via ``display_today()``,
         # never the process's UTC day: the input must not refuse a day

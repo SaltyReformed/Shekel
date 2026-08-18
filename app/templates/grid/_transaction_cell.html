@@ -1,4 +1,4 @@
-{% from "_money_macros.html" import money %}
+{% from "_money_macros.html" import money, retained_badge %}
 {# Transaction cell -- displays amount with status badge.
    Clicking opens the inline edit form via HTMX.
 
@@ -43,7 +43,16 @@
     (``routes/_render_helpers.render_transaction_cell`` for the fragments, the
     grid and companion routes for the pages). -#}
 {% set est_display = budgets[t.id] %}
-{% set display_amount = t.actual_amount if t.actual_amount is not none else est_display %}
+{# What the row RECORDED as having moved, or none when it has not settled
+   (plan step X-au-c3).  A settled row shows what it booked; an unsettled one
+   shows its plan. #}
+{% set recorded = settled[t.id] %}
+{% set display_amount = recorded if recorded is not none else est_display %}
+{# What a tick WOULD book, where that is neither the plan nor a recorded figure
+   (plan step X-au-c3): a row reverted out of the settled band keeps what it
+   recorded and a re-settle honours it.  ``none`` for every row without that
+   gap -- the route decides, this template draws. #}
+{% set will_book = retained[t.id] %}
 {% set es = entry_sums.get(t.id) if entry_sums is defined else none %}
 {% set show_progress = es is not none and t.status_id == STATUS_PROJECTED %}
 {% if show_progress %}
@@ -77,7 +86,7 @@
      ONCE (polyglot audit TPLB/TPL-10).  aria-label additionally prefixes
      the txn name for screen readers, and the two conflict prefixes differ
      only in punctuation, so those stay inline. #}
-  {% set detail %}{% if show_progress %}{{ money(es.total) }} / {{ money(es.budget) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ money(display_amount) }}{% if t.actual_amount is not none and t.actual_amount != est_display %} (est: {{ money(est_display) }}){% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}{% endset %}
+  {% set detail %}{% if show_progress %}{{ money(es.total) }} / {{ money(es.budget) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ money(display_amount) }}{% if recorded is not none and recorded != est_display %} (est: {{ money(est_display) }}){% endif %}{% if will_book is not none %} -- marking paid records {{ money(will_book) }}{% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}{% endset %}
   <span class="txn-open"
         data-txn-id="{{ t.id }}"
         {% if t.is_expense and t.status_id == STATUS_PROJECTED
@@ -101,16 +110,17 @@
         {{ "{:,.0f}".format(es.total) }} / {{ "{:,.0f}".format(es.budget) }}
       </span>
     {# Show crossed-out estimate + actual when they differ #}
-    {% elif t.actual_amount is not none and t.actual_amount != est_display %}
+    {% elif recorded is not none and recorded != est_display %}
       <span class="text-decoration-line-through small text-muted-shekel">
         {{ "{:,.0f}".format(est_display) }}
       </span>
-      <span class="fw-semibold font-mono">{{ "{:,.0f}".format(t.actual_amount) }}</span>
+      <span class="fw-semibold font-mono">{{ "{:,.0f}".format(recorded) }}</span>
     {% else %}
       {% if est_display != 0 %}
         <span class="font-mono">{{ "{:,.0f}".format(est_display) }}</span>
       {% endif %}
     {% endif %}
+    {{ retained_badge(will_book) }}
 
     {# Status badge #}
     {% if t.status %}
