@@ -1,41 +1,51 @@
 """
 Shekel Budget App -- the recurrence picker offers only what can be STORED (R7b-2)
 
-The form used to pick a NAME from the closed pattern set.  It now authors the
-two axes the write door already takes -- how often (``interval_n`` plus
-``unit``) and which paycheck funds an occurrence (``placement``) -- and
-``encode_cadence`` chooses the pattern that stores them.
+The form used to pick a NAME from the closed pattern set.  It authors the two
+axes the write door takes -- how often (``interval_n`` plus ``unit``) and which
+paycheck funds an occurrence (``placement``).
 
 **The claim this file exists to hold the code to is that the offer set is
-DERIVED from the encoder's own table.**  Before plan step R7b-2 the picker
-iterated ``RecurrencePatternEnum`` while the encoder read
-``PATTERN_DERIVATIONS``, so "nothing offers an unstorable cadence" held only
+DERIVED from the producer that would otherwise REFUSE the cadence.**  Before
+plan step R7b-2 the picker iterated the closed pattern set while the encoder
+read its own table, so "nothing offers an unauthorable cadence" held only
 because the two sets happened to coincide -- protected by no gate.
-``authorable_cadences`` inverts the encoder's table and ``_picker`` words it,
+``authorable_cadences`` is that producer's own answer and ``_picker`` words it,
 so the refusal is unreachable through the form rather than fenced behind it
 (developer ruling 2026-08-12).
 
+**Plan step R7c-c changed WHICH producer binds, and two properties with it.**
+Storage was the constraint while a cadence had to have a name; every reading
+can be stored now, so what is left is whether the application can HONOUR it.
+The interval is a free number box for every unit, and the
+``(unit, interval)`` pair dependency is gone -- which is plan ledger row
+**D32**'s defect ceasing to exist.
+
+**Plan step R8-a changed the gate itself.**  R7c-c left it on
+``anchor_family``, a three-valued router selecting between first-occurrence
+derivations ruling **R-R16** had deleted; R8-a replaced it with two rules over
+live facts, which widened the offer set by exactly one reading (a year-scale
+cadence funded from a later paycheck) and left one withheld (the ``WEEK``
+unit, until plan step R5).
+
 Four properties, each of which fails differently:
 
-1. every offered ``(interval, unit, placement)`` is storable -- swept over the
-   whole rendered offer set, not sampled;
-2. a placement belongs to the ``(unit, interval)`` PAIR, not to the unit:
-   ``MONTHLY_FIRST`` is ``(1, MONTH, PERIOD_STARTING_ON_OR_AFTER)`` with no
-   quarterly twin, so an offer set keyed on the unit alone offers
-   ``(3, MONTH, first-paycheck)`` -- measured unstorable;
-3. exactly one of the two ``interval_n`` inputs is ever enabled, because a
-   disabled control does not submit and two spellings of one field must never
-   reach the schema together;
+1. every offered ``(unit, placement)`` is one the write door accepts -- swept
+   over the whole rendered offer set, not sampled;
+2. the "Funded from" row is RENDERED for every cadence, and says so when the
+   cadence admits one funding rule (the rest of D32, developer ruling
+   2026-08-16): hiding it is how a bill's funding changed with nothing on
+   screen saying so;
+3. the one ``interval_n`` input is enabled exactly when a cadence is chosen,
+   because a disabled control does not submit and an interval beside no unit
+   states half a cadence;
 4. an EDIT form starts on the cadence its rule actually means, and a rule whose
-   stored pattern the application no longer models renders the controls unset
-   above a flashed explanation -- and cannot be destroyed by saving it
-   unchanged.
+   stored cadence the application cannot read renders the controls unset above
+   a flashed explanation -- and cannot be destroyed by saving it unchanged.
 
 The state property 4 needs is manufactured here: ``ref_cache.init`` requires
 every ENUM member to have a ``ref`` row and says nothing about the reverse, so
-a surplus row is a state the schema permits.  Plan step R2e-3 created exactly
-one on purpose -- the ``Once`` row survives its deleted enum member to R9 so
-the auto-rollback image can still boot (ruling R-R11).
+a surplus row is a state the schema permits.
 """
 import json
 import re
@@ -51,13 +61,12 @@ from app import ref_cache
 from app.enums import (
     BusinessDayShiftEnum,
     PeriodPlacementEnum,
-    RecurrencePatternEnum,
     RecurrenceUnitEnum,
     TxnTypeEnum,
 )
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import AccountType, RecurrencePattern
+from app.models.ref import AccountType, RecurrenceUnit
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.routes._recurrence_form_refusals import (
@@ -67,31 +76,35 @@ from app.services import account_service
 from app.services.recurrence import _picker
 from app.services.recurrence import (
     END_BOUND_KINDS,
-    UNAVAILABLE_PATTERN_MESSAGE,
+    UNREADABLE_CADENCE_MESSAGE,
     EndsAfterOccurrences,
     EndsOnDate,
     NeverEnds,
-    RecurrenceResolutionError,
     cadence_options,
-    decode_pattern,
     end_bound_options,
     is_authorable,
-    modelled_pattern,
     modelled_placement,
     modelled_unit,
     picker_model,
 )
 from tests._test_helpers import cadence_payload
+from tests.oracles.recurrence_baseline import CADENCE_BY_LEGACY_NAME
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _unmodelled_pattern_id(name="Every Blue Moon"):
-    """Insert and commit a ``ref.recurrence_patterns`` row with no enum member.
+def _unmodelled_unit_id(name="Blue Moon"):
+    """Insert and commit a ``ref.recurrence_units`` row with no enum member.
 
     Committed rather than flushed because the route under test runs in its own
     request and session.
+
+    **It planted a surplus ``ref.recurrence_patterns`` row until plan step
+    R7c-c**, which dropped the column a rule pointed at one with.  The state a
+    rule can still reach is a ``unit_id`` the enums do not model -- a seed the
+    enums have diverged from, a hand edit, a partial restore -- so the same
+    class of unreadable rule is manufactured on the axis that survived.
 
     Args:
         name: The row's name; asserted not to collide with an enum value.
@@ -99,25 +112,23 @@ def _unmodelled_pattern_id(name="Every Blue Moon"):
     Returns:
         int: The new row's primary key.
     """
-    assert name not in {member.value for member in RecurrencePatternEnum}
-    row = RecurrencePattern(name=name)
+    assert name not in {member.value for member in RecurrenceUnitEnum}
+    row = RecurrenceUnit(name=name)
     db.session.add(row)
     db.session.commit()
     return row.id
 
 
-def _assert_unresolvable(pattern_id):
-    """Assert the seam raises for *pattern_id*, i.e. the door earns its keep.
+def _assert_unreadable(unit_id):
+    """Assert the seam cannot read *unit_id*, i.e. the door earns its keep.
 
     Without this, a test that only asserts "the route refused" cannot tell a
     door that refuses bad input from a door that refuses everything.
 
     Args:
-        pattern_id: The id the surface just refused.
+        unit_id: The id the surface just refused.
     """
-    expected = rf"pattern id {pattern_id} matches no RecurrencePatternEnum"
-    with pytest.raises(RecurrenceResolutionError, match=expected):
-        decode_pattern(pattern_id, 1)
+    assert modelled_unit(unit_id) is None
 
 
 def _savings_account(seed_user):
@@ -226,50 +237,39 @@ def _expense_type_id():
     return ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
 
-def _rule_on_pattern(seed_user, pattern_id, interval_n=1):
-    """Create and flush a rule naming *pattern_id*, bypassing the write door.
+def _rule_on_cadence(seed_user, cadence_name, interval_n=None, unit_id=None):
+    """Create and flush a rule of *cadence_name*, bypassing the write door.
 
     Deliberately constructed rather than authored: ``author_rule`` resolves
-    before it writes, so it REFUSES an unmodelled pattern -- which is the guard
-    under test.  The row this builds is what a database left behind by plan
-    step R2e-3 would hold, and only a direct construction can produce it.
+    before it writes, so it REFUSES an unreadable cadence -- which is the guard
+    under test -- and only a direct construction can produce the row a diverged
+    ``ref`` seed would leave behind.
 
-    **The two-axis columns are DERIVED from the pattern, not hard-coded**, and
-    the difference matters more than the fixture's convenience.  They were
-    written as a fixed ``(month, containing_date)`` for every pattern, on the
-    reasoning that only the PATTERN id was under test -- true of the unmodelled
-    guard this exists for, and false of every other caller, because
-    ``pattern_id`` is nothing but the closed set's ENCODING of these two
-    columns.  A row where the two disagree is one no application path can
-    write, and while ``edit_form_cadence`` read the pattern the disagreement
-    was invisible: the sweep below asserted a decoding that was never reading
-    the columns it claimed to.  Deriving them keeps the row COHERENT, so the
-    sweep measures the mapping rather than the fixture.
+    **The cadence comes from the SHARED table, not hard-coded here**, and the
+    difference matters more than the fixture's convenience: a row whose columns
+    disagree with each other is one no application path can write, and a sweep
+    over such rows measures the fixture rather than the mapping.
 
-    An UNMODELLED pattern has no reading to derive, so it keeps the ordinary
-    monthly axes -- which is the honest shape for that case too: what is
-    unmodelled is the pattern id beside them.
+    Args:
+        seed_user: The owner fixture.
+        cadence_name: One of :data:`CADENCE_BY_LEGACY_NAME`'s keys.
+        interval_n: The interval to store; defaults to the cadence's own.
+        unit_id: A ``ref.recurrence_units`` id to store INSTEAD of the
+            cadence's, for the unreadable-rule cases.
+
+    Returns:
+        The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
-    reading = (
-        decode_pattern(pattern_id, interval_n)
-        if modelled_pattern(pattern_id) is not None else None
-    )
-    unit = RecurrenceUnitEnum.MONTH if reading is None else reading.cadence.unit
-    placement = (
-        PeriodPlacementEnum.CONTAINING_DATE if reading is None
-        else reading.placement
-    )
+    cadence = CADENCE_BY_LEGACY_NAME[cadence_name]
+    own_interval = 1 if cadence.interval_n is None else cadence.interval_n
     rule = RecurrenceRule(
         user_id=seed_user["user"].id,
-        pattern_id=pattern_id,
-        interval_n=interval_n,
-        offset_periods=0,
-        day_of_month=1,
-        # Stated because plan step R7c-b made them NOT NULL: a row is
-        # unstorable without them, so leaving them out would make this fixture
-        # fail on the INSERT rather than exercise what it exists for.
-        unit_id=ref_cache.recurrence_unit_id(unit),
-        placement_id=ref_cache.period_placement_id(placement),
+        interval_n=own_interval if interval_n is None else interval_n,
+        unit_id=(
+            ref_cache.recurrence_unit_id(cadence.unit) if unit_id is None
+            else unit_id
+        ),
+        placement_id=ref_cache.period_placement_id(cadence.placement),
         shift_id=ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE),
         starts_on=date(2026, 1, 1),
     )
@@ -278,9 +278,11 @@ def _rule_on_pattern(seed_user, pattern_id, interval_n=1):
     return rule
 
 
-def _template_with_pattern(seed_user, pattern_id, interval_n=1):
-    """Create a committed transaction template carrying a rule on *pattern_id*."""
-    rule = _rule_on_pattern(seed_user, pattern_id, interval_n)
+def _template_with_cadence(
+    seed_user, cadence_name, interval_n=None, unit_id=None,
+):
+    """Create a committed transaction template carrying a rule of that cadence."""
+    rule = _rule_on_cadence(seed_user, cadence_name, interval_n, unit_id)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         name="Rent",
@@ -295,9 +297,11 @@ def _template_with_pattern(seed_user, pattern_id, interval_n=1):
     return template
 
 
-def _transfer_template_with_pattern(seed_user, destination, pattern_id):
-    """Create a committed transfer template carrying a rule on *pattern_id*."""
-    rule = _rule_on_pattern(seed_user, pattern_id)
+def _transfer_template_with_cadence(
+    seed_user, destination, cadence_name, unit_id=None,
+):
+    """Create a committed transfer template carrying that cadence."""
+    rule = _rule_on_cadence(seed_user, cadence_name, unit_id=unit_id)
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         name="To Savings",
@@ -315,14 +319,14 @@ def _transfer_template_with_pattern(seed_user, destination, pattern_id):
 # ── The offer set ────────────────────────────────────────────────────
 
 
-class TestNothingOfferedIsUnstorable:
-    """Property 1: every offered triple is one ``encode_cadence`` accepts."""
+class TestNothingOfferedIsUnauthorable:
+    """Property 1: every offered pair is one the write door accepts."""
 
-    def test_every_offered_triple_is_authorable(self, app):
+    def test_every_offered_pair_is_authorable(self, app):
         """Swept over the whole offer set, not sampled.
 
-        The producer and the encoder read ONE table, so this cannot fail
-        without the inversion in ``_frequency`` being broken -- which is
+        The producer and the validator read ONE table, so this cannot fail
+        without the derivation in ``_frequency`` being broken -- which is
         precisely the coupling worth a gate, because the two were separate
         producers that merely agreed until plan step R7b-2.
         """
@@ -335,72 +339,70 @@ class TestNothingOfferedIsUnstorable:
                 placement = modelled_placement(option.placement_id)
                 assert unit is not None, option
                 assert placement is not None, option
-                # ``None`` means ANY positive interval; 1 stands for the class.
-                interval_n = (
-                    1 if option.interval_n is None else option.interval_n
-                )
-                assert is_authorable(interval_n, unit, placement), (
-                    f"the picker offers {(interval_n, unit, placement)}, which "
-                    f"the write door cannot store"
+                # Every positive interval is authorable on an offered pair
+                # since plan step R7c-c; 1 stands for the class.
+                assert is_authorable(1, unit, placement), (
+                    f"the picker offers {(unit, placement)}, which the write "
+                    f"door cannot store"
                 )
 
-    def test_the_unstorable_pair_is_really_unstorable(self, app):
+    @pytest.mark.parametrize("placement", list(PeriodPlacementEnum))
+    def test_the_unauthorable_reading_is_really_unauthorable(
+        self, app, placement,
+    ):
         """The premise the sweep above rests on, stated as a measurement.
 
         Without this the sweep passes against an ``is_authorable`` that says
-        yes to everything.  ``(3, MONTH, first-paycheck)`` is the exact triple
-        an offer set keyed on the UNIT alone would produce.
+        yes to everything.  The ``WEEK`` unit is the reading the offer set
+        withholds from plan step **R8-a**: a weekly occurrence is neither a
+        payday nor a day of the month, so
+        ``recurrence_engine.compute_due_date`` has nothing to date its rows
+        from and every one would carry the funding payday instead.  Plan step
+        **R5** gives a row its own ``occurs_on`` and the unit becomes
+        authorable with that deletion.
+
+        **The case MOVED here at R8-a and the pair it replaced is now
+        authorable.**  It was ``(1, YEAR, first paycheck)``, refused because
+        ``anchor_family`` had no first-occurrence derivation for it -- a
+        derivation ruling **R-R16** deleted at plan step R7c-b, leaving the
+        refusal behind.  Swept over both placements, because the withholding is
+        a property of the UNIT and a case pinning one placement would go green
+        against a rule that had started admitting the other.
         """
         with app.app_context():
-            assert not is_authorable(
-                3,
-                RecurrenceUnitEnum.MONTH,
-                PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
-            )
-            assert is_authorable(
-                1,
-                RecurrenceUnitEnum.MONTH,
-                PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
-            )
+            assert not is_authorable(1, RecurrenceUnitEnum.WEEK, placement)
+            assert is_authorable(1, RecurrenceUnitEnum.YEAR, placement)
+            assert is_authorable(1, RecurrenceUnitEnum.MONTH, placement)
 
-    def test_the_offer_set_carries_whole_triples(self, app):
-        """Property 2: the placement is offered per ``(unit, interval)``.
+    def test_the_month_unit_offers_BOTH_placements(self, app):
+        """Property 2: plan ledger row **D32**'s defect ceasing to exist.
 
-        A flat list of triples is what leaves that dependency in the DATA.
-        Read as "which placements does the MONTH unit allow" the answer is
-        both, and it is wrong at every interval but 1.
+        A placement belonged to the ``(unit, interval)`` PAIR while
+        ``MONTHLY_FIRST`` had no quarterly twin, so raising a monthly rule's
+        interval silently reassigned its funding choice.  With the closed set
+        gone, the MONTH unit offers both placements and the interval selects no
+        offer at all -- so there is no reassignment left to notice.
         """
         with app.app_context():
             month_id = ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH)
-            first_paycheck_id = ref_cache.period_placement_id(
-                PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
-            )
-            month_offers = {
-                (option.interval_n, option.placement_id)
-                for option in cadence_options()
+            month_placements = {
+                option.placement_id for option in cadence_options()
                 if option.unit_id == month_id
             }
 
-            assert (1, first_paycheck_id) in month_offers
-            assert (3, first_paycheck_id) not in month_offers
-            assert (6, first_paycheck_id) not in month_offers
-
-    # ``test_a_calendar_option_states_its_month_span`` was here until plan
-    # step R7c-b.  It asserted ``months_per_unit`` -- how many calendar months
-    # one unit spans -- which decided whether the form showed a "Month"
-    # control; ruling R-R16 put the cycle's month on ``starts_on``, so the
-    # control, the field and the question are all gone.  The half that
-    # survives is ``anchors_day_of_month``, and the test below grades it keyed
-    # by PLACEMENT, which is the key it is actually a property of: MONTHLY and
-    # MONTHLY_FIRST share ``(month, 1)`` and disagree on it.
+            assert month_placements == {
+                ref_cache.period_placement_id(member)
+                for member in PeriodPlacementEnum
+            }
 
     def test_a_first_paycheck_month_cadence_reads_no_day_of_month(self, app):
-        """``anchors_day_of_month`` belongs to the PAIR, not to the unit.
+        """``schedules_on_day_of_month`` belongs to the PAIR, not to the unit.
 
-        ``MONTHLY_FIRST`` anchors on a month's first PAYCHECK, so
-        ``day_of_month`` is never read for it -- which is why the form has
-        always hidden that input for it, and why the fact is asked of the
-        anchor router rather than of the unit.
+        ``(MONTH, first paycheck)`` dates its generated rows from the PAYCHECK
+        they defer onto, so ``scheduling_day_of_month`` answers ``None`` for it
+        -- which is why the form has always hidden the Due Day input for it,
+        and why the fact is asked of the ``(unit, placement)`` pair rather than
+        of the unit.
         """
         with app.app_context():
             month_id = ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH)
@@ -411,9 +413,9 @@ class TestNothingOfferedIsUnstorable:
                 PeriodPlacementEnum.CONTAINING_DATE,
             )
             by_placement = {
-                option.placement_id: option.wire.anchors_day_of_month
+                option.placement_id: option.wire.schedules_on_day_of_month
                 for option in cadence_options()
-                if option.unit_id == month_id and option.interval_n == 1
+                if option.unit_id == month_id
             }
 
             assert by_placement[covering_id] is True
@@ -446,14 +448,19 @@ class TestTheScriptCanReadWhatTheServerSerialized:
     #:
     #: ``has_day_of_month_coordinate`` JOINED it at the same step, and the two
     #: day facts are deliberately BOTH here rather than one standing for the
-    #: other.  ``anchors_day_of_month`` is keyed on the ``(unit, placement)``
+    #: other.  ``schedules_on_day_of_month`` is keyed on the
+    #: ``(unit, placement)``
     #: pair and decides the Due Day row; this one is keyed on the UNIT and
-    #: decides the "repeating on" control.  They disagree for exactly
-    #: ``Monthly First``, and the script reading the pair-keyed fact where it
-    #: needed the unit-keyed one silently erased a month-end rule's
+    #: decides the "repeating on" control.  They disagree for exactly a
+    #: first-paycheck month cadence, and the script reading the pair-keyed fact
+    #: where it needed the unit-keyed one silently erased a month-end rule's
     #: ``nominal_day`` on an ordinary edit.
+    #:
+    #: ``interval_n`` LEFT it at plan step R7c-c: every positive interval is
+    #: authorable on every offered pair, so an offer names none and the script
+    #: has no interval to filter on.
     _READ_BY_THE_SCRIPT = frozenset({
-        "unit_id", "interval_n", "placement_id", "anchors_day_of_month",
+        "unit_id", "placement_id", "schedules_on_day_of_month",
         "has_day_of_month_coordinate",
     })
 
@@ -520,15 +527,14 @@ class TestTheScriptCanReadWhatTheServerSerialized:
             model = picker_model()
             emitted = json.loads(model.options_json)
             serialized_keys = {
-                (entry["unit_id"], entry["interval_n"], entry["placement_id"])
+                (entry["unit_id"], entry["placement_id"])
                 for entry in emitted
             }
 
-            for projection in (model.units, model.fixed_intervals,
-                               model.placements):
+            for projection in (model.units, model.placements):
                 for option in projection:
                     assert (
-                        option.unit_id, option.interval_n, option.placement_id,
+                        option.unit_id, option.placement_id,
                     ) in serialized_keys
 
     def test_the_projections_are_subsets_of_the_offer_set(self, app):
@@ -536,34 +542,31 @@ class TestTheScriptCanReadWhatTheServerSerialized:
         with app.app_context():
             model = picker_model()
 
-            for projection in (model.units, model.fixed_intervals,
-                               model.placements):
+            for projection in (model.units, model.placements):
                 assert set(projection) <= set(model.options)
 
     def test_each_projection_holds_one_entry_per_distinct_key(self, app):
         """The de-duplication rule, per control.
 
-        The interval list is what shipped the defect this pins: ``MONTHLY`` and
-        ``MONTHLY_FIRST`` are two triples over one ``(1, MONTH)`` interval, so
-        an un-projected list rendered "1 month" twice and marked BOTH selected.
+        The interval ``<select>`` plan step R7c-c deleted is what shipped the
+        defect this pins: MONTHLY and MONTHLY FIRST were two offers over one
+        ``(1, MONTH)`` interval, so an un-projected list rendered "1 month"
+        twice and marked BOTH selected.  The UNIT select carries the same
+        hazard -- the MONTH unit still has two offers -- which is why the rule
+        outlived the control that exposed it.
         """
         with app.app_context():
             model = picker_model()
 
             units = [option.unit_id for option in model.units]
-            intervals = [
-                (option.unit_id, option.interval_n)
-                for option in model.fixed_intervals
-            ]
             placements = [option.placement_id for option in model.placements]
 
             assert len(units) == len(set(units))
-            assert len(intervals) == len(set(intervals))
             assert len(placements) == len(set(placements))
-            assert all(
-                option.interval_n is not None
-                for option in model.fixed_intervals
-            ), "a free-interval unit has no fixed option to render"
+            assert len(model.units) < len(model.options), (
+                "the unit projection is not de-duplicating anything, so this "
+                "rule is no longer being exercised"
+            )
 
 
 class TestBothFormsRenderTheSameControls:
@@ -577,9 +580,9 @@ class TestBothFormsRenderTheSameControls:
     ):
         """One ``<option>`` per unit however many readings it has.
 
-        The MONTH unit has four offered readings (1, 3, 6 and the
-        first-paycheck one) and must still render a single entry, or the user
-        is asked to choose between four things called "months".
+        The MONTH unit has two offered readings (both placements) and must
+        still render a single entry, or the user is asked to choose between two
+        things called "months".
         """
         assert seed_periods_today
         with app.app_context():
@@ -607,8 +610,7 @@ class TestBothFormsRenderTheSameControls:
             transaction = auth_client.get("/templates/new").data.decode()
             transfer = auth_client.get("/transfers/new").data.decode()
 
-        for select_id in ("recurrence_unit", "interval_n_fixed",
-                          "recurrence_placement"):
+        for select_id in ("recurrence_unit", "recurrence_placement"):
             assert _options(transaction, select_id) == _options(
                 transfer, select_id,
             ), select_id
@@ -616,64 +618,85 @@ class TestBothFormsRenderTheSameControls:
     @pytest.mark.parametrize(
         "url", ["/templates/new", "/transfers/new"],
     )
-    def test_neither_interval_control_submits_on_a_create_form(
+    def test_the_interval_box_does_not_submit_on_a_create_form(
         self, app, auth_client, seed_user, seed_periods_today, url,
     ):
         """Property 3, at the "Does not repeat" default.
 
-        Both post ``interval_n``; a disabled control does not submit, so the
-        schema must never see two spellings of one field.  On a create form no
-        cadence is chosen, so neither may submit.
+        A disabled control does not submit, and an interval beside no unit
+        states half a cadence.  On a create form no cadence is chosen, so it
+        must not submit.
+
+        **There were TWO controls posting ``interval_n`` until plan step
+        R7c-c** -- a free number box and a ``<select>`` of the month intervals
+        the closed set could name -- with exactly one enabled, because two
+        spellings of one field must never reach the schema together.  Every
+        interval is authorable on every unit now, so there is one control and
+        the question is whether a cadence was chosen at all.
         """
         assert seed_periods_today
         resp = auth_client.get(url)
         body = resp.data.decode()
 
-        assert "disabled" in _tag(body, "interval_n_free")
-        assert "disabled" in _tag(body, "interval_n_fixed")
+        assert "disabled" in _tag(body, "interval_n")
 
     @pytest.mark.parametrize(
-        ("pattern", "enabled", "disabled"),
-        [
-            # The paycheck cadence takes ANY N, so the free box is live.
-            (
-                RecurrencePatternEnum.EVERY_N_PERIODS,
-                "interval_n_free", "interval_n_fixed",
-            ),
-            # A month cadence takes 1 / 3 / 6 only, so the select is.
-            (
-                RecurrencePatternEnum.QUARTERLY,
-                "interval_n_fixed", "interval_n_free",
-            ),
-            (
-                RecurrencePatternEnum.ANNUAL,
-                "interval_n_fixed", "interval_n_free",
-            ),
-        ],
+        "cadence_name",
+        ["Every N Periods", "Quarterly", "Annual"],
     )
-    def test_exactly_one_interval_control_submits_on_an_edit_form(
-        self, app, auth_client, seed_user, seed_periods_today,
-        pattern, enabled, disabled,
+    def test_the_interval_box_submits_on_an_edit_form(
+        self, app, auth_client, seed_user, seed_periods_today, cadence_name,
     ):
         """Property 3 on the form that starts with a cadence chosen.
 
         The server renders the state matching the stored rule, so the form is
         correct before any script runs -- which is what a user with a slow
-        connection submits.
+        connection submits.  Swept over a paycheck cadence and two calendar
+        ones because the ENABLED state used to depend on which of the two
+        controls a unit used, and a rule that only exercised one unit would
+        have missed the other's control being left disabled.
         """
         assert seed_periods_today
         with app.app_context():
-            template_id = _template_with_pattern(
-                seed_user,
-                ref_cache.recurrence_pattern_id(pattern),
-                interval_n=3 if pattern is RecurrencePatternEnum.EVERY_N_PERIODS
-                else 1,
+            template_id = _template_with_cadence(
+                seed_user, cadence_name,
+                interval_n=3 if cadence_name == "Every N Periods" else None,
             ).id
 
         body = auth_client.get(f"/templates/{template_id}/edit").data.decode()
 
-        assert "disabled" not in _tag(body, enabled)
-        assert "disabled" in _tag(body, disabled)
+        assert "disabled" not in _tag(body, "interval_n")
+
+    @pytest.mark.parametrize(
+        "url", ["/templates/new", "/transfers/new"],
+    )
+    def test_the_funding_row_is_rendered_on_both_forms(
+        self, app, auth_client, seed_user, seed_periods_today, url,
+    ):
+        """Property 2: the "Funded from" control is always on the page.
+
+        Plan ledger row **D32**, developer ruling 2026-08-16.  The row used to
+        hide itself whenever the chosen cadence admitted one placement, which
+        is how a bill's funding rule came to change with nothing on screen
+        saying so.  ONE cadence still admits one -- paychecks, where the
+        placement is inert -- and for it the row renders with the help text
+        that explains it rather than disappearing.  It was TWO until plan step
+        **R8-a**, which admitted the YEAR unit's deferring reading; that
+        refusal cited a first-occurrence derivation ruling R-R16 had deleted.
+
+        Both sentences are rendered by the SERVER, which is what the script
+        swaps between: a script that authored copy could word the state two
+        ways.
+        """
+        assert seed_periods_today
+        body = auth_client.get(url).data.decode()
+
+        assert '<select id="recurrence_placement"' in body
+        assert 'id="placement-help"' in body
+        assert "Which paycheck pays for each occurrence." in body
+        assert (
+            "This cadence has one funding rule, so there is nothing to choose."
+        ) in body
 
 
 # ── The edit form's starting state ───────────────────────────────────
@@ -683,49 +706,50 @@ class TestAnEditFormStartsOnItsRulesCadence:
     """Property 4: the controls read back what the rule actually means."""
 
     @pytest.mark.parametrize(
-        ("pattern", "unit", "interval", "placement"),
+        ("cadence_name", "unit", "interval", "placement"),
         [
             (
-                RecurrencePatternEnum.EVERY_PERIOD, RecurrenceUnitEnum.PERIOD,
+                "Every Period", RecurrenceUnitEnum.PERIOD,
                 1, PeriodPlacementEnum.CONTAINING_DATE,
             ),
             (
-                RecurrencePatternEnum.MONTHLY, RecurrenceUnitEnum.MONTH,
+                "Monthly", RecurrenceUnitEnum.MONTH,
                 1, PeriodPlacementEnum.CONTAINING_DATE,
             ),
             (
-                RecurrencePatternEnum.MONTHLY_FIRST, RecurrenceUnitEnum.MONTH,
+                "Monthly First", RecurrenceUnitEnum.MONTH,
                 1, PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
             ),
             (
-                RecurrencePatternEnum.QUARTERLY, RecurrenceUnitEnum.MONTH,
+                "Quarterly", RecurrenceUnitEnum.MONTH,
                 3, PeriodPlacementEnum.CONTAINING_DATE,
             ),
             (
-                RecurrencePatternEnum.SEMI_ANNUAL, RecurrenceUnitEnum.MONTH,
+                "Semi-Annual", RecurrenceUnitEnum.MONTH,
                 6, PeriodPlacementEnum.CONTAINING_DATE,
             ),
             (
-                RecurrencePatternEnum.ANNUAL, RecurrenceUnitEnum.YEAR,
+                "Annual", RecurrenceUnitEnum.YEAR,
                 1, PeriodPlacementEnum.CONTAINING_DATE,
             ),
         ],
     )
-    def test_each_stored_pattern_preselects_its_own_axes(
+    def test_each_stored_cadence_preselects_its_own_axes(
         self, app, auth_client, seed_user, seed_periods_today,
-        pattern, unit, interval, placement,
+        cadence_name, unit, interval, placement,
     ):
-        """Every modelled pattern, decoded back onto the three controls.
+        """Every named cadence, read back onto the three controls.
 
-        Swept rather than sampled because the decoding is per pattern: a
-        mapping wrong for ONE of them shows a user the wrong cadence on the
-        screen where they are about to re-save it.
+        Swept rather than sampled because a mapping wrong for ONE of them shows
+        a user the wrong cadence on the screen where they are about to re-save
+        it.  The interval is read off the number box for every unit since plan
+        step R7c-c, where a calendar cadence used to preselect an option in a
+        ``<select>`` -- and a quarterly rule reading back "1 month" is three
+        times the projected spend.
         """
         assert seed_periods_today
         with app.app_context():
-            template_id = _template_with_pattern(
-                seed_user, ref_cache.recurrence_pattern_id(pattern),
-            ).id
+            template_id = _template_with_cadence(seed_user, cadence_name).id
             expected_unit = str(ref_cache.recurrence_unit_id(unit))
             expected_placement = str(ref_cache.period_placement_id(placement))
 
@@ -733,32 +757,49 @@ class TestAnEditFormStartsOnItsRulesCadence:
 
         assert _selected(body, "recurrence_unit") == expected_unit
         assert _selected(body, "recurrence_placement") == expected_placement
-        if unit is RecurrenceUnitEnum.PERIOD:
-            assert f'value="{interval}"' in _tag(body, "interval_n_free")
-        else:
-            assert _selected(body, "interval_n_fixed") == str(interval)
+        assert f'value="{interval}"' in _tag(body, "interval_n")
 
     def test_an_every_n_rule_prefills_its_own_interval(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The one cadence whose interval is a COLUMN reads back from it."""
+        """A stated interval reads back off the column that stores it."""
         assert seed_periods_today
         with app.app_context():
-            template_id = _template_with_pattern(
-                seed_user,
-                ref_cache.recurrence_pattern_id(
-                    RecurrencePatternEnum.EVERY_N_PERIODS,
-                ),
-                interval_n=4,
+            template_id = _template_with_cadence(
+                seed_user, "Every N Periods", interval_n=4,
             ).id
 
         body = auth_client.get(f"/templates/{template_id}/edit").data.decode()
 
-        assert 'value="4"' in _tag(body, "interval_n_free")
+        assert 'value="4"' in _tag(body, "interval_n")
+
+    def test_an_interval_the_closed_set_could_never_name_reads_back(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """"Every 2 months" round-trips through the form.
+
+        The cadence this whole arc exists for: it resolves and walks correctly
+        and had nowhere to be written until plan step R7c-c freed the interval.
+        A form that still rendered a 1 / 3 / 6 ``<select>`` would show it as
+        one of those, and re-saving would silently re-cadence a bill.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            template_id = _template_with_cadence(
+                seed_user, "Monthly", interval_n=2,
+            ).id
+            month_id = str(ref_cache.recurrence_unit_id(
+                RecurrenceUnitEnum.MONTH,
+            ))
+
+        body = auth_client.get(f"/templates/{template_id}/edit").data.decode()
+
+        assert _selected(body, "recurrence_unit") == month_id
+        assert 'value="2"' in _tag(body, "interval_n")
 
 
-class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
-    """A stored pattern the app no longer models renders UNSET -- and is SAFE.
+class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
+    """A stored cadence the app cannot read renders UNSET -- and is SAFE.
 
     An HTML ``<select>`` whose selected value is absent from its options does
     not fail: the browser silently selects the first, and that option submits.
@@ -767,13 +808,18 @@ class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
     one whose save DELETES the rule and sweeps its future rows (plan step
     R2e-1).
 
-    The two-axis controls carry no pattern id, so there is nothing to keep
+    The two-axis controls carry no such id, so there is nothing to keep
     selected -- they render unset, which means the unit select's first entry IS
-    selected.  ``UNAVAILABLE_PATTERN_MESSAGE`` therefore promises the user that
+    selected.  ``UNREADABLE_CADENCE_MESSAGE`` therefore promises the user that
     "saving it unchanged will be refused", and this class holds the code to
     that promise: the refusal is the SERVER's, made from the two facts it
-    already holds (the stored rule is unmodelled, the submission names no
+    already holds (the stored rule is unreadable, the submission names no
     cadence), not a hidden field a client can drop.
+
+    **The unreadable COLUMN moved at plan step R7c-c.**  It was a ``pattern_id``
+    the enum did not name; that column is dropped, so the state a rule can still
+    reach is a ``unit_id`` the enums do not name.  Same class of state, same
+    disposition, same promise.
     """
 
     def test_the_transaction_form_renders_the_controls_unset(
@@ -782,19 +828,22 @@ class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
         """No cadence is preselected, because none of them is this rule's."""
         assert seed_periods_today
         with app.app_context():
-            surplus_id = _unmodelled_pattern_id()
-            _assert_unresolvable(surplus_id)
-            template_id = _template_with_pattern(seed_user, surplus_id).id
+            surplus_id = _unmodelled_unit_id()
+            _assert_unreadable(surplus_id)
+            template_id = _template_with_cadence(
+                seed_user, "Monthly", unit_id=surplus_id,
+            ).id
 
         body = auth_client.get(f"/templates/{template_id}/edit").data.decode()
 
         # The empty "Does not repeat" entry is what "unset" means on a
-        # <select>, and it is the whole assertion: comparing the surplus
-        # PATTERN id against the UNIT ids the control renders would be
-        # measuring two unrelated sequences against each other -- vacuously
-        # true today and a false failure the day they align.
+        # <select>, and it is the whole assertion: the surplus id is a real
+        # ``ref.recurrence_units`` row, so a control that rendered it would
+        # be offering a cadence nothing can resolve.
         assert _selected(body, "recurrence_unit") == ""
-        assert _selected(body, "interval_n_fixed") is None
+        assert str(surplus_id) not in {
+            value for value, _ in _options(body, "recurrence_unit")
+        }
 
     def test_the_transfer_form_renders_the_controls_unset(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -803,16 +852,16 @@ class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
         assert seed_periods_today
         with app.app_context():
             savings = _savings_account(seed_user)
-            surplus_id = _unmodelled_pattern_id()
-            template_id = _transfer_template_with_pattern(
-                seed_user, savings, surplus_id,
+            surplus_id = _unmodelled_unit_id()
+            template_id = _transfer_template_with_cadence(
+                seed_user, savings, "Monthly", unit_id=surplus_id,
             ).id
 
         body = auth_client.get(f"/transfers/{template_id}/edit").data.decode()
 
         assert _selected(body, "recurrence_unit") == ""
 
-    def test_the_user_is_told_the_pattern_is_gone(
+    def test_the_user_is_told_the_cadence_is_unreadable(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """A warning names the state and the repair.
@@ -822,12 +871,14 @@ class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
         """
         assert seed_periods_today
         with app.app_context():
-            surplus_id = _unmodelled_pattern_id()
-            template_id = _template_with_pattern(seed_user, surplus_id).id
+            surplus_id = _unmodelled_unit_id()
+            template_id = _template_with_cadence(
+                seed_user, "Monthly", unit_id=surplus_id,
+            ).id
 
         body = auth_client.get(f"/templates/{template_id}/edit").data.decode()
 
-        assert UNAVAILABLE_PATTERN_MESSAGE.split(".", maxsplit=1)[0] in body
+        assert UNREADABLE_CADENCE_MESSAGE.split(".", maxsplit=1)[0] in body
 
     def test_saving_it_unchanged_is_refused_and_the_rule_survives(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -843,8 +894,10 @@ class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
         """
         assert seed_periods_today
         with app.app_context():
-            surplus_id = _unmodelled_pattern_id()
-            template = _template_with_pattern(seed_user, surplus_id)
+            surplus_id = _unmodelled_unit_id()
+            template = _template_with_cadence(
+                seed_user, "Monthly", unit_id=surplus_id,
+            )
             template_id, rule_id = template.id, template.recurrence_rule_id
 
             resp = auth_client.post(f"/templates/{template_id}", data={
@@ -859,7 +912,7 @@ class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
             # The REASON is asserted, not just the survival: without it this
             # test passes against a route that refused the POST for an
             # unrelated reason, and the message is the whole of what
-            # UNAVAILABLE_PATTERN_MESSAGE promised the user on the way in.
+            # UNREADABLE_CADENCE_MESSAGE promised the user on the way in.
             assert UNREPAIRED_CADENCE_CANNOT_BE_CLEARED.split(
                 ",", maxsplit=1,
             )[0].encode() in resp.data
@@ -887,9 +940,9 @@ class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
         assert seed_periods_today
         with app.app_context():
             savings = _savings_account(seed_user)
-            surplus_id = _unmodelled_pattern_id()
-            template = _transfer_template_with_pattern(
-                seed_user, savings, surplus_id,
+            surplus_id = _unmodelled_unit_id()
+            template = _transfer_template_with_cadence(
+                seed_user, savings, "Monthly", unit_id=surplus_id,
             )
             template_id = template.id
             rule_id = template.recurrence_rule_id
@@ -924,12 +977,14 @@ class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
         """
         assert seed_periods_today
         with app.app_context():
-            surplus_id = _unmodelled_pattern_id()
-            _assert_unresolvable(surplus_id)
-            template = _template_with_pattern(seed_user, surplus_id)
+            surplus_id = _unmodelled_unit_id()
+            _assert_unreadable(surplus_id)
+            template = _template_with_cadence(
+                seed_user, "Monthly", unit_id=surplus_id,
+            )
             template_id, rule_id = template.id, template.recurrence_rule_id
-            monthly_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.MONTHLY,
+            month_id = ref_cache.recurrence_unit_id(
+                RecurrenceUnitEnum.MONTH,
             )
 
             resp = auth_client.post(f"/templates/{template_id}", data={
@@ -947,13 +1002,11 @@ class TestAnUnmodelledRuleCannotBeDestroyedBySavingIt:
             # The SAME rule row, re-pointed -- not a new one, so every
             # generated row keeps its lineage.
             assert reloaded.recurrence_rule_id == rule_id
-            assert reloaded.recurrence_rule.pattern_id == monthly_id
-            # The repaired rule fires on the date the form stated.  The form
-            # posts ``starts_on`` rather than a day since plan step R7c-b, and
-            # the write door ENCODES the legacy column from it -- so asserting
-            # both is what says the encode still happens.
+            assert reloaded.recurrence_rule.unit_id == month_id
+            # The repaired rule fires on the date the form stated, which is
+            # the whole of what it says about its cycle since plan step
+            # R7c-c: the day and the month are that date's.
             assert reloaded.recurrence_rule.starts_on == date(2026, 9, 1)
-            assert reloaded.recurrence_rule.day_of_month == 1
 
 
 class TestTheWriteDoorsRefuseAnUnstorableCadence:
@@ -965,9 +1018,20 @@ class TestTheWriteDoorsRefuseAnUnstorableCadence:
     replaced it, so a route that accepted the triple and 500'd at the flush
     would have passed the whole suite.
 
-    ``(2, MONTH)`` is the case: well defined, walked correctly by the resolver,
-    and with no closed-set pattern to be stored as until plan step R7c.  The
-    picker offers 1 / 3 / 6 for months, so no click produces it.
+    ``(1, WEEK, ...)`` is the case since plan step **R8-a**: a weekly
+    occurrence is neither a payday nor a day of the month, so
+    ``recurrence_engine.compute_due_date`` has nothing to date its generated
+    rows from and :func:`~app.services.recurrence._frequency
+    .has_row_date_coordinate` keeps the unit out of the offer set.  The picker
+    never renders the WEEK unit, so no click produces it.
+
+    **The case has MOVED TWICE, each time because the gap it named closed.**
+    It was ``(2, MONTH)`` until plan step R7c-c, which freed the interval; then
+    ``(1, YEAR, first paycheck)`` until R8-a, which admitted it -- that refusal
+    named a first-occurrence derivation ruling **R-R16** had already deleted.
+    Plan step **R5** closes this one, and the case then has no successor: the
+    offer set and the write door will admit every reading, and what is left to
+    pin is that they still agree.
     """
 
     #: The verbatim copy the routes flash.  Pinned because the message names
@@ -994,9 +1058,7 @@ class TestTheWriteDoorsRefuseAnUnstorableCadence:
                 "category_id": str(seed_user["categories"]["Rent"].id),
                 "transaction_type_id": str(_expense_type_id()),
                 "account_id": str(seed_user["account"].id),
-                **cadence_payload(
-                    unit=RecurrenceUnitEnum.MONTH, interval_n=2,
-                ),
+                **cadence_payload(unit=RecurrenceUnitEnum.WEEK),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -1025,9 +1087,7 @@ class TestTheWriteDoorsRefuseAnUnstorableCadence:
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
-                **cadence_payload(
-                    unit=RecurrenceUnitEnum.MONTH, interval_n=2,
-                ),
+                **cadence_payload(unit=RecurrenceUnitEnum.WEEK),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -1048,19 +1108,16 @@ class TestTheWriteDoorsRefuseAnUnstorableCadence:
         """
         assert seed_periods_today
         with app.app_context():
-            monthly_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.MONTHLY,
+            month_id = ref_cache.recurrence_unit_id(
+                RecurrenceUnitEnum.MONTH,
             )
-            template = _template_with_pattern(seed_user, monthly_id)
+            template = _template_with_cadence(seed_user, "Monthly")
             template_id, rule_id = template.id, template.recurrence_rule_id
 
             resp = auth_client.post(f"/templates/{template_id}", data={
                 "name": "Rent",
                 "default_amount": "1200.00",
-                **cadence_payload(
-                    unit=RecurrenceUnitEnum.MONTH, interval_n=2,
-                ),
-                "day_of_month": "1",
+                **cadence_payload(unit=RecurrenceUnitEnum.WEEK),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
@@ -1068,7 +1125,158 @@ class TestTheWriteDoorsRefuseAnUnstorableCadence:
             db.session.expire_all()
             reloaded = db.session.get(TransactionTemplate, template_id)
             assert reloaded.recurrence_rule_id == rule_id
-            assert reloaded.recurrence_rule.pattern_id == monthly_id
+            assert reloaded.recurrence_rule.unit_id == month_id
+
+
+class TestAClearedIntervalBoxCannotReCadenceARule:
+    """Plan step **R7c-c**: an emptied "every ___" box is refused, not read as 1.
+
+    **The defect this pins moved money, and the whole suite was blind to it.**
+    Every case in ``test_recurrence_form_helpers.py`` states ``interval_n``
+    explicitly through ``validated_cadence(...)``, so nothing exercised the
+    absence -- and the absence is what a browser produces: an ``<input
+    type="number">`` cleared by the user submits ``""``, which
+    ``_normalize_empty_inputs`` DROPS because the field is not ``allow_none``.
+    Both write doors then defaulted to ``1``, so a save with an empty box
+    silently re-cadenced a quarterly bill to monthly -- 12 occurrences a year
+    where 4 were owed, across the whole projection.
+
+    R7c-c is what made it reachable for the calendar units: the months
+    ``<select>`` it replaced could not post an empty value, so only the PERIOD
+    unit's free box carried the shape before.
+
+    The interval box is enabled for every chosen cadence, so absence beside a
+    named unit is a cleared box or a crafted POST and never "not mine to
+    state".  That is why the refusal is the submission's -- see
+    ``validate_authorable_cadence`` -- rather than a fourth ``KEY in data``
+    read at a route site, which is the copy plan ledger row **D36** warns
+    against.
+    """
+
+    #: The verbatim copy the routes flash, pinned for the reason the sibling
+    #: class pins its own: the generic "correct the highlighted errors" prompt
+    #: names no control, on a redirect that highlights nothing.
+    _REFUSAL = b"Say how often this repeats"
+
+    def test_an_edit_that_clears_it_leaves_the_stored_interval_alone(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The measured case: a quarterly bill stays quarterly.
+
+        Asserting the stored ``interval_n`` rather than the response alone is
+        the point -- the pre-fix route ALSO answered 200 here, and redirected
+        to a list that says nothing about the cadence.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            template = _template_with_cadence(seed_user, "Quarterly")
+            template_id, rule_id = template.id, template.recurrence_rule_id
+            assert template.recurrence_rule.interval_n == 3
+
+            resp = auth_client.post(f"/templates/{template_id}", data={
+                "name": "Rent",
+                "default_amount": "1200.00",
+                **cadence_payload(
+                    unit=RecurrenceUnitEnum.MONTH,
+                    interval_n=3,
+                    starts_on=date(2026, 1, 1),
+                ),
+                # What the browser posts for a box the user emptied.
+                "interval_n": "",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert self._REFUSAL in resp.data
+            db.session.expire_all()
+            reloaded = db.session.get(TransactionTemplate, template_id)
+            assert reloaded.recurrence_rule_id == rule_id
+            assert reloaded.recurrence_rule.interval_n == 3
+
+    def test_a_create_that_clears_it_authors_no_rule(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The create door refuses the same absence, and writes nothing.
+
+        Swept because the create path carried the identical default and its
+        harm is only different in kind: an edit re-cadences a bill that
+        exists, a create authors a monthly one the user never asked for.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            rules_before = db.session.query(RecurrenceRule).count()
+
+            resp = auth_client.post("/templates", data={
+                "name": "Water Bill",
+                "default_amount": "120.00",
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "transaction_type_id": str(_expense_type_id()),
+                "account_id": str(seed_user["account"].id),
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH, interval_n=3),
+                "interval_n": "",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert self._REFUSAL in resp.data
+            assert db.session.query(TransactionTemplate).filter_by(
+                name="Water Bill",
+            ).first() is None
+            assert db.session.query(RecurrenceRule).count() == rules_before
+
+    def test_a_stated_interval_still_saves(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The negative control: the refusal is about ABSENCE, not the field.
+
+        Without it a route that refused every submission carrying an interval
+        would pass both cases above -- and re-cadencing a bill deliberately is
+        the ordinary edit this form exists for.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            template = _template_with_cadence(seed_user, "Quarterly")
+            template_id = template.id
+
+            resp = auth_client.post(f"/templates/{template_id}", data={
+                "name": "Rent",
+                "default_amount": "1200.00",
+                **cadence_payload(
+                    unit=RecurrenceUnitEnum.MONTH,
+                    interval_n=6,
+                    starts_on=date(2026, 1, 1),
+                ),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            reloaded = db.session.get(TransactionTemplate, template_id)
+            assert reloaded.recurrence_rule.interval_n == 6
+
+    def test_an_amount_only_edit_states_no_cadence_and_is_unaffected(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A submission naming NO unit is still a partial update.
+
+        The rule is conditional on a cadence being named, exactly as
+        ``validate_recurrence_states_a_start`` is: refusing an absent interval
+        unconditionally would make every amount-only edit unsavable, which is
+        the failure mode the placement half was written to avoid.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            template = _template_with_cadence(seed_user, "Quarterly")
+            template_id, rule_id = template.id, template.recurrence_rule_id
+
+            resp = auth_client.post(f"/templates/{template_id}", data={
+                "name": "Rent",
+                "default_amount": "1300.00",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            reloaded = db.session.get(TransactionTemplate, template_id)
+            assert reloaded.default_amount == Decimal("1300.00")
+            assert reloaded.recurrence_rule_id == rule_id
+            assert reloaded.recurrence_rule.interval_n == 3
 
 
 class TestTheCopyTheUserActuallyReads:
@@ -1095,19 +1303,15 @@ class TestTheCopyTheUserActuallyReads:
             "Does not repeat", "paychecks", "months", "years",
         ]
 
-    def test_the_interval_options_agree_with_their_own_counts(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """"1 month", not "1 months" -- the count drives the noun.
-
-        The one place the template picks between the two label forms.
-        """
-        assert seed_periods_today
-        body = auth_client.get("/templates/new").data.decode()
-
-        assert _option_labels(body, "interval_n_fixed") == [
-            "1 paycheck", "1 month", "3 months", "6 months", "1 year",
-        ]
+    # ``test_the_interval_options_agree_with_their_own_counts`` was here until
+    # plan step R7c-c.  It pinned the interval ``<select>``'s labels -- "1
+    # paycheck", "1 month", "3 months", "6 months", "1 year" -- which was the
+    # one place the template picked between ``unit_label_one`` and
+    # ``unit_label_many``.  That control is deleted: every interval is a free
+    # number box, so the count is typed rather than chosen and there is no
+    # per-count noun to word.  Both labels still ride on the option, because
+    # plan step R8's controls will need them; nothing renders the singular
+    # today, which is why nothing pins it.
 
     def test_the_placement_options_are_worded_over_the_date(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1135,8 +1339,7 @@ class TestTheCopyTheUserActuallyReads:
         transaction = auth_client.get("/templates/new").data.decode()
         transfer = auth_client.get("/transfers/new").data.decode()
 
-        for select_id in ("recurrence_unit", "interval_n_fixed",
-                          "recurrence_placement"):
+        for select_id in ("recurrence_unit", "recurrence_placement"):
             assert _option_labels(transaction, select_id) == _option_labels(
                 transfer, select_id,
             ), select_id
@@ -1156,12 +1359,7 @@ class TestADeliberateClearStillWorks:
         """A rule the form COULD show is cleared by the empty unit."""
         assert seed_periods_today
         with app.app_context():
-            template = _template_with_pattern(
-                seed_user,
-                ref_cache.recurrence_pattern_id(
-                    RecurrencePatternEnum.EVERY_PERIOD,
-                ),
-            )
+            template = _template_with_cadence(seed_user, "Every Period")
             template_id, rule_id = template.id, template.recurrence_rule_id
 
             resp = auth_client.post(f"/templates/{template_id}", data={

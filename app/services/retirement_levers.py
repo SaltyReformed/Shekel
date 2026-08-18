@@ -20,9 +20,16 @@ direction-D page:
   readiness picture -- the merit-horizon salary path, the pension years
   of service and high-salary average, the growth horizon, and the
   required target (BOTH sides of the gap move with the date) -- reaches
-  funded >= 100%.  Probes reuse one loaded input batch
-  (:func:`app.services.retirement_projection.load_projection_batch`);
-  only the date-dependent parts recompute per probe.
+  funded >= 100%.
+
+**This module SOLVES; it no longer computes the picture it solves against**
+(plan step C2-f2d-2, ledger row **P57**).  It held ``_ProbeInputs``, a second
+loader, and ``_probe``, a second implementation of the retirement picture --
+and on a default ``/retirement`` load its month-0 probe recomputed, from its
+own 46 queries, the picture the readiness hero had already drawn.  A probe is
+now :func:`~app.services.retirement_plan.picture_at` at a
+:class:`~app.services.retirement_plan.PlanPoint` whose month offset varies,
+so the baseline the levers compare against IS the object the hero rendered.
 
 ``compute_lever_data`` is the producer the P2c lever fragment endpoint
 renders: it returns both levers' solved defaults plus the outcome facts
@@ -31,31 +38,13 @@ at caller-supplied stepper values.
 All functions accept plain data and return plain data.  No Flask imports.
 """
 
-from dataclasses import dataclass, replace
-from datetime import date
+from dataclasses import replace
 from decimal import Decimal
 
-from app.services import growth_engine, retirement_gap_calculator
-from app.services.pay_calendar import PayCadence, PeriodWindow
-from app.services.retirement_dashboard_service import (
-    GapInputs,
-    compute_gap_net_biweekly,
-    compute_pension_summary,
-    compute_slider_defaults,
-    load_gap_inputs,
-    resolve_estimated_tax_rate,
-    resolve_planned_retirement_date,
-    resolve_swr_fraction,
-)
-from app.services.retirement_projection import (
-    build_employer_salary_basis,
-    build_projection_context,
-    load_projection_batch,
-    project_accounts_with_batch,
-    resolve_projection_axis,
-)
-from app.services.retirement_readiness import funded_ratio_state
-from app.utils.dates import add_months
+from app.services import growth_engine
+from app.services.pay_calendar import PayCadence
+from app.services.retirement_gap_calculator import funded_ratio_for
+from app.services.retirement_plan import picture_at
 from app.utils.money import ZERO, round_money
 
 # Retire-later search cap: the largest month offset the P2b binary search
@@ -63,96 +52,31 @@ from app.utils.money import ZERO, round_money
 # months is reported as the honest ``not_within_cap`` state.
 _MAX_DELAY_MONTHS = 180
 
-# Percentage scaler for ``compute_slider_defaults``' percent-form blended
-# return (10.50 -> 0.1050).
-_PCT_SCALE = Decimal("100")
 
-# Funded means the quantized funded ratio reaches at least this value.
-_FULLY_FUNDED = Decimal("1")
-
-
-@dataclass(frozen=True)
-class _ProbeInputs:
-    """Loaded-once inputs shared by every retire-later probe.
-
-    Built by :func:`_load_probe_inputs`.  Everything here is
-    date-independent: a probe at month offset ``m`` recomputes only the
-    salary path, the pension benefit, the employer salary basis, the
-    projection axis, and the per-account engine walk.
-
-    Attributes:
-        gap: The :class:`GapInputs` bundle (settings, pensions, salary
-            profiles, current pay, merit horizon).
-        base_date: The stored plan's resolved retirement date, or ``None``
-            when neither a pension nor the settings supply one.
-        ctx: The projection context at the stored plan (probes derive
-            horizon-shifted copies via :func:`dataclasses.replace`).
-        batch: The date-independent projection batch (deductions,
-            contributions, params, balances) loaded once.
-        swr: The resolved fractional safe-withdrawal rate.
-        effective_tax_rate: The explicit (possibly F1 zero) estimated
-            retirement tax rate.
-        tax_rate_missing: True when the stored rate is unset (fork F1).
-    """
-
-    gap: GapInputs
-    base_date: date | None
-    ctx: object
-    batch: object
-    swr: Decimal
-    effective_tax_rate: Decimal
-    tax_rate_missing: bool
-
-
-@dataclass(frozen=True)
-class _ProbeResult:
-    """One candidate retirement date's readiness picture.
-
-    **``month_offset`` was DELETED at plan step C2-e** (developer, 2026-08-14),
-    which is what keeps this record at seven fields and off a
-    ``too-many-instance-attributes`` suppression now that it carries the axis.
-    It was written by :func:`_probe` and read nowhere in ``app/``: the memo is
-    keyed on the offset by its CALLER (:func:`compute_lever_data`'s
-    ``probe_cache``), and both levers read :attr:`retirement_date` instead.  A
-    field whose only consumer was a test is a field with no consumer -- the same
-    ruling that deleted the milestone dicts' machine ``kind`` at plan step X-s1.
-
-    Attributes:
-        retirement_date: The shifted retirement date.
-        required: The net-frame required savings at that date.
-        after_tax_projected: The after-tax projected savings at that date.
-        funded_ratio: after-tax projected / required (quantized), or
-            ``None`` when the requirement is zero.
-        no_savings_needed: True when the requirement is zero (the pension
-            fully covers the shifted gap).
-        projections: The per-account projection dicts the probe produced
-            (the baseline probe's list feeds the blended return and the
-            headroom facts).
-        axis: The :class:`~app.services.pay_calendar.PeriodWindow` this probe
-            projected over -- the owner's paychecks from the read pass's clock
-            to :attr:`retirement_date`.  **Carried rather than rebuilt** (plan
-            step C2-e): the contribution lever's annuity factor is a fold over
-            exactly the periods the baseline probe used, and it used to
-            RE-ISSUE the axis producer with the same two arguments and trust
-            the two calls to agree.  An annuity factor over a different axis
-            than the shortfall it divides solves for a per-period contribution
-            that does not close the gap.
-    """
-
-    retirement_date: date
-    required: Decimal
-    after_tax_projected: Decimal
-    funded_ratio: Decimal | None
-    no_savings_needed: bool
-    projections: list
-    axis: PeriodWindow
-
-
-def compute_lever_data(user_id, contribution_override=None, months_override=None):
+def compute_lever_data(
+    inputs, point=None, contribution_override=None, months_override=None,
+):
     """Compute both levers' solved defaults and stepper outcomes (P2a/P2b).
 
+    **It runs on the render's own loaded inputs and derives the picture through
+    the page's one producer** (plan step C2-f2d-2).  The ``/retirement`` route
+    renders this beside the readiness verdict, and this module used to load
+    every input again and recompute that verdict's picture as its month-0
+    probe: 86 of the render's 179 queries on a production clone, and -- the
+    part that is not about speed -- a second derivation of a displayed figure,
+    agreeing with the first until one of them changed.
+
     Args:
-        user_id: The user's integer ID.
+        inputs: The render's
+            :class:`~app.services.retirement_plan.RetirementInputs`, built once
+            by the route.
+        point: The :class:`~app.services.retirement_plan.PlanPoint` these
+            levers solve FROM -- the assumptions the page is currently showing;
+            ``None`` for the owner's stored plan.  Its ``month_offset`` is
+            REPLACED per probe (the retire-later lever owns that axis) while
+            the assumptions ride through unchanged, so a lever solved while a
+            slider is held is solved against the picture beside it rather than
+            against the stored one.
         contribution_override: Optional Decimal per-period extra
             contribution from the stepper; ``None`` displays the solved
             default.
@@ -166,150 +90,44 @@ def compute_lever_data(user_id, contribution_override=None, months_override=None
         dicts (see :func:`_contribution_lever` /
         :func:`_retire_later_lever`).
     """
-    inputs = _load_probe_inputs(user_id)
+    point = inputs.stored_plan if point is None else point
     if inputs.base_date is None:
         # No pension date and no settings date: there is no horizon to
-        # solve against.  P3 renders this as the page's empty state.
+        # solve against.  P3 renders this as the page's empty state.  The
+        # picture is not derived at all here, so a horizon-less owner pays
+        # for none of the projection.
         return {
             "no_horizon": True,
             "tax_rate_missing": inputs.tax_rate_missing,
         }
 
-    probe_cache: dict[int, _ProbeResult] = {}
-
     def probe_at(month_offset):
-        """Memoized probe so the search and the outcome reuse results."""
-        if month_offset not in probe_cache:
-            probe_cache[month_offset] = _probe(inputs, month_offset)
-        return probe_cache[month_offset]
+        """The picture at *point* delayed by *month_offset* whole months.
+
+        Memoized by :func:`~app.services.retirement_plan.picture_at` on the
+        render's inputs rather than in a cache of this function's own, which
+        is what lets the search, the displayed outcome AND the readiness hero
+        share one derivation of the month-0 picture.
+        """
+        return picture_at(inputs, replace(point, month_offset=month_offset))
 
     baseline = probe_at(0)
+    funded_ratio, no_savings_needed = baseline.funded_state
     return {
         "no_horizon": False,
         "tax_rate_missing": inputs.tax_rate_missing,
         "baseline": {
-            "funded_ratio": baseline.funded_ratio,
-            "no_savings_needed": baseline.no_savings_needed,
-            "required_savings": baseline.required,
-            "projected_after_tax": baseline.after_tax_projected,
-            "retirement_date": inputs.base_date,
+            "funded_ratio": funded_ratio,
+            "no_savings_needed": no_savings_needed,
+            "required_savings": baseline.net.required_retirement_savings,
+            "projected_after_tax": baseline.net.after_tax_projected_savings,
+            "retirement_date": baseline.retirement_date,
         },
         "contribution": _contribution_lever(
-            inputs, baseline, contribution_override,
+            baseline, contribution_override,
         ),
         "retire_later": _retire_later_lever(probe_at, months_override),
     }
-
-
-# ── Loading and probing ──────────────────────────────────────────
-
-
-def _load_probe_inputs(user_id):
-    """Load every date-independent lever input exactly once.
-
-    Args:
-        user_id: The user's integer ID.
-
-    Returns:
-        A :class:`_ProbeInputs` bundle.  ``ctx`` / ``batch`` are built at
-        the stored plan's resolved date; probes shift the context per
-        candidate date without re-querying.
-    """
-    gap = load_gap_inputs(user_id)
-    base_date = resolve_planned_retirement_date(gap.pensions, gap.settings)
-    ctx = build_projection_context(
-        user_id,
-        gap.pay.all_periods,
-        gap.pay.current_period,
-        base_date,
-        None,
-        build_employer_salary_basis(
-            gap.salary_profiles, base_date, gap.merit_horizon_years,
-        ),
-    )
-    stored_tax_rate = resolve_estimated_tax_rate(gap.settings)
-    return _ProbeInputs(
-        gap=gap,
-        base_date=base_date,
-        ctx=ctx,
-        batch=load_projection_batch(ctx),
-        swr=resolve_swr_fraction(gap.settings),
-        effective_tax_rate=(
-            stored_tax_rate if stored_tax_rate is not None else Decimal("0")
-        ),
-        tax_rate_missing=stored_tax_rate is None,
-    )
-
-
-def _probe(inputs, month_offset):
-    """Recompute the FULL readiness picture at plan date + *month_offset*.
-
-    Both sides of the gap move with the date: the merit-horizon salary
-    path extends (:func:`compute_pension_summary` shifts each pension's
-    date, growing the years of service and the high-salary window), the
-    income target re-derives from the longer salary path
-    (:func:`compute_gap_net_biweekly`), the employer salary basis and the
-    growth horizon extends, and the per-account projections
-    re-run over the longer axis -- all against the ONE loaded batch.
-
-    Args:
-        inputs: The loaded-once :class:`_ProbeInputs` (``base_date`` is
-            non-None; the caller guards the no-horizon case).
-        month_offset: Whole months added to the stored plan (>= 0).
-
-    Returns:
-        A :class:`_ProbeResult` for the shifted date.
-    """
-    date_m = add_months(inputs.base_date, month_offset)
-    pension = compute_pension_summary(
-        inputs.gap.pensions, inputs.gap.merit_horizon_years, month_offset,
-    )
-    ctx_m = replace(
-        inputs.ctx,
-        planned_retirement_date=date_m,
-        employer_salary_basis=build_employer_salary_basis(
-            inputs.gap.salary_profiles, date_m,
-            inputs.gap.merit_horizon_years,
-        ),
-    )
-    axis = resolve_projection_axis(ctx_m, inputs.batch.balance_ctx)
-    projections = project_accounts_with_batch(ctx_m, inputs.batch, axis)
-    net = retirement_gap_calculator.calculate_gap(
-        net_biweekly_pay=compute_gap_net_biweekly(
-            inputs.gap.salary_profiles, date_m, inputs.gap.pay,
-            pension.salary_by_year, inputs.gap.merit_horizon_years,
-        ),
-        pay_cadence=inputs.gap.pay_cadence,
-        monthly_pension_income=pension.monthly_income,
-        retirement_account_projections=projections,
-        safe_withdrawal_rate=inputs.swr,
-        estimated_tax_rate=inputs.effective_tax_rate,
-    )
-    funded_ratio, no_savings_needed = funded_ratio_state(net)
-    return _ProbeResult(
-        retirement_date=date_m,
-        required=net.required_retirement_savings,
-        after_tax_projected=net.after_tax_projected_savings,
-        funded_ratio=funded_ratio,
-        no_savings_needed=no_savings_needed,
-        projections=projections,
-        axis=axis,
-    )
-
-
-def _is_funded(probe):
-    """Return True when a probe's plan is fully funded.
-
-    Funded means the requirement is zero (the pension covers the whole
-    gap) or the quantized funded ratio reaches 100%.
-
-    Args:
-        probe: A :class:`_ProbeResult`.
-
-    Returns:
-        bool.
-    """
-    return probe.no_savings_needed or probe.funded_ratio >= _FULLY_FUNDED
 
 
 # ── P2a: contribution lever ──────────────────────────────────────
@@ -347,27 +165,6 @@ def _annuity_factor(periods, annual_return):
             )
         )
     return factor
-
-
-def _blended_return(settings, projections):
-    """The balance-weighted blended annual return fraction.
-
-    Reuses :func:`~app.services.retirement_dashboard_service
-    .compute_slider_defaults` -- the same definition the readiness chart's
-    needed-path uses -- scaled from percent to fraction.
-
-    Args:
-        settings: The user's :class:`UserSettings`, or ``None``.
-        projections: The baseline per-account projection dicts.
-
-    Returns:
-        Decimal fraction (e.g. ``0.105`` for 10.5%).
-    """
-    slider = compute_slider_defaults({
-        "settings": settings,
-        "retirement_account_projections": projections,
-    })
-    return slider["current_return"] / _PCT_SCALE
 
 
 def _headroom_per_period(
@@ -410,15 +207,21 @@ def _headroom_per_period(
     return round_money(total)
 
 
-def _contribution_outcome(baseline, annuity_factor, amount):
+def _contribution_outcome(net, annuity_factor, amount):
     """Outcome facts for an extra *amount* per period, Roth-basis (F2).
 
     The stream's horizon value is ``amount * AF``; Roth-basis dollars land
     untaxed, so it adds to the AFTER-TAX projection dollar-for-dollar and
     the funded ratio re-derives against the unchanged requirement.
 
+    It takes the ANALYSIS rather than the whole picture, because those two
+    figures are every input it has: handing it a picture to read a required
+    and a projected off would be stamp coupling, and it would force any test
+    of this arithmetic to construct a projection it never looks at.
+
     Args:
-        baseline: The month-0 :class:`_ProbeResult`.
+        net: The month-0 picture's net-frame
+            :class:`~app.services.retirement_gap_calculator.RetirementGapAnalysis`.
         annuity_factor: The horizon annuity factor.
         amount: The extra per-period contribution (Decimal >= 0).
 
@@ -426,25 +229,20 @@ def _contribution_outcome(baseline, annuity_factor, amount):
         dict with ``projected_after_tax``, ``funded_ratio``,
         ``no_savings_needed``, and ``surplus_or_shortfall`` at *amount*.
     """
-    projected = baseline.after_tax_projected + round_money(
+    required = net.required_retirement_savings
+    projected = net.after_tax_projected_savings + round_money(
         amount * annuity_factor,
     )
-    if baseline.required == ZERO:
-        funded_ratio, no_savings_needed = None, True
-    else:
-        funded_ratio = (projected / baseline.required).quantize(
-            Decimal("0.0001"),
-        )
-        no_savings_needed = False
+    funded_ratio, no_savings_needed = funded_ratio_for(projected, required)
     return {
         "projected_after_tax": projected,
         "funded_ratio": funded_ratio,
         "no_savings_needed": no_savings_needed,
-        "surplus_or_shortfall": projected - baseline.required,
+        "surplus_or_shortfall": projected - required,
     }
 
 
-def _contribution_lever(inputs, baseline, contribution_override):
+def _contribution_lever(baseline, contribution_override):
     """Assemble the contribution lever's solved default and outcome (P2a).
 
     Closed form: ``solved = round(after-tax shortfall / AF)`` where the
@@ -461,8 +259,10 @@ def _contribution_lever(inputs, baseline, contribution_override):
     and never caps the number.
 
     Args:
-        inputs: The loaded-once :class:`_ProbeInputs`.
-        baseline: The month-0 probe.
+        baseline: The month-0
+            :class:`~app.services.retirement_plan.RetirementPicture` -- its
+            axis, its shortfall, its blended return and the owner's cadence
+            are every input this lever has.
         contribution_override: Optional stepper amount; ``None`` displays
             the solved default.
 
@@ -470,16 +270,33 @@ def _contribution_lever(inputs, baseline, contribution_override):
         dict with ``state`` (``solved`` / ``already_funded`` /
         ``past_horizon``), ``solved_amount`` (``None`` for
         ``past_horizon`` -- no per-period solution exists), ``amount``
-        (the displayed stepper value; ``None`` only in the unsolvable
-        no-override case), the outcome facts at that amount,
+        (the amount the outcome facts describe: the override when one was
+        submitted, else the solved default), ``entered`` (the OWNER's
+        submitted amount alone, or ``None``), the outcome facts at ``amount``,
         ``headroom_per_period`` (``None`` = unbounded), and
         ``exceeds_headroom``.
+
+        **``entered`` is published apart from ``amount`` because the stepper
+        input may carry only the first** (plan step C2-f2d-4).  A field
+        pre-filled with the solved default is indistinguishable over HTTP from
+        one the owner typed, so the next what-if refresh submits it back as an
+        override and the card states the stale figure in its outcome line
+        while its headline states the newly solved one -- two per-paycheck
+        contributions for one plan, which is the defect this step exists to
+        remove.  The assumptions rail's own "Assumed return" row starts empty
+        for exactly this reason and says so; these steppers now follow it.
     """
-    annuity_factor = _annuity_factor(
-        baseline.axis,
-        _blended_return(inputs.gap.settings, baseline.projections),
+    # The annuity factor folds over exactly the window this picture projected
+    # over, at exactly the return it grew at -- both read off the picture
+    # rather than rebuilt beside it (plan steps C2-e and C2-f2d-2).  An annuity
+    # factor over a different axis, or at a different rate, than the shortfall
+    # it divides solves for a per-period contribution that does not close the
+    # gap.
+    annuity_factor = _annuity_factor(baseline.axis, baseline.blended_return)
+    shortfall = (
+        baseline.net.required_retirement_savings
+        - baseline.net.after_tax_projected_savings
     )
-    shortfall = baseline.required - baseline.after_tax_projected
     if shortfall <= ZERO:
         state = "already_funded"
         solved_amount = Decimal("0.00")
@@ -500,17 +317,18 @@ def _contribution_lever(inputs, baseline, contribution_override):
         else solved_amount
     )
     headroom = _headroom_per_period(
-        baseline.projections, inputs.gap.pay_cadence,
+        baseline.projections, baseline.pay_cadence,
     )
     return {
         "state": state,
         "solved_amount": solved_amount,
         "amount": amount,
+        "entered": contribution_override,
         # A None amount (past_horizon, no override) evaluates the outcome
         # at $0 extra: with no periods the annuity factor is zero anyway,
         # so the facts are the baseline picture.
         **_contribution_outcome(
-            baseline, annuity_factor,
+            baseline.net, annuity_factor,
             amount if amount is not None else Decimal("0"),
         ),
         "headroom_per_period": headroom,
@@ -528,8 +346,9 @@ def _contribution_lever(inputs, baseline, contribution_override):
 def _retire_later_lever(probe_at, months_override):
     """Assemble the retire-later lever's solved default and outcome (P2b).
 
-    Binary search for the smallest whole-month offset at which
-    :func:`_is_funded` holds, capped at :data:`_MAX_DELAY_MONTHS`.  The
+    Binary search for the smallest whole-month offset at which the picture is
+    :attr:`~app.services.retirement_plan.RetirementPicture.is_funded`, capped
+    at :data:`_MAX_DELAY_MONTHS`.  The
     search assumes funded-ness is monotone in the delay (each extra month
     adds contributions, growth, and pension service on one side of the
     gap faster than the salary-grown target moves on the other -- the
@@ -540,29 +359,31 @@ def _retire_later_lever(probe_at, months_override):
     at-cap facts).
 
     Args:
-        probe_at: The memoized ``month_offset -> _ProbeResult`` callable.
+        probe_at: The ``month_offset -> RetirementPicture`` callable, memoized
+            on the render's inputs so a repeated offset costs nothing and the
+            month-0 probe is the readiness hero's own picture.
         months_override: Optional stepper offset; ``None`` displays the
             solved default (or the cap facts when unsolvable).
 
     Returns:
         dict with ``state`` (``solved`` / ``already_funded`` /
-        ``not_within_cap``), ``solved_months`` (``None`` when
-        unsolvable), ``months`` (the displayed offset, ``None`` only in
-        the unsolvable no-override case), ``retirement_date``, and the
-        funded / required / projected / surplus facts at the displayed
-        offset.
+        ``not_within_cap``), ``solved_months`` (``None`` when unsolvable),
+        ``months`` (the offset the facts below describe), ``entered`` (the
+        OWNER's submitted offset alone, or ``None`` -- see
+        :func:`_contribution_lever` for why the two are published apart),
+        ``retirement_date``, and the funded / required / projected / surplus
+        facts at ``months``.
     """
-    baseline = probe_at(0)
-    if _is_funded(baseline):
+    if probe_at(0).is_funded:
         state, solved_months = "already_funded", 0
-    elif not _is_funded(probe_at(_MAX_DELAY_MONTHS)):
+    elif not probe_at(_MAX_DELAY_MONTHS).is_funded:
         state, solved_months = "not_within_cap", None
     else:
         low, high = 0, _MAX_DELAY_MONTHS
         # Invariant: not funded at ``low``, funded at ``high``.
         while high - low > 1:
             mid = (low + high) // 2
-            if _is_funded(probe_at(mid)):
+            if probe_at(mid).is_funded:
                 high = mid
             else:
                 low = mid
@@ -572,16 +393,18 @@ def _retire_later_lever(probe_at, months_override):
     # The unsolvable no-override case displays the at-cap facts so the
     # caption can state how far even +180 months falls short.
     outcome = probe_at(months if months is not None else _MAX_DELAY_MONTHS)
+    funded_ratio, no_savings_needed = outcome.funded_state
+    required = outcome.net.required_retirement_savings
+    projected = outcome.net.after_tax_projected_savings
     return {
         "state": state,
         "solved_months": solved_months,
         "months": months,
+        "entered": months_override,
         "retirement_date": outcome.retirement_date,
-        "funded_ratio": outcome.funded_ratio,
-        "no_savings_needed": outcome.no_savings_needed,
-        "required_savings": outcome.required,
-        "projected_after_tax": outcome.after_tax_projected,
-        "surplus_or_shortfall": (
-            outcome.after_tax_projected - outcome.required
-        ),
+        "funded_ratio": funded_ratio,
+        "no_savings_needed": no_savings_needed,
+        "required_savings": required,
+        "projected_after_tax": projected,
+        "surplus_or_shortfall": projected - required,
     }

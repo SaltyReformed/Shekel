@@ -55,20 +55,26 @@ RECURRENCE_NEEDS_A_START: dict[str, list[str]] = {
     ],
 }
 
-# The largest occurrence count ``budget.recurrence_rules.max_occurrences`` can
-# hold: it is a Postgres ``integer``, so a larger value dies at the DATABASE
-# with ``psycopg2.errors.NumericValueOutOfRange`` -- an unhandled 500 on a door
-# an ordinary crafted POST reaches, which is the ``MarkDoneSchema`` defect the
-# monetary bound above records.  A schema-tier bound AT the column's domain is
-# what keeps an unstorable count a designed 400.
+# The largest value a Postgres ``integer`` column holds, and the ceiling BOTH
+# of this form's count fields need: ``max_occurrences`` and ``interval_n`` are
+# both ``integer``, so a larger submission dies at the DATABASE with
+# ``psycopg2.errors.NumericValueOutOfRange`` -- an unhandled 500 on a door an
+# ordinary crafted POST reaches, which is the ``MarkDoneSchema`` defect the
+# monetary bound records.  A schema-tier bound AT the column's domain is what
+# keeps an unstorable value a designed 400.
 #
-# There is deliberately NO lower bound beside it (plan step R7b-3).  "A count
-# names at least one occurrence" is
-# :class:`~app.services.recurrence.EndsAfterOccurrences`'s own invariant, held
-# at construction where no path can miss it; stating it here as well would put
-# one rule in two places AND take the refusal away from the shape, whose
-# message names the control and says what to type.
-_MAX_OCCURRENCE_COUNT = 2147483647
+# ``interval_n`` joined it at plan step R7c-c, and that step is what opened the
+# hole on three of the four units: while the closed pattern set was the storage,
+# ``is_authorable`` refused any MONTH or YEAR interval above 6, so only the
+# PERIOD unit's free box could reach the flush with an unstorable count.
+# Freeing the interval made every unit's box free, and ``is_authorable`` now
+# asks only that the interval be POSITIVE -- the upper half of the domain is
+# the column's type, and nothing was stating it.
+#
+# Each field states its own LOWER bound, or deliberately does not: see the two
+# declarations for why ``interval_n`` carries ``min=1`` and ``max_occurrences``
+# leaves that to the shape it composes into.
+_MAX_INTEGER_COLUMN = 2147483647
 
 
 class RecurrenceUnitField(_RefEnumField):
@@ -139,18 +145,34 @@ def validate_authorable_cadence(data):
 
     The cross-field half of the recurrence form's validation, shared by the
     transaction-template and transfer-template schemas so the rule is stated
-    once.  Whether a reading can be written is a property of the whole
-    ``(interval, unit, placement)`` triple and of no single field: until plan
-    step R7c the cadence is stored as a closed-set pattern id, and that set
-    covers every N pay periods but only 1, 3 or 6 months, and pairs the
-    first-paycheck placement with a ONE-month interval only.
+    once.  Completeness is a property of the whole ``(interval, unit,
+    placement)`` triple and of no single field, which is why all three are
+    asked here.
+
+    **What can still be REFUSED changed at plan step R7c-c.**  While the
+    cadence was stored as a closed-set pattern id, the binding constraint was
+    STORAGE: the set covered every N pay periods but only 1, 3 or 6 months, and
+    paired the first-paycheck placement with a ONE-month interval only.  With
+    ``interval_n`` and ``unit_id`` authored columns every reading can be stored,
+    so what is left is whether the application can HONOUR the
+    ``(unit, placement)`` PAIR.  Until plan step **R8-a** that meant "can a
+    first occurrence be DERIVED", which refused two pairs by naming derivations
+    ruling **R-R16** had already deleted; it is the two live rules
+    :func:`~app.services.recurrence.authorable_cadences` states now, and the
+    only reading still refused is the ``WEEK`` unit -- whose occurrences are
+    neither paydays nor days of the month, so
+    ``recurrence_engine.compute_due_date`` has nothing to date its rows from
+    until plan step **R5** gives a generated row its own ``occurs_on``.  **The
+    interval is no longer able to make a cadence unauthorable**, which is what
+    the refusal's own copy had to stop saying.
 
     **This is the door's copy of a rule the FORM already makes unreachable.**
     Plan step R7b-2 serves the picker's options from
     :func:`~app.services.recurrence.cadence_options`, derived from the same
-    table, so no combination a user can assemble by clicking arrives here
-    refused.  It is what a hand-assembled POST meets, and it is why the write
-    door's :class:`~app.services.recurrence.RecurrenceResolutionError` stays a
+    producer this asks, so no combination a user can assemble by clicking
+    arrives here refused.  It is what a hand-assembled POST meets, and it is why
+    the write door's
+    :class:`~app.services.recurrence.RecurrenceResolutionError` stays a
     broken-invariant 500 rather than becoming a user-facing path.
 
     Skipped when NO unit is named: "does not repeat" is the absence of a
@@ -166,8 +188,10 @@ def validate_authorable_cadence(data):
     ``allow_none``, so :func:`_normalize_empty_inputs` keeps the key with a
     present ``None``, marshmallow never deserializes it, and the route built a
     spec with ``placement=None`` that RESOLVED (the ``PERIOD`` unit's anchor
-    does not read the placement) and then died inside ``encode_cadence``.  That
-    is precisely the refusal this function exists to turn into a field error,
+    does not read the placement) and then died inside the write door's
+    completeness refusal, which was ``encode_cadence`` then and is
+    :func:`~app.services.recurrence.require_authorable_cadence` now.  That is
+    precisely the refusal this function exists to turn into a field error,
     arriving as a 500 instead.
 
     It is defect **D13**'s shape one field over, and the transfer route's own
@@ -177,12 +201,38 @@ def validate_authorable_cadence(data):
     stops a rule being authored from a cadence the user only half stated -- a
     default would pick which paycheck pays a bill on the user's behalf.
 
+    **A named unit with no INTERVAL is refused for the same reason, from plan
+    step R7c-c, and until then it was DEFAULTED TO 1 in three places** -- here,
+    and in each write door's ``pop``.  That default moved money: R7c-c replaced
+    the months ``<select>`` (which cannot post an empty value) with one free
+    ``<input type="number">``, so clearing the box on a quarterly bill dropped
+    the key -- ``interval_n`` is not ``allow_none``, so
+    :func:`_normalize_empty_inputs` removes it rather than keeping a stated
+    ``None`` -- and the save silently re-cadenced the rule to every 1 month,
+    generating 12 occurrences a year where 4 were owed, across the whole
+    projection.  The shape was already reachable for the PERIOD unit's free box
+    before R7c-c; freeing the interval widened it to every unit.
+
+    **Absence is refused rather than read as "leave the stored one alone"**,
+    which is the opposite of what ``starts_on`` and the closing bound do, and
+    the difference is which states the CONTROL can produce.  Those two are
+    disabled on a form whose value the app DERIVES (a loan payment's), so
+    "not mine to state" is a real third state and the update door honours it.
+    The interval box is disabled only while the definition does not repeat
+    (``_recurrence_fields.html``; ``recurrence_form.js`` re-enables it for
+    every chosen cadence), so beside a named unit there is no producer of an
+    absent interval except a cleared box or a hand-assembled POST.  Two states,
+    not three -- so this field is not one of plan ledger row **D36**'s, and
+    refusing states its real arity instead of adding a fourth hand-written
+    presence read at a route site, which is what D36 warns against.
+
     Args:
         data: The deserialized schema payload.
 
     Raises:
-        ValidationError: A unit is named with no placement, or the submitted
-            triple has no closed-set pattern to be stored as.
+        ValidationError: A unit is named without a placement or without an
+            interval, or the submitted triple has no closed-set pattern to be
+            stored as.
     """
     # Pylint: ``import-outside-toplevel`` -- see
     # :meth:`RecurrenceUnitField._member_for`.
@@ -199,10 +249,23 @@ def validate_authorable_cadence(data):
             "Choose which paycheck funds each occurrence.",
             field_name="recurrence_placement",
         )
-    if not is_authorable(data.get("interval_n", 1), unit, placement):
+    if "interval_n" not in data:
+        raise ValidationError(
+            "Say how often this repeats.  Enter a number beside the unit, "
+            "like 3 for every 3 months.",
+            field_name="interval_n",
+        )
+    if not is_authorable(data["interval_n"], unit, placement):
+        # **"a different repeat unit", not "a different interval", from plan
+        # step R7c-c.**  The interval was half the answer while storage was the
+        # binding constraint; it cannot make a cadence unauthorable now, so
+        # telling the user to change it names a control that will not help.
+        # The two that can are the two this copy names, and it spells them the
+        # way their own field refusals do ("Invalid repeat unit.", "Invalid
+        # funding choice.") so one vocabulary reaches the user.
         raise ValidationError(
             "That repeat schedule cannot be saved yet. Pick a different "
-            "interval or a different funding choice.",
+            "repeat unit or a different funding choice.",
             field_name="recurrence_unit",
         )
 
@@ -427,9 +490,21 @@ class RecurrenceFormFieldsMixin:
     # template ever rendered an input for, so every submission carried the
     # schema default -- which the update path then wrote over the rule's real
     # phase.  ``resolve`` derives the phase from the rule's opening bound.
+    #
+    # ``interval_n`` is the cadence's THIRD axis and it is bounded at BOTH ends
+    # here.  ``min=1`` mirrors ``ck_recurrence_rules_positive_interval``;
+    # ``max`` is the column's own type, which nothing stated until plan step
+    # R7c-c freed the interval for every unit -- see
+    # :data:`_MAX_INTEGER_COLUMN`.  It is NOT ``required``, for the reason
+    # ``starts_on`` is not: a submission naming no cadence authors no rule and
+    # a partial update that omits every recurrence key must stay one.  What
+    # makes it required WHEN A CADENCE IS CHOSEN is
+    # :func:`validate_authorable_cadence`, the only layer that sees the triple.
     recurrence_unit = RecurrenceUnitField(allow_none=True)
     recurrence_placement = PeriodPlacementField(allow_none=True)
-    interval_n = fields.Integer(validate=validate.Range(min=1))
+    interval_n = fields.Integer(
+        validate=validate.Range(min=1, max=_MAX_INTEGER_COLUMN),
+    )
 
     # The rule's FIRST OCCURRENCE (plan step R7c-b, ruling **R-R16**).  It
     # replaced THREE fields: ``day_of_month`` (the cycle's day),
@@ -494,7 +569,7 @@ class RecurrenceFormFieldsMixin:
     # ``min=`` would put one rule in two places and hand the user marshmallow's
     # generic wording instead.  What the shape has no opinion about is how
     # large a count the COLUMN can hold, so that bound is here -- see
-    # :data:`_MAX_OCCURRENCE_COUNT`.
+    # :data:`_MAX_INTEGER_COLUMN`.
     #
     # No ``allow_none`` on the mode, deliberately.  An empty select value is
     # dropped by :func:`_normalize_empty_inputs`, so it arrives ABSENT -- and
@@ -508,7 +583,7 @@ class RecurrenceFormFieldsMixin:
     recurrence_end_mode = fields.String()
     end_date = fields.Date(allow_none=True)
     max_occurrences = fields.Integer(
-        validate=validate.Range(max=_MAX_OCCURRENCE_COUNT),
+        validate=validate.Range(max=_MAX_INTEGER_COLUMN),
     )
 
     @validates_schema

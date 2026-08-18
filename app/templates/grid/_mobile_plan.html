@@ -189,7 +189,7 @@
                       {{ rk.group_name }}
                     </li>
                   {% endif %}
-                  {{ render_row_static(rk, period, plan_matched_by_row_period) }}
+                  {{ render_row_static(rk, period, plan_matched_by_row_period, budgets) }}
                 {% endfor %}
               </ul>
             </div>
@@ -209,7 +209,7 @@
                       {{ rk.group_name }}
                     </li>
                   {% endif %}
-                  {{ render_row_static(rk, period, plan_matched_by_row_period) }}
+                  {{ render_row_static(rk, period, plan_matched_by_row_period, budgets) }}
                 {% endfor %}
               </ul>
             </div>

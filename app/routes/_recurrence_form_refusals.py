@@ -67,7 +67,7 @@ UNREPAIRED_CADENCE_CANNOT_BE_CLEARED: str = (
 )
 """Refusal shown when an edit would clear a rule the form could not display.
 
-**The half of :data:`~app.services.recurrence.UNAVAILABLE_PATTERN_MESSAGE`'s
+**The half of :data:`~app.services.recurrence.UNREADABLE_CADENCE_MESSAGE`'s
 promise that has to live on the SERVER.**  That message tells the user "saving
 it unchanged will be refused", and before plan step R7b-2 the picker kept that
 promise by keeping the stored pattern as a trailing selected ``<option>``: the

@@ -340,7 +340,14 @@ def build_recurrence_rule_from_form(
         return None
 
     placement = data.pop("recurrence_placement")
-    interval_n = data.pop("interval_n", 1)
+    # NO default, exactly like the placement above: all three axes of the
+    # cadence are required beside a chosen unit and
+    # :func:`~app.schemas.validation._helpers.validate_authorable_cadence`
+    # refuses a submission missing any of them.  It defaulted to ``1`` until
+    # plan step R7c-c, which is the value a cleared interval box authored --
+    # "Repeats: Months, every [blank]" became a MONTHLY rule rather than a
+    # field error.
+    interval_n = data.pop("interval_n")
     # Pop the closing bound's keys even though the value comes from
     # ``ctx.end_bound`` -- keeps the "all recurrence keys removed from data"
     # contract symmetric between the repeats and does-not-repeat branches, so
@@ -371,12 +378,13 @@ def build_recurrence_rule_from_form(
     # derivation and wrote the schema default instead, re-phasing every
     # future occurrence on an amount-only edit.
     #
-    # **No decode step, since plan step R7b-2**: the form now POSTS the two
-    # axes, so what the user authored reaches the write door unchanged and
-    # ``encode_cadence`` chooses the pattern that stores it.  The translation
-    # that used to sit here read a submitted pattern id back into a cadence,
-    # which made the form's vocabulary and the door's differ by one hop for no
-    # reason once the picker could state the cadence itself.
+    # **No decode step, since plan step R7b-2**: the form POSTS the two axes,
+    # so what the user authored reaches the write door unchanged.  The
+    # translation that used to sit here read a submitted pattern id back into a
+    # cadence, which made the form's vocabulary and the door's differ by one hop
+    # for no reason once the picker could state the cadence itself -- and plan
+    # step R7c-c deleted the encoding on the far side too, so the triple this
+    # call states is now what the columns hold.
     #
     # ``offset_periods`` is not read from the payload at all -- the schemas no
     # longer declare it (defect D8) and the spec no longer carries it (plan
@@ -428,8 +436,14 @@ def update_recurrence_rule_from_form(
     (:func:`app.services.recurrence.recurrence_spec`), replacing only the
     fields this form owns, and writing the whole value means the rule's
     start period still phases it and nothing the form does not collect is
-    reset to a schema default.  ``interval_n`` needs no pattern-scoping
-    for a related reason -- see the inline comment on the call.
+    reset to a schema default.
+
+    **The one field that still carried a schema default was ``interval_n``,
+    and plan step R7c-c removed it.**  It is the same defect one field over:
+    a cleared interval box drops the key, this helper defaulted to ``1``, and
+    a quarterly bill re-cadenced to monthly on save.  It is refused at the
+    submission now rather than merged here -- see the inline comment on the
+    pop for why a fourth presence read would have been the wrong door.
 
     Args:
         rule: The existing :class:`RecurrenceRule` to mutate in place.
@@ -463,7 +477,25 @@ def update_recurrence_rule_from_form(
     # The form's every-recurrence-key pops happen unconditionally, so the
     # caller's downstream ``setattr`` loop never sees a stray kwarg whichever
     # cadence was chosen.
-    submitted_interval = data.pop("interval_n", 1)
+    #
+    # **NO default, and the ``1`` that used to be here re-cadenced bills**
+    # (plan step R7c-c).  Every other field this function merges reads PRESENCE
+    # first, because a control the form DISABLES posts nothing and absence has
+    # to mean "leave the stored one alone"; the interval had neither a presence
+    # read nor a producer of absence, so a cleared box arrived as no key at all
+    # and this line quietly stored ``1``.  Measured shape: a quarterly bill
+    # edited with the interval box emptied generates 12 rows a year instead of
+    # 4, across the whole projection, with nothing on screen saying so.
+    #
+    # It is NOT fixed by adding a fourth presence read.  The interval box is
+    # enabled for every chosen cadence (``recurrence_form.js``), so beside a
+    # named unit "absent" is not a request the form can make -- unlike
+    # ``starts_on`` and the closing bound, whose locked loan-payment controls
+    # make it one.  The refusal belongs to the submission, so it is
+    # :func:`~app.schemas.validation._helpers.validate_authorable_cadence`'s,
+    # beside the identical rule for the placement half, and this pop states the
+    # guarantee rather than papering over its absence.
+    submitted_interval = data.pop("interval_n")
     # The first occurrence and the day it means, on the SAME present-versus-
     # absent rule the closing bound runs on (plan step R7c-b).  PRESENCE is
     # read before the pop and it is not the same question as the value: a form
@@ -511,31 +543,25 @@ def update_recurrence_rule_from_form(
     # replaces the stored value when the form stated it and leaves it alone
     # when the form did not.  See the two lines below.
     #
-    # ``interval_n`` needs no pattern-scoping here, and since plan step R7b-1
-    # it cannot reach a column at all for a calendar cadence.  This form's
-    # interval input is hidden for every pattern but EVERY_N_PERIODS and a
-    # hidden input still SUBMITS, so the submitted value used to land verbatim
-    # on a Quarterly rule's column, where it meant nothing and nobody read it.
-    # ``decode_pattern`` now discards it for any pattern that names its own
-    # interval and ``encode_cadence`` writes 1, so the column holds one meaning
-    # rather than "whatever the form happened to post".  ``interval_n`` carries
-    # one meaning only, "repeat every N pay PERIODS", consulted by the
-    # occurrence engine's PERIOD-unit walk, by ``obligations_aggregator``'s
-    # monthly equivalent under the same condition (through
-    # ``recurrence.cadence_of``), and by ``_recurrence_macros.html`` inside
-    # the same branch.  The interval of
-    # a MONTH- or YEAR-unit recurrence is a different fact, derived from the
-    # pattern by ``resolve`` and stored nowhere (plan step R2d), so no value
-    # this form can submit is able to say a Quarterly bill recurs monthly.
-    # That is what makes the pattern-scoped guard unnecessary rather than
-    # merely relocated, and it closes the reverse case the guard left open:
-    # switching an every-4-paychecks rule to Quarterly used to make it read as
-    # "every 4 months".
+    # ``interval_n`` is written for EVERY unit from plan step R7c-c, and the
+    # paragraph that stood here said the reverse.  While the closed pattern set
+    # was the storage, the column held the authored count for ``Every N
+    # Periods`` and ``1`` for every pattern whose interval was baked into its
+    # NAME -- so a Quarterly rule's column read as monthly and the interval a
+    # calendar cadence repeated on was recovered through ``pattern_id``.  That
+    # is what R7c-c's migration re-points: the column now means "how many units
+    # pass between occurrences" for all four units, and what this form posts
+    # reaches it verbatim.
+    #
+    # Which is exactly why a MISSING interval may no longer be defaulted -- see
+    # the pop above.  The old sentence "no value this form can submit is able to
+    # say a Quarterly bill recurs monthly" was true only because the pattern
+    # held the interval; once the column does, the default WAS such a value.
     # **Read with the SUBMITTED cadence, never the stored one**, and the
     # difference is the repair path this form advertises: an edit page may be
-    # showing a rule whose stored pattern the application no longer models
-    # (``edit_form_cadence`` renders the controls UNSET and
-    # ``UNAVAILABLE_PATTERN_MESSAGE`` says to choose a cadence before saving),
+    # showing a rule whose stored unit or placement the application no longer
+    # models (``edit_form_cadence`` renders the controls UNSET and
+    # ``UNREADABLE_CADENCE_MESSAGE`` says to choose a cadence before saving),
     # and reading that rule's cadence on the way to REPLACING it raises.
     # Measured against ``origin/dev``: routing this through ``recurrence_spec``
     # turned the one action the surface tells the user to take into a 500.

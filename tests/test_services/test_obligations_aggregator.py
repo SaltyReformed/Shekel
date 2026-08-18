@@ -34,7 +34,7 @@ from types import SimpleNamespace
 import pytest
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, TxnTypeEnum
+from app.enums import RecurrenceUnitEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction_template import TransactionTemplate
@@ -137,7 +137,7 @@ class TestObligationsAggregator:
         expired_end = as_of - timedelta(days=1)
         with app.app_context():
             rule = _create_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, "Every Period",
                 end_date=expired_end,
             )
             tmpl = _create_expense(
@@ -166,7 +166,7 @@ class TestObligationsAggregator:
         as_of = date(2026, 5, 20)
         with app.app_context():
             rule = _create_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, "Every Period",
             )
             tmpl = _create_expense(
                 seed_user, rule, Decimal("100.00"),
@@ -205,7 +205,7 @@ class TestObligationsAggregator:
                 name="One-Time",
             )
             recurring_rule = _create_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, "Every Period",
             )
             recurring_tmpl = _create_expense(
                 seed_user, recurring_rule, Decimal("100.00"),
@@ -244,10 +244,10 @@ class TestObligationsAggregator:
         """
         with app.app_context():
             biweekly_rule = _create_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, "Every Period",
             )
             monthly_rule = _create_rule(
-                seed_user, RecurrencePatternEnum.MONTHLY,
+                seed_user, "Monthly",
             )
             _create_expense(
                 seed_user, biweekly_rule, Decimal("100.00"),
@@ -297,19 +297,24 @@ class TestObligationsAggregator:
         and the quiet side was the one feeding the emergency-fund baseline.
 
         The surplus id is computed from the enum rather than written down: a
-        literal would stop naming an unmodelled pattern the day an eighth
-        member is added.
+        literal would stop naming an unmodelled unit the day a member is added.
+
+        **The unreadable COLUMN moved at plan step R7c-c.**  This planted a
+        ``pattern_id`` no ``RecurrencePatternEnum`` member named; that column is
+        dropped, and the state a rule can still reach is a ``unit_id`` the
+        enums do not model.  Same broken invariant, same disposition, on the
+        column that replaced it.
         """
         surplus = max(
-            ref_cache.recurrence_pattern_id(member)
-            for member in RecurrencePatternEnum
+            ref_cache.recurrence_unit_id(member)
+            for member in RecurrenceUnitEnum
         ) + 1
         with app.app_context():
             template = SimpleNamespace(
                 recurrence_rule=SimpleNamespace(
                     end_date=None,
                     max_occurrences=None,
-                    pattern_id=surplus, interval_n=1,
+                    unit_id=surplus, interval_n=1,
                 ),
                 default_amount=Decimal("100.00"),
             )
@@ -328,8 +333,8 @@ class TestObligationsAggregator:
         legitimate skips into 500s.
         """
         as_of = date(2026, 5, 20)
-        every_period = ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.EVERY_PERIOD,
+        every_period = ref_cache.recurrence_unit_id(
+            RecurrenceUnitEnum.PERIOD,
         )
         with app.app_context():
             no_rule = SimpleNamespace(
@@ -339,7 +344,7 @@ class TestObligationsAggregator:
                 recurrence_rule=SimpleNamespace(
                     end_date=as_of - timedelta(days=1),
                     max_occurrences=None,
-                    pattern_id=every_period, interval_n=1,
+                    unit_id=every_period, interval_n=1,
                 ),
                 default_amount=Decimal("100.00"),
             )
@@ -347,7 +352,7 @@ class TestObligationsAggregator:
                 recurrence_rule=SimpleNamespace(
                     end_date=None,
                     max_occurrences=None,
-                    pattern_id=every_period, interval_n=1,
+                    unit_id=every_period, interval_n=1,
                 ),
                 default_amount=Decimal("0.00"),
             )
@@ -366,28 +371,32 @@ class TestObligationsAggregator:
         answer for the cadences plan step R8 adds.
         """
         cases = [
-            (RecurrencePatternEnum.EVERY_PERIOD, 1, "216.67"),   # 100*26/12
-            (RecurrencePatternEnum.EVERY_N_PERIODS, 2, "108.33"),  # 100*26/2/12
-            (RecurrencePatternEnum.MONTHLY, 1, "100.00"),        # unchanged
-            (RecurrencePatternEnum.MONTHLY_FIRST, 1, "100.00"),  # unchanged
-            (RecurrencePatternEnum.QUARTERLY, 1, "33.33"),       # 100/3
-            (RecurrencePatternEnum.SEMI_ANNUAL, 1, "16.67"),     # 100/6
-            (RecurrencePatternEnum.ANNUAL, 1, "8.33"),           # 100/12
+            (RecurrenceUnitEnum.PERIOD, 1, "216.67"),   # 100*26/12
+            (RecurrenceUnitEnum.PERIOD, 2, "108.33"),   # 100*26/2/12
+            (RecurrenceUnitEnum.MONTH, 1, "100.00"),    # unchanged
+            (RecurrenceUnitEnum.MONTH, 3, "33.33"),     # 100/3
+            (RecurrenceUnitEnum.MONTH, 6, "16.67"),     # 100/6
+            (RecurrenceUnitEnum.YEAR, 1, "8.33"),       # 100/12
+            # The two the closed pattern set could NOT name, which plan step
+            # R7c-c makes storable: every other month is six a year, and every
+            # other year is half of one.
+            (RecurrenceUnitEnum.MONTH, 2, "50.00"),     # 100*12/2/12
+            (RecurrenceUnitEnum.YEAR, 2, "4.17"),       # 100/24
         ]
         with app.app_context():
-            for pattern, interval_n, expected in cases:
+            for unit, interval_n, expected in cases:
                 template = SimpleNamespace(
                     recurrence_rule=SimpleNamespace(
                         end_date=None,
                         max_occurrences=None,
-                        pattern_id=ref_cache.recurrence_pattern_id(pattern),
+                        unit_id=ref_cache.recurrence_unit_id(unit),
                         interval_n=interval_n,
                     ),
                     default_amount=Decimal("100.00"),
                 )
                 assert obligations_aggregator.committed_monthly(
                     [template], date(2026, 5, 20), _biweekly_calendar(),
-                ) == Decimal(expected), pattern
+                ) == Decimal(expected), (unit, interval_n)
 
     def test_the_conversion_side_paycheck_count_has_one_producer(self):
         """C23-5, as plan step R7a-2a restated it: ONE producer, no constant.
@@ -448,8 +457,8 @@ class TestObligationsAggregator:
             recurrence_rule=SimpleNamespace(
                 end_date=None,
                 max_occurrences=None,
-                pattern_id=ref_cache.recurrence_pattern_id(
-                    RecurrencePatternEnum.EVERY_PERIOD,
+                unit_id=ref_cache.recurrence_unit_id(
+                    RecurrenceUnitEnum.PERIOD,
                 ),
                 interval_n=1,
             ),
@@ -490,7 +499,7 @@ class TestObligationsAggregator:
         """
         with app.app_context():
             rule = _create_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, "Every Period",
                 end_date=date.today() - timedelta(days=1),
             )
             _create_expense(
@@ -542,7 +551,7 @@ class TestASpentCountLeavesTheObligationsTotal:
             The flushed template.
         """
         rule = _create_rule(
-            seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+            seed_user, "Every Period",
         )
         rule.max_occurrences = count
         db.session.flush()
@@ -654,7 +663,7 @@ class TestASpentCountLeavesTheObligationsTotal:
             calendar = calendar_for(seed_user["user"].id)
             payday = calendar.periods[1].start_date
             rule = _create_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, "Every Period",
                 end_date=payday,
             )
             template = _create_expense(
@@ -685,7 +694,7 @@ class TestASpentCountLeavesTheObligationsTotal:
             last_fired = calendar.periods[1].start_date
             next_payday = calendar.periods[2].start_date
             rule = _create_rule(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, "Every Period",
                 end_date=next_payday - timedelta(days=1),
             )
             template = _create_expense(

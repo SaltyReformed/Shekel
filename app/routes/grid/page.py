@@ -30,6 +30,7 @@ from app.services import (
 )
 from app.services.account_resolver import resolve_grid_account
 from app.services.balance_at import BalanceContext
+from app.services.cash_ledger import display_amounts_by_id
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
@@ -266,7 +267,9 @@ class _GridRowData(NamedTuple):
     entry_lists: dict[int, dict]
 
 
-def _build_grid_row_data(transactions, periods, show_all, all_categories):
+def _build_grid_row_data(
+    transactions, periods, show_all, all_categories, budgets,
+):
     """Build row keys, the (row_key, period) match index, and entry sums.
 
     Row keys + the (row_key, period) -> matched-transactions dict are
@@ -309,7 +312,7 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
         income_row_keys, expense_row_keys, periods, transactions,
     )
 
-    entry_sums = build_entry_sums_dict(transactions)
+    entry_sums = build_entry_sums_dict(transactions, budgets)
     # Pre-render context for the inline mobile entries list on envelope
     # cards.  Computed here (server-side) rather than via per-card HTMX
     # ``hx-trigger="load"`` fan-out to keep one grid page load from
@@ -317,7 +320,7 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
     # on the entries endpoint -- with 6 visible periods and ~10 envelope
     # templates each, the lazy-load shape generated ~60 parallel GETs
     # and the over-limit cards stuck on the loading spinner forever.
-    entry_lists = build_entry_lists_dict(transactions)
+    entry_lists = build_entry_lists_dict(transactions, budgets)
 
     return _GridRowData(
         income_row_keys=income_row_keys,
@@ -328,7 +331,7 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
     )
 
 
-def _build_plan_view(ctx, all_transactions, grid_view, all_categories):
+def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
     """Build the read-only "Plan" tab context window.
 
     The Plan tab on the mobile grid answers "what does the next half-
@@ -363,6 +366,11 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories):
         all_categories: User's full category set (active + archived).
             Forwarded to the row-key builder so archived-category
             transactions still render.
+        budgets: The page's ONE ``{transaction_id: amount}`` map, threaded in
+            rather than rebuilt: this helper runs a second time for the Plan
+            window over the SAME rows, and a second map would be a second
+            pricing pass over rows the first already priced (the shape of
+            findings **N-268** / **N-269**).
 
     Returns:
         Dict with six ``plan_*`` keys ready to splice into the
@@ -392,7 +400,7 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories):
     )
 
     row_data = _build_grid_row_data(
-        all_transactions, plan_periods, False, all_categories,
+        all_transactions, plan_periods, False, all_categories, budgets,
     )
 
     return {
@@ -441,19 +449,30 @@ def index():
         ctx.account, ctx.balance_ctx, ctx.all_periods,
     )
     grid_view, anchor = _build_grid_view(ctx.account, ctx.balance_ctx)
-    # Workstream B: annotate each row with the live display amount, read back
-    # off the map the SEAM built for its own projection (ruling R-Q) rather
-    # than a second one built here.  The two were "provably identical" by
-    # argument -- both filter the same account/scenario rows through
-    # ``is_projected`` -- and now they are the same object, so a cell and the
-    # balance row cannot price one row differently.  ``live_estimated_amount``
-    # is a transient (non-mapped) attribute the cell templates read with a
-    # safe ``is defined`` fallback, so it never persists and never affects
-    # render paths that do not set it.
-    for txn in all_transactions:
-        txn.live_estimated_amount = grid_view.amount_overrides.get(
-            txn.id, txn.estimated_amount,
-        )
+    # The ONE map every cell on this page reads its amount from, built by the
+    # ONE rule every OTHER surface reads it by (``display_amounts_by_id``):
+    # what the row's amount resolves to, superseded by a live recompute where
+    # one exists (ruling R-Q).  It composed those two terms inline here until
+    # an adversarial review found the composition written twice and differently
+    # -- the fragments and the companion published the resolved map ALONE under
+    # the same context key, so the grid showed a drifted salary row its live
+    # net and the quick-edit box the same click opened showed the stale column.
+    # It reads the pass's own basis, which is the object the seam's own
+    # override map was built from, so the cell and the balance row beside it
+    # still cannot price one row two ways.
+    #
+    # **That fall-through was ``txn.estimated_amount`` until plan step
+    # X-au-c2b**, annotated onto each row as a transient
+    # ``live_estimated_amount`` the cell templates read behind an
+    # ``is defined`` guard.  Both halves of that had to go: a derived row
+    # stores nothing in the column, so the fallback would render an empty
+    # string where a figure belongs, and a Jinja ``Undefined`` answers
+    # silently, so a render path that forgot to set the attribute showed the
+    # stale column with nothing to say it had.  A published MAP is what a
+    # template cannot read half of.
+    budgets = display_amounts_by_id(
+        all_transactions, ctx.balance_ctx.amounts(),
+    )
 
     # Load ALL categories (including archived) for row-key building so
     # transactions with archived categories still render correctly;
@@ -467,18 +486,22 @@ def index():
     show_all = request.args.get("show_all", type=int) == 1
 
     row_data = _build_grid_row_data(
-        all_transactions, ctx.periods, show_all, all_categories,
+        all_transactions, ctx.periods, show_all, all_categories, budgets,
     )
 
     # Build the parallel context for the mobile "Plan" tab.  Decoupled
     # from ctx.periods so a `?periods=1&offset=N` URL (driven by the
     # This Period arrow nav) does not starve Plan of forward visibility.
     plan_view = _build_plan_view(
-        ctx, all_transactions, grid_view, all_categories,
+        ctx, all_transactions, grid_view, all_categories, budgets,
     )
 
     return render_template(
         "grid/grid.html",
+        # The ONE amount map every cell on this page reads (plan step
+        # X-au-c2b).  Published as context rather than annotated onto each row,
+        # so a template cannot read a stale column when a render path forgets.
+        budgets=budgets,
         # The ID, not the Scenario ROW (plan step X-v2): the template needs
         # exactly the id for its hidden create-form field, and the two sibling
         # create fragments already take ``scenario_id``.  Passing the nullable

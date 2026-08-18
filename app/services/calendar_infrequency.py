@@ -136,7 +136,7 @@ def is_infrequent(
             f"cadence; reaching here means the build was told it had no rows "
             f"to badge and then found one."
         )
-    cadence = cadence_of(rule.pattern_id, rule.interval_n)
+    cadence = cadence_of(rule)
     return cadence.occurrences_per_year(pay_cadence) < (
         _INFREQUENT_BELOW_PER_YEAR
     )

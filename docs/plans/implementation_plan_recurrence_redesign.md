@@ -3,23 +3,23 @@
 ## Where this stands
 
 **Plan of record** for the two-axis recurrence model and the cash-date / installment-date split.
-R1-R4 ARCHIVED. **R1-R4b-2, R-F1, R-F8, R7a-1 and R7a-2 are IN PRODUCTION** (PRs #85 / #86 / #87,
-then `003e3657` and `7c417b90`); R7a-2 opened **F-16** / **F-17**, both ruled into this arc.
-**R7b DECOMPOSED into four leaves** 2026-08-12; its first (`e7eb3b1a`) made the authored vocabulary
-the two axes.
+R1-R4 ARCHIVED. Which steps are in PRODUCTION is a measurement, not a stored value:
+`git branch -r --contains <hash>` against `origin/main`. R9 waits on one -- see its own entry.
 
-**What to do next is `steps.md`'s order table; do not re-derive it here.** One ruling is still owed
-and section 0 states its two options: the index sequenced R6 behind R5 without the developer saying
-whether that discharges "R6 ships with X-an", which was unsatisfiable.
+**R7c IS COMPLETE, and it is what this arc was for** (R-R16 / R-R18). `budget.recurrence_rules`
+states its cadence ONCE -- `interval_n` / `unit_id` / `placement_id` / `shift_id` / `starts_on` /
+`nominal_day` -- where `starts_on` is the rule's FIRST OCCURRENCE and the closed pattern set is
+DROPPED, so every interval is authorable on every unit and no reader recovers a value through a
+pattern id.
 
-**Row D28 is RULED and R7c is DECOMPOSED into three leaves** (R-R16 / R-R18, 2026-08-14).
-`starts_on` is the rule's FIRST OCCURRENCE, not its opening validity bound: a bound is not in the
-cycle's residue class, and 18 of the 24 live multi-month rules would have fired in the wrong months
-under the earlier reading. The leaves are an expand / migrate / contract and `R7c-a` has landed --
-the five columns exist, are backfilled and are dual-written, and nothing reads them yet.
+**R8 DECOMPOSED at R8-a (R-R23), and the split is a measurement.** Three of the four ruled add-ons
+need a generated row's own `occurs_on`, which is **R5**'s: `compute_due_date(rule, period)` never
+receives the occurrence, so a weekly row, an nth-weekday row and a shifted row each carry a date the
+cadence never named. R8-a shipped what does not, and closed **D20** by measuring its premise false.
 
-**Section 4 is the steps; findings, the step index, the rules and the verification standard are the
-shared registries** -- `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
+**What to do next is `steps.md`'s order table; do not re-derive it here.** One ruling is owed and
+section 0 states its two options. Section 4 is the steps; the findings, the index, the rules and the
+verification standard (`verification.md`) are the shared registries in `docs/plans/`.
 
 ## Rulings
 
@@ -46,6 +46,13 @@ Taken 2026-08-05 (developer):
 | **What `starts_on` MEANS** | **The rule's FIRST OCCURRENCE, ONE meaning for every unit: the first date a calendar cadence fires on, and the payday of the first paycheck a pay-period cadence bills in. Its position in the cycle IS the phase, so `day_of_month` and `month_of_year` are DROPPED rather than renamed. R-R16, ruled 2026-08-14; supersedes R-R13's "opening validity bound" reading and closes row D28** |
 | **Whether the YEAR unit survives** | **YES, and `(12k, MONTH)` is CANONICALISED to `(k, YEAR)` at the write door once the interval is free, so one cadence has one spelling. Dropping the unit would move the times-twelve encoding into the form, which is the second vocabulary R7b-1 removed. R-R17, ruled 2026-08-14** |
 | **How R7c ships** | **THREE leaves, expand / migrate / contract: `R7c-a` adds the columns and dual-writes them while nothing reads them, `R7c-b` moves every reader and the form onto them, `R7c-c` drops the closed set. The destructive DDL is last and no translation shim is written in any leaf. R-R18, ruled 2026-08-14** |
+| **Whether `day_of_month` may be dropped before its reader** | **YES, because the column is a derived ENCODING and its reader reads the derivation instead. `recurrence_engine.compute_due_date` dates every generated row from it and plan step R5 deletes that function four ranks later; ledger row D37 named two ways out -- hold the column, or swap the ranks -- and this is a third. `recurrence.scheduling_day_of_month` answers the same value from `(unit_id, placement_id, starts_on, nominal_day)`, and the migration grades the equality in SQL before dropping: 0 of 46 live rules disagree. R-R20, ruled 2026-08-16** |
+| **What the form does when a cadence admits ONE funding rule** | **RENDER the "Funded from" row anyway, with help text saying there is nothing to choose. Hiding it is how a bill's funding rule came to change with nothing on screen saying so (ledger row D32), and freeing the interval removes the measured instance outright -- the MONTH unit offers both placements at every interval. The two that remain are PERIOD, where the placement is provably inert, and YEAR, whose first-paycheck anchor is R8's. R-R21, ruled 2026-08-16. **Its second example expired the next day**: R-R24 admitted the YEAR unit's deferring reading, so PERIOD is the only cadence left admitting one placement. The RULING is unchanged -- the row renders either way -- and only the count of cadences it applies to moved** |
+| **Whether the AUTHORED month needs surfacing before it is dropped** | **NO: ruling R-R15 already decided the display and the two affected rules fire on the same cycle either way -- `3 = 6 (mod 3)` and `3 = 9 (mod 6)` -- so no generated row and no projected balance moves. The typed month was a second spelling of the residue class the first occurrence carries, not a second fact. Closes ledger row D38 with nothing built. R-R22, ruled 2026-08-16** |
+| **What GATES the offer set, and how R8 ships** | **The gate is what the app can HONOUR, derived from two live facts, not from an anchor derivation that was deleted. `anchor_family` and its three `FAMILY_*` constants go: ruling R-R16 made the first occurrence AUTHORED and R7c-b deleted all three derivations the router selected between, leaving it refusing two cadences by citing them. Measured over all eight `(unit, placement)` pairs, its one live projection equals `has_day_of_month_coordinate(unit) and placement is CONTAINING_DATE`. And R8 SPLITS on that measurement: only the gate ships now, as `R8-a`, because the other three add-ons each need a generated row's own `occurs_on` and therefore wait on R5. R-R23, ruled 2026-08-16; shipped as R8-a** |
+| **Whether a year-scale cadence may defer onto a later paycheck** | **YES. `(k, YEAR, PERIOD_STARTING_ON_OR_AFTER)` fires on its own authored date every `k` years and defers onto the next paycheck, exactly as its MONTH twin already does; the refusal cited `_first_of_month_anchor`, deleted at R7c-b. 0 of 46 live rules read differently, and a yearly cadence cannot repeat a paycheck at any `cadence_days` in 1-365. It also restores `(12, MONTH, deferred)` -> `(1, YEAR, deferred)`, so one rhythm keeps one spelling. R-R24, ruled 2026-08-16; shipped as R8-a** |
+| **Where the nth-weekday coordinate LIVES** | **On `budget.recurrence_rules`, as an EXCLUSIVE ARC of columns under one CHECK, and `budget.recurrence_weekday_anchors` is DROPPED unwritten. "A rule fires on a day-of-month OR an nth-weekday" cannot be a CHECK while the two live in different tables -- PostgreSQL CHECKs are single-table -- so the satellite form would need a trigger or a door-only fence for an invariant the column form makes structural. The same move ruling R-R16 made for `nominal_day` and R7c-c made for the unwritten `recurrence_month_anchors`. R-R25, ruled 2026-08-16; owned by R8-c** |
+| **What "non-business day" MEANS** | **Weekends plus the eleven US federal holidays, DERIVED as rules rather than seeded as rows -- they are nth-weekday-of-month rules and fixed dates with weekend observation, so there is no per-year seed to keep current and the derivation composes with R8-c's own machinery. R-R26, ruled 2026-08-16; owned by R8-d. Finding F-4, the PAY SCHEDULE's own holiday shift, is a different question and is not settled by this** |
 | **What a REGENERATION does to the rows it already generated** | **It MAINTAINS them; it does not destroy and rebuild them. A row the rule still names is UPDATED in place, a period the rule names with no row gets one, and a row the rule no longer names is removed only when it carries nothing of the owner's. A row holding the owner's own records -- purchases, a note, a hand-entered actual -- is RETAINED and reported, in two shapes: the rule stopped naming its period, or the template's ACCOUNT moved, which drags every purchase onto the new account and invalidates the statement link that cleared it. The delete-and-recreate this replaces was safe only while a generated row was a pure projection of `(template, period)`; `transaction_entries` CASCADE from their parent, so it destroyed `$499.82` of recorded purchases on live data. R-R19, ruled 2026-08-15; shipped as R10-a (`5fc13cdb`), closing row N-292** |
 
 ---
@@ -224,9 +231,16 @@ occurrence; R3 does not emit it. A pay-period-space rule emits the qualifying PA
 is also what reproduces the current row's DATE: `compute_due_date` returns `period.start_date` for a
 day-less rule, so emitting a mid-period bound would move it.
 
-**The axis is short one value.** Both members fund on or AFTER the occurrence, so a bill that must
-be funded in ADVANCE -- rent due the 1st, paid from the last paycheck before it -- is inexpressible;
-at a 90-day cadence today's `Monthly First` funds February's rent on 31 March. Ledger row D20, R8.
+**The axis is short one value, and it is NOT the one this paragraph used to name.** It said both
+members fund on or AFTER the occurrence, so a bill that must be funded in ADVANCE is inexpressible,
+and named "the last paycheck on or before the occurrence" as the missing member (ledger row D20).
+Plan step R8-a measured both halves false. `CONTAINING_DATE` funds from the paycheck whose span
+COVERS the occurrence, so its payday is on or before that date by construction, and the member D20
+named is that same rule under another name on a calendar whose periods tile.
+**D20 CLOSED on that measurement.** What is genuinely inexpressible is a LEAD: funding from a
+paycheck EARLIER than the containing one, so rent due 1 August is paid from the 17 July paycheck
+rather than the 31 July one. Ledger row **D40**, plan step **R11**, which opens with the ruling of
+what the lead is measured in.
 
 **Only the `budget` tables are audited.** An earlier draft of this section said "all three new
 tables go into `AUDITED_TABLES`"; measured against that list's own inclusion criteria
@@ -312,6 +326,18 @@ loan-payment rule carries the `end_date` that moved them. Against production it 
 live rules, 866 generated rows, byte-identical under both engines. Half A = R1-R4, R7a-1 through
 R7c, R8 (+ the Half-A part of R9); Half B = R5, R6 (see section 0).
 
+**Any step that changes the recurrence form's controls runs
+`tests/manual/verify_recurrence_form.py`.** A standing mandate for this arc, hoisted here at R7c-c
+when the R7c entry that carried it was archived -- it binds steps that have not been written yet, so
+it may not live inside a shipped step's pointer. Two of R7b-2's six defects were invisible to pytest
+by construction: a control hidden by a class, an option hidden by a script, and a style the browser
+REFUSED to apply all look identical in rendered HTML. R7c-c added a third kind -- the run found two
+of the harness's OWN checks reading a database the app under test never wrote to, so they would have
+passed with every refusal accepted.
+**When the dev app is pointed at a database COPY, point the harness there too**
+(`VERIFY_DEV_DATABASE`); the `ref` ids a `TEMPLATE` copy carries are identical either way, which is
+exactly what made the mismatch invisible.
+
 - [ ] **R5 -- a generated row carries THREE dates, in three places.**
 
 **RESPECIFIED by ruling R-R12** (2026-08-08). The old specification -- rename `due_date` to
@@ -361,6 +387,20 @@ into one; the plan previously counted them as one accessor plus a rule read. Kil
 **R7 is THREE leaves**, ruled 2026-08-07: the cutover is the only irreversible-ish one, so the label
 and form work is not carried into it.
 
+**The four R7b leaves and R7c's first two LEFT this list at plan step R8-a** (`conventions.md` rule
+5, one line per step: its id, its commit and what it closed). All six shipped; the first four are
+accounted for in `historical/recurrence_as_built_2026-08-14.md` and the last two in
+`historical/recurrence_findings_as_built_2026-08-15.md`, which R7c-c's own entry says to read first.
+
+| step | commit | what it did, and what it closed |
+|---|---|---|
+| `R7b-1` | `e7eb3b1a` | The authored vocabulary becomes the two axes; the closed set becomes a storage ENCODING. Closed nothing |
+| `R7b-2` | `ecc4d01b` | The form authors that vocabulary, its offer set derived from the encoder's own table. Closed **D8**; opened **D31**, **D32** |
+| `R7b-3` | `c8655584` | One "Ends" control for a bound with three shapes, so a rule cannot state two. Closed **D23**; took the count-bounded end off **R8** |
+| `R7b-4` | `67f013c8` | The opening bound becomes a DATE and the `Every N Periods` phase a derivation of it. Closed **D2**, **D30** |
+| `R7c-a` | `370a30cc` (migration `f2a94c7e1b60`) | The two-axis columns land NULLABLE, backfilled and dual-written, read by nobody. Closed **D12** |
+| `R7c-b` | `900e761a` (migration `b6d41f0a9c27`) | Every reader and the form move onto them; four columns tighten to NOT NULL. Closed **D10**, **D21**, **D24**, **D28**, **D31** |
+
 - [x] **R7a-1 -- the Recurrence cell is one function.** `6fed14af`. Over `(interval, unit)`, so a
       cadence nothing authors yet reads correctly. Closed **D17**.
 
@@ -370,133 +410,18 @@ and form work is not carried into it.
 - [x] **R7a-2b -- the monthly equivalent is ONE expression.** `7c417b90`. Over `(interval_n, unit)`.
       All three archived under rule 5 to `historical/recurrence_findings_as_built_2026-08-15.md`.
 
-- [x] **R7b-1** `e7eb3b1a` -- the authored vocabulary becomes the two axes; the closed set becomes a
-      storage ENCODING crossed by one inverted table. **All four R7b leaves are ARCHIVED** to
-      `historical/recurrence_as_built_2026-08-14.md` and condensed to one line each here
-      (`conventions.md` rule 5); each authors through the closed-set columns, so the schema does not
-      move until R7c.
+- [x] **R7c -- THE CUTOVER, the DECOMPOSED parent of three leaves.** `ee35bca7`, ticked with
+      `R7c-c`, its last leaf. Split 2026-08-14 (**R-R18**) as an expand / migrate / contract, so the
+      destructive DDL came LAST and no leaf wrote a translation shim. Its account, and the five
+      rulings that bound all three leaves, are archived under rule 5 to
+      `historical/recurrence_r7cc_as_built_2026-08-16.md`.
 
-- [x] **R7b-2** `ecc4d01b` -- the form authors that vocabulary, its offer set derived from the
-      encoder's own table. Closed **D8**; opened **D31**, **D32**.
-
-- [x] **R7b-3** `c8655584` -- one "ends" control for a bound with three shapes, so a rule cannot
-      state two. Closed **D23**; took the count-bounded end off **R8**.
-
-- [x] **R7b-4** `67f013c8` -- the opening bound becomes a DATE and the `Every N Periods` phase
-      becomes a derivation of it. Closed **D2**, **D30**.
-
-- [ ] **R7c -- THE CUTOVER, the DECOMPOSED parent of three leaves.**
-
-Split with the developer 2026-08-14 (R-R18) as an expand / migrate / contract: `R7c-a` adds the
-two-axis columns and dual-writes them while nothing reads them, `R7c-b` moves every reader and the
-form onto them, `R7c-c` drops the closed set. The destructive DDL is therefore LAST, and no leaf
-writes a translation shim -- the alternative split, which kept the schema still until the end,
-needed three (a route composing `starts_on`, a write door decomposing it back, and a read door
-recomposing it behind a `calendar` argument the last leaf would remove again).
-
-**What R7b left for the CUTOVER** sits here rather than in its own entry, because a shipped step's
-entry is a pointer rather than an account (`conventions.md` rule 5) and every ruling below binds all
-three leaves. R7b's four leaves have all shipped, each authoring through the closed-set columns, so
-the schema does not move until this step.
-
-**Two rulings taken 2026-08-12 on the shape of the cadence controls, which R7c must obey.** They are
-LINKED rather than independent: the unit repopulates the interval control and the placement select,
-which renders only where a `(unit, interval)` pair offers more than one. And the month interval is a
-SELECT of 1 / 3 / 6 rather than a number box, because those are the only month cadences the closed
-set stores; R7c widens it to a free box when the authored columns land. Three free controls would
-offer combinations `encode_cadence` refuses, which is the refusal this design makes unreachable.
-
-**A placement belongs to the `(unit, interval)` PAIR, not to the unit**, and a design keyed on the
-unit alone re-opens exactly what that ruling closes. `MONTHLY_FIRST` is
-`(1, MONTH, PERIOD_STARTING_ON_OR_AFTER)` and the closed set has no quarterly or semi-annual twin,
-so `(3, MONTH, first-paycheck)` is unstorable -- measured, not argued. The offer set therefore
-carries whole triples and every consumer filters them. Row **D32** is the cost still owed on it: a
-pair that drops the first-paycheck option rewrites the funding choice with nothing on screen saying
-which paycheck now pays.
-
-**Where the anchor-family router lives, ruled 2026-08-13.** `anchor_family` and the `FAMILY_*`
-constants sit in `_frequency`, not `_resolution`: WHICH derivation a `(unit, placement)` cadence
-uses needs no schedule, which is that module's charter, while WHERE the anchor lands needs the whole
-calendar. `fires_on_day_of_month` is its projection, and it is what the form asks rather than
-keeping a second list of which cadences have a day-of-month coordinate.
-
-**THE PHASE IS A DERIVATION OF THE OPENING BOUND** (developer ruling 2026-08-14, option C of three),
-and R7c inherits it. `_derive_offset_periods` answers
-`span_containing(effective).period_index % interval_n` -- the ordinal of the paycheck the bound
-falls in -- so nothing authors a phase and `offset_periods` is written but never read back. The
-alternative was to keep the stored column, which would have opened a new every-N-paychecks rule up
-to N-1 paychecks LATE for its whole life. Three consequences R7c must not undo: the `FAMILY_PERIOD`
-anchor IS the bound (`_phased_period_anchor` existed only to reconcile two independent statements of
-one cadence); `ck_recurrence_rules_valid_offset` is unviolatable rather than mirrored, retiring one
-of **D23**'s two remaining mirrors; and the divergence `_occurrence._period_walk` recorded for R7c
--- the advance falling back to the raw bound and generating nothing -- is unreachable, because the
-paycheck the bound falls in is in phase by construction. `span_containing` rather than
-`period_containing` is what keeps it TOTAL past the horizon, which R7c's NOT NULL columns need.
-
-**The migration's downgrade restores NOTHING, and that is the ruling rather than a shortcut.** The
-old code read `start_period_id` for two things: the opening maximum, which `start_date` now HOLDS,
-and the phase, which fell back to the `offset_periods` COLUMN -- and the write door always wrote
-that column with the value the FK would have derived. Re-deriving the FK would NOT be neutral: a
-rule that always had a `start_date` and never had a start period (every loan payment) would newly
-acquire one and re-phase. Exercised in both directions on a production clone.
-
-**Any step that changes the recurrence form's controls runs
-`tests/manual/verify_recurrence_form.py`.** Two of R7b-2's six defects were invisible to pytest by
-construction -- a control hidden by a class, an option hidden by a script, and a style the browser
-REFUSED to apply all look identical in rendered HTML.
-
-- [x] **R7c-a -- the two-axis columns land.** `370a30cc`, migration `f2a94c7e1b60`. All five
-      NULLABLE, backfilled, dual-written from the same `resolve` call, and nothing reads them.
-      Closed **D12**. Archived under rule 5 to
-      `historical/recurrence_findings_as_built_2026-08-15.md`; read it before R7c-c.
-
-- [x] **R7c-b -- every reader and the form move onto the new columns.** `900e761a`, migration
-      `b6d41f0a9c27`. One `starts_on` replaces three inputs, four columns tighten to NOT NULL, two
-      CHECKs land. **D10, D21, D24, D28 and D31 close**; `end_date >= starts_on` is **R7d**'s (D35).
-      Archived under rule 5 to `historical/recurrence_findings_as_built_2026-08-15.md`; read it
-      before R7c-c.
-
-- [ ] **R7c-c -- the closed set dies.**
-
-DROP `pattern_id` / `day_of_month` / `month_of_year` / `start_period_id` / `offset_periods`, and
-DROP the unwritten `budget.recurrence_month_anchors` (R-R13) -- which moves `EXPECTED_TRIGGER_COUNT`
-DOWN by one, asserted by the container entrypoint at start. `encode_cadence`, `decode_pattern`,
-`PATTERN_DERIVATIONS`, its inverse and `cadence_of` leave together, and `cadence_of`'s two outside
-callers (`obligations_aggregator`, `calendar_infrequency`) read the `unit_id` column instead.
-
-**`start_date` is DROPPED HERE TOO, and this document said otherwise** -- it read "`start_date`
-survives: R9 owns it" beside a "where the old columns went" row saying it merges into `starts_on`,
-which are two statements of one column's fate. R-R16 settles it: R7c-b moves `RecurrenceSpec` onto
-one `starts_on`, and every reader goes with it. Census 2026-08-14, corrected by adversarial review
-after a first pass named three of seven: the COLUMN is read by
-`_reading.recurrence_spec_with_cadence` (the read door), `_recurrence_form_render` (the prefill),
-`_recurrence_form_helpers` (the update merge) and `loan_recurrence_sync` (its no-change guard and
-log); the SPEC field is read by `_resolution._effective_start` and `_require_authored_domains`, and
-collected by the `schemas/validation/_helpers` field. All seven move at R7c-b, so the column reaches
-this leaf dead. **Row D6 is re-pointed off R9 onto this leaf** with it, narrowed as the mapping
-table above states. `due_day_of_month` still survives; R5 owns it.
-
-**The INTERVAL is freed HERE**, with the three things that wait on it: `interval_n` is re-pointed
-from the encoder's `1` to the two-axis interval in this same migration (Quarterly to 3, Semi-Annual
-to 6 -- 4 live rules), the form's month interval widens from a SELECT to a free box, and row **D32**
-lands with it, because a free box multiplies the `(unit, interval)` pairs that silently drop the
-first-paycheck placement.
-
-**`(12k, MONTH)` is CANONICALISED to `(k, YEAR)` at the write door** (R-R17), which is only
-reachable once the interval is free: one cadence gets one spelling, so the Recurring surface cannot
-word the same rhythm "Every 12 months" on one row and "Annually" on another.
-
-**Its downgrade must REFUSE rather than guess.** With `Once` retired at R2e,
-`(interval, unit, placement)` names exactly one closed-set pattern for every shape the app could
-author before this leaf; a row carrying a cadence the closed set cannot name (every-other-month, a
-WEEK unit, a weekday anchor) is unrepresentable, so `downgrade` re-derives what it can and raises
-`RuntimeError` naming the offending rule ids otherwise. `day_of_month` comes back exactly, from
-`starts_on.day` and `nominal_day`.
-
-**Do not quietly retain `offset_periods`**: it is a stored derivative of `period_index`, so once
-that ordinal is DERIVED an inserted payday re-phases every `Every N Periods` rule. Dropping it IS
-the whole remedy for the pay-calendar arc's row **P11** (inert today, `interval_n = 1` on all 46).
-**This leaf needs its own review pass.**
+- [x] **R7c-c -- the closed set dies.** `ee35bca7`, migration `d9f5c1a48b73`. Seven statements of
+      six facts dropped, `interval_n` re-pointed off the encoding, the offer set re-based on the
+      producer that refuses. Closed **D6**, **D32**, **D37**, **D38**, pay_calendar **P11**; opened
+      **D39**. Four rulings 2026-08-16 (**R-R20**, **R-R21**, **R-R22**, D6's). **Still owed**: `R5`
+      deletes `compute_due_date`, and the WEEK unit `R8-b` frees is where that migration's SQL and
+      its Python twin part. Account: `historical/recurrence_r7cc_as_built_2026-08-16.md`.
 
 - [ ] **R7d -- a loan payment's validity window stops being a stored column.**
 
@@ -569,38 +494,87 @@ The same two lines pass a `date | None` into a `date` field, whose only disposit
 `RecurrenceSpec`'s "states no starts_on" refusal -- a message written for a form, reached by a route
 that has none. Whatever this step rules, it states the value honestly at both sites. Closes **D34**.
 
-- [ ] **R8 -- Add-ons.**
+- [ ] **R8 -- the DECOMPOSED parent of the ruled add-ons.** Split 2026-08-16 (**R-R23**) on a
+      measurement, not on size: three of the four add-ons cannot deliver what they promise before
+      **R5**. `recurrence_engine.compute_due_date(rule, period)` never receives the occurrence
+      (ledger row **D26**), so a generated row is dated from the rule's day of the month or from its
+      PAY PERIOD and from nothing else -- and a weekly row, an nth-weekday row and a shifted row
+      each name a date neither source can carry. The count-bounded end left at **R7b-3**.
 
-WEEK unit, `recurrence_weekday_anchors`, business-day shift.
-**The count-bounded end LEFT this list at R7b-3**, which built the control that authors it:
-`max_occurrences` has a writer, the occurrence walk has honoured it since R3, and the display, the
-obligations filter and the frozen oracle all cover it. Note: the shift applies to the CASH date only
--- a bill due Aug 1 paid Friday because Aug 1 is a Sunday still satisfies the Aug 1 installment, so
-`due_on` is never shifted. **R-R13 removed the exclusivity problem R-R3 handed this step**: with one
-subtype left, "a rule fires on a day-of-month OR an nth-weekday" is one table and one row, so a
-CHECK can express it instead of the authoring seam.
+- [x] **R8-a -- the offer set stops being gated on a derivation that was deleted.** `87e2c5b9`.
+      `anchor_family` and its three `FAMILY_*` constants go; `authorable_cadences` derives from
+      `has_row_date_coordinate` and `emits_period_starts`, so the ONE reading withheld is the `WEEK`
+      unit and it drops out of a derivation. Closed **D20**, opened **D40**. Four rulings
+      (**R-R23**-**R-R26**) and every measurement are archived to
+      `historical/recurrence_r8a_as_built_2026-08-16.md`; read it before R8-b, R8-c, R8-d or R11.
 
-- [ ] **R9 -- Drop the old columns.**
+- [ ] **R8-b -- the WEEK unit.** Blocked by **R5**, and the blocker is measured rather than
+      inherited: with the router's refusal lifted a `(2, WEEK)` rule already resolves, walks, places
+      and words itself correctly -- and every row it generates carries the funding PAYDAY, because
+      `scheduling_day_of_month` answers `None` for a unit with no day of the month and
+      `compute_due_date` reads `None` as "date this from the period". The step is therefore the
+      DELETION of `has_row_date_coordinate` and its raising twin, which R5's `occurs_on` makes
+      unnecessary rather than merely satisfied. A second measurement bounds the value: at the
+      developer's 14-day cadence `(1, WEEK)` puts TWO occurrences in one paycheck, which
+      `idx_transactions_template_period_scenario` cannot hold and
+      `_recurrence_common.refuse_unstorable_repeats` refuses -- so weekly-by-date needs R5's re-key
+      as well, and only `(2, WEEK)` and coarser are storable before it.
 
-Drops the `ref.recurrence_patterns` table and `pay_period_admin._repoint_recurrence_rules`
-(`:756-795`). The `Once` row leaves at R2e; the orphan cleanup and the FK claim that used to live
-here were both wrong and belong to R-F6 (see R-R7).
+- [ ] **R8-c -- the nth-weekday coordinate.** Blocked by **R5** for the same reason: a "third
+      Tuesday" rule has unit MONTH, so `scheduling_day_of_month` answers `starts_on.day` -- the
+      anchor's incidental day -- and every generated row is dated on the 17th of its month rather
+      than on that month's third Tuesday. That is ledger row **D29**'s display defect in the DATE.
+      **RULED 2026-08-16 (R-R25)**: the two fields go on `budget.recurrence_rules` as an EXCLUSIVE
+      ARC under one CHECK, and `budget.recurrence_weekday_anchors` is DROPPED unwritten. The plan
+      said this invariant becomes "a CHECK against `recurrence_rules.nominal_day`", which is not
+      buildable -- a PostgreSQL CHECK cannot reference another table -- and the column form is what
+      ruling **R-R16** already did for `nominal_day` and R7c-c already did to the unwritten
+      `recurrence_month_anchors`. `_describe._coordinate` must then dispatch on the coordinate KIND
+      rather than on "WEEK or else".
 
-**Two premises to re-check before dropping anything.** `_repoint_recurrence_rules` was to be retired
-on the premise that "a date survives a schedule rebuild" -- and it does not survive
-`reset_pay_schedule`, which takes an arbitrary new start and cadence. R2d narrows what that costs:
-with the anchor computed there is nothing to strand, so what actually needs re-pointing is
-`start_period_id` and the `offset_periods` derived from it, which is exactly what the function now
-does. And `start_date` is retired on the premise that `anchor_date >= start_date` holds by
-construction; it holds for the calendar family only, because a PERIOD-unit anchor is the effective
-bound and a period qualifies on its END. Ledger row D6.
+- [ ] **R8-d -- the business-day shift.** Blocked by **R5**, and this one cannot even be OBSERVED
+      before it: the shift moves an OCCURRENCE and the write loop discards it (**D26**), so no
+      stored row's date would move at all -- only which paycheck the occurrence places into.
+      **RULED 2026-08-16 (R-R26)**: "non-business day" is weekends plus the eleven US federal
+      holidays DERIVED as rules rather than seeded as rows, which needs no per-year migration and
+      composes with the nth-weekday machinery R8-c builds. The shift applies to the CASH date only
+      -- a bill due Aug 1 paid Friday because Aug 1 is a Sunday still satisfies the Aug 1
+      installment, so `due_on` is never shifted. `RecurrenceSpec` carries no `shift` field today and
+      `resolve` hardcodes `NONE`; 46 of 46 live rules carry `none`. Finding **F-4** (the PAY
+      SCHEDULE's own holiday shift) is a different question and stays separate.
 
-Derived simplifications that fall out and must be taken, not left behind:
+- [ ] **R9 -- Drop the closed pattern set's last two artefacts.**
 
-- `savings_goal_service.amount_to_monthly` (`:406-450`): 8-branch switch -> 4 lines over
-  `(interval, unit)`, automatically correct for intervals not yet invented.
-- `calendar_service._INFREQUENT_PATTERNS` (`:74-79`): enumerated -> derived.
-- The four `Once` guards: deleted.
+Drops `ref.recurrence_patterns` and `RecurrencePatternEnum`, with `ref_cache.recurrence_pattern_id`
+and the seed entry behind them.
+**The step is what R7c-c left of it, and it is one table and one enum**: `pattern_id` is gone
+(`d9f5c1a48b73`), so no user-owned row can reference the table and the surviving `Once` row is
+unreachable by construction rather than by a refusal.
+
+**It waits for its own release, and that is ruling R-R11 rather than caution**: `ref_cache.init`
+raises for an enum member with no row, so deleting the row in the same release that deletes the
+member would leave the auto-rollback image unable to boot. R7c-c is the release that stops writing
+the column; R9 is the one that removes what it pointed at.
+**That precondition is a RELEASE, and `steps.md`'s `starts` column cannot see it** -- it derives
+from step blockers, and R7c-c is shipped, so the cell reads `NOW` and is right about the graph and
+silent about the gate. Before picking this step up, MEASURE where R7c-c is:
+`git branch -r --contains ee35bca7` must name `origin/main`, and
+`docker inspect shekel-prod-app --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'`
+must resolve to a commit containing it. Noted at plan step R8-a, when the same check found it in
+`origin/dev` alone.
+
+**Three things this entry used to name and no longer can.**
+`pay_period_admin._repoint_recurrence_rules` was DELETED at plan step R7b-4, with the
+`start_period_id` capture it existed for -- so the premise about a date not surviving
+`reset_pay_schedule` has no subject: a rule's opening bound is `starts_on`, and `resolve` measures
+it against whatever schedule the owner has. The `start_date` premise (`anchor_date >= start_date`
+holds by construction) is moot with that column dropped; ledger row **D6** closed at R7c-c.
+`savings_goal_service.amount_to_monthly` was deleted at R7a-2b, and
+`calendar_service._INFREQUENT_PATTERNS` with it -- the infrequent badge derives from
+`(interval_n, unit)`.
+
+The four `Once` guards went at R2e-3; the orphan cleanup and the FK claim that used to live here
+were both wrong and belong to R-F6 (see R-R7).
 
 **R10 is the regeneration's own defect, found while X-f3b measured the ledger.** Its two leaves are
 below.
@@ -627,6 +601,32 @@ The update door already exists and is the reason this leaf is small:
 3-5). The leaf is to give the transfer engine its own `DerivedRowFields` twin, route the maintain
 pass through that door, and lift whatever of R10-a's classifier is genuinely model-agnostic into
 `_recurrence_common` rather than copying it.
+
+- [ ] **R11 -- the LEAD placement: fund an occurrence from an EARLIER paycheck.**
+
+**Opened at plan step R8-a, out of what closing ledger row D20 left behind.** D20 said the placement
+axis has no "the LAST paycheck on or before the occurrence", so a bill funded IN ADVANCE is
+inexpressible, and both halves were measured false: `CONTAINING_DATE` funds from the paycheck whose
+span COVERS the occurrence, so its payday is on or before that date by construction -- 0 of 305
+seated occurrences across five pay cadences funded after theirs -- and the remedy it named is not a
+third rule, because `PayCalendar.period_starting_on_or_before` disagreed with `period_containing` on
+0 of 8,460 days of a tiling calendar and past the horizon answers the LAST saved paycheck, which
+would seat every future occurrence of every rule in one.
+
+What is genuinely inexpressible is a LEAD: funding from a paycheck EARLIER than the one containing
+the occurrence, so rent due 1 August is paid from the 17 July paycheck rather than the 31 July one.
+**MOVES MONEY**, so it opens with a ruling and not a keystroke, and the ruling is what the lead is
+MEASURED IN: one paycheck back (`PayCalendar.period_starting_before` over the containing period's
+own payday, which already exists and needs no new search), or a lead in DAYS placed at
+`occurrence - lead_days`, or a lead in days that then places by the CONTAINING rule. The first adds
+no authored value and cannot express "three days early"; the last two add an integer to
+`budget.recurrence_rules` and need their own domain.
+
+Whatever wins, three things follow that R8-a's code already names: `_describe._placement_note` must
+word the new member or RAISE (it is total over the enum), `_parenthetical`'s day-1 collapse is
+guarded on the deferring placement precisely so a LEAD cannot silently inherit it, and
+`fires_on_day_of_month` stays `False` for it -- so its rows are dated from the funding payday, the
+same deliberate state the deferring placement carries under **D26**. Closes **D40**.
 
 ### Carried steps -- scheduled here so they are not merely remembered
 

@@ -46,8 +46,9 @@ day-of-month VALUE TYPE, which is plan step G2's work and not this one's.
 
 **The first ``abc.ABC`` in ``app/``, and that is a decision rather than an
 accident.**  This package's precedent for a closed set with per-member
-behaviour is table-driven (``_frequency.PATTERN_DERIVATIONS`` keyed by enum
-member), and that shape fits a set whose members differ only in DATA.  These
+behaviour was table-driven -- ``_frequency.PATTERN_DERIVATIONS``, keyed by enum
+member, deleted with the closed pattern set at plan step R7c-c -- and that
+shape fits a set whose members differ only in DATA.  These
 three differ in BEHAVIOUR -- what stops the walk, what the columns are, what a
 submission must state -- so a table would hold three callables per member and
 lose the one thing an abstract method buys: a shape that forgets one is
@@ -103,7 +104,7 @@ class EndBoundInputError(ShekelError):
     this module's").  Those two own what a thing is CALLED -- a label, a
     phrase -- and this owns what a refusal SAYS, which is inseparable from the
     condition that raises it.  The package's precedent is
-    :data:`~app.services.recurrence.UNAVAILABLE_PATTERN_MESSAGE`, user-facing
+    :data:`~app.services.recurrence.UNREADABLE_CADENCE_MESSAGE`, user-facing
     copy in ``_vocabulary`` beside the membership test that earns it, flashed
     by ``_recurrence_form_helpers.edit_form_cadence``.
 

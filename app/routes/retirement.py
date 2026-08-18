@@ -30,8 +30,10 @@ from app.schemas.validation import (
 from app.services import (
     retirement_dashboard_service,
     retirement_levers,
+    retirement_plan,
     retirement_readiness,
 )
+from app.services.balance_at import BalanceContext
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +70,9 @@ _readiness_query_schema = RetirementReadinessQuerySchema()
 def dashboard():
     """The direction-D retirement readiness page.
 
-    Computes the gap data ONCE and shapes the readiness picture from it
-    (:func:`~app.services.retirement_readiness.readiness_from_gap_data`),
-    closing the P3a double-compute; the levers run their own probe loads.
+    Derives the retirement picture ONCE and shapes the readiness picture
+    from it (:func:`~app.services.retirement_readiness.readiness_from_picture`);
+    the levers run on the same loaded inputs and the same memoized picture.
     The context carries exactly what the rebuilt template consumes: the
     readiness dict, the lever baselines, the per-account projections +
     salary profiles for the accounts table, the blended return for the
@@ -81,23 +83,41 @@ def dashboard():
     merit horizon showing the template literal 5).  The legacy gap-table
     context (gap analysis, chart data, SWR slider default) retired with
     the old page (P3c).
+
+    **This route opens the render's ONE read pass and LOADS its inputs once**
+    (plan steps C2-f2d-1 and C2-f2d-2, ledger rows **P43** and **P57**).  The
+    readiness verdict and the lever card are two views of ONE retirement
+    picture: they belong to one owner, one baseline scenario, one day and one
+    plan.  Each used to build its own pass AND its own loaded inputs AND its
+    own derivation of that picture -- 86 of the render's 179 queries on a
+    production clone were the second copy, and the lever card's month-0 probe
+    recomputed the verdict the hero had already drawn.
+
+    **What that buys, stated exactly.**  ``picture_at(inputs, STORED_PLAN)``
+    below and the lever solver's own month-0 probe are the SAME object, not two
+    equal ones, so the two cards cannot state different figures for one plan.
+    It does not make this render single-clock: ``compute_pension_summary``,
+    ``compute_gap_net_biweekly`` and ``build_employer_salary_basis`` still read
+    ``date.today().year`` for themselves.  Ledger row **P55** owns that
+    remainder.  The gate for what IS claimed here is
+    ``tests/test_arch/test_one_read_pass_per_render.py``.
     """
-    data = retirement_dashboard_service.compute_gap_data(current_user.id)
-    readiness = retirement_readiness.readiness_from_gap_data(data)
+    inputs = retirement_plan.load_retirement_inputs(
+        BalanceContext.build(current_user.id),
+    )
+    picture = retirement_plan.picture_at(inputs, inputs.stored_plan)
+    readiness = retirement_readiness.readiness_from_picture(picture)
     return render_template(
         "retirement/dashboard.html",
-        current_return=(
-            retirement_dashboard_service.compute_slider_defaults(
-                data,
-            )["current_return"]
-        ),
+        # The rail's "Assumed return" row: the rate this page's own projection
+        # actually grew at, scaled to the percent the template formats.  It was
+        # a third derivation of that rate until plan step C2-f2d-2.
+        current_return=picture.blended_return * retirement_plan.PCT_SCALE,
         readiness=readiness,
-        levers=retirement_levers.compute_lever_data(current_user.id),
-        retirement_account_projections=(
-            data["retirement_account_projections"]
-        ),
-        salary_profiles=data["salary_profiles"],
-        settings=data["settings"],
+        levers=retirement_levers.compute_lever_data(inputs),
+        retirement_account_projections=picture.projections,
+        salary_profiles=inputs.gap.salary_profiles,
+        settings=inputs.gap.settings,
         date_provenance=readiness["date_provenance"],
     )
 
@@ -392,10 +412,27 @@ def readiness_fragment():
     query parameters recompute the readiness picture as a what-if against
     the stored-settings baseline and return the panel's delta facts
     (funded-ratio delta in points, shortfall delta in dollars); optional
-    ``months`` / ``contribution`` additionally recompute the lever
-    outcome lines.  All validated through
-    :class:`RetirementReadinessQuerySchema` (bounds -> 422 on garbage).
-    Renders the minimal ``_readiness.html`` stub P3b restyles.
+    ``months`` / ``contribution`` set where the two lever steppers sit.  All
+    validated through :class:`RetirementReadinessQuerySchema` (bounds -> 422
+    on garbage).  Renders the minimal ``_readiness.html`` stub P3b restyles,
+    with the income panel and the lever card as out-of-band siblings so every
+    figure the request moved updates in one round trip.
+
+    **ONE set of assumptions per response, since plan step C2-f2d-4.**  The
+    verdict, the chart, the income meter and both levers are computed at the
+    SAME :class:`~app.services.retirement_plan.PlanPoint`.  The panel's
+    ``baseline`` is deliberately the STORED plan beside them -- stating the
+    delta is its whole product -- and it is the one figure here that is not at
+    *point*.
+
+    **One read pass and one LOADER for the fragment** (plan steps C2-f2d-1 and
+    C2-f2d-2), built here and shared by the what-if's two pictures and by the
+    levers beside them.  This request published up to three pictures from three
+    passes and three loads -- the stored-settings baseline, the override, and
+    the lever outcome -- and the panel's whole purpose is to state the DELTA
+    between the first two, so every input the halves share had better BE
+    shared.  They are; the bare ``date.today()`` reads ledger row **P55** names
+    are not yet.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("retirement.dashboard"))
@@ -405,26 +442,37 @@ def readiness_fragment():
     except ValidationError as exc:
         return jsonify(errors=exc.messages), 422
 
-    whatif = retirement_readiness.compute_readiness_whatif(
-        current_user.id,
+    inputs = retirement_plan.load_retirement_inputs(
+        BalanceContext.build(current_user.id),
+    )
+    # RESOLVED against the owner's settings, not carried as overrides: the
+    # merit-horizon input is pre-filled with the stored value and so submits it
+    # on every request, and an override that equals the stored value is the
+    # stored plan.  ``plan_with`` is the door that makes those one key.
+    point = inputs.plan_with(
         swr_override=query_data.get("swr"),
         return_rate_override=query_data.get("return_rate"),
         merit_horizon_override=query_data.get("merit_raise_horizon_years"),
     )
-    lever_data = None
-    if (query_data.get("months") is not None
-            or query_data.get("contribution") is not None):
-        lever_data = retirement_levers.compute_lever_data(
-            current_user.id,
-            contribution_override=query_data.get("contribution"),
-            months_override=query_data.get("months"),
-        )
+    whatif = retirement_readiness.compute_readiness_whatif(inputs, point)
     return render_template(
         "retirement/_readiness.html",
         readiness=whatif["readiness"],
         baseline=whatif["baseline"],
         deltas=whatif["deltas"],
-        levers=lever_data,
+        # SOLVED AGAINST *point*, and computed on EVERY refresh (plan step
+        # C2-f2d-4, ledger row P59).  Both halves of that changed together and
+        # neither works alone: the levers used to ignore the what-if sliders
+        # entirely, so this card stated the stored-settings plan beside a hero
+        # stating the what-if -- two funded ratios on one screen, measured
+        # differently, with no caption saying so.  And they used to be computed
+        # only when a STEPPER moved, so refreshing them on a slider move is
+        # what stops the card going stale in the newly-visible way.
+        levers=retirement_levers.compute_lever_data(
+            inputs, point,
+            contribution_override=query_data.get("contribution"),
+            months_override=query_data.get("months"),
+        ),
     )
 
 

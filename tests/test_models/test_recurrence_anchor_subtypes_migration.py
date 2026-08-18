@@ -65,10 +65,19 @@ _MIGRATION_SOURCE = (_MIGRATIONS_DIR / _MIGRATION_FILENAME).read_text()
 #: The one column the migration adds, nullable and unwritten until step R8.
 _NEW_COLUMNS: tuple[str, ...] = ("max_occurrences",)
 
-#: The two subtype tables, with the value column each carries.
+#: The subtype table this migration created that still exists, with the value
+#: columns it carries.
+#:
+#: **It held TWO until plan step R7c-c**, which dropped
+#: ``budget.recurrence_month_anchors`` unwritten (migration ``d9f5c1a48b73``):
+#: ruling **R-R16** put the day a clamped anchor MEANT on the rule itself, as
+#: ``recurrence_rules.nominal_day`` under a CHECK tying its presence to
+#: meaning, so the satellite never gained a writer.  Every case below that
+#: swept both now sweeps one, and the cases that could only be written against
+#: the dropped table are re-pointed at the survivor -- the constraints are the
+#: same shape, and the survivor is the one plan step R8 will write.
 _SUBTYPE_TABLES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("recurrence_weekday_anchors", ("nth_week", "weekday")),
-    ("recurrence_month_anchors", ("nominal_day",)),
 )
 
 #: The SELECT list every rule INSERT below shares: a storable Monthly rule.
@@ -84,11 +93,10 @@ _SUBTYPE_TABLES: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: The values name an ordinary monthly cadence starting 2026-01-15.  The
 #: migration under test writes no data and reads none of them.
 _STORABLE_RULE_COLUMNS = (
-    "user_id, pattern_id, interval_n, offset_periods, "
-    "unit_id, placement_id, shift_id, starts_on"
+    "user_id, interval_n, unit_id, placement_id, shift_id, starts_on"
 )
 _STORABLE_RULE_VALUES = (
-    ":u, id, 1, 0, "
+    ":u, 1, "
     "(SELECT id FROM ref.recurrence_units WHERE name = 'month'), "
     "(SELECT id FROM ref.period_placements WHERE name = 'containing_date'), "
     "(SELECT id FROM ref.business_day_shifts WHERE name = 'none'), "
@@ -173,10 +181,10 @@ class TestTheSubtypeTablesAreStillEmpty:
     def test_the_subtype_tables_are_still_empty(self, app, db):
         """Neither anchor subtype has a writer yet.
 
-        ``recurrence_month_anchors`` describes a clamp of ``anchor_date``,
-        which is not a column, and ``recurrence_weekday_anchors`` waits for
-        plan step R8.  A row in either now would describe a value nothing
-        stores and nothing reads.
+        ``recurrence_weekday_anchors`` waits for plan step R8, so a row in it
+        now would describe a value nothing stores and nothing reads.  Its
+        sibling ``recurrence_month_anchors`` was still empty when plan step
+        R7c-c dropped it, which is the strongest form of the same statement.
         """
         with app.app_context():
             for table, _values in _SUBTYPE_TABLES:
@@ -269,19 +277,26 @@ class TestSubtypeTables:
     def test_a_second_row_for_the_same_rule_is_refused(
         self, app, db, seed_user,
     ):
-        """The UNIQUE constraint actually fires on a duplicate."""
+        """The UNIQUE constraint actually fires on a duplicate.
+
+        Driven against the SURVIVING subtype since plan step R7c-c: it was
+        written against ``recurrence_month_anchors``, which that step dropped,
+        and the cardinality it grades is the same on both.
+        """
         with app.app_context():
             rule_id = db.session.execute(text(
                 _insert_rule_sql(returning="RETURNING id")
             ), {"u": seed_user["user"].id}).scalar()
             db.session.execute(text(
-                "INSERT INTO budget.recurrence_month_anchors "
-                "  (recurrence_rule_id, nominal_day) VALUES (:r, 31)"
+                "INSERT INTO budget.recurrence_weekday_anchors "
+                "  (recurrence_rule_id, nth_week, weekday) "
+                "VALUES (:r, 1, 2)"
             ), {"r": rule_id})
-            with pytest.raises(IntegrityError, match="uq_recurrence_month"):
+            with pytest.raises(IntegrityError, match="uq_recurrence_weekday"):
                 db.session.execute(text(
-                    "INSERT INTO budget.recurrence_month_anchors "
-                    "  (recurrence_rule_id, nominal_day) VALUES (:r, 30)"
+                    "INSERT INTO budget.recurrence_weekday_anchors "
+                    "  (recurrence_rule_id, nth_week, weekday) "
+                    "VALUES (:r, 3, 4)"
                 ), {"r": rule_id})
             db.session.rollback()
 
@@ -292,14 +307,15 @@ class TestSubtypeTables:
                 _insert_rule_sql(returning="RETURNING id")
             ), {"u": seed_user["user"].id}).scalar()
             db.session.execute(text(
-                "INSERT INTO budget.recurrence_month_anchors "
-                "  (recurrence_rule_id, nominal_day) VALUES (:r, 31)"
+                "INSERT INTO budget.recurrence_weekday_anchors "
+                "  (recurrence_rule_id, nth_week, weekday) "
+                "VALUES (:r, 1, 2)"
             ), {"r": rule_id})
             db.session.execute(text(
                 "DELETE FROM budget.recurrence_rules WHERE id = :r"
             ), {"r": rule_id})
             survivors = db.session.execute(text(
-                "SELECT count(*) FROM budget.recurrence_month_anchors "
+                "SELECT count(*) FROM budget.recurrence_weekday_anchors "
                 " WHERE recurrence_rule_id = :r"
             ), {"r": rule_id}).scalar()
             assert survivors == 0, (
@@ -308,25 +324,15 @@ class TestSubtypeTables:
             )
             db.session.rollback()
 
-    @pytest.mark.parametrize("nominal_day", [28, 32])
-    def test_a_nominal_day_that_cannot_clamp_is_refused(
-        self, app, db, seed_user, nominal_day,
-    ):
-        """Only 29-31 can be lost to a short month, so only those are stored.
-
-        A row for day 28 would carry no information (every month holds a
-        28th), and day 32 is not a day.
-        """
-        with app.app_context():
-            rule_id = db.session.execute(text(
-                _insert_rule_sql(returning="RETURNING id")
-            ), {"u": seed_user["user"].id}).scalar()
-            with pytest.raises(IntegrityError, match="nominal_day"):
-                db.session.execute(text(
-                    "INSERT INTO budget.recurrence_month_anchors "
-                    "  (recurrence_rule_id, nominal_day) VALUES (:r, :d)"
-                ), {"r": rule_id, "d": nominal_day})
-            db.session.rollback()
+    # ``test_a_nominal_day_that_cannot_clamp_is_refused`` was here until plan
+    # step R7c-c.  It drove ``ck_recurrence_month_anchors_nominal_day`` -- only
+    # 29-31 can be lost to a short month, so a row for day 28 carried no
+    # information and day 32 is not a day -- and that table is dropped.  The
+    # rule itself is not lost: ruling **R-R16** moved the day onto
+    # ``recurrence_rules.nominal_day``, whose CHECK says strictly MORE (the
+    # domain, that it exceeds the day the date carries, AND that the date was
+    # actually clamped by it), and ``test_recurrence_rule_constraints``'s
+    # ``TestTheNominalDayIsOnlyEverAClamp`` drives every conjunct.
 
     @pytest.mark.parametrize(
         "nth_week,weekday,constraint",
@@ -355,7 +361,7 @@ class TestSubtypeTables:
 
 
 class TestSubtypeTablesAreAudited:
-    """Both tables are audited, and the trigger is proven to FIRE.
+    """The surviving table is audited, and the trigger is proven to FIRE.
 
     The presence check alone would have missed the defect this guards: with
     the design's ``recurrence_rule_id``-only primary key the trigger EXISTS
@@ -363,8 +369,8 @@ class TestSubtypeTablesAreAudited:
     ``v_row_id := NEW.id``.  Only an actual INSERT distinguishes the two.
     """
 
-    def test_both_tables_are_in_audited_tables(self):
-        """Both carry user-controlled budget state, so both are audited."""
+    def test_the_subtype_table_is_in_audited_tables(self):
+        """It carries user-controlled budget state, so it is audited."""
         for table, _values in _SUBTYPE_TABLES:
             assert ("budget", table) in AUDITED_TABLES, (
                 f"budget.{table} holds user-controlled financial state and "
@@ -373,18 +379,15 @@ class TestSubtypeTablesAreAudited:
             )
 
     def test_inserting_writes_an_audit_row(self, app, db, seed_user):
-        """An INSERT into each subtype table lands in ``system.audit_log``."""
+        """An INSERT into the subtype table lands in ``system.audit_log``."""
         with app.app_context():
             rule_id = db.session.execute(text(
                 _insert_rule_sql(returning="RETURNING id")
             ), {"u": seed_user["user"].id}).scalar()
             db.session.execute(text(
-                "INSERT INTO budget.recurrence_month_anchors "
-                "  (recurrence_rule_id, nominal_day) VALUES (:r, 31)"
-            ), {"r": rule_id})
-            db.session.execute(text(
                 "INSERT INTO budget.recurrence_weekday_anchors "
-                "  (recurrence_rule_id, nth_week, weekday) VALUES (:r, -1, 4)"
+                "  (recurrence_rule_id, nth_week, weekday) "
+                "VALUES (:r, -1, 4)"
             ), {"r": rule_id})
             for table, _values in _SUBTYPE_TABLES:
                 inserted_id = db.session.execute(text(
@@ -471,11 +474,22 @@ class TestDowngradeIsAReversal:
         )
 
     def test_it_drops_both_subtype_tables(self):
-        """Dropping each table takes its audit trigger with it."""
+        """Dropping each table takes its audit trigger with it.
+
+        Read against THIS MIGRATION'S own two tables rather than against the
+        set that survives at head, and the difference is the point: plan step
+        R7c-c dropped ``budget.recurrence_month_anchors`` in a LATER revision,
+        which does not change what ``c8f2b6a41d93`` created or what its
+        downgrade must undo.  A migration is reversible at its own point in the
+        chain; grading it against a schema three revisions ahead would fail it
+        for a change it cannot see.
+        """
         dropped = {
             args[0] for args in self._downgrade_calls("drop_table") if args
         }
-        assert dropped == {table for table, _values in _SUBTYPE_TABLES}, (
+        assert dropped == {
+            "recurrence_weekday_anchors", "recurrence_month_anchors",
+        }, (
             f"downgrade drops tables {sorted(dropped)}, expected both subtypes"
         )
 

@@ -4,16 +4,14 @@
  *
  * Plan step R7b-2.  The form authors two axes -- how often (interval + unit)
  * and which paycheck funds an occurrence (placement) -- instead of picking a
- * name from a closed pattern set.  Until plan step R7c the cadence is still
- * STORED as one of those patterns, so not every (interval, unit, placement) can
- * be written: any N paychecks, but only 1 / 3 / 6 months, and only a ONE-month
- * interval may be funded from the first paycheck.
+ * name from a closed pattern set.
  *
  * The offer set arrives whole in data-cadence-options, derived server-side from
- * the encoder's own table (app.services.recurrence.picker_model).  This file
- * FILTERS it; it never states which cadences exist, so it cannot drift from
- * what the write door accepts.  Filtering is what makes the refusal
- * unreachable: a combination the closed set cannot store is never selectable.
+ * the producer that would otherwise refuse the cadence
+ * (app.services.recurrence.picker_model).  This file FILTERS it; it never
+ * states which cadences exist, so it cannot drift from what the write door
+ * accepts.  Filtering is what makes the refusal unreachable: a combination the
+ * application cannot resolve is never selectable.
  *
  * Each offer also CARRIES whether the cadence anchors on a DAY of the month,
  * because that is a property of the resolver's own routing rather than of
@@ -24,9 +22,16 @@
  * says both (ruling R-R16).  What is left beside that date is the one question
  * the date cannot answer -- see ``syncNominalDay``.
  *
- * Both interval controls post ``interval_n``, so exactly one is ever enabled --
- * a disabled control does not submit, which keeps two spellings of one field
- * from reaching the schema together.
+ * **Plan step R7c-c freed the INTERVAL and kept the FUNDING row on screen.**
+ * The cadence was stored as one of eight pattern names until then, so not every
+ * (interval, unit, placement) could be written -- any N paychecks, but only
+ * 1 / 3 / 6 months, and only a ONE-month interval funded from the first
+ * paycheck -- which is why there were two controls posting interval_n with
+ * exactly one enabled, and why the funding row hid itself whenever the chosen
+ * pair admitted a single placement.  Every positive interval is authorable on
+ * every offered (unit, placement) pair now: one number box, and a funding row
+ * that is always rendered and explains itself when there is nothing to choose
+ * (plan ledger row D32).
  */
 (function() {
   var unitSelect = document.getElementById('recurrence_unit');
@@ -34,10 +39,10 @@
 
   var controls = document.getElementById('cadence-controls');
   var intervalWrap = document.getElementById('field-interval');
-  var intervalFree = document.getElementById('interval_n_free');
-  var intervalFixed = document.getElementById('interval_n_fixed');
+  var interval = document.getElementById('interval_n');
   var placementWrap = document.getElementById('field-placement');
   var placementSelect = document.getElementById('recurrence_placement');
+  var placementHelp = document.getElementById('placement-help');
 
   var container = document.getElementById('recurrence-fields');
   var dueDom = document.getElementById('field-due-dom');
@@ -95,8 +100,7 @@
 
   // The "Ends" control (plan step R7b-3): a mode select and the value inputs
   // its shapes need.  This file never states which shapes exist -- each
-  // <option> names the control ITS shape needs in data-needs, the same way
-  // each fixed-interval option names its unit in data-unit, so a shape plan
+  // <option> names the control ITS shape needs in data-needs, so a shape plan
   // step R8 adds needs no edit here.
   var endBoundWrap = document.getElementById('field-end-bound');
   var endMode = document.getElementById('recurrence_end_mode');
@@ -126,94 +130,83 @@
     return unitSelect.value;
   }
 
-  // A unit takes ANY positive interval when some offer for it carries a null
-  // interval -- the one pattern whose interval lives in a column rather than
-  // in its name.  That is also why such a unit's fixed entries are ignored:
-  // the free entry subsumes them.
-  function unitIsFree(id) {
-    return options.some(function(o) {
-      return String(o.unit_id) === String(id) && o.interval_n === null;
-    });
-  }
-
+  // What the interval box says, or null when it says nothing.
+  //
+  // **It defaulted an empty box to 1 until plan step R7c-c, and that default
+  // is now a claim the save contradicts.**  Freeing the interval made the box
+  // clearable for every unit, and clearing it beside a chosen cadence is
+  // REFUSED at the submission (validate_authorable_cadence) rather than
+  // silently stored as 1 -- so previewing twelve monthly dates for a box the
+  // user has just emptied would show a schedule no save can produce, on the
+  // one surface whose whole contract is "what saving would produce".
+  //
+  // Null rather than a guess, and fetchPreview says so with the SAME sentence
+  // it uses for no cadence at all: "choose how often this repeats" is exactly
+  // what is missing either way.  The server still bounds the value it is sent
+  // (require_positive_interval); this is the preview's own read, not a
+  // validation.
   function currentInterval() {
-    var raw = unitIsFree(unitId()) ? intervalFree.value : intervalFixed.value;
-    var n = parseInt(raw, 10);
-    return isNaN(n) ? 1 : n;
+    var n = parseInt(interval.value, 10);
+    return isNaN(n) ? null : n;
   }
 
-  // The offer chosen right now: the (unit, interval, placement) triple whose
-  // server-stated facts the calendar detail rows are shown from.  Read from
-  // the offer set rather than inferred, because both facts belong to the
-  // WHOLE triple: "every 1 month funded from the first paycheck" anchors on a
-  // paycheck and reads no day of the month, while "every 1 month" on the same
-  // unit does.
-  function currentOption(id, interval, placementId) {
+  // The offer chosen right now: the (unit, placement) pair whose server-stated
+  // facts the calendar detail rows are shown from.  Read from the offer set
+  // rather than inferred, because both facts belong to the WHOLE pair: "months
+  // funded from the first paycheck" anchors on a paycheck and reads no day of
+  // the month, while "months funded from the covering paycheck" does.
+  //
+  // The INTERVAL left this lookup at plan step R7c-c, with the closed pattern
+  // set: every positive interval is authorable on every offered pair, so it
+  // selects no offer and changing it changes no fact here.
+  function currentOption(id, placementId) {
     var matches = options.filter(function(o) {
       return String(o.unit_id) === String(id) &&
-             (o.interval_n === null || o.interval_n === interval) &&
              String(o.placement_id) === String(placementId);
     });
     return matches.length ? matches[0] : null;
   }
 
-  // The placements storable for this (unit, interval) pair -- NOT for the unit
-  // alone.  The closed set stores "every 1 month funded from the first
-  // paycheck" and has no quarterly or semi-annual twin, so keying on the unit
-  // would offer what encode_cadence refuses.
-  // DISTINCT placement ids, and the de-duplication is load-bearing rather
-  // than tidy: the row hides itself when a pair offers fewer than two, and the
-  // paycheck unit has TWO offers at interval 1 (every paycheck, and every N
-  // paychecks with N = 1) that carry the SAME placement.  Without this the
-  // most common cadence on the form rendered a "Funded from" select with one
-  // usable choice beside a hidden one.
-  function placementsFor(id, interval) {
+  // The placements authorable for this UNIT.
+  //
+  // **It was keyed on the (unit, interval) PAIR until plan step R7c-c**, and
+  // the pair was the closed pattern set's doing: it stored "every 1 month
+  // funded from the first paycheck" and had no quarterly twin, so keying on
+  // the unit alone would have offered what the write door refused.  With the
+  // interval free the MONTH unit admits both placements at every interval, and
+  // the dependency is gone with the fusion that created it -- which is plan
+  // ledger row D32's defect ceasing to exist rather than being warned about.
+  //
+  // DISTINCT placement ids, and the de-duplication is still load-bearing: the
+  // help text below swaps on whether a unit admits fewer than two, so a
+  // duplicate would read as a choice the user does not have.
+  function placementsFor(id) {
     var found = [];
     options.forEach(function(o) {
       if (String(o.unit_id) !== String(id)) return;
-      if (o.interval_n !== null && o.interval_n !== interval) return;
       var value = String(o.placement_id);
       if (found.indexOf(value) === -1) found.push(value);
     });
     return found;
   }
 
-  // Show only this unit's fixed intervals, and keep the selection on one of
-  // THEM -- identified by the option itself, never by its value.
+  // Enable the placements this unit admits, keep the selection on one of them,
+  // and say which of the two states the user is in.
   //
-  // An interval value is not unique across units: "1" is offered by paychecks,
-  // months AND years, so `select.value = "1"` selects whichever carries it
-  // FIRST in document order, which is another unit's. Driving the real form in
-  // a browser is what caught it, and the damage was not cosmetic: choosing
-  // "months" left the selection on the hidden, disabled "1 paycheck" option,
-  // so the control rendered BLANK and -- because a disabled option submits
-  // nothing -- the form posted no interval_n at all. A validity test that
-  // compared values agreed the selection was fine ("1" === "1") while
-  // selectedIndex pointed at the wrong unit's entry.
+  // **The row is no longer HIDDEN when a unit admits one placement** (plan step
+  // R7c-c, developer ruling 2026-08-16 on plan ledger row D32).  Hiding it is
+  // how a bill's funding rule came to change with nothing on screen saying so:
+  // the select is reassigned below whenever the previous choice is not
+  // admissible, which is correct and was invisible.  ONE cadence still admits
+  // one -- paychecks, where the placement is inert because a payday resolves to
+  // its own paycheck either way -- and for it the row renders with that one
+  // option and the help text explains why there is nothing to choose.  It was
+  // two until plan step R8-a admitted the year unit's deferring reading.
   //
-  // The key is the (unit, interval) PAIR, which is what the offer set says, so
-  // ownership is read off data-unit and the selection is moved by INDEX.
-  function syncFixedIntervals(id) {
-    var firstIndex = null;
-    var current = intervalFixed.options[intervalFixed.selectedIndex] || null;
-    var stillValid = current !== null &&
-                     current.getAttribute('data-unit') === String(id);
-    Array.prototype.forEach.call(intervalFixed.options, function(opt, index) {
-      var mine = opt.getAttribute('data-unit') === String(id);
-      opt.hidden = !mine;
-      opt.disabled = !mine;
-      if (mine && firstIndex === null) firstIndex = index;
-    });
-    if (!stillValid && firstIndex !== null) {
-      intervalFixed.selectedIndex = firstIndex;
-    }
-  }
-
-  // Same hazard on the placement select, plus one more: when a unit offers a
-  // single placement the row is hidden, and the hidden select must still post
-  // that placement rather than whatever was chosen under the previous unit.
-  function syncPlacements(id, interval) {
-    var allowed = placementsFor(id, interval);
+  // Both sentences come from data-* attributes the SERVER rendered; this file
+  // states no copy, the same rule syncStartsOnHelp follows.
+  function syncPlacements(id) {
+    var allowed = placementsFor(id);
     var stillValid = false;
     Array.prototype.forEach.call(placementSelect.options, function(opt) {
       var mine = allowed.indexOf(opt.value) !== -1;
@@ -222,7 +215,11 @@
       if (mine && opt.value === placementSelect.value) stillValid = true;
     });
     if (!stillValid && allowed.length) placementSelect.value = allowed[0];
-    placementWrap.classList.toggle('d-none', allowed.length < 2);
+    if (!placementHelp) return;
+    var text = placementHelp.getAttribute(
+      allowed.length < 2 ? 'data-fixed-text' : 'data-choice-text'
+    );
+    if (text) placementHelp.textContent = text;
   }
 
   // Whether the server rendered the "Ends" control locked -- a loan payment,
@@ -345,11 +342,11 @@
   // what keeps this an affordance rather than a rule.
   //
   // ``hasDayCoordinate`` is the offer's has_day_of_month_coordinate, which is
-  // keyed on the UNIT -- never anchors_day_of_month, which is keyed on the
-  // (unit, placement) pair and answers a different question.  Passing the
+  // keyed on the UNIT -- never schedules_on_day_of_month, which is keyed on
+  // the (unit, placement) pair and answers a different question.  Passing the
   // wrong one MOVED MONEY: they disagree for Monthly First, whose occurrences
-  // are days of the month even though its anchor is a paycheck, so this
-  // cleared and disabled a control the server had rendered enabled.  The
+  // are days of the month even though its rows are dated from the paycheck, so
+  // this cleared and disabled a control the server had rendered enabled.  The
   // update door reads nominal_day off the same presence key as starts_on, so
   // changing only "Funded from" on a "last day of every month" rent posted the
   // date without the day, wrote nominal_day = NULL, and moved every later
@@ -397,12 +394,12 @@
   // cadence does not make it wrong -- and the update door reads an ABSENT key
   // as "leave the stored one alone" (RecurrenceFormContext), so a hidden row
   // states nothing rather than erasing what it cannot show.
-  function syncDueDom(anchorsDay) {
+  function syncDueDom(schedulesOnDay) {
     if (!dueDom) return;
-    dueDom.classList.toggle('d-none', !anchorsDay);
+    dueDom.classList.toggle('d-none', !schedulesOnDay);
     Array.prototype.forEach.call(
       dueDom.querySelectorAll('input'),
-      function(input) { input.disabled = !anchorsDay; }
+      function(input) { input.disabled = !schedulesOnDay; }
     );
   }
 
@@ -414,8 +411,14 @@
     if (!id) {
       intervalWrap.classList.add('d-none');
       placementWrap.classList.add('d-none');
-      intervalFree.disabled = true;
-      intervalFixed.disabled = true;
+      interval.disabled = true;
+      // DISABLED with the interval, not merely hidden.  This was the one
+      // control in the file that broke the file's own rule -- a hidden control
+      // still SUBMITS, which is the defect class plan step R7b-2 shipped twice
+      // -- and it went unnoticed because the write door pops the placement on
+      // the no-cadence branch, so the stray key was absorbed one layer down by
+      // a guard written for something else.  Closed at plan step R7c-c.
+      placementSelect.disabled = true;
       container.classList.add('d-none');
       syncEndBound(false);
       syncStartPeriod(false);
@@ -426,32 +429,33 @@
       return;
     }
 
-    var free = unitIsFree(id);
     intervalWrap.classList.remove('d-none');
-    intervalFree.disabled = !free;
-    intervalFixed.disabled = free;
-    intervalFree.classList.toggle('d-none', !free);
-    intervalFixed.classList.toggle('d-none', free);
-    if (!free) syncFixedIntervals(id);
-    var interval = currentInterval();
-    syncPlacements(id, interval);
+    interval.disabled = false;
+    placementWrap.classList.remove('d-none');
+    // Re-enabled BEFORE syncPlacements, which turns individual OPTIONS off and
+    // on: a disabled <select> posts nothing whatever its options say, so the
+    // order here is what makes the chosen placement reach the door.
+    placementSelect.disabled = false;
+    syncPlacements(id);
 
     container.classList.remove('d-none');
 
     // Whether this cadence lands on a DAY of the month is a fact the SERVER
-    // stated about the chosen triple, never inferred here.  Inferring it is
-    // what an earlier draft of this file did -- it read "the interval control
-    // is a free number box" as "this cadence has no day of the month", which
-    // is true of every cadence offered today and is not the same fact.
-    var chosen = currentOption(id, interval, placementSelect.value);
+    // stated about the chosen pair, never inferred here.  Inferring it is what
+    // an earlier draft of this file did -- it read "the interval control is a
+    // free number box" as "this cadence has no day of the month", which was
+    // true of every cadence offered then, is true of NONE now that every unit
+    // uses the free box, and was never the same fact either way.
+    var chosen = currentOption(id, placementSelect.value);
     // Two facts, two questions, and they differ for Monthly First -- see
-    // syncNominalDay.  The DUE DAY row asks about the anchor family, which is
-    // the question it has always asked; the "repeating on" control asks
-    // whether occurrences land on a day of the month at all.
-    var anchorsDay = chosen !== null && chosen.anchors_day_of_month;
+    // syncNominalDay.  The DUE DAY row asks whether a generated row is DATED
+    // from a day of the month, which is the question it has always asked; the
+    // "repeating on" control asks whether occurrences land on a day of the
+    // month at all.
+    var schedulesOnDay = chosen !== null && chosen.schedules_on_day_of_month;
     var hasDayCoordinate =
       chosen !== null && chosen.has_day_of_month_coordinate;
-    syncDueDom(anchorsDay);
+    syncDueDom(schedulesOnDay);
 
     syncStartPeriod(true);
     syncStartsOn(true);
@@ -480,8 +484,12 @@
   function fetchPreview() {
     if (!preview) return;
 
+    // A cadence is a unit AND a count, so a missing either is the same state
+    // and gets the same sentence.  The copy matches the pre-script render in
+    // _recurrence_fields.html verbatim, which is why it is written once here.
     var id = unitId();
-    if (!id) {
+    var everyN = currentInterval();
+    if (!id || everyN === null) {
       preview.innerHTML = '<small class="text-muted">Choose how often this repeats to see upcoming dates</small>';
       return;
     }
@@ -491,7 +499,7 @@
 
     var params = new URLSearchParams();
     params.set('recurrence_unit', id);
-    params.set('interval_n', String(currentInterval()));
+    params.set('interval_n', String(everyN));
     if (placementSelect.value) params.set('recurrence_placement', placementSelect.value);
 
     // The FIRST OCCURRENCE and the day a clamped one MEANT, sent whenever the
@@ -564,15 +572,14 @@
   toggleFields();
 
   // Listen for changes.  The unit re-links everything below it; the interval
-  // re-links the placements, because which are storable depends on the pair.
+  // re-links the placements, because which are authorable depends on the unit.
   // The PLACEMENT re-links too, and it is not decoration: a monthly cadence
   // funded from the month's first paycheck anchors on that paycheck and reads
   // no day of the month, so switching the funding choice adds or removes the
   // Day of Month row.  Setting a <select>'s value from script fires no change
   // event, so syncPlacements' own corrections cannot re-enter this.
   unitSelect.addEventListener('change', toggleFields);
-  intervalFree.addEventListener('change', toggleFields);
-  intervalFixed.addEventListener('change', toggleFields);
+  interval.addEventListener('change', toggleFields);
   placementSelect.addEventListener('change', toggleFields);
   // The DESTINATION re-links the "Starts on" row, and only on a create form:
   // choosing a loan hands its first occurrence to the route, so the control
@@ -591,9 +598,7 @@
   // moving it can retire the choice the user made under the old one.
   if (startsOn) {
     startsOn.addEventListener('change', function() {
-      var chosen = currentOption(
-        unitId(), currentInterval(), placementSelect.value
-      );
+      var chosen = currentOption(unitId(), placementSelect.value);
       syncNominalDay(chosen !== null && chosen.has_day_of_month_coordinate);
       fetchPreview();
     });

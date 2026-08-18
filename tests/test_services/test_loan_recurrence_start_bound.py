@@ -45,7 +45,11 @@ from app.services import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
-from app.services.recurrence import RecurrenceSpec, resolve
+from app.services.recurrence import (
+    RecurrenceSpec,
+    resolve,
+    scheduling_day_of_month,
+)
 from app.services.generation_schedule import GenerationSchedule
 from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
@@ -219,7 +223,7 @@ class TestStartBoundIsSynced:
         ).template
         rule = template.recurrence_rule
         assert rule.starts_on == date(2026, 5, 1)
-        assert rule.day_of_month == 1
+        assert scheduling_day_of_month(rule) == 1
 
         params = loan_loaders.load_loan_params(acct.id)
         params.payment_day = 20
@@ -231,7 +235,7 @@ class TestStartBoundIsSynced:
 
         db.session.refresh(rule)
         assert rule.starts_on == date(2026, 5, 20)
-        assert rule.day_of_month == 20, (
+        assert scheduling_day_of_month(rule) == 20, (
             "day_of_month must follow payment_day, or the rule bills a day the "
             "bound excludes"
         )
@@ -276,13 +280,13 @@ class TestStartBoundIsSynced:
                 db.session, seed_user, to_account=acct,
             )
             db.session.commit()
-            assert template.recurrence_rule.day_of_month is None
+            assert scheduling_day_of_month(template.recurrence_rule) is None
 
             loan_recurrence_sync.sync_recurring_payment_bounds(acct.id)
 
             assert template.recurrence_rule.starts_on == date(2026, 4, 24)
             assert template.recurrence_rule.nominal_day is None
-            assert template.recurrence_rule.day_of_month is None
+            assert scheduling_day_of_month(template.recurrence_rule) is None
 
     def test_the_start_bound_survives_a_missing_baseline_scenario(
         self, app, db, seed_user, seed_periods,
@@ -720,8 +724,8 @@ class TestAMonthEndLoanKeepsItsMonthEnd:
     :attr:`ResolvedRecurrence.day_of_month` both read.
 
     The producer asked a DIFFERENT question: ``fires_on_day_of_month``, which
-    answers which ANCHOR FAMILY a ``(unit, placement)`` pair derives its first
-    occurrence from.  The two agree everywhere except ``Monthly First``, whose
+    answers whether a generated ROW is dated from a day of the month (it read
+    an ANCHOR FAMILY router until plan step R8-a, which deleted it).  The two agree everywhere except ``Monthly First``, whose
     occurrences ARE days of the month even though its anchor is a paycheck --
     so under that placement the producer recorded no nominal day and the reader
     then answered the CLAMPED day.

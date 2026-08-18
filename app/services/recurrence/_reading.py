@@ -72,20 +72,21 @@ from app.services.recurrence._occurrence import (
 )
 from app.services.recurrence._frequency import (
     Cadence,
-    PatternReading,
+    CadenceReading,
     RecurrenceResolutionError,
+    fires_on_day_of_month,
     placement_member,
-    stored_interval,
+    require_row_date_coordinate,
     unit_member,
 )
 from app.services.recurrence._vocabulary import (
-    modelled_pattern,
     modelled_placement,
     modelled_unit,
 )
 from app.services.recurrence._resolution import (
     RecurrenceSpec,
     ResolvedRecurrence,
+    cadence_day_of_month,
     is_offerable_nominal_day,
     resolve,
 )
@@ -133,16 +134,16 @@ class RuleReading:
             )
 
 
-def stored_cadence(rule: RecurrenceRule) -> PatternReading | None:
+def stored_cadence(rule: RecurrenceRule) -> CadenceReading | None:
     """Return what a stored rule says on both authored axes, or ``None``.
 
-    **The non-raising twin of the three lookups :func:`recurrence_spec` makes**,
+    **The non-raising twin of the two lookups :func:`recurrence_spec` makes**,
     for the callers that must DISPOSE of an unreadable cadence rather than fail
     on it -- the same split
-    :func:`~app.services.recurrence.is_authorable` records against
-    ``encode_cadence`` and
-    :func:`~app.services.recurrence.is_offerable_nominal_day` against the write
-    door's own refusal.  Built on the same ``modelled_*`` lookups, so the door
+    :func:`~app.services.recurrence.is_authorable` records against the write
+    door's cadence refusal and
+    :func:`~app.services.recurrence.is_offerable_nominal_day` against its
+    nominal-day one.  Built on the same ``modelled_*`` lookups, so the door
     that raises and the form that renders unset can never disagree about which
     rules this application can read.
 
@@ -159,35 +160,138 @@ def stored_cadence(rule: RecurrenceRule) -> PatternReading | None:
     pattern -- a rule readable on one and not the other would have rendered
     unset and then been deleted by an unchanged save.
 
-    **The unit and the placement come from the AUTHORED columns; only the
-    INTERVAL still comes through the pattern**, because ``encode_cadence``
-    writes ``1`` for every pattern whose interval is baked into its NAME.  That
-    boundary is :func:`~app.services.recurrence._frequency.stored_interval`'s to
-    name and plan step R7c-c is what removes it, along with this function's
-    pattern arm.
+    **All THREE values come off the row's own columns since plan step R7c-c.**
+    The interval was the last one that did not: ``encode_cadence`` wrote ``1``
+    for every pattern whose interval was baked into its NAME, so a Quarterly
+    rule stored ``interval_n = 1`` and the reader had to recover the ``3``
+    through ``stored_interval``.  That leaf re-points the column in the same
+    migration that drops ``pattern_id``, so the column says what the cadence
+    says and the pattern arm of this function goes with it.
 
     Args:
         rule: The rule to read.
 
     Returns:
-        The :class:`~app.services.recurrence.PatternReading`, or ``None`` when
-        the row names a unit, a placement or a pattern this application does
-        not model -- a ``ref`` row the enums have diverged from, a hand edit, or
-        a partial restore.
+        The :class:`~app.services.recurrence.CadenceReading`, or ``None`` when
+        the row names a unit or a placement this application does not model --
+        a ``ref`` row the enums have diverged from, a hand edit, or a partial
+        restore.
     """
     unit = modelled_unit(rule.unit_id)
     placement = modelled_placement(rule.placement_id)
-    if unit is None or placement is None or modelled_pattern(
-        rule.pattern_id,
-    ) is None:
+    if unit is None or placement is None:
         return None
-    return PatternReading(
-        cadence=Cadence(
-            interval_n=stored_interval(rule.pattern_id, rule.interval_n),
-            unit=unit,
-        ),
+    return CadenceReading(
+        cadence=Cadence(interval_n=rule.interval_n, unit=unit),
         placement=placement,
     )
+
+
+def cadence_of(rule: RecurrenceRule) -> Cadence:
+    """Return how often a stored rule fires, with NO schedule involved.
+
+    The projection of :func:`recurrence_spec` taken by the two consumers that
+    ask "how often" and never "when" or "which paycheck":
+    ``obligations_aggregator``'s monthly equivalent and
+    ``calendar_infrequency``'s infrequent-transaction badge, neither of which
+    holds a :class:`~app.services.pay_calendar.PayCalendar`.  That absence is
+    exactly why both read ``pattern_id`` through a hand-written switch until
+    plan step R7a-2b.
+
+    **It took ``(pattern_id, interval_n)`` and lived in ``_frequency`` until
+    plan step R7c-c**, which is the move rather than an implementation detail.
+    A cadence used to be recoverable from two integers with no row in hand, so
+    the function belonged in the pure module; it is now two of the row's own
+    columns, so it belongs at the READ DOOR beside every other question asked
+    of a rule -- and both callers already held the rule.
+
+    Args:
+        rule: The stored recurrence rule.
+
+    Returns:
+        The :class:`~app.services.recurrence.Cadence`.
+
+    Raises:
+        RecurrenceResolutionError: When the row names a unit this application
+            does not model.  Raised rather than answered for the reason
+            :func:`~app.services.recurrence._frequency.unit_member` raises: a
+            cadence read from a fabricated unit contributes a silently wrong
+            figure to the emergency-fund baseline and mis-badges a bill's
+            frequency.  A caller that must DISPOSE of an unreadable rule asks
+            :func:`stored_cadence`.
+    """
+    return Cadence(
+        interval_n=rule.interval_n, unit=unit_member(rule.unit_id),
+    )
+
+
+def scheduling_day_of_month(rule: RecurrenceRule) -> int | None:
+    """Return the day of the month a rule's generated rows are SCHEDULED on.
+
+    **What ``budget.recurrence_rules.day_of_month`` HELD, derived from the
+    columns that survive** (plan step R7c-c, developer ruling 2026-08-16 on
+    plan ledger row **D37**).  ``recurrence_engine.compute_due_date`` dates
+    every generated row from that day and plan step **R5** is what deletes that
+    function; this leaf drops the column four steps ahead of it, so the reader
+    reads the derivation the write door was encoding the column FROM rather
+    than a column that is gone.
+
+    It is ``_authoring._author``'s own expression, moved rather than restated:
+    the day the cadence fires on
+    (:attr:`~app.services.recurrence.ResolvedRecurrence.day_of_month`, the join
+    of ``starts_on``'s day with ``nominal_day``), gated on the ``(unit,
+    placement)`` PAIR rather than on the unit alone.  Measured on a 2026-08-16
+    production clone: 0 of
+    46 live rules disagree with the stored column, and the migration that drops
+    it asserts the same equality in SQL before the ``ALTER TABLE``.
+
+    **The gate is ``fires_on_day_of_month`` and NOT
+    ``has_day_of_month_coordinate``, and the difference moves dates.**  The two
+    answer differently for exactly one cadence: a MONTH-unit rule funded from a
+    month's FIRST paycheck fires on days of the month, so the second predicate
+    says yes -- but the column has always been NULL for it, and NULL is what
+    makes ``compute_due_date`` date the row from its PAYCHECK.  Answering the
+    day here would be plan ledger row **D26**'s fix arriving in the wrong step,
+    measured there at 11 rows.  See
+    :func:`~app.services.recurrence.has_day_of_month_coordinate` for the two
+    wrong-money defects that came of reaching for the other predicate.
+
+    Reads no calendar, because none of its inputs needs one -- which is what
+    lets ``compute_due_date`` stay the pure function of a rule and a period
+    that its callers, the frozen baseline included, take it as.
+
+    **``None`` means "date this row from its PAYCHECK", so a unit that cannot
+    be dated either way is REFUSED rather than answered** -- plan step R8-a's
+    :func:`~app.services.recurrence._frequency.require_row_date_coordinate`,
+    which restates a refusal this function used to inherit.  Until that step
+    ``fires_on_day_of_month`` RAISED for the ``WEEK`` unit (it read the
+    anchor-family router, which had no derivation for it); stating that
+    predicate directly made it answer ``False``, and ``False`` here dates every
+    weekly row on the funding payday with the authored weekday discarded.  The
+    refusal is asked FIRST, before the placement is consulted, because it is a
+    property of the unit alone.
+
+    Args:
+        rule: The stored (or transient) recurrence rule.
+
+    Returns:
+        The day 1-31 the rule's rows are scheduled on, or ``None`` for a
+        cadence whose rows are dated from their PAYCHECK -- a pay-period
+        cadence, or a calendar one funded from a later paycheck.
+
+    Raises:
+        RecurrenceResolutionError: When the row names a unit or a placement
+            this application does not model (see :func:`cadence_of`), or a unit
+            whose occurrences a generated row cannot carry the date of (see
+            :func:`~app.services.recurrence._frequency
+            .require_row_date_coordinate`).
+    """
+    unit = unit_member(rule.unit_id)
+    require_row_date_coordinate(unit, f"recurrence rule {rule.id}")
+    placement = placement_member(rule.placement_id)
+    if not fires_on_day_of_month(unit, placement):
+        return None
+    return cadence_day_of_month(unit, rule.starts_on, rule.nominal_day)
 
 
 def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:
@@ -197,24 +301,19 @@ def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:
     without a partial write: a caller that owns ONE fact about a rule reads
     the spec, replaces that fact, and re-authors the whole value.
 
-    **The cadence comes from THREE places and that is a boundary rather than a
-    mess** (plan step R7c-b).  The unit and the placement are AUTHORED columns
-    from that step, so they are read off the row through
+    **All THREE cadence values come off the row's own columns since plan step
+    R7c-c.**  The unit and the placement became authored columns at R7c-b and
+    are read through
     :func:`~app.services.recurrence._frequency.unit_member` /
     :func:`~app.services.recurrence._frequency.placement_member`, which refuse a
-    stored id this application does not model.  Only the INTERVAL still belongs
-    to the closed pattern set, because ``encode_cadence`` writes ``1`` for every
-    pattern whose interval is in its NAME -- so it is taken through
-    :func:`~app.services.recurrence._frequency.stored_interval`, which is the
-    one function that names that boundary.  Plan step R7c-c re-points the column
-    and deletes it.
-
-    **Reading the interval off the column instead would be a live money
-    defect**, not a tidiness question: the four live Quarterly and Semi-Annual
-    rules carry ``(interval_n = 1, unit_id = month)``, which reads as MONTHLY --
-    12 occurrences a year where 4 or 2 are owed, across the whole projection.
-    ``test_recurrence_authoring.TestTheIntervalIsStillTheClosedSets`` asserts
-    that deliberate inequality and turns red if a reader moves.
+    stored id this application does not model.  The INTERVAL was the last value
+    that still belonged to the closed pattern set -- ``encode_cadence`` wrote
+    ``1`` for every pattern whose interval was in its NAME, so the four live
+    Quarterly and Semi-Annual rules stored ``(interval_n = 1, unit_id = month)``
+    and a reader taking the column at face value would have read them as MONTHLY,
+    12 occurrences a year where 4 or 2 are owed.  R7c-c's migration re-points
+    the column onto the two-axis interval, so the face value IS the cadence and
+    ``stored_interval`` has nothing left to name.
 
     Args:
         rule: The rule to read.
@@ -225,19 +324,18 @@ def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:
         cadence half over every authorable cadence rather than by argument.
 
     Raises:
-        RecurrenceResolutionError: When the row names a pattern, a unit or a
-            placement this application does not model, when it carries a
-            non-positive interval, or when it carries both closing-bound
-            columns (see :func:`recurrence_spec_with_cadence`).  A caller that
-            is REPLACING the cadence must take
-            :func:`recurrence_spec_with_cadence` instead, which reads no
-            pattern and therefore cannot fail on one; a caller that must
+        RecurrenceResolutionError: When the row names a unit or a placement
+            this application does not model, or when it carries both
+            closing-bound columns (see :func:`recurrence_spec_with_cadence`).
+            A caller that is REPLACING the cadence must take
+            :func:`recurrence_spec_with_cadence` instead, which reads no stored
+            cadence and therefore cannot fail on one; a caller that must
             DISPOSE of an unreadable rule rather than fail on it asks
             :func:`stored_cadence`.
     """
     return recurrence_spec_with_cadence(
         rule,
-        interval_n=stored_interval(rule.pattern_id, rule.interval_n),
+        interval_n=rule.interval_n,
         unit=unit_member(rule.unit_id),
         placement=placement_member(rule.placement_id),
     )
@@ -260,7 +358,7 @@ def recurrence_spec_with_cadence(
     **Its existence is a defect the two-axis swap would otherwise have
     introduced, measured against ``origin/dev``.**  An edit form meeting a
     stored pattern the application no longer models tells the user to choose a
-    cadence before saving (``UNAVAILABLE_PATTERN_MESSAGE``) -- so choosing one
+    cadence before saving (``UNREADABLE_CADENCE_MESSAGE``) -- so choosing one
     IS the documented repair.  Routing that repair through
     :func:`recurrence_spec` made it read the broken cadence on the way to
     replacing it, and the read raised: the one action the surface tells the
@@ -284,12 +382,14 @@ def recurrence_spec_with_cadence(
     **D28** measured going wrong -- 18 of 24 live multi-month rules firing in
     the wrong months under the reading it replaced.  ``nominal_day`` rides
     beside it for the one shape a short month loses, and the pair is refused at
-    construction if the two disagree.
+    construction if the two disagree.  All five were DROPPED at plan step
+    R7c-c, which is what makes the paragraphs above history rather than a rule
+    a reader still has to keep.
 
     Args:
-        rule: The rule to read.  Its ``pattern_id`` and ``interval_n`` are NOT
-            consulted, nor are the three legacy anchor columns the write door
-            encodes.
+        rule: The rule to read.  Its ``interval_n`` is NOT consulted -- the
+            caller states the cadence, which is the whole point of this
+            function.
         interval_n: The cadence interval to state.
         unit: The cadence unit to state.
         placement: The placement to state.
@@ -644,6 +744,7 @@ def placed_periods(
 
 __all__ = [
     "RuleReading",
+    "cadence_of",
     "has_ended",
     "placed_periods",
     "read_rule",
@@ -651,5 +752,6 @@ __all__ = [
     "recurrence_spec_with_cadence",
     "resolved_recurrence",
     "rule_occurrences",
+    "scheduling_day_of_month",
     "stored_cadence",
 ]

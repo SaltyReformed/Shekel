@@ -39,21 +39,25 @@ can be checked against a real answer.
 from datetime import date, timedelta
 
 import pytest
+import sqlalchemy as sa
 
 from app import ref_cache
 from app.enums import (
     BusinessDayShiftEnum,
     PeriodPlacementEnum,
+    # Read by ``TestTheRetiredOncePattern`` alone, which is the one class here
+    # still about the closed set: plan step R7c-c dropped the COLUMN, and plan
+    # step R9 drops this enum with the ``ref`` table it names.
     RecurrencePatternEnum,
     RecurrenceUnitEnum,
 )
 from app.extensions import db
 from app.models.ref import RecurrencePattern
 from app.services.pay_calendar import PayCalendar
+from tests.oracles.recurrence_baseline import CADENCE_BY_LEGACY_NAME
 from app.services.recurrence import (
     RecurrenceResolutionError,
     RecurrenceSpec,
-    decode_pattern,
     is_offerable_nominal_day,
     occurrence_placements,
     offerable_nominal_days,
@@ -143,23 +147,24 @@ def payday(index: int) -> date:
 
 
 def spec_for(
-    pattern: RecurrencePatternEnum, starts_on: date, **overrides,
+    cadence_name: str, starts_on: date, **overrides,
 ) -> RecurrenceSpec:
-    """Return a spec for the cadence *pattern* names, starting on *starts_on*.
+    """Return a spec for the cadence *cadence_name* names, from *starts_on*.
 
-    **Keyed on the closed-set member even though the spec no longer carries
-    one** (plan step R7b), and deliberately: every case in this file was
-    written against a named pattern and hand-checked at exact dates, so
-    re-keying them onto ``(interval, unit, placement)`` by hand would be a
-    silent opportunity to change what a case measures.  The translation goes
-    through :func:`~app.services.recurrence.decode_pattern`, the same seam the
-    read door uses for the interval, so a case still means what its name says.
+    **Keyed on the closed set's old NAMES even though nothing stores one**
+    (plan step R7c-c), and deliberately: every case in this file was written
+    against a named pattern and hand-checked at exact dates, so re-keying them
+    onto ``(interval, unit, placement)`` by hand would be a silent opportunity
+    to change what a case measures.  The translation goes through
+    :data:`~tests.oracles.recurrence_baseline.CADENCE_BY_LEGACY_NAME`, which is
+    where ``tests/`` states that mapping once, so a case still means what its
+    name says and means the same thing a frozen shape with that label does.
 
     A case ABOUT the two-axis vocabulary states the axes directly instead --
     see the last of :class:`TestRefusals`.
 
     Args:
-        pattern: The pattern member whose cadence to build.
+        cadence_name: One of that table's keys.
         starts_on: The rule's first occurrence.  Required here as it is on the
             spec, because a recurrence with no first occurrence has no cadence
             (ruling R-R16).
@@ -169,22 +174,20 @@ def spec_for(
     Returns:
         The spec.
     """
-    # Decoded at TWO, not one, and an adversarial review of plan step R7b-1
-    # is why: a pattern that names its own interval ignores this number, and
+    # TWO, not one, and an adversarial review of plan step R7b-1 is why: a
+    # shorthand that names its own interval ignores this number, and
     # ``Every N Periods`` -- the one that does not -- would otherwise collapse
     # onto ``Every Period``'s reading, silently dropping a member from every
-    # sweep in this file that claims to cover the whole enum.
+    # sweep in this file that claims to cover the whole vocabulary.
     interval_override = overrides.pop("interval_n", None)
-    reading = decode_pattern(ref_cache.recurrence_pattern_id(pattern), 2)
+    cadence = CADENCE_BY_LEGACY_NAME[cadence_name]
+    stated = 2 if cadence.interval_n is None else cadence.interval_n
     return RecurrenceSpec(
         user_id=_USER_ID,
-        unit=reading.cadence.unit,
+        unit=cadence.unit,
         starts_on=starts_on,
-        interval_n=(
-            reading.cadence.interval_n if interval_override is None
-            else interval_override
-        ),
-        placement=reading.placement,
+        interval_n=stated if interval_override is None else interval_override,
+        placement=cadence.placement,
         **overrides,
     )
 
@@ -212,7 +215,7 @@ class TestTheFirstOccurrenceIsAuthored:
         only by coincidence of this schedule.
         """
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.MONTHLY, date(2026, 7, 15)),
+            spec_for("Monthly", date(2026, 7, 15)),
             build_calendar(),
         )
 
@@ -224,17 +227,18 @@ class TestTheFirstOccurrenceIsAuthored:
         assert resolved.nominal_day is None
 
     @pytest.mark.parametrize(
-        "pattern",
+        "cadence_name",
         [
-            RecurrencePatternEnum.MONTHLY,
-            RecurrencePatternEnum.QUARTERLY,
-            RecurrencePatternEnum.SEMI_ANNUAL,
-            RecurrencePatternEnum.ANNUAL,
-            RecurrencePatternEnum.MONTHLY_FIRST,
+            "Monthly",
+            "Quarterly",
+            "Semi-Annual",
+            "Annual",
+            "Monthly First",
         ],
-        ids=lambda pattern: pattern.name,
     )
-    def test_no_calendar_cadence_moves_when_the_schedule_does(self, pattern):
+    def test_no_calendar_cadence_moves_when_the_schedule_does(
+        self, cadence_name,
+    ):
         """Extending or shortening the schedule cannot move the first occurrence.
 
         The three schedules below share only their owner: 61 biweekly periods
@@ -245,7 +249,7 @@ class TestTheFirstOccurrenceIsAuthored:
         is what ``GREATEST(opening, start_date)`` made it a function of.
         """
         stated = date(2026, 11, 1)
-        spec = spec_for(pattern, stated)
+        spec = spec_for(cadence_name, stated)
 
         answers = {
             resolve(spec, calendar).starts_on
@@ -272,7 +276,7 @@ class TestTheFirstOccurrenceIsAuthored:
         """
         calendar = build_calendar()
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.MONTHLY, date(2026, 1, 15)),
+            spec_for("Monthly", date(2026, 1, 15)),
             calendar,
         )
 
@@ -312,7 +316,7 @@ class TestThePayPeriodNormalisation:
         Period index 3 opens 2026-03-26 + 3 x 14 = 2026-05-07.
         """
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.EVERY_PERIOD, payday(3)),
+            spec_for("Every Period", payday(3)),
             build_calendar(),
         )
 
@@ -331,7 +335,7 @@ class TestThePayPeriodNormalisation:
         disagree, but they were two functions where one will do.
         """
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.EVERY_PERIOD, date(2026, 5, 14)),
+            spec_for("Every Period", date(2026, 5, 14)),
             build_calendar(),
         )
 
@@ -347,7 +351,7 @@ class TestThePayPeriodNormalisation:
         name there at all.
         """
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.EVERY_PERIOD, date(2026, 1, 1)),
+            spec_for("Every Period", date(2026, 1, 1)),
             build_calendar(),
         )
 
@@ -366,7 +370,7 @@ class TestThePayPeriodNormalisation:
 
         resolved = resolve(
             spec_for(
-                RecurrencePatternEnum.EVERY_PERIOD,
+                "Every Period",
                 last_payday + timedelta(days=_CADENCE_DAYS + 3),
             ),
             build_calendar(),
@@ -389,7 +393,7 @@ class TestThePayPeriodNormalisation:
         calendar = build_calendar()
         resolved = resolve(
             spec_for(
-                RecurrencePatternEnum.EVERY_PERIOD,
+                "Every Period",
                 payday(4) + timedelta(days=offset_days),
             ),
             calendar,
@@ -420,7 +424,7 @@ class TestThePhaseIsReadOffTheFirstOccurrence:
         """
         resolved = resolve(
             spec_for(
-                RecurrencePatternEnum.EVERY_N_PERIODS, payday(5), interval_n=3,
+                "Every N Periods", payday(5), interval_n=3,
             ),
             build_calendar(),
         )
@@ -440,7 +444,7 @@ class TestThePhaseIsReadOffTheFirstOccurrence:
         """
         resolved = resolve(
             spec_for(
-                RecurrencePatternEnum.EVERY_N_PERIODS,
+                "Every N Periods",
                 date(2026, 6, 10), interval_n=3,
             ),
             build_calendar(),
@@ -470,7 +474,7 @@ class TestThePhaseIsReadOffTheFirstOccurrence:
         """
         resolved = resolve(
             spec_for(
-                RecurrencePatternEnum.EVERY_N_PERIODS,
+                "Every N Periods",
                 date(2026, 9, 15), interval_n=5,
             ),
             build_calendar(),
@@ -500,7 +504,7 @@ class TestThePhaseIsReadOffTheFirstOccurrence:
         """
         calendar = build_calendar()
         spec = spec_for(
-            RecurrencePatternEnum.EVERY_N_PERIODS,
+            "Every N Periods",
             payday(offset), interval_n=interval_n,
         )
 
@@ -523,18 +527,17 @@ class TestThePhaseIsReadOffTheFirstOccurrence:
         )
 
     @pytest.mark.parametrize(
-        "pattern",
+        "cadence_name",
         [
-            RecurrencePatternEnum.EVERY_PERIOD,
-            RecurrencePatternEnum.MONTHLY,
-            RecurrencePatternEnum.QUARTERLY,
-            RecurrencePatternEnum.SEMI_ANNUAL,
-            RecurrencePatternEnum.ANNUAL,
-            RecurrencePatternEnum.MONTHLY_FIRST,
+            "Every Period",
+            "Monthly",
+            "Quarterly",
+            "Semi-Annual",
+            "Annual",
+            "Monthly First",
         ],
-        ids=lambda pattern: pattern.name,
     )
-    def test_no_other_cadence_ever_carries_a_phase(self, pattern):
+    def test_no_other_cadence_ever_carries_a_phase(self, cadence_name):
         """Only ``Every N Periods`` reads the phase, so only it derives one.
 
         A rule of any other cadence starting in period index 5 still resolves
@@ -544,7 +547,7 @@ class TestThePhaseIsReadOffTheFirstOccurrence:
         meaningless-by-convention.
         """
         assert resolve(
-            spec_for(pattern, payday(5)), build_calendar(),
+            spec_for(cadence_name, payday(5)), build_calendar(),
         ).offset_periods == 0
 
 
@@ -597,7 +600,7 @@ class TestTheNominalDayPair:
         """A stated nominal day reaches the resolved value unchanged."""
         resolved = resolve(
             spec_for(
-                RecurrencePatternEnum.MONTHLY, date(2026, 4, 30),
+                "Monthly", date(2026, 4, 30),
                 nominal_day=31,
             ),
             build_calendar(),
@@ -617,13 +620,13 @@ class TestTheNominalDayPair:
         calendar = build_calendar()
         month_end = resolve(
             spec_for(
-                RecurrencePatternEnum.MONTHLY, date(2026, 4, 30),
+                "Monthly", date(2026, 4, 30),
                 nominal_day=31,
             ),
             calendar,
         )
         the_thirtieth = resolve(
-            spec_for(RecurrencePatternEnum.MONTHLY, date(2026, 4, 30)),
+            spec_for("Monthly", date(2026, 4, 30)),
             calendar,
         )
 
@@ -669,7 +672,7 @@ class TestTheNominalDayPair:
         )
         with pytest.raises(RecurrenceResolutionError, match="nominal_day"):
             spec_for(
-                RecurrencePatternEnum.MONTHLY, starts_on,
+                "Monthly", starts_on,
                 nominal_day=nominal_day,
             )
 
@@ -677,7 +680,7 @@ class TestTheNominalDayPair:
         """A cadence with no day-of-month coordinate names no day at all."""
         with pytest.raises(RecurrenceResolutionError, match="nominal_day"):
             spec_for(
-                RecurrencePatternEnum.EVERY_PERIOD, date(2026, 4, 30),
+                "Every Period", date(2026, 4, 30),
                 nominal_day=31,
             )
 
@@ -689,7 +692,7 @@ class TestTheDayOfMonthAccessor:
     def test_it_answers_the_dates_own_day_when_nothing_clamped(self):
         """Every rule whose day is 1-28, and every 31st of a long month."""
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.MONTHLY, date(2026, 1, 31)),
+            spec_for("Monthly", date(2026, 1, 31)),
             build_calendar(),
         )
 
@@ -700,7 +703,7 @@ class TestTheDayOfMonthAccessor:
         """The day the rule MEANS, not the day the date could hold."""
         resolved = resolve(
             spec_for(
-                RecurrencePatternEnum.MONTHLY, date(2026, 2, 28),
+                "Monthly", date(2026, 2, 28),
                 nominal_day=30,
             ),
             build_calendar(),
@@ -709,14 +712,15 @@ class TestTheDayOfMonthAccessor:
         assert resolved.day_of_month == 30
 
     @pytest.mark.parametrize(
-        "pattern",
+        "cadence_name",
         [
-            RecurrencePatternEnum.EVERY_PERIOD,
-            RecurrencePatternEnum.EVERY_N_PERIODS,
+            "Every Period",
+            "Every N Periods",
         ],
-        ids=lambda pattern: pattern.name,
     )
-    def test_a_paycheck_cadence_has_no_day_of_the_month(self, pattern):
+    def test_a_paycheck_cadence_has_no_day_of_the_month(
+        self, cadence_name,
+    ):
         """``None`` is ABSENCE rather than a missing value.
 
         A paycheck-space rule has no day-of-month coordinate, and answering the
@@ -724,7 +728,7 @@ class TestTheDayOfMonthAccessor:
         ``compute_due_date`` would then date every generated row from.
         """
         assert resolve(
-            spec_for(pattern, payday(2)), build_calendar(),
+            spec_for(cadence_name, payday(2)), build_calendar(),
         ).day_of_month is None
 
 
@@ -738,16 +742,22 @@ class TestTotality:
     """
 
     @pytest.mark.parametrize(
-        "pattern", list(RecurrencePatternEnum), ids=lambda p: p.name,
+        "cadence_name", list(CADENCE_BY_LEGACY_NAME),
     )
-    def test_every_pattern_resolves_from_one_date(self, pattern):
-        """The whole closed set, with nothing stated but the first occurrence.
+    def test_every_cadence_resolves_from_one_date(self, cadence_name):
+        """Every named cadence, with nothing stated but the first occurrence.
 
-        Swept over the enum rather than over a list, so a member added without
-        a resolution is a failure here rather than a 500 on the surface that
-        meets it first.
+        Swept over the shared table rather than over a list written here, so
+        a cadence added to the test vocabulary without a resolution is a
+        failure here rather than a 500 on the surface that meets it first.
+
+        **It swept ``RecurrencePatternEnum`` until plan step R7c-c**, which
+        dropped the column that enum named.  ``TestTheOfferSetIsTotal`` in
+        ``test_recurrence_frequency`` is what now sweeps the whole AUTHORABLE
+        space -- wider than this one, because the closed set could not name
+        every cadence the resolver walks.
         """
-        spec = spec_for(pattern, payday(2))
+        spec = spec_for(cadence_name, payday(2))
 
         resolved = resolve(spec, build_calendar())
 
@@ -793,16 +803,16 @@ class TestTotality:
         )
         assert projected < beyond
 
-        for pattern, expected in (
-            (RecurrencePatternEnum.EVERY_PERIOD, projected),
+        for cadence_name, expected in (
+            ("Every Period", projected),
             # A calendar cadence names its own dates, so the horizon is not its
             # business and the authored date is returned untouched.
-            (RecurrencePatternEnum.MONTHLY, beyond),
-            (RecurrencePatternEnum.MONTHLY_FIRST, beyond),
+            ("Monthly", beyond),
+            ("Monthly First", beyond),
         ):
             assert resolve(
-                spec_for(pattern, beyond), build_calendar(),
-            ).starts_on == expected, pattern.name
+                spec_for(cadence_name, beyond), build_calendar(),
+            ).starts_on == expected, cadence_name
 
 
 @pytest.mark.usefixtures("app")
@@ -815,16 +825,33 @@ class TestTheRetiredOncePattern:
     merely unoffered.
     """
 
-    def test_the_surviving_once_row_is_refused_by_the_decoder(self, app):
-        """A stored rule naming it cannot be read into a cadence."""
-        with app.app_context():
-            row = (
-                db.session.query(RecurrencePattern)
-                .filter_by(name=_RETIRED_PATTERN_NAME).one()
-            )
+    def test_no_recurrence_rule_can_reference_the_table_at_all(self, app):
+        """The row is unreachable from ``budget``, not merely unreadable.
 
-            with pytest.raises(RecurrenceResolutionError, match="pattern id"):
-                decode_pattern(row.id, 1)
+        **This asserted that the DECODER refused it until plan step R7c-c**,
+        which is the weaker property and the only one available while
+        ``budget.recurrence_rules.pattern_id`` existed: the row could be
+        pointed at and the read would raise.  That column is dropped, so no row
+        in any user-owned table can name a ``ref.recurrence_patterns`` id --
+        the surviving ``Once`` row is unreachable by construction rather than
+        by a refusal, which is what the whole leaf claims and what plan step R9
+        then makes moot by dropping the table.
+        """
+        with app.app_context():
+            referencing = db.session.execute(sa.text("""
+                SELECT c.conrelid::regclass::text AS table_name
+                FROM pg_constraint c
+                WHERE c.contype = 'f'
+                  AND c.confrelid = 'ref.recurrence_patterns'::regclass
+            """)).scalars().all()
+
+            assert referencing == [], (
+                f"ref.recurrence_patterns is still referenced by "
+                f"{referencing}.  Plan step R7c-c dropped the one foreign key "
+                f"it had (budget.recurrence_rules.pattern_id), which is what "
+                f"makes the retired Once row unreachable rather than merely "
+                f"unoffered."
+            )
 
     def test_no_enum_member_names_the_retired_row(self, app):
         """The row exists AND no member names it -- both halves, together.
@@ -834,7 +861,7 @@ class TestTheRetiredOncePattern:
         "no member names it" while breaking the auto-rollback image the ``Once``
         row survives to R9 for (ruling R-R11); without the second, re-adding the
         member would satisfy "the row exists" while re-introducing the
-        ambiguity ``decode_pattern`` refuses one case up.
+        ambiguity the dropped ``pattern_id`` column made expressible.
 
         Plan step R7c-b dropped the first half and the docstring that said why;
         restored, because "the set the application models is narrower than the
@@ -867,14 +894,16 @@ class TestRefusals:
         """
         with pytest.raises(RecurrenceResolutionError, match="cannot be resolved"):
             resolve(
-                spec_for(RecurrencePatternEnum.EVERY_PERIOD, payday(0)),
+                spec_for("Every Period", payday(0)),
                 build_calendar(user_id=_USER_ID + 1),
             )
 
-    @pytest.mark.parametrize("pattern", list(RecurrencePatternEnum))
+    @pytest.mark.parametrize(
+        "cadence_name", list(CADENCE_BY_LEGACY_NAME),
+    )
     @pytest.mark.parametrize("interval_n", [0, -1, -12])
     def test_a_non_positive_interval_is_refused_for_every_cadence(
-        self, pattern, interval_n,
+        self, cadence_name, interval_n,
     ):
         """Mirrors ``ck_recurrence_rules_positive_interval``, at the door.
 
@@ -900,7 +929,7 @@ class TestRefusals:
         """
         with pytest.raises(RecurrenceResolutionError, match="interval_n"):
             resolve(
-                spec_for(pattern, payday(0), interval_n=interval_n),
+                spec_for(cadence_name, payday(0), interval_n=interval_n),
                 build_calendar(),
             )
 
@@ -917,7 +946,7 @@ class TestRefusals:
         with pytest.raises(RecurrenceResolutionError, match="due_day_of_month"):
             resolve(
                 spec_for(
-                    RecurrencePatternEnum.MONTHLY, date(2026, 4, 15),
+                    "Monthly", date(2026, 4, 15),
                     due_day_of_month=day,
                 ),
                 build_calendar(),
@@ -927,7 +956,7 @@ class TestRefusals:
         """``NULL`` is the value that means "this rule states no due day"."""
         resolved = resolve(
             spec_for(
-                RecurrencePatternEnum.MONTHLY, date(2026, 4, 15),
+                "Monthly", date(2026, 4, 15),
                 due_day_of_month=None,
             ),
             build_calendar(),
@@ -949,7 +978,7 @@ class TestRefusals:
 
         with pytest.raises(RecurrenceResolutionError, match="no pay periods"):
             resolve(
-                spec_for(RecurrencePatternEnum.EVERY_PERIOD, payday(0)), empty,
+                spec_for("Every Period", payday(0)), empty,
             )
 
     def test_a_calendar_cadence_needs_no_schedule_at_all(self):
@@ -966,7 +995,7 @@ class TestRefusals:
         )
 
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.MONTHLY, date(2026, 7, 15)), empty,
+            spec_for("Monthly", date(2026, 7, 15)), empty,
         )
 
         assert resolved.starts_on == date(2026, 7, 15)

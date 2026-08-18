@@ -139,10 +139,13 @@ class TestAnUnmodelledIdIsRefused:
 
         The state is manufacturable for the same reason it is for patterns:
         ``ref_cache.init`` requires every ENUM member to have a row and says
-        nothing about the reverse.  Plan step R8 will add real members for
-        exactly these two shapes -- a WEEK-scale unit and a fund-in-advance
-        placement (plan ledger row **D20**) -- which is what makes a surplus row
-        a state to refuse rather than a hypothetical.
+        nothing about the reverse.  Real members for exactly these two
+        shapes are SCHEDULED -- a WEEK-scale unit at plan step **R8-b**, and a
+        LEAD placement at plan step **R11** (plan ledger row **D40**) -- which
+        is what makes a surplus row a state to refuse rather than a
+        hypothetical.  R8-a re-pointed both: the WEEK unit is R8's leaf rather
+        than R8, and the placement is R11's rather than D20's, because D20's
+        own remedy was measured to be ``CONTAINING_DATE`` under another name.
         """
         with app.app_context():
             assert row_name not in {
@@ -208,8 +211,8 @@ class TestTheModelledCasesStillPass:
         declares the field, while keeping this class's subject to the field.
         Going through ``load()`` would entangle it with the cross-field rule
         two classes down: a lone unit is refused there now, and a ``WEEK`` unit
-        is refused whatever it is paired with, because no closed-set pattern
-        stores it until plan step R8.
+        is refused whatever it is paired with, because a generated row cannot
+        carry the date its occurrences name until plan step R5.
         """
         with app.app_context():
             declared = schema_cls().fields.get(field)
@@ -293,67 +296,74 @@ class TestTheTripleMustBeStorable:
 
     @pytest.mark.parametrize("label,schema_cls", _SCHEMAS)
     @pytest.mark.parametrize(
-        "unit,interval_n",
-        [
-            (RecurrenceUnitEnum.MONTH, 2),   # every other month: no pattern
-            (RecurrenceUnitEnum.MONTH, 4),
-            (RecurrenceUnitEnum.MONTH, 12),  # a YEAR spelled in months
-            (RecurrenceUnitEnum.YEAR, 2),    # every other year
-        ],
+        "placement", list(PeriodPlacementEnum),
     )
-    def test_a_month_or_year_interval_with_no_pattern_is_refused(
-        self, app, label, schema_cls, unit, interval_n,
+    @pytest.mark.parametrize("unit", [RecurrenceUnitEnum.WEEK])
+    def test_a_reading_the_app_cannot_honour_is_refused(
+        self, app, label, schema_cls, unit, placement,
     ):
-        """A cadence the closed set cannot NAME is refused on every schema.
+        """A cadence the app cannot honour is refused on every schema.
 
-        Each of these is well defined and the resolver walks it correctly; the
-        closed pattern set simply has no name for it until plan step R7c gives
-        the table an authored unit and interval.  The refusal is attached to
-        ``recurrence_unit`` because that is the control the user changes to
-        get out of the state.
+        **The refused SET has moved twice, and each move closed a real gap.**
+        It was every month or year INTERVAL the closed pattern set could not
+        name -- ``(2, MONTH)``, ``(4, MONTH)``, ``(2, YEAR)`` -- because
+        storage was the binding constraint; plan step R7c-c freed the interval.
+        It was then the two ``(unit, placement)`` pairs ``anchor_family``
+        refused, and plan step **R8-a** measured one of those refusals stale --
+        a year-scale cadence deferred onto a later paycheck names its own date,
+        because ruling **R-R16** made the first occurrence authored and deleted
+        the derivation the refusal cited.
+
+        What is left is the ``WEEK`` unit, at EITHER placement: a weekly
+        occurrence is neither a payday nor a day of the month, so
+        ``recurrence_engine.compute_due_date`` has nothing to date its
+        generated rows from.  Plan step **R5** closes it.  The refusal is
+        attached to ``recurrence_unit`` because that is the control the user
+        changes to get out of the state.
         """
         with app.app_context():
             with pytest.raises(ValidationError) as exc:
                 schema_cls().load(
-                    self._payload(
-                        unit, PeriodPlacementEnum.CONTAINING_DATE, interval_n,
-                    ),
+                    self._payload(unit, placement, 1),
                     partial=True,
                 )
 
             assert "recurrence_unit" in exc.value.messages, label
 
-    @pytest.mark.parametrize("interval_n", [3, 6])
-    def test_the_first_paycheck_placement_is_refused_above_one_month(
+    @pytest.mark.parametrize("interval_n", [1, 2, 3, 6, 12])
+    def test_the_first_paycheck_placement_passes_at_every_month_interval(
         self, app, interval_n,
     ):
-        """The PAIR dependency: a placement belongs to ``(unit, interval)``.
+        """Plan ledger row **D32**: the PAIR dependency is gone.
 
-        ``MONTHLY_FIRST`` is ``(1, MONTH, PERIOD_STARTING_ON_OR_AFTER)`` and
-        the closed set has no quarterly or semi-annual twin.  A validator
-        keyed on the unit alone would accept both of these -- and so would a
-        picker that offered placements per unit, which is why the offer set
-        carries whole triples.
+        ``(1, MONTH, first paycheck)`` was the only month cadence that could
+        carry that placement, because the closed set had no quarterly or
+        semi-annual twin -- so raising a Monthly First rule's interval
+        silently rewrote its funding choice.  Every month interval admits it
+        now, and this sweep is what says so: a validator that kept the old
+        pair rule would refuse four of these five.
         """
         with app.app_context():
-            with pytest.raises(ValidationError) as exc:
-                TemplateCreateSchema().load(
-                    self._payload(
-                        RecurrenceUnitEnum.MONTH,
-                        PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
-                        interval_n,
-                    ),
-                    partial=True,
-                )
+            loaded = TemplateCreateSchema().load(
+                self._payload(
+                    RecurrenceUnitEnum.MONTH,
+                    PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                    interval_n,
+                ),
+                partial=True,
+            )
 
-            assert "recurrence_unit" in exc.value.messages
+            assert loaded["recurrence_unit"] is RecurrenceUnitEnum.MONTH
+            assert loaded["recurrence_placement"] is (
+                PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER
+            )
 
     def test_the_same_placement_at_one_month_passes(self, app):
         """The neighbouring case, and the one a too-broad rule would break.
 
-        Without this the test above would pass against a validator that simply
-        refused the first-paycheck placement outright -- which would delete a
-        cadence 5 of the 46 live rules use.
+        Without this the sweeps above would pass against a validator that
+        simply refused the first-paycheck placement outright -- which would
+        delete a cadence live rules use.
         """
         with app.app_context():
             loaded = TemplateCreateSchema().load(
@@ -386,25 +396,103 @@ class TestTheTripleMustBeStorable:
 
             assert loaded["interval_n"] == interval_n
 
-    def test_an_omitted_interval_defaults_to_one(self, app):
-        """An absent ``interval_n`` is read as 1, matching the write door.
+    @pytest.mark.parametrize(
+        ("label", "schema_cls"),
+        [
+            ("create", TemplateCreateSchema),
+            ("update", TemplateUpdateSchema),
+        ],
+    )
+    def test_a_unit_with_no_interval_is_refused(self, app, label, schema_cls):
+        """**A named unit with no interval is bad input, not a partial update.**
 
-        An untouched HTML number input submits ``""``, which
-        ``_normalize_empty_inputs`` DROPS (the field is not ``allow_none``), so
-        the cross-field check sees no key at all.  Reading that as 1 is what
-        ``build_recurrence_rule_from_form`` does with the same absence; reading
-        it as 0 would refuse every such submission.
+        It was read as 1 until plan step R7c-c, on both schemas and in both
+        write doors, and the default MOVED MONEY.  An HTML number input
+        submits ``""`` when cleared, ``_normalize_empty_inputs`` DROPS the key
+        (the field is not ``allow_none``), and the save then stored ``every 1``
+        -- so clearing the box on a quarterly bill re-cadenced it to monthly
+        and generated 12 occurrences a year where 4 were owed, across the whole
+        projection, with nothing on screen saying so.
+
+        R7c-c is what widened it past the PERIOD unit: the months ``<select>``
+        it replaced could not post an empty value, so three of the four units
+        were covered by the control's shape rather than by any rule.
+
+        **Refused rather than read as "leave the stored one alone"**, which is
+        what ``starts_on`` and the closing bound do with the same absence, and
+        the difference is which states the control can produce.  Those two are
+        DISABLED on a form whose value the app derives (a loan payment's), so
+        absence is a real request there.  The interval box is disabled only
+        while the definition does not repeat, so beside a named unit its
+        absence is a cleared box or a crafted POST and nothing else -- two
+        states, not three, which is why this is not one of plan ledger row
+        **D36**'s fields and why the refusal belongs at the submission rather
+        than as a fourth presence read in a route.
+
+        On BOTH schemas, because the harm is on both: an update re-cadences a
+        bill that exists, a create authors the wrong one.
+        """
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc:
+                schema_cls().load(
+                    self._payload(
+                        RecurrenceUnitEnum.MONTH,
+                        PeriodPlacementEnum.CONTAINING_DATE,
+                    ),
+                    partial=True,
+                )
+
+            assert "interval_n" in exc.value.messages, label
+
+    def test_an_interval_past_the_column_domain_is_refused(self, app):
+        """An interval above ``integer``'s ceiling is a 400, not a 500.
+
+        ``budget.recurrence_rules.interval_n`` is a Postgres ``integer``, so
+        ``2147483648`` reaches the flush as an unhandled
+        ``psycopg2.errors.NumericValueOutOfRange``.  ``ck_recurrence_rules_
+        positive_interval`` guards only the bottom of the domain; the type is
+        the top, and nothing stated it -- ``is_authorable`` asks only that the
+        interval be POSITIVE.
+
+        Latent for three of the four units until plan step R7c-c: while the
+        closed pattern set was the storage, ``is_authorable`` refused any MONTH
+        or YEAR interval above 6, so only the paycheck unit's free box could
+        reach the flush with an unstorable count.  Freeing the interval made
+        every unit's box free and the accident stopped covering them.
+        """
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc:
+                TemplateCreateSchema().load(
+                    self._payload(
+                        RecurrenceUnitEnum.PERIOD,
+                        PeriodPlacementEnum.CONTAINING_DATE,
+                        2147483648,
+                    ),
+                    partial=True,
+                )
+
+            assert "interval_n" in exc.value.messages
+
+    def test_the_largest_storable_interval_still_passes(self, app):
+        """The neighbouring value, so the bound is AT the column's domain.
+
+        Without this the case above would pass against a bound set anywhere
+        below the ceiling -- including one that refused ordinary intervals.
+        ``2147483647`` is what a Postgres ``integer`` holds, and a rule that
+        far out simply fires once (``_months.walk_months`` stops at the last
+        month this application's calendar reaches).
         """
         with app.app_context():
             loaded = TemplateCreateSchema().load(
                 self._payload(
-                    RecurrenceUnitEnum.MONTH,
+                    RecurrenceUnitEnum.PERIOD,
                     PeriodPlacementEnum.CONTAINING_DATE,
+                    2147483647,
                 ),
                 partial=True,
             )
 
-            assert "interval_n" not in loaded
+            assert loaded["interval_n"] == 2147483647
 
     @pytest.mark.parametrize(
         ("label", "placement_value"),
@@ -519,13 +607,19 @@ class TestTheNominalDayMustFitTheFirstOccurrence:
                                 PeriodPlacementEnum.CONTAINING_DATE,
                             ),
                         ),
+                        # Stated so the ONLY thing wrong with this submission
+                        # is the pair under test.  A chosen cadence with no
+                        # interval is refused in its own right from plan step
+                        # R7c-c, and a payload carrying two faults cannot say
+                        # which one the assertion caught.
+                        "interval_n": "1",
                         "starts_on": starts_on.isoformat(),
                         "nominal_day": str(nominal_day),
                     },
                     partial=True,
                 )
 
-            assert "nominal_day" in exc.value.messages, (
+            assert exc.value.messages.keys() == {"nominal_day"}, (
                 f"{schema_label}: {label}"
             )
 
@@ -548,6 +642,7 @@ class TestTheNominalDayMustFitTheFirstOccurrence:
                             PeriodPlacementEnum.CONTAINING_DATE,
                         ),
                     ),
+                    "interval_n": "1",
                     "starts_on": "2026-04-30",
                     "nominal_day": "31",
                 },
@@ -577,6 +672,7 @@ class TestTheNominalDayMustFitTheFirstOccurrence:
                             PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
                         ),
                     ),
+                    "interval_n": "1",
                     "starts_on": "2026-04-30",
                     "nominal_day": "31",
                 },
@@ -605,6 +701,7 @@ class TestTheNominalDayMustFitTheFirstOccurrence:
                             PeriodPlacementEnum.CONTAINING_DATE,
                         ),
                     ),
+                    "interval_n": "1",
                     "nominal_day": "31",
                 },
                 partial=True,

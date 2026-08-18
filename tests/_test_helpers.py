@@ -3874,27 +3874,33 @@ def make_pattern_rule(
     end_date=None,
     _flush=True,
 ):
-    """Author one rule of a NAMED closed-set pattern, through the write door.
+    """Author one rule of a NAMED cadence, through the write door.
 
     :func:`make_every_period_rule`'s general sibling, for the tests that need a
     cadence other than every-paycheck.  Both exist because a rule may not be
     constructed field by field any more: plan step R7c-b made ``unit_id``,
     ``placement_id``, ``shift_id`` and ``starts_on`` ``NOT NULL``, so a
-    hand-built ``RecurrenceRule`` naming only a pattern is a constraint
-    violation rather than a shortcut.
+    hand-built ``RecurrenceRule`` stating a cadence in one field is a
+    constraint violation rather than a shortcut.
 
-    **The two axes are DECODED from the pattern rather than restated here.**
-    ``decode_pattern`` is the application's own one place a stored pattern id
-    becomes ``(interval_n, unit, placement)``; a table in a test file saying
-    "Quarterly means MONTH / CONTAINING_DATE" would be a second statement of
-    that mapping, and a second statement is one that can disagree.  So a test
-    naming ``"Quarterly"`` gets exactly the cadence the write door would encode
-    back to ``Quarterly``.
+    **The NAME is test-side SHORTHAND from plan step R7c-c**, and this docstring
+    said the opposite one leaf earlier.  It read "the two axes are DECODED from
+    the pattern rather than restated here", because ``decode_pattern`` was the
+    application's own one place a stored ``pattern_id`` became
+    ``(interval_n, unit, placement)`` and a table in a test file would have been
+    a second statement of it.  That column and that function are dropped, so the
+    mapping has exactly one home and it is
+    ``tests.oracles.recurrence_baseline.CADENCE_BY_LEGACY_NAME`` -- beside the
+    frozen shapes, whose labels use the same names, so a fixture asking for "a
+    Quarterly rule" and a captured shape labelled ``quarterly`` cannot come to
+    mean different cadences.
 
     Args:
         user_id: The owner.
-        pattern_name: A ``ref.recurrence_patterns`` display name, which is also
-            a :class:`~app.enums.RecurrencePatternEnum` value.
+        pattern_name: One of the closed pattern set's old display names, as
+            shorthand for the cadence it used to encode.  Plain strings, so
+            this vocabulary does not go down with the enum plan step R9
+            deletes.
         starts_on: The rule's FIRST OCCURRENCE (ruling R-R16).  Defaults to
             what the retired derivation answered for a rule stating no day:
             the schedule's opening payday for a PAYCHECK-space cadence, and
@@ -3909,9 +3915,11 @@ def make_pattern_rule(
             Mutually exclusive with *starts_on*.
         fires_in_month: The month half of that description, for the annual and
             semi-annual cadences.
-        interval_n: Read only for ``Every N Periods``, whose interval is a
-            column; every other pattern's interval is a property of the
-            pattern, and ``decode_pattern`` discards what is passed here.
+        interval_n: Read only for ``"Every N Periods"``, the one shorthand that
+            fixes no interval of its own; every other name carries one and this
+            argument is discarded.  (The COLUMN takes any positive interval for
+            any unit since plan step R7c-c -- what is narrow here is the
+            shorthand, not the model.)
         nominal_day: The day the rule MEANS when *starts_on*'s month clamped
             it (ruling R-R3).
         due_day_of_month: Real bill due day, when it differs from the
@@ -3927,8 +3935,6 @@ def make_pattern_rule(
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
-    from app import ref_cache
-    from app.enums import RecurrencePatternEnum, RecurrenceUnitEnum
     from app.services.pay_calendar import calendar_for
     from app.services.recurrence import (
         NEVER_ENDS,
@@ -3936,8 +3942,8 @@ def make_pattern_rule(
         RecurrenceSpec,
         author_rule,
         build_transient_rule,
-        decode_pattern,
     )
+    from tests.oracles.recurrence_baseline import CADENCE_BY_LEGACY_NAME
 
     if starts_on is not None and fires_on_day is not None:
         raise ValueError(
@@ -3945,9 +3951,27 @@ def make_pattern_rule(
             "they are two statements of the same fact and only one can be "
             f"authored (got {starts_on!r} and day {fires_on_day!r})",
         )
-    pattern = RecurrencePatternEnum(pattern_name)
-    reading = decode_pattern(
-        ref_cache.recurrence_pattern_id(pattern), interval_n,
+    # ``getattr(..., "value")`` so a caller may still pass a
+    # ``RecurrencePatternEnum`` member: that enum outlives its column by one
+    # step (plan step R9 drops it with ``ref.recurrence_patterns``), and
+    # rewriting ~130 call sites to unwrap it would be a large diff carrying no
+    # meaning.  The table itself is keyed by plain STRING, so nothing here goes
+    # down with the enum when R9 lands.
+    cadence = CADENCE_BY_LEGACY_NAME.get(
+        getattr(pattern_name, "value", pattern_name),
+    )
+    if cadence is None:
+        raise ValueError(
+            f"no cadence is filed under {pattern_name!r}.  This helper takes "
+            f"one of the closed pattern set's own display names as SHORTHAND "
+            f"for a cadence -- plan step R7c-c dropped the column, so the "
+            f"names are a test vocabulary now and "
+            f"tests.oracles.recurrence_baseline.CADENCE_BY_LEGACY_NAME is the "
+            f"one place they are defined.  Known: "
+            f"{sorted(CADENCE_BY_LEGACY_NAME)}.",
+        )
+    resolved_interval = (
+        interval_n if cadence.interval_n is None else cadence.interval_n
     )
     calendar = calendar_for(user_id)
     if starts_on is None and fires_on_day is not None:
@@ -3956,15 +3980,15 @@ def make_pattern_rule(
         )
     if starts_on is None:
         starts_on = _default_first_occurrence(
-            user_id, calendar, reading.cadence.unit, reading.placement,
+            user_id, calendar, cadence.unit, cadence.placement,
         )
     write = author_rule if _flush else build_transient_rule
     return write(
         RecurrenceSpec(
             user_id=user_id,
-            unit=reading.cadence.unit,
-            placement=reading.placement,
-            interval_n=reading.cadence.interval_n,
+            unit=cadence.unit,
+            placement=cadence.placement,
+            interval_n=resolved_interval,
             starts_on=(
                 starts_on if starts_on is not None
                 else calendar.opening_bound()
@@ -4997,3 +5021,292 @@ def period_window(periods):
             if period.period_id in wanted
         ),
     )
+
+
+def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
+    """Return a :class:`BalanceContext` whose pay calendar is *paydays*.
+
+    **The ONE place a test seeds the read pass's pay-calendar memo**, and that
+    is the whole point of it existing (plan finding **P54**, ruled by the
+    developer 2026-08-16).
+
+    :class:`~app.services.balance_at.BalanceContext` derives the owner's
+    calendar lazily into a field its own module docstring declares PRIVATE,
+    because that module owns the derivation.  A unit test with no database
+    cannot let it derive -- ``calendar_for`` would query -- so it must seed the
+    memo, which means naming that private field.  Three sites wanted to by plan
+    step ``C2-f2d``, and N sites reaching into one private field is how a memo
+    becomes a de-facto public seam.
+
+    **The two alternatives were weighed and refused.**  A named constructor on
+    the seam (``BalanceContext.for_test(calendar=...)``) ships a production
+    entry point whose only caller is this suite, which is ``CLAUDE.md`` rule
+    13's speculative shape.  An optional ``calendar=`` on the real
+    :meth:`~app.services.balance_at.BalanceContext.build` hands EVERY
+    production caller a way to supply a calendar the module did not derive,
+    with nothing checking it even belongs to that owner -- a new way to hold
+    contradictory state, to solve a test-ergonomics problem.  Making the
+    calendar EAGER on the pass was refused on measurement: deriving one can
+    raise for an owner with no pay schedule, so every render would begin
+    failing over a fact most of them never read.
+
+    **Every type here is the real one** -- a real
+    :class:`~app.services.pay_calendar.PayCalendar` derived from real paydays
+    (:func:`derived_window`'s own discipline: the ends and ordinals are the
+    derivation's, so a test cannot express a schedule production could not),
+    and a real frozen :class:`BalanceContext`.  It cannot fail silently either:
+    rename the memo field and the seed misses, the pass falls through to
+    ``calendar_for``, and the query raises outside an app context.
+
+    Args:
+        paydays: The paydays opening each period, in any order.
+        cadence_days: Days between paydays, 1..365.  It sets the LAST period's
+            end and nothing else.
+        as_of: The day this read pass is pinned to.
+        user_id: The owning user (default ``1``).  The calendar is derived for
+            the SAME id the pass carries, so the two cannot disagree -- which
+            is the pairing the seeded memo could otherwise express.
+
+    Returns:
+        A :class:`~app.services.balance_at.BalanceContext` with no baseline
+        scenario and its calendar memo pre-filled.  ``scenario`` is ``None``
+        because a pure unit case has no database to resolve one from; a test
+        that reaches a scenario-scoped seam entry will get that entry's own
+        named refusal rather than a fake.
+
+    Raises:
+        PayCalendarError: Anything the derivation refuses -- a duplicate
+            payday, a cadence outside 1..365, a payday that is not a plain
+            ``date``.
+    """
+    from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
+        BalanceContext,
+    )
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PayCalendar,
+    )
+
+    calendar = PayCalendar.from_paydays(
+        [
+            (index + 1, payday)
+            for index, payday in enumerate(sorted(paydays))
+        ],
+        cadence_days,
+        user_id=user_id,
+    )
+    return BalanceContext(
+        user_id=user_id,
+        scenario=None,
+        as_of=as_of,
+        _calendars={user_id: calendar},
+    )
+
+
+@contextmanager
+def counting_calls(*targets):
+    """Count calls to each ``(module path, attribute name)`` in *targets*.
+
+    **The ONE instrument for "how many times did this render run that"**,
+    shared by the architecture gate
+    (``tests/test_arch/test_one_read_pass_per_render.py``) and the render
+    harness (``tests/manual/verify_retirement_render.py``) -- the same sharing
+    :func:`counting_read_passes` below states its own case for, and for the
+    same reason: two copies of a measuring instrument is the shape where one is
+    later taught something the other is not, and the one that was not keeps
+    grading the old question.
+
+    Patched on the OWNING module and on every ``app.services`` module that
+    imported the name directly, because a producer that holds its own reference
+    would otherwise go uncounted -- and an undercount reads exactly like the
+    improvement it is supposed to be measuring.
+
+    Args:
+        targets: ``(module path, attribute name)`` pairs, e.g.
+            ``("app.services.retirement_projection", "load_projection_batch")``.
+
+    Yields:
+        A ``{name: int}`` dict whose values are the counts so far; read it
+        after the block exits.
+    """
+    # pylint: disable=import-outside-toplevel
+    import importlib
+    import sys
+
+    counts = {name: 0 for _, name in targets}
+    restore = []
+    for module_path, name in targets:
+        real = getattr(importlib.import_module(module_path), name)
+
+        def counting(*args, _real=real, _name=name, **kwargs):
+            counts[_name] += 1
+            return _real(*args, **kwargs)
+
+        for module in list(sys.modules.values()):
+            if getattr(module, "__name__", "").startswith("app.") and (
+                getattr(module, name, None) is real
+            ):
+                restore.append((module, name, real))
+                setattr(module, name, counting)
+    try:
+        yield counts
+    finally:
+        for module, name, real in restore:
+            setattr(module, name, real)
+
+
+@contextmanager
+def counting_read_passes():
+    """Count every ``BalanceContext.build`` while the block runs.
+
+    **The ONE instrument for "how many read passes did this open"**, shared by
+    the architecture gate (``tests/test_arch/test_one_read_pass_per_render.py``)
+    and the cutover harness (``tests/manual/verify_retirement_pass_cutover.py``)
+    -- which is what plan step ``C2-f2d-1``'s adversarial code review asked for
+    after both shipped their own copy of it. Two copies of a measuring
+    instrument is the shape where one is later taught something the other is
+    not, and the one that was not keeps grading the old question.
+
+    Patched on the CLASS rather than on any module's imported name: several
+    producers hold their own reference to ``BalanceContext``, so patching a
+    single module's attribute would count some builds and miss others -- and a
+    counter that undercounts reads exactly like a gate that passes.
+
+    **It counts ``build``, not construction.** A direct
+    ``BalanceContext(user_id=..., scenario=..., as_of=...)`` is invisible to it.
+    Nothing in ``app/`` does that today, but :func:`read_pass_over_paydays`
+    above does, so the path is live in this repository and a producer that took
+    it would go uncounted.
+
+    Yields:
+        A ``{"n": int}`` dict whose ``n`` is the count so far; read it after
+        the block exits.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.services.balance_at import BalanceContext
+
+    counter = {"n": 0}
+    real = BalanceContext.build.__func__
+
+    def counting(cls, user_id, as_of=None):
+        counter["n"] += 1
+        return real(cls, user_id, as_of)
+
+    BalanceContext.build = classmethod(counting)
+    try:
+        yield counter
+    finally:
+        BalanceContext.build = classmethod(real)
+
+
+class PlantedPricing:
+    """A stand-in for one of the amount model's live DERIVATIONS.
+
+    Plan step X-au-c2b made :class:`~app.services.cash_ledger.AmountBasis` hold
+    the two derivations behind a row's live figure -- the owner's salary
+    projection and the scenario's loan resolutions -- rather than the
+    ``{transaction_id: Decimal}`` maps they used to produce.  Tests whose
+    subject is a VALUATION rule ("when the basis says X, what does this
+    reduction return") need to plant an answer without seeding a salary profile
+    or a loan, and this is what they plant it with.
+
+    It satisfies both halves of the seam: :meth:`net_for` is what
+    ``income_service.salary_net_for`` asks, and :meth:`live_cash` is what
+    ``loan_payment_service.LoanPricing`` answers with.  Planting by
+    TRANSACTION id therefore lands on the loan half, which
+    ``cash_ledger.live_override`` asks first.
+
+    Use it ONLY where the derivation is an input to the rule under test.  A test
+    OF the amount model builds a real basis (``amount_basis``) and seeds the
+    profile or the loan, because a planted map cannot grade a derivation.
+    """
+
+    def __init__(self, overrides=None):
+        """Plant ``{transaction_id: Decimal}`` as this derivation's answers.
+
+        Args:
+            overrides: The live figures to answer with, or ``None`` for a
+                derivation that answers for nothing -- the common case, and
+                what a row set with no salary row and no loan payment gets.
+        """
+        self._overrides = dict(overrides or {})
+
+    def net_for(self, template_id, pay_period_id):
+        """Answer nothing: a planted figure lands on the LOAN half.
+
+        Args:
+            template_id: Ignored.
+            pay_period_id: Ignored.
+
+        Returns:
+            ``None`` always -- a test that needs a real paycheck seeds a
+            profile and builds a real basis.
+        """
+        return None
+
+    def live_cash(self, txn):
+        """Return the planted figure for *txn*, or ``None``.
+
+        Args:
+            txn: The row being asked about; only its ``id`` is read.
+
+        Returns:
+            The planted ``Decimal``, or ``None`` when nothing was planted for
+            this row.
+        """
+        return self._overrides.get(getattr(txn, "id", None))
+
+
+def planted_basis(*rows, overrides=None):
+    """An :class:`~app.services.cash_ledger.AmountBasis` answering *overrides*.
+
+    The basis a producer would hand a valuation rule, with both live
+    derivations planted (:class:`PlantedPricing`) so no test of a reduction
+    needs a salary profile or a configured loan to reach the override seam.
+
+    Args:
+        rows: The rows this basis will price.  A basis was built OVER a row set
+            until plan step X-au-c2b, and every call site named its rows; they
+            are kept because the first row still decides one thing -- the
+            SCENARIO the basis declares.  ``resolve_transaction_amount`` refuses
+            a row from another scenario, so a double that named the wrong one
+            would grade that refusal instead of the rule under test.
+        overrides: ``{transaction_id: Decimal}`` live figures to plant.
+
+    Returns:
+        The :class:`~app.services.cash_ledger.AmountBasis`.
+    """
+    from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
+        AmountBasis,
+    )
+
+    planted = PlantedPricing(overrides)
+    return AmountBasis(
+        user_id=0,
+        scenario_id=getattr(rows[0], "scenario_id", 0) if rows else 0,
+        salary=planted,
+        loans=planted,
+    )
+
+
+def basis_for(account, scenario):
+    """The read pass's :class:`~app.services.cash_ledger.AmountBasis`.
+
+    What a route or a top-level producer holds and threads into the cash fold
+    since plan step X-au-c2b -- pinned to an owner and a scenario, never to a
+    row set, and lazy, so building one in a fixture costs nothing until a rule
+    asks.  The seam entries take one where they took a bare ``scenario_id``,
+    because the scenario a row set is loaded under and the derivations it is
+    priced through are one decision rather than two a caller could get apart.
+
+    Args:
+        account: Any account of the owner; only ``user_id`` is read.
+        scenario: The scenario whose rows are being valued.
+
+    Returns:
+        The unresolved :class:`~app.services.cash_ledger.AmountBasis`.
+    """
+    from app.services.cash_ledger import (  # pylint: disable=import-outside-toplevel
+        amount_basis,
+    )
+
+    return amount_basis(account.user_id, scenario.id)

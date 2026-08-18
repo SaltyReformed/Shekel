@@ -53,11 +53,17 @@ What an occurrence IS, per unit
   what keeps a day-31 rule on the last day of every month instead of decaying
   to the 30th forever.  Both are read through
   :attr:`ResolvedRecurrence.day_of_month`, the one place that join is written.
-* ``WEEK`` -- ``starts_on`` plus multiples of ``7 * interval_n`` days.  No
-  pattern resolves to this unit yet; plan step R8 is its first author.  It is
-  implemented here rather than refused because a partial function over an
-  enum is the defect this redesign exists to remove, and because a walk that
-  silently ignored the unit would be a wrong answer rather than an error.
+* ``WEEK`` -- ``starts_on`` plus multiples of ``7 * interval_n`` days.  **This
+  walk is correct and unreachable**, and plan step R8-a re-stated why: the unit
+  is kept out of the offer set by
+  :func:`~app.services.recurrence._frequency.has_row_date_coordinate`, because
+  a weekly occurrence is neither a payday nor a day of the month and
+  ``recurrence_engine.compute_due_date`` can date a generated row from nothing
+  else.  Plan step **R5** gives a row its own ``occurs_on`` and the unit
+  becomes authorable by that deletion.  It is implemented here rather than
+  refused because a partial function over an enum is the defect this redesign
+  exists to remove, and because a walk that silently ignored the unit would be
+  a wrong answer rather than an error.
 * ``PERIOD`` -- **the qualifying paycheck's own payday.**  A paycheck qualifies
   when it has not already ENDED before ``starts_on`` -- which is what the
   reverse matcher selected (``p.end_date >= effective_from``) -- and it is
@@ -202,10 +208,23 @@ putting one row in front of several events.  So the pairs are returned as
 generated: this module answers "what does the cadence name", and presentation
 is the display layer's.
 
-A third placement -- "the LAST paycheck on or before the occurrence" -- is
-what a bill funded IN ADVANCE needs, and the axis does not have it: today's
-two values both fund on or after, so rent due the 1st is funded from a
-paycheck that may fall after it.  Plan step R8 adds it.
+**A bill funded IN ADVANCE is already expressible, and the claim that it was
+not was measured false at plan step R8-a.**  This paragraph read "a third
+placement -- the LAST paycheck on or before the occurrence -- is what a bill
+funded in advance needs, and the axis does not have it: today's two values both
+fund on or after" (plan ledger row **D20**).  Both halves are wrong.
+``CONTAINING_DATE`` funds from the paycheck whose span COVERS the occurrence,
+so its payday is on or before that date by construction -- measured over five
+pay cadences, 0 of 305 seated occurrences funded after theirs.  And the remedy
+it named is not a third rule: ``PayCalendar.period_starting_on_or_before``
+disagreed with ``period_containing`` on 0 of 8,460 days of a tiling calendar,
+because derived periods TILE, and past the horizon it answers the LAST saved
+paycheck -- which would seat every future occurrence of every rule in one.
+
+What the axis genuinely cannot say is a LEAD: fund from a paycheck EARLIER than
+the one containing the occurrence, so rent due 1 August is paid from the 17
+July paycheck rather than the 31 July one.  D20 closed on the measurement and
+that capability carries its own ledger row.
 
 Pure: no Flask, no ORM, no clock, no database.
 """
@@ -319,7 +338,8 @@ def _period_walk(
     phase off ``starts_on`` now (``_derive_offset_periods``), the paycheck that
     date falls in is in phase by construction, and the advancing anchor is
     deleted.  ``resolved`` still carries ``offset_periods`` because this walk is
-    the ONE reader of it, and plan step R7c-c drops the column it is written to.
+    the ONE reader of it; plan step R7c-c dropped the COLUMN it used to be
+    written to, so what rides here is a derivation and nothing stores it.
 
     **``starts_on`` is this walk's own first yield, since plan step R7c-b**, and
     that is structural rather than checked: ``_resolution._first_occurrence``
@@ -406,9 +426,12 @@ def _unbounded(
     #
     # ``months_per_step`` is partial over the enum and is NOT guarded here,
     # because reaching this line already proves membership: ``day_of_month``
-    # answers non-``None`` only for ``_resolution._DAY_OF_MONTH_UNITS``, which
-    # IS ``_months.MONTH_SPANNING_UNITS``, which is that function's own key
-    # set.  A guard whose only reachability condition is "two hand-written sets
+    # answers non-``None`` only for ``_frequency.has_day_of_month_coordinate``,
+    # which is a membership test against ``_months.MONTH_SPANNING_UNITS``
+    # itself, which is that function's own key set.  (It read
+    # ``_resolution._DAY_OF_MONTH_UNITS`` until plan step R8-a, an alias of the
+    # same tuple that moved to ``_frequency`` with the predicate.)  A guard
+    # whose only reachability condition is "two hand-written sets
     # disagree" is the fence this project removes rather than tests, and an
     # adversarial review of plan step R7b-1 named it: the sets are one now, so
     # the state is unconstructible rather than merely unreached.

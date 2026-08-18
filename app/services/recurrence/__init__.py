@@ -6,26 +6,32 @@ and the single producer of what a recurrence MEANS, and the public surface of
 a package whose private modules are fenced by ``shekel-private-module-import``
 (W9910).
 
-What a rule AUTHORS, and what is left of the encoding
------------------------------------------------------
+What a rule AUTHORS, and nothing else
+--------------------------------------
 
-``budget.recurrence_rules`` states its recurrence in five columns: ``unit_id``,
-``placement_id``, ``shift_id``, ``starts_on`` and the 0-or-1 ``nominal_day``.
-A caller states the same thing (:class:`RecurrenceSpec`) and every reader takes
-it from there.  That is the END of plan step R7c's expand / migrate / contract:
-**R7c-a** added the columns and had the write door keep them in step while
-nothing read them, **R7c-b** moved every reader across and gave the form one
-date to collect, **R7c-c** drops what is left of the closed set.
+``budget.recurrence_rules`` states its recurrence in SIX columns: ``interval_n``,
+``unit_id``, ``placement_id``, ``shift_id``, ``starts_on`` and the 0-or-1
+``nominal_day``.  A caller states the same thing (:class:`RecurrenceSpec`) and
+every reader takes it from there.  That is the END of plan step R7c's expand /
+migrate / contract: **R7c-a** added the columns and had the write door keep them
+in step while nothing read them, **R7c-b** moved every reader across and gave the
+form one date to collect, **R7c-c** dropped the closed set.
 
-**What is left is an ENCODING, and it runs one way.**  ``pattern_id`` /
-``interval_n`` / ``day_of_month`` / ``month_of_year`` / ``start_date`` /
-``start_period_id`` / ``offset_periods`` are derived by the write door from the
-five above and read by almost nothing: ``interval_n`` still carries the cadence
-interval (``encode_cadence`` writes ``1`` for every pattern whose interval is in
-its NAME, so the read door takes it through ``_frequency.stored_interval`` and
-never off the column), ``day_of_month`` still feeds
-``recurrence_engine.compute_due_date`` until plan step R5 deletes that function,
-and the other four have no reader at all.
+**There is no encoding left.**  ``pattern_id``, ``day_of_month``,
+``month_of_year``, ``start_date``, ``start_period_id`` and ``offset_periods``
+are DROPPED (migration ``d9f5c1a48b73``), and with them ``encode_cadence``,
+``decode_pattern``, ``PATTERN_DERIVATIONS``, ``stored_interval`` and
+``pattern_member``.  ``interval_n`` was the last column read through the
+encoding -- the write door stored ``1`` for every pattern whose interval was in
+its NAME, so a Quarterly rule read as monthly at face value -- and that same
+migration re-points it, so it now means "how many ``unit_id``\\ s pass between
+occurrences" for every unit and every reader takes it off the column.
+
+What survives that a later step still owes: ``recurrence_engine.compute_due_date``
+dated every row from the dropped ``day_of_month`` and reads
+:func:`scheduling_day_of_month` instead (developer ruling 2026-08-16, plan
+ledger row **D37**), until plan step **R5** deletes that function by giving a
+generated row its own ``occurs_on`` and ``due_on``.
 
 **A stored DERIVATION would have been a cache; a stored AUTHORED value is a
 fact**, and that distinction is why the R2d ruling of 2026-08-07 refused these
@@ -37,7 +43,9 @@ ORM bulk ``update()``, Core ``update()`` on ``__table__``, or assignment to the
 private name.  Nothing is being kept honest here, because nothing is derived
 from an input that can move: the form collects ``starts_on``, the loan sync
 writes it from a contract.  (A day-less LOAN payment is the one shape still
-measured against the schedule; plan ledger row **D6** tracks it.)
+measured against the schedule -- its stored first occurrence is a PAYDAY rather
+than the contractual installment it was derived from; plan ledger row **D39**
+tracks it, and owns it at plan step R5.)
 
 What this package offers
 ------------------------
@@ -80,8 +88,12 @@ What lives where
 
 * ``_frequency`` -- what a cadence means with NO schedule: :class:`Cadence`,
   the pattern table both readings share, the yearly counts every monthly
-  equivalent rests on, and (since plan step R7b-2) the anchor-family router
-  that says WHICH derivation a ``(unit, placement)`` uses.  Split out at plan
+  equivalent rests on, and (since plan step R8-a) the OFFER SET and the two
+  predicates it is derived from -- whether a unit's occurrences can be dated
+  onto a generated row, and whether the placement can change which paycheck
+  funds one.  That gate was a three-valued ``anchor_family`` router until R8-a,
+  selecting between first-occurrence derivations ruling **R-R16** had deleted.
+  Split out at plan
   step R7a-2b because ``obligations_aggregator`` and the calendar's infrequent
   badge ask "how often" and hold no calendar, so they could not use the
   two-axis vocabulary at all while it was fused to the anchor derivation.
@@ -162,12 +174,15 @@ from app.services.recurrence._bounds import (
     end_bound_from_token,
 )
 from app.services.recurrence._frequency import (
+    AuthorableCadence,
     Cadence,
-    PatternReading,
+    CadenceReading,
     RecurrenceFrequencyError,
     RecurrenceResolutionError,
-    cadence_of,
-    decode_pattern,
+    authorable_cadences,
+    canonical_cadence,
+    emits_period_starts,
+    has_day_of_month_coordinate,
     is_authorable,
 )
 from app.services.recurrence._describe import (
@@ -184,6 +199,7 @@ from app.services.recurrence._occurrence import (
 )
 from app.services.recurrence._reading import (
     RuleReading,
+    cadence_of,
     has_ended,
     placed_periods,
     read_rule,
@@ -191,12 +207,13 @@ from app.services.recurrence._reading import (
     recurrence_spec_with_cadence,
     resolved_recurrence,
     rule_occurrences,
+    scheduling_day_of_month,
     stored_cadence,
 )
 from app.services.recurrence._resolution import (
     RecurrenceSpec,
     ResolvedRecurrence,
-    has_day_of_month_coordinate,
+    cadence_day_of_month,
     is_offerable_nominal_day,
     offerable_nominal_days,
     resolve,
@@ -213,8 +230,7 @@ from app.services.recurrence._picker import (
     selected_cadence,
 )
 from app.services.recurrence._vocabulary import (
-    UNAVAILABLE_PATTERN_MESSAGE,
-    modelled_pattern,
+    UNREADABLE_CADENCE_MESSAGE,
     modelled_placement,
     modelled_unit,
 )
@@ -222,10 +238,12 @@ from app.services.recurrence._vocabulary import (
 __all__ = [
     "END_BOUND_KINDS",
     "NEVER_ENDS",
-    "UNAVAILABLE_PATTERN_MESSAGE",
+    "UNREADABLE_CADENCE_MESSAGE",
+    "AuthorableCadence",
     "BoundReading",
     "Cadence",
     "CadenceOption",
+    "CadenceReading",
     "EndBound",
     "EndBoundColumns",
     "EndBoundInputError",
@@ -234,7 +252,6 @@ __all__ = [
     "EndsOnDate",
     "NeverEnds",
     "OccurrencePlacement",
-    "PatternReading",
     "PickerModel",
     "RecurrenceDescription",
     "RecurrenceDescriptionError",
@@ -246,11 +263,14 @@ __all__ = [
     "RuleReading",
     "SelectedCadence",
     "author_rule",
+    "authorable_cadences",
     "build_transient_rule",
+    "cadence_day_of_month",
     "cadence_of",
     "cadence_options",
-    "decode_pattern",
+    "canonical_cadence",
     "describe",
+    "emits_period_starts",
     "end_bound_from_columns",
     "end_bound_from_token",
     "end_bound_options",
@@ -259,7 +279,6 @@ __all__ = [
     "is_authorable",
     "has_day_of_month_coordinate",
     "is_offerable_nominal_day",
-    "modelled_pattern",
     "modelled_placement",
     "modelled_unit",
     "occurrence_placements",
@@ -275,6 +294,7 @@ __all__ = [
     "resolve",
     "resolved_recurrence",
     "rule_occurrences",
+    "scheduling_day_of_month",
     "selected_cadence",
     "stored_cadence",
 ]

@@ -38,6 +38,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User
 from app.services.pay_calendar import DerivedPeriod, calendar_for
+from app.services.scenario_resolver import require_baseline_scenario
 from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
@@ -223,6 +224,17 @@ def get_visible_transactions(
         )
         .filter(
             Transaction.pay_period_id == period.period_id,
+            # The owner's BASELINE scenario, and only it (plan step X-au-c2b,
+            # after an adversarial review).  This filter was absent, so a
+            # what-if scenario's rows appeared on the companion's screen beside
+            # the real plan with nothing distinguishing them -- and the amount
+            # model made that worse than cosmetic: the route prices these rows
+            # through ONE basis, so a row from another scenario would be priced
+            # by the baseline's salary profile and the baseline's loans once a
+            # per-kind cutover declares its kind derived.  Scoping the QUERY is
+            # the fix rather than a guard at the pricing door: the companion is
+            # a read of the owner's plan, and the plan is one scenario.
+            Transaction.scenario_id == require_baseline_scenario(owner_id).id,
             or_(
                 TransactionTemplate.companion_visible.is_(True),
                 and_(

@@ -50,7 +50,10 @@ from app.services.investment_dashboard_service._context import (
     _ProjectionContext,
 )
 from app.services.pay_calendar import PayCalendar
-from tests._test_helpers import make_investment_account
+from tests._test_helpers import (
+    make_investment_account,
+    read_pass_over_paydays,
+)
 
 
 def _cards_context(*, limit, ytd, paydays, current_index, as_of, cadence=14,
@@ -73,6 +76,14 @@ def _cards_context(*, limit, ytd, paydays, current_index, as_of, cadence=14,
     and a day, and a database would only supply those two values less
     legibly.
 
+    **The seeding goes through ONE shared door**
+    (:func:`tests._test_helpers.read_pass_over_paydays`, plan finding **P54**,
+    ruled by the developer 2026-08-16).  This was the first site to name the
+    pass's PRIVATE calendar memo, and plan step ``C2-f2d`` brings two more
+    packages wanting the same fixture; N sites reaching into one private field
+    is how a memo becomes a de-facto public seam.  That helper's docstring
+    carries the two alternatives that were refused and why.
+
     The fields no card helper reads are filled with the degenerate value their
     type admits.  Nothing here asserts on them, and a helper that started
     reading one would fail loudly rather than silently agreeing with a fake.
@@ -89,14 +100,8 @@ def _cards_context(*, limit, ytd, paydays, current_index, as_of, cadence=14,
     Returns:
         The ``_ProjectionContext``.
     """
-    calendar = PayCalendar.from_paydays(
-        [(index, payday) for index, payday in enumerate(paydays, start=1)],
-        cadence, user_id=1,
-    )
-    balance_ctx = BalanceContext(
-        user_id=1, scenario=None, as_of=as_of, _calendars={1: calendar},
-    )
-    saved = calendar.saved()
+    balance_ctx = read_pass_over_paydays(paydays, cadence, as_of)
+    saved = balance_ctx.calendar().saved()
     return _ProjectionContext(
         params=InvestmentParams(annual_contribution_limit=limit),
         current_balance=Decimal("0"),

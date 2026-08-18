@@ -589,7 +589,7 @@ def projected_income_shadows(
 
     Carries no period bound and NO cash: the plan builder resolves each shadow's
     live D3 cash
-    (:func:`app.services.loan_payment_service.live_loan_transfer_amounts`), its due
+    (:meth:`~app.services.loan_payment_service.LoanPricing.live_cash`), its due
     date (:func:`loan_payment_due_date`), and its escrow as the plan is assembled.
     ``pay_period`` and ``status`` are eager-loaded by :func:`query_shadow_income`.
 
@@ -678,15 +678,32 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     reconstructs the due date from the pay-period start, which is correct
     exactly while the payment's period still contains its due date.
 
-    PRECONDITION on the stored value: the payment's recurrence rule must carry a
-    ``day_of_month``, so :func:`app.services.recurrence_engine.compute_due_date`
-    stamps each instance with the installment date rather than falling back to
-    ``period.start_date`` (its no-day behaviour, and the origin of the legacy
-    rows migration ``c4e91a7b2d38`` backfills).  The loan payment-transfer flow
-    guarantees it -- ``app/routes/loan/payment_transfer.py`` builds the rule with
-    ``day_of_month=params.payment_day`` -- but a loan payment set up as a plain
-    every-paycheck transfer would not, and would keep regenerating pay-period
-    starts into a column the posting walk now reads.
+    PRECONDITION on the stored value, and plan step R7c-c re-words it without
+    changing it (plan ledger row **D27**): the payment's recurrence rule must
+    fire ON A DAY OF THE MONTH, so
+    :func:`app.services.recurrence_engine.compute_due_date` stamps each instance
+    with the installment date rather than falling back to ``period.start_date``
+    (its no-day behaviour, and the origin of the legacy rows migration
+    ``c4e91a7b2d38`` backfills).
+
+    **The predicate was a COLUMN and is now a derivation.** It read
+    ``recurrence_rules.day_of_month``, which R7c-c drops; the same question is
+    :func:`app.services.recurrence.scheduling_day_of_month` answering non-``None``,
+    which is :func:`app.services.recurrence.fires_on_day_of_month` joined with
+    the rule's
+    first occurrence.  The rules that satisfy it are unchanged -- the migration
+    graded the two equal on all 46 live rules before dropping the column -- so
+    this is the same precondition stated over the columns that survive.
+
+    The loan payment-transfer flow guarantees it: ``app/routes/loan/
+    payment_transfer.py`` derives the cadence through
+    ``loan_recurrence_sync.loan_cadence_start``, which states the first
+    contractual installment as the rule's ``starts_on``.  A loan payment set up
+    as a plain every-paycheck transfer would NOT -- a ``PERIOD``-unit rule has
+    no day-of-month coordinate at all -- and would keep regenerating pay-period
+    starts into a column the posting walk now reads.  Still unenforced, which
+    is what D27 records, and plan step R5 makes it structural by giving a
+    generated row its own ``due_on``.
 
     This value is a POSTING INPUT, not display metadata: the fold's event stream
     (``loan_ledger.merge_anchor_and_payment_events``) orders
@@ -817,7 +834,7 @@ def latest_settled_payment_due_date(
     earlier installment is the same structural property the tracking-start guard
     carries; a settled payment's escrow is additionally frozen by
     capture-on-settle
-    (:func:`app.services.loan_payment_service.live_loan_payment_amount`).
+    (:meth:`~app.services.loan_payment_service.LoanPricing.live_cash`).
 
     Args:
         account_id: The loan account whose settled payments to scan.

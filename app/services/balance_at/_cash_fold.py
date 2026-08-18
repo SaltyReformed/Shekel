@@ -105,7 +105,6 @@ from app.models.transaction import Transaction
 from app.services.cash_ledger import (
     AmountBasis,
     CashLedgerWalk,
-    amount_basis,
     dated_deltas,
     planned_cash_rows,
     sum_projected,
@@ -174,17 +173,22 @@ class AssembledCashFold:
 
 
 def assemble(
-    account: Account, scenario_id: int, as_of: date,
+    account: Account, basis: AmountBasis, as_of: date,
 ) -> AssembledCashFold:
     """Walk the account's facts and load its plan -- ONCE, for every reader.
 
     Args:
-        account: The account to value.  Its ``id`` scopes the walk and the plan,
-            and its ``user_id`` scopes the live salary override; its KIND is not
-            consulted (ruling R-J).  Must be attached to ``db.session``.
-        scenario_id: The budget scenario whose rows to fold.  Assertions are
+        account: The account to value.  Its ``id`` scopes the walk and the plan;
+            its KIND is not consulted (ruling R-J).  Must be attached to
+            ``db.session``.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`
+            (:meth:`~app.services.balance_at.BalanceContext.amounts`).  It
+            carries the SCENARIO whose rows are folded -- assertions are
             per-ACCOUNT and replay in every scenario; only the transaction rows
-            are scenario-scoped.
+            are scenario-scoped -- so the scenario and the pricing it resolves
+            under are one argument rather than two a caller could disagree
+            about (plan step X-au-c2b).
         as_of: The reader's NOW, and since plan step X-c2c1 deleted the
             reservation's entry window it does exactly ONE job: it is the floor
             a still-Projected row's effective date is clamped up to (ruling
@@ -193,25 +197,25 @@ def assemble(
     Returns:
         The :class:`AssembledCashFold`.
     """
-    walk = walk_cash_ledger(account.id, scenario_id)
+    walk = walk_cash_ledger(account.id, basis.scenario_id)
     # The plan load is INDEPENDENT of the walk since plan step X-f3b (ruling
     # **R-FM**): it took the walk so the entry reservation could ask which of an
     # envelope's purchases a declared balance already contained, and a purchase
     # carrying a posting day is now a movement in the walk itself, so the
     # reservation reads the purchase and the clearing rule is only ever asked
     # where the money is replayed.
-    plan = _cash_plan(account, scenario_id, as_of)
+    plan = _cash_plan(account, basis, as_of)
     day_nets = _planned_day_nets(plan)
     seed, steps = _running_steps(walk, day_nets)
     return AssembledCashFold(
-        scenario_id=scenario_id,
+        scenario_id=basis.scenario_id,
         seed=seed, steps=steps, walk=walk, plan=plan, day_nets=day_nets,
     )
 
 
 def fold_cash_balances(
     account: Account,
-    scenario_id: int,
+    basis: AmountBasis,
     as_of: date,
     dates: list[date],
 ) -> dict[date, Decimal]:
@@ -235,7 +239,8 @@ def fold_cash_balances(
 
     Args:
         account: The account to value (see :func:`assemble`).
-        scenario_id: The budget scenario whose rows to fold.
+        basis: The read pass's amount basis, carrying the scenario whose rows
+            are folded (see :func:`assemble`).
         as_of: The reader's NOW (ruling R-G's clamp floor).
         dates: The dates to value the account at, in any order.  Duplicates
             collapse.
@@ -244,13 +249,13 @@ def fold_cash_balances(
         ``{date: balance}`` -- one cent-quantized ``Decimal`` per distinct
         requested date.  ``{}`` for an empty *dates*.
     """
-    folded = assemble(account, scenario_id, as_of)
+    folded = assemble(account, basis, as_of)
     return sample_cumulative(folded.seed, folded.steps, dates)
 
 
 def cash_period_balances(
     account: Account,
-    scenario_id: int,
+    basis: AmountBasis,
     as_of: date,
     window: PeriodWindow,
 ) -> "OrderedDict[int, Decimal]":
@@ -270,7 +275,8 @@ def cash_period_balances(
 
     Args:
         account: The account to value (see :func:`assemble`).
-        scenario_id: The budget scenario whose rows to fold.
+        basis: The read pass's amount basis, carrying the scenario whose rows
+            are folded (see :func:`assemble`).
         as_of: The reader's NOW (ruling R-G's clamp floor).
         window: The pay periods to value, as a slice of the owner's ONE derived
             calendar
@@ -282,7 +288,7 @@ def cash_period_balances(
         order.  EVERY period of *window* is present.
     """
     return _period_balances(
-        assemble(account, scenario_id, as_of), window,
+        assemble(account, basis, as_of), window,
     )
 
 
@@ -438,13 +444,15 @@ class _CashPlan:
             the scenario, unwindowed (:func:`~app.services.cash_ledger.planned_cash_rows`).
         by_day: The same rows keyed by the day each LANDS on (ruling R-G's
             clamp) -- the cash clock.  Empty when the account has no plan.
-        basis: The account's
+        basis: The READ PASS's
             :class:`~app.services.cash_ledger.AmountBasis` -- what every row is
-            priced through -- built ONCE over the whole plan and threaded into
-            every reduction (the established build-once-and-thread pattern).
-            Each live producer picks its own candidates and both filter to
-            ``is_projected``, so a basis built over the plan alone answers
-            identically on every key that can matter.  It was a
+            priced through -- carried here and threaded into every reduction so
+            no reduction reaches for one of its own.  It was BUILT here, over
+            this plan's rows, until plan step X-au-c2b: a basis is pinned to an
+            owner and a scenario now rather than to a row set, so the pass hands
+            one down instead and a second reader of the same request stops
+            paying for a second paycheck-engine run (findings **N-268**,
+            **N-269**).  It was a
             ``ProjectedBasis`` carrying the account's clearing rule beside this
             until plan step X-f3b: the entry reservation was what asked, and
             ruling **R-FM** made a purchase's posted-ness a fact about the
@@ -459,7 +467,7 @@ class _CashPlan:
 
 
 def _cash_plan(
-    account: Account, scenario_id: int, as_of: date,
+    account: Account, basis: AmountBasis, as_of: date,
 ) -> _CashPlan:
     """Load the account's plan and key each row onto the day it lands on.
 
@@ -497,23 +505,18 @@ def _cash_plan(
     assertions than the walk replayed.
 
     Args:
-        account: The account whose plan to load (its ``user_id`` scopes the live
-            salary override).
-        scenario_id: The budget scenario the rows live in.
+        account: The account whose plan to load.
+        basis: The read pass's amount basis, carrying the scenario the rows live
+            in and the derivations they are priced through.
         as_of: The reader's NOW -- the floor ruling R-G clamps a landing day up
             to.
 
     Returns:
         The account's :class:`_CashPlan`; its ``rows`` and ``by_day`` are empty
-        for an account with no plan, and its ``basis`` is built either way so
-        the record is self-describing.
+        for an account with no plan, and it carries the pass's basis either way
+        so the record is self-describing.
     """
-    rows = planned_cash_rows(account.id, scenario_id)
-    # Built over the plan whether or not it is empty: both live producers filter
-    # their candidates in Python first, so an empty row set costs two list
-    # comprehensions and no query -- which is cheaper than a second construction
-    # of the same record for the empty branch.
-    basis = amount_basis(account.user_id, scenario_id, rows)
+    rows = planned_cash_rows(account.id, basis.scenario_id)
     if not rows:
         return _CashPlan(rows=[], by_day={}, basis=basis)
 

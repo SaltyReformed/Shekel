@@ -23,12 +23,12 @@ signpost.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-f3b** -- a PURCHASE whose bank posting day is recorded is a cash movement of its own, in the walk and in the ledger, and its envelope's close books only the remainder (**R-FM**, refined by **R-FR**). Measured on a production clone: 1 of 215 days moves on 1 of 7 accounts (`+$12.79` on 2026-08-13), 9 purchase entries are written and the trial balance closes. Closed **N-274**, **N-286**, **N-288** | Section 5 |
-| **in flight** | **X-f3's decomposition** (2026-08-13), specified below and not yet built. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app` | Section 5 |
+| **just landed** | **X-au-c2b** -- a row's BUDGET is RESOLVED, not read off `estimated_amount`, at 14 readers and in every template; ONE rule says what a row DISPLAYS as, where the grid, the HTMX fragments and the companion had three; and under them an `AmountBasis` pinned to `(user_id, scenario_id)` rather than to a ROW SET, which is what a pricing pass was always scoped by. `priced_ids` and the two duplicate loan producers are deleted, a scenario refusal replaces the membership guard, and `BalanceContext.amounts()` memoizes one basis per read pass. Byte-identical across four harnesses on a 1,012-row clone, before AND after four adversarial reviews. Closed **N-268**, **N-269**, **N-270**, **N-271**; opened **N-294**-**N-298** | Section 5 |
+| **in flight** | Nothing. **X-au-c3** (the settle FREEZE) is the amount model's next leaf and inherits four obligations named in its entry; the cutover cluster still waits on `bank_import:X-f6a`. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app` | Section 5 |
 | **what changed the plan** | **X-f3 DECOMPOSED and X-f6 moved AHEAD of the cutover** (developer, 2026-08-13), because two of R-EB's premises were refuted by measurement against the developer's own YTD bank exports: the residual it would classify is dominated by date misplacement rather than by spending (lag-1 autocorrelation `-0.306`; bank-anchored untracked spend `$2,096.37`, not the `$15,413.71` gross), and an assertion is **not** the closing balance for its civil day (17 of 55 equal the bank's closing; only 30% of 110 matched movements carry the day the bank posted them). What X-f3 needed was never the import surface but CLEARING FACTS -- rulings **R-FL**..**R-FO** here and **R-FP** in the import arc. **X-f5 is superseded** by X-f3c | Section 3.3, Section 4 |
 | **blocked on you** | What to do next is `../../plans/steps.md`'s first row, never this section. Six `developer-decision` / `operator` rows carry this arc's open questions (`ledger.md`); the one this change ADDS is **R-FO**, the modelled half of the cutover -- whether a Roth / Traditional / 401(k) / Property true-up books to a per-account `investment_return` account (`$10,623.66` measured) or stays on `anchor_equity` with its own step. Stated as a recommendation, not a decision. Outside this arc, the recurrence arc's X-an-a sequencing ruling is still open | Section 4, R-FO |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it: the recurrence redesign (block 9) and the pay calendar (block 10). **The pay calendar's `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, so whoever builds it must satisfy all three specifications | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md` |
-| **the live lesson** | **A predicate that answers a question about the WORLD by comparing two of the app's own dates is a guess wearing a rule's clothes.** `ReconciledThrough.covers` said so in its own docstring -- *"what removes it is an OBSERVATION, not a second derived date"* -- and the bank's record measured the guess. The same shape is what R-FI deleted for amounts and what R-DH (a) itself was | Section 3.3, R-FL |
+| **the live lesson** | **A cache keyed on the CALLER's row set, when everything expensive behind it is scoped by the owner, makes every second reader pay again -- and the duplication gets filed as two findings before anyone reads it as one.** N-268 and N-269 were two symptoms of one shape; so were the two loan producers whose own docstring said one *"mirrors"* the other. A membership guard (`priced_ids`) had been added to make the wrong keying safe, which is the tell: a fence protecting a state the model should not be able to reach | Section 5, X-au-c2b |
 | **resuming cold** | Branch from `dev`; whether it leads `main` is a MEASUREMENT (`git log --oneline origin/main..dev`). Read the repo's migration head from `alembic_version` rather than from prose, and rebuild the test template only if you add a migration. **Pass `TEST_DB_PREFIX=<name>` when another checkout may be running the suite**, put the venv on `PATH` (`scripts/test.sh` execs bare `pytest`) and keep it ACTIVE for `git commit` (pre-commit hooks are `language: system`). The registries have their own gate: `pytest tools/plan_gate -c /dev/null -q`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x) | `../../plans/verification.md` |
 
 Section 5 is the work that remains and Section 4 the rulings that govern it; `archive/` is what
@@ -444,23 +444,12 @@ hides.
     `get_payment_history` can never take the resolver (**N-266**, a cycle), and nothing reachable
     from `loan_payment_service` may NAME `cash_ledger` (**N-267**) -- which is why the
     producer-free arms live in `row_valuation.py`. Closed **N-262**; opened **N-266**-**N-272**.
-  * [ ] **X-au-c2b** `refactor(cash): a row's BUDGET is resolved, not read off the column` -- the
-    second reader group, split out when the census came back at two kinds (developer ruling,
-    2026-08-12). These ~15 sites across 8 modules never touched the property: they read
-    `estimated_amount` DIRECTLY as the row's budget -- `compute_remaining(txn.estimated_amount,
-    entries)` in `entry_service`, `dashboard_service` and `routes/entries.py`, the carry-forward
-    leftover arithmetic in `_execute.py:337` and `_preview.py:272`, `_context.py:296`'s TOP_UP base,
-    `credit_workflow.py:356`'s payback amount, and the spending report's settled estimate. Nothing
-    forces them today, which is exactly why they are their own leaf rather than deferred: under the
-    amount model a derived row's column is NULL, so at each per-kind cutover an unrouted one meets
-    `None - Decimal` and 500s on a live screen. **They need the RESOLVED AMOUNT, not the
-    contribution**, so the batch this leaf adds is `amounts_by_id` rather than
-    `contributions_by_id`: E-21 rules an envelope's budget base is `estimated_amount`
-    unconditionally -- never `actual_amount`, never status-dependent -- and `contributed_amount`
-    would answer `$0.00` for a Cancelled envelope where the budget is still its budget.
-    Byte-identity is structural for the same reason it was in X-au-c2a and only while it lasts:
-    every row is OWN, so the resolver answers the stored column through one arm, and that window
-    closes at the first cutover.
+  * [x] **X-au-c2b** `a24f0b80` a row's BUDGET is RESOLVED, and ONE rule says what it DISPLAYS as
+    (`display_amounts_by_id`, where the grid, the fragments and the companion had three). The basis
+    is pinned to `(user_id, scenario_id)`: `priced_ids` deleted, a scenario REFUSAL in its place.
+    **A LATER leaf must obey**: rules 2 and 4 read no STATUS; `amounts_by_id` has no gate above the
+    resolve; the basis pins `date.today()` and moving it to `ctx.as_of` is X-i2's money move; every
+    door writing an amount CLEARS `amount_source_id`. Closed **N-268**-**N-271**; opened **N-294**-**N-298**.
   * [ ] **X-au-c3** `fix(cash): a settle freezes what the row is worth` -- the FREEZE and its
     INVERSE, closing **N-241**, **N-242**, **N-282** and **N-259**. **It inherits X-aq's obligation**
     (`9cabc206`, amended `c4932746`), carried here when that step was archived: a settle already

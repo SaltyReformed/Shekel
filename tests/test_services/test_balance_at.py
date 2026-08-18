@@ -3095,7 +3095,7 @@ class TestGridBalanceView:
             live = {income_txn.id: Decimal("1500.00")}
             monkeypatch.setattr(
                 income_service, "live_projected_net",
-                lambda uid, sid, txns: dict(live),
+                lambda txn, pricing: live.get(txn.id),
             )
 
             view = balance_at.grid_balance_view(hysa, bctx)
@@ -3518,7 +3518,9 @@ class TestTheViewOwnsTheLiveOverrideMap:
             db.session.commit()
             monkeypatch.setattr(
                 income_service, "live_projected_net",
-                lambda uid, sid, txns: {income_txn.id: Decimal("1500.00")},
+                lambda txn, pricing: (
+                    Decimal("1500.00") if txn.id == income_txn.id else None
+                ),
             )
 
             view = balance_at.grid_balance_view(account, bctx)

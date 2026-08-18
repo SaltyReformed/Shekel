@@ -385,11 +385,15 @@ class TestItRefusesWhatItCannotWord:
             describe(half_worded)
 
     def test_a_placement_with_no_wording_raises(self):
-        """Plan step R8 adds a third placement; it must be worded, not assumed.
+        """Plan step R11 adds a third placement; it must be worded, not assumed.
 
         Falling back to the containing-date phrasing would tell the user the
-        money moves on a day it does not -- the "fund in advance" placement
-        ledger row D20 names funds from an EARLIER paycheck.
+        money moves on a day it does not -- the LEAD placement plan ledger row
+        **D40** names funds from a paycheck EARLIER than the one containing the
+        occurrence.  (It was "the fund in advance placement ledger row D20
+        names"; plan step R8-a closed D20 on the measurement that
+        ``CONTAINING_DATE`` already funds on or before every occurrence, and
+        the LEAD is what survived it.)
         """
         unworded = ResolvedRecurrence(
             offset_periods=0,
@@ -585,19 +589,27 @@ class TestTheDeferredCollapseNamesItsPlacement:
     """The day is dropped only under the placement whose words imply it."""
 
     def test_a_future_advance_placement_keeps_the_day(self):
-        """Plan step R8's fund-in-ADVANCE member must not inherit the collapse.
+        """Plan step R11's LEAD member must not inherit the collapse.
 
         "The first paycheck on or after the 1st" IS the month's first
-        paycheck; "the LAST paycheck on or before the 1st" is the PREVIOUS
-        month's last, so the two are different facts and the day is half the
-        answer.  A condition keyed only on unit / interval / day would delete
-        it silently the day ledger row D20's placement lands.
+        paycheck; "the paycheck BEFORE the one covering the 1st" is the
+        previous month's last, so the two are different facts and the day is
+        half the answer.  A condition keyed only on unit / interval / day would
+        delete it silently the day plan ledger row **D40**'s placement lands.
+
+        **The member this stands in for was re-decided at plan step R8-a.**  It
+        was D20's "the LAST paycheck on or before the occurrence", which that
+        step measured to be ``CONTAINING_DATE`` under another name -- 0
+        disagreements with ``period_containing`` over 8,460 days of a tiling
+        calendar -- so D20 closed and the LEAD carries the gap under D40.  The
+        collapse guard is unchanged either way: both readings put the money in
+        a different month from the one the day names.
 
         Reached by wording a hypothetical third member, which is exactly the
-        edit R8 will make.
+        edit R11 will make.
         """
-        # A stand-in for the placement R8 adds; wording it is all this needs.
-        advance = "PERIOD_ENDING_ON_OR_BEFORE"
+        # A stand-in for the placement R11 adds; wording it is all this needs.
+        advance = "PERIOD_BEFORE_THE_CONTAINING_ONE"
         resolved = ResolvedRecurrence(
             offset_periods=0,
             interval_n=1,

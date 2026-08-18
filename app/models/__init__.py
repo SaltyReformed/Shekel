@@ -42,7 +42,6 @@ from app.models.account import Account, AccountAnchorHistory
 from app.models.category import Category
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.recurrence_anchors import (
-    RecurrenceMonthAnchor,
     RecurrenceWeekdayAnchor,
 )
 from app.models.scenario import Scenario
@@ -124,7 +123,6 @@ __all__ = [
     "AccountAnchorHistory",
     "Category",
     "RecurrenceRule",
-    "RecurrenceMonthAnchor",
     "RecurrenceWeekdayAnchor",
     "Scenario",
     "TransactionTemplate",
