@@ -69,13 +69,12 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from app import ref_cache
 from app.enums import AcctTypeEnum
-from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.services import (
     balance_at,
     paycheck_calculator,
     tax_calculator,
 )
+from app.services.pay_calendar import calendar_for
 from app.services.projection_inputs import (
     load_active_accounts_with_types,
     load_active_salary_profiles,
@@ -414,28 +413,29 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
 # ── Data loading (year-end orchestrator precedent) ────────────────
 
 
-def _load_year_periods(user_id: int, year: int) -> list:
+def _load_year_periods(user_id: int, year: int) -> tuple:
     """Return the user's pay periods whose payday falls in *year*.
 
-    Pay periods with ``start_date`` in the calendar year, ordered by
-    ``period_index``.
+    The saved periods whose ``start_date`` is in the calendar year, in payday
+    order, off the owner's DERIVED calendar (pay-calendar plan step
+    **C2-f2d-3**) rather than out of a SQL ``ORDER BY period_index`` -- the
+    stored ordinal is one of the two columns plan step **C4** drops, and the
+    derived order is the payday order by construction.
 
     Args:
         user_id: The owning user.
         year: The calendar/tax year to scope periods to.
 
     Returns:
-        The year's :class:`PayPeriod` list (possibly empty).
+        The year's :class:`~app.services.pay_calendar.DerivedPeriod` values as
+        a tuple (possibly empty).  A tuple rather than a
+        :class:`~app.services.pay_calendar.PeriodWindow`: a year slice is a
+        FILTER of the calendar, and the window type is produced only by the
+        calendar's own four views (see that class).
     """
-    return (
-        db.session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == user_id,
-            PayPeriod.start_date >= date(year, 1, 1),
-            PayPeriod.start_date <= date(year, 12, 31),
-        )
-        .order_by(PayPeriod.period_index)
-        .all()
+    return tuple(
+        period for period in calendar_for(user_id).saved()
+        if period.start_date.year == year
     )
 
 

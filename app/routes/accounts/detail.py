@@ -74,7 +74,6 @@ from app.services import (
     balance_at,
     cash_ledger,
     home_equity_service,
-    pay_period_service,
     property_equity_chart,
 )
 from app.services.balance_at import BalanceContext
@@ -88,8 +87,8 @@ from app.utils.period_projections import project_balance_horizons
 if TYPE_CHECKING:
     # Typing-only imports for the per-page helper signatures (lazy strings
     # via ``from __future__ import annotations``; no runtime cost).
-    from app.models.pay_period import PayPeriod
     from app.services.cash_ledger import AnchorPoint
+    from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +124,7 @@ _CHART_LABEL_FORMAT = "%b %-d"
 
 def _current_period_balance(
     balances: dict[int, Decimal],
-    current_period: PayPeriod | None,
+    current_period: DerivedPeriod | None,
     anchor: AnchorPoint | None,
 ) -> Decimal | None:
     """Return the current-period projected balance, else the anchor balance.
@@ -134,7 +133,9 @@ def _current_period_balance(
     when one exists, otherwise the resolved anchor balance (E-19),
     otherwise ``None``.
     """
-    current_bal = balances.get(current_period.id) if current_period else None
+    current_bal = (
+        balances.get(current_period.period_id) if current_period else None
+    )
     if current_bal is None and anchor is not None:
         current_bal = anchor.balance
     return current_bal
@@ -172,8 +173,8 @@ def _ensure_interest_params(account: Account) -> InterestParams:
 
 def _build_horizons(
     current_balance: Decimal | None,
-    current_period: PayPeriod | None,
-    all_periods: list[PayPeriod],
+    current_period: DerivedPeriod | None,
+    all_periods: PeriodWindow,
     balances: dict[int, Decimal],
 ) -> list[dict]:
     """Build the 3 / 6 / 12-month horizon chip rows for the template.
@@ -196,8 +197,8 @@ def _build_horizons(
 
 def _interest_next_year(
     interest_by_period: dict[int, Decimal],
-    current_period: PayPeriod,
-    all_periods: list[PayPeriod],
+    current_period: DerivedPeriod,
+    all_periods: PeriodWindow,
 ) -> Decimal:
     """Sum the interest earned over the next year (26 biweekly periods).
 
@@ -214,14 +215,14 @@ def _interest_next_year(
     total = Decimal("0.00")
     for period in all_periods:
         if lo <= period.period_index <= hi:
-            total += interest_by_period.get(period.id, Decimal("0.00"))
+            total += interest_by_period.get(period.period_id, Decimal("0.00"))
     return total
 
 
 def _build_chart(
-    all_periods: list[PayPeriod],
+    all_periods: PeriodWindow,
     balances: dict[int, Decimal],
-    current_period: PayPeriod | None,
+    current_period: DerivedPeriod | None,
 ) -> tuple[str, bool]:
     """Serialize the balance-projection trend to a Chart.js JSON string.
 
@@ -240,19 +241,23 @@ def _build_chart(
         ``(chart_json, has_chart)`` -- the JSON string and whether the
         series is non-empty.
     """
-    ordered = sorted(all_periods, key=lambda p: p.period_index)
-    series = [p for p in ordered if p.id in balances]
+    # The window is ALREADY in payday order, which is ``period_index`` order
+    # by the derivation's own construction, so the explicit sort this carried
+    # is gone (pay-calendar plan step C2-f2d-3): a
+    # :class:`~app.services.pay_calendar.PeriodWindow` sorts at construction
+    # and the ordinal IS the position in that order.
+    series = [p for p in all_periods if p.period_id in balances]
 
     current_index = 0
     if current_period is not None:
         for i, period in enumerate(series):
-            if period.id == current_period.id:
+            if period.period_id == current_period.period_id:
                 current_index = i
                 break
 
     chart_json = json.dumps({
         "labels": [p.end_date.strftime(_CHART_LABEL_FORMAT) for p in series],
-        "balance": [float(balances[p.id]) for p in series],
+        "balance": [float(balances[p.period_id]) for p in series],
         "current_index": current_index,
     })
     return chart_json, bool(series)
@@ -262,7 +267,7 @@ def _cash_projection(
     account: Account,
     is_interest: bool,
     balance_ctx: BalanceContext,
-    all_periods: list[PayPeriod],
+    all_periods: PeriodWindow,
 ) -> "tuple[dict[int, Decimal], dict[int, Decimal], AnchorPoint | None]":
     """Produce the per-period balances (and interest) for a cash account.
 
@@ -338,8 +343,13 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
         account.account_type and account.account_type.has_interest
     )
 
-    all_periods = pay_period_service.get_all_periods(current_user.id)
-    current_period = pay_period_service.get_current_period(current_user.id)
+    # BOTH questions off the pass's ONE memoized calendar (pay-calendar plan
+    # step C2-f2d-3).  They were two SQL readers on two clocks -- the second
+    # defaulting to its own ``date.today()`` rather than the pass's ``as_of``,
+    # so a render begun before midnight and reaching this line after it placed
+    # the hero in one paycheck and the seam's columns in another.
+    all_periods = ctx.reported_periods()
+    current_period = ctx.calendar().period_containing(ctx.as_of)
 
     # Preserve the pre-merge ``interest_detail`` behaviour: the params row is
     # auto-created before any projection so the parameters card always

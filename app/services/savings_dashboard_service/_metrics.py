@@ -28,7 +28,7 @@ from app.services.savings_dashboard_service._debt_line import (
     debt_without_payoff_model,
     loan_payoff_outlook,
 )
-from app.services.pay_calendar import PayCadence, PayCalendar
+from app.services.pay_calendar import PayCadence, PayCalendar, PeriodWindow
 from app.services.row_valuation import owned_contribution
 from app.services.savings_dashboard_service._types import (
     AccountProjection,
@@ -229,7 +229,23 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     """Compute the canonical paycheck breakdown for the current period.
 
     The single income producer this module uses for any engine-derived
-    income figure (MED-06 / F-032).  Both consumers -- the savings-goal
+    income figure (MED-06 / F-032).
+
+    **A dead ``duplicate-code`` suppression sat on the body of this function
+    and is deleted** (pay-calendar plan step C2-f2d-3).  It justified itself by
+    naming ``dashboard_service`` as running the same resolve-profile ->
+    load-configs -> ``calculate_paycheck`` sequence; that module has neither a
+    ``SalaryProfile`` query nor a ``load_tax_configs_for_year`` call, so the
+    rationale described code that no longer exists and the disable suppressed
+    NOTHING -- measured by deleting it and re-running ``pylint app/``, which
+    stays at 10.00/10 with no ``duplicate-code`` message.  It survived every
+    gate because ``useless-suppression`` cannot see a stale ``duplicate-code``
+    disable, which is finding **N-154**; this is a measured instance of it.
+    **The sequence itself is still written THREE times** -- here,
+    ``retirement_dashboard_service._compute_current_pay`` and
+    ``income_service.get_current_gross_biweekly`` -- which is reported rather
+    than merged here (``CLAUDE.md`` rule 6: collapsing it changes what two
+    other pages produce).  Both consumers -- the savings-goal
     trajectory's net biweekly pay and the DTI denominator's gross
     monthly income -- route through this helper so the page cannot
     silently disagree with the paycheck engine on the same period.
@@ -241,10 +257,12 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
 
     Args:
         user_id: Integer ID of the current user.
-        all_periods: All pay periods for the user (passed through to
-            the paycheck engine for 3rd-paycheck detection and the
+        all_periods: The owner's whole saved schedule as a
+            :class:`~app.services.pay_calendar.PeriodWindow` (passed through
+            to the paycheck engine for 3rd-paycheck detection and the
             FICA SS wage-base cap's cumulative-wage tracking).
-        current_period: The current :class:`PayPeriod`, or ``None``.
+        current_period: The current
+            :class:`~app.services.pay_calendar.DerivedPeriod`, or ``None``.
 
     Returns:
         :class:`PaycheckBreakdown` for the current period under the
@@ -257,15 +275,6 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     if current_period is None:
         return None
 
-    # Pylint: ``duplicate-code`` -- resolve-active-profile ->
-    # load-tax-configs -> calculate_paycheck.  ``dashboard_service`` runs
-    # the same three steps, but the two return different contracts (that
-    # one keeps only ``net_pay``; this one returns the full
-    # PaycheckBreakdown for the DTI / trajectory math), so they are
-    # deliberately separate surfaces over the same calculator rather than a
-    # shared helper (coding-standards rule 13).  One-sided
-    # ``duplicate-code`` disable (see plan.md Phase 2 notes).
-    # pylint: disable=duplicate-code
     profile = (
         db.session.query(SalaryProfile)
         .filter_by(user_id=user_id, is_active=True)
@@ -282,7 +291,6 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     return paycheck_calculator.calculate_paycheck(
         profile, current_period, all_periods, tax_configs,
     )
-    # pylint: enable=duplicate-code
 
 
 def _checking_account_ids(accounts):
@@ -310,7 +318,7 @@ def _checking_account_ids(accounts):
 
 def _recent_settled_expenses_monthly(
     checking_ids: list[int],
-    all_periods: list,
+    all_periods: PeriodWindow,
     current_period,
     scenario_id: int,
     pay_cadence: PayCadence,
@@ -334,8 +342,10 @@ def _recent_settled_expenses_monthly(
     Args:
         checking_ids: IDs of the user's checking accounts (the
             :func:`_checking_account_ids` set the floor also uses).
-        all_periods: All pay periods for the user.
-        current_period: The current :class:`PayPeriod`, or ``None``.
+        all_periods: The owner's saved schedule as a
+            :class:`~app.services.pay_calendar.PeriodWindow`.
+        current_period: The current
+            :class:`~app.services.pay_calendar.DerivedPeriod`, or ``None``.
         scenario_id: The baseline scenario's id, from the read pass's
             raising accessor -- never a nullable (plan step X-v2).
         pay_cadence: How often the owner is paid
@@ -367,7 +377,7 @@ def _recent_settled_expenses_monthly(
     if not recent_periods:
         return Decimal("0.00")
 
-    recent_period_ids = [p.id for p in recent_periods]
+    recent_period_ids = [p.period_id for p in recent_periods]
     # Both halves of "settled checking EXPENSE" are asked in SQL rather than in
     # a Python ``if`` beside the valuation (plan step X-au-c2).  They were, and
     # the row set was every status: the loop's guard was what kept a Projected
@@ -402,6 +412,7 @@ def _recent_settled_expenses_monthly(
 
 def _committed_expense_floor(
     user_id: int, checking_ids: list[int], calendar: PayCalendar,
+    as_of: date,
 ) -> Decimal:
     """Committed monthly expense floor from active checking templates.
 
@@ -422,6 +433,12 @@ def _committed_expense_floor(
             count-bounded template that has spent its count leaves the
             baseline, which needs the paydays and not just their spacing
             (plan step R7b-3).
+        as_of: The read pass's day.  It was ``date.today()`` here until
+            pay-calendar plan step C2-f2d-3 (ledger row **P55**): the
+            aggregator decides whether a bounded template still commits
+            anything AS OF the day it is given, so a bare clock read put this
+            floor on a different day from the settled-expense operand it is
+            compared against by ``max()``.
 
     Returns:
         The committed monthly floor as a Decimal.  ``Decimal("0.00")``
@@ -452,7 +469,7 @@ def _committed_expense_floor(
     )
     return obligations_aggregator.committed_monthly(
         list(active_expense_templates) + list(active_transfer_templates),
-        date.today(),
+        as_of,
         calendar,
     )
 
@@ -474,15 +491,18 @@ def _compute_avg_monthly_expenses(
     R7a-2a).  It had unpacked ``accounts`` / ``all_periods`` /
     ``current_period`` / ``scenario_id`` at the call site and threaded them
     through, and the owner's pay cadence -- which BOTH operands need -- would
-    have been a fifth.  The first four all come off
-    :class:`~.._types._DashboardCoreData`, so the bundle is the honest
-    argument and the caller stops restating its contents; the cadence does
-    NOT, and is passed separately for the reason that class's docstring gives.
+    have been a fifth.  All four are reachable from
+    :class:`~.._types._DashboardCoreData` (the period SET through its
+    ``balance_ctx`` since pay-calendar plan step C2-f2d-3), so the bundle is
+    the honest argument and the caller stops restating its contents; the
+    cadence does NOT, and is passed separately for the reason that class's
+    docstring gives.
 
     Args:
         user_id: Integer ID of the current user.
         core: The read pass's loaded bundle -- its accounts scope the checking
-            set, and its periods and scenario scope the historical operand.
+            set, and its pass's reported periods and scenario scope the
+            historical operand.
         calendar: The owner's whole pay-period schedule.  ``calendar.cadence``
             converts BOTH operands into month space -- one value for both, so
             the ``max()`` cannot compare figures measured against two rhythms
@@ -494,10 +514,12 @@ def _compute_avg_monthly_expenses(
     """
     checking_ids = _checking_account_ids(core.accounts)
     historical = _recent_settled_expenses_monthly(
-        checking_ids, core.all_periods, core.current_period,
+        checking_ids, core.balance_ctx.reported_periods(), core.current_period,
         core.balance_ctx.scenario_id, calendar.cadence,
     )
-    floor = _committed_expense_floor(user_id, checking_ids, calendar)
+    floor = _committed_expense_floor(
+        user_id, checking_ids, calendar, core.balance_ctx.as_of,
+    )
     return max(historical, floor)
 
 
@@ -674,6 +696,7 @@ def _compute_principal_paid_fraction(
 
 def _accumulate_loan_debt(
     loan_ads: list[AccountProjection], escrow_map: dict[int, list],
+    as_of: date,
 ) -> tuple[Decimal, Decimal, Decimal]:
     """Sum the owed-today debt metrics across the loans that still owe.
 
@@ -694,6 +717,12 @@ def _accumulate_loan_debt(
         loan_ads: Per-account projections that carry a ``loan`` detail (the
             loan subset of ``_compute_account_projections`` output).
         escrow_map: Dict mapping account_id to list of EscrowLine (with versions).
+        as_of: The read pass's day, which resolves each escrow LINE to its
+            active version.  It was ``date.today()`` here until pay-calendar
+            plan step C2-f2d-3 (ledger row **P55**) -- a bare clock read
+            deciding which escrow version prices the PITI total that the DTI
+            ratio beside it divides, on a page whose every other figure is
+            measured at the pass's day.
 
     Returns:
         ``(total_debt, total_monthly, weighted_rate_sum)`` -- the running sums.
@@ -719,9 +748,7 @@ def _accumulate_loan_debt(
         # Include escrow (property tax, insurance) for PITI total, resolved to
         # today's active version per line via the shared as-of function.
         lines = escrow_map.get(ad.account.id, [])
-        monthly_escrow = escrow_calculator.escrow_monthly_as_of(
-            lines, date.today(),
-        )
+        monthly_escrow = escrow_calculator.escrow_monthly_as_of(lines, as_of)
         monthly_total = round_money(monthly_pi + monthly_escrow)
 
         total_debt += principal
@@ -735,6 +762,7 @@ def _compute_debt_summary(
     account_data: list[AccountProjection],
     escrow_map: dict[int, list],
     gross_monthly: Decimal,
+    as_of: date,
 ) -> DebtSummary | None:
     """Compute aggregate debt metrics across the user's loan accounts.
 
@@ -782,6 +810,8 @@ def _compute_debt_summary(
             is computed from -- the owner's paycheck converted at their own
             cadence by the caller; ``0.00`` when the user has no salary data,
             which is what makes :attr:`DebtSummary.dti` ``None``.
+        as_of: The read pass's day, which resolves each loan's escrow version
+            inside :func:`_accumulate_loan_debt` (ledger row **P55**).
 
     Returns:
         The :class:`DebtSummary`, or ``None`` if no loan accounts with params
@@ -793,7 +823,7 @@ def _compute_debt_summary(
         return None
 
     total_debt, total_monthly, weighted_rate_sum = (
-        _accumulate_loan_debt(loan_ads, escrow_map)
+        _accumulate_loan_debt(loan_ads, escrow_map, as_of)
     )
 
     if total_debt > Decimal("0.00"):

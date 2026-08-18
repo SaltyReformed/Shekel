@@ -408,8 +408,7 @@ def _retirement_investment_bands(
     # both None: no slider override, and the constant employer base every
     # net-worth consumer uses (the ruled oracle; see the docstring).
     ctx = retirement_projection.build_projection_context(
-        core.balance_ctx, core.all_periods, core.current_period,
-        frame.horizon_end, None, None,
+        core.balance_ctx, frame.horizon_end, None, None,
     )
     batch = retirement_projection.load_projection_batch(ctx)
     projections = retirement_projection.project_accounts_with_batch(
@@ -920,7 +919,7 @@ def build_horizon(
         ``milestones`` (the ``{date, label}`` flags).  ``None`` when the
         user has no pay periods (no axis to project over).
     """
-    if not core.all_periods:
+    if not core.balance_ctx.reported_periods():
         return None
 
     today = core.balance_ctx.as_of

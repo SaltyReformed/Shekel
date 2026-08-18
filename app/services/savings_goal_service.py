@@ -405,23 +405,34 @@ def calculate_savings_metrics(
     )
 
 
-def count_periods_until(target_date, periods):
-    """Count pay periods between today and the target date.
+def count_periods_until(target_date, periods, as_of):
+    """Count the paydays between *as_of* and the target date.
+
+    **The day is an ARGUMENT, not a clock read** (pay-calendar plan step
+    C2-f2d-3, ledger row **P55**).  It read ``date.today()``, which put this
+    count on a different day from the balance and the required-contribution
+    figure rendered beside it on the same goal card whenever a render crossed
+    midnight -- and from the goal's own committed-contribution filter, which
+    asks a different producer the same question.  Its one caller holds a read
+    pass whose ``as_of`` is that render's single day.
 
     Args:
-        target_date: date -- the goal's target date.
-        periods:     List of PayPeriod objects ordered by index.
+        target_date: date -- the goal's target date, or ``None``.
+        periods: The owner's saved schedule -- a
+            :class:`~app.services.pay_calendar.PeriodWindow` -- whose paydays
+            are counted.
+        as_of: The read pass's day.  A payday ON this day counts.
 
     Returns:
-        int -- count of periods from today to the target date (inclusive).
+        int -- count of paydays from *as_of* to the target date (inclusive),
+        or ``None`` when *target_date* is ``None``.
     """
     if target_date is None:
         return None
 
-    today = date.today()
     count = 0
     for period in periods:
-        if period.start_date >= today and period.start_date <= target_date:
+        if as_of <= period.start_date <= target_date:
             count += 1
     return count
 

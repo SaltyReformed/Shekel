@@ -30,7 +30,6 @@ from app.enums import RecurrenceUnitEnum, TxnTypeEnum
 from app.services import (
     account_service,
     paycheck_calculator,
-    pay_period_service,
     recurrence_engine,
     template_amount_service,
 )
@@ -240,14 +239,18 @@ def create_profile():
         # is the OWNER's whole one, which is also what the paycheck
         # calculator reads as ``all_periods`` (plan step R4b-1).
         schedule = GenerationSchedule.for_user(current_user.id)
-        periods = list(schedule.periods)
+        # The DERIVED half of that one schedule (pay-calendar plan step
+        # C2-f2d-3), which ``GenerationSchedule.__post_init__`` proves is the
+        # same periods in the same order as its ORM half -- so this is not a
+        # second read of the owner's paydays.
+        periods = schedule.calendar.saved()
         recurrence_engine.generate_for_template(template, schedule, scenario.id)
 
         # Update the template's default_amount from gross to net so that
         # any future fallback (e.g. missing tax configs for a period)
         # uses the net amount rather than the gross.
         ref_period = (
-            pay_period_service.get_current_period(current_user.id)
+            schedule.calendar.period_containing(date.today())
             or (periods[0] if periods else None)
         )
         if ref_period:

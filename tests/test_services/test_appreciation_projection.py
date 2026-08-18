@@ -218,7 +218,7 @@ class TestSavingsDashboardProjection:
                 Decimal("400000.00"), rate=Decimal("0.03000"),
             )
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             entry = next(
                 ad for ad in data["account_data"]

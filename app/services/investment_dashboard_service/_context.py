@@ -473,7 +473,9 @@ def _load_projection_context(
     # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not the
     # off-engine ``annual_salary / pay_periods_per_year`` recompute that
     # silently dropped any applicable ``SalaryRaise`` row pre-Commit-17.
-    salary_gross_biweekly = income_service.get_current_gross_biweekly(user_id)
+    salary_gross_biweekly = income_service.get_current_gross_biweekly(
+        user_id, balance_ctx.calendar(),
+    )
     deductions = load_active_deductions_for_account(user_id, account.id)
     adapted_deductions = adapt_deductions(deductions)
     acct_contributions = load_shadow_income_contributions_for_account(
