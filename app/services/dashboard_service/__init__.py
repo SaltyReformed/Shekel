@@ -37,14 +37,25 @@ Module map:
   position tier: the savings-goal metro tracks and the debt track.
 """
 
+# ``DashboardSection`` is exported because the two producers that TAKE one
+# publicly annotate it and the route builds it: leaving it unexported is what
+# made two signatures in ``savings_dashboard_service`` drop their type hints,
+# against ``.claude/rules/coding.md`` -- an out-of-package annotation had no
+# name it was allowed to say.
 from app.services.dashboard_service._balance import compute_balance_section
 from app.services.dashboard_service._bills import txn_to_bill_dict
 from app.services.dashboard_service._pulse import compute_pulse_section
+from app.services.dashboard_service._section import (
+    DashboardSection,
+    resolve_section,
+)
 from app.services.dashboard_service._tracks import compute_tracks_section
 
 __all__ = [
+    "DashboardSection",
     "compute_balance_section",
     "compute_pulse_section",
     "compute_tracks_section",
+    "resolve_section",
     "txn_to_bill_dict",
 ]

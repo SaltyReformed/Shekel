@@ -5278,7 +5278,7 @@ class TestOneResolutionPerLoanPerReadPass:
                 dashboard_service,
             )
             dashboard_service.compute_tracks_section(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
 
             assert calls.count(loan_id) == 1

@@ -12,10 +12,10 @@ Pure aggregation -- no Flask imports, no database writes.
 
 from app.services import balance_at
 
-from ._section import _resolve_section_context
+from ._section import DashboardSection
 
 
-def compute_balance_section(user_id: int) -> dict:
+def compute_balance_section(section: DashboardSection | None) -> dict:
     """Compute the hero-shaped balance fragment for the anchor-edit revert.
 
     The narrow producer behind ``dashboard.balance_section`` -- the GET
@@ -70,21 +70,40 @@ def compute_balance_section(user_id: int) -> dict:
     ``ctx.as_of`` is the same producer answering the same question one day
     earlier, which is the honest figure when there is no period end to name.
 
+    **The period it names is DERIVED and the day it reads is the pass's**
+    (pay-calendar plan step C2-f2e).  Both used to be
+    ``pay_period_service.get_current_period(user_id)``: SQL over the stored
+    ``start_date`` / ``end_date`` span, resolving a ``date.today()`` of its own.
+    The fragment therefore answered against a clock the enclosing pulse region
+    had already read separately, and against a span the calendar need not
+    agree with (plan finding **P1**).  The route hands this producer the render's
+    one read pass and the section derives its period from that pass's calendar,
+    so the reverted control and the region it swaps back into cannot name
+    different paychecks.
+
     Args:
-        user_id: The current user's id.
+        section: The render's :class:`~._section.DashboardSection`, or ``None``
+            when the owner has no resolvable grid account.  ``None`` is a real
+            input here rather than a caller's mistake: the anchor editor is
+            opened from a rendered page and reverts through this endpoint, so
+            an account deactivated in between leaves a live fragment with no
+            account to edit -- which is the state ``_pulse_balance.html``'s
+            own else-branch renders.
 
     Returns:
         A dict with key ``hero`` -> ``{balance, account_id}``, or
         ``{"hero": None}`` when the user has no resolvable account.
     """
-    account, balance_ctx, current_period = _resolve_section_context(user_id)
-    if account is None:
+    if section is None:
         return {"hero": None}
 
+    current_period = section.current_period
     balance = balance_at.cash_balance_at(
-        account,
-        balance_ctx,
+        section.account,
+        section.balance_ctx,
         current_period.end_date if current_period is not None
-        else balance_ctx.as_of,
+        else section.balance_ctx.as_of,
     )
-    return {"hero": {"balance": balance, "account_id": account.id}}
+    return {
+        "hero": {"balance": balance, "account_id": section.account.id},
+    }

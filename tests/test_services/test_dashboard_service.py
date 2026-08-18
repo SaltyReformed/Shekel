@@ -29,6 +29,7 @@ from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger, dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    dashboard_section,
     make_every_period_rule,
     add_txn as _add_txn,
     make_investment_account,
@@ -315,7 +316,7 @@ class TestComputeBalanceSection:
             db.session.flush()
 
             result = dashboard_service.compute_balance_section(
-                seed_user["user"].id,
+                dashboard_section(seed_user["user"].id),
             )
             assert result == {"hero": None}
 
@@ -350,7 +351,7 @@ class TestComputeBalanceSection:
 
             with pytest.raises(BaselineMissingError):
                 dashboard_service.compute_balance_section(
-                    seed_user["user"].id,
+                    dashboard_section(seed_user["user"].id),
                 )
 
     def test_no_current_period_uses_raw_anchor(self, app, seed_user):
@@ -364,7 +365,7 @@ class TestComputeBalanceSection:
         """
         with app.app_context():
             result = dashboard_service.compute_balance_section(
-                seed_user["user"].id,
+                dashboard_section(seed_user["user"].id),
             )
             hero = result["hero"]
             assert hero is not None
@@ -383,7 +384,7 @@ class TestComputeBalanceSection:
         """
         with app.app_context():
             result = dashboard_service.compute_balance_section(
-                seed_user["user"].id,
+                dashboard_section(seed_user["user"].id),
             )
             hero = result["hero"]
             assert hero is not None
@@ -423,7 +424,7 @@ class TestComputeBalanceSection:
             assert modeled > Decimal("100000.00")
 
             result = dashboard_service.compute_balance_section(
-                seed_user["user"].id,
+                dashboard_section(seed_user["user"].id),
             )
             hero = result["hero"]
             assert hero["account_id"] == inv.id

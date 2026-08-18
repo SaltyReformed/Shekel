@@ -114,6 +114,7 @@ from app.services import (
     dashboard_service,
     spending_report_service,
 )
+from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
 from app.services.spending_report_service import SpendingWindow
 
@@ -319,11 +320,45 @@ def _spending_figures(user_id):
 
 
 def _pulse_figures(user_id):
-    """Dump the pulse region, whose next-paycheck answers were two queries."""
+    """Dump the pulse region, whose next-paycheck answers were two queries.
+
+    **The producer's signature moved at pay-calendar plan step C2-f2e**: it
+    takes a resolved ``DashboardSection`` where it took a ``user_id``, because
+    the ROUTE now opens the render's one read pass.  Resolved here rather than
+    called directly so this file still compiles and runs on both sides of that
+    step, which is what ``docs/plans/lessons.md`` asks of a before/after
+    harness -- a HEAD side that cannot be captured is a harness that proves
+    nothing.  ``verify_dashboard_cutover`` is the harness that OWNS this
+    surface now and dumps all three of the page's producers whole; this probe
+    stays because it is part of C2-f1's own recorded run.
+    """
     return _guard(
         "compute_pulse_section",
-        lambda: _plain(dashboard_service.compute_pulse_section(user_id)),
+        lambda: _plain(_pulse_section(user_id)),
     )
+
+
+def _pulse_section(user_id):
+    """Call the pulse producer on either side of pay-calendar step C2-f2e.
+
+    Discriminated on ``resolve_section`` -- the function that step ADDS -- for
+    the reason ``verify_dashboard_cutover._producers`` gives: a module name is
+    what the step also moved, and an argument count cannot tell a resolved
+    section from a bare owner id.
+
+    Args:
+        user_id: The owner to compute for.
+
+    Returns:
+        The pulse-region dict, or ``None``.
+    """
+    if hasattr(dashboard_service, "resolve_section"):
+        return dashboard_service.compute_pulse_section(
+            dashboard_service.resolve_section(
+                BalanceContext.build(user_id),
+            ),
+        )
+    return dashboard_service.compute_pulse_section(user_id)
 
 
 def main(out_path):

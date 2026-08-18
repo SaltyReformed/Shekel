@@ -18,26 +18,24 @@ from decimal import Decimal
 from itertools import groupby
 from typing import TYPE_CHECKING
 
-from app.models.account import Account
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
-from app.services import balance_at, cash_ledger, pay_period_service
+from app.services import balance_at, cash_ledger
 from app.services.entry_service import compute_remaining
 from app.utils.money import round_money
 
 from ._bills import _query_unpaid_expense_rows, txn_to_bill_dict
-from ._section import (
-    _DEFAULT_STALENESS_DAYS,
-    _get_user_settings,
-    _resolve_section_context,
-)
+from ._section import _DEFAULT_STALENESS_DAYS, DashboardSection
 
 if TYPE_CHECKING:
-    # The pay calendar's own view of a period, carried by the two producers
-    # that took ``pay_period_service.get_next_period``'s answer before plan
-    # step C2-f.  Type-only: the value arrives from ``balance_ctx.calendar()``,
-    # which this module already reaches through ``BalanceContext``.
+    # The pay calendar's own view of a period.  EVERY period on this page is
+    # one since pay-calendar plan step C2-f2e -- the current one, the next
+    # one, and every point the chart, the trough and the peak read -- where
+    # the current period and the forward set were ``budget.pay_periods`` ORM
+    # rows carrying the two derived columns plan step **C4** drops.  Type-only:
+    # the values arrive from ``balance_ctx.calendar()`` and
+    # ``balance_ctx.reported_periods()``, which this module reaches through the
+    # section's ``BalanceContext``.
     from app.services.pay_calendar import DerivedPeriod
 
 _ZERO = Decimal("0")
@@ -61,7 +59,9 @@ _STREET_STATION_MAX_VISIBLE = 3
 # ── Pulse producer (canvas + street + due-soon) ────────────────────
 
 
-def compute_pulse_section(user_id: int) -> dict | None:
+def compute_pulse_section(
+    section: "DashboardSection | None",
+) -> dict | None:
     """Compute the dashboard pulse region (canvas + street + due-soon).
 
     The single ``balanceChanged`` refresh region of the Terminal Road
@@ -94,29 +94,57 @@ def compute_pulse_section(user_id: int) -> dict | None:
         due date render as one station instead of overlapping).
 
     Args:
-        user_id: Integer ID of the current user.
+        section: The render's :class:`~._section.DashboardSection`, or ``None``
+            when the owner has no resolvable grid account.  **The read pass
+            arrives on it rather than being built here** (pay-calendar plan
+            step C2-f2e, ledger rows **P56** and **P61**): this producer and
+            :func:`~._tracks.compute_tracks_section` each opened one, so ``/``
+            held two passes and derived the owner's pay calendar twice per
+            render.  The route opens the one pass and both take it.
 
     Returns:
         The pulse-region dict, or ``None`` when the region cannot be
         computed (no account / scenario / current period).
     """
-    account, balance_ctx, current_period = _resolve_section_context(user_id)
     # The no-baseline arm this guard used to carry is GONE (plan step X-v2,
     # ruling R-BW): the seam raises and one application-level handler answers,
     # so this region no longer decides what a user with no computable balance
     # sees.  What remains are the two states this producer genuinely models --
     # no grid account, and no period containing today.
-    if account is None or current_period is None:
+    #
+    # **The account is checked FIRST and that ORDER is load-bearing.**  Reading
+    # ``section.current_period`` derives the owner's calendar, which RAISES
+    # ``PayCalendarError`` for an owner whose paydays cannot define one (ledger
+    # row **P35**, a legacy period stored before ``budget.pay_schedule``
+    # existed).  A no-account owner reached no calendar before this step and
+    # must not start reaching one now, so the cheap structural refusal comes
+    # before the derivation -- the opposite of ``/grid``, which derives before
+    # it looks at an account and which P35 records as WIDENED for exactly that.
+    if section is None:
+        return None
+    current_period = section.current_period
+    if current_period is None:
         return None
 
-    settings = _get_user_settings(user_id)
-    all_periods = pay_period_service.get_all_periods(user_id)
+    balance_ctx = section.balance_ctx
+    account = section.account
+    settings = section.settings
+    # The owner's saved schedule, from the SAME window the balance seam reports
+    # every per-period figure on this page over (pay-calendar plan step C2-f2e,
+    # ledger row **P36**).  It was ``pay_period_service.get_all_periods``: a
+    # second read of one schedule, ordered by the stored ``period_index`` where
+    # the seam's own domain is ordered by payday -- so a stored ordinal that
+    # disagreed with payday order (plan finding **P1**) plotted this chart in
+    # one order and the balances it reads in another, and a destructive
+    # pay-period write landing between the two reads left this producer
+    # indexing the map by an id the seam no longer held.  One derivation, no
+    # second spelling, and ``reported_periods()`` is already memoized on the
+    # calendar the line below fills.
+    all_periods = balance_ctx.reported_periods()
     # The pass's own calendar answers "which paycheck comes next" (plan step
-    # C2-f1), and this is the call that FILLS that memo -- ``BalanceContext.build``
-    # resolves only the scenario, so the two queries are paid here and
-    # ``cash_balance_map`` below reads the same value for free.  Net for this
-    # producer: four queries down to two, where the retired ``get_next_period``
-    # and ``_next_paycheck_date`` each issued one BESIDE the map's own load.
+    # C2-f1).  ``BalanceContext.build`` resolves only the scenario, so the
+    # calendar's two queries are paid by whichever of these lines runs first
+    # and every other calendar read on this render is free.
     next_period = balance_ctx.calendar().period_starting_after(
         current_period.start_date,
     )
@@ -170,7 +198,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # current+next set once -- with its single ``selectinload(entries)``
     # round trip -- and splitting it in memory avoids a second identical
     # query on the ``balanceChanged`` refresh path.
-    period_ids = [current_period.id]
+    period_ids = [current_period.period_id]
     if next_period is not None:
         period_ids.append(next_period.period_id)
     unpaid_rows = _query_unpaid_expense_rows(
@@ -196,23 +224,21 @@ def compute_pulse_section(user_id: int) -> dict | None:
     budgets = cash_ledger.amounts_by_id(unpaid_rows, balance_ctx.amounts())
 
     due_soon = _due_soon(
-        unpaid_rows, contributions, budgets, current_period,
+        unpaid_rows, contributions, budgets, current_period, balance_ctx.as_of,
     )
 
     return {
-        # ``current_period`` came from ``get_current_period``, so it is a row
-        # of ``budget.pay_periods``, and since plan step C2-c the map's domain
-        # is the pass's own ``reported_periods()`` -- every saved period of the
-        # same owner -- so the key is present.  (It read "a member of the
-        # ``all_periods`` the map was built over" until that step took the
-        # period list off the seam's signature; the conclusion survives, the
-        # stated reason did not.)  Indexed rather than ``.get``-with-a-default
-        # on purpose: a default here would render SOME number for a hero whose
-        # own period the projection did not cover, which is the silent-wrong
-        # shape this arc exists to end.
+        # The key is present BY CONSTRUCTION since pay-calendar plan step
+        # C2-f2e: ``current_period`` is now a member of the very window the map
+        # was built over (``reported_periods()``, which is
+        # ``calendar().saved()``), where it used to be a ``get_current_period``
+        # row that the map's domain merely happened to contain.  Indexed rather
+        # than ``.get``-with-a-default on purpose: a default here would render
+        # SOME number for a hero whose own period the projection did not cover,
+        # which is the silent-wrong shape this arc exists to end.
         "hero": _hero(
-            account, end_balances[current_period.id], current_period,
-            next_period, settings,
+            section, end_balances[current_period.period_id], current_period,
+            next_period,
         ),
         "chart": _chart(forward_periods, end_balances, settings),
         "trough": _trough(
@@ -224,18 +250,17 @@ def compute_pulse_section(user_id: int) -> dict | None:
         "still_due": _still_due(
             unpaid_rows, contributions, budgets, current_period, next_period,
         ),
-        "street": _street(current_period),
+        "street": _street(current_period, balance_ctx.as_of),
         "due_soon": due_soon,
         "due_soon_stations": _due_soon_stations(due_soon),
     }
 
 
 def _hero(
-    account: Account,
+    section: DashboardSection,
     balance: Decimal,
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
     next_period: "DerivedPeriod | None",
-    settings: UserSettings | None,
 ) -> dict:
     """Build the pulse hero block: the period-END balance and its captions.
 
@@ -268,11 +293,19 @@ def _hero(
     rebuild moves the signal onto the "last updated" caption).
 
     Args:
-        account: The resolved dashboard account (``resolve_grid_account``'s
-            pick; may be any kind).
+        section: The render's :class:`~._section.DashboardSection` -- the
+            account this hero is about (``resolve_grid_account``'s pick; may be
+            any non-amortizing kind), the settings its staleness threshold
+            reads, and the read pass whose pinned day the staleness count
+            measures from.  Taken as one value rather than as three arguments
+            because they are one value: they arrive together, from one
+            resolution, and a caller could not honestly supply a settings row
+            belonging to a different owner than the account.
         balance: The current period's projected end balance, off the same
             ``cash_balance_map`` the chart plots.
-        current_period: The period containing today.
+        current_period: The period containing the pass's day.  Passed rather
+            than re-read off *section* so the hero's dates and the balance
+            beside them come from ONE bisect of the calendar.
         next_period: The paycheck after it, or ``None`` past the schedule's
             end.  **TAKEN rather than looked up** (plan step C2-f1): this
             module held a ``_next_paycheck_date`` query of its own -- "the
@@ -281,17 +314,18 @@ def _hero(
             the current one", and the same card renders both (the hero's
             next-paycheck caption beside the still-due panel's
             ``next_period_start``).
-            **The two questions are not the same question**, which is what
+            **The two questions were not the same question**, which is what
             made keeping both a defect rather than a duplication: this one is
-            anchored on *current_period*, which ``get_current_period`` selects
+            anchored on *current_period*, which ``get_current_period`` selected
             by the STORED span, while the deleted query anchored on the clock
-            -- so wherever a stored ``end_date`` disagrees with the derived
+            -- so wherever a stored ``end_date`` disagreed with the derived
             one (plan finding **P1**, the disagreement nothing reconciles) the
-            period the card calls current need not be the period today falls
-            in, and the two captions name different paydays.  It also read its
-            own ``date.today()``, a second clock in one render.  One value
-            now, from the pass's own calendar, so neither can happen.
-        settings: The user's settings, or ``None``.
+            period the card called current need not be the period today fell
+            in, and the two captions named different paydays.  It also read its
+            own ``date.today()``, a second clock in one render.  Since
+            pay-calendar plan step C2-f2e *current_period* is itself derived
+            from the paydays at the pass's own day, so the stored span is out
+            of the question entirely and one clock answers both.
 
     Returns:
         A dict with keys ``balance``, ``period_start_date``,
@@ -311,6 +345,7 @@ def _hero(
     # ``None`` for an account with no assertion (the never-set staleness arm)
     # rather than raise, and the two are provably equal -- ``MAX(observed_on)``
     # against the last element of the same ordering, pinned by a test.
+    account = section.account
     last_observed_on = cash_ledger.reconciled_through(account.id).observed_day
 
     return {
@@ -320,7 +355,9 @@ def _hero(
         "account_name": account.name,
         "account_id": account.id,
         "last_updated_date": last_observed_on,
-        "is_stale": _anchor_is_stale(last_observed_on, settings),
+        "is_stale": _anchor_is_stale(
+            last_observed_on, section.settings, section.balance_ctx.as_of,
+        ),
         "next_paycheck_date": (
             next_period.start_date if next_period is not None else None
         ),
@@ -330,6 +367,7 @@ def _hero(
 def _anchor_is_stale(
     observed_on: date | None,
     settings: UserSettings | None,
+    as_of: date,
 ) -> bool:
     """Return whether the checking anchor is stale (the warning condition).
 
@@ -350,19 +388,27 @@ def _anchor_is_stale(
     today is stale on the day it names, which is what a user asking "how old is
     this number" means.
 
-    **The comparison's own clock is deliberately NOT touched here.**
-    ``date.today()`` is the process day and ``observed_on`` is a display-zone
-    civil day, so the two can differ by one across the evening window -- the
-    finding N-138 class, whose app-side conversion was BUILT AND REVERTED
-    because doing it site by site turns agreeing-but-wrong into actively
-    disagreeing and no gate can currently certify completeness.  This edit
-    changes which display-zone day arrives, not which clock it is compared
-    against, so the split is neither created nor widened here.
+    **The comparison's own clock is the READ PASS's since pay-calendar plan
+    step C2-f2e, and it is still the PROCESS day.**  It was a bare
+    ``date.today()`` here -- one of three this region resolved for itself,
+    beside the street's "Today" marker and the due-soon list's days-until-due
+    -- so a render crossing midnight could count staleness against one day and
+    place the marker on the next.  ``as_of`` is the same value every one of
+    them now reads, pinned once when the route built the pass and unable to
+    move under its consumers.  What this does NOT change is WHICH clock: the
+    pass defaults to ``date.today()``, the process day, while ``observed_on``
+    is a display-zone civil day, so the two can still differ by one across the
+    evening window -- the finding N-138 class, whose app-side conversion was
+    BUILT AND REVERTED because doing it site by site turns agreeing-but-wrong
+    into actively disagreeing and no gate can currently certify completeness.
+    The split is neither created nor widened here; ledger row **P55** carries
+    it.
 
     Args:
         observed_on: The civil day the latest assertion was true for, or
             ``None`` when the anchor has never been set.
         settings: The user's settings, or ``None``.
+        as_of: The read pass's pinned day -- the render's ONE clock.
 
     Returns:
         ``True`` when the anchor is never-set or older than the threshold.
@@ -373,11 +419,11 @@ def _anchor_is_stale(
         settings.anchor_staleness_days if settings
         else _DEFAULT_STALENESS_DAYS
     )
-    return (date.today() - observed_on).days > staleness_days
+    return (as_of - observed_on).days > staleness_days
 
 
 def _chart(
-    forward_periods: list[PayPeriod],
+    forward_periods: "list[DerivedPeriod]",
     end_balances: dict[int, Decimal],
     settings: UserSettings | None,
 ) -> dict:
@@ -409,9 +455,9 @@ def _chart(
     """
     chart_periods = forward_periods[:_CHART_HORIZON_PERIODS]
     points = [
-        {"end_date": period.end_date, "balance": end_balances[period.id]}
+        {"end_date": period.end_date, "balance": end_balances[period.period_id]}
         for period in chart_periods
-        if period.id in end_balances
+        if period.period_id in end_balances
     ]
 
     threshold = None
@@ -422,9 +468,9 @@ def _chart(
 
 
 def _trough(
-    forward_periods: list[PayPeriod],
+    forward_periods: "list[DerivedPeriod]",
     end_balances: dict[int, Decimal],
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
 ) -> dict | None:
     """Find the lowest projected end balance over the FULL forward horizon.
 
@@ -451,9 +497,9 @@ def _trough(
 
 
 def _peak(
-    forward_periods: list[PayPeriod],
+    forward_periods: "list[DerivedPeriod]",
     end_balances: dict[int, Decimal],
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
 ) -> dict | None:
     """Find the highest projected end balance over the FULL forward horizon.
 
@@ -482,9 +528,9 @@ def _peak(
 
 
 def _extremum(
-    forward_periods: list[PayPeriod],
+    forward_periods: "list[DerivedPeriod]",
     end_balances: dict[int, Decimal],
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
     find_max: bool,
 ) -> dict | None:
     """Find the extreme projected end balance over the FULL forward horizon.
@@ -520,7 +566,7 @@ def _extremum(
     extremum_period = None
     extremum_balance = None
     for period in forward_periods:
-        balance = end_balances.get(period.id)
+        balance = end_balances.get(period.period_id)
         if balance is None:
             continue
         if extremum_balance is None:
@@ -545,7 +591,7 @@ def _still_due(
     rows: list[Transaction],
     contributions: dict[int, Decimal],
     budgets: dict[int, Decimal],
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
     next_period: "DerivedPeriod | None",
 ) -> dict:
     """Compute the still-due totals for the current and next periods.
@@ -601,7 +647,7 @@ def _still_due(
         contribution = _row_still_due(
             txn, contributions[txn.id], budgets[txn.id],
         )
-        if txn.pay_period_id == current_period.id:
+        if txn.pay_period_id == current_period.period_id:
             current_total += contribution
         elif next_period is not None and txn.pay_period_id == next_period.period_id:
             next_total += contribution
@@ -655,7 +701,7 @@ def _row_still_due(
     return contribution
 
 
-def _street(current_period: PayPeriod) -> dict:
+def _street(current_period: "DerivedPeriod", as_of: date) -> dict:
     """Build the street band's day-span and today's offset within it.
 
     The street band lays the current period out day by day, and the
@@ -669,22 +715,28 @@ def _street(current_period: PayPeriod) -> dict:
       * ``days_total`` -- ``(end_date - start_date).days``: the day span
         of the current period.  The period-end station on the street sits
         at this offset (the far right of the band).
-      * ``today_offset`` -- ``(today - start_date).days``: where the
-        "Today" marker falls on the band.  May fall outside ``[0,
-        days_total]`` only at a period boundary the producer never reaches
-        (``compute_pulse_section`` resolves the period that CONTAINS today,
-        so ``start_date <= today <= end_date`` and the offset is in range);
-        the JS clamps defensively regardless.
+      * ``today_offset`` -- ``(as_of - start_date).days``: where the
+        "Today" marker falls on the band.  It CANNOT fall outside ``[0,
+        days_total]`` since pay-calendar plan step C2-f2e: the period is the
+        one the pass's own day falls in and *as_of* is that same day, so
+        ``start_date <= as_of <= end_date`` holds by construction.  It could
+        before -- the period came from the STORED span and this offset from a
+        second ``date.today()``, so a render crossing midnight placed the
+        marker one day past a period the other clock had already left.  The JS
+        still clamps defensively.
 
     Args:
-        current_period: The period containing today.
+        current_period: The period containing the pass's day.
+        as_of: The read pass's pinned day -- the render's ONE clock, shared
+            with the due-soon list's days-until-due and the hero's staleness
+            count.
 
     Returns:
         A dict with integer keys ``days_total`` and ``today_offset``.
     """
     return {
         "days_total": (current_period.end_date - current_period.start_date).days,
-        "today_offset": (date.today() - current_period.start_date).days,
+        "today_offset": (as_of - current_period.start_date).days,
     }
 
 
@@ -692,7 +744,8 @@ def _due_soon(
     rows: list[Transaction],
     contributions: dict[int, Decimal],
     budgets: dict[int, Decimal],
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
+    as_of: date,
 ) -> list[dict]:
     """Build the current period's due-soon rows (the street / mobile list).
 
@@ -729,20 +782,24 @@ def _due_soon(
         budgets: ``{transaction_id: Decimal}`` over the same rows, shared the
             same way -- the E-21 base an entry-tracked bill's amount cell and
             its progress fields both answer on.
-        current_period: The period containing today.
+        current_period: The period containing the pass's day.
+        as_of: The read pass's pinned day, which each bill's
+            ``days_until_due`` counts from.  It was a ``date.today()`` of this
+            function's own until pay-calendar plan step C2-f2e -- a third clock
+            on one render, beside the street marker's and the hero staleness
+            count's -- so a bill could read "due today" under a street band
+            that had already moved to tomorrow.
 
     Returns:
         A list of bill dicts (see :func:`txn_to_bill_dict`) each carrying
         the extra ``day_offset`` and ``undated`` keys.
     """
-    today = date.today()
-
     due_soon: list[dict] = []
     for txn in rows:
-        if txn.pay_period_id != current_period.id:
+        if txn.pay_period_id != current_period.period_id:
             continue
         bill = txn_to_bill_dict(
-            txn, today, contributions[txn.id], budgets[txn.id],
+            txn, as_of, contributions[txn.id], budgets[txn.id],
         )
         if txn.due_date is not None:
             bill["day_offset"] = (txn.due_date - current_period.start_date).days
