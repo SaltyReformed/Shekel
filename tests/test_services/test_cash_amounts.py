@@ -77,6 +77,7 @@ from pathlib import Path
 import pytest
 import sqlalchemy.exc
 
+from app.services.cash_ledger import _amounts
 from app.services.cash_ledger._amounts import (
     _entry_aware_amount,
     _expense_amount,
@@ -713,7 +714,8 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
     guards is load-bearing, and that shape is what proves it (see
     :meth:`TestTheLiveOverride.test_no_entries_short_circuits_before_the_status_read`).
 
-    **It grew the override seam's columns at plan step X-au-c2b**, and the
+    **It grew the override seam's columns at plan step X-au-c2b and the
+    settlement record's at X-au-c3**, and the
     reason is the restructure itself: :func:`live_override` indexed a
     ``{transaction_id: Decimal}`` map the basis carried, so it read no column at
     all; it asks the two live DERIVATIONS per row now, and each answers ``None``
@@ -732,7 +734,12 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
         # property any more -- the resolved figure arrives as an argument.
         self.estimated_amount = Decimal(effective_amount)
         self.amount_source_id = None
-        self.actual_amount = None
+        # The settlement RECORD (plan step X-au-c3).  ``settled_figure`` asks
+        # the STATUS first -- a retained record on a reverted row is not what
+        # that row is worth -- and the basis only for a row the status says has
+        # settled, so a stand-in a valuation may see carries all three.
+        self.settled_basis_id = None
+        self.settled_amount = None
         self.is_deleted = False
         self.status = None
         # What the live-override seam reads before it answers "nothing
@@ -749,8 +756,13 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
         self.is_income = False
         self.template_id = None
         self.pay_period_id = None
-        if not statusless:
-            self.status_id = None
+        # ``status_id`` is always present, and *statusless* now means the
+        # ``status`` RELATIONSHIP is absent rather than the column.  Since plan
+        # step X-au-c3 every valuation asks the status whether a row is worth
+        # what it RECORDED or what it PLANS, so a stand-in without the column is
+        # not a row any valuation could see -- and a test double built around a
+        # missing attribute grades an impossible input.
+        self.status_id = None
 
 
 class TestTheLiveOverride:
@@ -840,18 +852,33 @@ class TestTheLiveOverride:
             assert _expense_amount(txn, no_override) == Decimal("50.00")
             assert _expense_amount(txn, overridden) == Decimal("123.45")
 
-    def test_no_entries_short_circuits_before_the_status_read(self):
+    def test_no_entries_short_circuits_before_the_status_read(
+        self, monkeypatch,
+    ):
         """The guard ORDER holds: no entries returns before ``is_projected``.
 
-        ``_entry_aware_amount`` checks ``not entries`` FIRST and that is
-        load-bearing rather than stylistic -- ``is_projected`` reads
-        ``status_id`` through ``ref_cache``, so a non-ORM row with neither
-        attribute must still be valued rather than raising.
+        ``_entry_aware_amount`` checks ``not entries`` FIRST, so an entry-less
+        row is valued without the status read the entry-aware branch needs.
+        That is load-bearing rather than stylistic: ``is_projected`` resolves a
+        ``ref_cache`` id, which is work an entry-less row has no reason to pay.
 
-        Mutation-verified: swapping the two guards fails this with
-        ``AttributeError: '_FakeRow' object has no attribute 'status_id'`` --
-        ``is_projected`` reads ``status_id`` BEFORE it consults ``ref_cache``,
-        so that attribute, not the cache, is what the ordering protects.
+        **It is graded by a SPY rather than by a missing attribute** (plan step
+        X-au-c3).  The proof used to be that ``_FakeRow`` omitted ``status_id``,
+        so a swapped order raised ``AttributeError``.  That stopped being a
+        legal input: every valuation now asks the status whether a row is worth
+        what it RECORDED or what it PLANS, so a row without the column is one no
+        valuation could ever see, and a control whose input is impossible grades
+        nothing.  Counting the call states the ordering claim directly and still
+        fails on a swap -- the entry-aware branch below calls ``is_projected``
+        exactly once, so a reordered guard makes this count 1.
         """
+        calls = []
+        real = _amounts.is_projected
+        monkeypatch.setattr(
+            _amounts, "is_projected",
+            lambda row: (calls.append(row), real(row))[1],
+        )
+
         row = _FakeRow(txn_id=1, statusless=True)
         assert _entry_aware_amount(row, _basis(row)) == Decimal("77.00")
+        assert calls == []

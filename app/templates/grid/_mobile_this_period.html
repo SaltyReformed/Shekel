@@ -230,7 +230,7 @@
                 {% endif %}
               {% endif %}
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, can_edit, 'tp', entry_lists, today) }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, settled, retained, can_edit, 'tp', entry_lists, today) }}
           {% endif %}
         {% endfor %}
       </ul>
@@ -285,7 +285,7 @@
                 {% endif %}
               {% endif %}
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, can_edit, 'tp', entry_lists, today) }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, settled, retained, can_edit, 'tp', entry_lists, today) }}
           {% endif %}
         {% endfor %}
       </ul>

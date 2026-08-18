@@ -27,13 +27,14 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import TxnTypeEnum
+from app.enums import SettlementBasisEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import posting_service
+from app.services import status_seam
 from app.services.status_seam import reject_settle_day_without_settled_status
 from app.services.transfer_service._loan_posting import (
     _reject_payment_before_origination,
@@ -93,7 +94,8 @@ def _build_shadow(
         category_id=xfer.category_id,
         transaction_type_id=transaction_type_id,
         estimated_amount=xfer.amount,
-        actual_amount=None,
+        settled_amount=None,
+        settled_basis_id=None,
         is_override=False,
         is_deleted=False,
         credit_payback_for_id=None,
@@ -282,8 +284,20 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     # (finding N-183).  The shadows are born in the parent's status, so this is
     # an identity status change carrying the day and moves nothing else.
     if created_status is not None and created_status.is_settled:
+        # The shadows are BORN in the settled status, so the seam sees an
+        # identity transition and cannot demand a record of what moved -- but a
+        # settled row that records nothing is one
+        # ``row_valuation.settled_figure`` refuses to value.  So the create
+        # supplies one: the figure
+        # is the transfer's own amount, which is what a born-settled transfer
+        # says moved, and the basis is ``derived`` because the app resolved it
+        # from the row rather than a human correcting what the app booked (plan
+        # step X-au-c3).
         apply_settle_day_to_pair(
             expense_shadow, income_shadow, spec.settled_on,
+            settlement=status_seam.Settlement(
+                amount=amount, basis=SettlementBasisEnum.DERIVED,
+            ),
         )
         db.session.flush()
         posting_service.sync_transfer_postings(xfer, settled=True)

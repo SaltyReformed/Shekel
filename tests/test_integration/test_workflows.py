@@ -16,12 +16,11 @@ from decimal import Decimal
 
 import pytest
 
-from app.enums import RecurrencePatternEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
 from app.models.ref import (
-    AccountType, RecurrencePattern, Status, TransactionType,
+    AccountType, Status, TransactionType,
 )
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -32,6 +31,7 @@ from app.services import (
     carry_forward_service,
     credit_workflow,
     recurrence_engine,
+    transaction_service,
     transfer_recurrence,
 )
 from app.services import balance_at
@@ -39,10 +39,11 @@ from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     make_every_period_rule,
-    make_pattern_rule,
+    make_cadence_rule,
     override_anchor,
     settle_instant_on,
 )
+from tests.oracles.recurrence_baseline import MONTHLY
 from app.services.row_valuation import owned_contribution
 
 
@@ -53,7 +54,6 @@ class TestSalaryToGrid:
         """Creating a salary template with every_period recurrence populates all periods."""
         with app.app_context():
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
             # Create recurrence rule and template (mimics salary profile creation).
             rule = make_every_period_rule(db.session, seed_user["user"].id)
@@ -94,9 +94,9 @@ class TestTemplateRecurrenceToGrid:
             # Authored through the write door (plan step R7c-b): "monthly on
             # the 15th" is stated as the first occurrence that description
             # produces, which is what ``first_occurrence_on_day`` translates.
-            rule = make_pattern_rule(
+            rule = make_cadence_rule(
                 seed_user["user"].id,
-                RecurrencePatternEnum.MONTHLY,
+                MONTHLY,
                 fires_on_day=15,
             )
 
@@ -980,9 +980,13 @@ class TestFullBudgetWorkflow:
             db.session.commit()
             txn1_id, txn2_id, txn3_id = txn1.id, txn2.id, txn3.id
 
-            # Step 2: Mark Rent as 'done' with actual_amount != estimated.
-            txn1.status_id = done.id
-            txn1.actual_amount = Decimal("1195.00")
+            # Step 2: Mark Rent as 'done' with a CORRECTION -- the figure a
+            # human read off a statement, which the settle records as
+            # ``corrected`` (plan step X-au-c3).  Through the real verb, because
+            # a bare status assign leaves a state the record's CHECKs refuse.
+            transaction_service.settle_transaction(
+                txn1, submitted=Decimal("1195.00"),
+            )
             db.session.commit()
 
             # Step 3: Mark Dining Out as 'credit' → payback in period 1.
@@ -1011,7 +1015,7 @@ class TestFullBudgetWorkflow:
             by_name_p0 = {t.name: t for t in period0_txns}
             assert by_name_p0["Rent"].status.name == "Paid"
             assert by_name_p0["Rent"].estimated_amount == Decimal("1200.00")
-            assert by_name_p0["Rent"].actual_amount == Decimal("1195.00")
+            assert by_name_p0["Rent"].settled_amount == Decimal("1195.00")
             assert by_name_p0["Dining Out"].status.name == "Credit"
             assert by_name_p0["Dining Out"].estimated_amount == Decimal("75.00")
             assert owned_contribution(by_name_p0["Dining Out"]) == Decimal("0")

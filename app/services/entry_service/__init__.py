@@ -25,8 +25,12 @@ shape was already there --
 * :mod:`._sums` -- what a SET of purchases adds up to, and the contexts a
   screen renders from those sums.  It does not.
 
--- and the arrow runs ONE way, ``_doors`` reading
-:func:`~._sums.compute_actual_from_entries` and ``_sums`` reading nothing back.
+-- and the arrow runs ONE way, ``_doors`` reading the reductions in
+:mod:`._sums` and ``_sums`` reading nothing back.  (It named
+``_sums.compute_actual_from_entries`` until plan step X-au-c3, which deleted
+that helper: the sum it computed is now the row's own ``purchases``-basis
+settlement, stated once in
+:func:`app.services.row_valuation.purchases_total`.)
 
 **Every public name is re-exported here**, so the split moved no call site:
 ``entry_service.create_entry`` and ``entry_service.entry_list_view`` resolve
@@ -54,7 +58,6 @@ from ._sums import (
     build_entry_lists_dict,
     build_entry_sums_dict,
     check_purchase_date_in_period,
-    compute_actual_from_entries,
     compute_entry_sums,
     compute_remaining,
     entry_list_view,
@@ -66,7 +69,6 @@ __all__ = [
     "build_entry_lists_dict",
     "build_entry_sums_dict",
     "check_purchase_date_in_period",
-    "compute_actual_from_entries",
     "compute_entry_sums",
     "compute_remaining",
     "create_entry",

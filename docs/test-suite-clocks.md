@@ -149,12 +149,17 @@ The mechanism is a session-scoped autouse fixture in `tests/conftest.py` (`_cale
 
 ```text
 created_at / updated_at   server_default=db.func.now()   app/models/mixins.py
-paid_at                   db.func.now()                  app/services/status_seam.py
 entry_date                server_default CURRENT_DATE    app/models/transaction_entry.py
 ```
 
-All three are evaluated **in the database**, which knows nothing about the fake. So under a faked
-date a server-stamped row carries the **real** instant, and any test comparing it against a
+A third row used to sit here -- `paid_at`, stamped by `db.func.now()` in
+`app/services/status_seam.py` -- and it is gone twice over. Ruling **R-EC** (plan step X-f1)
+replaced that instant with the civil `settled_on`, which the seam writes from `display_today()`:
+Python's clock, so `time-machine` does move it. And plan step X-au-c3 made `status_seam` a package,
+so the path named no file either.
+
+Both remaining rows are evaluated **in the database**, which knows nothing about the fake. So under
+a faked date a server-stamped row carries the **real** instant, and any test comparing it against a
 Python-derived date fails by the offset between them.
 
 Measured directly, under `SHEKEL_FAKE_TODAY=2026-09-02`:

@@ -50,6 +50,7 @@ def apply_status_to_all_three(
     new_status_id: int,
     *,
     settled_on: date | None = None,
+    settlement: "status_seam.Settlement | None" = None,
 ) -> None:
     """Move a transfer and both shadows to one status, through the ONE seam.
 
@@ -89,11 +90,23 @@ def apply_status_to_all_three(
             did not move, and the second went through the door ruling **R-ED**
             built for a user CORRECTING one.  Ignored for a non-settled status,
             where the seam clears the day.
+        settlement: WHAT moved, when this change records a settle
+            (:class:`app.services.status_seam.Settlement`).  Applied to BOTH
+            shadows and to neither the parent -- a transfer's money moves on its
+            legs, so each leg records its own, and the two are equal by Transfer
+            Invariant 3 exactly as their settle day is.  **A move INTO the
+            settled band must carry one**, which the seam refuses otherwise;
+            that is what keeps "a settled row states what moved" true of a
+            transfer's rows as well as a plain one's.  ``None`` on any other move
+            leaves each shadow's existing record alone, and on the way OUT of the
+            band the seam releases both.
 
     Raises:
         ValidationError: If the transition is illegal for the transfer or for
             either shadow (propagated from the state machine), or if
             *settled_on* is refused by the seam (a future day, ruling R-EJ).
+        ValueError: If the move enters the settled band with no *settlement*
+            (propagated from the seam).
     """
     for row in (rows.transfer, *rows.shadows):
         verify_transition(row, new_status_id)
@@ -110,27 +123,58 @@ def apply_status_to_all_three(
     # Preferring an EXISTING day over today is what stops a repair from
     # inventing a settle day: the sibling already knows when the money moved,
     # and that day is the ``entry_date`` the postings are filed under.
+    settled_ids = settled_status_ids()
+    settles = new_status_id in settled_ids
+    # **A leg still IN the settled band is asked FIRST, and the two repairs
+    # below share that one ordering** (plan step X-au-c3).  A settled leg's
+    # facts are what a balance is counting right now; an unsettled leg's are
+    # only what it remembers, and since a revert RETAINS the record while
+    # RELEASING the day, the pair can hold a live leg and a stale one at once.
+    # Reading the shadows in their declared order instead -- ``TransferRows.
+    # shadows`` is ``(expense, income)`` -- would always ask the expense leg,
+    # so a repair on a transfer whose expense leg had drifted out of the band
+    # would write that leg's retained figure over the income leg's live one,
+    # pricing the pair at a number one of them had already stopped claiming.
+    # ``sorted`` is stable, so two legs in the same band keep the declared
+    # order and a repair remains deterministic.
+    legs = sorted(rows.shadows, key=lambda s: s.status_id not in settled_ids)
     pair_day = None
-    if new_status_id in settled_status_ids():
-        # The CALLER's day wins over both, because it is the only one of the
-        # three that is EVIDENCE: a statement said the money moved that day.
-        # The two below are repairs -- a sibling's record, then the user's
-        # today -- and a repair may not overrule a fact.
+    if settles:
+        # The CALLER's day wins over both legs, because it is the only one of
+        # the three that is EVIDENCE: a statement said the money moved that day.
+        # The rest are repairs -- a sibling's record, then the user's today --
+        # and a repair may not overrule a fact.
         pair_day = settled_on
-        # ``is not None`` rather than truthiness: the coding standard forbids
-        # relying on falsiness for a business value, and while no ``date`` is
-        # falsy today, the ``or`` chain read as if one could be.
-        if pair_day is None:
-            pair_day = rows.expense.settled_on
-        if pair_day is None:
-            pair_day = rows.income.settled_on
+        for leg in legs:
+            # ``is not None`` rather than truthiness: the coding standard
+            # forbids relying on falsiness for a business value, and while no
+            # ``date`` is falsy today, an ``or`` chain read as if one could be.
+            if pair_day is None:
+                pair_day = leg.settled_on
         if pair_day is None:
             pair_day = display_today()
+    # ONE settlement RECORD for the PAIR, resolved by the same rule and for the
+    # same reason as the day above: a REPAIR may not invent either term.
+    # ``restore_transfer`` moves a shadow that drifted out of its parent's
+    # settled status back INTO the band, and it has no figure of its own to state
+    # -- so it takes the one its SIBLING already recorded, which is Transfer
+    # Invariant 3 read rather than maintained.  A caller's own record wins,
+    # because it is the only one of the two that is EVIDENCE; where neither
+    # exists the seam refuses, which is correct -- there is nothing to record.
+    pair_settlement = settlement
+    if pair_settlement is None and settles:
+        for leg in legs:
+            pair_settlement = status_seam.recorded_settlement(leg)
+            if pair_settlement is not None:
+                break
     for shadow in rows.shadows:
         status_seam.apply_status_change(
-            shadow, new_status_id, settled_on=pair_day,
+            shadow, new_status_id,
+            settled_on=pair_day, settlement=pair_settlement,
         )
-    # The parent carries no ``settled_on`` column, so it takes no day.
+    # The parent carries neither a ``settled_on`` column nor a settlement
+    # record, so it takes neither: a transfer's money moves on its two shadow
+    # rows and each records its own leg.
     status_seam.apply_status_change(rows.transfer, new_status_id)
 
 
@@ -138,6 +182,8 @@ def apply_settle_day_to_pair(
     expense_shadow: Transaction,
     income_shadow: Transaction,
     day: date | None,
+    *,
+    settlement: "status_seam.Settlement | None" = None,
 ) -> None:
     """Record ONE settle day on both shadows, at the status they already hold.
 
@@ -166,6 +212,17 @@ def apply_settle_day_to_pair(
             user's today, which is the F-048 / C-22 rule for a transfer created
             already settled: it settled at creation.  The default is resolved
             HERE rather than at the call site so there is one statement of it.
+        settlement: WHAT moved, for the BORN-SETTLED create alone
+            (:class:`app.services.status_seam.Settlement`).  Its shadows are
+            constructed already in the settled status, so the seam sees an
+            IDENTITY transition and cannot ask them for a record -- but a
+            settled row that records nothing is one
+            ``row_valuation.settled_figure`` refuses to value, so the create
+            must supply one.
+            :func:`apply_settle_day_correction`, the other caller, passes
+            ``None``: it corrects the day of a pair whose record already exists,
+            and re-stating the figure there would re-price a settled row from
+            whatever the app thinks today.
 
     Raises:
         ValidationError: If either shadow is not in a settled status (a day
@@ -180,7 +237,8 @@ def apply_settle_day_to_pair(
     pair_day = day if day is not None else display_today()
     for shadow in (expense_shadow, income_shadow):
         status_seam.apply_status_change(
-            shadow, shadow.status_id, settled_on=pair_day,
+            shadow, shadow.status_id,
+            settled_on=pair_day, settlement=settlement,
         )
 
 

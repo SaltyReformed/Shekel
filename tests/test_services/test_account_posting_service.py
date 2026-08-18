@@ -447,9 +447,22 @@ class TestWalkAccountLedger:
             # Break the row AFTER its postings exist, which is the only way to
             # reach this walk with one: a bulk update bypasses the ORM, exactly
             # as the real hazard does.
+            # The whole RECORD goes with the day, because
+            # ``ck_transactions_settle_day_needs_basis`` refuses a day that
+            # names no figure (plan step X-au-c3).  The break under test is
+            # still the missing DAY on a settled STATUS, which no constraint
+            # can state -- the predicate is ``ref.statuses.is_settled`` and a
+            # CHECK cannot join.
             _db.session.query(Transaction).filter(
                 Transaction.id == txn.id,
-            ).update({"settled_on": None}, synchronize_session=False)
+            ).update(
+                {
+                    "settled_on": None,
+                    "settled_amount": None,
+                    "settled_basis_id": None,
+                },
+                synchronize_session=False,
+            )
             _db.session.commit()
 
             with pytest.raises(UndatedSettleError) as exc:

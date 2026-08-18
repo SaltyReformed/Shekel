@@ -17,7 +17,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import posting_service, transfer_service
 from app.services.cash_ledger import resolve_transaction_amount
-from app.services.entry_service import compute_actual_from_entries
+from app.services.row_valuation import purchases_total
 from app.utils.balance_predicates import is_projected_clause
 from app.utils.log_events import BUSINESS, EVT_CARRY_FORWARD, log_event
 
@@ -279,7 +279,7 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
       2. Compute ``leftover = max(Decimal("0"), <the source's RESOLVED
          amount> - entries_sum)``.  Overspend (``entries_sum > budget``)
          clamps to zero -- the actual overspend is recorded on the
-         settled source row's ``actual_amount`` and on its entries.
+         settled source row's settlement record and on its entries.
       3. If ``leftover > 0``, resolve the destination row via
          ``_resolve_or_create_target_row``, which (a) bumps the single
          mutable (Projected) row for ``(template_id, target_period.id,
@@ -355,7 +355,7 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
     # mutations on this row) untouched.  Reading entries triggers a
     # lazy-load SELECT inside no_autoflush, which is safe because
     # this function never mutates entries.
-    entries_sum = compute_actual_from_entries(source_txn.entries)
+    entries_sum = purchases_total(source_txn.entries)
     # The source's BUDGET, resolved rather than read off the column (plan step
     # X-au-c2b): ruling E-21 fixes an envelope's base on its own amount
     # unconditionally, and a derived row stores none.

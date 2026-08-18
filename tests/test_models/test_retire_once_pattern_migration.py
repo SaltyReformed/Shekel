@@ -5,19 +5,24 @@ Plan step **R2e-3** of ``docs/plans/implementation_plan_recurrence_redesign.md``
 ``recurrence_rule_id`` for every ``Once`` rule and then deletes those rules,
 while deliberately LEAVING the ``ref.recurrence_patterns`` row itself.
 
-Three groups, and the split is the same one the sibling recurrence migration
+Two groups, and the split is the same one the sibling recurrence migration
 tests draw:
 
 * **State at HEAD.**  The migration is already applied when these run (the
   template builder upgraded base->head), so the post-conditions are asserted
   against the live database rather than by re-running the migration in an
   xdist worker.
-* **The expand/contract half is asserted in BOTH directions** -- the row is
-  present AND no enum member names it.  Either alone passes for the wrong
-  reason (see :class:`TestTheSurvivingRefRow`).
 * **The downgrade refuses**, read from the AST rather than executed: running a
   downgrade inside an xdist worker would mutate the session-wide database, and
   this one raises by design.
+
+**A third group, ``TestTheSurvivingRefRow``, went at plan step R9**, and what
+it asserted is worth recording rather than merely deleting: that the ``Once``
+``ref`` row was PRESENT and that no enum member named it, together, because
+either half alone passed for the wrong reason.  R9 dropped
+``ref.recurrence_patterns`` and ``RecurrencePatternEnum`` in one release, so
+both halves lost their subject at once and the strictly stronger claim -- the
+table does not exist -- is asserted by :class:`TestNoOnceRuleSurvives` below.
 
 **What this file does NOT do is re-run the upgrade.**  It writes DATA, so
 executing it twice against the session database would be a no-op the second
@@ -34,9 +39,7 @@ import pathlib
 
 from sqlalchemy import text
 
-from app.enums import RecurrencePatternEnum
 from app.extensions import db
-from app.ref_seeds import _REF_TABLE_SEEDS
 from tests._test_helpers import load_migration_module
 
 _MIGRATION_FILENAME = "d4a71f6e30bb_retire_the_once_recurrence_pattern.py"
@@ -74,35 +77,36 @@ class TestChaining:
 class TestNoOnceRuleSurvives:
     """No ``budget.recurrence_rules`` row can name the retired pattern."""
 
-    def test_zero_rules_reference_the_retired_pattern(self, app):
+    def test_the_pattern_table_is_gone_entirely(self, app):
         """The upgrade's whole point, asserted against the live database.
 
-        **The assertion got STRONGER at plan step R7c-c, and the query
-        changed with it.**  It counted the rules whose ``pattern_id`` joined to
-        the retired row by NAME -- the honest question while a rule could point
-        at one.  That column is dropped (migration ``d9f5c1a48b73``), so what
-        is assertable now is that ``ref.recurrence_patterns`` has no inbound
-        foreign key at all: no rule NAMES the retired pattern because no rule
-        CAN, which is the same claim made unconditionally.
+        **This claim has strengthened twice.**  It began as a count of the
+        rules whose ``pattern_id`` joined to the retired row by NAME -- the
+        honest question while a rule could point at one.  Plan step R7c-c
+        dropped that column (``d9f5c1a48b73``), which turned it into "no
+        inbound foreign key exists", making "no surviving rule names it" into
+        "no rule CAN name it".  Plan step **R9** dropped the table itself
+        (``b2e9a47c3f18``), which is the end of the line: there is nothing for
+        a rule to name.
 
-        The ``ref`` row itself still survives, and deliberately -- see
-        :class:`TestTheSurvivingRefRow` and ruling R-R11; plan step **R9**
-        drops the table.
+        Asserted here rather than only in R9's own migration test because THIS
+        file is where "can a rule still be a Once rule" is answered, and an
+        answer that stopped being checked when its subject moved is a coverage
+        hole rather than a closed question.
         """
         with app.app_context():
-            referencing = db.session.execute(text("""
+            exists = db.session.execute(text("""
                 SELECT count(*)
-                  FROM pg_constraint c
-                 WHERE c.contype = 'f'
-                   AND c.confrelid = 'ref.recurrence_patterns'::regclass
+                  FROM information_schema.tables
+                 WHERE table_schema = 'ref'
+                   AND table_name = 'recurrence_patterns'
             """)).scalar_one()
 
-        assert referencing == 0, (
-            f"a foreign key still points at ref.recurrence_patterns, so a "
-            f"rule could name the '{_RETIRED}' pattern again.  Plan step "
-            f"R7c-c dropped budget.recurrence_rules.pattern_id, which is the "
-            f"only one there was -- and dropping it is what turns "
-            f"'no surviving rule names it' into 'no rule CAN name it'"
+        assert exists == 0, (
+            f"ref.recurrence_patterns is back, so a rule could name the "
+            f"'{_RETIRED}' pattern again.  Plan step R9 dropped it once "
+            f"R7c-c had removed budget.recurrence_rules.pattern_id, the only "
+            f"foreign key it ever had"
         )
 
     def test_no_template_of_either_kind_names_a_retired_rule(self, app):
@@ -131,48 +135,6 @@ class TestNoOnceRuleSurvives:
             """)).scalar_one()
 
         assert dangling == 0
-
-
-class TestTheSurvivingRefRow:
-    """The ``ref`` row outlives its enum member, and that is load-bearing.
-
-    Asserted in BOTH directions in one class because either half alone passes
-    for the wrong reason: "the row exists" is satisfied by re-adding the enum
-    member (which re-introduces the ambiguity ruling R-R4 removed), and "no
-    member names it" is satisfied by deleting the row (which is the failure --
-    the PREVIOUS image's ``ref_cache.init`` raises without it, and
-    ``shekel-deploy`` rolls back to that image).
-    """
-
-    def test_the_row_is_still_there(self, app):
-        """``ref.recurrence_patterns`` still carries the retired name."""
-        with app.app_context():
-            rows = db.session.execute(text(
-                "SELECT count(*) FROM ref.recurrence_patterns WHERE name = :name"
-            ), {"name": _RETIRED}).scalar_one()
-
-        assert rows == 1, (
-            f"the '{_RETIRED}' ref row must survive until plan step R9 drops "
-            f"the table (ruling R-R11) -- deleting it makes the deploy's "
-            f"auto-rollback image unbootable"
-        )
-
-    def test_no_enum_member_names_it(self):
-        """``RecurrencePatternEnum`` really did lose the member."""
-        assert _RETIRED not in {m.value for m in RecurrencePatternEnum}
-
-    def test_the_reseed_would_put_it_back(self):
-        """``app/ref_seeds.py`` still lists it, so a fresh init recreates it.
-
-        The database check above cannot see this: every test database is
-        migration-built, so the row is present whether or not the reseed list
-        names it.  Without the entry, the ``create_all`` + ``seed_reference_data``
-        fresh-init path would produce a database the previous image cannot
-        boot against.
-        """
-        seeds = dict(_REF_TABLE_SEEDS)["RecurrencePattern"]
-
-        assert _RETIRED in seeds
 
 
 class TestDowngradeRefuses:

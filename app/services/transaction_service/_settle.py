@@ -21,8 +21,10 @@ and none of them is reachable from a template or a form field.
 Architecture:
   - No Flask imports.  Receives ORM objects, mutates them, and
     raises domain exceptions on precondition violation.
-  - All monetary arithmetic uses ``Decimal`` (the helpers delegate
-    to ``app.services.entry_service.compute_actual_from_entries``).
+  - All monetary arithmetic uses ``Decimal``.  The entry sum a settle books
+    is ``row_valuation.purchases_total`` -- it was
+    ``entry_service.compute_actual_from_entries`` until plan step X-au-c3
+    deleted that helper along with the column it was named for.
   - Does NOT flush or commit -- the caller owns the transaction
     boundary so the helper can safely participate in larger atomic
     operations (e.g. the carry-forward batch in Phase 4).  The ledger
@@ -34,6 +36,7 @@ import logging
 from datetime import date
 from decimal import Decimal
 
+from app.enums import SettlementBasisEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services import posting_service
@@ -42,9 +45,15 @@ from app.services.cash_ledger import (
     contribution_of,
     live_override,
 )
-from app.services.entry_service import compute_actual_from_entries
-from app.services.status_seam import apply_status_change
+from app.services.row_valuation import purchases_total
+from app.services.status_seam import (
+    Settlement,
+    apply_status_change,
+    honoured_correction,
+    recorded_settlement,
+)
 from app.services.transaction_service._status_rules import settled_status_id
+from app.utils.balance_predicates import is_identity_move, settled_status_ids
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSACTION_SETTLED_FROM_ENTRIES,
@@ -137,6 +146,98 @@ def reject_unsettleable(txn: Transaction) -> None:
         )
 
 
+def fixed_settle_amount(txn: Transaction) -> "Decimal | None":
+    """Return what a settle books from the row's OWN RECORDS, or ``None``.
+
+    **The pure prefix of :func:`settle_amount`**, and the sibling in shape of
+    :func:`app.services.row_valuation.fixed_contribution`: the arms that answer
+    before any producer is consulted, so a caller that only wants those arms
+    does not run the paycheck engine to find out there was nothing to run it
+    for.  ``None`` means neither arm applies and the row's amount must be
+    RESOLVED, which is what :func:`settle_amount` goes on to do.
+
+    Two arms, in this order:
+
+      * a row whose figure comes from its PURCHASES books their sum
+        (:func:`settles_from_entries`, ruling **R-FF**) -- and it takes
+        precedence, because such a row honours no correction at all;
+      * a row still holding a ``corrected`` record books THAT
+        (:func:`~app.services.status_seam.honoured_correction`, plan step
+        X-au-c3).  A revert keeps what moved, so a row the user reverted in
+        order to edit re-books the figure they read off their statement.
+
+    **It is published because a SCREEN needs the second arm** (developer,
+    2026-08-17).  A reverted row is worth its PLAN -- that is what the balance
+    counts and what the grid shows -- while a re-settle books its retained
+    correction, so the two numbers genuinely differ and the second one was
+    visible on no surface but the reconcile panel.  The developer's rule is that
+    whatever will be booked against the account is shown wherever the row is
+    shown; :func:`retained_settle_amounts_by_id` is that map, and it is built
+    from THIS function rather than from a second reading of the same columns, so
+    what a screen promises and what a tick books cannot drift.
+
+    Pure and cheap: a status test, a relationship read for an entries row, and
+    one ``ref_cache`` lookup.  No producer runs, so a whole grid costs no
+    paycheck engine.
+
+    Args:
+        txn: The row being priced.
+
+    Returns:
+        The figure the row's own records answer, or ``None`` when they do not.
+    """
+    if settles_from_entries(txn):
+        return purchases_total(txn.entries)
+    return honoured_correction(txn)
+
+
+def retained_settle_amounts_by_id(rows) -> "dict[int, Decimal | None]":
+    """Return ``{transaction_id: the figure a re-settle would RE-BOOK}``.
+
+    The display map for the one figure a screen could not otherwise show (plan
+    step X-au-c3, developer 2026-08-17).  A row that has been reverted out of
+    the settled band keeps what it recorded, and a re-settle honours it -- so
+    the grid showing a ``$500.00`` plan while marking it paid books ``$245.32``
+    is two answers to one money question, which is the defect the reconcile
+    panel's own prefill was fixed for and which the grid and the full-edit
+    popover still had.
+
+    ``None`` for every row where no such gap exists: a row already SETTLED
+    (:func:`app.services.row_valuation.settled_amounts_by_id` is that row's
+    map, and the screen shows the recorded figure already), a row that settles
+    from its purchases (its entries are on screen and are the figure), and a row
+    holding no ``corrected`` record (its plan IS what a settle would book).  So
+    a non-``None`` value means exactly "this row will book something other than
+    what you can see", which is the only case worth drawing.
+
+    **It asks :func:`~app.services.status_seam.honoured_correction` rather than
+    :func:`fixed_settle_amount`, and the difference is a false caption on a
+    large class of rows.**  That function's FIRST arm is the purchases sum, so
+    delegating to it answered a figure for every unsettled ENVELOPE carrying a
+    purchase -- a `$400` envelope with one `$25` entry came back `$25.00`, and
+    every grid surface drew it under the words "the figure recorded before this
+    row was set back to Projected".  That row has never settled and records
+    nothing; the caption was false, and the cell already showed `25 / 400` two
+    lines up.  A retained CORRECTION is the one thing this map is about, and
+    ``honoured_correction`` is the arm that answers it (found by adversarial
+    review, 2026-08-18; the paragraph above already said this and the code did
+    not do it).
+
+    Args:
+        rows: The rows a surface is about to render.
+
+    Returns:
+        ``{transaction_id: Decimal | None}`` covering every row.
+    """
+    settled = settled_status_ids()
+    return {
+        row.id: (
+            None if row.status_id in settled else honoured_correction(row)
+        )
+        for row in rows
+    }
+
+
 def settle_amount(txn: Transaction) -> Decimal:
     """Return what settling *txn* would BOOK, absent a caller-supplied actual.
 
@@ -168,23 +269,70 @@ def settle_amount(txn: Transaction) -> Decimal:
             into.
     """
     reject_unsettleable(txn)
-    if settles_from_entries(txn):
-        return compute_actual_from_entries(txn.entries)
-    basis = amount_basis(txn.account.user_id, txn.scenario_id)
+    fixed = fixed_settle_amount(txn)
+    if fixed is not None:
+        return fixed
+    return _manual_branch_figures(
+        txn, amount_basis(txn.account.user_id, txn.scenario_id),
+    )[0]
+
+
+def _manual_branch_figures(
+    txn: Transaction, basis,
+) -> "tuple[Decimal, Decimal | None]":
+    """Return the MANUAL branch's figure AND the live one behind it.
+
+    **Split out of :func:`settle_amount` so ONE settle resolves ONE basis**
+    (developer ruling, 2026-08-17).  The public accessor builds a basis per
+    call, which is right for the reconcile panel's per-row offer and wrong
+    inside the verb: :func:`settle_transaction` needs the same figure and then
+    needs the same basis again for :func:`_reconcile_cached_amount`, so calling
+    the public form there ran the profile lookup, the loan resolve and the
+    paycheck engine twice over one row -- and a third time when a caller
+    supplied a figure and the echo rule asked again.  That is the shape plan
+    step X-au-c2b closed WITHIN a call (findings **N-268** / **N-269**), and it
+    had grown back one tier up.
+
+    **It answers BOTH figures because one resolution produces both**, and the
+    alternative was resolving :func:`_freshest_amount` twice per settle -- once
+    for what the settle books and once for the cache refresh that writes the
+    same answer.  Returning the pair keeps ONE statement of the branch's rule,
+    which is what :func:`settle_amount` exists to guarantee: the figure the
+    reconcile panel OFFERS and the figure the verb BOOKS cannot drift, because
+    they come from this function or from nowhere.
+
+    Args:
+        txn: The row being priced, still in its pre-settle status.
+        basis: The pass's :class:`~app.services.cash_ledger.AmountBasis`.
+
+    Returns:
+        ``(booked, live)``: what a settle would book -- the projection's live
+        figure when one exists, else the row's own contribution -- and the live
+        figure itself, or ``None`` when nothing supersedes the row's cache.
+    """
     live = _freshest_amount(txn, basis)
-    return contribution_of(txn, basis) if live is None else live
+    booked = contribution_of(txn, basis) if live is None else live
+    return booked, live
 
 
-def is_correction(txn: Transaction, submitted: "Decimal | None") -> bool:
+def _is_correction(
+    txn: Transaction, submitted: "Decimal | None", booked: Decimal,
+) -> bool:
     """Return whether *submitted* is a HUMAN's figure this settle would BOOK.
 
-    **The verb's own act-1b decision, published, and it is finding N-231's
-    fix.**  Three doors may hand a settle an ``actual_amount`` and only some of
-    those figures are corrections: a row whose amount is DERIVED from its
-    entries ignores one outright (:func:`settles_from_entries`), and a figure
-    equal to what the row would book anyway is the panel's own prefill coming
-    back untouched.  :func:`settle_transaction` asks this to decide what to
-    write; the reconcile writer asks it to decide what to COUNT.
+    **The verb's own act-1b decision, and it is finding N-231's fix.**  Three
+    doors may hand a settle a figure and only some of them are corrections: a
+    row whose amount is DERIVED from its entries ignores one outright
+    (:func:`settles_from_entries`), and a figure equal to what the row would
+    book anyway is the panel's own prefill coming back untouched.
+
+    **It was PUBLIC until the developer's 2026-08-17 ruling**, so the reconcile
+    writer could ask what the settle would count.  It asked BEFORE the settle
+    and re-resolved the row's amount to make its comparison, which meant one
+    ticked row paid for the derivation twice and the count was a second answer
+    to a question the write had already decided.  :func:`settle_transaction`
+    RETURNS that answer now -- the shape ``transfer_service._settle.settle``
+    already had -- so the rule has one caller and needs no door.
 
     **What it replaced was a reading of the COLUMN, and that over-reported by
     construction.**  ``reconcile_service`` counted rows whose ``actual_amount``
@@ -213,23 +361,27 @@ def is_correction(txn: Transaction, submitted: "Decimal | None") -> bool:
         txn: The row about to settle, still in its pre-settle status.
         submitted: The figure a caller supplied, or ``None`` when nobody typed
             one.
+        booked: What this settle would book absent a correction, resolved once
+            by :func:`_manual_branch_figures` and threaded here rather than
+            re-derived.
 
     Returns:
-        True when the verb will write *submitted* into ``actual_amount``.
+        True when the verb will RECORD *submitted* as a ``corrected``
+        settlement.
     """
     return (
         submitted is not None
         and not settles_from_entries(txn)
-        and submitted != settle_amount(txn)
+        and submitted != booked
     )
 
 
 def settle_transaction(
     txn: Transaction,
     *,
-    actual_amount: Decimal | None = None,
+    submitted: Decimal | None = None,
     settled_on: date | None = None,
-) -> None:
+) -> bool:
     """Settle one regular transaction -- what "the money moved" MEANS for a row.
 
     **Ruling R-FA's verb.**  The rule lived in a ROUTE branch
@@ -244,29 +396,30 @@ def settle_transaction(
     Three acts, in this order and the order matters:
 
     1. **The amount, which is the FRESHEST derivation of what this row is
-       worth** (ruling **R-FE**, plan step X-aq), and it is TWO writes to two
-       columns that mean two different things.  An envelope-tracked row WITH
+       worth** (ruling **R-FE**, plan step X-aq).  An envelope-tracked row WITH
        entries settles at ``sum(entries)`` (:func:`settle_from_entries`),
-       because its entries ARE the record of what it cost.  Everything else:
-       :func:`_reconcile_cached_amount` first refreshes ``estimated_amount``
-       from the projection's own live derivation, because that column is a
-       CACHE and this is the one moment the arc reconciles it (finding
-       **N-224**; plan step **X-ar** gives the same reconciler its other
-       triggers and deletes the read-time thread).  Then a caller-supplied
-       *actual_amount* -- a figure a HUMAN read off a statement -- lands in
-       ``actual_amount``, and only if it differs from what the refreshed row
-       would book anyway.
+       because its entries ARE the record of what it cost -- and its record
+       stores NO figure at all, for that reason.  Everything else resolves its
+       figure ONCE (:func:`_manual_branch_figures`) and does two things with the
+       one answer: :func:`_reconcile_cached_amount` refreshes
+       ``estimated_amount`` where the projection's live derivation supersedes
+       it, because that column is a CACHE and this is the one moment the arc
+       reconciles it (finding **N-224**; plan step **X-ar** gives the same
+       reconciler its other triggers and deletes the read-time thread), and the
+       settle RECORDS what it booked.  A caller-supplied *submitted* figure -- a
+       figure a HUMAN read off a statement -- is what the record states instead,
+       and only if it differs from what the row would book anyway.
        **The ``and txn.entries`` half is load-bearing**, and production says
        so: ``Kayla's Spending Money`` carries no entries at all, so settling it
        from entries unconditionally would book ``$0.00`` against its
        ``$100.00`` estimate.  **Why the rule is HERE and not at each door**: it
        decides money, three doors settle a row, and a door that picks its own
        figure is how one row comes to book two amounts depending on which
-       control the user pressed.  **And why the two writes are not one**: a
-       machine's recompute and a human's correction are different facts, and
-       three subsystems read ``actual_amount``'s NULL-ness as meaning the
-       second -- see :func:`_reconcile_cached_amount` for the three and for the
-       review that sent the single-column version back.
+       control the user pressed.  **And why the plan and the record are two
+       columns**: a machine's recompute and a human's correction are different
+       facts, and until plan step X-au-c3 three subsystems read one column's
+       NULL-ness to tell them apart -- see :func:`_reconcile_cached_amount` for
+       the three, and ``settled_basis_id`` for what says it now.
     2. **The status**, through the single seam, so the transition is verified
        and the settle day stamped by the one door that owns both.
     3. **The ledger**, reconciled LAST, so it reads the final amount rather
@@ -315,17 +468,18 @@ def settle_transaction(
             REFUSED here, because a transfer settles through
             ``transfer_service.update_transfer`` so both legs and the parent
             move together.
-        actual_amount: What the row actually cost, when the CALLER knows --
-            i.e. a figure a human supplied.  ``None`` does NOT mean "keep the
-            stored amount": it means "nobody typed one", and act 1 then asks
-            :func:`_freshest_amount` what the projection is holding.  **No form
-            submits it today** -- measured: ``name="actual_amount"`` appears
-            only on the full-edit and full-create templates, which PATCH and
-            POST the transaction rather than posting mark-done, and no JS
-            composes it -- so ``MarkDoneSchema``'s field is a channel the UI
-            has never used.  Ruling **R-FB** is what gives it a first real
-            caller: a BILL's tick may correct its amount, prefilled, and an
-            envelope's close may not.
+        submitted: What the row actually cost, when the CALLER knows -- i.e. a
+            figure a human supplied.  ``None`` does NOT mean "keep the stored
+            amount": it means "nobody typed one", and the settle then RECORDS
+            what it resolved, on the ``derived`` basis.  Ruling **R-FB** is what
+            gives the parameter its real callers: a BILL's tick may correct its
+            amount, prefilled, and an envelope's close may not -- the envelope
+            branch ignores a submitted figure outright, and the full-edit door
+            refuses one on such a row rather than dropping it silently.
+            **It is named for what it IS rather than for a column** since plan
+            step X-au-c3: it was ``actual_amount``, and the column of that name
+            is gone -- a settled row records what moved in ``settled_amount``
+            beside a ``settled_basis_id`` that says whether this figure is why.
         settled_on: The civil day the money moved, when the CALLER knows it --
             the reconcile tick's statement date.  ``None`` derives it through
             the seam.  A day in the future or one supplied for a non-settled
@@ -333,6 +487,18 @@ def settle_transaction(
             the tick cannot reach either, because an assertion's own
             ``observed_on`` is already refused in the future by
             ``anchor_service``.
+
+    Returns:
+        Whether this settle booked a HUMAN's figure -- what the reconcile
+        writer counts (finding **N-231**).  **Answered by the act itself since
+        the developer's 2026-08-17 ruling**, which is the shape
+        ``transfer_service._settle.settle`` already had one table over: the
+        caller used to ask :func:`_is_correction` separately, which re-resolved
+        the row's amount to make its comparison, so one ticked row paid for the
+        paycheck engine twice and the count could in principle disagree with
+        the write.  Asked by the verb, the two cannot differ and the figure is
+        resolved once.  ``False`` for the envelope branch, which books its own
+        entries and honours no submitted figure at all.
 
     Raises:
         ValidationError: On a transfer shadow or a soft-deleted row, from the
@@ -348,12 +514,51 @@ def settle_transaction(
     # its own three refusals, and for the same reason.
     reject_unsettleable(txn)
 
+    # **A row ALREADY in the status this settle would move it to is an
+    # idempotent no-op**, which is the rule
+    # ``transfer_service._update.settle_transfer`` has always stated one table
+    # over and this verb did not.  Without it a replayed mark-done -- a double
+    # click, a stale tab, a re-POST of an empty body -- re-derived the row and
+    # OVERWROTE its record: measured, a settle booking a human's ``$90.00``
+    # against a ``$500.00`` plan came back ``$90.00`` on the ``derived`` basis,
+    # so the figure survived and the stored answer to "did a human correct this"
+    # was destroyed.  That answer is the entire reason ``settled_basis_id``
+    # exists (finding **N-241**, ruling **R-FH**), and the reconcile writer's
+    # correction count is read from this verb's return, so the replay also
+    # un-counted a correction that had really been made.
+    #
+    # **``Settlement.from_settle`` closed that measurement independently** by
+    # honouring a RETAINED ``corrected`` record, so the manual branch would now
+    # survive the replay without this line.  What it still uniquely protects is
+    # the ENVELOPE replay: ``settle_from_entries`` refuses an immutable row by
+    # precondition, so a double-clicked Mark Paid on an already-Paid envelope
+    # would 400 where nothing is wrong and nothing needs doing.  That is the
+    # case ``TestAReplayedSettleIsANoOp`` pins, and it is pinned because this
+    # return had no firing control anywhere in the suite until then -- all
+    # 9,611 tests passed with it disabled, measured 2026-08-17.
+    #
+    # **It tests the row's own settled status, NOT the settled BAND**, and the
+    # difference is a refusal: a first version asked ``status_id in
+    # settled_status_ids()`` and thereby swallowed ``Settled -> Paid``, an
+    # ILLEGAL transition ``state_machine.verify_transition`` exists to reject,
+    # turning a designed 400 into a silent 200.  Only the identity move is
+    # nothing to do; every other settled-to-settled move still owes the state
+    # machine its answer.
+    #
+    # Settling again is not how a settled row is changed: the figure is
+    # corrected by reverting and re-settling (the record survives the revert,
+    # ``status_seam.apply_status_change``), and the DAY by
+    # ``status_seam.settle_day_for_status`` (ruling **R-ED**).
+    if is_identity_move(txn, settled_status_id(txn)):
+        return False
+
+    correction = None
     if settles_from_entries(txn):
         settle_from_entries(txn, settled_on=settled_on)
     else:
         # Act 1b's DECISION, taken before act 1a moves anything.  The echo rule
         # -- a figure equal to what the row would book anyway is not a
-        # correction -- is :func:`is_correction`'s, asked here and by the
+        # correction -- is :func:`_is_correction`'s, asked here and by the
         # reconcile writer's telemetry so one rule has one statement (finding
         # **N-231**).  Writing an echoed figure would populate a column that is
         # NULL on every uncorrected row, destroying the only signal that says a
@@ -376,32 +581,60 @@ def settle_transaction(
         # **Asked BEFORE act 1a, and that is exact rather than approximate.**
         # The comparison it makes -- against :func:`settle_amount`, the same
         # expression the panel prefills from -- equals the post-refresh
-        # the row's contribution in every shape (:func:`is_correction` states the
+        # the row's contribution in every shape (:func:`_is_correction` states the
         # three).  What it is NOT is a comparison against the pre-refresh
         # that contribution: it is a cache the recompute has already
         # superseded, and using it made the rule inert for exactly the rows act
         # 1a is about.
-        correction = actual_amount if is_correction(txn, actual_amount) else None
+        # What this settle BOOKS, read once from the same published rule the
+        # reconcile panel prefills from, so the figure offered and the figure
+        # recorded cannot differ.  Read BEFORE act 1a below, which is the only
+        # moment it has an answer: the live producers are Projected-only.
+        # ONE basis for the whole act (developer ruling, 2026-08-17): the
+        # figure this settle books, the echo rule's comparison and act 1a's
+        # cache refresh are three questions about one row against one
+        # derivation, and building a basis for each ran the paycheck engine
+        # up to three times per settle.
+        basis = amount_basis(txn.account.user_id, txn.scenario_id)
+        resolved, live = _manual_branch_figures(txn, basis)
+        # What this settle BOOKS: a RETAINED correction if the row still holds
+        # one, else what the branch resolves.  Read through the same published
+        # rule :func:`settle_amount` answers with, so the figure the panel
+        # OFFERS and the figure this books are one expression and cannot drift.
+        held = honoured_correction(txn)
+        booked = resolved if held is None else held
+        correction = submitted if _is_correction(txn, submitted, booked) else None
         # Act 1a: RECONCILE THE CACHE, before the seam.  It must be before:
         # the projection's own rule is Projected-only, so ``live_projected_net``
         # drops a row the moment its status leaves that band and asking after
         # the flip always answers "nothing fresher".
-        _reconcile_cached_amount(txn)
+        _reconcile_cached_amount(txn, live)
+        # Acts 1b and 2 in ONE call: what moved, how it is known, and the day.
+        # The record is written by the seam rather than here so ``settled_amount``
+        # keeps the ONE writer ``settled_on`` has (finding **N-185**'s rule
+        # applied to the column beside it) -- two writers of one money column in
+        # one request is the shape this arc removes.
+        #
+        # ``recorded_settlement`` is what the row STILL carries from a settle it
+        # has since been reverted out of: a revert releases the assertion and
+        # keeps what moved, so a user who reverted in order to edit has not lost
+        # the figure they read off their statement.  ``from_settle`` honours a
+        # retained ``corrected`` one, which is what makes that round trip
+        # lossless rather than merely slower to destroy the figure.
         apply_status_change(
             txn, settled_status_id(txn), settled_on=settled_on,
+            settlement=Settlement.from_settle(
+                booked, correction, recorded_settlement(txn),
+            ),
         )
-        # Applied AFTER the seam so act 3 below reads the final actual amount
-        # rather than the pre-settle estimate (the 2.8b HIGH, forward
-        # direction).
-        if correction is not None:
-            txn.actual_amount = correction
 
     posting_service.sync_transaction_postings(
         txn, settled=txn.status.is_settled,
     )
+    return correction is not None
 
 
-def _reconcile_cached_amount(txn: Transaction) -> None:
+def _reconcile_cached_amount(txn: Transaction, live: "Decimal | None") -> None:
     """Refresh *txn*'s cached amount from its own live derivation.
 
     **This is plan step X-ar's reconciler, with ONE trigger.**  Finding
@@ -444,10 +677,14 @@ def _reconcile_cached_amount(txn: Transaction) -> None:
         txn: The row about to settle, still in its pre-settle status.  Must be
             asked BEFORE the status flip: the projection's rule is
             Projected-only, so after it there is never anything fresher.
+        live: The projection's live figure for this row, or ``None`` when
+            nothing supersedes its cache.  Resolved ONCE by
+            :func:`_manual_branch_figures` alongside the figure the settle
+            books, and threaded here rather than re-derived -- the same
+            build-once-and-thread discipline the fold uses over a whole plan,
+            applied to one settle.  It is the caller's job to ask before the
+            status flip, for the reason the *txn* argument states.
     """
-    live = _freshest_amount(
-        txn, amount_basis(txn.account.user_id, txn.scenario_id),
-    )
     if live is not None:
         txn.estimated_amount = live
 
@@ -481,21 +718,25 @@ def _freshest_amount(txn: Transaction, basis) -> Decimal | None:
     ad-hoc row, an already-settled row and a manually-overridden paycheck each
     leave here after two list comprehensions.
 
-    **A row carrying an ``actual_amount`` is NOT a candidate, and that guard is
-    a money fix rather than a shortcut.**  What this refreshes is a CACHE, and
-    the cache is ``estimated_amount``; ``actual_amount`` is a fact a human
-    entered.  Without the guard, a Projected salary row whose actual the owner
-    typed by hand is compared against the recompute and OVERWRITTEN at settle --
-    the app deleting the user's own figure and substituting its estimate.  It
-    was reachable: ``is_override`` is the only other thing excluding such a row
-    from the override map, and ``routes/transactions/mutations`` sets that flag
-    only when ``estimated_amount`` or ``pay_period_id`` was submitted, so
-    editing the actual ALONE leaves it False.  An invariant of this module
-    cannot rest on a bookkeeping flag another module sets for another reason.
+    **It carried a fourth guard until plan step X-au-c3 -- "a row carrying an
+    ``actual_amount`` is NOT a candidate" -- and that guard is DELETED because
+    its state became unconstructible.**  It protected a Projected salary row
+    whose actual the owner had typed by hand from having its estimate
+    overwritten at settle.  That row can no longer exist: a figure now records a
+    SETTLE, and ``ck_transactions_settled_amount_needs_basis`` keeps one off a
+    row that has not settled, so a pre-settle row carries none by construction.
+    The five production rows that were in that state were promoted into their
+    PLAN by migration ``e4b8a71c0f36``, where the valuation was already reading
+    them.  Translating the guard into ``settled_basis_id is not None`` would have
+    kept the shape and lost the point: every caller here is pre-settle, both live
+    producers are Projected-only, so no single-line mutation of the translated
+    guard could fail a test -- and a guard whose only possible test cannot fail
+    is not a guard (the same rule ``status_seam.settle_day_for_status``'s closing
+    note states, and finding **N-184**'s).
 
-    **It compares against ``estimated_amount``, not the row's contribution**,
-    for the same reason: past the guard above they are equal, and naming the
-    column that IS the cache says what the comparison means.
+    **It compares against ``estimated_amount``, not the row's contribution**:
+    the two are equal for every row that reaches here, and naming the column that
+    IS the cache says what the comparison means.
 
     Args:
         txn: The row about to settle, still in its pre-settle status.  Read for
@@ -512,8 +753,6 @@ def _freshest_amount(txn: Transaction, basis) -> Decimal | None:
         The live amount when one exists and disagrees with the cache, else
         ``None`` -- meaning "nothing fresher than what the row already says".
     """
-    if txn.actual_amount is not None:
-        return None
     live = live_override(txn, basis)
     if live is None or live == txn.estimated_amount:
         return None
@@ -526,8 +765,8 @@ def settle_from_entries(
     """Settle a tracked-envelope transaction at sum(entries).
 
     The envelope PRIMITIVE: the three writes an envelope's close needs --
-    ``status_id``, the settle day, and ``actual_amount`` -- as a single source
-    of truth.  It is reached two ways, and the split is
+    ``status_id``, the settle day, and the settlement RECORD -- as a single
+    source of truth.  It is reached two ways, and the split is
     :func:`settle_transaction`'s docstring: every DOOR settles through that
     verb, which chooses this branch when the row is envelope-tracked and has
     entries, while ``carry_forward_service._execute`` calls this directly
@@ -554,7 +793,15 @@ def settle_from_entries(
     at `$0.00` through carry-forward.
 
     Effect on *txn* (in place):
-      - ``actual_amount`` is set to ``sum(e.amount for e in txn.entries)``,
+      - **NO figure is stored at all** (plan step X-au-c3).  The record's basis
+        is ``purchases``, and a ``purchases`` settlement leaves
+        ``settled_amount`` NULL because the row's own entries ARE the record:
+        ``row_valuation.settled_figure`` sums them on demand.  It USED to set
+        ``actual_amount = sum(entries)``, and dropping that copy is what deleted
+        ``entry_service``'s re-derivation of a settled envelope's figure -- with
+        one copy there is nothing for a reconciler to keep in step, and a
+        purchase corrected later moves the close by exactly its own difference.
+        What the close BOOKS is still ``sum(e.amount for e in txn.entries)``,
         which is ``Decimal("0")`` when ``txn.entries`` is empty -- see the
         ruling above.
       - ``status_id`` is set to ``DONE`` for expense transactions and
@@ -658,16 +905,25 @@ def settle_from_entries(
 
     new_status_id = settled_status_id(txn)
 
-    # Route the status mechanics (transition check, status_id, settled_on,
-    # status expire) through the single seam so this helper cannot drift from
-    # the manual mark-done / PATCH / credit paths.  The day is the caller's
+    # Route the status mechanics (transition check, status_id, the settlement
+    # record, status expire) through the single seam so this helper cannot drift
+    # from the manual mark-done / PATCH / credit paths.  The day is the caller's
     # when it has one -- the reconcile tick's statement date -- and otherwise
     # None, which is the seam's "stamp the user's today on entering the settled
     # status and preserve an existing one".
-    apply_status_change(txn, new_status_id, settled_on=settled_on)
-    # ``compute_actual_from_entries`` returns Decimal("0") on an empty
-    # list, which is the carry-forward "no spend, full rollover" case.
-    txn.actual_amount = compute_actual_from_entries(txn.entries)
+    #
+    # The record STORES NO FIGURE (plan step X-au-c3): its basis is
+    # ``purchases``, and the row's own entries are what state the amount.  That
+    # is what deleted ``entry_service``'s re-derivation of a settled envelope's
+    # figure -- with one copy there is nothing for a reconciler to keep in step,
+    # and a purchase corrected next week moves the close by exactly its own
+    # difference with no second write.
+    apply_status_change(
+        txn, new_status_id, settled_on=settled_on,
+        settlement=Settlement(
+            amount=None, basis=SettlementBasisEnum.PURCHASES,
+        ),
+    )
 
     log_event(
         logger, logging.INFO,
@@ -680,6 +936,10 @@ def settle_from_entries(
         user_id=txn.pay_period.user_id,
         transaction_id=txn.id,
         new_status_id=new_status_id,
-        actual_amount=str(txn.actual_amount),
+        # What the close BOOKS, computed for the log rather than read back off
+        # the row: a ``purchases`` settlement stores nothing to read.
+        # ``purchases_total`` answers ``Decimal("0")`` for an empty entry list,
+        # which is the carry-forward "no spend, full rollover" case.
+        settled_amount=str(purchases_total(txn.entries)),
         settled_on=txn.settled_on.isoformat(),
     )

@@ -80,8 +80,8 @@ def _apply_shadow_update(txn, txn_id, data):
     svc_kwargs = {}
     if "estimated_amount" in data:
         svc_kwargs["amount"] = data["estimated_amount"]
-    if "actual_amount" in data:
-        svc_kwargs["actual_amount"] = data["actual_amount"]
+    if "settled_amount" in data:
+        svc_kwargs["settled_amount"] = data["settled_amount"]
     if "status_id" in data:
         # No ``settled_on`` companion: the seam CLEARS the day on entering a
         # non-settled status, so the explicit ``None`` this used to add was a
@@ -159,7 +159,7 @@ def _apply_shadow_update(txn, txn_id, data):
     return response, 200, {"HX-Trigger": "balanceChanged"}
 
 
-def _mark_done_shadow(txn, txn_id, actual_amount, target):
+def _mark_done_shadow(txn, txn_id, submitted, target):
     """Settle a transfer shadow through the transfer service.
 
     Marks both shadows and the parent transfer done atomically (the
@@ -171,8 +171,8 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
     Args:
         txn: The shadow Transaction being settled.
         txn_id: The shadow's id, for stale-conflict logging / re-fetch.
-        actual_amount: Optional manual actual amount from the form, or
-            ``None`` to leave it to the service.
+        submitted: The figure a human typed for what moved, or ``None``
+            when nobody typed one.
         target: The :class:`_RenderTarget` describing the response
             surface (mobile card vs desktop cell).
 
@@ -204,7 +204,7 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
     # overrode that and re-dated a replayed settle.
     try:
         transfer_service.settle_transfer(
-            txn.transfer_id, current_user.id, actual_amount=actual_amount,
+            txn.transfer_id, current_user.id, submitted=submitted,
         )
         db.session.commit()
     except StaleDataError:

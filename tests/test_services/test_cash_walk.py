@@ -36,10 +36,13 @@ from app.services.cash_ledger import (
     walk_cash_ledger,
 )
 from app.services.balance_at._cash_fold import fold_cash_balances
+from app.services import transaction_service
+from app.services.row_valuation import purchases_total, settled_figure
 from app.enums import StatusEnum
 from app.exceptions import UndatedSettleError
 from app.utils.dates import DISPLAY_TIMEZONE, display_today, to_display_date
 from tests._test_helpers import (
+    settlement_if_settling,
     add_txn,
     append_balance_assertion,
     basis_for,
@@ -462,7 +465,7 @@ class TestSourceFactValuation:
         _restamp_opening(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("100.00"),
-            actual_amount=Decimal("84.20"),
+            settled_amount=Decimal("84.20"),
             settled_on=date(2026, 2, 1), name="spend",
         )
         db.session.commit()
@@ -554,19 +557,17 @@ class TestSourceFactValuation:
                 settled_on=day,
             ))
         db.session.flush()
-        # Routed through PRODUCTION's own rule rather than hand-set: the
-        # ``effective - credit`` formula collapses to the debit-only outflow
-        # ONLY because the settled actual is the sum of ALL entries, so a test
-        # that stipulated that premise would keep passing if production stopped
-        # honouring it.
-        txn.actual_amount = entry_service.compute_actual_from_entries(
-            list(txn.entries),
-        )
-        assert txn.actual_amount == Decimal("200.00")
-        db.session.flush()
-        status_seam.apply_status_change(
-            txn, ref_cache.status_id(StatusEnum.DONE),
-        )
+        # Settled through PRODUCTION's own verb rather than hand-set: the
+        # ``recorded - credit`` formula collapses to the debit-only outflow
+        # ONLY because a settled envelope is worth ALL of its entries, so a
+        # test that stipulated that premise would keep passing if production
+        # stopped honouring it.  The verb picks the entries branch and records
+        # the ``purchases`` basis, which stores no figure at all (plan step
+        # X-au-c3) -- the row's own entries state it, and the accessor is what
+        # reads it back.
+        transaction_service.settle_transaction(txn)
+        assert settled_figure(txn) == Decimal("200.00")
+        assert purchases_total(list(txn.entries)) == Decimal("200.00")
         txn.settled_on = date(2026, 2, 1)
         posting_service.sync_transaction_postings(txn, settled=True)
         db.session.commit()

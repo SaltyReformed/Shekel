@@ -12,7 +12,7 @@ from typing import List, Optional
 
 from app.models.transaction import Transaction
 from app.services.cash_ledger import resolve_transaction_amount
-from app.services.entry_service import compute_actual_from_entries
+from app.services.row_valuation import purchases_total
 
 from ._context import (
     _build_carry_forward_context,
@@ -273,7 +273,7 @@ def _build_envelope_plan(source_txn, target_period, basis, schedule):
     once -- making it harder for a future edit to forget a field
     on one branch.
     """
-    entries_sum = compute_actual_from_entries(source_txn.entries)
+    entries_sum = purchases_total(source_txn.entries)
     # The source's BUDGET, resolved rather than read off the column, and the
     # SAME expression the mutating path uses (plan step X-au-c2b): a preview
     # that predicted a leftover from a different base than the execution rolls

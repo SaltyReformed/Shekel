@@ -22,9 +22,9 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transaction_entry import TransactionEntry
 from app.models.ref import Status, TransactionType
-from app.routes._render_helpers import fragment_budgets
+from app.routes._render_helpers import fragment_amounts
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
-from app.services import pay_period_service
+from app.services import pay_period_service, transaction_service
 
 
 def _sums(rows):
@@ -34,7 +34,7 @@ def _sums(rows):
     X-au-c2b -- it read ``txn.estimated_amount``, the COLUMN a derived row does
     not carry -- so every route that renders a cell resolves its rows once and
     hands the map down.  These tests resolve through the app's own single-set
-    door (:func:`~app.routes._render_helpers.fragment_budgets`) rather than
+    door (:func:`~app.routes._render_helpers.fragment_amounts`) rather than
     passing a literal, so the figures they assert are the ones the app would
     show.
 
@@ -46,7 +46,7 @@ def _sums(rows):
     """
     budgets = {}
     for row in rows:
-        budgets.update(fragment_budgets(row))
+        budgets.update(fragment_amounts(row).budgets)
     return build_entry_sums_dict(rows, budgets)
 
 
@@ -61,7 +61,7 @@ def _lists(rows):
     """
     budgets = {}
     for row in rows:
-        budgets.update(fragment_budgets(row))
+        budgets.update(fragment_amounts(row).budgets)
     return build_entry_lists_dict(rows, budgets)
 
 def _create_tracked_txn(seed_user, seed_periods_today, period_index=0,
@@ -530,20 +530,25 @@ class TestCellProgressDisplay:
 
     def test_done_shows_actual_not_progress(self, app, auth_client,
                                              seed_user, seed_periods_today):
-        """Paid (DONE) txn shows actual amount, not progress format.
+        """Paid (DONE) txn shows what it RECORDED, not progress format.
 
-        Entry total is $330 on a $500 budget. After mark-paid, actual
-        is set to $330. Cell should show '330' (actual), not '330 / 500'.
+        Entry total is $330 on a $500 budget.  The close records the
+        ``purchases`` basis, whose figure is those entries, so the cell shows
+        '330' and not '330 / 500'.
+
+        **Settled through the real verb since plan step X-au-c3.**  The fixture
+        assigned ``status_id`` and the figure directly, which the settlement
+        record's own CHECKs refuse -- and a fixture that writes a close by hand
+        cannot grade what a close produces.  The verb picks the entries branch
+        itself, so the basis under test is the one the app writes.
         """
         with app.app_context():
             txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
             _add_entry(txn, seed_user, Decimal("200.00"))
             _add_entry(txn, seed_user, Decimal("130.00"))
+            db.session.flush()
 
-            # Mark as paid.
-            done = db.session.query(Status).filter_by(name="Paid").one()
-            txn.status_id = done.id
-            txn.actual_amount = Decimal("330.00")
+            transaction_service.settle_transaction(txn)
             db.session.commit()
 
             resp = auth_client.get(f"/transactions/{txn.id}/cell")
@@ -910,7 +915,7 @@ class TestTheAmountFenceIsGone:
         import jinja2  # pylint: disable=import-outside-toplevel
 
         txn = SimpleNamespace(
-            id=1, name="Rent", actual_amount=None,
+            id=1, name="Rent", settled_amount=None,
             estimated_amount=Decimal("1200.00"),
             status=SimpleNamespace(is_settled=False, name="Projected"),
             status_id=99, transfer_id=None, credit_payback_for_id=None,
@@ -955,6 +960,6 @@ class TestTheAmountFenceIsGone:
                 # so the raise above is the missing map rather than the
                 # template being unrenderable.
                 html = template.render(
-                    txn=txn, locked=False, budgets=fragment_budgets(txn),
+                    txn=txn, locked=False, budgets=fragment_amounts(txn).budgets,
                 )
                 assert f'value="{txn.estimated_amount}"' in html

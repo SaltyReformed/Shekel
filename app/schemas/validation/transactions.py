@@ -40,9 +40,32 @@ class TransactionUpdateSchema(BaseSchema):
 
     name = fields.String(validate=validate.Length(min=1, max=200))
     estimated_amount = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
-    actual_amount = fields.Decimal(
+    # WHAT MOVED, and the ONLY thing this door may do with one is hand it to a
+    # SETTLE arriving in the same request (plan step X-au-c3).  A figure without
+    # a settling status is refused by
+    # ``transaction_service.apply_requested_status`` with a designed 400.
+    #
+    # **The full-edit popover's Actual box submits it** (developer ruling,
+    # 2026-08-17): a settled row's figure is an observed fact, so it is
+    # correctable in place rather than only by reverting.  It stayed declared
+    # through the period when no form sent one, and that is worth keeping if a
+    # form ever stops: ``Meta.unknown`` is ``EXCLUDE``, so deleting the field
+    # would make a stale or crafted submission's figure vanish in silence
+    # instead of being refused, and a silently dropped money field is how a
+    # user's typed number disappears.
+    # ``allow_none`` because an HTML form submits every input including the
+    # empty ones, and an empty box means nobody typed a figure.
+    #
+    # **Bounded ABOVE as well**, by the shared monetary ceiling: the column is
+    # ``Numeric(12, 2)``, so a bare lower bound let a figure at or above
+    # `10 ** 10` reach the database and die there as a ``DataError`` -- a
+    # sibling of ``IntegrityError``, not a subclass, so this route's except-list
+    # missed it and the user's Save 500'd in silence.  ``MarkDoneSchema`` below
+    # already carries the ceiling for the measurement plan step X-f2-c3 made;
+    # this door did not until an adversarial review found the gap (2026-08-18).
+    settled_amount = fields.Decimal(
         places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=0),
+        validate=_NON_NEGATIVE_MONETARY,
     )
     status_id = RowId()
     pay_period_id = RowId()
@@ -82,10 +105,6 @@ class TransactionCreateSchema(BaseSchema):
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     estimated_amount = fields.Decimal(
         required=True, places=2, as_string=True,
-        validate=validate.Range(min=0),
-    )
-    actual_amount = fields.Decimal(
-        places=2, as_string=True, allow_none=True,
         validate=validate.Range(min=0),
     )
     account_id = RowId(required=True)
@@ -132,10 +151,6 @@ class InlineTransactionCreateSchema(BaseSchema):
         required=True, places=2, as_string=True,
         validate=validate.Range(min=0),
     )
-    actual_amount = fields.Decimal(
-        places=2, as_string=True, allow_none=True,
-        validate=validate.Range(min=0),
-    )
     account_id = RowId(required=True)
     category_id = RowId(required=True)
     pay_period_id = RowId(required=True)
@@ -175,8 +190,10 @@ class MarkDoneSchema(BaseSchema):
     malformed numeric input with a clean field-level 400 instead of
     the route's catch-and-translate 400, and
     ``_NON_NEGATIVE_MONETARY`` is the schema-tier counterpart to the
-    DB CHECK ``actual_amount IS NULL OR actual_amount >= 0`` on
-    ``budget.transactions.actual_amount``.
+    DB CHECK ``settled_amount IS NULL OR settled_amount >= 0`` on
+    ``budget.transactions.settled_amount`` (the column was
+    ``actual_amount`` until plan step X-au-c3 renamed it and paired it
+    with ``settled_basis_id``).
 
     **Its UPPER bound is what plan step X-f2-c3 added, and the lower
     half alone was a 500.**  The column is ``numeric(12, 2)``, so a
@@ -193,14 +210,19 @@ class MarkDoneSchema(BaseSchema):
     no upper bound, which is ledger finding **N-256** rather than this
     step's to sweep.
 
-    ``allow_none=True`` matches the column's nullability so a JSON
-    caller can clear the actual amount explicitly (the form path is
-    already handled by ``BaseSchema``'s EXCLUDE policy plus the
-    routes' "if value present" check on the loaded result).  The
-    routes treat a missing ``actual_amount`` key as "leave the column
-    untouched" rather than "clear it" -- mark-done with no body must
-    not nullify a previously recorded actual amount.  Audit
-    references: F-042 / F-162 / commit C-27 of the 2026-04-15
+    ``allow_none=True`` matches the column's nullability, and an HTML
+    form submits every input including the empty ones, so an empty box
+    loads as ``None`` and means "nobody typed a figure".
+
+    **What ``None`` MEANS changed at plan step X-au-c3**, and this
+    paragraph said the opposite until an adversarial review caught it
+    (2026-08-18).  It used to mean "leave the column untouched", because
+    a settled row recording nothing was a legal state and every reader
+    fell back to the row's plan.  A settle now always RECORDS what
+    moved, so ``None`` means "nobody typed one, so record what the
+    settle resolved" -- the rule
+    ``transaction_service.settle_transaction`` states in those words.
+    Audit references: F-042 / F-162 / commit C-27 of the 2026-04-15
     security remediation plan.
     """
 
@@ -221,7 +243,7 @@ class MarkDoneSchema(BaseSchema):
         """
         return _normalize_empty_inputs(self, data)
 
-    actual_amount = fields.Decimal(
+    settled_amount = fields.Decimal(
         places=2, as_string=True, allow_none=True,
         validate=_NON_NEGATIVE_MONETARY,
     )

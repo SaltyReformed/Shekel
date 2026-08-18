@@ -93,14 +93,43 @@ class Transaction(
     row, so its precision described a bookkeeping session rather than money.
     Storing the day directly leaves one clock, converted once at the write door.
 
-    **The settled-iff-dated invariant is structural, not a constraint.**  A
-    CHECK cannot express it: the predicate is ``ref.statuses.is_settled`` and a
-    constraint cannot join, while hardcoding the settled ids would be a magic
-    number that breaks when a status is added or removed.  Instead
-    ``status_seam.apply_status_change`` is the ONE door that writes
-    ``status_id``, and it writes ``settled_on`` in the same call.  A reader that
-    finds a settled row with no day must FAIL LOUD rather than fall back --
-    dropping such a row from a fold is silent money loss.
+    **A row carries THREE facts about money, and they have three different
+    lifetimes** (plan step **X-au-c3**).  No column belongs to two of them:
+
+    ====================  ====================  =====================
+    the PLAN              WHAT MOVED            the ASSERTION
+    ====================  ====================  =====================
+    ``estimated_amount``  ``settled_amount``    ``settled_on``
+    ``amount_source_id``  ``settled_basis_id``  ``reconciled_by_id``
+    ====================  ====================  =====================
+
+    * the **PLAN** is what the row is forecast to cost.  It exists from creation
+      and no settle path writes it;
+    * **WHAT MOVED** is what the bank actually took, and how that figure is
+      known.  It comes into existence at a settle and is a fact about the ROW
+      from then on;
+    * the **ASSERTION** is "this money moved, on this day, and that statement
+      showed it".  A revert withdraws it.
+
+    **A revert releases the ASSERTION and keeps WHAT MOVED**, and that asymmetry
+    is the model's centre.  A first version of this step made all three one
+    "settlement record" under a CHECK pairing the day with the basis, so
+    withdrawing the assertion destroyed the figure -- and the full-edit popover
+    TELLS the user to revert in order to edit, so the app's own instruction
+    deleted a number they had read off a statement.  Splitting the lifetimes
+    removes the constraint, the release and the data loss at once, and it is how
+    every reconciliation system this was checked against behaves: un-clearing a
+    transaction never touches its amount (developer, 2026-08-17).
+
+    **What a CHECK cannot express is the tie to the STATUS**: that predicate is
+    ``ref.statuses.is_settled`` and a constraint cannot join, while hardcoding
+    the settled ids would be a magic number that breaks when a status is added
+    or removed.  So ``status_seam.apply_status_change`` remains the ONE door that
+    writes ``status_id``, and it writes the assertion and what moved in the same
+    call.  The reading half is ``row_valuation.settled_figure``, which asks the
+    STATUS -- not the columns -- whether this row is worth what it recorded or
+    what it plans; a settled row that records nothing must FAIL LOUD there rather
+    than fall back, because dropping such a row from a fold is silent money loss.
 
     **``settled_on`` has no bounds, and that is deliberate.**  A settle
     legitimately falls outside its budget period on EITHER side (measured on the
@@ -206,8 +235,63 @@ class Transaction(
             name="ck_transactions_estimated_amount",
         ),
         db.CheckConstraint(
-            "actual_amount IS NULL OR actual_amount >= 0",
-            name="ck_transactions_actual_amount",
+            "settled_amount IS NULL OR settled_amount >= 0",
+            name="ck_transactions_settled_amount",
+        ),
+        # A FIGURE CARRIES ITS PROVENANCE (plan step **X-au-c3**): a stored
+        # ``settled_amount`` always says HOW it is known.  The converse is
+        # deliberately NOT asserted here, and the gap is exactly one basis:
+        # ``purchases`` stores no figure, because the row's own entries state it
+        # and a stored copy would need a reconciler
+        # (:class:`app.enums.SettlementBasisEnum`).  Saying "``purchases`` if and
+        # only if ``settled_amount IS NULL``" needs the constraint to name a ref
+        # id, which is the one thing the project's ref convention forbids putting
+        # in a schema -- so that half is a write-door rule with its own negative
+        # control (``tests/test_models/test_settlement_record.py``) rather than a
+        # constraint, and saying which is which is the point: a safety that is
+        # not a predicate is not a safety.
+        db.CheckConstraint(
+            "settled_amount IS NULL OR settled_basis_id IS NOT NULL",
+            name="ck_transactions_settled_amount_needs_basis",
+        ),
+        # AN ASSERTION NAMES WHAT IT ASSERTS (plan step **X-au-c3**): a row
+        # carrying the day its money moved always records WHAT moved.  It is the
+        # half of the settlement pairing a CHECK can state, and it is stated
+        # here because the two tiers that answer "what did this row settle at"
+        # disagree without it -- :func:`app.services.row_valuation.settled_figure`
+        # RAISES for a settled row recording nothing, while
+        # ``posting_reads.settled_figure_clause`` answers ``0`` for the same row
+        # through its entry sum's ``COALESCE``, and the SQL side is what writes
+        # the ledger.  A disagreement between a refusal and a zero is money
+        # leaving a balance in silence; a constraint is what makes the row
+        # neither tier can see.
+        #
+        # **It is an IMPLICATION, and a first version of this step made it a
+        # BICONDITIONAL** (``ck_transactions_settlement_recorded``,
+        # ``(settled_on IS NULL) = (settled_basis_id IS NULL)``).  The ``<-``
+        # direction is what was wrong, and the way it was wrong is worth
+        # keeping: it welded two facts with different lifetimes into one record.
+        # ``settled_on`` and ``reconciled_by_id`` are the ASSERTION that this
+        # money moved on a named day and a named statement showed it -- a revert
+        # withdraws that.  ``settled_amount`` and ``settled_basis_id`` are WHAT
+        # MOVED, which is a fact about the row.  Because that direction made them
+        # share a lifetime, releasing the assertion had to destroy the figure --
+        # so following the full-edit popover's own instruction ("set Status to
+        # Projected to edit the amounts") silently deleted a number the user had
+        # read off their bank statement.  That is finding **N-241**'s shape --
+        # one thing answering two questions -- rebuilt one level up, in a step
+        # whose whole purpose was to remove it.  Every reconciliation system this
+        # was checked against separates them: an amount belongs to the
+        # transaction and cleared-ness is metadata over it, so un-clearing never
+        # touches the amount (developer, 2026-08-17).
+        #
+        # The ``->`` direction below survives that argument untouched: a
+        # RETAINED record is ``settled_on IS NULL`` with a basis, which this
+        # admits.  What keeps such a figure out of a balance is still the
+        # STATUS, asked by ``row_valuation.settled_figure``, and not this.
+        db.CheckConstraint(
+            "settled_on IS NULL OR settled_basis_id IS NOT NULL",
+            name="ck_transactions_settle_day_needs_basis",
         ),
         # THE AMOUNT MODEL'S ONE CONSTRAINT (ruling **R-FI**, plan step
         # X-au-c1): a row's amount is either its OWN or it is DERIVED, and a
@@ -339,7 +423,50 @@ class Transaction(
     # without the other saying so.  No production row is NULL as of this step;
     # the per-kind cutovers (plan steps X-au-d through X-au-i) are what empty it.
     estimated_amount = db.Column(db.Numeric(12, 2))
-    actual_amount = db.Column(db.Numeric(12, 2))
+    # WHAT MOVED -- a fact about the ROW, not a second opinion about the plan
+    # above and not part of the assertion beside it (plan step **X-au-c3**).
+    # NULL until the row first settles, and NULL whenever the basis is
+    # ``purchases`` -- there the figure is the sum of the row's own entries,
+    # which are themselves the records, so storing it would be a second copy
+    # beside a reconciler.  Otherwise it states what left the account.
+    #
+    # **It SURVIVES a revert**, which is why this is not "NULL when the row has
+    # not settled": withdrawing the assertion does not un-know what the bank
+    # took, and the popover instructs the user to revert in order to edit, so
+    # destroying it there destroyed their own statement reading.  A row out of
+    # the settled band therefore may carry a figure, and no balance reads it --
+    # ``row_valuation.settled_figure`` asks the STATUS first and answers ``None``
+    # for such a row.  A re-settle HONOURS a retained ``corrected`` figure
+    # (``status_seam.Settlement.from_settle``), so the round trip is lossless.
+    #
+    # **It was ``actual_amount``, and the rename is the fix rather than tidying**
+    # (finding **N-241**).  That column answered two questions at once: its VALUE
+    # was the settled figure and its NULL-ness was read by three subsystems as
+    # *a human entered this* (ruling **R-FH**) -- so a machine-derived figure
+    # written there manufactured a correction nobody made, and a settle that had
+    # no correction to record recorded nothing at all.  WHO said it is
+    # ``settled_basis_id`` now, and the two facts can no longer collide.
+    settled_amount = db.Column(db.Numeric(12, 2))
+    # HOW the figure beside it is known -- ``derived``, ``corrected`` or
+    # ``purchases`` -- and NULL only when this row has never settled (plan step
+    # **X-au-c3**).  It travels WITH ``settled_amount``, not with ``settled_on``:
+    # provenance is a property of a figure, so the two share a lifetime and
+    # ``ck_transactions_settled_amount_needs_basis`` is the pairing.
+    #
+    # **It is NOT the answer to "has this row settled"** -- the STATUS is, and
+    # reading this column for that question is exactly what forced a first
+    # version of this step to destroy a user's figure on every revert.  RESTRICT
+    # rather than SET NULL: a vanishing ref row would leave a stored figure with
+    # no provenance, which is the state that pairing exists to forbid.  Resolved
+    # through ``ref_cache.settlement_basis_id``.
+    settled_basis_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.settlement_bases.id",
+            name="fk_transactions_settled_basis_id",
+            ondelete="RESTRICT",
+        ),
+    )
     # WHICH RELATION prices this row, or NULL when the row owns its own figure
     # (ruling **R-FI**, plan step X-au-c1).  RESTRICT rather than SET NULL: a
     # ``ref.amount_sources`` row disappearing under a derived transaction would

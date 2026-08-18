@@ -495,7 +495,7 @@ def _independent_settled_income_cash(
     """
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     effective = _db.func.coalesce(
-        Transaction.actual_amount, Transaction.estimated_amount
+        Transaction.settled_amount, Transaction.estimated_amount
     )
     return (
         _db.session.query(
@@ -1427,8 +1427,8 @@ class TestOracleIsNotVacuous:
 
         A reconciled $1,000 payment has linked net +500, income cash +1,000, and
         non-principal corrections +500, so ``linked == income - non_principal``
-        holds.  Forcing the income shadow's ``actual_amount`` to 9,999 via raw SQL
-        (no re-sync) pushes the income cash to +9,999 while the posted ledger is
+        holds.  Forcing the income shadow's recorded ``settled_amount`` to 9,999
+        via raw SQL (no re-sync) pushes the income cash to +9,999 while the posted ledger is
         unchanged -- so ``income - non_principal`` becomes 9,499, no longer the
         +500 linked net.  The superseding invariant the sweep relies on now FAILS,
         proving it is a real comparison, not one that passes unconditionally.
@@ -1448,10 +1448,12 @@ class TestOracleIsNotVacuous:
             # Reconciled before tampering.
             assert linked == income - non_principal
 
-            # Tamper the settled actual cash (transactions carry no balance
-            # trigger, so this commits); the posted ledger is left untouched.
+            # Tamper the RECORDED cash (transactions carry no balance trigger,
+            # so this commits); the posted ledger is left untouched.  It is the
+            # record and not the plan since plan step X-au-c3: a settled row's
+            # cash is what it recorded as having moved.
             db.session.execute(_db.text(
-                "UPDATE budget.transactions SET actual_amount = 9999 "
+                "UPDATE budget.transactions SET settled_amount = 9999 "
                 "WHERE id = :i"
             ), {"i": shadow.id})
             db.session.commit()

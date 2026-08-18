@@ -33,6 +33,7 @@ from app.utils.dates import display_today
 from app.utils.dates import add_months
 from app.services.cash_ledger import resolve_transfer_amount
 from app.services.row_valuation import owned_contribution
+from tests._test_helpers import default_settle_day, settlement_columns
 
 
 # ── What a TRANSACTION contributes ───────────────────────────────────
@@ -46,14 +47,44 @@ class TestTransactionEffectiveAmount:
     with no session -- and its four arms moved to
     ``row_valuation.owned_contribution`` for a row that owns its figure.  These
     cases moved with them unchanged, because the RULES did not change: zero for
-    a soft-deleted or excluded row, a human's ``actual_amount`` where there is
-    one (including a real ``$0.00``), else the row's own stored figure.
+    a soft-deleted or excluded row, what a SETTLED row recorded, else the row's
+    own stored figure.
+
+    **The second arm was ``actual_amount`` until plan step X-au-c3, and TWO
+    cases went with the change rather than being retargeted.**  That column was
+    reachable on an UNSETTLED row and OUTRANKED the plan there, so the class
+    pinned "a Projected row with an actual prefers the actual" (case 5A.1) and
+    its ``$0.00`` twin (E-12's projected half).  Both are refuted now, and by
+    the STATUS rather than by the columns: an unsettled row carrying a recorded
+    figure is perfectly constructible -- it is the RETAINED state a revert
+    leaves behind, which ``ck_transactions_settle_day_needs_basis`` admits on
+    purpose -- and ``row_valuation.settled_figure`` answers ``None`` for it
+    whatever it still remembers, so such a row is worth its PLAN.  The
+    preference those two cases asserted has no state left to hold in.
+
+    The five production rows carrying a figure while unsettled were promoted
+    into their PLAN by migration ``e4b8a71c0f36`` -- balance-neutrally, because
+    the valuation was already answering the promoted figure.  So the correction
+    5A.1 was about is made on ``estimated_amount`` now, which
+    ``test_projected_returns_estimated`` grades, and E-12's rule survives on the
+    settled half in ``test_done_with_zero_actual``.  That the retained state is
+    STORABLE and worth nothing is graded in
+    ``tests/test_models/test_settlement_record.py``.
     """
 
     def _make_txn(self, seed_user, seed_periods, status_name, estimated, actual=None):
-        """Helper: create a transaction with given status and amounts."""
+        """Helper: create a transaction with given status and amounts.
+
+        A row built in a SETTLED status carries the whole record -- the day, the
+        figure and how the figure is known -- through the one door a bare-built
+        fixture uses (``_test_helpers.settlement_columns``).  *actual* is the
+        figure a human typed, which makes the record a ``corrected`` one; with
+        no *actual* the record is ``derived`` at the row's own plan, which is
+        what a settle with nothing to correct records.
+        """
         status = db.session.query(Status).filter_by(name=status_name).one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+        settled_on = default_settle_day(seed_periods[0], status.id)
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
@@ -63,7 +94,8 @@ class TestTransactionEffectiveAmount:
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=expense_type.id,
             estimated_amount=estimated,
-            actual_amount=actual,
+            settled_on=settled_on,
+            **settlement_columns(settled_on, estimated, submitted=actual),
         )
         db.session.add(txn)
         db.session.flush()
@@ -75,48 +107,15 @@ class TestTransactionEffectiveAmount:
             txn = self._make_txn(seed_user, seed_periods, "Projected", Decimal("150.00"))
             assert owned_contribution(txn) == Decimal("150.00")
 
-    # ── Three cases that arrived at plan step X-c2c2c ────────────────
+    # ── The case that arrived at plan step X-c2c2c ───────────────────
     #
-    # They were asserted inside ``test_balance_calculator.py``, through the
+    # It was asserted inside ``test_balance_calculator.py``, through the
     # balance walk, by two tests whose other six cases duplicated the ones
-    # above.  The duplicates deleted; these three had no home here and are
+    # above.  The duplicates deleted; the survivors had no home here and are
     # the whole of what that move preserved.  The property is the MODEL's, so
-    # it is graded against the model.
-
-    def test_projected_with_actual_prefers_the_actual(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A PROJECTED row with an actual returns the actual (5A.1).
-
-        The pairing the class was missing: it pinned Projected WITHOUT an
-        actual and Paid WITH one, so nothing here said that a projected row
-        prefers its actual too.  It does, and it must -- the grid lets a user
-        correct an amount before marking the row paid, and until 5A.1 the
-        projection ignored that correction.
-        """
-        with app.app_context():
-            txn = self._make_txn(
-                seed_user, seed_periods, "Projected",
-                Decimal("100.00"), actual=Decimal("150.00"),
-            )
-            assert owned_contribution(txn) == Decimal("150.00")
-
-    def test_projected_with_zero_actual_returns_zero(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A PROJECTED row with ``actual_amount`` of zero is worth zero.
-
-        Zero is a VALUE, not "missing" (E-12): a waived fee corrected to
-        ``0.00`` must reduce the projection by nothing, not fall back to the
-        ``100.00`` estimate.  ``test_done_with_zero_actual`` pins the settled
-        half of this; the projected half was unpinned.
-        """
-        with app.app_context():
-            txn = self._make_txn(
-                seed_user, seed_periods, "Projected",
-                Decimal("100.00"), actual=Decimal("0.00"),
-            )
-            assert owned_contribution(txn) == Decimal("0")
+    # it is graded against the model.  Two of the three went at plan step
+    # X-au-c3 -- see the class docstring for the state they described and why
+    # it no longer exists.
 
     def test_a_soft_deleted_row_is_worth_zero_whatever_its_status(
         self, app, db, seed_user, seed_periods,
@@ -125,11 +124,11 @@ class TestTransactionEffectiveAmount:
 
         The last of the property's four branches, and the only one no test
         here covered: a soft-deleted row is worth nothing even when its status
-        is active and its actual is populated.
+        is a settled one and it recorded a figure.
         """
         with app.app_context():
             txn = self._make_txn(
-                seed_user, seed_periods, "Projected",
+                seed_user, seed_periods, "Paid",
                 Decimal("100.00"), actual=Decimal("75.00"),
             )
             txn.is_deleted = True
@@ -138,7 +137,7 @@ class TestTransactionEffectiveAmount:
             assert owned_contribution(txn) == Decimal("0")
 
     def test_done_with_actual_returns_actual(self, app, db, seed_user, seed_periods):
-        """Done transaction with actual_amount returns actual_amount."""
+        """A Paid row that recorded a human's CORRECTION is worth that figure."""
         with app.app_context():
             txn = self._make_txn(
                 seed_user, seed_periods, "Paid",
@@ -147,7 +146,15 @@ class TestTransactionEffectiveAmount:
             assert owned_contribution(txn) == Decimal("145.00")
 
     def test_done_without_actual_returns_estimated(self, app, db, seed_user, seed_periods):
-        """Done transaction without actual_amount falls back to estimated."""
+        """A Paid row that recorded no correction is worth what it DERIVED.
+
+        The figure is the row's own plan, and the two are equal here -- but they
+        are read from different columns since plan step X-au-c3, and that is the
+        point.  This used to be the FALL-BACK case: a settled row stored no
+        figure at all, so the valuation read its plan.  A settle now records the
+        figure it booked, so the same ``$150.00`` is an answer about the money
+        rather than about the forecast.
+        """
         with app.app_context():
             txn = self._make_txn(seed_user, seed_periods, "Paid", Decimal("150.00"))
             assert owned_contribution(txn) == Decimal("150.00")
@@ -178,10 +185,10 @@ class TestTransactionEffectiveAmount:
             assert owned_contribution(txn) == Decimal("0")
 
     def test_received_uses_estimated_when_no_actual(self, app, db, seed_user, seed_periods):
-        """Received transaction without actual_amount falls back to estimated.
+        """A Received row that recorded no correction is worth what it DERIVED.
 
-        The source treats 'received' the same as 'done': actual if set,
-        else estimated. When actual_amount is None, estimated is returned.
+        'Received' settles exactly as 'Paid' does: the record states the figure,
+        and with nobody correcting it the figure is what the row was worth.
         Expected: the contribution == Decimal('150.00').
         """
         with app.app_context():
@@ -191,10 +198,10 @@ class TestTransactionEffectiveAmount:
             assert owned_contribution(txn) == Decimal("150.00")
 
     def test_received_uses_actual_when_set(self, app, db, seed_user, seed_periods):
-        """Received transaction with actual_amount returns actual.
+        """A Received row that recorded a CORRECTION is worth that figure.
 
-        When both estimated and actual are present, the actual takes
-        precedence for done/received statuses.
+        The record and the plan are two different columns, and a settled row is
+        worth what it recorded.
         Expected: the contribution == Decimal('145.00').
         """
         with app.app_context():
@@ -205,10 +212,10 @@ class TestTransactionEffectiveAmount:
             assert owned_contribution(txn) == Decimal("145.00")
 
     def test_done_with_zero_actual(self, app, db, seed_user, seed_periods):
-        """Done transaction with actual_amount=0 returns zero (e.g., waived fee).
+        """A Paid row that recorded ``$0.00`` is worth zero (e.g., a waived fee).
 
-        Zero is a valid actual_amount (the bill was waived). The function
-        must not fall back to estimated when actual is explicitly 0.
+        Zero is a VALUE, not "missing" (E-12): a row whose record says nothing
+        moved must not fall back to the ``$100.00`` it planned.
         Expected: the contribution == Decimal('0.00').
         """
         with app.app_context():
@@ -939,6 +946,9 @@ class TestSettleDayRefusesAnInstant:
                 transaction_type_id=expense_type.id,
                 estimated_amount=Decimal("100.00"),
                 settled_on=seed_periods[0].start_date,
+                **settlement_columns(
+                    seed_periods[0].start_date, Decimal("100.00"),
+                ),
             )
             db.session.add(txn)
             db.session.flush()
@@ -1004,6 +1014,7 @@ class TestDaysPaidBeforeDue:
             estimated_amount=Decimal("100.00"),
             due_date=due_date_val,
             settled_on=settled_on_val,
+            **settlement_columns(settled_on_val, Decimal("100.00")),
         )
         db.session.add(txn)
         db.session.flush()

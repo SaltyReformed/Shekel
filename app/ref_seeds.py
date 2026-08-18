@@ -104,26 +104,6 @@ _REF_TABLE_SEEDS = (
         {"name": "Cancelled", "is_settled": False, "is_immutable": True,  "excludes_from_balance": True},
         {"name": "Settled",   "is_settled": True,  "is_immutable": True,  "excludes_from_balance": False},
     ]),
-    # ``Once`` is a DELIBERATE SURPLUS and must not be removed until plan step
-    # R9 drops the table (recurrence redesign, step R2e-3 / ruling R-R11).
-    # ``RecurrencePatternEnum`` no longer names it -- "does not recur" is
-    # ``recurrence_rule_id IS NULL`` -- so THIS image does not need the row:
-    # ``ref_cache.init`` iterates the running image's enum and never looks at a
-    # surplus row.  The image that needs it is the PREVIOUS one, the target of
-    # ``shekel-deploy``'s auto-rollback, whose enum still has ``ONCE``.  Its own
-    # copy of this list still carries "Once" and would upsert the row back --
-    # except ``scripts/seed_ref_tables.py`` boots the full app with plain
-    # ``create_app()``, so ``ref_cache.init`` raises before the upsert runs.
-    # Deleting this entry is therefore what makes that image unbootable, and
-    # the seed cannot repair what the seed's own startup refuses to reach.
-    # Full reasoning and its measured caveat: migration ``d4a71f6e30bb``.
-    # Pinned by ``TestDeliberateRefSeedSurplus``
-    # (``tests/test_models/test_posting_ref_seed_parity.py``), which also
-    # refuses a SECOND unmodelled value here.
-    ("RecurrencePattern", [
-        "Every Period", "Every N Periods", "Monthly", "Monthly First",
-        "Quarterly", "Semi-Annual", "Annual", "Once",
-    ]),
     ("FilingStatus", [
         "single", "married_jointly", "married_separately",
         "head_of_household",
@@ -240,6 +220,19 @@ _REF_TABLE_SEEDS = (
     # -- the same dual-seed pattern the posting and recurrence refs use.  Names
     # match the enum ``.value`` strings in ``app/enums.py`` exactly.
     ("AmountSource", ["template", "parent_transfer"]),
+    # The settlement record's discriminator (balance arc, plan step X-au-c3).
+    # HOW a settled row's recorded figure is known: ``derived`` is the app's own
+    # resolution at the moment of the settle, ``corrected`` is a figure a human
+    # read off a statement, ``purchases`` is the sum of the row's own entries and
+    # is the one basis storing no figure at all.  A row that has NOT settled
+    # carries ``settled_basis_id IS NULL``, so there is deliberately no
+    # ``not_settled`` row here -- see :class:`app.enums.SettlementBasisEnum` for
+    # why that state is an absence.  The migration ``e4b8a71c0f36`` inline-seeds
+    # the identical rows so a freshly upgraded DB resolves the enum before this
+    # idempotent reseed runs -- the same dual-seed pattern the amount-model,
+    # posting and recurrence refs use.  Names match the enum ``.value`` strings
+    # in ``app/enums.py`` exactly.
+    ("SettlementBasis", ["derived", "corrected", "purchases"]),
 )
 # pylint: enable=line-too-long
 # fmt: on

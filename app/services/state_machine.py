@@ -77,7 +77,7 @@ argument a caller can get wrong is a defect, not a contract.
 Consumers
 ---------
 
-* ``app/services/status_seam.py:apply_status_change`` -- the ONE seam
+* ``app/services/status_seam/_seam.py:apply_status_change`` -- the ONE seam
   that ASSIGNS a status, for both row types.  Every status-changing path
   in the application writes through it.
 

@@ -1038,7 +1038,7 @@ class TestShekelTransactionStatusBypassChecker(CheckerTestCase):
     def test_allows_status_id_assignment_in_status_seam(self) -> None:
         """The seam's own module (status_seam) may assign status_id; not flagged."""
         node = self._status_assign(
-            "txn.status_id = new_status_id", "app.services.status_seam",
+            "txn.status_id = new_status_id", "app.services.status_seam._seam",
         )
         with self.assertNoMessages():
             self.checker.visit_assignattr(node)
@@ -1092,16 +1092,43 @@ class TestShekelTransactionStatusBypassChecker(CheckerTestCase):
             with self.assertNoMessages():
                 self.checker.visit_assignattr(node)
 
-    def test_allows_seam_package_submodule(self) -> None:
-        """A submodule of a seam module (if it is split into a package) stays exempt.
+    def test_flags_a_SIBLING_leaf_of_the_seam_package(self) -> None:
+        """A seam leaf that is not the allowlisted one is NOT exempt.
 
-        Locks the package-prefix match: a future
-        ``app/services/status_seam/_core.py`` resolves to
-        ``app.services.status_seam._core`` and must remain exempt.
+        The narrowing of plan step X-au-c3, stated as a test.  ``status_seam``
+        became a package there, and the entry named the package until the same
+        widening this file already records for ``transfer_service`` was noticed
+        a second time: :func:`_module_in_allowlist` matches a package PREFIX, so
+        naming the package exempts every leaf inside it from the status-write
+        fence -- an allowlist widening nobody decided on.
+
+        The entry names ``_seam``, the one leaf holding ``apply_status_change``.
+        ``_record`` (the settlement value and its reads) and ``_refusals`` (the
+        invariants as guards) assign nothing, so a ``status_id`` write appearing
+        in either is a write that went around the seam and must be flagged.
+        """
+        for leaf in (
+            "app.services.status_seam._record",
+            "app.services.status_seam._refusals",
+        ):
+            node = self._status_assign("txn.status_id = new_status_id", leaf)
+            with self.assertAddsMessages(
+                MessageTest("shekel-transaction-status-bypass", node=node),
+                ignore_position=True,
+            ):
+                self.checker.visit_assignattr(node)
+
+    def test_allows_a_submodule_of_an_ALLOWLISTED_module(self) -> None:
+        """The package-prefix match itself still holds, for the named entry.
+
+        The control for the test above: prefix matching is not broken, it is
+        merely pointed at a leaf.  A submodule of an allowlisted module stays
+        exempt, which is what lets an entry survive a further split of the
+        module it names.
         """
         node = self._status_assign(
             "txn.status_id = new_status_id",
-            "app.services.status_seam._core",
+            "app.services.status_seam._seam._mechanics",
         )
         with self.assertNoMessages():
             self.checker.visit_assignattr(node)
@@ -1354,7 +1381,7 @@ class TestShekelTransactionStatusBypassChecker(CheckerTestCase):
         """The seam module may use any write form it owns; not flagged."""
         node = self._status_call(
             'setattr(txn, "status_id", new_status_id)',
-            "app.services.status_seam",
+            "app.services.status_seam._seam",
         )
         with self.assertNoMessages():
             self.checker.visit_call(node)

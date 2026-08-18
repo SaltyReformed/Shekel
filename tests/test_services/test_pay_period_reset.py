@@ -38,7 +38,6 @@ from app import ref_cache
 from app.exceptions import PayPeriodResetBlocked, ValidationError
 from app.enums import (
     PostingSourceEnum,
-    RecurrencePatternEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -70,9 +69,13 @@ from tests._test_helpers import (
     create_savings_account,
     freeze_today,
     make_expense_template,
-    make_pattern_rule,
+    make_cadence_rule,
     make_transfer_template,
     seam_cash_balance_at,
+)
+from tests.oracles.recurrence_baseline import (
+    EVERY_PERIOD,
+    EVERY_N_PERIODS,
 )
 from app.services import cash_ledger
 
@@ -160,9 +163,9 @@ def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
 
     Returns the created template (flushed; the caller commits).
     """
-    rule = make_pattern_rule(
+    rule = make_cadence_rule(
         seed_user["user"].id,
-        RecurrencePatternEnum.EVERY_N_PERIODS,
+        EVERY_N_PERIODS,
         starts_on=start_period.start_date,
         interval_n=interval_n,
     )
@@ -393,9 +396,9 @@ class TestResetHappyPath:
             # A date inside the OLD schedule and a year before the rebuilt
             # one, so a reset that re-pointed anything could not leave it here.
             stated_start = date(2026, 1, 30)
-            rule = make_pattern_rule(
+            rule = make_cadence_rule(
                 seed_user["user"].id,
-                RecurrencePatternEnum.EVERY_PERIOD,
+                EVERY_PERIOD,
                 starts_on=stated_start,
             )
             template = make_expense_template(db.session, seed_user)

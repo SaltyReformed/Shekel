@@ -30,6 +30,8 @@ from app.services import balance_at, cash_ledger, dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     dashboard_section,
+    default_settle_day,
+    settlement_columns,
     make_every_period_rule,
     add_txn as _add_txn,
     make_investment_account,
@@ -64,13 +66,8 @@ class TestBillRowSingleBase:
         over estimated_amount / actual_amount / status.
         """
         # pylint: disable=import-outside-toplevel
-        from app.models.ref import RecurrencePattern
         from app.models.recurrence_rule import RecurrenceRule
         from app.models.transaction_template import TransactionTemplate
-        every_period = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name="Every Period").one()
-        )
         rule = make_every_period_rule(db.session, seed_user["user"].id)
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -84,6 +81,9 @@ class TestBillRowSingleBase:
         )
         db.session.add(template)
         db.session.flush()
+        _settle_day = default_settle_day(
+            period, ref_cache.status_id(status_enum),
+        )
         txn = Transaction(
             account_id=seed_user["account"].id,
             pay_period_id=period.id,
@@ -93,9 +93,15 @@ class TestBillRowSingleBase:
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
             estimated_amount=Decimal(str(estimated)),
-            actual_amount=Decimal(str(actual)) if actual is not None else None,
             template_id=template.id,
             due_date=date(2026, 1, 5),
+            # The settlement record -- day, figure and basis together, through
+            # the one door a bare-built fixture uses (plan step X-au-c3).
+            settled_on=_settle_day,
+            **settlement_columns(
+                _settle_day, Decimal(str(estimated)),
+                submitted=Decimal(str(actual)) if actual is not None else None,
+            ),
         )
         db.session.add(txn)
         db.session.flush()

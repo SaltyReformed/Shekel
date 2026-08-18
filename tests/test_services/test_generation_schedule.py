@@ -62,7 +62,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.exceptions import RecurrenceWindowError
 from app import ref_cache
 from app.extensions import db
@@ -75,10 +75,14 @@ from app.models.transaction_template import TransactionTemplate
 from app.services import pay_period_service, pay_period_write, period_population, recurrence_engine
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
-    make_pattern_rule,
+    make_cadence_rule,
     seed_fica_config,
     seed_state_tax_config,
     seed_tax_bracket_set,
+)
+from tests.oracles.recurrence_baseline import (
+    EVERY_PERIOD,
+    MONTHLY_FIRST,
 )
 
 # ``seed_periods`` runs 10 biweekly periods from 2026-01-02, so the paydays are
@@ -93,12 +97,13 @@ _JANUARY_THIRD_PAYCHECK_INDEX = 2
 _LAST_SEEDED_INDEX = 9
 
 
-def _make_template(seed_user, pattern_enum, **rule_kwargs):
+def _make_template(seed_user, cadence, **rule_kwargs):
     """Create a recurring expense template and its rule.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
-        pattern_enum: The :class:`~app.enums.RecurrencePatternEnum` member.
+        cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
+            to author.
         **rule_kwargs: Extra columns for the rule (``day_of_month``,
             ``start_date``, ...).
 
@@ -106,8 +111,8 @@ def _make_template(seed_user, pattern_enum, **rule_kwargs):
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`.
     """
     rule_kwargs.pop("offset_periods", None)
-    rule = make_pattern_rule(
-        seed_user["user"].id, pattern_enum,
+    rule = make_cadence_rule(
+        seed_user["user"].id, cadence,
         interval_n=rule_kwargs.pop("interval_n", 1),
         fires_on_day=rule_kwargs.pop("day_of_month", None),
         fires_in_month=rule_kwargs.pop("month_of_year", None),
@@ -228,7 +233,7 @@ class TestAnExtendDoesNotDuplicateAMonthlyFirstRow:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             template = _make_template(
-                seed_user, RecurrencePatternEnum.MONTHLY_FIRST,
+                seed_user, MONTHLY_FIRST,
             )
             recurrence_engine.generate_for_template(
                 template,
@@ -270,7 +275,7 @@ class TestAnExtendDoesNotDuplicateAMonthlyFirstRow:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             template = _make_template(
-                seed_user, RecurrencePatternEnum.MONTHLY_FIRST,
+                seed_user, MONTHLY_FIRST,
             )
             recurrence_engine.generate_for_template(
                 template,
@@ -314,7 +319,7 @@ class TestTheWindowStillNarrowsWhatIsWritten:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             template = _make_template(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, EVERY_PERIOD,
             )
 
             created = recurrence_engine.generate_for_template(
@@ -359,7 +364,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             scenario_id = seed_user["scenario"].id
             template = _make_template(
                 seed_user,
-                RecurrencePatternEnum.EVERY_PERIOD,
+                EVERY_PERIOD,
                 starts_on=seed_periods[5].start_date,
             )
             window = seed_periods[2:4]
@@ -392,7 +397,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             scenario_id = seed_user["scenario"].id
             template = _make_template(
                 seed_user,
-                RecurrencePatternEnum.EVERY_PERIOD,
+                EVERY_PERIOD,
                 starts_on=seed_periods[5].start_date,
             )
 
@@ -416,7 +421,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             scenario_id = seed_user["scenario"].id
             template = _make_template(
                 seed_user,
-                RecurrencePatternEnum.EVERY_PERIOD,
+                EVERY_PERIOD,
                 starts_on=seed_periods[5].start_date,
             )
 
@@ -455,7 +460,7 @@ class TestThePredictionIsTheGenerationCall:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             template = _make_template(
-                seed_user, RecurrencePatternEnum.MONTHLY_FIRST,
+                seed_user, MONTHLY_FIRST,
             )
             schedule = GenerationSchedule.for_user(seed_user["user"].id)
 
@@ -499,8 +504,8 @@ class TestThePaycheckSeesTheWholeSchedule:
         Returns:
             ``(template, profile)``, both flushed.
         """
-        rule = make_pattern_rule(
-            seed_user["user"].id, RecurrencePatternEnum.EVERY_PERIOD,
+        rule = make_cadence_rule(
+            seed_user["user"].id, EVERY_PERIOD,
         )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -798,7 +803,7 @@ class TestGenerationIsStillGated:
         """The ownership defence still fires before any resolution."""
         with app.app_context():
             template = _make_template(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, EVERY_PERIOD,
             )
 
             created = recurrence_engine.generate_for_template(
@@ -816,7 +821,7 @@ class TestGenerationIsStillGated:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             template = _make_template(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, EVERY_PERIOD,
             )
             schedule = GenerationSchedule.for_user(seed_user["user"].id)
 
@@ -839,7 +844,7 @@ class TestGenerationIsStillGated:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             template = _make_template(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, EVERY_PERIOD,
             )
             created = recurrence_engine.generate_for_template(
                 template,
@@ -893,7 +898,7 @@ class TestABoundedRuleDoesNotRestartItsCount:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             template = _make_template(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, EVERY_PERIOD,
             )
             template.recurrence_rule.max_occurrences = 3
             db.session.flush()
@@ -926,12 +931,13 @@ class TestABoundedRuleDoesNotRestartItsCount:
 class TestTheTransferEngineTakesTheSameSchedule:
     """Half the changed surface, and the migration ships a DELETE for it."""
 
-    def _transfer_template(self, seed_user, pattern_enum):
+    def _transfer_template(self, seed_user, cadence):
         """Create a recurring transfer template into a fresh savings account.
 
         Args:
             seed_user: The ``seed_user`` fixture dict.
-            pattern_enum: The recurrence pattern to author.
+            cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
+            to author.
 
         Returns:
             The flushed :class:`~app.models.transfer_template.TransferTemplate`.
@@ -946,7 +952,7 @@ class TestTheTransferEngineTakesTheSameSchedule:
         savings = create_savings_account(
             seed_user, db.session, "Savings", Decimal("0.00"),
         )
-        rule = make_pattern_rule(seed_user["user"].id, pattern_enum)
+        rule = make_cadence_rule(seed_user["user"].id, cadence)
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
@@ -978,7 +984,7 @@ class TestTheTransferEngineTakesTheSameSchedule:
 
             scenario_id = seed_user["scenario"].id
             template = self._transfer_template(
-                seed_user, RecurrencePatternEnum.MONTHLY_FIRST,
+                seed_user, MONTHLY_FIRST,
             )
             transfer_recurrence.generate_for_template(
                 template,
@@ -1030,7 +1036,7 @@ class TestRegenerateSweepsOnlyWhatItRewrites:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             template = _make_template(
-                seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                seed_user, EVERY_PERIOD,
             )
             recurrence_engine.generate_for_template(
                 template,
@@ -1079,7 +1085,7 @@ class TestOneScheduleReadServesTheWholeRequest:
             scenario_id = seed_user["scenario"].id
             for index in range(12):
                 template = _make_template(
-                    seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+                    seed_user, EVERY_PERIOD,
                 )
                 template.name = f"Envelope {index}"
                 template.is_envelope = True

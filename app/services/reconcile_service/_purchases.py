@@ -19,9 +19,9 @@ into a shape those two can share until they exist.
 **All three now reconcile the LEDGER, and that is plan step X-f3b** (ruling
 **R-FM**): a purchase whose posting day is recorded is a cash movement of its
 own, so stamping one posts its cash leg.  The bulk ``UPDATE`` stays -- the
-column write is still one statement -- and the postings are reconciled per row
-afterwards, which keeps the security property (the SCOPE is what decides which
-rows were stamped) and adds no second definition of "outstanding".
+column write is still one statement -- and the postings are reconciled per
+FAMILY afterwards, which keeps the security property (the SCOPE is what decides
+which rows were stamped) and adds no second definition of "outstanding".
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, frozen dataclasses out.
@@ -40,10 +40,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
 from app.services.cash_ledger import AnchorPoint
 from app.services.reconcile_service._offers import OutstandingPurchase
-from app.utils.balance_predicates import (
-    balance_contributing_clause,
-    is_projected_clause,
-)
+from app.utils.balance_predicates import balance_contributing_clause
 from app.utils.log_events import (
     BUSINESS,
     EVT_ENTRIES_SETTLED_DAY_RECORDED,
@@ -89,19 +86,28 @@ def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
       one checking account (there is no per-type uniqueness).  Reconciling
       across accounts would drop another account's reservation without ever
       raising its anchor.
-    * the parent is PROJECTED and CONTRIBUTING -- the entry reservation
-      prices only projected rows
-      (:func:`app.services.cash_ledger._amounts._entry_aware_amount`), so an
-      entry on a settled parent is inert and listing it would be asking the
-      user to reconcile something that cannot move a figure.  Routed through
-      the centralized ``is_projected_clause`` (D6-09 / MED-02) so this filter
-      shares one definition with every other Projected filter, composed with
-      ``balance_contributing_clause`` -- the soft-delete half was a
-      hand-written ``is_deleted.is_(False)`` until plan step X-f2-c2, which
-      left one package stating "which parent rows exist at all" two ways while
-      its new arm's own docstring argued for the shared builder.  The two are
-      equivalent today (Projected is neither Credit nor Cancelled); the point
-      is that they cannot come to disagree.
+    * the parent is CONTRIBUTING -- a Credit or Cancelled parent's purchases
+      are not money this account owes, and a soft-deleted one's are not money
+      at all (``settled_cash_leg`` and ``_events.settled_cash_facts`` both zero
+      the whole family for such a row).  Routed through the shared
+      ``balance_contributing_clause`` so this filter and the plan loader cannot
+      come to disagree about which parent rows exist at all -- the soft-delete
+      half was a hand-written ``is_deleted.is_(False)`` until plan step X-f2-c2.
+
+    **The parent is NOT required to be PROJECTED, and dropping that clause is
+    the developer's 2026-08-17 ruling** (plan step X-au-c3).  It was here on the
+    premise that "the entry reservation prices only projected rows
+    (``cash_ledger._amounts._entry_aware_amount``), so an entry on a settled
+    parent is inert" -- and ruling **R-FM** had already falsified it one step
+    earlier: ``settled_cash_leg`` subtracts every POSTED purchase from a settled
+    row's close, so recording a posting day on such a purchase moves its cash
+    out of the close's day and onto the bank's.  Nothing is created or destroyed
+    by that -- the two terms always sum to the row's whole debit total -- but
+    the DAY is what a statement reconciles against, which is this panel's entire
+    subject.  Measured on the 2026-08-17 production dump: 28 closed envelopes
+    hold 61 debit purchases with no posting day, ``$4,360.07``, none of which
+    this panel would ever have offered.  ``entry_service._doors``'s field-aware
+    refusal is the write side of the same ruling.
 
     Not scoped by scenario_id: transactions are scenario-scoped, but Phase 1 is
     baseline-only (every transaction lives in the single baseline scenario), so
@@ -128,7 +134,6 @@ def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
             .filter(
                 PayPeriod.user_id == owner_id,
                 Transaction.account_id == account_id,
-                is_projected_clause(Transaction),
                 balance_contributing_clause(),
             )
         ),
@@ -215,8 +220,9 @@ def _post_stamped_purchases(
     posting day is a cash movement of its own, so stamping one is a LEDGER act
     as well as a column write, exactly as the transaction arm's settle already
     is.  This arm's writer is a bulk ``UPDATE`` and stays one; the postings are
-    reconciled per row afterwards, which is what
-    ``posting_service.sync_purchase_postings`` is for.
+    reconciled per FAMILY afterwards, which is what
+    ``posting_service.sync_transaction_postings`` is for -- see the comment at
+    that call for why it is the family and not the purchase.
 
     **The set is re-read rather than assumed**, and both halves of that matter.
     The ``UPDATE`` ran with ``synchronize_session=False``, so any
@@ -260,8 +266,39 @@ def _post_stamped_purchases(
         )
         .all()
     )
-    for entry in stamped:
-        posting_service.sync_purchase_postings(entry)
+    # **The FAMILY is reconciled, not the purchase**, and that is a defect fixed
+    # rather than a tidier spelling (plan step X-au-c3, second pass).  This
+    # loop called ``posting_service.sync_purchase_postings`` per entry, whose
+    # own docstring states the precondition it was written under: it is "for
+    # the write paths that change a purchase WITHOUT touching its parent's own
+    # cash leg".
+    #
+    # Widening :func:`_outstanding_scope` to admit a SETTLED parent broke that
+    # precondition, because a settled row's confirmed effect is
+    # ``settled figure - Sigma(credit) - Sigma(POSTED purchases)``
+    # (``cash_ledger.settled_cash_leg``): recording the day SHRINKS the
+    # parent's own leg by exactly what the purchase's new leg books.  Posting
+    # the purchase alone left the parent's full leg standing beside it and the
+    # money was counted TWICE -- measured on a ``$30.00`` purchase under a
+    # settled envelope on a ``$1,000.00`` anchor, ledger ``970 -> 940`` while
+    # its own sources still said ``970``, breaking the Build-Order Step-5
+    # per-account invariant through an ordinary ``POST /accounts/<id>/reconcile``.
+    #
+    # ``sync_transaction_postings`` is the door for a caller that changed the
+    # parent, and it reconciles the parent's leg AND one leg per posted
+    # purchase in a single idempotent pass -- so it replaces the per-entry call
+    # outright rather than being added beside it.  It is correct for a
+    # PROJECTED parent too: ``settled=False`` leaves the parent booking nothing
+    # and still posts each purchase's own leg, which is ruling **R-FM**.
+    #
+    # Grouped so a statement that ticks four purchases of one envelope
+    # reconciles that family ONCE; ``dict`` preserves insertion order, so the
+    # pass stays deterministic.
+    families = {entry.transaction_id: entry.transaction for entry in stamped}
+    for txn in families.values():
+        posting_service.sync_transaction_postings(
+            txn, settled=txn.status.is_settled,
+        )
 
 
 def record_settled_days(
@@ -287,8 +324,11 @@ def record_settled_days(
 
     **Every id is re-scoped through :func:`_outstanding_scope` rather than
     trusted.**  The ids arrive from a form, so an id belonging to another
-    user, another account, a credit purchase, a settled parent or an
-    already-reconciled entry simply does not match and is silently skipped --
+    user, another account, a credit purchase, a NON-CONTRIBUTING parent
+    (Credit, Cancelled, soft-deleted) or an already-reconciled entry simply
+    does not match and is silently skipped.  A SETTLED parent's purchase is no
+    longer in that list and that is the developer's 2026-08-17 ruling: it
+    matches, and recording its day is the point.  Skipping is --
     the same "404 for both not-found and not-yours" posture the ownership
     helpers take, expressed as a filter because this is a set operation.
     The count returned is what actually changed, not what was asked for.

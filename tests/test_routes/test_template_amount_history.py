@@ -24,11 +24,12 @@ from html.parser import HTMLParser
 
 from app.extensions import db
 from app.utils.dates import display_today
-from app.models.ref import RecurrencePattern, TransactionType
+from app.models.ref import TransactionType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import template_amount_service as tas
 from tests._test_helpers import create_savings_account, make_every_period_rule
+from tests.oracles.recurrence_baseline import EVERY_PERIOD
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -57,11 +58,6 @@ def _max_form_nesting(html: str) -> int:
     parser = _FormNesting()
     parser.feed(html)
     return parser.deepest
-
-
-def _pattern_id(name="Every Period"):
-    """Return a recurrence pattern's id by name (display lookup, test-only)."""
-    return db.session.query(RecurrencePattern).filter_by(name=name).one().id
 
 
 def _template_with_history(seed_user, amounts, name="Geico"):
@@ -130,7 +126,6 @@ class TestCreateOpensTheSeries:
                 "transaction_type_id": db.session.query(TransactionType)
                     .filter_by(name="Expense").one().id,
                 "account_id": seed_user["account"].id,
-                "recurrence_pattern": str(_pattern_id()),
             }, follow_redirects=True)
             assert resp.status_code == 200
 
@@ -158,7 +153,6 @@ class TestCreateOpensTheSeries:
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
                 "category_id": seed_user["categories"]["Rent"].id,
-                "recurrence_pattern": str(_pattern_id()),
                 "start_period_id": seed_periods_today[0].id,
             }, follow_redirects=True)
             assert resp.status_code == 200
@@ -309,7 +303,6 @@ class TestEditRecordsThePrice:
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
                 "category_id": seed_user["categories"]["Rent"].id,
-                "recurrence_pattern": str(_pattern_id()),
                 "effective_from": "2026-05-21",
             }, follow_redirects=True)
             assert resp.status_code == 200
@@ -341,7 +334,7 @@ class TestTheConflictChooserRoundTrip:
             _create_template, _future_override_txn,
         )
         template = _create_template(
-            seed_user, pattern_name="Every Period", amount="1200.00",
+            seed_user, cadence=EVERY_PERIOD, amount="1200.00",
         )
         tas.set_amount(
             template, Decimal("1200.00"), effective_on=date(2026, 1, 1),
@@ -360,7 +353,6 @@ class TestTheConflictChooserRoundTrip:
 
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "recurrence_pattern": str(_pattern_id()),
                 "effective_from": "2026-06-01",
             })
             assert resp.status_code == 200
@@ -383,7 +375,6 @@ class TestTheConflictChooserRoundTrip:
 
             resp = auth_client.post(f"/templates/{tid}", data={
                 "default_amount": "1400.00",
-                "recurrence_pattern": str(_pattern_id()),
                 "effective_from": "2026-06-01",
                 "conflict_apply": "1",
                 f"conflict_decision_{txn_id}": "keep",
@@ -505,7 +496,6 @@ class TestTheOptimisticLockCounter:
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
                 "category_id": seed_user["categories"]["Rent"].id,
-                "recurrence_pattern": str(_pattern_id()),
                 "version_id": str(before),
             }, follow_redirects=True)
             assert resp.status_code == 200

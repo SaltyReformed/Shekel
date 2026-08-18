@@ -397,8 +397,8 @@ def contributed_amount(txn, resolved: Decimal) -> Decimal:
             reader's own live figure where one supersedes it.
 
     Returns:
-        ``0`` for a row that contributes nothing, the entered ``actual_amount``
-        when there is one, else *resolved*.
+        ``0`` for a row that contributes nothing, what the row RECORDED as
+        having moved once it has settled, else *resolved*.
     """
     fixed = fixed_contribution(txn)
     return resolved if fixed is None else fixed
@@ -726,9 +726,16 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     # short-circuit and keeping non-ORM tests stable.
     entries = getattr(txn, "entries", ())
     # This check stays AHEAD of ``is_projected`` and that ordering is
-    # load-bearing, not stylistic: ``is_projected`` reads ``txn.status_id``
-    # through ``ref_cache`` and so raises on a non-ORM fake, which the
-    # no-entries short-circuit above is documented to keep working.
+    # load-bearing, not stylistic: ``is_projected`` resolves a ``ref_cache`` id,
+    # which is work an entry-less row has no reason to pay for.
+    #
+    # **The reason it used to give was that ``is_projected`` raises on a non-ORM
+    # fake, and plan step X-au-c3 voided it**: every valuation now asks the
+    # STATUS whether a row is worth what it RECORDED or what it PLANS, so a row
+    # carrying no ``status_id`` is one no valuation could ever see.  The
+    # ordering is graded by a call-counting spy instead of by a missing
+    # attribute, and that spy still fails when the two guards are swapped --
+    # verified by making the swap.
     if not entries:
         return contribution_of(txn, basis)
 
@@ -831,10 +838,13 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     Credit Card account).
 
     For a plain transaction both entry sums are zero and the effect collapses to
-    ``+/-effective_amount``.  For an ENVELOPE at settle ``effective_amount``
-    equals the sum of ALL its entries (``compute_actual_from_entries`` sets
-    ``actual_amount`` so), and subtracting the two collapses the result to the
-    UNPOSTED debit outflow -- with no branch on "is this an envelope".
+    ``+/-effective_amount``.  For an ENVELOPE at settle the first term equals the
+    sum of ALL its entries -- since plan step X-au-c3 because that is what the
+    row's ``purchases``-basis settlement RECORDS
+    (``row_valuation.settled_figure``), where it used to be because a deleted
+    hook wrote the sum into ``actual_amount`` -- and subtracting the two
+    collapses the result to the UNPOSTED debit outflow, with no branch on "is
+    this an envelope".
 
     **The third term is ruling R-FM** (plan step X-f3b), and it is what makes
     "an envelope's close books only what its purchases did not" one expression
@@ -865,6 +875,16 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     the same sum in SQL and deliberately stays independent: it is the Step-3
     reconciliation oracle's own window onto the ledger, and an oracle that
     shared this implementation could not grade it.
+
+    **That holds for the TRANSACTION arm and NOT for the TRANSFER arm since plan
+    step X-au-c3** (adversarial review, 2026-08-17).  This rule is the
+    transaction writer's in Python and the oracle's is in SQL, so those two
+    still grade each other.  The transfer writer
+    (``posting_service._settle_effective``) spelled its figure inline and now
+    shares ``posting_reads.settled_figure_clause`` with its own oracle.  What
+    was lost is a transcription check between two copies of one expression;
+    what was gained is one statement of a money rule.  ``settled_figure`` is the
+    Python twin that still grades that expression, through the cash walk.
 
     **TOTAL: a non-contributing row is worth exactly zero.**  A soft-deleted or
     Credit / Cancelled row has an ``effective_amount`` of zero, but its ENTRIES
@@ -915,18 +935,16 @@ def income_amount(txn, basis: AmountBasis):
     later profile, calibration or code change may have invalidated; absent one
     the row is valued through the amount model
     (:func:`contribution_of`) -- ``0`` for a row that contributes
-    nothing, a human's ``actual_amount`` where one is entered, else what the
-    row's amount RESOLVES to.
+    nothing, what a SETTLED row recorded as having moved, else what the row's
+    amount RESOLVES to.
 
-    **The override outranking an entered actual is preserved rather than ruled**
-    (plan step X-au-c2).  The settle door orders the two the other way
-    (``transaction_service._settle._freshest_amount`` refuses to refresh a row
-    carrying an actual), so the app holds two precedences for one pair -- which
-    is finding **N-224**'s family.  It is unreachable on production, measured:
-    of 707 projected rows, ZERO carry an ``actual_amount``, and the override
-    map's producers take Projected rows only.  Changing it here would move a
-    number before the schema change that makes the new answer structural, so
-    this leaf preserves it and X-au-d deletes the arm outright.
+    **The override outranks the amount model here, preserved rather than ruled**
+    (plan step X-au-c2), and unreachable on production: the override map's
+    producers take Projected rows only, and a Projected row records nothing.
+    X-au-d deletes the arm outright.  This paragraph also named a SECOND
+    precedence -- ``_freshest_amount`` refusing to refresh a row carrying an
+    ``actual_amount`` -- which plan step X-au-c3 deleted with the column that
+    made a machine's figure and a human's indistinguishable.
 
     **It takes the ``AmountBasis`` directly since plan step X-f3b**, where it
     took a ``ProjectedBasis`` wrapper before.  That record bundled TWO

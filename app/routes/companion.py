@@ -47,9 +47,14 @@ from app.enums import RoleEnum
 from app.extensions import db
 from app.models.category import Category
 from app.services import companion_service, grid_view_service
-from app.services.cash_ledger import amount_basis, display_amounts_by_id
+from app.services.cash_ledger import (
+    amount_basis,
+    display_amounts_by_id,
+    settled_amounts_by_id,
+)
 from app.services.scenario_resolver import require_baseline_scenario
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
+from app.services.transaction_service import retained_settle_amounts_by_id
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError
 
@@ -135,6 +140,20 @@ def _build_partial_context(
         transactions,
         amount_basis(owner_id, require_baseline_scenario(owner_id).id),
     )
+    # What each row's money DID, beside what its amount IS (plan step X-au-c3).
+    # The card macro reads BOTH maps -- a settled row shows the figure it
+    # RECORDED and an unsettled one shows its plan -- so the companion, which
+    # shares that macro, publishes both for exactly the reason the owner grid
+    # does.  It needs no basis: a settlement record is the row's own, and
+    # reading one consults no producer.
+    settled = settled_amounts_by_id(transactions)
+    # And what each row WOULD book if it were marked paid, where that differs
+    # from both maps above (plan step X-au-c3, developer 2026-08-17): a row
+    # reverted out of the settled band keeps what it recorded and a re-settle
+    # honours it.  The shared card macro draws it, so the companion publishes it
+    # for the same reason it publishes the other two -- a surface that took two
+    # of the three would show a figure the tick beside it does not book.
+    retained = retained_settle_amounts_by_id(transactions)
     entry_sums = build_entry_sums_dict(transactions, budgets)
     # Pre-render context for the inline envelope entries list -- see
     # the matching comment in app/routes/grid/page.py::_build_grid_row_data
@@ -149,6 +168,8 @@ def _build_partial_context(
         "expense_row_keys": expense_row_keys,
         "matched_by_row_period": matched_by_row_period,
         "budgets": budgets,
+        "settled": settled,
+        "retained": retained,
         "entry_sums": entry_sums,
         "entry_lists": entry_lists,
         # The USER's civil day, never the process's.  This reaches

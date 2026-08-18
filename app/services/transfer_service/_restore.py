@@ -48,9 +48,12 @@ def restore_transfer(transfer_id, user_id):
     re-syncs every field the service mirrors from the canonical parent
     onto both shadows (amount, status, period, category, due_date,
     is_override) in case any drifted via direct ORM mutation while the
-    transfer was soft-deleted.  ``actual_amount`` stays excluded: the
-    ``Transfer`` parent has no canonical column for it, so there is no value
-    to re-sync against.
+    transfer was soft-deleted.  The SETTLEMENT RECORD stays excluded: the
+    ``Transfer`` parent carries none of its three columns -- a transfer's
+    money moves on its legs -- so there is no value to re-sync against.
+    ``apply_status_to_all_three`` repairs a drifted leg's record from its
+    SIBLING's instead, which is Transfer Invariant 3 read rather than
+    maintained.
 
     **``settled_on`` IS now maintained, and it is not the parent that supplies
     it** (plan step X-aj1).  Repairing a status through the one seam brings

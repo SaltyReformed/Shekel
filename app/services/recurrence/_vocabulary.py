@@ -18,16 +18,16 @@ member names, and no route catches it -- so the gap between the two sets is a
 
 **The question this module asks moved from the PATTERN to the two axes at plan
 step R7c-c**, with the column it was asked about.  Until then it was
-``modelled_pattern(pattern_id)`` over the closed eight-member
-:class:`~app.enums.RecurrencePatternEnum`, and the sets HAD diverged: plan step
-R2e-3 deleted the ``Once`` member while its ``ref`` row survived to R9, because
-deleting the row in the same release would leave the auto-rollback image unable
-to boot (``ref_cache.init`` raises for an enum member with no row; ruling
-R-R11).  ``pattern_id`` is dropped, so the divergence is no longer reachable
-through any rule at all, and what is left to ask about is a rule's ``unit_id``
-and ``placement_id``.  ``ref.recurrence_patterns`` and its enum outlive this
-module's interest in them by exactly one step: plan step **R9** drops both, for
-the same rollback-image reason R-R11 gave.
+``modelled_pattern(pattern_id)`` over a closed eight-member enum, and the sets
+HAD diverged: plan step R2e-3 deleted the ``Once`` member while its ``ref`` row
+survived, because deleting the row in the same release was thought to leave the
+auto-rollback image unable to boot (``ref_cache.init`` raises for an enum member
+with no row; ruling R-R11).  ``pattern_id`` is dropped, so the divergence is no
+longer reachable through any rule at all, and what is left to ask about is a
+rule's ``unit_id`` and ``placement_id``.  ``ref.recurrence_patterns`` and its
+enum outlived this module's interest in them by exactly one step: plan step
+**R9** dropped both, once the rollback image was measured to be protected by
+``shekel-deploy``'s own refusal rather than by the row.
 
 **The PICKER left at plan step R7b-2** and took the larger half of this module
 with it.  The form does not choose a cadence NAME; it authors
