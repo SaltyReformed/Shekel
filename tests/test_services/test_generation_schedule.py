@@ -570,12 +570,11 @@ class TestThePaycheckSeesTheWholeSchedule:
             template, profile = self._salary_template(seed_user)
             period = seed_periods[_JANUARY_THIRD_PAYCHECK_INDEX]
 
+            schedule = GenerationSchedule.for_periods(
+                seed_user["user"].id, [period],
+            )
             created = recurrence_engine.generate_for_template(
-                template,
-                GenerationSchedule.for_periods(
-                    seed_user["user"].id, [period],
-                ),
-                scenario_id,
+                template, schedule, scenario_id,
             )
             db.session.flush()
 
@@ -588,11 +587,18 @@ class TestThePaycheckSeesTheWholeSchedule:
                 load_tax_configs_for_year,
             )
             configs = load_tax_configs_for_year(profile.user_id, profile, 2026)
+            # The engine takes DERIVED periods (pay-calendar plan step
+            # C2-f2d-3), and this case's whole point is the difference between
+            # the WHOLE schedule and a one-period window -- so both are taken
+            # off the same calendar and only the SLICE differs.
+            calendar = schedule.calendar
+            derived = calendar.saved()
+            derived_period = calendar.period_by_id(period.id)
             whole_break = paycheck_calculator.calculate_paycheck(
-                profile, period, list(seed_periods), configs,
+                profile, derived_period, derived, configs,
             )
             windowed_break = paycheck_calculator.calculate_paycheck(
-                profile, period, [period], configs,
+                profile, derived_period, [derived_period], configs,
             )
             whole = whole_break.earnings.net_pay
             windowed = windowed_break.earnings.net_pay

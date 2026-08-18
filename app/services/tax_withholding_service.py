@@ -253,7 +253,7 @@ def compute_withholding_to_date(
             relationships available (read by ``project_salary``).
         year: The tax year; every period in *periods* is expected to fall
             in it (the caller loads the year's periods).
-        periods: The tax year's :class:`~app.models.pay_period.PayPeriod`
+        periods: The tax year's :class:`~app.services.pay_calendar.DerivedPeriod`
             list.  PASSED IN (this module performs no pay-period query);
             an empty list yields an all-zero modeled remainder.
 
@@ -349,7 +349,7 @@ def _project_remainder(
         The summed modeled remainder as a :class:`WithholdingComponents`.
     """
     remainder_ids = {
-        p.id for p in periods
+        p.period_id for p in periods
         if checkpoint is None or p.start_date > checkpoint.as_of_date
     }
     if not remainder_ids:

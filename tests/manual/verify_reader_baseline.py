@@ -283,8 +283,12 @@ def _spending(user_id, account_id):
 
 def _savings(user_id):
     """The savings dashboard's emergency-fund metrics (the settled-spend feed)."""
-    return _plain(_guard("savings", lambda: savings_dashboard_service
-                         .compute_dashboard_data(user_id)))
+    return _plain(_guard(
+        "savings",
+        lambda: savings_dashboard_service.compute_dashboard_data(
+            BalanceContext.build(user_id),
+        ),
+    ))
 
 
 def _investment(user_id, accounts):

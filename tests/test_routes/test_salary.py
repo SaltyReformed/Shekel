@@ -26,6 +26,7 @@ from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
     RaiseType, TransactionType,
 )
+from app.services.pay_calendar import calendar_for
 from app.services.auth_service import hash_password
 
 import pytest
@@ -3190,8 +3191,11 @@ class TestCalibrationServerDerivedSnapshot:
             profile = db.session.query(SalaryProfile).filter_by(
                 id=cal.salary_profile_id,
             ).one()
-            current_period = pay_period_service.get_current_period(user.id)
-            periods = pay_period_service.get_all_periods(user.id)
+            # The DERIVED calendar, as the engine takes it since pay-calendar
+            # plan step C2-f2d-3.
+            calendar = calendar_for(user.id)
+            current_period = calendar.period_containing(date.today())
+            periods = calendar.saved()
             tax_configs = load_tax_configs_for_year(
                 user.id, profile, current_period.start_date.year,
             )

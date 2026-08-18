@@ -24,12 +24,10 @@ from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.pension_profile import PensionProfile
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import (
-    pay_period_service,
     paycheck_calculator,
     pension_calculator,
 )
@@ -103,16 +101,20 @@ class PensionSummary:
 class _CurrentPay:
     """The user's current-period pay snapshot.
 
-    Returned by :func:`_compute_current_pay`.  Bundles the pay-period
-    calendar and the engine-computed current paycheck so the projection
-    context and the gap-comparison salary calc both read one snapshot
-    rather than re-loading periods or re-running the paycheck engine.
+    Returned by :func:`_compute_current_pay`, so the gap comparison and the
+    readiness picture read ONE engine run rather than each starting another.
+
+    **It carried the owner's PERIODS too, and they went at pay-calendar plan
+    step C2-f2d-3.**  ``all_periods`` and ``current_period`` existed to be
+    threaded into ``retirement_projection.build_projection_context``; that
+    function now derives both from the read pass it already takes, which left
+    these two fields with ZERO readers in ``app/`` or ``tests/`` -- a value
+    published for a consumer that no longer exists, which is the shape rulings
+    R-BG and R-BH each deleted once already.  Anything wanting either asks the
+    pass: ``balance_ctx.reported_periods()`` and
+    ``balance_ctx.calendar().period_containing(balance_ctx.as_of)``.
 
     Attributes:
-        all_periods: Every pay period for the user (projection horizon
-            source + gap input).
-        current_period: The user's current pay period, or ``None`` when
-            no period covers today.
         net_biweekly: The current-period net (take-home) pay from the
             paycheck engine; ``Decimal("0")`` when there is no active
             salary profile or no current period.
@@ -121,8 +123,6 @@ class _CurrentPay:
             no-period cases; reused for the engine gross-biweekly figure.
     """
 
-    all_periods: list[PayPeriod]
-    current_period: PayPeriod | None
     net_biweekly: Decimal
     current_breakdown: paycheck_calculator.PaycheckBreakdown | None
 
@@ -374,14 +374,17 @@ def _compute_current_pay(
             used as the current profile).
 
     Returns:
-        A :class:`_CurrentPay` snapshot with the period calendar, the
-        current period, the net biweekly pay, and the full breakdown.
+        A :class:`_CurrentPay` snapshot -- the net biweekly pay and the full
+        breakdown.  It carried the period calendar too until pay-calendar plan
+        step C2-f2d-3; see that class.
     """
     user_id = balance_ctx.user_id
-    all_periods = pay_period_service.get_all_periods(user_id)
-    current_period = pay_period_service.get_current_period(
-        user_id, as_of=balance_ctx.as_of,
-    )
+    # BOTH answers come off the pass's ONE memoized calendar (pay-calendar
+    # plan step C2-f2d-3), where two SQL readers could disagree with each other
+    # and with the derived calendar every other producer on this page reads.
+    calendar = balance_ctx.calendar()
+    all_periods = calendar.saved()
+    current_period = calendar.period_containing(balance_ctx.as_of)
     net_biweekly = Decimal("0")
     current_breakdown = None
     # F-20 / MED-06 / F-032: take the current-period net (and, via the
@@ -400,9 +403,7 @@ def _compute_current_pay(
             profile, current_period, all_periods, tax_configs,
         )
         net_biweekly = current_breakdown.earnings.net_pay
-    return _CurrentPay(
-        all_periods, current_period, net_biweekly, current_breakdown,
-    )
+    return _CurrentPay(net_biweekly, current_breakdown)
 
 
 def resolve_retirement_date_provenance(

@@ -114,6 +114,7 @@ from tests._test_helpers import (
     counting_calls,
     counting_read_passes,
     make_investment_account,
+    make_salary_profile,
 )
 
 #: The producers plan step C2-f2d-2 collapsed, as ``(module path, attribute)``.
@@ -125,6 +126,17 @@ _ONCE_PER_RENDER = (
     ("app.services.retirement_projection", "load_projection_batch"),
 )
 _PER_PLAN = ("app.services.retirement_projection", "project_accounts_with_batch")
+
+#: The one database door every pay-calendar derivation goes through.
+#: A read pass MEMOIZES the calendar, so "one pass" and "one derivation" ought
+#: to be the same claim -- and they were not.  Measured across pay-calendar plan
+#: step C2-f2d-3: ``/savings`` opened ONE pass and derived the owner's schedule
+#: SEVEN times, ``/retirement`` SIX, growing with the owner's investment-account
+#: count, because two producers reached ``income_service`` through call chains
+#: that held a pass and did not hand it over.  The pass counter beside this one
+#: read 1 throughout.  Two counts of one question, and only one of them could
+#: see it.
+_CALENDAR_DOOR = ("app.services.pay_calendar._loader", "calendar_for")
 
 
 def _seed_projecting_account(db, seed_user, seed_periods_today):
@@ -167,6 +179,15 @@ def _seed_projecting_account(db, seed_user, seed_periods_today):
         .one()
     )
     settings.planned_retirement_date = add_months(date.today(), 240)
+    # **The SALARY PROFILE is load-bearing and was missing until 2026-08-16.**
+    # ``income_service.get_current_gross_biweekly`` returns at its profile
+    # lookup for an owner who has none, and every producer that reaches it does
+    # so behind that early return -- so a calendar count taken without a
+    # profile read the same number on the tree that derived the owner's
+    # schedule SEVEN times and on the tree that derives it once.  That is the
+    # arm-that-cannot-fail shape one line up, found the same way: by an
+    # adversarial review re-running the measurement over a richer owner.
+    make_salary_profile(seed_user, db.session)
     account = make_investment_account(
         seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
     )
@@ -387,4 +408,92 @@ class TestOneLoadPerRender:
         assert render_plus_one["load_gap_inputs"] == baseline + 1, (
             "the call counter did not see a deliberately repeated load, so "
             "the assertions beside it grade nothing"
+        )
+
+
+class TestOneCalendarDerivationPerRender:
+    """Every render below derives the owner's pay calendar exactly ONCE.
+
+    **A read pass memoizes the calendar, so this ought to be the pass count
+    restated -- and for three renders it was not** (pay-calendar plan step
+    C2-f2d-3, found by that step's adversarial design review).  Measured
+    through the routes over an owner with a salary profile and three
+    investment accounts: ``/savings`` derived it SEVEN times and
+    ``/retirement`` SIX, against ONE read pass each, because
+    ``income_service.get_current_gross_biweekly`` derived its own from a
+    ``user_id`` while every chain reaching it already held the pass.  The
+    count grew with the account count, since the seam asks for a
+    per-account contribution feed.
+
+    **This is a SECOND count of the same question and that is the point.**
+    ``TestOneReadPassPerRender`` proves the render opens one pass; it cannot
+    see a producer that holds the pass and derives anyway, because opening
+    nothing is exactly what such a producer does.
+
+    ``/`` is deliberately NOT here: it opens TWO passes, one per producer, so
+    it derives twice by construction.  That is ledger row **P61** and plan step
+    **C2-f2e** closes it -- pinning 2 here would pin the defect.
+    """
+
+    def test_savings_derives_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /savings derives the owner's pay calendar exactly once."""
+        with app.app_context():
+            _seed_projecting_account(db, seed_user, seed_periods_today)
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get("/savings")
+
+        assert resp.status_code == 200
+        assert counts["calendar_for"] == 1, (
+            f"/savings derived the pay calendar {counts['calendar_for']} "
+            "times; the route opens one read pass and every producer below it "
+            "must read that pass's memo"
+        )
+
+    def test_retirement_derives_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /retirement derives the owner's pay calendar exactly once."""
+        with app.app_context():
+            _seed_projecting_account(db, seed_user, seed_periods_today)
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get("/retirement")
+
+        assert resp.status_code == 200
+        assert counts["calendar_for"] == 1, (
+            f"/retirement derived the pay calendar {counts['calendar_for']} "
+            "times; see the class docstring"
+        )
+
+    def test_the_count_grows_with_the_account_set_when_a_producer_derives(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """NEGATIVE CONTROL: a per-account derivation would be VISIBLE here.
+
+        The regression these two cases exist for scaled with the owner's
+        investment-account count, so the control adds accounts and requires the
+        count NOT to move.  A counter that never incremented, or a fixture whose
+        producers sat behind an early return, would pass the two assertions
+        above on the tree that derived seven times -- which is what happened.
+        """
+        with app.app_context():
+            _seed_projecting_account(db, seed_user, seed_periods_today)
+            for index in range(2):
+                make_investment_account(
+                    seed_user, db.session, seed_periods_today[0],
+                    Decimal("50000.00"), name=f"extra-401k-{index}",
+                )
+            db.session.commit()
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get("/savings")
+
+        assert resp.status_code == 200
+        assert counts["calendar_for"] == 1, (
+            f"/savings derived the pay calendar {counts['calendar_for']} times "
+            "for three investment accounts, so a producer is deriving PER "
+            "ACCOUNT rather than reading the read pass's memo"
         )

@@ -32,6 +32,7 @@ from app.routes._commit_helpers import (
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
 from app.services import account_service, savings_dashboard_service
+from app.services.balance_at import BalanceContext
 from app.services.savings_dashboard_service import NetWorthRegion
 
 logger = logging.getLogger(__name__)
@@ -343,6 +344,15 @@ def _cockpit_context(user_id: int) -> dict:
     the Chart.js boundary; and :func:`_serialize_sparklines`, the
     sparkline-geometry boundary); every other figure stays ``Decimal``.
 
+    **The ROUTE opens the render's one read pass** (plan step C2-f2d-3,
+    ledger row **P58**).  ``compute_dashboard_data`` took an owner id and built
+    its own, so it was this page's door by accident rather than by design --
+    correct only while ``/savings`` had exactly ONE producer, which is the
+    condition ``/retirement`` stopped satisfying and paid ``$4.18`` and one
+    paycheck of countdown for.  Both render paths through this function share
+    one pass, so the full page and the ``balanceChanged`` partial resolve every
+    loan, the pay calendar and the clock once each.
+
     Args:
         user_id: Integer ID of the current user.
 
@@ -350,7 +360,9 @@ def _cockpit_context(user_id: int) -> dict:
         The ``compute_dashboard_data`` dict with ``net_worth_chart_json`` and
         ``sparkline_points`` (``{account_id: svg points}``) added.
     """
-    ctx = savings_dashboard_service.compute_dashboard_data(user_id)
+    ctx = savings_dashboard_service.compute_dashboard_data(
+        BalanceContext.build(user_id),
+    )
     ctx["net_worth_chart_json"] = _serialize_net_worth_chart(
         ctx["net_worth"]
     )
@@ -433,7 +445,7 @@ def cockpit_balance(account_id):
         return redirect(url_for("savings.dashboard"))
 
     projection = savings_dashboard_service.compute_account_balance_cell(
-        current_user.id, account_id,
+        BalanceContext.build(current_user.id), account_id,
     )
     if projection is None:
         abort(404)

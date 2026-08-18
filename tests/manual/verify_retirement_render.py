@@ -474,13 +474,19 @@ def _savings(user_id):
     """
     return {
         "dashboard": _plain(_guard("savings_dashboard", lambda: (
-            savings_dashboard_service.compute_dashboard_data(user_id)
+            savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(user_id),
+            )
         ))),
         "goal_progress": _plain(_guard("goal_progress", lambda: (
-            savings_dashboard_service.compute_goal_progress(user_id)
+            savings_dashboard_service.compute_goal_progress(
+                BalanceContext.build(user_id),
+            )
         ))),
         "debt_summary": _plain(_guard("debt_summary", lambda: (
-            savings_dashboard_service.compute_debt_summary(user_id)
+            savings_dashboard_service.compute_debt_summary(
+                BalanceContext.build(user_id),
+            )
         ))),
         # The budget dashboard's TRACKS section, which is the one production
         # caller that hands ONE pass to both narrow producers -- and therefore
@@ -585,7 +591,9 @@ def _savings_page_passes(user_id):
     """
     with counting_read_passes() as counter:
         _guard("savings_page_passes", lambda: (
-            savings_dashboard_service.compute_dashboard_data(user_id)
+            savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(user_id),
+            )
         ))
     return counter["n"]
 

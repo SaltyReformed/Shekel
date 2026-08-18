@@ -202,8 +202,6 @@ class TestComputeGapNetBiweekly:
         """
         profile = SalaryProfile(pay_periods_per_year=26)
         pay = retirement_dashboard_service._CurrentPay(
-            all_periods=[],
-            current_period=None,
             net_biweekly=Decimal("2000.00"),
             current_breakdown=paycheck_calculator.PaycheckBreakdown(
                 period=paycheck_calculator.PeriodInfo(period_id=1),
@@ -235,8 +233,6 @@ class TestComputeGapNetBiweekly:
         """
         profile = SalaryProfile(pay_periods_per_year=26)
         pay = retirement_dashboard_service._CurrentPay(
-            all_periods=[],
-            current_period=None,
             net_biweekly=Decimal("1800.00"),
             current_breakdown=None,
         )
@@ -256,8 +252,6 @@ class TestComputeGapNetBiweekly:
         """
         profile = SalaryProfile(pay_periods_per_year=26)
         pay = retirement_dashboard_service._CurrentPay(
-            all_periods=[],
-            current_period=None,
             net_biweekly=Decimal("1500.00"),
             current_breakdown=None,
         )
@@ -1214,13 +1208,10 @@ class TestTheProjectionAxisIsTheOwnersOwnCalendar:
         """Return the axis the retirement projection would run over."""
         # pylint: disable=import-outside-toplevel
         from app.services import retirement_projection
+        # The pass carries the owner's calendar, so the two period arguments
+        # this took went with pay-calendar plan step C2-f2d-3.
         ctx = retirement_projection.build_projection_context(
-            BalanceContext.build(user_id),
-            pay_period_service.get_all_periods(user_id),
-            pay_period_service.get_current_period(user_id),
-            horizon,
-            None,
-            None,
+            BalanceContext.build(user_id), horizon, None, None,
         )
         return retirement_projection.resolve_projection_axis(ctx)
 

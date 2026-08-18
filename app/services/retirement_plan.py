@@ -176,9 +176,12 @@ class RetirementInputs:
     :func:`_derive_picture` replaces per point.  Sharing one ``batch`` across
     plans is therefore safe because of a property of the LOADER, not of the
     context: :func:`~app.services.retirement_projection.load_projection_batch`
-    reads only ``balance_ctx``, ``accounts``, ``all_periods`` and
-    ``current_period`` -- never the horizon, the return override or the
-    employer basis.  Teaching it to read one of those would silently hand every
+    reads only ``balance_ctx`` and ``accounts`` -- never the horizon, the
+    return override or the employer basis.  (It read two PERIOD fields as well
+    until pay-calendar plan step C2-f2d-3 deleted them from that context; both
+    are derived from ``balance_ctx`` now, which this list already named, so the
+    property is unchanged and the surface it rests on is smaller.)
+    Teaching it to read one of those would silently hand every
     point in a render the stored plan's batch, so the property is pinned by
     ``tests/test_services/test_retirement_plan.py``'s
     ``TestTheBatchIsHorizonIndependent`` rather than left to this note.
@@ -359,8 +362,6 @@ def load_retirement_inputs(balance_ctx: BalanceContext) -> RetirementInputs:
     base_date = resolve_planned_retirement_date(gap.pensions, gap.settings)
     base_ctx = build_projection_context(
         balance_ctx,
-        gap.pay.all_periods,
-        gap.pay.current_period,
         # The three point-dependent fields are placeholders: every picture
         # replaces the horizon, the return override AND the employer salary
         # basis, so building a basis here would run the whole salary projection

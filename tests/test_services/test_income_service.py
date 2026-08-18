@@ -34,6 +34,7 @@ from app.models.salary_raise import SalaryRaise
 from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.services.pay_calendar import calendar_for
 from app.services import (
     balance_at,
     income_service,
@@ -306,6 +307,19 @@ class TestLiveProjectedNet:
             assert _live_net_map(user_id, scenario_id, [txn]) == {}
 
 
+
+def _derived(user_id):
+    """The owner's saved schedule AS THE PAYCHECK ENGINE takes it.
+
+    That engine moved onto :class:`~app.services.pay_calendar.DerivedPeriod`
+    at pay-calendar plan step C2-f2d-3, and ``income_service`` derives this
+    same window internally -- so the oracles below are handed the shape the
+    producer under test uses, while the ORM rows beside them stay for the
+    fixtures that WRITE a ``pay_period_id``.
+    """
+    return calendar_for(user_id).saved()
+
+
 class TestLiveIncomeThroughBalanceResolver:
     """Workstream B integration: balance surfaces recompute projected salary
     income live, so a stale stored ``estimated_amount`` never reaches a
@@ -353,7 +367,8 @@ class TestLiveIncomeThroughBalanceResolver:
                 user_id, profile, period.start_date.year,
             )
             breakdowns = paycheck_calculator.project_salary(
-                profile, periods, tax_configs, calibration=profile.calibration,
+                profile, _derived(user_id), tax_configs,
+                calibration=profile.calibration,
             )
             expected_net = {
                 bd.period.period_id: bd.earnings.net_pay for bd in breakdowns
@@ -444,7 +459,8 @@ class TestGetCurrentGrossBiweekly:
             db.session.commit()
 
             result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id, as_of=_AS_OF_AFTER_RAISE,
+                seed_user["user"].id,
+                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
             )
 
             assert result == _RAISE_APPLIED_GROSS
@@ -466,7 +482,8 @@ class TestGetCurrentGrossBiweekly:
             db.session.commit()
 
             result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id, as_of=_AS_OF_AFTER_RAISE,
+                seed_user["user"].id,
+                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
             )
 
             assert result == _NO_RAISE_GROSS
@@ -483,7 +500,8 @@ class TestGetCurrentGrossBiweekly:
         with app.app_context():
             # No SalaryProfile inserted -- seed_user does not create one.
             result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id, as_of=_AS_OF_AFTER_RAISE,
+                seed_user["user"].id,
+                calendar_for(seed_user["user"].id), as_of=_AS_OF_AFTER_RAISE,
             )
 
             assert result == Decimal("0")
@@ -506,7 +524,8 @@ class TestGetCurrentGrossBiweekly:
             db.session.commit()
 
             result = income_service.get_current_gross_biweekly(
-                seed_user["user"].id, as_of=_AS_OF_BEFORE_RAISE,
+                seed_user["user"].id,
+                calendar_for(seed_user["user"].id), as_of=_AS_OF_BEFORE_RAISE,
             )
 
             assert result == _NO_RAISE_GROSS
@@ -532,6 +551,7 @@ class TestGetCurrentGrossBiweekly:
             # zero -- no profile matches the filter.
             result = income_service.get_current_gross_biweekly(
                 seed_user["user"].id,
+                calendar_for(seed_user["user"].id),
                 scenario_id=seed_user["scenario"].id + 9999,
                 as_of=_AS_OF_AFTER_RAISE,
             )
@@ -540,6 +560,7 @@ class TestGetCurrentGrossBiweekly:
             # Same call with the correct scenario_id resolves the profile.
             result_match = income_service.get_current_gross_biweekly(
                 seed_user["user"].id,
+                calendar_for(seed_user["user"].id),
                 scenario_id=seed_user["scenario"].id,
                 as_of=_AS_OF_AFTER_RAISE,
             )
@@ -574,7 +595,9 @@ class TestConsumerIntegration:
             db.session.commit()
 
             # Producer: the canonical helper itself.
-            canonical = income_service.get_current_gross_biweekly(user_id)
+            canonical = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
             assert canonical == _RAISE_APPLIED_GROSS
 
             # Savings consumer: after the Level-1 balance-seam reroute the
@@ -591,14 +614,16 @@ class TestConsumerIntegration:
                 seed_user, db.session, seed_periods_today[0],
                 Decimal("10000.00"),
             )
-            seam_inputs = balance_at._contribution_inputs_for_account(inv)
+            seam_inputs = balance_at._contribution_inputs_for_account(
+                inv, BalanceContext.build(user_id),
+            )
             assert seam_inputs.salary_gross_biweekly == canonical
 
             # The scoping control: a non-investment account in the same user's
             # set gets NO gross, so the assertion above is pinning the
             # investment-only fetch rather than a value every account carries.
             checking_inputs = balance_at._contribution_inputs_for_account(
-                seed_user["account"],
+                seed_user["account"], BalanceContext.build(user_id),
             )
             assert checking_inputs.salary_gross_biweekly == Decimal("0")
             assert checking_inputs.investment_params is None
@@ -612,7 +637,9 @@ class TestConsumerIntegration:
             # locks the producer/consumer agreement because the
             # investment dashboard now has no intermediate site that
             # could drift.
-            investment_val = income_service.get_current_gross_biweekly(user_id)
+            investment_val = income_service.get_current_gross_biweekly(
+                user_id, calendar_for(user_id),
+            )
             assert investment_val == canonical
 
 
@@ -683,7 +710,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             net_2027_rate = {
                 bd.period.period_id: bd.earnings.net_pay
                 for bd in paycheck_calculator.project_salary(
-                    profile, periods,
+                    profile, _derived(user_id),
                     load_tax_configs(user_id, profile, tax_year=2027),
                     calibration=profile.calibration,
                 )
@@ -691,7 +718,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             net_2026_rate = {
                 bd.period.period_id: bd.earnings.net_pay
                 for bd in paycheck_calculator.project_salary(
-                    profile, periods,
+                    profile, _derived(user_id),
                     load_tax_configs(user_id, profile, tax_year=2026),
                     calibration=profile.calibration,
                 )
@@ -818,12 +845,16 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
                 p for p in periods if p.start_date.year == 2027
             )
 
+            derived = _derived(user_id)
+            derived_2027 = next(
+                p for p in derived if p.start_date.year == 2027
+            )
             resolved = paycheck_calculator.calculate_paycheck(
-                profile, period_2027, periods,
+                profile, derived_2027, derived,
                 load_tax_configs_for_year(user_id, profile, 2027),
             )
             unresolved = paycheck_calculator.calculate_paycheck(
-                profile, period_2027, periods,
+                profile, derived_2027, derived,
                 load_tax_configs(user_id, profile, 2027),
             )
 

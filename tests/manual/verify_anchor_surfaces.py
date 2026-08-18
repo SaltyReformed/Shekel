@@ -195,7 +195,9 @@ def _user_surfaces(user_id):
         ),
         "savings_dashboard": _guarded(
             "savings_dashboard",
-            lambda: savings_dashboard_service.compute_dashboard_data(user_id),
+            lambda: savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(user_id),
+            ),
         ),
         "retirement_gap": _guarded(
             "retirement_gap",

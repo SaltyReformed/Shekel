@@ -10,15 +10,17 @@ omit-vs-zero-vs-beyond-horizon contract had ZERO coverage.  This file
 re-pins that user-facing display directly against the helper.
 
 The helper is pure (no Flask, no SQLAlchemy): it reads only
-``period.period_index`` / ``period.id`` and a ``{period_id: balance}``
-map, so the tests stub periods with ``SimpleNamespace`` and need no app
-context or database.  Every dollar assertion shows its arithmetic;
+``period.period_index`` / ``period.period_id`` and a ``{period_id: balance}``
+map, so the tests build real
+:class:`~app.services.pay_calendar.DerivedPeriod` values -- itself pure -- and
+need no app context or database.  Every dollar assertion shows its arithmetic;
 Decimals are constructed from strings per the testing standards.
 """
 
 from decimal import Decimal
-from types import SimpleNamespace
+from datetime import date, timedelta
 
+from app.services.pay_calendar import DerivedPeriod
 from app.utils.period_projections import (
     HORIZON_OFFSETS,
     project_balance_horizons,
@@ -26,8 +28,22 @@ from app.utils.period_projections import (
 
 
 def _period(period_index, period_id):
-    """Build a minimal period stub the helper can read."""
-    return SimpleNamespace(period_index=period_index, id=period_id)
+    """Build the REAL period value the helper reads.
+
+    It was a ``SimpleNamespace(period_index=..., id=...)`` until pay-calendar
+    plan step C2-f2d-3 moved this helper onto the derived calendar.  A
+    stand-in with the old ``id`` spelling would have kept passing here while
+    both production callers broke, so the frozen production value is built
+    instead; the dates are internally consistent and nothing under test reads
+    them.
+    """
+    return DerivedPeriod(
+        period_id=period_id,
+        period_index=period_index,
+        start_date=date(2026, 1, 2) + timedelta(days=14 * period_index),
+        end_date=date(2026, 1, 15) + timedelta(days=14 * period_index),
+        end_is_projected=False,
+    )
 
 
 class TestProjectBalanceHorizons:

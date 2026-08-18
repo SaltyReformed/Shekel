@@ -38,6 +38,7 @@ from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import balance_at, paycheck_calculator
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.auth_service import _seed_tax_data_for_user
+from app.services.pay_calendar import calendar_for
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_report_service import (
     TaxReport,
@@ -147,6 +148,20 @@ def _add_pretax_deduction(profile, amount, name="401k"):
     _db.session.flush()
 
 
+
+def _derived(user_id, year=2026):
+    """The year's pay periods AS THE PRODUCER SEES THEM.
+
+    ``_load_year_periods`` reads the owner's DERIVED calendar and filters it to
+    the tax year since pay-calendar plan step C2-f2d-3, so the oracle below is
+    handed the same shape rather than the ORM rows the fixtures create.
+    """
+    return tuple(
+        period for period in calendar_for(user_id).saved()
+        if period.start_date.year == year
+    )
+
+
 def _project_sum(user_id, profile, year, periods):
     """Independent oracle: sum ``project_salary`` over *periods*.
 
@@ -198,7 +213,8 @@ class TestSingleProfileFullyModeled:
         next_stub with today 2026-03-01: first payday > 03-01 is 2026-03-13.
         """
         profile = _seed_and_profile(seed_user)
-        periods = _make_full_year_periods(seed_user["user"])
+        _make_full_year_periods(seed_user["user"])
+        periods = _derived(seed_user["user"].id)
         db.session.commit()
 
         report = compute_tax_report(
@@ -345,12 +361,10 @@ class TestCheckpointMovesRefundByDelta:
         base = compute_tax_report(seed_user["user"].id, 2026, date(2026, 8, 1))
 
         # Independent oracle over the elapsed subset (i=0..12).
-        all_periods = (
-            db.session.query(PayPeriod)
-            .filter(PayPeriod.start_date >= date(2026, 1, 1))
-            .order_by(PayPeriod.period_index).all()
-        )
-        elapsed = [p for p in all_periods if p.start_date <= date(2026, 6, 30)]
+        elapsed = [
+            p for p in _derived(seed_user["user"].id)
+            if p.start_date <= date(2026, 6, 30)
+        ]
         assert len(elapsed) == 13  # 06-19 is the last elapsed payday
         elapsed_oracle = _project_sum(
             seed_user["user"].id, profile, 2026, elapsed,
@@ -686,6 +700,8 @@ class TestScheduleAMortgageInterest:
         """
         freeze_today(monkeypatch, date(2026, 6, 1))
         _seed_and_profile(seed_user)
+        # The ORM rows: this case WRITES a transfer into one of them, which
+        # needs the row a ``pay_period_id`` points at.
         periods = _make_full_year_periods(seed_user["user"])
         loan = create_loan_with_trueup(
             seed_user, db.session,

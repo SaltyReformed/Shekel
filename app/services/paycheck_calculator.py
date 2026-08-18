@@ -6,6 +6,13 @@ salary profile including raises, deductions, and taxes.
 
 All functions are pure (no DB access) -- data is passed in as arguments.
 
+A pay period here is a :class:`~app.services.pay_calendar.DerivedPeriod`, not a
+``budget.pay_periods`` ORM row (pay-calendar plan step **C2-f2d-3**, whose
+as-built record carries the census).  Only ``start_date`` and the period's
+IDENTITY are read; ``end_date`` / ``period_index`` -- the columns plan step
+**C4** drops -- never were.  See :class:`PeriodInfo` for why that identity is
+never ``None``.
+
 Biweekly rounding residue -- reconciled to the annual aggregate
 ---------------------------------------------------------------
 
@@ -56,6 +63,7 @@ contract.
 """
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 
@@ -63,6 +71,7 @@ from app import ref_cache
 from app.enums import CalcMethodEnum, DeductionTimingEnum
 from app.services import tax_calculator
 from app.services.calibration_service import apply_calibration
+from app.services.pay_calendar import DerivedPeriod
 from app.utils.deduction_cap import cap_period_amount
 from app.utils.money import round_money
 
@@ -136,7 +145,18 @@ class Earnings:
 
 @dataclass
 class PeriodInfo:
-    """Pay-period identity and per-paycheck event flags."""
+    """Pay-period identity and per-paycheck event flags.
+
+    Attributes:
+        period_id: ``budget.pay_periods.id``.  **Never ``None`` structurally**
+            -- three consumers KEY on it.  Its three producers are safe two
+            ways: ``saved`` / ``period_containing`` FILTER to materialised
+            periods; ``period_by_id`` keys on a non-``None`` int.
+        is_third_paycheck: Whether this is the third paycheck starting in its
+            calendar month, which is what a 24-per-year deduction skips.
+        raise_event: The raise taking effect in this period, as the label
+            :func:`get_raise_event` composes, or ``""``.
+    """
     period_id: int
     is_third_paycheck: bool = False
     raise_event: str = ""
@@ -163,8 +183,8 @@ class PaycheckBreakdown:
 class _DeductionContext:
     """Immutable inputs shared by the pre- and post-tax deduction passes."""
     profile: object
-    period: object
-    all_periods: list
+    period: DerivedPeriod
+    all_periods: Sequence[DerivedPeriod]
     gross_biweekly: Decimal
     is_third_paycheck: bool
 
@@ -183,7 +203,8 @@ class _WageBasis:
     cumulative_wages: Decimal
 
 
-def calculate_paycheck(profile, period, all_periods, tax_configs,
+def calculate_paycheck(profile, period: DerivedPeriod,
+                       all_periods: Sequence[DerivedPeriod], tax_configs,
                        *, calibration=None):
     """Calculate a single paycheck for a given period.
 
@@ -200,9 +221,16 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
 
     Args:
         profile:      SalaryProfile with loaded raises and deductions.
-        period:       The PayPeriod for this paycheck.
-        all_periods:  All pay periods for the year (for 3rd paycheck detection
-                      and cumulative wage tracking).
+        period:       The ``DerivedPeriod`` this paycheck is for.
+        all_periods:  The owner's WHOLE saved schedule (``calendar.saved()``
+                      for every direct caller): 3rd-paycheck detection, the
+                      first-paycheck-of-month cadence, the annual rounding
+                      reconciliation, the FICA cumulative and a deduction's
+                      annual cap all read it, and a partial set under-counts
+                      every one -- ``$502.45`` on one stored row when the
+                      recurrence arc measured it (ledger row **D25**).  A
+                      SEQUENCE, not the window type: :func:`project_salary`
+                      passes a year slice by design (the fallback above).
         tax_configs:  dict with keys:
                       - bracket_set: TaxBracketSet
                       - state_config: StateTaxConfig
@@ -268,7 +296,8 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
 
     return PaycheckBreakdown(
         period=PeriodInfo(
-            period.id, ded_ctx.is_third_paycheck, get_raise_event(profile, period),
+            period.period_id, ded_ctx.is_third_paycheck,
+            get_raise_event(profile, period),
         ),
         earnings=Earnings(annual_salary, gross_biweekly, taxable_biweekly, net_pay),
         taxes=taxes,
@@ -276,7 +305,8 @@ def calculate_paycheck(profile, period, all_periods, tax_configs,
     )
 
 
-def project_salary(profile, periods, tax_configs=None, *,
+def project_salary(profile, periods: Sequence[DerivedPeriod],
+                   tax_configs=None, *,
                    configs_by_year=None, calibration=None):
     """Generate paycheck breakdowns for all given periods.
 
@@ -296,7 +326,10 @@ def project_salary(profile, periods, tax_configs=None, *,
 
     Args:
         profile:          SalaryProfile with loaded raises and deductions.
-        periods:          List of PayPeriod objects.
+        periods:          The periods to project, ALSO handed to each
+                          :func:`calculate_paycheck` as its ``all_periods``,
+                          so a year-scoped caller gets that year as the
+                          cumulative context.
         tax_configs:      dict with bracket_set, state_config, fica_config,
                           or ``None`` when ``configs_by_year`` is given.
         configs_by_year:  ``{tax_year: configs dict}`` mapping covering
@@ -499,8 +532,9 @@ def _gross_biweekly_for_period(
         annual_salary: The post-raise annual salary for ``period``,
             as returned by :func:`apply_raises`.  Constructed from a
             Decimal upstream; the helper does not re-coerce.
-        period: The :class:`PayPeriod` whose gross is being computed.
-        all_periods: Every :class:`PayPeriod` known to the calling
+        period: The :class:`~app.services.pay_calendar.DerivedPeriod` whose
+            gross is being computed.
+        all_periods: Every period known to the calling
             ``calculate_paycheck`` invocation.  Periods outside
             ``period.start_date.year`` are ignored.
         profile: The :class:`SalaryProfile`; consulted only for
