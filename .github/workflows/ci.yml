@@ -220,6 +220,116 @@ jobs:
       - name: Cross-tree duplicate-code (pylint app/ + scripts/)
         run: pylint app/ scripts/ --disable=all --enable=duplicate-code --disable=unknown-option-value,bad-option-value --output-format=colorized
 
+      # ── 5d. Record the runner's capacity ─────────────────────────
+      # ``pytest.ini`` pins ``-n 12``, a figure profiled on a 24-core
+      # developer box.  Nothing in this job has ever recorded what the
+      # hosted runner actually provides, so whether 12 workers are
+      # under- or over-subscribed here has never been answerable from
+      # a log -- and worker oversubscription is what turns a test's
+      # CPU time into wall-clock time, which is what fixed timeouts
+      # (pytest-timeout, the ``seed_user.py`` subprocess budgets)
+      # measure.  Three cheap commands so the next investigation of a
+      # timeout starts with the number instead of an assumption.
+      - name: Record runner capacity
+        run: |
+          echo "cores: $(nproc)"
+          free -h
+          df -h /
+
+      # ── 5e. Make the test cluster throwaway ──────────────────────
+      # The suite's per-test isolation drops and re-clones a database
+      # for EVERY test (tests/conftest.py::db, ~9,000 times a run).
+      # Every one of those statements forces cluster-wide checkpoints,
+      # and on a cluster with durability ON each checkpoint fsyncs.
+      # ``docker-compose.dev.yml`` gives the dev test-db
+      # ``fsync=off`` / ``synchronous_commit=off`` /
+      # ``full_page_writes=off``; this service container had no such
+      # settings, so the identical suite paid ~50x per clone here and
+      # nowhere else.  Measured consequence: 24,444 forced checkpoints
+      # in run 32129135926 and 702.8 s of single-threaded checkpointer
+      # time inside a 1733.55 s run -- a serialised floor all 12 xdist
+      # workers block on, which is what pushed the ``url_map`` sweep
+      # past pytest-timeout's 30 s on roughly half of all runs from
+      # 2026-08-16.
+      #
+      # Applied with ALTER SYSTEM + pg_reload_conf rather than in the
+      # ``services:`` block above because GitHub Actions service
+      # containers accept no ``command:``.  ``fsync`` and
+      # ``full_page_writes`` are SIGHUP-context GUCs, so a reload is
+      # enough; no restart, no lost service-container health check.
+      #
+      # These settings are correct ONLY because this cluster is
+      # thrown away when the job ends: a crash that loses committed
+      # transactions costs a re-run, not data.  Do NOT copy them to
+      # any cluster whose contents must survive -- the same warning
+      # docker-compose.dev.yml carries for the ``db`` service.
+      - name: Configure the test cluster as throwaway
+        run: |
+          python - <<'PY'
+          import os
+          import time
+
+          import psycopg2
+
+          GUCS = ("fsync", "full_page_writes", "synchronous_commit")
+          DSN = os.environ["TEST_ADMIN_DATABASE_URL"]
+
+
+          def read_settings():
+              """Read the three GUCs over a FRESH backend.
+
+              pg_reload_conf() only signals the postmaster; existing
+              backends apply the new file when they next check for
+              signals, so the connection that issued the reload still
+              reports the OLD values and would make this check a
+              tautology in the wrong direction.  A new connection reads
+              the configuration at startup, so it reports what the next
+              backend -- i.e. every pytest worker -- will actually get.
+              """
+              conn = psycopg2.connect(DSN)
+              try:
+                  with conn.cursor() as cur:
+                      cur.execute(
+                          "SELECT name, setting FROM pg_settings "
+                          "WHERE name = ANY(%s) ORDER BY name",
+                          (list(GUCS),),
+                      )
+                      return dict(cur.fetchall())
+              finally:
+                  conn.close()
+
+
+          conn = psycopg2.connect(DSN)
+          conn.autocommit = True
+          try:
+              with conn.cursor() as cur:
+                  for guc in GUCS:
+                      cur.execute(f"ALTER SYSTEM SET {guc} = off")
+                  cur.execute("SELECT pg_reload_conf()")
+          finally:
+              conn.close()
+
+          # The reload is asynchronous, so poll rather than sleep a
+          # guessed interval.  Ten seconds is far beyond the observed
+          # sub-second latency and still fails the job quickly if the
+          # setting never lands.
+          deadline = time.monotonic() + 10
+          while True:
+              applied = read_settings()
+              if all(v == "off" for v in applied.values()):
+                  break
+              if time.monotonic() > deadline:
+                  # Fail the job rather than run a 30-minute suite that
+                  # silently did not get the setting -- a reload that did
+                  # not take would otherwise surface only as a timeout
+                  # weeks later, which is the failure mode this whole
+                  # step exists to remove.
+                  raise SystemExit(f"GUCs did not apply: {applied}")
+              time.sleep(0.2)
+
+          print(f"test cluster set to throwaway durability: {applied}")
+          PY
+
       # ── 6. Build the per-pytest-session template database ───────
       # Builds ``shekel_test_template``: drops + recreates the
       # database, runs the Alembic chain to ``head``, applies the
@@ -234,6 +344,10 @@ jobs:
       # ``TEST_ADMIN_DATABASE_URL`` from the job env; ``SECRET_KEY``
       # is defaulted by the script (the template DB is never reached
       # through Gunicorn, so the value is purely scaffolding).
+      #
+      # Runs AFTER 5e so the template build itself is written to a
+      # cluster that is already non-durable -- the Alembic chain is
+      # the single heaviest write in the job.
       - name: Build test template database
         run: python scripts/build_test_template.py
 
@@ -244,8 +358,16 @@ jobs:
       # ``shekel_test_template`` (built in the previous step) into a
       # uniquely-named per-session DB and drops it at session end;
       # no manual database setup is needed.
+      #
+      # ``--durations=25``: the ``-q`` here overrides ``pytest.ini``'s
+      # ``-v``, so before this flag a green CI run published NO
+      # per-test timing at all.  A test creeping toward its timeout
+      # was therefore invisible until the run it finally blew -- which
+      # is how the ``url_map`` sweep reached ~30 s unnoticed.  The 25
+      # slowest tests are printed on every run, pass or fail, so the
+      # margin is readable before it is gone.
       - name: Run tests
-        run: pytest --tb=short -q
+        run: pytest --tb=short -q --durations=25
 
   # ── Polyglot linters ──────────────────────────────────────────────
   # Non-Python lint floors adopted in docs/audits/polyglot-cleanup
