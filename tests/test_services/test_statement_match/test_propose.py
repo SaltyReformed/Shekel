@@ -573,60 +573,125 @@ class TestTheOrderPutsConfirmationsFirst:
 class TestTheFloorIsAppliedPerPAIRAndNotPerAmountGroup:
     """A row legal against ONE line was being handed a DIFFERENT one.
 
-    **A shipped defect, found by X-f6a-3a's own measurement.**
     ``_one_to_one`` filters the amount group with ``any(_within_window(...))``
     -- so a row legal against at least one of the group's lines survives -- and
     :func:`_assign`'s undated arm then paired a surviving row with whichever
     line was still free, with no check of its own.  A per-GROUP survival test
-    was standing in for a per-PAIR legality test.
+    stood in for a per-PAIR legality test.
 
-    Measured on the developer's own clone at HEAD: 3 proposals were offered
-    whose Accept could never succeed, the worst pairing a line posted
-    2026-06-01 with a purchase made 2026-07-27, 56 days later.  The reviewer
-    saw an Accept button that raised ``ValidationError`` when pressed.
-
-    **The dated arm never had the hole**: ``_least_cost_pairing`` is bounded by
-    :data:`DAY_WINDOW`, which subsumes the floor for a row whose own day is
-    inside it.  Only the undated fallback could cross.
+    **What makes it reachable is the window, not the floor**, and an
+    adversarial review of X-f6a-3a is what established that: the FLOOR (a line
+    posted before its purchase, unrescuable) needs a line whose stated
+    transaction day is after its posting day, which the only adapter cannot
+    produce.  The WINDOW does the work instead -- an undated purchase is
+    anchored on the day it was MADE (:func:`~._propose._window_anchor`), so a
+    line more than :data:`DAY_WINDOW` days from it is illegal, and that is an
+    ordinary SECU line.
     """
 
-    def test_an_undated_purchase_is_paired_with_the_line_it_is_LEGAL_against(
-        self,
-    ):
-        """Two lines share an amount; only one of them can take the purchase.
+    @staticmethod
+    def _undated_purchase(made_on):
+        """Return an undated purchase made on *made_on*."""
+        return CandidateRow(
+            kind=RowKind.PURCHASE, row_id=10, label="Kroger",
+            cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            parent_id=900, expected_on=made_on,
+        )
+
+    def test_it_is_paired_with_the_line_it_is_LEGAL_against(self):
+        """Two ordinary lines share an amount; only one is near the purchase.
 
         The illegal line posts EARLIER, so a loop taking lines in day order
         reaches it first -- which is exactly how the shipped defect chose it.
-        It is illegal because its own stated transaction day is AFTER the day
-        it posted, the one shape no correction can rescue.
+        Revert :func:`_assign`'s per-pair check to ``undated.pop(0)`` and this
+        fails.
         """
-        unreachable = _line(
-            1, "-25.00", date(2026, 5, 10), transaction_on=date(2026, 5, 12),
-        )
-        reachable = _line(2, "-25.00", date(2026, 5, 20))
-        purchase = CandidateRow(
-            kind=RowKind.PURCHASE, row_id=10, label="Kroger",
-            cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
-            parent_id=900, expected_on=date(2026, 5, 15),
-        )
+        far = _line(1, "-25.00", date(2026, 3, 1))
+        near = _line(2, "-25.00", date(2026, 5, 20))
+        purchase = self._undated_purchase(date(2026, 5, 18))
 
-        proposals = propose([unreachable, reachable], [purchase])
+        proposals = propose([far, near], [purchase])
 
         assert len(proposals) == 1
-        assert proposals[0].lines[0].line_id == reachable.line_id
+        assert proposals[0].lines[0].line_id == near.line_id
 
-    def test_a_purchase_legal_against_NEITHER_line_is_not_offered(self):
-        """The group filter's own arm, kept honest by its own case."""
-        first = _line(
-            1, "-25.00", date(2026, 5, 10), transaction_on=date(2026, 5, 12),
-        )
-        second = _line(
-            2, "-25.00", date(2026, 5, 11), transaction_on=date(2026, 5, 13),
-        )
-        purchase = CandidateRow(
-            kind=RowKind.PURCHASE, row_id=10, label="Kroger",
-            cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
-            parent_id=900, expected_on=date(2026, 5, 15),
-        )
+    def test_a_purchase_near_NEITHER_line_is_not_offered(self):
+        """No line in the group is legal, so no proposal survives.
+
+        **It is NOT a control for the ``any()`` group filter**, and a first
+        docstring claimed it was: deleting that filter entirely leaves the
+        whole suite green, because the per-pair tests inside :func:`_assign`
+        refuse the same pairings one level down.  The filter is an
+        optimisation -- it keeps the assignment's pool to rows that can pair
+        with something -- and what makes the ANSWER right is the per-pair
+        test.  Measured by adversarial test-quality review 2026-08-18.
+        """
+        first = _line(1, "-25.00", date(2026, 3, 1))
+        second = _line(2, "-25.00", date(2026, 3, 4))
+        purchase = self._undated_purchase(date(2026, 7, 27))
 
         assert propose([first, second], [purchase]) == []
+
+
+class TestAnUndatedPurchaseIsBoundedByTheDayItWasMADE:
+    """:data:`DAY_WINDOW` reaches a purchase through its OTHER clock.
+
+    **Ruling R-FW removed the only bound an undated purchase had.**  Until
+    X-f6a-3a a line posted before the purchase was made could never be
+    accepted, so the proposer declined it; R-FW makes that pairing legal by
+    CORRECTING the purchase day, and ``_day_distance`` answers ``None`` for a
+    row with no ``settled_on`` -- so nothing bounded the pairing at all.
+    Measured on the developer's own statement, the three worst then re-dated a
+    purchase by 39, 40 and 59 days on an exact-amount coincidence, rewriting
+    the one piece of evidence that would have exposed the mis-pairing.
+
+    A purchase always carries ``purchased_on``, so "undated" is true of its
+    CASH clock and false of the purchase.  Found by two independent adversarial
+    reviews 2026-08-18.
+    """
+
+    @staticmethod
+    def _undated_purchase(made_on):
+        """Return an undated purchase made on *made_on*."""
+        return CandidateRow(
+            kind=RowKind.PURCHASE, row_id=10, label="Kroger",
+            cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            parent_id=900, expected_on=made_on,
+        )
+
+    def test_a_line_two_months_from_the_purchase_is_not_offered(self):
+        """The measured defect, as a control: a May line, a July purchase."""
+        line = _line(1, "-25.00", date(2026, 6, 1),
+                     transaction_on=date(2026, 5, 30))
+
+        assert propose([line], [self._undated_purchase(date(2026, 7, 27))]) == []
+
+    def test_a_line_inside_the_window_still_is(self):
+        """The 14 pairings the step exists for are 1 to 5 days out."""
+        line = _line(1, "-25.00", date(2026, 4, 24),
+                     transaction_on=date(2026, 4, 23))
+
+        proposals = propose(
+            [line], [self._undated_purchase(date(2026, 4, 29))],
+        )
+
+        assert len(proposals) == 1
+        assert proposals[0].made_on == date(2026, 4, 23)
+
+    def test_a_TRANSACTION_keeps_its_unbounded_arm(self):
+        """A bill's ``expected_on`` is a pay-period start, not an observation.
+
+        Bounding one by 14 days from its period start would refuse the arm that
+        settles a row the app never marked as having happened -- 11 of them
+        inside the developer's own statement span.
+        """
+        proposals = propose(
+            [_line(1, "-25.00", date(2026, 8, 1))],
+            [CandidateRow(
+                kind=RowKind.TRANSACTION, row_id=10, label="Bill",
+                cash_amount=Decimal("-25.00"), settled_on=None,
+                is_settled=False, expected_on=date(2026, 1, 1),
+            )],
+        )
+
+        assert len(proposals) == 1

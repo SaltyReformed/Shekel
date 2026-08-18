@@ -29,7 +29,7 @@ The public surface, and what each piece is for:
 **What the recorded lines are FOR is the steps after this one**, named here
 because the schema was designed for all four rather than for the first: the
 match and its review (``X-f6a-2``), a bank line that becomes a purchase
-(``X-f6a-3``), the walked-statement SILENCE that makes an unshown line NOT
+(``X-f6a-3b``), the walked-statement SILENCE that makes an unshown line NOT
 CLEARED rather than unknown (``balance:X-f3a-2``), and the re-openable recorded
 difference at the cash cutover (``balance:X-f3c``).
 """

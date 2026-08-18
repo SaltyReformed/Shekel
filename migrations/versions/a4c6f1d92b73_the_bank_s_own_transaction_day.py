@@ -33,20 +33,35 @@ days, chosen over correcting only the posting day, after the measurement that
 clearing day) if the app took the bank's day unconditionally, against 3 of 44
 if it takes it only where the bank CONTRADICTS what the app holds.
 
-**This migration moves no money.**  It widens a column and rewrites no row:
-the table is empty in production (X-f6a-1's tables have never been deployed),
-and on any environment that did run them every existing value equals its own
-``posted_on``, which is exactly what the new adapter records as NULL. The
-existing values are therefore left alone rather than nulled -- see below.
+**This migration moves no money.**  It widens a column and erases a copy in
+one, and neither is a balance input: nothing dates a posting, a ledger leg or a
+projection off ``transaction_on``.  The table is empty in production
+(X-f6a-1's tables have never been deployed).
 
-**Nothing is backfilled, and the reason is the one X-f6a-1 gives.**  A row
-already carrying ``transaction_on = posted_on`` was written by an adapter that
-could not distinguish the two, so its value is a copy; nulling it would be
-correct and rewriting it to a parsed day would be deriving an observation
-nobody made.  Neither is done, because the only rows that can exist are on
-throwaway clones: production has none, and a re-import records the line afresh.
-The column is widened, and every line recorded from here carries the honest
-value.
+**A row already carrying ``transaction_on = posted_on`` IS backfilled to NULL,
+and a first draft of this migration wrongly left it alone.**  Such a row was
+written by an adapter that could not distinguish the two days, so its value is
+a copy -- and after this step ``transaction_on = posted_on`` no longer reads as
+"this source distinguishes nothing", it reads as "the bank OBSERVED the swipe
+on the day it cleared", which ``corrected_purchase_day`` then writes onto a
+matched purchase's ``purchased_on``.  Leaving the copy in place would launder
+it into an observation nobody made, which is the precise thing the NULL was
+introduced to prevent.
+
+**The draft justified leaving it by a claim that is FALSE**: that "a re-import
+records the line afresh".  It does not -- a recognised line goes through
+``statement_import._record._absorb_gained_facts``, which fills only the columns
+a later export GAINS, and ``transaction_on`` was not among them.  Measured by
+adversarial financial review 2026-08-18: after a re-import the copy was still
+there.  Both halves are fixed -- this backfill for rows that already exist, and
+that function for rows re-imported later.
+
+Nothing is derived: the backfill only ERASES a copy, and no parsed day is
+written into a historical row.  Production carries none of these rows at all
+(X-f6a-1's tables have never been deployed), so the backfill's whole audience
+is the developer's own clones -- which is where every measurement quoted here
+was taken, and therefore exactly where a laundered copy would have corrupted
+one.
 
 Revision ID: a4c6f1d92b73
 Revises: c1e7d4b3a850
@@ -68,6 +83,13 @@ def upgrade():
     op.alter_column(
         'bank_statement_lines', 'transaction_on',
         existing_type=sa.Date(), nullable=True, schema='budget',
+    )
+    # Erase the COPY a pre-X-f6a-3a adapter wrote.  See the module docstring:
+    # after this step an equal value is a claim that the bank observed the
+    # swipe on the clearing day, and a match writes that day onto a purchase.
+    op.execute(
+        "UPDATE budget.bank_statement_lines "
+        "SET transaction_on = NULL WHERE transaction_on = posted_on"
     )
 
 

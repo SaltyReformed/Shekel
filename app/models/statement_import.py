@@ -15,7 +15,7 @@ which of the app's own rows it explains, so this leaf lands with no matcher, no
 ``settled_on`` correction and no clearing link -- the same discipline that made
 ``X-au-c1`` and ``X-f3a-1`` provably balance-neutral.  What the recorded lines
 are FOR is the leaves after it: the match and its review (``X-f6a-2``), the
-purchase a bank line becomes (``X-f6a-3``), the walked-statement silence that
+purchase a bank line becomes (``X-f6a-3b``), the walked-statement silence that
 makes an unshown line NOT CLEARED (``balance:X-f3a-2``), and the re-openable
 recorded difference at the cutover (``balance:X-f3c``).
 

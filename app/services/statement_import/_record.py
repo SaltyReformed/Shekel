@@ -271,7 +271,10 @@ def _absorb_gained_facts(
     Only ``NULL`` is filled.  A value that DISAGREES is left alone rather than
     overwritten, for the reason :func:`_refuse_restatement` no longer compares
     it: the later file is not more authoritative about a figure that depends on
-    listing order.
+    listing order.  **That rule is what makes the ``transaction_on`` arm safe
+    to add**: a stated transaction day is an observation, so a second export
+    restating it differently is a disagreement to leave alone rather than a
+    correction to apply.
 
     Args:
         keyed: The incoming line and its ordinal.
@@ -283,6 +286,17 @@ def _absorb_gained_facts(
         recorded.source_category = keyed.line.source_category
     if recorded.external_id is None and keyed.line.external_id:
         recorded.external_id = keyed.line.external_id
+    # **The transaction day joins the same rule at plan step X-f6a-3a**, and
+    # it is the one that MOVES A DATE rather than adding provenance: a match
+    # writes this day onto a matched purchase's ``purchased_on`` (ruling
+    # **R-FW**).  A row recorded by an adapter that could not read it carries
+    # NULL, and without this arm a re-import of the very same file would leave
+    # it NULL forever -- the exact defect the running-balance arm above exists
+    # for, on a column that feeds a date write instead of a display.  Found by
+    # adversarial financial review 2026-08-18, which measured the re-import
+    # leaving the column untouched.
+    if recorded.transaction_on is None and keyed.line.transaction_on is not None:
+        recorded.transaction_on = keyed.line.transaction_on
 
 
 def _fresh_lines(

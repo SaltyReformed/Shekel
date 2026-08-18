@@ -31,6 +31,7 @@ from app.models.user import User, UserSettings
 from app.services import auth_service
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
+    a_purchase,
     a_transaction,
     an_import,
 )
@@ -66,6 +67,51 @@ class TestTheReviewPage:
         assert b"ACH DEBIT DUKEENERGYCORPOR" in response.data
         assert b"Electricity" in response.data
         assert b"moves the day by 3 day(s)" in response.data
+
+    def test_it_names_the_purchase_date_it_would_CORRECT(
+        self, auth_client, db, seed_user,
+    ):
+        """The only warning before a write a Release cannot undo.
+
+        Accepting a match rewrites a matched purchase's ``purchased_on``
+        (ruling **R-FW**), and ``release_match`` deliberately does not put days
+        back.  The caption had NO test at all -- and a first version named the
+        day the purchase moves TO without naming the day it moves FROM, so a
+        reviewer saw "corrects 1 purchase date(s) to 2026-05-30" with nothing
+        saying the app currently held a different day.  Found by two adversarial
+        reviews 2026-08-18.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date + timedelta(days=6)
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        a_purchase(
+            seed_user, envelope, amount="25.00",
+            purchased_on=bank_day + timedelta(days=4),
+        )
+        a_purchase(
+            seed_user, envelope, amount="31.00", description="Aldi",
+            purchased_on=bank_day,
+        )
+        a_bank_line(
+            seed_user, statement, amount="-25.00", posted_on=bank_day,
+            transaction_on=bank_day - timedelta(days=2),
+        )
+        db.session.commit()
+
+        response = auth_client.get(_review_url(seed_user["account"].id))
+
+        assert response.status_code == 200
+        body = response.data
+        assert b"corrects 1 purchase date(s)" in body
+        assert str(bank_day - timedelta(days=2)).encode() in body, (
+            "the day it moves TO is not named"
+        )
+        assert b"back 6 day(s)" in body, "the distance is not named"
+        assert str(bank_day + timedelta(days=4)).encode() in body, (
+            "the day it moves FROM is not named"
+        )
 
     def test_it_says_the_page_changes_records(self, auth_client, seed_user):
         """This screen MOVES MONEY and, unlike its sibling, says so."""

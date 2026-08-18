@@ -369,6 +369,59 @@ class TestItIsIdempotent:
 class TestItAbsorbsWhatALaterExportAdds:
     """Information GAINED is not a restatement, and it must not be discarded."""
 
+    def test_a_transaction_day_arriving_later_is_recorded(
+        self, app, db, seed_user,
+    ):
+        """The arm that MOVES A DATE, not just a display figure.
+
+        A line recorded by an adapter that could not read the bank's stated
+        transaction day carries NULL, and a match writes that day onto a
+        matched purchase's ``purchased_on`` (ruling **R-FW**).  Without this
+        arm a re-import of the very same file left the column NULL forever --
+        the running-balance defect above, on a column that feeds a date write.
+        Found by adversarial financial review 2026-08-18, which measured the
+        re-import leaving it untouched.
+        """
+        stated = date(2026, 3, 1)
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 DATE 03-01 COFFEE")]
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+        recorded = db.session.query(BankStatementLine).one()
+        assert recorded.transaction_on == stated
+        # Stand in for a row an older adapter wrote, which knew no such day.
+        recorded.transaction_on = None
+        db.session.flush()
+
+        second = _record(seed_user, build.build(build.chained(
+            "100.00", entries,
+        )), file_name="again.csv")
+
+        assert second.recorded_count == 0
+        assert db.session.query(BankStatementLine).one().transaction_on == stated
+
+    def test_a_DISAGREEING_transaction_day_is_left_alone(
+        self, app, db, seed_user,
+    ):
+        """Only NULL is filled -- a stated day is an observation, not a draft.
+
+        THE FIRING CONTROL for the arm's ``is None`` guard: widen it to an
+        unconditional write and this fails.
+        """
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 DATE 03-01 COFFEE")]
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+        recorded = db.session.query(BankStatementLine).one()
+        recorded.transaction_on = date(2026, 2, 27)
+        db.session.flush()
+
+        _record(seed_user, build.build(build.chained(
+            "100.00", entries,
+        )), file_name="again.csv")
+
+        assert db.session.query(
+            BankStatementLine,
+        ).one().transaction_on == date(2026, 2, 27)
+
     def test_a_running_balance_arriving_later_is_recorded(
         self, app, db, seed_user,
     ):

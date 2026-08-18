@@ -176,10 +176,15 @@ def accept_statement_match(account_id):
 def _accepted_message(accepted) -> str:
     """Return the sentence describing what an accepted match did.
 
-    **It names the two effects separately**, because they are different acts
+    **It names the three effects separately**, because they are different acts
     with different consequences: settling a row books money the projection was
-    still holding forward, and correcting a day moves money already booked from
-    one day to another.  A single "2 rows updated" would hide which happened.
+    still holding forward, correcting a settle day moves money already booked
+    from one day to another, and correcting a PURCHASE day moves no money at
+    all but rewrites when the owner says they bought something.  A single
+    "2 rows updated" would hide which happened -- and the third was folded into
+    the first until adversarial review 2026-08-18 measured that the step's own
+    motivating case (an unsettled purchase, re-dated by up to 59 days) reported
+    only "marked 1 row(s) as having happened".
 
     Args:
         accepted: The :class:`~app.services.statement_match.AcceptedMatch`.
@@ -195,6 +200,14 @@ def _accepted_message(accepted) -> str:
     if accepted.corrected_count:
         did.append(
             f"moved {accepted.corrected_count} row(s) onto the bank's day"
+        )
+    # THE THIRD EFFECT, and it is named separately for the same reason the
+    # first two are.  A purchase that was still Projected is counted as
+    # SETTLED, so a purchase-day correction on one would otherwise appear
+    # nowhere in the receipt -- and that is the step's own motivating case.
+    if accepted.redated_count:
+        did.append(
+            f"corrected the purchase date on {accepted.redated_count} row(s)"
         )
     what = " and ".join(did) if did else "confirmed what you already had"
     return (

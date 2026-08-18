@@ -638,11 +638,14 @@ class TestItRecordsTheDayTheBankSTATED:
 
         assert line.transaction_on is None
 
-    def test_it_reads_the_token_out_of_the_MEMO_JOINED_text(self):
-        """What is parsed is what is stored, not the description alone.
+    def test_a_date_in_the_MEMO_is_not_read_as_the_bank_stating_one(self):
+        """A memo is the USER's free text; only the bank's cell states a day.
 
-        The row records ``Description | Memo``; parsing only the description
-        would answer for a string no column holds.
+        The description column is where SECU puts its transaction-day field.
+        A parse over the stored ``Description | Memo`` text would read a memo's
+        own date as the bank's word -- and the two-token refusal above, written
+        for exactly that hazard, only catches its two-token form.  Found by
+        adversarial review 2026-08-18.
         """
         rows = [
             build.row(date(2026, 8, 14), "-25.00",
@@ -652,4 +655,88 @@ class TestItRecordsTheDayTheBankSTATED:
         _, lines = parse_statement(_SOURCE, build.build(rows))
 
         assert lines[0].description.endswith("| DATE 08-13")
-        assert lines[0].transaction_on == date(2026, 8, 13)
+        assert lines[0].transaction_on is None
+
+    def test_a_second_token_past_the_200_char_cut_still_refuses(self):
+        """The two-token guard must not depend on a string length.
+
+        The stored description is truncated to 200 characters; a guard that ran
+        over the truncated text could see one token where the bank wrote two,
+        turning a refused line into an accepted one.  Parsing the CELL removes
+        the truncation from the guard's reach.
+        """
+        long_desc = (
+            "POINT OF SALE DEBIT L340 DATE 08-13 " + "X" * 190 + " DATE 08-11"
+        )
+        rows = [build.row(date(2026, 8, 14), "-25.00", long_desc,
+                          running="75.00")]
+        _, lines = parse_statement(_SOURCE, build.build(rows))
+
+        assert len(lines[0].description) == 200
+        assert lines[0].transaction_on is None
+
+    def test_a_token_TWO_months_back_is_refused(self):
+        """The month window's first REFUSED value, not a comfortable margin.
+
+        A refusal test six months out passes whatever the bound is; this one
+        fails the moment ``months_back <= 1`` is loosened by even one.  Found
+        by adversarial test-quality review 2026-08-18.
+        """
+        line = self._one(
+            date(2026, 8, 14),
+            "POINT OF SALE DEBIT L340 DATE 06-13 SOMETHING OLD",
+        )
+
+        assert line.transaction_on is None
+
+    def test_a_token_ONE_month_back_is_accepted(self):
+        """The last ACCEPTED value, so the bound is pinned from both sides."""
+        line = self._one(
+            date(2026, 8, 14),
+            "POINT OF SALE DEBIT L340 DATE 07-16 SOMETHING RECENT",
+        )
+
+        assert line.transaction_on == date(2026, 7, 16)
+
+    def test_february_29_in_a_year_that_has_none_is_refused(self):
+        """The leap-day arm, which the year loop's own comment names.
+
+        ``date(2026, 2, 29)`` raises, and the loop must move to the next
+        candidate year rather than propagating it.  2025 has no 02-29 either,
+        so the honest answer is ``None``.
+        """
+        line = self._one(
+            date(2026, 3, 2),
+            "POINT OF SALE DEBIT L340 DATE 02-29 LEAP",
+        )
+
+        assert line.transaction_on is None
+
+    def test_february_29_in_a_year_that_HAS_one_is_read(self):
+        """The control: the arm skips an impossible year, not a real day."""
+        line = self._one(
+            date(2028, 3, 1),
+            "POINT OF SALE DEBIT L340 DATE 02-29 LEAP",
+        )
+
+        assert line.transaction_on == date(2028, 2, 29)
+
+    def test_each_line_anchors_its_year_on_ITS_OWN_posting_day(self):
+        """One file, two lines, two different years -- read per row.
+
+        Every other test here parses a one-row file, so nothing graded that the
+        year is anchored per LINE rather than once per import.  A file spanning
+        a new year is the ordinary case for a year-to-date export, and it is
+        where a per-file anchor would silently mis-date January.
+        """
+        rows = build.chained("100.00", [
+            (date(2026, 1, 2), "-25.00",
+             "POINT OF SALE DEBIT L340 DATE 12-31 BJS.COM"),
+            (date(2026, 8, 14), "-25.00",
+             "POINT OF SALE DEBIT L340 DATE 08-13 AMAZON"),
+        ])
+        _, lines = parse_statement(_SOURCE, build.build(rows))
+
+        assert [line.transaction_on for line in lines] == [
+            date(2025, 12, 31), date(2026, 8, 13),
+        ]

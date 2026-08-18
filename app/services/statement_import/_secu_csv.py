@@ -390,10 +390,11 @@ def _stated_transaction_day(
 
     * NO token -- this source states no transaction day for this line, which
       is what ``None`` means and is the honest record for 179 of 361 lines;
-    * MORE THAN ONE token -- the description is a ``Description | Memo`` join,
-      so a memo could carry its own date, and which one is "the" transaction
-      day would then be a guess.  0 of 361 lines carry two; refusing keeps the
-      rule TOTAL rather than correct-because-the-data-is-tidy;
+    * MORE THAN ONE token -- which one is "the" transaction day would then be
+      a guess.  0 of 361 lines carry two; refusing keeps the rule TOTAL rather
+      than correct-because-the-data-is-tidy.  **A memo's own date cannot reach
+      here at all**, because the caller passes the DESCRIPTION cell rather than
+      the ``Description | Memo`` text the row stores;
     * a token whose day lands neither in the posted month nor in the one
       immediately before it.  The token states no YEAR, so its day is only
       unambiguous near the posting day -- this is a statement about the token's
@@ -404,7 +405,9 @@ def _stated_transaction_day(
       into a closed pay period.
 
     Args:
-        description: The line's description as the bank wrote it, memo joined.
+        description: The bank's DESCRIPTION cell, verbatim and untruncated --
+            not the ``Description | Memo`` text the row stores, and not the
+            200-character form.
         posted_on: The day the bank posted the line, which anchors the year.
 
     Returns:
@@ -584,10 +587,19 @@ def parse(payload: bytes) -> "tuple[str, list[StatementLine]]":
             # step X-f6a-3a, which is what made it useless: a match writes this
             # day onto a matched purchase's ``purchased_on``, and a copy would
             # record every card purchase as made on the day it cleared.
-            # Read from the JOINED text the row records, so what is parsed is
-            # what is stored -- a parse over the description alone would answer
-            # for a string no column holds.
-            transaction_on=_stated_transaction_day(joined, posted_on),
+            # **Read from the DESCRIPTION cell, never the joined text.**  A
+            # first draft parsed ``joined`` so that "what is parsed is what is
+            # stored" -- which is the wrong property: what matters is which
+            # CELL the bank put the token in.  SECU states a transaction day
+            # inside the description of a card line; a MEMO is the user's own
+            # free text, so a ``DATE 08-13`` in a memo alone would have been
+            # read as the bank's word.  The two-token refusal below was written
+            # for exactly that hazard and only caught its two-token form.
+            # Parsing the cell also removes the 200-character truncation from
+            # the guard's reach, where a second token past the cut could turn a
+            # refused line into an accepted one.  Found by adversarial design
+            # and financial review 2026-08-18.
+            transaction_on=_stated_transaction_day(description, posted_on),
             amount=_row_amount(row, columns),
             description=joined,
             source_category=_cell(row, columns, "Category")[:100] or None,

@@ -188,10 +188,20 @@ class MatchDays:
             point**: a row is not wholly moved until its last line posts, and a
             purchase the bank split across several lines was made no later than
             the first of them.
+        posted_first: The EARLIEST day any of these lines posted, which is what
+            REFUTES a recorded purchase day (:func:`corrected_purchase_day`).
+            A third day rather than a reuse of :attr:`posts_on`, for the same
+            reason ``happened_on`` is one: money cannot leave before it is
+            spent, so a purchase explained by lines posted 06-01 and 06-10 was
+            made on or before 06-01 -- and testing a purchase recorded 06-05
+            against 06-10 leaves an impossibility uncorrected, which
+            ``update_entry``'s own check (against the LATEST day) would not
+            catch either.  Found by adversarial design review 2026-08-18.
     """
 
     posts_on: date
     happened_on: date
+    posted_first: date
 
     @classmethod
     def of(cls, lines) -> "MatchDays":
@@ -217,6 +227,7 @@ class MatchDays:
             happened_on=min(
                 line.transaction_on or line.posted_on for line in lines
             ),
+            posted_first=min(line.posted_on for line in lines),
         )
 
 
@@ -257,9 +268,18 @@ def corrected_purchase_day(
         The day to write into ``purchased_on``, or ``None`` when the bank
         contradicts nothing and the column must be left alone.
     """
+    # ``expected_on is None`` is UNREACHABLE for a purchase and is stated
+    # anyway, which is the discipline ``_candidates._transaction_candidates``
+    # applies to its own shadow-parent clause: ``transaction_entries
+    # .purchased_on`` is NOT NULL and ``_purchase_candidates`` always fills the
+    # field, so the test can refuse no row today -- and without it a hand-built
+    # candidate would reach a ``None`` comparison and raise ``TypeError`` from
+    # inside a money path rather than declining.  Named by adversarial
+    # test-quality review 2026-08-18, which measured that deleting it changes
+    # no test.
     if row.kind is not RowKind.PURCHASE or row.expected_on is None:
         return None
-    if row.expected_on <= days.posts_on:
+    if row.expected_on <= days.posted_first:
         return None
     # Refuted.  The bank's own stated day where it has one, else the day it
     # posted -- the tightest day the owner's own assertion supports.  It is NOT
@@ -366,6 +386,26 @@ class MatchProposal:
         return self.days.happened_on
 
     @property
+    def redate_gap(self) -> "int | None":
+        """Return the FURTHEST a purchase day would move, in days.
+
+        **The screen named the day a purchase moves TO and never the day it
+        moves FROM**, on the one write a release cannot undo -- so a reviewer
+        was shown "corrects 1 purchase date(s) to 2026-05-30" with nothing
+        saying the app currently holds 2026-07-27.  The posting-day caption
+        beside it has always stated its distance; this is that caption's twin.
+        Found by adversarial financial review 2026-08-18.
+
+        ``None`` when nothing would be re-dated.
+        """
+        moved = self.redated_purchases
+        if not moved:
+            return None
+        return max(
+            (row.expected_on - self.days.happened_on).days for row in moved
+        )
+
+    @property
     def posts_on(self) -> date:
         """Return the day every member row would take.
 
@@ -376,8 +416,14 @@ class MatchProposal:
         which is the class of double-count ``dated_deltas``' day partition
         exists to make unspellable.  With one line, which is every proposal
         this app offers automatically, the two rules agree.
+
+        **It DELEGATES rather than restating the rule.**  The template renders
+        this property and the accept door writes :attr:`MatchDays.posts_on`, so
+        a second spelling here would let the screen print one day while the
+        door wrote another -- the duplication :class:`MatchDays` exists to
+        prevent.  Found by two adversarial reviews 2026-08-18.
         """
-        return max(line.posted_on for line in self.lines)
+        return self.days.posts_on
 
 
 @dataclass(frozen=True)

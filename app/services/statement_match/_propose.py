@@ -93,6 +93,49 @@ def _day_distance(row: CandidateRow, posted_on: date) -> "int | None":
     return abs((row.settled_on - posted_on).days)
 
 
+def _window_anchor(row: CandidateRow) -> "date | None":
+    """Return the day *row* sits on for the purposes of the search window.
+
+    **A PURCHASE is never truly undated, and treating one as if it were is how
+    a `$25.00` May swipe came to be offered against a `$25.00` July purchase.**
+    :func:`_day_distance` answers ``None`` for a row carrying no ``settled_on``
+    -- correct, because that column is the CASH clock and a row never observed
+    to move has no distance from a bank day.  But a purchase carries a second
+    clock, ``purchased_on``, which every purchase has.  So "undated" is true of
+    a purchase's cash clock and false of the purchase.
+
+    **What made this load-bearing is ruling R-FW.**  Until plan step X-f6a-3a
+    the purchase day bounded the pairing implicitly: a line posted before the
+    purchase was made could never be ACCEPTED, so offering it was merely
+    useless.  R-FW makes that pairing legal -- the match now CORRECTS the
+    purchase day -- which left an undated purchase with no bound at all, since
+    :data:`DAY_WINDOW` is measured from ``settled_on`` and it has none.
+    Measured on the developer's own statement, the three worst pairings then
+    re-dated a purchase by 39, 40 and 59 days on an exact-amount coincidence,
+    overwriting the one fact that would have exposed the mis-pairing.  The 14
+    pairings the step exists for are 1 to 5 days out, so every one survives the
+    bound.  Found by two independent adversarial reviews 2026-08-18.
+
+    **A TRANSACTION keeps answering ``None``, and that is not an oversight.**
+    Its ``expected_on`` is its pay period's START -- a budgeting fact, not an
+    observation of when money moved -- so bounding a bill by 14 days from it
+    would refuse exactly the arm that settles a row the app never marked as
+    having happened, 11 of them inside the developer's own statement span.
+
+    Args:
+        row: The candidate.
+
+    Returns:
+        The day to measure the window from, or ``None`` for a row that
+        genuinely has none.
+    """
+    if row.settled_on is not None:
+        return row.settled_on
+    if row.kind is RowKind.PURCHASE:
+        return row.expected_on
+    return None
+
+
 def _within_window(row: CandidateRow, line: BankLine) -> bool:
     """Return whether *row* may be paired with *line* at all.
 
@@ -100,10 +143,13 @@ def _within_window(row: CandidateRow, line: BankLine) -> bool:
     row: a distance the owner would recognise, and a pairing the write door can
     actually carry out.
 
-    **The distance.** A row carrying NO day is within the window: the bank is
-    the only evidence it has about when that money moved, so there is nothing
-    to be far from.  This is the arm that reaches the rows inside a statement's
-    span that had never been marked as having happened.
+    **The distance**, measured from :func:`_window_anchor` rather than from
+    ``settled_on`` alone.  A TRANSACTION carrying no settle day is within the
+    window whatever its distance: the bank is the only evidence it has about
+    when that money moved, so there is nothing to be far from, and that is the
+    arm which reaches the rows inside a statement's span that had never been
+    marked as having happened.  A PURCHASE is anchored on the day it was MADE,
+    because it always has one.
 
     **The FLOOR, and forgetting one was a real defect.**  A purchase cannot
     reach the bank before it was made, so ``entry_service.update_entry``'s
@@ -148,8 +194,10 @@ def _within_window(row: CandidateRow, line: BankLine) -> bool:
         and line.posted_on < line.happened_on
     ):
         return False
-    distance = _day_distance(row, line.posted_on)
-    return distance is None or distance <= DAY_WINDOW
+    anchor = _window_anchor(row)
+    if anchor is None:
+        return True
+    return abs((anchor - line.posted_on).days) <= DAY_WINDOW
 
 
 def _assign(
@@ -179,15 +227,19 @@ def _assign(
     marked as having happened -- 11 of them inside the developer's own
     statement span.
 
-    **That arm re-asks :func:`_within_window` per PAIR, and its absence was a
+    **BOTH arms re-ask :func:`_within_window` per PAIR, and its absence was a
     shipped defect** (plan step X-f6a-3a).  The caller's filter is an ``any``
     over the amount group -- a row legal against ONE line survives it -- and
-    this loop then handed a surviving row whichever line was still free.
+    each arm then assigned a surviving row to whichever line it liked.
     Measured on the developer's own clone: 3 proposals were offered whose
     Accept could never succeed, the worst pairing a line posted 2026-06-01 with
-    a purchase made 2026-07-27, 56 days later.  The dated arm never had the
-    hole: :func:`_least_cost_pairing` is bounded by :data:`DAY_WINDOW`, which
-    subsumes the floor for a row whose own day is inside it.
+    a purchase made 2026-07-27, 56 days later.
+    **A first fix guarded only this arm** on the reasoning that
+    :func:`_least_cost_pairing` is "bounded by :data:`DAY_WINDOW`, which
+    subsumes the floor" -- false, because the window bounds a row by its own
+    settle day and the floor is about the purchase day and the line's stated
+    one.  Adversarial test-quality review 2026-08-18 built the dated case that
+    proved it.
 
     Args:
         lines: Bank lines sharing one signed amount.
@@ -262,7 +314,19 @@ def _least_cost_pairing(
             distance = abs(
                 (rows[j - 1].settled_on - lines[i - 1].posted_on).days
             )
-            if distance <= DAY_WINDOW:
+            # **The legality test is per PAIR here too**, and its absence was
+            # the same defect the undated arm carried.  ``distance`` bounds a
+            # row by its own settle day; it says nothing about whether the
+            # write door could carry the pairing out, and the caller's filter
+            # is an ``any`` over the amount group -- so a row legal against one
+            # line could be assigned to another.  The docstring above used to
+            # claim ``DAY_WINDOW`` "subsumes the floor", which is false: the
+            # floor is about ``expected_on`` and the line's stated day, and the
+            # window is about ``settled_on``.  Found by adversarial test-quality
+            # review 2026-08-18.
+            if distance <= DAY_WINDOW and _within_window(
+                rows[j - 1], lines[i - 1],
+            ):
                 pairs, cost = table[i - 1][j - 1]
                 options.append(((pairs - 1, cost + distance), "pair"))
             table[i][j], move[i][j] = min(options)
@@ -476,7 +540,7 @@ def _groups(
     deliberately NOT proposed automatically**, and that is measured rather than
     cautious.  On the developer's own accounts no settled envelope's period
     swipes sum to its close within `$25`, because the app holds only some of
-    what the bank shows; that gap is what plan step ``bank_import:X-f6a-3``
+    what the bank shows; that gap is what plan step ``bank_import:X-f6a-3b``
     closes by letting a bank line BECOME a purchase.  The owner builds such a
     group on the review screen's own hand-build form, which posts to
     :func:`~._accept.accept_match` like any other match -- the refusal here is

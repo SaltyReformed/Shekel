@@ -103,8 +103,15 @@
             {% if proposal.redated_purchases %}
             <div class="text-warning-emphasis">
               corrects {{ proposal.redated_purchases | length }} purchase date(s)
-              to {{ proposal.made_on }}
+              to {{ proposal.made_on }}, moving
+              {% if proposal.redated_purchases | length == 1 %}it{% else %}one{% endif %}
+              back {{ proposal.redate_gap }} day(s)
             </div>
+            {% for row in proposal.redated_purchases %}
+            <div class="small text-body-secondary">
+              {{ row.label }}: recorded {{ row.expected_on }}
+            </div>
+            {% endfor %}
             {% endif %}
           </td>
           <td class="text-end">

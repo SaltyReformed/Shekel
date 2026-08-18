@@ -95,6 +95,16 @@ class AcceptedMatch:
             correction is in neither, and reporting it as "corrected" would
             claim work that did not happen.
         line_count: How many bank lines the act explains.
+        redated_count: How many member PURCHASES had their purchase day moved
+            onto the bank's (ruling **R-FW**).  **It cuts ACROSS the partition
+            above rather than joining it**, and it has to: a purchase that was
+            still Projected is reported as ``settled``, so without its own
+            count the step's own motivating case -- six purchases typed in one
+            bookkeeping session, none of them settled -- would re-date silently
+            and the receipt would say only that a row was marked as having
+            happened.  The two largest moves measured on the developer's own
+            data, 40 and 59 days, are exactly that case.  Found by two
+            independent adversarial reviews 2026-08-18.
     """
 
     match_id: int
@@ -103,6 +113,7 @@ class AcceptedMatch:
     settled_count: int
     corrected_count: int
     line_count: int
+    redated_count: int
 
 
 def _load_lines(
@@ -219,7 +230,7 @@ def _reject_empty_side(
 
     A match is a claim that two things are the SAME movement, so one thing is
     not a match: a bank line with no app row is what plan step
-    ``bank_import:X-f6a-3`` turns into a purchase, and an app row with no bank
+    ``bank_import:X-f6a-3b`` turns into a purchase, and an app row with no bank
     line is a row the statement did not show.
 
     Args:
@@ -534,12 +545,16 @@ def accept_match(submission: MatchSubmission) -> AcceptedMatch:
     # two ends are opposite.
     days = MatchDays.of(lines)
 
-    outcomes = [
-        _apply_day(row, submission, days)
-        for row in sorted(
-            rows, key=lambda row: (row.kind is not RowKind.PURCHASE, row.row_id),
-        )
-    ]
+    ordered = sorted(
+        rows, key=lambda row: (row.kind is not RowKind.PURCHASE, row.row_id),
+    )
+    # Read BEFORE the writes: once `_apply_day` has moved a purchase onto the
+    # bank's day the predicate no longer holds, so counting afterwards would
+    # report zero every time.
+    redated_count = sum(
+        1 for row in ordered if corrected_purchase_day(row, days) is not None
+    )
+    outcomes = [_apply_day(row, submission, days) for row in ordered]
     match = _record(submission, lines, rows)
 
     amount = round_money(sum((line.amount for line in lines), Decimal("0.00")))
@@ -550,6 +565,7 @@ def accept_match(submission: MatchSubmission) -> AcceptedMatch:
         settled_count=outcomes.count("settled"),
         corrected_count=outcomes.count("corrected"),
         line_count=len(lines),
+        redated_count=redated_count,
     )
     log_event(
         _logger, logging.INFO, EVT_STATEMENT_MATCHED, BUSINESS,
@@ -563,6 +579,7 @@ def accept_match(submission: MatchSubmission) -> AcceptedMatch:
         row_count=len(rows),
         settled_count=accepted.settled_count,
         corrected_count=accepted.corrected_count,
+        redated_count=accepted.redated_count,
     )
     return accepted
 
