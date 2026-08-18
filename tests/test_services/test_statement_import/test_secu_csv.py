@@ -127,21 +127,20 @@ class TestItReadsAWellFormedExport:
 
         assert lines[0].source_category is None
 
-    def test_the_transaction_day_equals_the_posted_day(self):
-        """SECU's CSV states ONE date, and the adapter does not invent a second.
+    def test_a_line_stating_no_transaction_day_records_NONE(self):
+        """The NULL is the source saying so, not the adapter not knowing.
 
-        Its OFX states two and they were measured equal on 359 of 361 lines,
-        so nothing is lost -- and the transaction date embedded in some
-        descriptions ("DATE 12-31") is deliberately not parsed out, because
-        deriving a fact from prose is the guessing this arc exists to end.
+        It held a COPY of ``posted_on`` until plan step X-f6a-3a, which is what
+        made it useless: no reader could tell an observed swipe day from a
+        restatement of the clearing day.  A match writes this day onto a
+        matched purchase's ``purchased_on`` (ruling **R-FW**), so a copy would
+        record every card purchase as made on the day it cleared.
         """
         payload, _ = _payload()
 
         _, lines = parse_statement(_SOURCE, payload)
 
-        assert all(
-            line.transaction_on == line.posted_on for line in lines
-        )
+        assert all(line.transaction_on is None for line in lines)
 
     def test_this_source_carries_no_external_id(self):
         """The CSV has no FITID, and the shape says so rather than faking one."""
@@ -517,3 +516,140 @@ class TestItRefusesAFileItCannotTrust:
 
         with pytest.raises(StatementParseError, match="no importer"):
             parse_statement(_Unwired(), b"")
+
+
+class TestItRecordsTheDayTheBankSTATED:
+    """``DATE MM-DD`` inside a card line's description, parsed or refused.
+
+    Plan step **bank_import:X-f6a-3a**, ruling **R-FW**.  SECU concatenates a
+    fixed transaction-day field into the description of every card line, and it
+    is the ONLY place either of this bank's formats carries the day a swipe
+    happened: the OFX's structured ``DTUSER`` equals ``DTPOSTED`` on 359 of its
+    361 lines and is one day LATER on the other two.  So the choice is not
+    between a parsed day and a stated one; it is between the stated day and
+    nothing.
+
+    **Why it matters that this is right**: an accepted match writes this day
+    onto a matched purchase's ``purchased_on``.  Reading the token wrongly
+    would re-date a real purchase, and reading the POSTING day instead would
+    record every card purchase as having been made on the day it cleared.
+
+    Measured over the developer's own 2026-08-16 export: 182 of 361 lines carry
+    exactly one token, every one derivable, gaps of 0-4 days, 2 genuine year
+    rollovers, and 0 lines carrying two tokens.
+    """
+
+    @staticmethod
+    def _one(day, description):
+        """Return the single parsed line of a file holding just this row."""
+        rows = build.chained("100.00", [(day, "-25.00", description)])
+        _, lines = parse_statement(_SOURCE, build.build(rows))
+        return lines[0]
+
+    def test_it_reads_the_stated_day(self):
+        """The ordinary card line: posted a day after the swipe."""
+        line = self._one(
+            date(2026, 8, 14),
+            "POINT OF SALE DEBIT L340 DATE 08-13 Amazon.com*5H2RA5V",
+        )
+
+        assert line.transaction_on == date(2026, 8, 13)
+
+    def test_it_reads_a_day_stated_as_the_posting_day(self):
+        """Equal is a real answer, not a reason to record NONE.
+
+        25 of the developer's 182 stated days equal their posting day.  The
+        NULL means *the source states none*, so a stated day that happens to
+        agree must still be recorded as stated.
+        """
+        line = self._one(
+            date(2026, 8, 14),
+            "POINT OF SALE DEBIT L340 DATE 08-14 Amazon.com*5H2RA5V",
+        )
+
+        assert line.transaction_on == date(2026, 8, 14)
+
+    def test_it_rolls_the_year_back_over_new_year(self):
+        """The token states no year, and January lines state December days.
+
+        Both of the developer's real rollovers are this line: posted
+        2026-01-02, stating ``DATE 12-31``.  Reading the year off the posting
+        day alone would date the purchase eleven months into the FUTURE, which
+        ``entry_service`` would then refuse as a purchase that has not happened.
+        """
+        line = self._one(
+            date(2026, 1, 2),
+            "POINT OF SALE DEBIT L340 DATE 12-31 BJS.COM #5490",
+        )
+
+        assert line.transaction_on == date(2025, 12, 31)
+
+    def test_a_line_stating_nothing_records_NONE(self):
+        """Most non-card lines state no transaction day at all."""
+        line = self._one(
+            date(2026, 8, 14),
+            "ACH DEBIT CAPITAL ONE      MOBILE PMT 026226009042739",
+        )
+
+        assert line.transaction_on is None
+
+    def test_TWO_stated_days_record_NONE(self):
+        """Which one is "the" transaction day would be a guess, so neither is.
+
+        The stored description is a ``Description | Memo`` join, so a memo can
+        carry its own date.  0 of the developer's 361 lines do, which is
+        exactly why the rule has to be TOTAL rather than correct because
+        today's data is tidy.
+        """
+        line = self._one(
+            date(2026, 8, 14),
+            "POINT OF SALE DEBIT L340 DATE 08-13 KOBO DATE 08-11",
+        )
+
+        assert line.transaction_on is None
+
+    def test_a_day_too_far_back_to_be_unambiguous_records_NONE(self):
+        """The token carries no year, so its day is only readable near the post.
+
+        A stated day that lands neither in the posted month nor the one before
+        it cannot be resolved to a year without guessing -- and reading it
+        anyway would drag a matched purchase months backwards into a closed pay
+        period.  This is a statement about the TOKEN's ambiguity, not a
+        tolerance on money.
+        """
+        line = self._one(
+            date(2026, 8, 14),
+            "POINT OF SALE DEBIT L340 DATE 02-11 SOMETHING STALE",
+        )
+
+        assert line.transaction_on is None
+
+    def test_the_stated_day_is_never_after_the_posting_day(self):
+        """A future-looking token resolves backwards, never forwards.
+
+        ``DATE 08-20`` on a line posted 08-14 is last year's 08-20 by the
+        year rule -- and that is more than a month back, so it records NONE
+        rather than a purchase made in the future.
+        """
+        line = self._one(
+            date(2026, 8, 14),
+            "POINT OF SALE DEBIT L340 DATE 08-20 SOMETHING AHEAD",
+        )
+
+        assert line.transaction_on is None
+
+    def test_it_reads_the_token_out_of_the_MEMO_JOINED_text(self):
+        """What is parsed is what is stored, not the description alone.
+
+        The row records ``Description | Memo``; parsing only the description
+        would answer for a string no column holds.
+        """
+        rows = [
+            build.row(date(2026, 8, 14), "-25.00",
+                      "POINT OF SALE DEBIT L340 KOBO",
+                      memo="DATE 08-13", running="75.00"),
+        ]
+        _, lines = parse_statement(_SOURCE, build.build(rows))
+
+        assert lines[0].description.endswith("| DATE 08-13")
+        assert lines[0].transaction_on == date(2026, 8, 13)

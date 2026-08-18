@@ -142,6 +142,7 @@ def an_import(seed_user, account=None):
 def a_bank_line(
     seed_user, statement, *, amount="-180.00", posted_on=None,
     description="ACH DEBIT DUKEENERGY", sequence_in_group=0,
+    transaction_on=None,
 ):
     """Stage and return one recorded bank line under *statement*.
 
@@ -152,6 +153,12 @@ def a_bank_line(
         posted_on: The day the bank posted it.
         description: What the bank called it.
         sequence_in_group: The ordinal completing its identity.
+        transaction_on: The day the bank STATED the transaction happened, or
+            ``None`` for a source stating none -- which is the DEFAULT here
+            because it is the majority case on the developer's own statement
+            (179 of 361 lines) and because a fixture that always states one
+            would never exercise :attr:`~._offers.BankLine.happened_on`'s
+            fallback.
 
     Returns:
         The staged
@@ -162,7 +169,7 @@ def a_bank_line(
         account_id=statement.account_id,
         import_id=statement.id,
         posted_on=day,
-        transaction_on=day,
+        transaction_on=transaction_on,
         amount=Decimal(amount),
         description=description,
         sequence_in_group=sequence_in_group,

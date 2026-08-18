@@ -28,8 +28,15 @@ class StatementLine:
             the whole arc exists to obtain -- of 110 movements matched to bank
             lines on exact amount, only 33 carried the day the app had recorded
             (finding **N-173**).
-        transaction_on: The civil day the transaction itself happened, where
-            the source distinguishes the two, else equal to :attr:`posted_on`.
+        transaction_on: The civil day the bank STATED the transaction itself
+            happened, or ``None`` where the source states none.
+            **The NULL is the source saying so, not the app not knowing**
+            (plan step ``bank_import:X-f6a-3a``): this field held a COPY of
+            :attr:`posted_on` for a source that does not distinguish the two,
+            so no reader could tell an observed swipe day from a restatement of
+            the clearing day -- and a match writes this day onto a purchase's
+            ``purchased_on``, where a clearing day would claim the purchase was
+            made on the day it cleared.
             **It is NOT bounded by ``posted_on``**: 2 of 361 lines in the
             developer's own SECU export carry an OFX ``DTUSER`` one day AFTER
             their ``DTPOSTED``, both ACH deposits.
@@ -50,7 +57,7 @@ class StatementLine:
     """
 
     posted_on: date
-    transaction_on: date
+    transaction_on: "date | None"
     amount: Decimal
     description: str
     source_category: "str | None" = None

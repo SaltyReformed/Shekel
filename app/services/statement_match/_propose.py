@@ -93,26 +93,50 @@ def _day_distance(row: CandidateRow, posted_on: date) -> "int | None":
     return abs((row.settled_on - posted_on).days)
 
 
-def _within_window(row: CandidateRow, posted_on: date) -> bool:
-    """Return whether *row* is near enough to *posted_on* to be proposed.
+def _within_window(row: CandidateRow, line: BankLine) -> bool:
+    """Return whether *row* may be paired with *line* at all.
 
-    A row carrying NO day is within the window on DISTANCE: the bank is the
-    only evidence it has about when that money moved, so there is nothing to be
-    far from.  This is the arm that reaches the rows inside a statement's span
-    that had never been marked as having happened.
+    Two independent tests, and both are about THIS pair rather than about the
+    row: a distance the owner would recognise, and a pairing the write door can
+    actually carry out.
 
-    **It still has a FLOOR, and forgetting one was a real defect.**  A purchase
-    cannot reach the bank before it was made, so
-    ``entry_service.update_entry``'s ``_reject_settled_before_purchase``
-    refuses that pairing at the door -- and a proposer blind to
-    ``purchased_on`` renders an Accept button that can never succeed.  Measured
-    on the developer's own clone: 23 (line, undated purchase) pairs where the
-    line posted BEFORE the purchase was made.  Found by adversarial security
-    review 2026-08-17.
+    **The distance.** A row carrying NO day is within the window: the bank is
+    the only evidence it has about when that money moved, so there is nothing
+    to be far from.  This is the arm that reaches the rows inside a statement's
+    span that had never been marked as having happened.
+
+    **The FLOOR, and forgetting one was a real defect.**  A purchase cannot
+    reach the bank before it was made, so ``entry_service.update_entry``'s
+    ``_reject_settled_before_purchase`` refuses that pairing at the door -- and
+    a proposer blind to ``purchased_on`` renders an Accept button that can
+    never succeed.  Measured on the developer's own clone: 23 (line, undated
+    purchase) pairs where the line posted BEFORE the purchase was made.  Found
+    by adversarial security review 2026-08-17.
+
+    **What plan step X-f6a-3a changed is that the floor is now SATISFIABLE
+    rather than merely refusing**, because a match may move the purchase day
+    (ruling **R-FW**).  The pairing is legal when the app's own purchase day
+    already sits on or before the bank's, OR when the day the match would write
+    does -- so a purchase the owner recorded days late is a CORRECTION to offer
+    instead of a line the review screen leaves looking unexplained.  It is the
+    same measurement that forced the ruling: on the developer's own statement
+    14 unexplained lines worth `$1,028.66` are an exact amount at the same
+    merchant as an unmatched purchase, refused only because the recorded
+    purchase day was 1 to 5 days after the bank posted it -- and the door
+    X-f6a-3b builds would have offered to record every one of them a SECOND
+    time.
+
+    **The floor is asked of the LINE, not of a bare day, and that is the bug
+    fix rather than a signature tidy-up.**  ``_one_to_one`` kept a row that was
+    legal against ANY line sharing its amount, and :func:`_assign`'s undated arm
+    then paired it with whichever line was free -- so a per-GROUP survival test
+    stood in for a per-PAIR legality test.  Measured on the developer's own
+    clone at HEAD: 3 offered proposals whose Accept could never succeed, the
+    worst pairing a line posted 2026-06-01 with a purchase made 2026-07-27.
 
     Args:
         row: The candidate.
-        posted_on: The bank's day.
+        line: The bank line it would be paired with.
 
     Returns:
         Whether to consider the pairing at all.
@@ -120,10 +144,11 @@ def _within_window(row: CandidateRow, posted_on: date) -> bool:
     if (
         row.kind is RowKind.PURCHASE
         and row.expected_on is not None
-        and posted_on < row.expected_on
+        and line.posted_on < row.expected_on
+        and line.posted_on < line.happened_on
     ):
         return False
-    distance = _day_distance(row, posted_on)
+    distance = _day_distance(row, line.posted_on)
     return distance is None or distance <= DAY_WINDOW
 
 
@@ -154,6 +179,16 @@ def _assign(
     marked as having happened -- 11 of them inside the developer's own
     statement span.
 
+    **That arm re-asks :func:`_within_window` per PAIR, and its absence was a
+    shipped defect** (plan step X-f6a-3a).  The caller's filter is an ``any``
+    over the amount group -- a row legal against ONE line survives it -- and
+    this loop then handed a surviving row whichever line was still free.
+    Measured on the developer's own clone: 3 proposals were offered whose
+    Accept could never succeed, the worst pairing a line posted 2026-06-01 with
+    a purchase made 2026-07-27, 56 days later.  The dated arm never had the
+    hole: :func:`_least_cost_pairing` is bounded by :data:`DAY_WINDOW`, which
+    subsumes the floor for a row whose own day is inside it.
+
     Args:
         lines: Bank lines sharing one signed amount.
         rows: Candidate rows sharing that same amount.
@@ -178,7 +213,16 @@ def _assign(
     for line in ordered:
         if line.line_id in taken or not undated:
             continue
-        paired.append((line, undated.pop(0)))
+        legal = next(
+            (
+                index for index, row in enumerate(undated)
+                if _within_window(row, line)
+            ),
+            None,
+        )
+        if legal is None:
+            continue
+        paired.append((line, undated.pop(legal)))
     position = {line.line_id: index for index, line in enumerate(lines)}
     paired.sort(key=lambda pair: position[pair[0].line_id])
     return paired
@@ -259,9 +303,16 @@ def _one_to_one(
 
     proposals = []
     for amount, group_lines in lines_by_amount.items():
+        # Rows legal against AT LEAST ONE line here, so the assignment has a
+        # pool to optimise over.  **The per-PAIR test is inside**
+        # :func:`_assign`, and it has to be: this filter is an ``any``, so a
+        # row legal against one line survives it and could then be handed a
+        # line it is illegal against.  That is not hypothetical -- it was
+        # measured at 3 unacceptable proposals on the developer's own clone
+        # before X-f6a-3a, all of them through the undated arm.
         group_rows = [
             row for row in rows_by_amount.get(amount, ())
-            if any(_within_window(row, line.posted_on) for line in group_lines)
+            if any(_within_window(row, line) for line in group_lines)
         ]
         for line, row in _assign(group_lines, group_rows):
             proposals.append(MatchProposal(
@@ -452,7 +503,7 @@ def _groups(
             # two of them may be an envelope and a purchase inside it: the
             # accept door refuses both, so offering either is an Accept button
             # that cannot succeed.
-            if all(_within_window(row, line.posted_on) for row in combo)
+            if all(_within_window(row, line) for row in combo)
             and not _holds_a_parent_and_its_child(combo)
         ]
         if len(found) != 1:

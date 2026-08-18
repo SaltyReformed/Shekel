@@ -256,9 +256,19 @@ class BankStatementLine(db.Model):
                         developer's export, only 33 of 110 matched movements
                         carried the day the bank posted them (finding
                         **N-173**).
-        transaction_on -- the day the transaction itself happened, where the
-                        source distinguishes the two.  Equal to
-                        :attr:`posted_on` where it does not.
+        transaction_on -- the day the bank STATED the transaction itself
+                        happened, or ``None`` where the source states none.
+                        **The NULL is a fact and not a gap** (plan step
+                        ``bank_import:X-f6a-3a``): it carried a COPY of
+                        :attr:`posted_on` until then, so nothing downstream
+                        could tell an OBSERVED swipe day from a restatement of
+                        the clearing day -- a derived value stored beside its
+                        own source with nothing reconciling the two, which is
+                        the root cause three of this project's arcs exist to
+                        remove.  A match writes this day onto a purchase's
+                        ``purchased_on`` (ruling **R-FW**), and writing a
+                        clearing day there would claim every card purchase was
+                        made on the day it cleared.
         amount       -- signed, positive INTO the account (see the module
                         docstring).
         description  -- what the bank called it, verbatim.
@@ -296,6 +306,12 @@ class BankStatementLine(db.Model):
     own SECU export carry an OFX ``DTUSER`` one day AFTER their ``DTPOSTED``
     (both ACH deposits, 2026-02-24 and 2026-03-18).  A constraint that a real
     statement violates would make the truth unimportable.
+    **What depends on that day being the earlier one is therefore a READER's
+    guard, not the schema's** (plan step ``bank_import:X-f6a-3a``): a match
+    corrects a purchase's ``purchased_on`` to this day, and
+    ``entry_service.update_entry`` refuses the pair a later one would make --
+    so the proposer declines the pairing rather than the table refusing the
+    line.
     """
 
     __tablename__ = "bank_statement_lines"
@@ -375,7 +391,13 @@ class BankStatementLine(db.Model):
     account_id = db.Column(db.Integer, nullable=False)
     import_id = db.Column(db.Integer, nullable=False)
     posted_on = db.Column(db.Date, nullable=False)
-    transaction_on = db.Column(db.Date, nullable=False)
+    # NULLABLE, and the NULL means "this source states no separate transaction
+    # day" rather than "unknown".  Measured on the developer's own 2026-08-16
+    # SECU export: the CSV states one on 182 of 361 lines and the OFX states
+    # none at all -- its ``DTUSER`` equals ``DTPOSTED`` on 359 of 361 and is one
+    # day LATER on the other two -- so a column that is never NULL would be a
+    # copy on at least half of every statement.
+    transaction_on = db.Column(db.Date)
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     description = db.Column(db.String(200), nullable=False)
     source_category = db.Column(db.String(100))

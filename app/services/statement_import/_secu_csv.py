@@ -53,8 +53,9 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from app.exceptions import StatementParseError
@@ -90,6 +91,14 @@ _TOTALS_MARKER = "Totals:"
 
 #: SECU writes dates as US month/day/year.
 _DATE_FORMAT = "%m/%d/%Y"
+
+#: The transaction day SECU states INSIDE a card line's description, as
+#: ``DATE MM-DD``.  It is a delimited token the bank concatenates into a text
+#: column, not prose to be interpreted: measured over the developer's own
+#: 2026-08-16 export, 182 of 361 lines carry exactly one, every one of them a
+#: ``POINT OF SALE`` line, and NO line carries two.  The year is absent, which
+#: is what :func:`_stated_transaction_day` exists to resolve.
+_STATED_DAY = re.compile(r"\bDATE (\d{2})-(\d{2})\b")
 
 #: The largest file this adapter will read, in lines.  The developer's own
 #: full year-to-date export is 361; a decade of weekly activity is under 6,000.
@@ -356,6 +365,74 @@ def _verify_against_totals(lines, totals: SecuTotals) -> None:
         )
 
 
+def _stated_transaction_day(
+    description: str, posted_on: date,
+) -> "date | None":
+    """Return the day SECU states the transaction happened, or ``None``.
+
+    **The bank states it, this does not infer it** -- and the distinction is
+    what makes reading a token out of a text column legitimate here where
+    "deriving a fact from prose" would not be.  SECU concatenates a fixed
+    ``DATE MM-DD`` field into a card line's description, and it is the ONLY
+    place either of this bank's formats carries the day a swipe happened: the
+    OFX's structured ``DTUSER`` is a copy of ``DTPOSTED`` on 359 of its 361
+    lines and is one day LATER on the other two.  So the choice is not between
+    a parsed day and a stated one; it is between the stated day and nothing.
+
+    **What it is FOR** (plan step ``bank_import:X-f6a-3a``, ruling **R-FW**): an
+    accepted match writes this day onto a matched purchase's ``purchased_on``.
+    Writing the POSTING day there instead would record every card purchase as
+    having been made on the day it cleared, which is measurably wrong on this
+    data -- the stated day is 1 to 4 days earlier on 157 of the 182 lines that
+    carry one.
+
+    **Three refusals, and each is a way the token could mean something else:**
+
+    * NO token -- this source states no transaction day for this line, which
+      is what ``None`` means and is the honest record for 179 of 361 lines;
+    * MORE THAN ONE token -- the description is a ``Description | Memo`` join,
+      so a memo could carry its own date, and which one is "the" transaction
+      day would then be a guess.  0 of 361 lines carry two; refusing keeps the
+      rule TOTAL rather than correct-because-the-data-is-tidy;
+    * a token whose day lands neither in the posted month nor in the one
+      immediately before it.  The token states no YEAR, so its day is only
+      unambiguous near the posting day -- this is a statement about the token's
+      own ambiguity, not a tolerance on money.  It is what resolves the two
+      real ROLLOVERS in the developer's export (posted 2026-01-02, stating
+      ``DATE 12-31``, so 2025-12-31) while refusing to read a stale or garbled
+      token as a purchase made ten months ago and dragging a matched purchase
+      into a closed pay period.
+
+    Args:
+        description: The line's description as the bank wrote it, memo joined.
+        posted_on: The day the bank posted the line, which anchors the year.
+
+    Returns:
+        The stated civil day, or ``None`` when the bank states none this rule
+        can read.  Never after *posted_on*.
+    """
+    found = _STATED_DAY.findall(description)
+    if len(found) != 1:
+        return None
+    month, day = int(found[0][0]), int(found[0][1])
+    # The most recent (month, day) at or before the posting day.  Both years
+    # are tried because a January line routinely states a December day, and
+    # ``ValueError`` covers 02-29 in a year that has no such day.
+    for year in (posted_on.year, posted_on.year - 1):
+        try:
+            stated = date(year, month, day)
+        except ValueError:
+            continue
+        if stated > posted_on:
+            continue
+        # In the posted month, or the one immediately before it.
+        months_back = (
+            (posted_on.year - stated.year) * 12 + posted_on.month - stated.month
+        )
+        return stated if months_back <= 1 else None
+    return None
+
+
 def _account_identity(row: "list[str]", columns: "dict[str, int]") -> str:
     """Return what this file calls its account: the NAME and the number.
 
@@ -496,18 +573,23 @@ def parse(payload: bytes) -> "tuple[str, list[StatementLine]]":
         memo = _cell(row, columns, "Memo")
         description = _cell(row, columns, "Description")
         running = _cell(row, columns, _RUNNING_BALANCE)
+        joined = (f"{description} | {memo}" if memo else description)[:200]
         lines.append(StatementLine(
             posted_on=posted_on,
-            # SECU's CSV states ONE date per line.  Its OFX states two, and
-            # they were measured EQUAL on 359 of 361 lines, so nothing is lost
-            # here -- and the transaction date embedded in some descriptions
-            # ("DATE 12-31") is deliberately not parsed out, because deriving a
-            # fact from prose is the guessing this arc exists to end.
-            transaction_on=posted_on,
+            # **The day the bank STATES the swipe happened, or None.**  SECU's
+            # CSV carries one DATE column and states the transaction day inside
+            # the description as ``DATE MM-DD`` (182 of 361 lines); its OFX
+            # carries no second day at all -- ``DTUSER`` equals ``DTPOSTED`` on
+            # 359 of 361.  This field held a COPY of ``posted_on`` until plan
+            # step X-f6a-3a, which is what made it useless: a match writes this
+            # day onto a matched purchase's ``purchased_on``, and a copy would
+            # record every card purchase as made on the day it cleared.
+            # Read from the JOINED text the row records, so what is parsed is
+            # what is stored -- a parse over the description alone would answer
+            # for a string no column holds.
+            transaction_on=_stated_transaction_day(joined, posted_on),
             amount=_row_amount(row, columns),
-            description=(
-                f"{description} | {memo}" if memo else description
-            )[:200],
+            description=joined,
             source_category=_cell(row, columns, "Category")[:100] or None,
             external_id=None,
             running_balance=(

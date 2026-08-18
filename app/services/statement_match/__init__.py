@@ -37,7 +37,7 @@ The public surface, and what each piece is for:
 2. **An unbalanced group is REFUSED and the difference is NAMED**, never
    apportioned and never absorbed by a tolerance.  6 of 16 payroll deposits on
    the developer's own statement sit `$0.05`-`$0.06` from the app's rows
-   (finding **N-299**), and a tolerance would silence the instrument that
+   (finding **N-239**), and a tolerance would silence the instrument that
    found it.
 3. **A match may SETTLE a still-Projected row**, because a statement is
    evidence that money moved.  11 rows inside the developer's own statement
@@ -53,9 +53,11 @@ from ._offers import (
     BankLine,
     CandidateRow,
     Candidates,
+    MatchDays,
     MatchProposal,
     MatchSubmission,
     RowKind,
+    corrected_purchase_day,
 )
 from ._propose import DAY_WINDOW, propose
 from ._reads import (
@@ -74,6 +76,7 @@ __all__ = [
     "CandidateRow",
     "Candidates",
     "DAY_WINDOW",
+    "MatchDays",
     "MatchProposal",
     "MatchSubmission",
     "ReviewBounds",
@@ -81,6 +84,7 @@ __all__ = [
     "RowKind",
     "accept_match",
     "candidates_for",
+    "corrected_purchase_day",
     "propose",
     "release_match",
     "review_set",

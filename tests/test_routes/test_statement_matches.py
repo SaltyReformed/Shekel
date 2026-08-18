@@ -213,7 +213,7 @@ class TestTheHandBuildForm:
     **Without it the refusals fire only on a crafted POST**, which an
     adversarial design review measured on 2026-08-17: every proposal balances
     by construction, so `_reject_unbalanced` -- the refusal ruling **R-FV**
-    calls the instrument that can see finding **N-299** -- had no path from the
+    calls the instrument that can see finding **N-239** -- had no path from the
     screen at all, and the `$0.05` payroll gap landed silently in "lines with
     no proposal" under copy telling the user it was probably a card swipe.
     """
@@ -251,7 +251,7 @@ class TestTheHandBuildForm:
     def test_a_hand_built_group_that_does_not_add_up_is_REFUSED_on_screen(
         self, auth_client, db, seed_user,
     ):
-        """N-299's own shape, reaching the user who can fix it.
+        """N-239's own shape, reaching the user who can fix it.
 
         This is the arm that did not exist: the bank paid `$2,573.43`, the
         app's two rows sum to `$2,573.38`, and the screen must NAME the five

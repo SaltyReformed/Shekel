@@ -66,7 +66,13 @@ from app.utils.log_events import (
 from app.utils.money import round_money
 
 from ._candidates import candidates_for
-from ._offers import CandidateRow, MatchSubmission, RowKind
+from ._offers import (
+    CandidateRow,
+    MatchDays,
+    MatchSubmission,
+    RowKind,
+    corrected_purchase_day,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -82,10 +88,12 @@ class AcceptedMatch:
         amount: The signed figure both sides agreed on.
         settled_count: How many member rows were still Projected and are now
             settled -- the bank's evidence that money moved, applied.
-        corrected_count: How many were already settled on a DIFFERENT day and
-            had it moved.  The two counts partition the rows that changed; a
-            row already settled on the bank's own day is in neither, and
-            reporting it as "corrected" would claim work that did not happen.
+        corrected_count: How many were already settled and had a day moved --
+            the posting day, the PURCHASE day (ruling **R-FW**), or both.  The
+            two counts partition the rows that changed; a settled row already
+            carrying the bank's own posting day and needing no purchase-day
+            correction is in neither, and reporting it as "corrected" would
+            claim work that did not happen.
         line_count: How many bank lines the act explains.
     """
 
@@ -320,7 +328,7 @@ def _reject_unbalanced(
     **The developer's ruling of 2026-08-17, and the alternative was measured.**
     On their own 2026-08-16 statement, 6 of 16 payroll deposits sit
     `$0.05`-`$0.06` above what the app's rows sum to, because the projected
-    paycheck distributes an annual rounding residue (finding **N-299**).
+    paycheck distributes an annual rounding residue (finding **N-239**).
     Absorbing that into a tolerance would silence the one instrument that can
     see it; apportioning it across the members would need a rule about which
     member is wrong, which is a decision about a paycheck and not a matcher's
@@ -350,14 +358,17 @@ def _reject_unbalanced(
 
 
 def _apply_day(
-    row: CandidateRow, submission: MatchSubmission, posts_on: date,
+    row: CandidateRow, submission: MatchSubmission, days: "MatchDays",
 ) -> str:
-    """Move one member row onto *posts_on* through its own settle door.
+    """Move one member row onto the bank's days through its own settle door.
 
     The dispatch, and every arm is an existing verb rather than a column write:
 
     * a PURCHASE stamps its posting day through ``entry_service.update_entry``,
-      which refuses a future day and releases the row's clearing link;
+      which refuses a future day and releases the row's clearing link -- and
+      takes the bank's own transaction day in the SAME call where the app's
+      recorded purchase day is refuted (ruling **R-FW**, see
+      :func:`~._offers.corrected_purchase_day`);
     * a transfer SHADOW goes through ``transfer_service`` -- ``settle_transfer``
       when it is still Projected, ``update_transfer`` when only the day moves,
       because a settled transfer is an idempotent no-op for the first;
@@ -369,7 +380,7 @@ def _apply_day(
     Args:
         row: The member being moved.
         submission: The act, for its owner id.
-        posts_on: The day the bank states.
+        days: The days the bank states for this match.
 
     Returns:
         ``"settled"`` when the row entered the settled band, ``"corrected"``
@@ -388,8 +399,11 @@ def _apply_day(
     # seam should make that state unreachable (it refuses a day on a
     # non-settled status and clears the column on the way out), but no CHECK
     # pairs the two columns, so the arm does not rest on that discipline.
+    posts_on = days.posts_on
+    purchase_day = corrected_purchase_day(row, days)
     outcome = (
         "unchanged" if row.is_settled and row.settled_on == posts_on
+        and purchase_day is None
         else "corrected" if row.is_settled
         else "settled"
     )
@@ -397,9 +411,14 @@ def _apply_day(
         return outcome
 
     if row.kind is RowKind.PURCHASE:
-        entry_service.update_entry(
-            row.row_id, submission.owner_id, settled_on=posts_on,
-        )
+        # ONE call, both days, because ``update_entry`` checks the RESULTING
+        # pair: submitting them separately would offer the door an intermediate
+        # state where the posting day precedes the purchase day, and it would
+        # rightly refuse the very correction that fixes it.
+        moves = {"settled_on": posts_on}
+        if purchase_day is not None:
+            moves["purchased_on"] = purchase_day
+        entry_service.update_entry(row.row_id, submission.owner_id, **moves)
         return outcome
 
     if row.transfer_id is not None:
@@ -509,15 +528,14 @@ def accept_match(submission: MatchSubmission) -> AcceptedMatch:
     _reject_parent_and_its_own_purchase(rows, submission.account_id)
     _reject_unbalanced(lines, rows)
 
-    # THE LATEST bank day, not the earliest.  A row is not wholly moved until
-    # its last line posts, so the earliest would let a balance asserted between
-    # the two absorb money that had not all left -- the class of double count
-    # the walk's day partition exists to make unspellable.  With one line,
-    # which is every proposal the app offers automatically, the two agree.
-    posts_on = max(line.posted_on for line in lines)
+    # THE LATEST bank day for the posting, the EARLIEST stated day for the
+    # purchase -- derived ONCE for the whole act, so no two members can be moved
+    # onto two answers to the same question.  See :class:`MatchDays` for why the
+    # two ends are opposite.
+    days = MatchDays.of(lines)
 
     outcomes = [
-        _apply_day(row, submission, posts_on)
+        _apply_day(row, submission, days)
         for row in sorted(
             rows, key=lambda row: (row.kind is not RowKind.PURCHASE, row.row_id),
         )
@@ -527,7 +545,7 @@ def accept_match(submission: MatchSubmission) -> AcceptedMatch:
     amount = round_money(sum((line.amount for line in lines), Decimal("0.00")))
     accepted = AcceptedMatch(
         match_id=match.id,
-        posts_on=posts_on,
+        posts_on=days.posts_on,
         amount=amount,
         settled_count=outcomes.count("settled"),
         corrected_count=outcomes.count("corrected"),
@@ -539,7 +557,8 @@ def accept_match(submission: MatchSubmission) -> AcceptedMatch:
         user_id=submission.owner_id,
         account_id=submission.account_id,
         match_id=accepted.match_id,
-        posts_on=posts_on.isoformat(),
+        posts_on=days.posts_on.isoformat(),
+        happened_on=days.happened_on.isoformat(),
         line_count=accepted.line_count,
         row_count=len(rows),
         settled_count=accepted.settled_count,

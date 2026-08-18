@@ -134,7 +134,7 @@ class TestABalancedMatchIsRecorded:
 
 
 class TestTheGroupMustSum:
-    """The developer's ruling of 2026-08-17, and finding **N-299**'s own data."""
+    """The developer's ruling of 2026-08-17, and finding **N-239**'s own data."""
 
     def test_a_five_cent_shortfall_is_refused(self, app, db, seed_user):
         """The payroll shape: the bank paid more than the app's rows say.
@@ -787,3 +787,198 @@ class TestAMatchStopsHoldingWhenAPURCHASELEAVESTHEACCOUNT:
         assert after[0].rows[0].settled_on == bank_day, (
             "the day is untouched -- which is why a day-only test was blind"
         )
+
+
+
+class TestItCorrectsThePurchaseDayTheBankContradicts:
+    """Ruling **R-FW**: the bank owns BOTH of a purchase's days.
+
+    A purchase carries the day it was MADE (``purchased_on``, the budget clock)
+    beside the day the bank TOOK the money (``settled_on``, the cash clock).
+    Accepting a match asserts that this bank line IS this purchase -- which
+    asserts the purchase was made on or before the day the line posted.  A
+    recorded day after that is refuted by the owner's own act, so it moves.
+
+    **Measured, and it is why the step exists.**  On the developer's own
+    2026-08-16 statement against a production clone, 14 unexplained bank lines
+    worth `$1,028.66` were an exact amount at the same merchant as an unmatched
+    purchase, and were blocked from being proposed only because the purchase
+    had been recorded 1 to 5 days after the bank posted it -- six of them typed
+    in one bookkeeping session on 2026-04-29 for swipes posted 04-24 and 04-27.
+    The create-a-purchase door X-f6a-3b builds would have offered to record
+    every one of them a SECOND time.
+
+    **The narrowness is measured too.**  Taking the bank's day unconditionally
+    would move 27 of the 44 purchases in today's proposals, 18 of them onto a
+    CLEARING day, because the source states no transaction day on 179 of 361
+    lines.  Correcting only what the bank contradicts moves 3.
+    """
+
+    @staticmethod
+    def _envelope_and_purchase(seed_user, purchased_on):
+        """Return an envelope and one unposted `$25.00` purchase under it."""
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        return envelope, a_purchase(
+            seed_user, envelope, amount="25.00", purchased_on=purchased_on,
+        )
+
+    def test_a_purchase_recorded_AFTER_the_posting_day_is_re_dated(
+        self, app, db, seed_user,
+    ):
+        """The refuted day moves back onto the day the bank posted.
+
+        This is the six-in-one-session shape: the money left on the bank's day
+        and the purchase was typed days later, so the recorded purchase day is
+        an impossibility rather than a disagreement.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        _, purchase = self._envelope_and_purchase(
+            seed_user, bank_day + timedelta(days=5),
+        )
+        line = a_bank_line(
+            seed_user, statement, amount="-25.00", posted_on=bank_day,
+        )
+
+        _submit(seed_user, lines=[line], entries=[purchase])
+
+        assert purchase.purchased_on == bank_day
+        assert purchase.settled_on == bank_day
+
+    def test_it_takes_the_day_the_bank_STATED_over_the_day_it_cleared(
+        self, app, db, seed_user,
+    ):
+        """Two different facts, and the swipe day is the one a purchase wants.
+
+        SECU states the swipe day inside a card line's description on 182 of
+        361 lines, 1 to 4 days before it posts.  Writing the posting day
+        instead would record the purchase as made on the day it cleared.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        swipe_day = bank_day - timedelta(days=2)
+        _, purchase = self._envelope_and_purchase(
+            seed_user, bank_day + timedelta(days=5),
+        )
+        line = a_bank_line(
+            seed_user, statement, amount="-25.00", posted_on=bank_day,
+            transaction_on=swipe_day,
+        )
+
+        _submit(seed_user, lines=[line], entries=[purchase])
+
+        assert purchase.purchased_on == swipe_day
+        assert purchase.settled_on == bank_day
+
+    def test_a_purchase_the_bank_does_NOT_contradict_keeps_its_day(
+        self, app, db, seed_user,
+    ):
+        """THE FIRING CONTROL for the narrowness, and it is the whole ruling.
+
+        A purchase recorded BEFORE the bank posted it is not refuted by
+        anything, so the day the owner typed stands -- even though the bank
+        states a day of its own.  Without this arm the door would overwrite 27
+        of 44 correct dates on the developer's own statement in order to fix 3
+        wrong ones.  Delete the ``expected_on <= posts_on`` test in
+        ``corrected_purchase_day`` and this fails.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date + timedelta(days=6)
+        made_on = bank_day - timedelta(days=4)
+        _, purchase = self._envelope_and_purchase(seed_user, made_on)
+        line = a_bank_line(
+            seed_user, statement, amount="-25.00", posted_on=bank_day,
+            transaction_on=bank_day - timedelta(days=1),
+        )
+
+        _submit(seed_user, lines=[line], entries=[purchase])
+
+        assert purchase.purchased_on == made_on
+        assert purchase.settled_on == bank_day
+
+    def test_a_TRANSACTION_has_no_purchase_day_to_correct(
+        self, app, db, seed_user,
+    ):
+        """Only a purchase carries the second clock.
+
+        A transaction's ``settled_on`` is its only date column -- what says
+        when it was budgeted is its pay period -- so the correction must not
+        leak onto the other kind.  ``update_entry`` is the only door that could
+        write it, and a transaction never reaches one.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        row = a_transaction(seed_user, name="Electricity", amount="180.00")
+        line = a_bank_line(
+            seed_user, statement, amount="-180.00", posted_on=bank_day,
+            transaction_on=bank_day - timedelta(days=3),
+        )
+
+        accepted = _submit(seed_user, lines=[line], transactions=[row])
+
+        assert row.settled_on == bank_day
+        assert accepted.settled_count == 1
+
+    def test_a_GROUP_re_dates_to_its_EARLIEST_stated_day(
+        self, app, db, seed_user,
+    ):
+        """Earliest for the purchase day, latest for the posting day.
+
+        A purchase the bank split across several lines was made no later than
+        the first of them, while the row is not wholly moved until the last one
+        posts -- so the two ends of :class:`MatchDays` are opposite ends on
+        purpose, and a single ``max`` for both would date the purchase after
+        the swipe that started it.
+        """
+        statement = an_import(seed_user)
+        first_day = seed_user["bootstrap_period"].start_date
+        last_day = first_day + timedelta(days=3)
+        _, purchase = self._envelope_and_purchase(
+            seed_user, last_day + timedelta(days=5),
+        )
+        early = a_bank_line(
+            seed_user, statement, amount="-10.00", posted_on=first_day,
+            transaction_on=first_day - timedelta(days=1),
+        )
+        late = a_bank_line(
+            seed_user, statement, amount="-15.00", posted_on=last_day,
+            transaction_on=last_day - timedelta(days=1),
+        )
+
+        accepted = _submit(seed_user, lines=[early, late], entries=[purchase])
+
+        assert purchase.purchased_on == first_day - timedelta(days=1)
+        assert purchase.settled_on == last_day
+        assert accepted.posts_on == last_day
+
+    def test_a_re_dated_purchase_already_settled_counts_as_CORRECTED(
+        self, app, db, seed_user,
+    ):
+        """A day moved is work done, whichever of the two columns moved.
+
+        A settled purchase already carrying the bank's posting day but a
+        refuted purchase day is not "unchanged": the door writes to it, so
+        reporting it as untouched would claim the opposite of what happened.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date + timedelta(days=9)
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        purchase = a_purchase(
+            seed_user, envelope, amount="25.00",
+            purchased_on=bank_day + timedelta(days=2),
+            settled_on=bank_day + timedelta(days=2),
+        )
+        line = a_bank_line(
+            seed_user, statement, amount="-25.00", posted_on=bank_day,
+        )
+
+        accepted = _submit(seed_user, lines=[line], entries=[purchase])
+
+        assert purchase.purchased_on == bank_day
+        assert purchase.settled_on == bank_day
+        assert accepted.corrected_count == 1
+        assert accepted.settled_count == 0

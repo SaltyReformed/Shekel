@@ -34,11 +34,17 @@ from app.services.statement_match._propose import (
 _DAY = date(2026, 5, 1)
 
 
-def _line(line_id, amount, posted_on=_DAY, description="ACH DEBIT"):
-    """Return one bank line."""
+def _line(line_id, amount, posted_on=_DAY, description="ACH DEBIT",
+          transaction_on=None):
+    """Return one bank line.
+
+    ``transaction_on`` defaults to ``None`` -- a source stating no separate
+    transaction day, which is 179 of the developer's own 361 lines.
+    """
     return BankLine(
         line_id=line_id, posted_on=posted_on,
         amount=Decimal(amount), description=description,
+        transaction_on=transaction_on,
     )
 
 
@@ -149,6 +155,18 @@ class TestAPurchaseIsNotOfferedBeforeItWasMade:
     ``purchased_on`` renders an Accept button that can never succeed --
     measured at 23 such (line, undated purchase) pairs on the developer's own
     clone.  Found by adversarial security review 2026-08-17.
+
+    **Plan step X-f6a-3a made the floor SATISFIABLE rather than merely
+    refusing** (ruling **R-FW**): a match may move the purchase day onto the
+    bank's own, so the pairing is offered and the correction is what the
+    reviewer accepts.  The floor still refuses the pairing no write could
+    legalise -- a line whose own stated transaction day is AFTER the day it
+    posted, which 2 of 361 lines in the developer's OFX are.
+
+    **Why the change is not a weakening.**  It is what stops the review screen
+    presenting 14 lines worth `$1,028.66` as unexplained when the app already
+    holds every one of them at the same amount and the same merchant, which is
+    an invitation to record them a second time.
     """
 
     @staticmethod
@@ -161,12 +179,68 @@ class TestAPurchaseIsNotOfferedBeforeItWasMade:
             parent_id=900, expected_on=purchased_on,
         )
 
-    def test_a_line_BEFORE_the_purchase_day_is_not_offered(self):
-        """The refusal the accept door would raise, declined earlier."""
-        assert propose(
+    def test_a_line_before_the_purchase_day_is_OFFERED_and_corrects_it(self):
+        """The app's day is refuted by the owner's own assertion, so it moves.
+
+        Ruling **R-FW**.  Accepting says *this line IS this purchase*, which
+        says the purchase was made on or before the day the line posted -- so
+        a recorded day after it is wrong, and the match corrects it rather than
+        the screen leaving the line looking unexplained.
+        """
+        proposals = propose(
             [_line(1, "-25.00", date(2026, 5, 1))],
             [self._purchase(10, "-25.00", date(2026, 5, 8))],
+        )
+
+        assert len(proposals) == 1
+        assert proposals[0].made_on == date(2026, 5, 1)
+        assert [row.row_id for row in proposals[0].redated_purchases] == [10]
+
+    def test_it_corrects_to_the_day_the_bank_STATED(self):
+        """Not to the day it cleared -- the two are different facts.
+
+        Where the source states a transaction day, that is the day the purchase
+        was MADE; the posted day is when the money left.  Recording the second
+        as the first would date every card purchase to its clearing day.
+        """
+        proposals = propose(
+            [_line(1, "-25.00", date(2026, 5, 1),
+                   transaction_on=date(2026, 4, 29))],
+            [self._purchase(10, "-25.00", date(2026, 5, 8))],
+        )
+
+        assert proposals[0].made_on == date(2026, 4, 29)
+
+    def test_a_line_no_write_could_legalise_is_still_refused(self):
+        """The floor survives for the pairing the correction cannot fix.
+
+        A source whose stated transaction day is AFTER its posting day exists
+        -- 2 of 361 lines in the developer's own OFX -- and there is no day a
+        match could write that satisfies ``settled_on >= purchased_on``.  So
+        the proposer declines rather than rendering an Accept that raises.
+        """
+        assert propose(
+            [_line(1, "-25.00", date(2026, 5, 1),
+                   transaction_on=date(2026, 5, 2))],
+            [self._purchase(10, "-25.00", date(2026, 5, 8))],
         ) == []
+
+    def test_a_purchase_the_bank_does_not_contradict_is_left_alone(self):
+        """The bank corrects what it refutes, and nothing else.
+
+        Measured on the developer's own statement: taking the bank's day
+        unconditionally moves 27 of 44 matched purchases, 18 of them onto a
+        CLEARING day because the source states no transaction day at all.
+        Correcting only the contradicted ones moves 3.
+        """
+        proposals = propose(
+            [_line(1, "-25.00", date(2026, 5, 8),
+                   transaction_on=date(2026, 5, 7))],
+            [self._purchase(10, "-25.00", date(2026, 5, 1))],
+        )
+
+        assert len(proposals) == 1
+        assert proposals[0].redated_purchases == ()
 
     def test_a_line_ON_the_purchase_day_is_offered(self):
         """The control: the floor is inclusive, as the door's own check is."""
@@ -318,7 +392,7 @@ class TestAGroupSumsToTheLine:
     def test_a_group_that_does_not_sum_is_not_proposed(self):
         """The five-cent payroll gap: the app must not offer it as a match.
 
-        Finding **N-299**: on 6 of 16 payroll deposits the app's rows sum
+        Finding **N-239**: on 6 of 16 payroll deposits the app's rows sum
         `$0.05`-`$0.06` below what the bank paid.  Proposing that group would
         put a difference in front of the accept door, which refuses it -- so
         the honest place to stop is here.
@@ -494,3 +568,65 @@ class TestTheOrderPutsConfirmationsFirst:
         )
 
         assert [p.day_gap for p in proposals] == [0, 5]
+
+
+class TestTheFloorIsAppliedPerPAIRAndNotPerAmountGroup:
+    """A row legal against ONE line was being handed a DIFFERENT one.
+
+    **A shipped defect, found by X-f6a-3a's own measurement.**
+    ``_one_to_one`` filters the amount group with ``any(_within_window(...))``
+    -- so a row legal against at least one of the group's lines survives -- and
+    :func:`_assign`'s undated arm then paired a surviving row with whichever
+    line was still free, with no check of its own.  A per-GROUP survival test
+    was standing in for a per-PAIR legality test.
+
+    Measured on the developer's own clone at HEAD: 3 proposals were offered
+    whose Accept could never succeed, the worst pairing a line posted
+    2026-06-01 with a purchase made 2026-07-27, 56 days later.  The reviewer
+    saw an Accept button that raised ``ValidationError`` when pressed.
+
+    **The dated arm never had the hole**: ``_least_cost_pairing`` is bounded by
+    :data:`DAY_WINDOW`, which subsumes the floor for a row whose own day is
+    inside it.  Only the undated fallback could cross.
+    """
+
+    def test_an_undated_purchase_is_paired_with_the_line_it_is_LEGAL_against(
+        self,
+    ):
+        """Two lines share an amount; only one of them can take the purchase.
+
+        The illegal line posts EARLIER, so a loop taking lines in day order
+        reaches it first -- which is exactly how the shipped defect chose it.
+        It is illegal because its own stated transaction day is AFTER the day
+        it posted, the one shape no correction can rescue.
+        """
+        unreachable = _line(
+            1, "-25.00", date(2026, 5, 10), transaction_on=date(2026, 5, 12),
+        )
+        reachable = _line(2, "-25.00", date(2026, 5, 20))
+        purchase = CandidateRow(
+            kind=RowKind.PURCHASE, row_id=10, label="Kroger",
+            cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            parent_id=900, expected_on=date(2026, 5, 15),
+        )
+
+        proposals = propose([unreachable, reachable], [purchase])
+
+        assert len(proposals) == 1
+        assert proposals[0].lines[0].line_id == reachable.line_id
+
+    def test_a_purchase_legal_against_NEITHER_line_is_not_offered(self):
+        """The group filter's own arm, kept honest by its own case."""
+        first = _line(
+            1, "-25.00", date(2026, 5, 10), transaction_on=date(2026, 5, 12),
+        )
+        second = _line(
+            2, "-25.00", date(2026, 5, 11), transaction_on=date(2026, 5, 13),
+        )
+        purchase = CandidateRow(
+            kind=RowKind.PURCHASE, row_id=10, label="Kroger",
+            cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            parent_id=900, expected_on=date(2026, 5, 15),
+        )
+
+        assert propose([first, second], [purchase]) == []

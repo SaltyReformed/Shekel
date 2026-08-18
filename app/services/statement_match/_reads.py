@@ -269,6 +269,7 @@ def _as_bank_line(row: BankStatementLine) -> BankLine:
         posted_on=row.posted_on,
         amount=Decimal(str(row.amount)),
         description=row.description,
+        transaction_on=row.transaction_on,
     )
 
 

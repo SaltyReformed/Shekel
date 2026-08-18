@@ -94,6 +94,18 @@
             {% else %}
             <div>moves the day by {{ proposal.day_gap }} day(s) to {{ proposal.posts_on }}</div>
             {% endif %}
+            {# The PURCHASE day, which is a different clock from the one above
+               and moves under a different rule (R-FW): the posting day is the
+               day the bank took the money and this is the day you made the
+               purchase.  Shown only when accepting would move it, which is
+               when the day you recorded is later than the day the bank posted
+               it -- an impossibility rather than a disagreement. #}
+            {% if proposal.redated_purchases %}
+            <div class="text-warning-emphasis">
+              corrects {{ proposal.redated_purchases | length }} purchase date(s)
+              to {{ proposal.made_on }}
+            </div>
+            {% endif %}
           </td>
           <td class="text-end">
             <form method="post"
@@ -128,7 +140,7 @@
 {# ── What could not be explained, and the door to explain it ─────────── #}
 {# THE HAND-BUILD FORM IS WHAT MAKES THE ACCEPT DOOR'S REFUSALS REACHABLE.
    Without it, _reject_unbalanced and _reject_parent_and_its_own_purchase fire
-   only on a crafted POST -- so the $0.05 payroll gap (finding N-299) is never
+   only on a crafted POST -- so the $0.05 payroll gap (finding N-239) is never
    put in front of the person who can fix it, and the proposer's own docstring
    claim that "the owner may still build such a group by hand" is false about
    the shipped app.  Found by adversarial design review, 2026-08-17. #}
