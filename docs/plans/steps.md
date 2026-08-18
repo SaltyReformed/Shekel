@@ -42,13 +42,13 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 43 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 48 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**148 steps, 109 open.** The dependency graph holds 95 edges over 62 rows.
+**149 steps, 109 open.** The dependency graph holds 95 edges over 62 rows.
 
 ## The order
 
@@ -59,12 +59,12 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-f3c | -- | THE CUTOVER: the assertion stops resetting the ledger, `balance(T)` becomes opening equity plus the sum of postings, and an unexplained difference becomes a recorded uncategorized transaction the user accepts. **MOVES MONEY, OWN PR, NO BACKLOG.** Closes **N-171**, **N-172**, **N-174**, **N-275**, **N-276**. | #2 | -- | after #1 / balance:X-f3b (shipped) / bank_import:X-f6a |
 | balance | X-f4 | -- | Delete what the cutover orphans: `ReconciledThrough`'s coverage rule, `_anchors.py`, the correction machinery and the R-I seed compensator, a set X-f3a has already narrowed. Closes **N-176**, **N-218**, **N-161**, **N-170**. | #4 | -- | after #2 / balance:X-f3c |
 | bank_import | X-f6b | -- | Add the automated SOURCE ADAPTER -- SimpleFIN recommended on the security ground ruling R-FP states -- so a statement arrives without a manual download, deciding first where a scheduled fetch runs in an app with no scheduler. | #5 | -- | after #1 / bank_import:X-f6a |
-| balance | X-au-c3 | -- | Turn X-aq's settle refresh into the FREEZE and the revert into its inverse: a settle writes the resolved figure into the row's own amount column and declares it owned, and leaving the settled band hands the declaration back. Closes **N-241**, **N-242**, **N-245**, **N-259**. | #6 | -- | NOW / balance:X-au-c2a (shipped) |
-| balance | X-au-d | -- | Cut SALARY rows over: generation stops pricing them, the 51 live rows go NULL, and `income_service.live_projected_net`, `_freshest_amount` and `_reconcile_cached_amount` are deleted. Closes **N-224**, **N-228**. | #7 | -- | after #6 / balance:X-au-c3 |
-| balance | X-au-e | -- | Cut TEMPLATE rows over to their template's amount series: generation stops pricing them, the 511 non-override rows go NULL, and regeneration's amount arm with the conflict chooser's keep-vs-use decision are both deleted. | #8 | -- | after #6 / balance:X-au-c3 / balance:X-au-a (shipped) |
-| balance | X-au-g | -- | Cut LOAN-PAYMENT shadows over, which must first RULE that a shadow's P&I resolves on its own due date as ruling D5 already put its escrow, because a resolver may not read the wall clock. Closes **N-40**. | #9 | -- | after #6 / balance:X-au-c3 |
-| balance | X-au-f | -- | Cut TRANSFER rows and their shadows over, deleting the amount copy in `update_transfer` and the drift corrector beside it, which makes Transfer Invariant 3 structural rather than maintained. | #10 | -- | after #6 / balance:X-au-c3 |
-| balance | X-au-i | -- | Cut the CC PAYBACK kind over, the sixth amount rule: a payback's figure is the credit entries it repays, so `sync_entry_payback`'s unconditional rewrite and `create_cc_payback_transaction`'s unrepaired copy both become one derivation. Closes **N-243**, **N-252**. | #11 | -- | after #6 / balance:X-au-c3 |
+| balance | X-au-j | -- | Give the reconcile panel ONE amount basis for the whole pass instead of building a fresh one per offered row, which X-au-c2b made shareable within a call and X-au-c3 left standing one tier up. Closes **N-295**. | #6 | -- | NOW / balance:X-au-c3 (shipped) |
+| balance | X-au-d | -- | Cut SALARY rows over: generation stops pricing them, the 51 live rows go NULL, and `income_service.live_projected_net`, `_freshest_amount` and `_reconcile_cached_amount` are deleted. Closes **N-224**, **N-228**. | #7 | -- | NOW / balance:X-au-c3 (shipped) |
+| balance | X-au-e | -- | Cut TEMPLATE rows over to their template's amount series: generation stops pricing them, the 511 non-override rows go NULL, and regeneration's amount arm with the conflict chooser's keep-vs-use decision are both deleted. | #8 | -- | NOW / balance:X-au-c3 (shipped) / balance:X-au-a (shipped) |
+| balance | X-au-g | -- | Cut LOAN-PAYMENT shadows over, which must first RULE that a shadow's P&I resolves on its own due date as ruling D5 already put its escrow, because a resolver may not read the wall clock. Closes **N-40**. | #9 | -- | NOW / balance:X-au-c3 (shipped) |
+| balance | X-au-f | -- | Cut TRANSFER rows and their shadows over, deleting the amount copy in `update_transfer` and the drift corrector beside it, which makes Transfer Invariant 3 structural rather than maintained. | #10 | -- | NOW / balance:X-au-c3 (shipped) |
+| balance | X-au-i | -- | Cut the CC PAYBACK kind over, the sixth amount rule: a payback's figure is the credit entries it repays, so `sync_entry_payback`'s unconditional rewrite and `create_cc_payback_transaction`'s unrepaired copy both become one derivation. Closes **N-243**, **N-252**. | #11 | -- | NOW / balance:X-au-c3 (shipped) |
 | balance | X-au-h | -- | Split the FOUR facts `is_override` carries, of which two were found by adversarial review: re-priced, moved, survives the regeneration sweep, and exempt from the partial unique index. Closes **N-238**. | #12 | -- | after #10 / balance:X-au-d / balance:X-au-e / balance:X-au-f / balance:X-au-g |
 | pay_calendar | C2-f2e | -- | Move the BUDGET DASHBOARD onto the pass's calendar and give its route the one pass its two producers now open separately, which is what takes `/` back to one calendar derivation; `/accounts/<id>` detail went early at **C2-f2d-3**. Ticks `C2-f2`, and with it **P36**. Closes **P61**. | #13 | -- | NOW |
 | pay_calendar | C2-f3 | -- | Point the readers at every remaining surface at one `calendar_for` load per producer, move `pay_period_admin`'s three write-path ORM-row reads into `pay_period_write`, and delete `get_current_period` and `get_all_periods`. Closes **P19**, **P45**, **P49**. | #14 | -- | after #13 / pay_calendar:C2-f2 |
@@ -180,6 +180,7 @@ The fuller as-built entries are in each arc's archive.
 
 | arc | id | also | what this step does | order | commit | starts |
 |---|---|---|---|---|---|---|
+| balance | X-au-c3 | -- | A settle RECORDS what moved instead of refreshing an amount: `settled_amount` + `settled_basis_id` + `settled_on` are one record the status seam alone writes, a revert releases the ASSERTION and KEEPS the fact, and both full-edit popovers correct a figure IN PLACE. Closed **N-241**, **N-242**, **N-257**, **N-259**, **N-265**, **N-282**, **N-298**; opened **N-301**-**N-304**. | SHIPPED | `3d1379d1` | -- |
 | recurrence | R9 | -- | The closed pattern set's LAST artefacts died: `ref.recurrence_patterns` dropped with `RecurrencePatternEnum`, `ref_cache.recurrence_pattern_id` and the seed entry behind them, and the suite's cadence vocabulary moved off the closed set's display names onto the two axes. Ruling **R-R27** discharged R-R11's held release. | SHIPPED | `800671a7` | -- |
 | pay_calendar | C2-f2d | -- | The DECOMPOSED parent of `/savings` and `/retirement`, ticked with C2-f2d-3, its last leaf. | SHIPPED | `c95519dd` | -- |
 | balance | X-au-c2b | -- | Every reader that took a row's BUDGET off `estimated_amount` now resolves it: one `amounts_by_id` batch and one `owned_amount` accessor across 14 sites, a `budgets` map published to every render path in place of a transient attribute read behind an `is defined` fallback, and a pricing pass pinned to the OWNER rather than to a row set. Closed **N-268**, **N-269**, **N-270**; opened **N-294**. | SHIPPED | `a24f0b80` | -- |

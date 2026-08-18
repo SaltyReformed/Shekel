@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# Anchored action card -- renders inside the #txn-popover container
    (rebuild decision 2, docs/design/grid_audit.md): ONE card replaces
    the old three-tier edit system.  Layout, top to bottom: header +
@@ -11,13 +12,18 @@
    Expected context: txn, statuses.
 
    Finalised rows (is_immutable: Paid / Received / Settled / Credit /
-   Cancelled) lock the money / period / due-date fields: those inputs are
-   disabled so they neither accept nor submit a value (matching the route
-   guard #26 -- a disabled input is omitted from the POST, so a notes-only
-   save still succeeds).  The Status dropdown and Notes stay editable; set
-   Status to Projected to unlock the amounts.  Because the unlock lives in
-   the Status dropdown, the More section renders pre-expanded on locked
-   rows.
+   Cancelled) lock the BUDGET DECISIONS -- the estimate, the period, the due
+   date: those inputs are disabled so they neither accept nor submit a value
+   (matching the route guard #26 -- a disabled input is omitted from the POST,
+   so a notes-only save still succeeds).  The Status dropdown and Notes stay
+   editable; set Status to Projected to unlock them.  Because that unlock lives
+   in the Status dropdown, the More section renders pre-expanded on locked rows.
+
+   **The two OBSERVED FACTS are not locked**: what the bank actually took
+   (Actual) and the day it took it (Money moved on).  A lock protects a decision
+   from being rewritten; an observation gets corrected when the statement
+   disagrees, and neither requires reverting the row (developer ruling,
+   2026-08-17).
 #}
 {% set locked = txn.status and txn.status.is_immutable %}
 <div class="txn-full-edit-content">
@@ -110,7 +116,9 @@
     {% if locked %}
     <div class="alert alert-secondary py-1 px-2 mb-2 small" role="status">
       <i class="bi bi-lock-fill"></i> This transaction is finalised. Set
-      <strong>Status</strong> to Projected to edit the amounts.
+      <strong>Status</strong> to Projected to change the <strong>estimate</strong>
+      or the period. What your bank actually took, and the day it took it, you
+      can correct right here.
     </div>
     {% endif %}
 
@@ -136,17 +144,79 @@
                placeholder="Estimated amount"
                {{ 'disabled' if locked else '' }}>
       </div>
-      {% if correctable %}
+      {# **The ACTUAL: what the bank really took** (developer ruling,
+         2026-08-17).  The estimate beside it and this are two DIFFERENT facts
+         about the row, so they are two different boxes and neither edits the
+         other: changing the estimate is a budget decision, and changing this
+         states what moved.
+
+         **Deliberately NOT disabled on a finalised row**, exactly like the
+         "Money moved on" date below and for the identical reason: the lock
+         protects BUDGET DECISIONS from being rewritten, and this is an OBSERVED
+         FACT about the bank, which gets corrected when the statement disagrees.
+         A draft of this step drew this box gated on ``locked`` -- and since
+         every ``is_settled`` status is also ``is_immutable`` it rendered
+         disabled on 100% of the rows it appeared on, so it was deleted as
+         unreachable.  That had the defect backwards: being disabled WAS the
+         defect.
+
+         Rendered only where a figure exists to correct and correcting it means
+         something: the row has settled, and its figure is not derived from
+         purchases (ruling **R-FF** -- an envelope's actual IS the sum of its
+         entries, so a number typed here would be contradicted by the row's own
+         children; that case gets the note below instead).
+
+         ``min`` / ``max`` mirror the schema's ``_NON_NEGATIVE_MONETARY``,
+         the same browser-first / server-backstop layering the "Money moved
+         on" box below uses: the column is ``Numeric(12, 2)``, and an
+         unbounded figure reached the DATABASE as a ``DataError`` -- not an
+         ``IntegrityError``, so no route caught it and Save 500'd in
+         silence (adversarial review, 2026-08-18).
+
+         Prefilled from ``settled[txn.id]`` -- what the row RECORDS -- so an
+         untouched Save posts the same figure back and the service writes
+         nothing (``status_seam.correction_record``'s echo rule).
+         Submitting a DIFFERENT number records it as a human's correction. #}
+      {% if txn.status and txn.status.is_settled and correctable %}
+      {# ``none`` for a settled row that records NOTHING -- the legacy shape
+         finding **N-181** names, which this box exists to repair.  Rendered
+         as an EMPTY input rather than the string "None": a blank box means
+         nothing is recorded, and typing the real figure is the repair. #}
+      {% set recorded = settled[txn.id] %}
       <div class="col">
-        <label class="form-label mb-0 small">Actual</label>
-        <input type="number" step="0.01" inputmode="decimal" name="actual_amount"
-               value="{{ txn.actual_amount if txn.actual_amount is not none else '' }}"
+        <label class="form-label mb-0 small" for="settled-amount-{{ txn.id }}">
+          Actual
+        </label>
+        <input type="number" step="0.01" inputmode="decimal"
+               name="settled_amount" id="settled-amount-{{ txn.id }}"
+               value="{{ recorded if recorded is not none else '' }}"
+               min="0" max="10000000"
                class="form-control form-control-sm"
-               placeholder="Actual amount"
-               {{ 'disabled' if locked else '' }}>
+               title="What your bank actually took. Correct it if your statement shows a different amount -- you do not need to set the row back to Projected to do that. Clearing the box does nothing; set Status to Projected to say the money did not move.">
       </div>
       {% endif %}
     </div>
+    {# The figure a re-settle will RE-BOOK, on the surface that tells the user to
+       revert (plan step X-au-c3, developer 2026-08-17).  This card's own hint
+       says "Set Status to Projected to edit the amounts", so the row a user is
+       most likely looking at here is exactly the one carrying a retained figure
+       -- and until this notice existed the card showed a ``$500.00`` plan for a
+       row that would book ``$245.32``, with the number visible nowhere but the
+       reconcile panel.  It reads the SAME map the grid does, built from the same
+       function the settle verb asks
+       (``transaction_service.retained_settle_amounts_by_id`` ->
+       ``fixed_settle_amount``), so what this promises and what a tick books
+       cannot drift.  Rendered read-only: the record has ONE write door, which is
+       a settle. #}
+    {% set will_book = retained[txn.id] %}
+    {% if will_book is not none %}
+    <div class="alert alert-info py-1 px-2 mb-2 small" role="status">
+      <i class="bi bi-arrow-repeat"></i> Marking this paid will record
+      <strong>{{ money(will_book) }}</strong> -- the figure recorded before this
+      row was set back to Projected. Type a different amount when you tick it on
+      the reconcile screen to replace that.
+    </div>
+    {% endif %}
     {% if not correctable %}
     <div class="txn-card-meta mb-2">
       <i class="bi bi-info-circle"></i> Actual comes from the purchases below.

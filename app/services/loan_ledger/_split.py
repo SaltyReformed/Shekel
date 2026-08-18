@@ -230,9 +230,9 @@ def split_one_payment(
             because the walk that produces it loads
             :func:`app.services.loan_loaders.settled_income_shadows`, which
             filters ``status_id.in_(settled_status_ids())``.  Every row here has
-            therefore been through the settle freeze (plan step X-au-c3) and
-            stores its own amount; a derived one would REFUSE rather than being
-            priced from a column it does not carry.
+            therefore SETTLED, so it answers from the settlement it RECORDED
+            (plan step X-au-c3) and never reaches the plan; a row that recorded
+            nothing REFUSES rather than falling back to a forecast.
         balance: The outstanding balance before this payment.
         periods: The loan's rate periods (from
             :func:`app.services.loan_resolver.resolve_periods`); the governing

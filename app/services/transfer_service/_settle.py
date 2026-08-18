@@ -77,6 +77,11 @@ from app.services.cash_ledger import (
     resolve_transaction_amount,
 )
 from app.services.row_valuation import fixed_contribution
+from app.services.status_seam import (
+    Settlement,
+    honoured_correction,
+    recorded_settlement,
+)
 from app.services.transfer_service._status import apply_status_to_all_three
 from app.services.transfer_service._validation import TransferRows
 from app.utils.log_events import (
@@ -214,6 +219,16 @@ def settle_amount(shadow: Transaction) -> Decimal:
             price it.  A refusal is never a fallback.
     """
     _reject_unsettleable(shadow)
+    # A RETAINED correction outranks every derivation below, and answering it
+    # HERE is what keeps the panel's offer equal to what a tick books (plan step
+    # X-au-c3).  The transaction verb states the same rule one table over
+    # (``transaction_service.honoured_correction``); a draft honoured it only at
+    # the WRITE, so the panel offered the plan and the settle booked the
+    # human's figure.  Asked before the basis is built, so an honoured row runs
+    # no producer at all.
+    held = honoured_correction(shadow)
+    if held is not None:
+        return held
     # ONE basis for both halves (plan step X-au-c2b, finding **N-269**): the
     # freeze and the fall-through both price this shadow, and building one each
     # is how a single offered row paid for the transfer lookup twice.
@@ -256,8 +271,8 @@ def _unfrozen_amount(shadow: Transaction, basis: AmountBasis) -> Decimal:
             :func:`frozen_amount`.
 
     Returns:
-        ``0`` for a row that contributes nothing, the entered ``actual_amount``
-        when there is one, else the row's resolved amount.
+        ``0`` for a row that contributes nothing, what the row RECORDED as
+        having moved once it has settled, else the row's resolved amount.
 
     Raises:
         AmountUnresolvable: When the rule that prices this row cannot answer.
@@ -282,51 +297,59 @@ def settle(
     is worth, records that the money moved, and dates it, and a door that does
     two of those three books a figure the third contradicts.
 
-    Three acts, in this order, and the order is the rule:
+    Two acts, in this order, and the order is the rule:
 
-    1. **The amount, decided but not yet written.**  :func:`frozen_amount` is
+    1. **The figure, decided but not yet written.**  :func:`frozen_amount` is
        resolved ONCE, before anything moves -- it is guarded on ``is_projected``,
-       so asking after the status flip would always answer ``None``.  A figure a
-       HUMAN supplied is compared against what the row would book anyway and is
-       a CORRECTION only if it differs; a correction beats the derivation,
-       because a figure somebody read off a statement is a fact and the freeze
-       is an inference.
-    2. **The status and the settle day, in ONE seam pass.**  The day is the
-       caller's when it has one -- the reconcile tick's statement date -- so
-       the pair is dated once rather than stamped with today and corrected
+       so asking after the status flip would always answer ``None``.  A RETAINED
+       correction (:func:`~app.services.status_seam.honoured_correction`)
+       outranks that derivation, and a figure a HUMAN supplied NOW outranks
+       both: it is compared against what the row would book anyway and is a
+       CORRECTION only if it differs.  A figure somebody read off a statement is
+       a fact; a derivation is an inference.
+    2. **The status, the settle day and the RECORD, in ONE seam pass.**  The day
+       is the caller's when it has one -- the reconcile tick's statement date --
+       so the pair is dated once rather than stamped with today and corrected
        afterwards.  That second write was this module's own defect: the settle
        went through :func:`~app.services.transfer_service._status.apply_settle_day_correction`,
        the door ruling **R-ED** built for a user CORRECTING a day, so every
        tick wrote ``settled_on`` twice and the intermediate value was a day the
-       money did not move.
-    3. **The figure**, written to BOTH legs after the seam so the ledger
-       reconcile in ``update_transfer``'s tail reads the final amount rather
-       than the pre-settle estimate -- and after it, so a refused transition
-       leaves the money columns untouched.
+       money did not move.  The figure rides in the same call
+       (``status_seam.Settlement``) and lands on BOTH legs and on neither the
+       parent, because a transfer's money moves on its legs.
 
-    **An ECHO is not written, and act 3 exists for that.**  The reconcile panel
-    PREFILLS its amount box, so an untouched tick posts the figure the row would
-    book anyway; recording it would populate a column that is NULL on every
-    uncorrected row and destroy the only signal that says a human read a number
-    off a statement (ruling **R-FB**'s production measurement, "11 of 93 settled
-    bills carry a hand-typed correction", is made of exactly that signal).
+    **It was THREE acts until plan step X-au-c3**, the third being a separate
+    write of the figure into ``actual_amount`` after the seam.  One call is what
+    makes "a settled row states what moved" a property of the seam rather than a
+    convention each settle verb keeps -- the seam REFUSES a row entering the
+    settled band with no record -- and it is why a refused transition can no
+    longer leave a money column written by a settle that did not happen.
 
-    **A settle WRITES the column or leaves it, and never CLEARS it.**  Clearing
-    is its own act: a caller that means it says so with an explicit
-    ``actual_amount=None``, which
-    :func:`~app.services.transfer_service._update._fields_the_settle_left`
-    routes past this function to the door that performs it.
+    **An ECHO is not recorded as a correction.**  The reconcile panel PREFILLS
+    its amount box, so an untouched tick posts the figure the row would book
+    anyway; recording it as ``corrected`` would destroy the only stored signal
+    that says a human read a number off a statement (ruling **R-FB**'s
+    production measurement, "11 of 93 settled bills carry a hand-typed
+    correction", is made of exactly that signal).  The figure is still RECORDED
+    either way -- on the ``derived`` basis -- which is the difference from the
+    world before this step, where an uncorrected settle recorded nothing and
+    every reader fell back to the row's plan.
+
+    **A settle never CLEARS the record, and there is no door that does.**  A
+    ``settled_amount`` arriving without a settling status is REFUSED outright
+    (``_update._apply_transfer_fields``), because a figure states what MOVED and
+    an unsettled pair has moved nothing.  Correcting a recorded figure is
+    revert, edit, settle again -- the revert KEEPS what moved and the re-settle
+    honours it (act 1 above), so the round trip is lossless.
     ``settle_transaction`` follows the same rule one table over, so the two
-    settles cannot come to disagree about what a ``None`` means.
+    settles cannot come to disagree.
 
-    **Writing the freeze HERE rather than into the row's own amount is finding
-    N-241 left open deliberately**; the module docstring above states the two
-    measured hazards that withdrew the move and names the step that owns it.
-    Because the freeze lands in ``actual_amount``, it OVERWRITES a figure left
-    behind by a reverted settle rather than being outranked by one -- so the
-    booked figure is what :func:`settle_amount` offered, on every row shape.
-    That is the property the column move would have broken, and it is why the
-    move waits for ``amount_source`` rather than shipping beside a workaround.
+    **The figure lands in the row's OWN settlement record, and that is what
+    closed finding N-241.**  It went to ``actual_amount`` -- a column ruling
+    **R-FH** reserves for a figure a HUMAN supplied -- so a machine-derived
+    freeze written there manufactured a correction nobody made.  A record with
+    its own ``settled_basis_id`` says which it is, so the freeze had nothing
+    left to overwrite and the column it was hiding in is gone.
 
     Mutates in place.  Does NOT flush, commit, or reconcile the posted ledger
     -- ``update_transfer``'s tail owns all three, so a settle and an ordinary
@@ -334,10 +357,10 @@ def settle(
 
     Args:
         rows: The transfer and both shadows, at their pre-settle status.  The
-            freeze is resolved from the EXPENSE leg; either would answer the
+            figure is resolved from the EXPENSE leg; either would answer the
             same (Transfer Invariant 3 -- both share the transfer id, the
-            period and the due date), and naming one means the choice is not
-            made twice.
+            period and the due date, and both carry the same record), and
+            naming one means the choice is not made twice.
         new_status_id: The settled status all three rows move to, as the DOOR
             asked for it.  Verified by
             :func:`~app.services.transfer_service._status.apply_status_to_all_three`.
@@ -347,11 +370,13 @@ def settle(
             ``None`` leaves the pair-day rule in force.
 
     Returns:
-        Whether this settle booked a HUMAN's figure -- what the reconcile
-        writer counts (finding **N-231**).  Answered by the act itself rather
-        than by a predicate the caller asks separately, so the count and the
-        write cannot disagree and the freeze is resolved once per settle
-        instead of once per asker.
+        Whether this settle booked a figure the caller supplied NOW -- what the
+        reconcile writer counts (finding **N-231**).  Answered by the act itself
+        rather than by a predicate the caller asks separately, so the count and
+        the write cannot disagree and the figure is resolved once per settle
+        instead of once per asker.  ``False`` for a settle that honoured a
+        RETAINED correction: nobody typed anything at this tick, and the count
+        is of what this tick's user did.
 
     Raises:
         ValidationError: On a row this module may not settle
@@ -367,25 +392,50 @@ def settle(
     # plus, for a derive-mode payment, a loan-basis resolve and an escrow load.
     basis = amount_basis(rows.expense.account.user_id, rows.expense.scenario_id)
     frozen = frozen_amount(rows.expense, basis)
-    booked = (
+    resolved = (
         _unfrozen_amount(rows.expense, basis) if frozen is None else frozen
     )
+    # A RETAINED correction outranks the derivation, through the same published
+    # rule :func:`settle_amount` offers from, so the pair's offer and its
+    # booking are one expression (plan step X-au-c3).
+    held = honoured_correction(rows.expense)
+    booked = resolved if held is None else held
     correction = (
         submitted if submitted is not None and submitted != booked else None
     )
-    # A human's figure beats the derivation; absent one, the freeze books what
-    # the payment is live worth; absent both, the row keeps what it carries.
-    resolved = frozen if correction is None else correction
 
-    apply_status_to_all_three(rows, new_status_id, settled_on=settled_on)
+    # ONE act: the status, the pair's day, and what each leg RECORDS as having
+    # moved.  ``Settlement.from_settle`` states the "a human's figure beats the
+    # derivation" rule once for both settle verbs, and the record lands on the
+    # shadows rather than on the parent because a transfer's money moves on its
+    # legs.
+    #
+    # **The figure goes to the row's OWN record, not to a column reserved for a
+    # human, and that closes finding N-241.**  It was written to
+    # ``actual_amount`` -- which ruling **R-FH** reserves for a figure somebody
+    # read off a statement, and which three subsystems read the NULL-ness of as
+    # meaning exactly that -- so every derive-mode loan settle manufactured a
+    # correction nobody had made.  The two are different columns now, and which
+    # one a figure is stands in ``settled_basis_id`` rather than being inferred
+    # from a column being populated.
+    #
+    # The pair's RETAINED record is read from the expense leg -- the same leg the
+    # figures above come from, and for the same reason (Transfer Invariant 3:
+    # both legs carry the same record, so naming one means the choice is not
+    # accidental).  A revert releases the pair's assertion and keeps what moved,
+    # so re-settling a transfer the user reverted in order to edit honours the
+    # figure they read off their statement instead of re-deriving over it.
+    apply_status_to_all_three(
+        rows, new_status_id, settled_on=settled_on,
+        settlement=Settlement.from_settle(
+            booked, correction, recorded_settlement(rows.expense),
+        ),
+    )
 
-    if resolved is not None:
-        for shadow in rows.shadows:
-            shadow.actual_amount = resolved
     if frozen is not None and correction is None:
         log_event(
             logger, logging.INFO, EVT_TRANSFER_AMOUNT_FROZEN, BUSINESS,
-            "A derived loan payment froze its live payment-date figure",
+            "A derived loan payment recorded its live payment-date figure",
             user_id=rows.transfer.user_id,
             transfer_id=rows.transfer.id,
             frozen_amount=str(frozen),

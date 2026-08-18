@@ -1,11 +1,18 @@
 """Database CHECK constraint regression tests for budget.transactions.
 
-Locks the storage-tier guarantee that estimated_amount and
-actual_amount cannot hold negative values.  The constraints are
-declared on the model (`app/models/transaction.py`
-`ck_transactions_estimated_amount`, `ck_transactions_actual_amount`)
-and materialised by migration
-`dc46e02d15b4_add_check_constraints_to_loan_params_.py`.
+Locks the storage-tier guarantee that estimated_amount and the settled
+figure cannot hold negative values.  The constraints are declared on the
+model (`app/models/transaction.py` `ck_transactions_estimated_amount`,
+`ck_transactions_settled_amount`) and materialised by migration
+`dc46e02d15b4_add_check_constraints_to_loan_params_.py`, the second of
+them renamed with its column by `e4b8a71c0f36_settlement_record.py`.
+
+**The NULL branch changed meaning at plan step X-au-c3** and the third
+test says so.  `actual_amount IS NULL` used to be the ordinary
+projected-but-not-yet-paid row; a projected row now carries no settlement
+record at all, and the branch is exercised by the one SETTLED shape that
+stores no figure -- a `purchases` record, where the row's own entries
+state the amount.
 
 The original H-1 drift fix
 (`migrations/versions/724d21236759_drop_redundant_transaction_check_.py`)
@@ -29,24 +36,35 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from app import ref_cache
+from app.enums import SettlementBasisEnum
 from app.extensions import db
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
+from tests._test_helpers import settlement_basis_id
 
 
-def _make_txn_kwargs(seed_user, seed_periods_today):
+def _make_txn_kwargs(seed_user, seed_periods_today, status_name="Projected"):
     """Return the minimum kwargs needed to construct a valid Transaction.
 
-    The caller overrides estimated_amount and/or actual_amount to
+    The caller overrides estimated_amount and/or the settlement record to
     exercise the CHECK constraint under test.
+
+    Args:
+        seed_user: The seeded owner fixture.
+        seed_periods_today: The seeded pay periods; the row lands in the first.
+        status_name: The ``ref.statuses`` name to build the row in.  A test
+            that writes a settlement record must pass a SETTLED one, because a
+            record on a row whose money has not moved is the state the write
+            door refuses.
     """
-    projected = db.session.query(Status).filter_by(name="Projected").one()
+    status = db.session.query(Status).filter_by(name=status_name).one()
     expense = db.session.query(TransactionType).filter_by(name="Expense").one()
     return {
         "account_id": seed_user["account"].id,
         "pay_period_id": seed_periods_today[0].id,
         "scenario_id": seed_user["scenario"].id,
-        "status_id": projected.id,
+        "status_id": status.id,
         "name": "Constraint Test",
         "category_id": seed_user["categories"]["Groceries"].id,
         "transaction_type_id": expense.id,
@@ -54,7 +72,7 @@ def _make_txn_kwargs(seed_user, seed_periods_today):
 
 
 class TestTransactionAmountCheckConstraints:
-    """Negative estimated_amount / actual_amount rejected at flush time."""
+    """Negative estimated_amount / settled_amount rejected at flush time."""
 
     def test_negative_estimated_amount_rejected(
         self, app, db, seed_user, seed_periods_today
@@ -75,48 +93,68 @@ class TestTransactionAmountCheckConstraints:
             assert "ck_transactions_estimated_amount" in str(exc_info.value)
             db.session.rollback()
 
-    def test_negative_actual_amount_rejected(
+    def test_negative_settled_amount_rejected(
         self, app, db, seed_user, seed_periods_today
     ):
-        """Inserting a Transaction with actual_amount < 0 raises IntegrityError.
+        """Inserting a Transaction with settled_amount < 0 raises IntegrityError.
 
-        The ck_transactions_actual_amount CHECK constraint admits NULL
-        (the projected-but-not-yet-paid case) and otherwise pins
-        storage to non-negative values.  Mirrors the
-        estimated_amount guarantee -- negative actuals would corrupt
-        the balance calculator the same way negative estimates would.
+        The ck_transactions_settled_amount CHECK constraint admits NULL
+        (the `purchases` record, whose figure its entries state) and
+        otherwise pins storage to non-negative values.  Mirrors the
+        estimated_amount guarantee -- a negative recorded figure would
+        corrupt the balance calculator the same way a negative estimate
+        would.
+
+        The rest of the record is COHERENT (a settled status, a settle day,
+        and a basis that stores its figure) so the flush fails on the
+        constraint under test and not on the record's own pairing.
         """
         with app.app_context():
-            kwargs = _make_txn_kwargs(seed_user, seed_periods_today)
+            kwargs = _make_txn_kwargs(
+                seed_user, seed_periods_today, status_name="Paid",
+            )
             txn = Transaction(
                 **kwargs,
                 estimated_amount=Decimal("100.00"),
-                actual_amount=Decimal("-1.00"),
+                settled_on=seed_periods_today[0].start_date,
+                settled_amount=Decimal("-1.00"),
+                settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
             db.session.add(txn)
             with pytest.raises(IntegrityError) as exc_info:
                 db.session.flush()
-            assert "ck_transactions_actual_amount" in str(exc_info.value)
+            assert "ck_transactions_settled_amount" in str(exc_info.value)
             db.session.rollback()
 
-    def test_null_actual_amount_allowed(
+    def test_null_settled_amount_allowed(
         self, app, db, seed_user, seed_periods_today
     ):
-        """A Transaction with actual_amount IS NULL is the projected default.
+        """A `purchases` record stores no figure, and the CHECK admits it.
 
         Asserts the CHECK predicate's NULL branch
-        (`actual_amount IS NULL OR actual_amount >= 0`) admits the
-        common case.  A regression that tightened the constraint to
-        `actual_amount >= 0` (no NULL branch) would block every
-        projected transaction -- a routine application path -- and
-        this test would catch it before the migration hit production.
+        (`settled_amount IS NULL OR settled_amount >= 0`).  A regression
+        that tightened the constraint to `settled_amount >= 0` (no NULL
+        branch) would block every envelope close -- a routine application
+        path -- and this test would catch it before the migration hit
+        production.
+
+        **The shape that exercises it changed at plan step X-au-c3.**  It used
+        to be the ordinary projected row, whose `actual_amount` was NULL until
+        somebody typed one; a projected row now carries no settlement record at
+        all, so the branch belongs to the one SETTLED basis that stores nothing.
         """
         with app.app_context():
-            kwargs = _make_txn_kwargs(seed_user, seed_periods_today)
+            kwargs = _make_txn_kwargs(
+                seed_user, seed_periods_today, status_name="Paid",
+            )
             txn = Transaction(
                 **kwargs,
                 estimated_amount=Decimal("100.00"),
-                actual_amount=None,
+                settled_on=seed_periods_today[0].start_date,
+                settled_amount=None,
+                settled_basis_id=ref_cache.settlement_basis_id(
+                    SettlementBasisEnum.PURCHASES,
+                ),
             )
             db.session.add(txn)
             db.session.flush()

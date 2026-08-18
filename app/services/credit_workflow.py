@@ -372,11 +372,8 @@ def mark_as_credit(transaction_id, user_id):
     # be is a different question, and it is plan step X-au-i's (finding
     # **N-243**): a payback is worth the credit entries it repays, and neither
     # of this line's two terms is that.
-    payback_amount = (
-        txn.actual_amount if txn.actual_amount is not None
-        else resolve_transaction_amount(
-            txn, amount_basis(txn.account.user_id, txn.scenario_id),
-        )
+    payback_amount = resolve_transaction_amount(
+        txn, amount_basis(txn.account.user_id, txn.scenario_id),
     )
 
     # Create the payback transaction via the shared factory (see

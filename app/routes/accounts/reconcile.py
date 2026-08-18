@@ -94,14 +94,14 @@ def panel_id(account_id: int) -> str:
 #: field rather than by position.  Paired arrays would depend on the browser
 #: submitting two lists in the same order, which is a property of the document
 #: rather than of the form.
-_AMOUNT_FIELD_PREFIX = "actual_amount-"
+_AMOUNT_FIELD_PREFIX = "settled_amount-"
 
 
 def _submitted_corrections(form) -> dict[int, Decimal]:
     """Return ``{transaction id: amount}`` for the amount boxes submitted.
 
     Ruling **R-FB** gives a bill's tick a prefilled, editable figure, so the
-    form carries one box per correctable row named ``actual_amount-<id>``.
+    form carries one box per correctable row named ``settled_amount-<id>``.
 
     **Each value is validated by ``MarkDoneSchema`` -- the SAME schema the
     grid's Mark Paid loads** -- because it is the same question feeding the same
@@ -109,7 +109,7 @@ def _submitted_corrections(form) -> dict[int, Decimal]:
     settle.  A second field declaration here would be a second answer to "what
     is a valid money input", on a money path, which is exactly what this arc
     removes; and it brings the two-place Decimal, the ``>= 0`` range mirroring
-    the ``ck_transactions_actual_amount`` CHECK, and the empty-string-to-``None``
+    the ``ck_transactions_settled_amount`` CHECK, and the empty-string-to-``None``
     normalisation for free.
 
     An empty box loads as ``None`` and is DROPPED rather than recorded: a user
@@ -141,10 +141,10 @@ def _submitted_corrections(form) -> dict[int, Decimal]:
         row_id = parse_row_id(field[len(_AMOUNT_FIELD_PREFIX):])
         if row_id is None:
             continue
-        errors = schema.validate({"actual_amount": raw})
+        errors = schema.validate({"settled_amount": raw})
         if errors:
             raise ValidationError(flatten_schema_errors(errors))
-        amount = schema.load({"actual_amount": raw}).get("actual_amount")
+        amount = schema.load({"settled_amount": raw}).get("settled_amount")
         if amount is not None:
             corrections[row_id] = amount
     return corrections
@@ -417,12 +417,15 @@ def record_reconciliation(account_id):
     projection stops holding those budgets back -- on a date the USER supplied
     rather than one the engine guessed.
 
-    **The ORDER the two arms run in is load-bearing and is NOT this module's**
-    -- it is ``reconcile_service.record_reconciliation``'s, because the rule is
-    about the arms rather than about HTTP: the purchase arm's scope requires a
-    PROJECTED parent, which the transaction arm's writer destroys.  It lived
-    here as two statements until an adversarial review pointed out that nothing
-    could fail if a later edit swapped them.
+    **The ORDER the two arms run in is NOT this module's** -- it is
+    ``reconcile_service.record_reconciliation``'s, because it is a rule about
+    the arms rather than about HTTP.  It lived here as two statements until an
+    adversarial review pointed out that nothing could fail if a later edit
+    swapped them.  What made it load-bearing was that the purchase arm's scope
+    required a PROJECTED parent, which the transaction arm's writer destroyed;
+    plan step X-au-c3 widened that scope, so the order is now a CONVENTION and
+    that function states which it is in its own words rather than here in
+    weaker ones.
 
     **It is its own request, and that is deliberate.**  Folding it into
     ``apply_anchor_true_up`` would put it inside the transaction that function

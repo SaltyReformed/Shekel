@@ -19,6 +19,7 @@ from app.enums import (
     AcctCategoryEnum,
     CompoundingFrequencyEnum,
     EmployerContributionTypeEnum,
+    SettlementBasisEnum,
     StatusEnum,
 )
 from app.extensions import db
@@ -30,6 +31,8 @@ from tests._test_helpers import (
     create_loan_account,
     create_transfer,
     settle_instant_on,
+    settlement_basis_id,
+    settlement_if_settling,
 )
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
@@ -43,9 +46,10 @@ from app.services import (
     cash_ledger,
     pay_period_service,
     pay_period_write,
+    status_seam,
 )
 from app.services.auth_service import hash_password
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import owned_contribution, settled_figure
 
 
 #: The out-of-band swap that carries the balance acknowledgement into
@@ -2363,15 +2367,30 @@ class TestTheReconcileRoute:
             assert response.status_code == 200
             assert self._entries_of(txn.id)[0].settled_on is None
 
-    def test_a_purchase_on_a_settled_parent_is_not_offered(
+    def test_a_purchase_on_a_settled_parent_IS_offered(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """RE-RULED from "entries on non-projected parents are not cleared".
+        """RE-RULED TWICE; this is the third and current ruling.
 
-        The entry reservation prices only PROJECTED rows, so a purchase on a
-        settled parent is inert -- listing it would ask the user to reconcile
-        something that cannot move a figure, and stamping it would record a
-        fact nothing reads.
+        It began as "entries on non-projected parents are not cleared", became
+        "the entry reservation prices only PROJECTED rows, so a purchase on a
+        settled parent is inert", and is now the opposite of both (developer,
+        2026-08-17).  Ruling **R-FM** falsified the "inert" premise one plan
+        step earlier: ``cash_ledger.settled_cash_leg`` subtracts every POSTED
+        purchase from a settled row's close, so recording the day moves that
+        purchase's cash off the close's day and onto the bank's.  The total
+        never moves; the DAY does, and a paper statement is reconciled by day.
+
+        Driven through the ROUTE rather than the service, which is the half its
+        sibling in ``test_reconcile_service`` cannot see: the panel must LIST
+        the purchase as well as accept it, and the two are different code.
+
+        The parent is settled through ``status_seam.apply_status_change``
+        rather than by assigning ``status_id``.  A raw assignment builds a
+        settled row carrying no settle day and no record -- one no door in the
+        app can create, and one ``ck_transactions_settle_day_needs_basis`` and
+        ``row_valuation.settled_figure`` between them exist to keep out of the
+        database and out of a balance.
         """
         with app.app_context():
             past = display_today() - timedelta(days=1)
@@ -2381,7 +2400,10 @@ class TestTheReconcileRoute:
                 ],
             )
             paid = db.session.query(Status).filter_by(name="Paid").one()
-            txn.status_id = paid.id
+            status_seam.apply_status_change(
+                txn, paid.id,
+                settlement=settlement_if_settling(txn, paid.id),
+            )
             db.session.commit()
             self._true_up(auth_client, seed_user["account"].id, "5000.00")
             entry_id = self._entries_of(txn.id)[0].id
@@ -2389,14 +2411,14 @@ class TestTheReconcileRoute:
             listed = auth_client.get(
                 f"/accounts/{seed_user['account'].id}/reconcile",
             )
-            assert b"100.00" not in listed.data
+            assert b"100.00" in listed.data
 
             auth_client.post(
                 f"/accounts/{seed_user['account'].id}/reconcile",
                 data={"entry_ids": [str(entry_id)]},
             )
 
-            assert self._entries_of(txn.id)[0].settled_on is None
+            assert self._entries_of(txn.id)[0].settled_on is not None
 
     def test_an_already_recorded_purchase_is_not_re_stamped(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -2906,7 +2928,9 @@ class TestTheReconcileRoute:
             assert self._entries_of(txn.id)[0].settled_on == display_today()
             settled = db.session.get(Transaction, txn.id)
             assert settled.settled_on == display_today()
-            assert settled.actual_amount == Decimal("106.86")
+            # A ``purchases`` record stores no figure: the row's own entries
+            # state it (plan step X-au-c3).
+            assert settled_figure(settled) == Decimal("106.86")
 
     def test_a_submitted_amount_box_corrects_what_the_row_books(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -2928,14 +2952,14 @@ class TestTheReconcileRoute:
                 f"/accounts/{seed_user['account'].id}/reconcile",
                 data={
                     "transaction_ids": [str(txn.id)],
-                    f"actual_amount-{txn.id}": "412.09",
+                    f"settled_amount-{txn.id}": "412.09",
                 },
             )
 
             assert response.status_code == 200
             db.session.expire_all()
             settled = db.session.get(Transaction, txn.id)
-            assert settled.actual_amount == Decimal("412.09")
+            assert settled.settled_amount == Decimal("412.09")
             assert settled.estimated_amount == Decimal("500.00")
 
     def test_a_malformed_amount_refuses_and_commits_NOTHING(
@@ -2967,7 +2991,7 @@ class TestTheReconcileRoute:
                 data={
                     "entry_ids": [str(entry_id)],
                     "transaction_ids": [str(txn.id)],
-                    f"actual_amount-{txn.id}": "-12",
+                    f"settled_amount-{txn.id}": "-12",
                 },
             )
 
@@ -3042,7 +3066,7 @@ class TestTheReconcileRoute:
             # The entry checkbox proves the block took the WITH-CHILDREN arm,
             # which is the arm that used to ignore the flag.
             assert 'name="entry_ids" value="' in body
-            assert f'name="actual_amount-{txn.id}"' in body
+            assert f'name="settled_amount-{txn.id}"' in body
 
     def test_the_write_door_still_404s_a_kind_this_panel_does_not_serve(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3292,8 +3316,8 @@ class TestTheReconcileRoutesUngradedBranches:
                 f"/accounts/{seed_user['account'].id}/reconcile",
                 data={
                     "transaction_ids": [str(ticked_id)],
-                    f"actual_amount-{ticked_id}": "175.42",
-                    f"actual_amount-{unticked_id}": "1.00",
+                    f"settled_amount-{ticked_id}": "175.42",
+                    f"settled_amount-{unticked_id}": "1.00",
                 },
             )
             assert response.status_code == 200
@@ -3301,8 +3325,8 @@ class TestTheReconcileRoutesUngradedBranches:
             db.session.expire_all()
             settled = db.session.get(Transaction, ticked_id)
             left_alone = db.session.get(Transaction, unticked_id)
-            assert settled.actual_amount == Decimal("175.42")
-            assert left_alone.actual_amount is None
+            assert settled.settled_amount == Decimal("175.42")
+            assert left_alone.settled_amount is None
             assert left_alone.settled_on is None
             assert left_alone.status.name == "Projected"
 
@@ -3337,7 +3361,7 @@ class TestTheReconcileRoutesUngradedBranches:
                 f"/accounts/{seed_user['account'].id}/reconcile",
                 data={
                     "transaction_ids": [str(elsewhere_id)],
-                    f"actual_amount-{elsewhere_id}": "999.99",
+                    f"settled_amount-{elsewhere_id}": "999.99",
                 },
             )
             assert response.status_code == 200
@@ -3345,7 +3369,7 @@ class TestTheReconcileRoutesUngradedBranches:
 
             db.session.expire_all()
             untouched = db.session.get(Transaction, elsewhere_id)
-            assert untouched.actual_amount is None
+            assert untouched.settled_amount is None
             assert untouched.settled_on is None
 
     def test_a_row_the_verb_would_not_read_a_box_for_renders_NONE(
@@ -3373,15 +3397,15 @@ class TestTheReconcileRoutesUngradedBranches:
             )
             assert response.status_code == 200
             body = response.data.decode()
-            assert f'name="actual_amount-{bill.id}"' in body
-            assert f'name="actual_amount-{envelope.id}"' not in body
+            assert f'name="settled_amount-{bill.id}"' in body
+            assert f'name="settled_amount-{envelope.id}"' not in body
 
     def test_a_correction_ABOVE_the_columns_domain_is_a_designed_refusal(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """A figure the column cannot hold is a 400, never a 500 mid-statement.
 
-        ``budget.transactions.actual_amount`` is ``numeric(12, 2)``, so a
+        ``budget.transactions.settled_amount`` is ``numeric(12, 2)``, so a
         figure at or above ``10 ** 10`` cannot be stored.  The schema bounded
         the field below (``>= 0``) and not above, so such a value passed
         validation, reached the settle verb and died at the DATABASE as a
@@ -3406,7 +3430,7 @@ class TestTheReconcileRoutesUngradedBranches:
                 f"/accounts/{seed_user['account'].id}/reconcile",
                 data={
                     "transaction_ids": [str(ticked_id), str(alongside_id)],
-                    f"actual_amount-{ticked_id}": "10000000000.00",
+                    f"settled_amount-{ticked_id}": "10000000000.00",
                 },
             )
 
@@ -3421,7 +3445,7 @@ class TestTheReconcileRoutesUngradedBranches:
                 row = db.session.get(Transaction, row_id)
                 assert row.status_id == projected_id
                 assert row.settled_on is None
-                assert row.actual_amount is None
+                assert row.settled_amount is None
 
 
 class TestTheTransferArmThroughItsROUTE:
@@ -3544,8 +3568,12 @@ class TestTheTransferArmThroughItsROUTE:
             for leg in legs:
                 assert leg.status_id == done_id
                 assert leg.settled_on == display_today()
-                # Nobody typed a figure, so no correction was recorded.
-                assert leg.actual_amount is None
+                # Nobody typed a figure, so the record's basis is ``derived``
+                # -- which is where "did a human correct this" lives since plan
+                # step X-au-c3, rather than in the figure's NULL-ness.
+                assert leg.settled_basis_id == settlement_basis_id(
+                    SettlementBasisEnum.DERIVED,
+                )
 
     def test_a_correction_typed_on_a_transfer_lands_on_BOTH_legs(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3567,7 +3595,7 @@ class TestTheTransferArmThroughItsROUTE:
                 f"/accounts/{seed_user['account'].id}/reconcile",
                 data={
                     "transaction_ids": [str(shadow_id)],
-                    f"actual_amount-{shadow_id}": "80.25",
+                    f"settled_amount-{shadow_id}": "80.25",
                 },
             )
             assert response.status_code == 200
@@ -3579,7 +3607,7 @@ class TestTheTransferArmThroughItsROUTE:
                 .all()
             )
             for leg in legs:
-                assert leg.actual_amount == Decimal("80.25")
+                assert leg.settled_amount == Decimal("80.25")
                 assert owned_contribution(leg) == Decimal("80.25")
 
     def test_an_ECHOED_prefill_on_a_transfer_records_no_correction(
@@ -3604,7 +3632,7 @@ class TestTheTransferArmThroughItsROUTE:
                 f"/accounts/{seed_user['account'].id}/reconcile",
                 data={
                     "transaction_ids": [str(shadow_id)],
-                    f"actual_amount-{shadow_id}": "75.00",
+                    f"settled_amount-{shadow_id}": "75.00",
                 },
             )
             assert response.status_code == 200
@@ -3616,7 +3644,12 @@ class TestTheTransferArmThroughItsROUTE:
                 .all()
             )
             for leg in legs:
-                assert leg.actual_amount is None
+                # An ECHOED prefill is not a correction: the record says
+                # ``derived`` and states the figure the settle booked.
+                assert leg.settled_basis_id == settlement_basis_id(
+                    SettlementBasisEnum.DERIVED,
+                )
+                assert settled_figure(leg) == Decimal("75.00")
                 assert owned_contribution(leg) == Decimal("75.00")
 
 

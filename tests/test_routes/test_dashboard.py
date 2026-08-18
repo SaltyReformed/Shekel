@@ -371,7 +371,7 @@ class TestDashboardPulseRendering:
             cur = pay_period_service.get_current_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "Already Paid", "500.00",
-                status_enum=StatusEnum.DONE, actual_amount="500.00",
+                status_enum=StatusEnum.DONE, settled_amount="500.00",
                 due_date=cur.start_date,
             )
             db.session.commit()

@@ -1147,7 +1147,7 @@ def _build_drift_shape(db_session, seed_user, periods):
         create_settled_cash_transaction(
             seed_user, db_session, period, _DRIFT_EXPENSE,
             name=f"rent p{index}", settled_on=expense_day,
-            actual_amount=(
+            settled_amount=(
                 _DRIFT_ACTUAL_EXPENSE if index == _DRIFT_ACTUAL_INDEX else None
             ),
         )

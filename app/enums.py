@@ -555,3 +555,60 @@ class AmountSourceEnum(enum.Enum):
 
     TEMPLATE = "template"
     PARENT_TRANSFER = "parent_transfer"
+
+
+class SettlementBasisEnum(enum.Enum):
+    """HOW a settled row's recorded figure is known (plan step **X-au-c3**).
+
+    A row is a PLAN until its money moves and a RECORD of what moved once it
+    has.  ``estimated_amount`` / ``amount_source_id`` are the plan and no settle
+    path writes either of them; ``settled_on`` / ``settled_amount`` /
+    ``settled_basis_id`` are the record and nothing but a settle writes those.
+    This enum is the record's third column: it says which of three ways the
+    figure beside it was arrived at.
+
+        derived   -- the app resolved it at the moment of the settle, from
+                     whatever prices the row (its definition's price series, its
+                     salary profile, its loan's schedule).  That resolution is
+                     not repeatable, which is why the answer is RECORDED rather
+                     than re-asked: an effective-dated price series admits a
+                     version dated into the past, so the same question answered
+                     a year later can give a different figure and be right both
+                     times -- the series says what the price WAS, and the bank
+                     says what it TOOK.
+        corrected -- a human read it off a statement and typed it.  It beats the
+                     derivation, because a figure somebody read is a fact and a
+                     derivation is an inference.
+        purchases -- the row's own purchases state it, and it is the one basis
+                     that stores NO figure: ``settled_amount`` is NULL and the
+                     amount is the sum of the row's entries, which are
+                     themselves the records.  Storing it would be a second copy
+                     of a value the row's own children already hold, with a
+                     reconciler to keep the two in step -- the shape ruling
+                     **R-FI** exists to delete.
+
+    **The point of the enum is that WHAT moved and WHO said so stopped sharing a
+    column.**  ``actual_amount`` carried both until this step: its VALUE was the
+    settled figure and its NULL-ness was read by three subsystems as *a human
+    entered this* (ruling **R-FH**).  Two defects followed from the one
+    overload.  A machine-derived figure written there manufactured a correction
+    that never happened (finding **N-241**).  And a settled row that carried no
+    correction carried no recorded figure at all -- so every reader fell back to
+    the row's PLAN, and because a plan is a derivation, the plan then had to be
+    frozen against later change.  Splitting the two makes the record mandatory,
+    and a mandatory record is what leaves nothing to freeze.
+
+    Application code resolves these via ``ref_cache.settlement_basis_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.  There is deliberately no member meaning *not settled*: that is
+    the ABSENCE of a basis, so a NULL test answers "has this row ever recorded
+    a settle" with no ref id frozen into the schema -- the same reason
+    :class:`AmountSourceEnum` has no ``own`` member.  Whether the row is settled
+    NOW is a different question with a different answer: its STATUS
+    (``row_valuation.settled_figure``), because a revert keeps what moved.
+    """
+
+    DERIVED = "derived"
+    CORRECTED = "corrected"
+    PURCHASES = "purchases"

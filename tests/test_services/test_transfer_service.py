@@ -12,7 +12,7 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -20,9 +20,14 @@ from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import pay_period_write, transfer_service
+from app.services.row_valuation import settled_figure
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
-from tests._test_helpers import create_loan_account
+from tests._test_helpers import (
+    create_loan_account,
+    settlement_basis_id,
+    settlement_columns,
+)
 
 
 @pytest.fixture()
@@ -115,7 +120,7 @@ class TestCreateTransfer:
                 assert s.template_id is None
                 assert s.is_override is False
                 assert s.is_deleted is False
-                assert s.actual_amount is None
+                assert s.settled_amount is None
 
             expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
             income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
@@ -520,22 +525,35 @@ class TestUpdateTransfer:
             for s in shadows_after:
                 assert s.estimated_amount == amounts_before[s.id]
 
-    def test_actual_amount_syncs_shadows(self, app, db, transfer_data):
-        """actual_amount update propagates to both shadows (Transfer has no actual_amount column)."""
+    def test_a_figure_on_an_UNSETTLED_transfer_is_REFUSED(self, app, db, transfer_data):
+        """A figure records a settle, so an unsettled pair cannot be handed one.
+
+        **This asserted the opposite until plan step X-au-c3** -- an
+        ``actual_amount`` handed to ``update_transfer`` was written onto both
+        shadows whatever their status.  A figure now RECORDS what moved, and
+        ``ck_transactions_settled_amount_needs_basis`` keeps one off a row whose
+        money has not; the service refuses the request with a designed 400
+        before any column is reached, rather than letting it reach the database.
+
+        No form can produce it: the correction box renders only on a settled
+        row.  To record a figure, settle the transfer -- the same act that
+        records one.  Stated here rather than quietly rewritten, because it is a
+        BEHAVIOUR change and belongs in the commit message.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
 
-            transfer_service.update_transfer(
-                xfer.id, td["user"].id, actual_amount=Decimal("245.00")
-            )
+            with pytest.raises(ValidationError, match="is not settling"):
+                transfer_service.update_transfer(
+                    xfer.id, td["user"].id, settled_amount=Decimal("245.00")
+                )
 
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows:
-                assert s.actual_amount == Decimal("245.00")
-
-            # Transfer model has no actual_amount column.
-            assert not hasattr(xfer, "actual_amount") or getattr(xfer, "actual_amount", None) is None
+            assert len(shadows) == 2
+            for shadow in shadows:
+                assert shadow.settled_amount is None
+                assert shadow.settled_basis_id is None
 
     def test_is_override_syncs_shadows(self, app, db, transfer_data):
         """is_override update propagates to transfer and both shadows."""
@@ -631,22 +649,57 @@ class TestUpdateTransfer:
             for shadow in shadows:
                 assert shadow.category_id is None
 
-    def test_actual_amount_none_clears_shadows(self, app, db, transfer_data):
-        """Setting actual_amount=None clears it on both shadows."""
+    def test_a_REVERT_is_what_clears_a_settled_transfers_figure(
+        self, app, db, transfer_data,
+    ):
+        """A revert takes back the ASSERTION and leaves what moved on the pair.
+
+        **This asserted the opposite until the developer's 2026-08-17 ruling.**
+        A draft of plan step X-au-c3 released the figure and the basis with the
+        day, under a CHECK that paired them; that welded two facts with
+        different lifetimes into one, so withdrawing "this moved on this day"
+        also destroyed "this is what the bank took".  The full-edit popover
+        TELLS the user to revert in order to edit, so the app's own instruction
+        deleted a figure they had read off a statement.
+
+        Both shadows keep it, which is Transfer Invariant 3 over the record as
+        well as over the amount, and neither is worth it while unsettled --
+        ``row_valuation.settled_figure`` asks the STATUS, so it answers ``None``
+        for a reverted leg whatever the leg still carries.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, actual_amount=Decimal("100")
+                xfer.id, td["user"].id,
+                status_id=done_id, settled_amount=Decimal("100"),
             )
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id,
+            ).all()
+            for shadow in shadows:
+                assert shadow.settled_amount == Decimal("100")
+
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, actual_amount=None
+                xfer.id, td["user"].id, status_id=projected_id,
             )
 
-            shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
-            for s in shadows:
-                assert s.actual_amount is None
+            db.session.expire_all()
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id,
+            ).all()
+            for shadow in shadows:
+                # The ASSERTION is withdrawn ...
+                assert shadow.settled_on is None
+                assert shadow.reconciled_by_id is None
+                # ... and WHAT MOVED is kept, on BOTH legs (Invariant 3).
+                assert shadow.settled_amount == Decimal("100")
+                assert shadow.settled_basis_id is not None
+                # Kept, but not counted: the status is what decides.
+                assert settled_figure(shadow) is None
 
     def test_settle_day_defaults_to_today_when_omitted(
         self, app, db, transfer_data
@@ -1210,7 +1263,15 @@ class TestRestoreTransfer:
                 .filter_by(transfer_id=xfer_id).order_by(Transaction.id).all()
             )
             drifted.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            # The whole record is stripped with the day, which is the LEGACY
+            # drift this test is about: a row that pre-dates the settlement
+            # record entirely.  ``ck_transactions_settle_day_needs_basis`` only
+            # forbids the reverse (a day naming no figure), so the RETAINED
+            # shape -- record kept, day released -- is legal and is covered by
+            # ``test_a_repair_prefers_the_leg_still_in_the_settled_band``.
             drifted.settled_on = None
+            drifted.settled_amount = None
+            drifted.settled_basis_id = None
             db.session.flush()
             assert sibling.settled_on == real_settle
 
@@ -1221,6 +1282,80 @@ class TestRestoreTransfer:
             assert drifted.settled_on == real_settle, (
                 f"the repair invented a settle day: {drifted.settled_on} "
                 f"instead of the sibling's {real_settle}"
+            )
+
+    def test_a_repair_prefers_the_leg_still_in_the_settled_band(
+        self, app, db, transfer_data,
+    ):
+        """A repair reads the LIVE leg's record, not the reverted leg's stale one.
+
+        **The hazard is retention, and it did not exist before plan step
+        X-au-c3.**  The pair's settle DAY needs no such preference, because a
+        revert RELEASES ``settled_on`` -- a drifted leg carries none and the day
+        loop skips it by construction.  The RECORD is the opposite: a revert
+        KEEPS it, so a drifted leg still carries whatever it last settled at.
+
+        ``TransferRows.shadows`` is ``(expense, income)``, so a repair that
+        simply took the first leg holding a record would ALWAYS take the expense
+        leg -- here the reverted one, carrying a stale ``$25.00``.  Writing that
+        onto the income leg would price the pair at a figure one of them had
+        already stopped claiming, and the posted ledger reads that figure
+        (``posting_service._settle_effective``).
+
+        The two legs are given DIFFERENT records on purpose: with equal ones the
+        preference is unobservable, which is why the shape survived a suite
+        whose only drifted leg was stripped bare
+        (``test_a_repair_takes_the_siblings_settle_day`` above).
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            paid_id = ref_cache.status_id(StatusEnum.DONE)
+            transfer_service.update_transfer(
+                xfer_id, td["user"].id, status_id=paid_id,
+                settled_on=date(2026, 3, 20),
+            )
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id)
+                .order_by(Transaction.id)
+                .all()
+            )
+            expense = next(s for s in shadows if s.is_expense)
+            income = next(s for s in shadows if s is not expense)
+
+            # The LIVE leg keeps the pair's real record.
+            income.settled_amount = Decimal("100.00")
+            income.settled_basis_id = settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
+            # The DRIFTED leg is reverted exactly as the seam reverts: the
+            # ASSERTION released, the RECORD retained -- and stale.
+            expense.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            expense.settled_on = None
+            expense.reconciled_by_id = None
+            expense.settled_amount = Decimal("25.00")
+            expense.settled_basis_id = settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
+            db.session.flush()
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+            db.session.flush()
+            db.session.refresh(expense)
+            db.session.refresh(income)
+
+            assert income.settled_amount == Decimal("100.00"), (
+                "the repair overwrote the LIVE leg's record with the reverted "
+                f"leg's stale one: {income.settled_amount}"
+            )
+            assert expense.settled_amount == Decimal("100.00"), (
+                "the repaired leg did not take its sibling's record: "
+                f"{expense.settled_amount}"
             )
 
     def test_a_repair_into_a_projected_status_clears_the_instant(
@@ -1247,7 +1382,13 @@ class TestRestoreTransfer:
                 .filter_by(transfer_id=xfer_id).order_by(Transaction.id).first()
             )
             drifted.status_id = ref_cache.status_id(StatusEnum.DONE)
+            # A dated row carries the whole record (plan step X-au-c3); the
+            # drift under test is the STATUS, so the record is coherent.
             drifted.settled_on = date(2026, 3, 20)
+            for column, value in settlement_columns(
+                date(2026, 3, 20), drifted.estimated_amount,
+            ).items():
+                setattr(drifted, column, value)
             db.session.flush()
 
             transfer_service.restore_transfer(xfer_id, td["user"].id)
@@ -1288,9 +1429,14 @@ class TestRestoreTransfer:
                 .filter_by(transfer_id=xfer_id).first()
             )
             drifted.status_id = ref_cache.status_id(StatusEnum.SETTLED)
-            # The drift under test is the STATUS; the day comes with it so the
-            # fixture expresses exactly one defect rather than two.
+            # The drift under test is the STATUS; the day and the RECORD come
+            # with it so the fixture expresses exactly one defect rather than
+            # three (plan step X-au-c3).
             drifted.settled_on = display_today()
+            for column, value in settlement_columns(
+                display_today(), drifted.estimated_amount,
+            ).items():
+                setattr(drifted, column, value)
             db.session.flush()
 
             with pytest.raises(ValidationError, match="cannot legally"):
@@ -1978,8 +2124,13 @@ class TestTheStatusMirrorIsAtomic:
             )
             income_shadow = next(s for s in shadows if s is not expense_shadow)
             income_shadow.status_id = ref_cache.status_id(StatusEnum.SETTLED)
-            # As above: the drift under test is the STATUS alone.
+            # As above: the drift under test is the STATUS alone, so the day
+            # and the RECORD come with it (plan step X-au-c3).
             income_shadow.settled_on = display_today()
+            for column, value in settlement_columns(
+                display_today(), income_shadow.estimated_amount,
+            ).items():
+                setattr(income_shadow, column, value)
             db.session.flush()
 
             with pytest.raises(ValidationError):
@@ -1993,3 +2144,223 @@ class TestTheStatusMirrorIsAtomic:
                 "move was refused -- the pair is now half-applied"
             )
             assert xfer.status_id == projected_id
+
+
+class TestTheFigureCorrectionDoorOnAPair:
+    """``update_transfer``'s FIGURE correction -- the service tier of the Actual box.
+
+    The transfer twin of ``transaction_service``'s door, and it exists because
+    the two halves of one assertion had different rights: a transfer's settle
+    DAY was correctable in place (ruling **R-ED**) while its FIGURE was refused
+    outright, so restating what the bank moved meant reverting the transfer --
+    and a revert RETAINS the recorded figure, so the re-settle re-booked the old
+    number over the re-planned one (developer ruling, 2026-08-17).
+
+    The route DROPS a figure that arrives with an unsettling status (ruling
+    **R-EG**, graded at the route tier); what these grade is the SERVICE, where
+    a caller stating both facts on purpose is refused instead.
+    """
+
+    @staticmethod
+    def _settled_transfer(td, amount="250.00"):
+        """Return a settled transfer and both its legs."""
+        xfer = transfer_service.create_transfer(
+            transfer_service.TransferSpec(
+                user_id=td["user"].id,
+                from_account_id=td["account"].id,
+                to_account_id=td["savings_account"].id,
+                pay_period_id=td["periods"][0].id,
+                scenario_id=td["scenario"].id,
+                amount=Decimal(amount),
+                status_id=td["projected_status"].id,
+                category_id=td["categories"]["Rent"].id,
+            ),
+        )
+        db.session.flush()
+        transfer_service.update_transfer(
+            xfer.id, td["user"].id,
+            status_id=ref_cache.status_id(StatusEnum.DONE),
+        )
+        db.session.flush()
+        return xfer
+
+    @staticmethod
+    def _legs(xfer_id):
+        return (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=xfer_id, is_deleted=False)
+            .order_by(Transaction.id)
+            .all()
+        )
+
+    def test_a_correction_records_on_both_legs_and_on_neither_parent(
+        self, app, db, transfer_data,
+    ):
+        """Transfer Invariant 3 for the settlement record.
+
+        A transfer's money moves on its two legs, so each records its own and
+        the two are equal -- exactly as their settle day is.  The PARENT carries
+        no such column, which is what ``apply_status_to_all_three`` enforces by
+        passing the record only to the shadows.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = self._settled_transfer(td)
+            day = self._legs(xfer.id)[0].settled_on
+
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id, settled_amount=Decimal("263.11"),
+            )
+            db.session.flush()
+
+            for leg in self._legs(xfer.id):
+                assert settled_figure(leg) == Decimal("263.11")
+                assert leg.settled_basis_id == settlement_basis_id(
+                    SettlementBasisEnum.CORRECTED,
+                )
+                assert leg.settled_on == day, (
+                    "a figure correction moved the pair's day"
+                )
+            # The PARENT went through the seam too, and came out on the same
+            # status as its legs (Transfer Invariant 4).  It deliberately does
+            # NOT assert ``not hasattr(xfer, "settled_amount")``: the seam gates
+            # its whole record block on ``isinstance(row, Transaction)``, so
+            # handing the parent a record is a silent no-op and only a SCHEMA
+            # change could fail such an assertion -- the "``hasattr`` is not a
+            # test" shape plan step X-aa already paid for (neutral review,
+            # 2026-08-18).
+            assert all(
+                leg.status_id == xfer.status_id for leg in self._legs(xfer.id)
+            ), "the correction moved the legs' status away from the parent's"
+
+    def test_a_figure_on_an_UNSETTLED_transfer_is_refused_untouched(
+        self, app, db, transfer_data,
+    ):
+        """An amount states what MOVED, and a Projected pair's money has not.
+
+        Refused BEFORE any field is written, which is why the gate sits at the
+        top of ``_apply_transfer_updates`` beside the loan-move refusal rather
+        than among the field arms: ``is_override`` and ``amount`` are staged two
+        statements later, so a refusal further down would leave a partially
+        edited transfer behind a raised exception.
+
+        Shown to FIRE: the accompanying ``amount`` is asserted UNWRITTEN, so a
+        gate moved below the field loop fails this test rather than passing it.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = transfer_service.create_transfer(
+                transfer_service.TransferSpec(
+                    user_id=td["user"].id,
+                    from_account_id=td["account"].id,
+                    to_account_id=td["savings_account"].id,
+                    pay_period_id=td["periods"][0].id,
+                    scenario_id=td["scenario"].id,
+                    amount=Decimal("250.00"),
+                    status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
+                ),
+            )
+            db.session.flush()
+
+            assert xfer.is_override is False, "fixture precondition"
+
+            with pytest.raises(ValidationError) as exc:
+                transfer_service.update_transfer(
+                    xfer.id, td["user"].id,
+                    is_override=True,
+                    amount=Decimal("999.00"),
+                    settled_amount=Decimal("50.00"),
+                )
+
+            assert "has nothing to record" in str(exc.value)
+            # BOTH pre-settle writes are asserted untouched, and both are
+            # needed: ``is_override`` is applied FIRST and ``amount`` second, so
+            # a gate that slipped BETWEEN them would leave one written and pass
+            # a test that checked only the other.
+            assert xfer.is_override is False, (
+                "the refusal ran AFTER the is_override write"
+            )
+            assert xfer.amount == Decimal("250.00"), (
+                "the refusal ran AFTER the amount write"
+            )
+            for leg in self._legs(xfer.id):
+                assert leg.settled_amount is None
+                assert leg.settled_basis_id is None
+
+    def test_an_echo_leaves_the_derived_basis_standing(
+        self, app, db, transfer_data,
+    ):
+        """Re-posting the prefilled figure must not manufacture a correction.
+
+        The basis is the only stored signal that a human read a number off a
+        statement, and this form submits every input it renders on every save.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = self._settled_transfer(td)
+            derived = settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert all(
+                leg.settled_basis_id == derived for leg in self._legs(xfer.id)
+            )
+
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id, settled_amount=Decimal("250.00"),
+            )
+            db.session.flush()
+
+            for leg in self._legs(xfer.id):
+                assert leg.settled_basis_id == derived
+
+    def test_a_settle_still_owns_a_figure_arriving_with_it(
+        self, app, db, transfer_data,
+    ):
+        """The correction door must not have stolen the SETTLE's figure.
+
+        A figure riding a settling ``status_id`` is the settle's own
+        (``_SETTLE_OWNED_FIELDS``), subject to its echo rule -- and the settle
+        writes the status, the pair's day and the record as ONE act.  If the
+        correction arm had taken it instead, the figure would be written twice
+        and the freeze would be resolved after the status flip, where it always
+        answers ``None``.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = transfer_service.create_transfer(
+                transfer_service.TransferSpec(
+                    user_id=td["user"].id,
+                    from_account_id=td["account"].id,
+                    to_account_id=td["savings_account"].id,
+                    pay_period_id=td["periods"][0].id,
+                    scenario_id=td["scenario"].id,
+                    amount=Decimal("250.00"),
+                    status_id=td["projected_status"].id,
+                    category_id=td["categories"]["Rent"].id,
+                ),
+            )
+            db.session.flush()
+
+            # Driven through the NAMED verb, because its return value is the
+            # one observable that separates the two arms.  Asserting the end
+            # state alone cannot: the echo rule makes a figure taken by the
+            # CORRECTION arm instead converge on a byte-identical row (the
+            # settle would record the plan, the correction would overwrite it),
+            # so an end-state-only test passes either way.  ``settle_transfer``
+            # reports whether the SETTLE booked a human's figure, and that is
+            # False the moment the settle stops owning it (neutral review,
+            # 2026-08-18).
+            corrected = transfer_service.settle_transfer(
+                xfer.id, td["user"].id, submitted=Decimal("241.00"),
+            )
+            db.session.flush()
+
+            assert corrected is True, (
+                "the SETTLE did not book the figure -- the correction arm took "
+                "it, so the freeze was resolved after the status flip"
+            )
+            for leg in self._legs(xfer.id):
+                assert settled_figure(leg) == Decimal("241.00")
+                assert leg.settled_basis_id == settlement_basis_id(
+                    SettlementBasisEnum.CORRECTED,
+                ), "a figure that differs from the plan IS a correction"
+                assert leg.settled_on is not None

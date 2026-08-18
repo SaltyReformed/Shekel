@@ -6,9 +6,14 @@ the in-period check, and the three builders that assemble the whole context an
 envelope's cell or entry list renders from.
 
 **Nothing here writes**, which is why it is the leaf: the write doors
-(:mod:`._doors`) read :func:`compute_actual_from_entries` from here and nothing
-here reads them, so the arrow runs one way and neither half can grow a cycle
-through the other.
+(:mod:`._doors`) read the reductions from here and nothing here reads them, so
+the arrow runs one way and neither half can grow a cycle through the other.
+
+**The sum of ALL of a row's purchases is NOT here**, and it left at plan step
+X-au-c3.  It was ``compute_actual_from_entries``, named for a column that step
+removed; it is now :func:`app.services.row_valuation.purchases_total`, in the
+module both the cash and loan tiers can reach -- because the settlement record's
+own accessor needs it, and a module under both tiers cannot import this one.
 
 Architecture:
   - No Flask imports.
@@ -310,27 +315,6 @@ def pct_complete(total: Decimal, target: Decimal) -> Decimal:
         guard does not fire; ``Decimal("0")`` when ``target <= 0``.
     """
     return percent_complete(total, target)
-
-
-def compute_actual_from_entries(
-    entries: list[TransactionEntry],
-) -> Decimal:
-    """Compute actual_amount for a Paid transaction: sum of ALL entries.
-
-    The actual_amount represents total spending for analytics and
-    reporting.  Both debit and credit entries contribute to the total.
-    The credit portion is already handled by the CC Payback in the
-    next period.
-
-    Pure function -- no database access.
-
-    Args:
-        entries: List of TransactionEntry objects.
-
-    Returns:
-        Decimal -- sum of all entry amounts (Decimal("0") if empty).
-    """
-    return sum((e.amount for e in entries), Decimal("0"))
 
 
 def check_purchase_date_in_period(

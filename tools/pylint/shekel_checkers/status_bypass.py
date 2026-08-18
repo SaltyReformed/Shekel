@@ -35,9 +35,16 @@ from ._common import _called_name_in, _is_string_const, _module_in_allowlist
 # ``_build_shadow`` and ``Transfer(status_id=...)`` in ``create_transfer``);
 # every other leaf reaches the column through the seam. Plan step X-aj2 makes
 # the write door structural and deletes the entry.
+#
+# The SEAM entry narrowed the same way and for the same reason at plan step
+# X-au-c3, when ``status_seam`` became a package: ``_seam`` holds
+# ``apply_status_change``, the one function here that assigns the column, while
+# ``_record`` (the settlement value and its reads) and ``_refusals`` (the
+# invariants as guards) write nothing at all. Naming the package would have
+# re-run the widening this comment already records one entry down.
 _STATUS_ID_ATTR = "status_id"
 _STATUS_SEAM_MODULES = frozenset({
-    "app.services.status_seam",
+    "app.services.status_seam._seam",
     "app.services.transfer_service._create",
 })
 # The two models carrying a ``status_id`` column.  A constructor call to one of

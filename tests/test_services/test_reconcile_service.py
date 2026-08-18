@@ -18,7 +18,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -37,8 +37,9 @@ from app.utils.log_events import (
     EVT_TRANSACTIONS_RECONCILED,
     EVT_TRANSFERS_RECONCILED,
 )
+from tests._test_helpers import settlement_basis_id, settlement_if_settling
 from tests._test_helpers import create_transfer
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import owned_contribution, settled_figure
 
 
 def _make_entry(transaction, user, amount="50.00", description="Kroger",
@@ -280,14 +281,27 @@ class TestTheOutstandingSet:
                 TransactionEntry, entry.id,
             ).settled_on is None
 
-    def test_a_purchase_on_a_settled_parent_matches_nothing(
+    def test_a_purchase_on_a_settled_parent_IS_offered(
         self, app, db, seed_user, seed_periods, seed_entry_template,
     ):
-        """The entry reservation prices only PROJECTED rows.
+        """A CLOSED envelope's purchase still owes the bank's day.
 
-        A purchase on a settled parent is inert -- offering it would ask the
-        user to reconcile something that cannot move a figure, and its parent's
-        confirmed cash effect already counts it in full.
+        **This asserted the exact opposite until the developer's 2026-08-17
+        ruling**, on the premise that "the entry reservation prices only
+        Projected rows, so a purchase on a settled parent is inert".  Ruling
+        **R-FM** had already falsified that one step earlier:
+        ``cash_ledger.settled_cash_leg`` subtracts every POSTED purchase from a
+        settled row's close, so recording the day moves that purchase's cash out
+        of the close's day and onto the bank's.  The total never changes -- the
+        two terms always sum to the row's whole debit -- and the DAY is what a
+        paper statement reconciles against, which is this panel's whole subject.
+
+        Measured on the 2026-08-17 production dump: 28 closed envelopes hold 61
+        debit purchases carrying no posting day, ``$4,360.07`` between them,
+        none of which this panel would ever have offered.
+        ``entry_service._doors._reject_settled_parent`` is the write side of the
+        same ruling -- it admits ``settled_on`` on a settled parent and refuses
+        every cost-bearing field.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -299,16 +313,17 @@ class TestTheOutstandingSet:
             status_seam.apply_status_change(
                 db.session.get(Transaction, txn.id),
                 ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(db.session.get(Transaction, txn.id), ref_cache.status_id(StatusEnum.DONE)),
             )
             db.session.commit()
 
-            assert self._listed(seed_user) == []
-            assert self._reconcile(seed_user, [entry.id]) == 0
+            assert self._listed(seed_user) == [entry.id]
+            assert self._reconcile(seed_user, [entry.id]) == 1
 
             db.session.expire_all()
             assert db.session.get(
                 TransactionEntry, entry.id,
-            ).settled_on is None
+            ).settled_on == _OBSERVED_ON
 
     def test_a_purchase_on_a_soft_deleted_parent_matches_nothing(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1272,7 +1287,7 @@ class TestTheTransactionArm:
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn.id)
             assert reloaded.settled_on is None
-            assert reloaded.actual_amount is None
+            assert reloaded.settled_amount is None
 
     def test_an_envelope_spent_only_BEFORE_the_statement_is_still_offered(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1642,7 +1657,7 @@ class TestTheTransferArm:
 
             db.session.expire_all()
             assert {
-                leg.actual_amount
+                leg.settled_amount
                 for leg in db.session.query(Transaction)
                 .filter_by(transfer_id=transfer.id).all()
             } == {Decimal("74.11")}
@@ -1674,11 +1689,17 @@ class TestTheTransferArm:
             db.session.commit()
 
             db.session.expire_all()
-            assert {
-                leg.actual_amount
-                for leg in db.session.query(Transaction)
+            # Both legs RECORD what the settle booked, on the ``derived`` basis
+            # -- an echoed prefill is not a correction, and since plan step
+            # X-au-c3 "not a correction" is a BASIS rather than a NULL figure.
+            legs = (
+                db.session.query(Transaction)
                 .filter_by(transfer_id=transfer.id).all()
-            } == {None}
+            )
+            assert {leg.settled_basis_id for leg in legs} == {
+                settlement_basis_id(SettlementBasisEnum.DERIVED),
+            }
+            assert {settled_figure(leg) for leg in legs} == {Decimal("75.00")}
 
             events = [
                 record for record in caplog.records
@@ -1720,9 +1741,9 @@ class TestWhatATickBooks:
 
             assert self._settle(seed_user, [txn.id]) == 1
             db.session.expire_all()
-            assert db.session.get(
-                Transaction, txn.id,
-            ).actual_amount == Decimal("100.00")
+            assert settled_figure(
+                db.session.get(Transaction, txn.id),
+            ) == Decimal("100.00")
 
     def test_an_envelope_with_NO_entries_offers_its_estimate_WITH_a_box(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1764,7 +1785,14 @@ class TestWhatATickBooks:
 
             db.session.expire_all()
             reloaded = db.session.get(Transaction, bill.id)
-            assert reloaded.actual_amount is None
+            # The tick RECORDS what it booked and says the basis is ``derived``
+            # -- nobody typed a different figure (plan step X-au-c3).  It
+            # asserted ``actual_amount is None`` until that step, because a NULL
+            # there was the only signal that no human had corrected the row.
+            assert reloaded.settled_basis_id == settlement_basis_id(
+                SettlementBasisEnum.DERIVED,
+            )
+            assert settled_figure(reloaded) == Decimal("180.00")
             assert owned_contribution(reloaded) == Decimal("180.00")
 
     def test_a_bill_ticked_with_a_different_figure_books_it(
@@ -1788,7 +1816,7 @@ class TestWhatATickBooks:
 
             db.session.expire_all()
             reloaded = db.session.get(Transaction, bill.id)
-            assert reloaded.actual_amount == Decimal("245.32")
+            assert reloaded.settled_amount == Decimal("245.32")
             assert reloaded.estimated_amount == Decimal("300.00")
 
     def test_a_correction_on_a_DERIVED_row_is_ignored_not_applied(
@@ -1815,9 +1843,9 @@ class TestWhatATickBooks:
             ) == 1
 
             db.session.expire_all()
-            assert db.session.get(
-                Transaction, txn.id,
-            ).actual_amount == Decimal("40.00")
+            assert settled_figure(
+                db.session.get(Transaction, txn.id),
+            ) == Decimal("40.00")
 
     def test_income_is_offered_as_a_DEPOSIT_and_settles_to_Received(
         self, app, db, seed_user, seed_periods,
@@ -2066,9 +2094,9 @@ class TestTheCorrectionCountIsWhatAHumanTyped:
 
             assert self._corrected_count(caplog) == 0
             db.session.expire_all()
-            assert db.session.get(
-                Transaction, txn.id,
-            ).actual_amount == Decimal("40.00")
+            assert settled_figure(
+                db.session.get(Transaction, txn.id),
+            ) == Decimal("40.00")
 
     def test_a_forged_box_on_a_DERIVED_row_counts_ZERO(
         self, app, db, seed_user, seed_periods, seed_entry_template, caplog,

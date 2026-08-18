@@ -220,7 +220,7 @@ class TestTransactionsMarkDoneActualAmount:
 
             resp = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
-                data={"actual_amount": "-50.00"},
+                data={"settled_amount": "-50.00"},
             )
             assert resp.status_code == 422
 
@@ -249,12 +249,12 @@ class TestTransactionsMarkDoneActualAmount:
 
             resp = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
-                data={"actual_amount": "abc"},
+                data={"settled_amount": "abc"},
             )
             assert resp.status_code == 422
             assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
             body = resp.data.decode()
-            assert "actual_amount" in body
+            assert "settled_amount" in body
             assert "txn-chip" in body, (
                 "the 422 body must be the desktop cell fragment"
             )
@@ -279,7 +279,7 @@ class TestTransactionsMarkDoneActualAmount:
 
             resp = auth_client.post(
                 f"/transactions/{shadow.id}/mark-done",
-                data={"actual_amount": "-25.00"},
+                data={"settled_amount": "-25.00"},
             )
             assert resp.status_code == 422
 
@@ -307,32 +307,43 @@ class TestTransactionsMarkDoneActualAmount:
 
             resp = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
-                data={"actual_amount": "85.50"},
+                data={"settled_amount": "85.50"},
             )
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.actual_amount == Decimal("85.50")
+            assert txn.settled_amount == Decimal("85.50")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
 
-    def test_missing_actual_amount_leaves_column_untouched(
+    def test_missing_actual_amount_leaves_the_record_untouched(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Mark-done without ``actual_amount`` does not nullify a prior value.
+        """Mark-done without ``settled_amount`` does not nullify what was recorded.
 
         Pre-C-27 the route's ``if actual:`` truthy check left the
         column untouched on missing input; the schema's
         ``strip_empty_strings`` plus ``data.get(...)`` preserves
         that contract -- a button-click with no body must not
-        clear the previously recorded actual amount.
+        clear the figure the row already recorded.
+
+        **The prior value now has to BE a record** (plan step X-au-c3): a figure
+        records a settle, so the row is settled with a human's ``$90.00``
+        correction first and the empty re-post is an idempotent re-submit, which
+        the seam reads as "nothing new about what moved" and leaves alone.
         """
         with app.app_context():
             txn = _add_txn(
                 db.session, seed_user, seed_periods_today[0],
                 "Bill", "100.00",
             )
-            txn.actual_amount = Decimal("90.00")
             db.session.commit()
+
+            assert auth_client.post(
+                f"/transactions/{txn.id}/mark-done",
+                data={"settled_amount": "90.00"},
+            ).status_code == 200
+            db.session.refresh(txn)
+            assert txn.settled_amount == Decimal("90.00")
 
             resp = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
@@ -341,8 +352,8 @@ class TestTransactionsMarkDoneActualAmount:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.actual_amount == Decimal("90.00"), (
-                "mark-done with no body must not clear actual_amount"
+            assert txn.settled_amount == Decimal("90.00"), (
+                "mark-done with no body must not clear what the row recorded"
             )
 
 

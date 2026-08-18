@@ -1,4 +1,4 @@
-{% from "_money_macros.html" import money %}
+{% from "_money_macros.html" import money, retained_badge %}
 {# Grid row macros -- the grid's shared display rules, stated once each.
 
    TWO groups, and they share only this file:
@@ -29,6 +29,25 @@
    inline matching loops in grid.html and _mobile_grid.html.  No
    template imports them yet -- Commits 3 and 4 switch each side
    to the macro.  Output stays byte-equivalent for now.
+
+   THE TWO AMOUNT MAPS, and why every row macro takes them as PARAMETERS
+   rather than reading them from context (plan steps X-au-c2b / X-au-c3):
+
+     * `budgets` answers what a row's amount IS -- the resolved figure, which
+       for a derived row is stored in no column at all;
+     * `settled` answers what its money DID -- the figure the row RECORDED as
+       having moved, or `none` when it has not settled.
+
+   They are two maps because they are two questions, and merging them would
+   put "has this settled" back inside a figure, which is the overload
+   `actual_amount` carried and this arc removed.  They are PARAMETERS because
+   every caller imports this file with a bare `{% from %}` -- WITHOUT context
+   -- so a name the calling template happens to hold is not in scope in here:
+   `render_row_cells`'s `{% include ... with context %}` of
+   `grid/_transaction_cell.html` passes the macro's own locals, and the
+   partial indexes both maps.  A route that renders any of these macros must
+   publish both (`grid/page.py`, `companion.py`, `_render_helpers.py`,
+   `transactions/_helpers.py`, `transactions/forms.py`).
 
    Jinja globals consumed (registered in app/jinja_globals.py):
      STATUS_PROJECTED, STATUS_CREDIT.
@@ -107,7 +126,7 @@
 {%- if value > 0 %}+{% endif %}{{ money(value, cents=cents) }}
 {%- endmacro %}
 
-{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, budgets, txn_type_id, account, today, current_period_id=none, band=none) -%}
+{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, budgets, settled, retained, txn_type_id, account, today, current_period_id=none, band=none) -%}
 {#- Desktop grid row.  Emits one <tr> containing the sticky row
     label (<th scope="row">) followed by one <td class="text-end
     cell"> per visible period.  Group-header rows are emitted by
@@ -120,6 +139,9 @@
     `<div id="txn-cell-{{ txn.id }}">` so HTMX cell-swap targets
     keep resolving once Commit 3 switches grid.html to call this
     macro.
+
+    `budgets` and `settled` are the page's two amount maps, threaded as
+    PARAMETERS -- see the file header for why they cannot be context.
 
     `today` is accepted for caller-shape parity with the grid
     route's context; it is intentionally unread here.  The
@@ -172,7 +194,7 @@
 </tr>
 {%- endmacro %}
 
-{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
+{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, settled, retained, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
 {#- Mobile grid cards for one (rk, period) cell.
 
     Looks up the matched transactions for the cell and emits one card
@@ -187,6 +209,9 @@
     matching the v1 _mobile_grid.html pattern where the header
     lives inside the `{% if matched %}` guard.
 
+    `budgets` and `settled` are the page's two amount maps, threaded as
+    PARAMETERS -- see the file header for why they cannot be context.
+
     `period` is read ONLY to key the cell lookup below -- `render_one_card`
     renders one transaction and names no period at all (plan step C2-f2b
     dropped the parameter it had been passed through).  Every other
@@ -195,11 +220,11 @@
 -#}
 {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id), []) %}
 {% for txn in matched %}
-{{ render_one_card(rk, txn, entry_sums, budgets, can_edit, id_prefix, entry_lists, today) }}
+{{ render_one_card(rk, txn, entry_sums, budgets, settled, retained, can_edit, id_prefix, entry_lists, today) }}
 {% endfor %}
 {%- endmacro %}
 
-{% macro render_one_card(rk, txn, entry_sums, budgets, can_edit=True, id_prefix='', entry_lists=none, today=none, error=none) -%}
+{% macro render_one_card(rk, txn, entry_sums, budgets, settled, retained, can_edit=True, id_prefix='', entry_lists=none, today=none, error=none) -%}
 {#- Render exactly one mobile transaction card.
 
     It took a `period` between `rk` and `txn` until plan step C2-f2b and
@@ -210,6 +235,9 @@
     it would have obliged `transactions._render_mobile_card` to keep
     handing an ORM `PayPeriod` into a macro family that no longer speaks
     that type, for a parameter nothing reads.
+
+    `budgets` and `settled` are the page's two amount maps, threaded as
+    PARAMETERS -- see the file header for why they cannot be context.
 
     error (default none): optional message string.  When set, a danger
     banner renders as the wrapper's first child: a rejected mutation
@@ -327,7 +355,13 @@
       stale column with nothing on screen to say so.  Indexing a published map
       is what a template cannot read half of. -#}
   {% set est_display = budgets[txn.id] %}
-  {% set display_amount = txn.actual_amount if txn.actual_amount is not none else est_display %}
+  {# The row's RECORDED figure where its money has moved, else its plan
+     (plan step X-au-c3). #}
+  {% set recorded = settled[txn.id] %}
+  {% set display_amount = recorded if recorded is not none else est_display %}
+  {# What a tick WOULD book, where that is neither the plan nor a recorded
+     figure (plan step X-au-c3).  ``none`` for every row without that gap. #}
+  {% set will_book = retained[txn.id] %}
   {% set es = entry_sums.get(txn.id) if entry_sums is defined else none %}
   {% set show_progress = es is not none and txn.status_id == STATUS_PROJECTED %}
   {% if show_progress %}
@@ -350,7 +384,7 @@
         role="button" tabindex="0"
         aria-expanded="false"
         aria-controls="{{ _aid }}"
-        aria-label="{% if show_progress %}{{ txn.name }}: {{ money(es.total) }} / {{ money(es.budget) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: {{ money(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
+        aria-label="{% if show_progress %}{{ txn.name }}: {{ money(es.total) }} / {{ money(es.budget) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: {{ money(display_amount) }}{% if will_book is not none %} -- marking paid records {{ money(will_book) }}{% endif %}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
       <span class="text-truncate me-2">
         {{ rk.display_name }}
         {% if txn.status %}
@@ -373,6 +407,7 @@
         {% else %}
           {{ money(display_amount, cents=false) }}
         {% endif %}
+        {{ retained_badge(will_book) }}
       </span>
     </li>
     {# Unified expansion -- one Bootstrap collapse holding every
@@ -484,7 +519,7 @@
   </div>
 {%- endmacro %}
 
-{% macro render_row_static(rk, period, matched_by_row_period, budgets) -%}
+{% macro render_row_static(rk, period, matched_by_row_period, budgets, settled, retained) -%}
 {#- Mobile Plan tab static row.  Emits zero or more non-interactive
     `<li class="list-group-item">` rows, one per matched transaction
     for the given (rk, period) cell.  Used exclusively by the read-
@@ -505,6 +540,9 @@
       - No `.mobile-card-expansion` collapse wrapper, no progress
         detail, no envelope entries list, no add-purchase form, no
         Mark Paid / Edit Amount / Open Full action row.
+
+    `budgets` and `settled` are the page's two amount maps, threaded as
+    PARAMETERS -- see the file header for why they cannot be context.
 
     Carry-forward preservation: if `matched_by_row_period[(rk, period)]`
     contains more than one transaction (the carry-forward case where
@@ -534,7 +572,13 @@
       stale column with nothing on screen to say so.  Indexing a published map
       is what a template cannot read half of. -#}
   {% set est_display = budgets[txn.id] %}
-  {% set display_amount = txn.actual_amount if txn.actual_amount is not none else est_display %}
+  {# The row's RECORDED figure where its money has moved, else its plan
+     (plan step X-au-c3). #}
+  {% set recorded = settled[txn.id] %}
+  {% set display_amount = recorded if recorded is not none else est_display %}
+  {# What a tick WOULD book, where that is neither the plan nor a recorded
+     figure (plan step X-au-c3).  ``none`` for every row without that gap. #}
+  {% set will_book = retained[txn.id] %}
   <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3">
     <span class="text-truncate me-2">
       {{ rk.display_name }}
@@ -553,7 +597,7 @@
       {% endif %}
     </span>
     <span class="font-mono fw-semibold text-nowrap">
-      {{ money(display_amount, cents=false) }}
+      {{ money(display_amount, cents=false) }}{{ retained_badge(will_book) }}
     </span>
   </li>
 {% endfor %}

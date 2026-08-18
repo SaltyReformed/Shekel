@@ -36,7 +36,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.routes._form_errors import GENERIC_VALIDATION_FLASH
 from app.services.auth_service import hash_password
-from app.services import account_service, pay_period_service
+from app.services import account_service, pay_period_service, status_seam
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
@@ -47,6 +47,8 @@ from app.services.recurrence import (
 )
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    settlement_columns,
+    settlement_if_settling,
     cadence_payload,
     create_account_of_type,
     create_loan_account,
@@ -2054,8 +2056,14 @@ class TestTemplateHardDelete:
             txn = db.session.query(Transaction).filter_by(
                 template_id=template.id,
             ).first()
-            txn.status_id = paid_status.id
-            txn.actual_amount = txn.estimated_amount
+            # Through the real seam, which writes the whole settlement record
+            # in one act -- the day, the figure and how it is known (plan step
+            # X-au-c3).  A bare status assign leaves a state the record's own
+            # CHECKs refuse.
+            status_seam.apply_status_change(
+                txn, paid_status.id,
+                settlement=settlement_if_settling(txn, paid_status.id),
+            )
             db.session.commit()
 
             resp = auth_client.post(
@@ -2102,8 +2110,14 @@ class TestTemplateHardDelete:
             txn = db.session.query(Transaction).filter_by(
                 template_id=template.id,
             ).first()
-            txn.status_id = paid_status.id
-            txn.actual_amount = txn.estimated_amount
+            # Through the real seam, which writes the whole settlement record
+            # in one act -- the day, the figure and how it is known (plan step
+            # X-au-c3).  A bare status assign leaves a state the record's own
+            # CHECKs refuse.
+            status_seam.apply_status_change(
+                txn, paid_status.id,
+                settlement=settlement_if_settling(txn, paid_status.id),
+            )
 
             # Pre-archive the template.
             template.is_active = False
@@ -2214,8 +2228,13 @@ class TestTemplateHardDelete:
                 transaction_type_id=income_type.id,
                 name="Biweekly Paycheck",
                 estimated_amount=Decimal("2000.00"),
-                actual_amount=Decimal("2000.00"),
                 status_id=received_status.id,
+                # A settled row carries the whole record, resolved through the
+                # one door a bare-built fixture uses (plan step X-au-c3).
+                settled_on=seed_periods_today[0].start_date,
+                **settlement_columns(
+                    seed_periods_today[0].start_date, Decimal("2000.00"),
+                ),
             )
             db.session.add(paycheck)
             db.session.commit()
@@ -2253,7 +2272,7 @@ class TestTemplateHardDelete:
             assert refreshed.is_deleted is False
             # Hand-verified: original actual_amount of $2000.00 is intact
             # (Decimal from string per coding standards).
-            assert refreshed.actual_amount == Decimal("2000.00")
+            assert refreshed.settled_amount == Decimal("2000.00")
 
     def test_hard_delete_template_bulk_delete_skips_settled_rows(
         self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
@@ -2304,8 +2323,13 @@ class TestTemplateHardDelete:
                 transaction_type_id=income_type.id,
                 name="Past Paycheck",
                 estimated_amount=Decimal("1500.00"),
-                actual_amount=Decimal("1500.00"),
                 status_id=received_status.id,
+                # A settled row carries the whole record, resolved through the
+                # one door a bare-built fixture uses (plan step X-au-c3).
+                settled_on=seed_periods_today[0].start_date,
+                **settlement_columns(
+                    seed_periods_today[0].start_date, Decimal("1500.00"),
+                ),
             )
             projected_paycheck = Transaction(
                 template_id=template.id,
@@ -2346,7 +2370,7 @@ class TestTemplateHardDelete:
             assert surviving is not None
             assert surviving.status_id == received_status.id
             assert surviving.is_deleted is False
-            assert surviving.actual_amount == Decimal("1500.00")
+            assert surviving.settled_amount == Decimal("1500.00")
 
             # Non-settled (Projected) row was deleted by the route, as intended.
             assert db.session.get(Transaction, projected_id) is None

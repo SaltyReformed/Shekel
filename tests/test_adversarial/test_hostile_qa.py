@@ -12,7 +12,14 @@ from decimal import Decimal
 
 import pytest
 
-from tests._test_helpers import freeze_today
+from app.enums import SettlementBasisEnum
+from tests._test_helpers import (
+    default_settle_day,
+    freeze_today,
+    settlement_basis_id,
+    settlement_columns,
+    settlement_if_settling,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -40,9 +47,10 @@ from app.services import (
     carry_forward_service,
     credit_workflow,
     pay_period_write,
+    status_seam,
 )
 from app.services import account_service
-from app.services.row_valuation import owned_contribution
+from app.services.row_valuation import owned_contribution, settled_figure
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -50,10 +58,19 @@ from app.services.row_valuation import owned_contribution
 
 def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="Projected",
                       txn_type_name="Expense", amount="100.00", name="Test Item",
-                      category_key="Rent"):
-    """Create and flush a transaction with sensible defaults."""
+                      category_key="Rent", settled_amount=None):
+    """Create and flush a transaction with sensible defaults.
+
+    A row built in a SETTLED status carries the whole record -- the day, the
+    figure and how the figure is known -- through the one door a bare-built
+    fixture uses (``_test_helpers.settlement_columns``, plan step X-au-c3).
+    *settled_amount* is a figure a HUMAN typed, which makes the record
+    ``corrected``; with none the record is ``derived`` at the row's own plan.
+    """
     status = db.session.query(Status).filter_by(name=status_name).one()
     txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
+    planned = Decimal(amount)
+    settled_on = default_settle_day(seed_periods[period_index], status.id)
     txn = Transaction(
         pay_period_id=seed_periods[period_index].id,
         scenario_id=seed_user["scenario"].id,
@@ -62,7 +79,9 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
         name=name,
         category_id=seed_user["categories"][category_key].id,
         transaction_type_id=txn_type.id,
-        estimated_amount=Decimal(amount),
+        estimated_amount=planned,
+        settled_on=settled_on,
+        **settlement_columns(settled_on, planned, submitted=settled_amount),
     )
     db.session.add(txn)
     db.session.flush()
@@ -132,9 +151,9 @@ class TestStateMachineViolations:
             assert txn.status.name == "Projected"
 
     def test_mark_done_negative_actual_amount(self, app, auth_client, seed_user, seed_periods):
-        """POST mark_done with actual_amount=-500 is rejected by DB CHECK constraint.
+        """POST mark_done with settled_amount=-500 is rejected by DB CHECK constraint.
 
-        The CHECK constraint on budget.transactions.actual_amount
+        The CHECK constraint on budget.transactions.settled_amount
         prevents negative values at the database level (L-01).
         """
         with app.app_context():
@@ -143,7 +162,7 @@ class TestStateMachineViolations:
 
             resp = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
-                data={"actual_amount": "-500.00"},
+                data={"settled_amount": "-500.00"},
             )
             assert resp.status_code == 422
 
@@ -154,8 +173,10 @@ class TestStateMachineViolations:
         the actual_amount could be overwritten if a new value is posted.
         """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods, status_name="Paid")
-            txn.actual_amount = Decimal("75.00")
+            txn = _make_transaction(
+                seed_user, seed_periods, status_name="Paid",
+                settled_amount=Decimal("75.00"),
+            )
             db.session.commit()
 
             # Call mark_done again without an actual_amount -- should keep the old one.
@@ -165,7 +186,7 @@ class TestStateMachineViolations:
             db.session.refresh(txn)
             # Current behavior: status is re-set, actual_amount preserved
             # because the form didn't send one.
-            assert txn.actual_amount == Decimal("75.00")
+            assert txn.settled_amount == Decimal("75.00")
 
     def test_projected_to_cancelled_to_projected_double_reversal(
         self, app, auth_client, seed_user, seed_periods,
@@ -220,8 +241,10 @@ class TestStateMachineViolations:
         rejected request.
         """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods, status_name="Paid")
-            txn.actual_amount = Decimal("85.00")
+            txn = _make_transaction(
+                seed_user, seed_periods, status_name="Paid",
+                settled_amount=Decimal("85.00"),
+            )
             db.session.commit()
 
             # Verify initial effective_amount uses actual_amount.
@@ -234,29 +257,46 @@ class TestStateMachineViolations:
             db.session.refresh(txn)
             # Row stays Paid; actual_amount preserved.
             assert txn.status.name == "Paid"
-            assert txn.actual_amount == Decimal("85.00")
+            assert txn.settled_amount == Decimal("85.00")
             assert owned_contribution(txn) == Decimal("85.00")
 
     def test_received_to_projected_reversion(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Received → projected reversion on an income transaction.
+        """Received -> projected reversion on an income transaction.
 
-        Income marked received (with actual_amount) is reverted to
-        projected via PATCH. Financially dangerous: income that was
-        counted as received re-appears at estimated_amount, which may
-        differ from the actual_amount that was settled.
+        Income that RECORDED ``$2,800.00`` is reverted to projected via PATCH.
+
+        **The revert releases the ASSERTION and KEEPS what moved** (plan step
+        X-au-c3, developer 2026-08-17).  ``settled_on`` and the clearing link
+        say "this money moved on this day and that statement showed it", and a
+        revert withdraws exactly that; ``settled_amount`` and
+        ``settled_basis_id`` say what the bank took, which the revert does not
+        un-know.  The row is worth its PLAN again because the STATUS decides
+        which figure governs (``row_valuation.settled_figure``), not because the
+        record was destroyed.
+
+        That is still the danger this adversarial case names, and it is
+        unchanged in dollars: the reverted row re-projects at ``$3,000.00``,
+        ``$200.00`` above what was really received.  What changed is that
+        settling it again RESTORES the ``$2,800.00`` instead of re-deriving over
+        it, so the round trip the full-edit popover instructs ("set Status to
+        Projected to edit the amounts") no longer destroys a figure the user read
+        off their statement.  A draft of this step released all three columns
+        together under a CHECK pairing the day with the basis; that welded two
+        facts with different lifetimes into one, which is finding **N-241**'s
+        shape rebuilt one level up.
         """
         with app.app_context():
             txn = _make_transaction(
                 seed_user, seed_periods, txn_type_name="Income",
                 name="Paycheck", category_key="Salary", amount="3000.00",
                 status_name="Received",
+                settled_amount=Decimal("2800.00"),
             )
-            txn.actual_amount = Decimal("2800.00")
             db.session.commit()
 
-            # Verify initial effective_amount uses actual_amount.
+            # The row is worth what it RECORDED while it is settled.
             assert owned_contribution(txn) == Decimal("2800.00")
 
             # PATCH back to projected.
@@ -272,11 +312,17 @@ class TestStateMachineViolations:
 
             db.session.refresh(txn)
             assert txn.status.name == "Projected"
-            # After 5A.1: effective_amount prefers actual_amount for all
-            # active statuses, so even as Projected it returns 2800.
-            assert owned_contribution(txn) == Decimal("2800.00")
-            # actual_amount is NOT cleared by the PATCH.
-            assert txn.actual_amount == Decimal("2800.00")
+            # The ASSERTION went with the revert: no day, no clearing link.
+            assert txn.settled_on is None
+            assert txn.reconciled_by_id is None
+            # WHAT MOVED stayed, and it is still flagged as the human's figure.
+            assert txn.settled_amount == Decimal("2800.00")
+            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.CORRECTED)
+            # The row is nonetheless worth its PLAN again -- $200.00 above what
+            # was really received, which is the danger this case names. The
+            # STATUS is what decides that, not the absence of the record.
+            assert settled_figure(txn) is None
+            assert owned_contribution(txn) == Decimal("3000.00")
 
     def test_credit_to_projected_reversion_deletes_payback(
         self, app, auth_client, seed_user, seed_periods,
@@ -445,7 +491,7 @@ class TestStateMachineViolations:
 
             resp = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
-                data={"actual_amount": "95.00"},
+                data={"settled_amount": "95.00"},
             )
             assert resp.status_code == 400
 
@@ -453,7 +499,7 @@ class TestStateMachineViolations:
             assert txn.status.name == "Cancelled"
             # No actual_amount recorded -- the rejected request did
             # not commit any partial state.
-            assert txn.actual_amount is None
+            assert txn.settled_amount is None
             assert owned_contribution(txn) == Decimal("0")
 
     def test_mark_credit_on_done_transaction(
@@ -465,8 +511,10 @@ class TestStateMachineViolations:
         Attempting to mark a done transaction as credit returns 400.
         """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods, status_name="Paid")
-            txn.actual_amount = Decimal("100.00")
+            txn = _make_transaction(
+                seed_user, seed_periods, status_name="Paid",
+                settled_amount=Decimal("100.00"),
+            )
             db.session.commit()
 
             resp = auth_client.post(f"/transactions/{txn.id}/mark-credit")
@@ -638,9 +686,14 @@ class TestCreditWorkflowEdgeCases:
             payback_id = payback.id
 
             # Simulate: payback was paid.
+            # Through the real seam, which writes the whole settlement record
+            # in one act -- a bare status assign leaves the row settled with no
+            # day and no figure, which the record's own CHECKs refuse.
             done_status = db.session.query(Status).filter_by(name="Paid").one()
-            payback.status_id = done_status.id
-            payback.actual_amount = Decimal("100.00")
+            status_seam.apply_status_change(
+                payback, done_status.id,
+                settlement=settlement_if_settling(payback, done_status.id),
+            )
             db.session.commit()
 
             # Unmark credit -- payback is deleted even though it was done.

@@ -335,12 +335,29 @@ def _rows_holding_owner_records(existing) -> set[int]:
     codebase is a rule that will stop holding without anyone noticing.  One
     condition makes it structural.
 
+    **The SETTLEMENT arm reads the record rather than a column that used to
+    proxy for it** (plan step X-au-c3).  It was ``actual_amount is not None``,
+    which meant "a human typed a figure here" only because that column carried
+    both the settled figure and the fact that a human had supplied it.  A row
+    that has settled records what moved, whoever said so, and that is the fact
+    worth holding a row for -- so the predicate reads ``settled_basis_id``.
+
+    **Unlike the statement-link arm above it this one is REACHABLE, and the same
+    step is what made it so.**  A revert releases the ASSERTION and keeps WHAT
+    MOVED (``status_seam.apply_status_change``), so a row the owner settled and
+    then set back to Projected is mutable to this sweep AND still carries a
+    ``settled_basis_id``.  That state is the arm's real subject rather than a
+    theoretical one, and holding it is the point: the retained figure is a
+    number the owner read off a bank statement, and letting a template edit
+    retire the row out from under it would destroy exactly what retention exists
+    to keep.  The row is held back as a CONFLICT for the owner to resolve.
+
     Args:
         existing: The rows this pass is considering.
 
     Returns:
-        The subset of their ids that hold purchases, a note, a hand-entered
-        actual, or a statement link of their own.
+        The subset of their ids that hold purchases, a note, a settlement
+        record, or a statement link of their own.
     """
     ids = [row.id for row in existing]
     if not ids:
@@ -356,7 +373,7 @@ def _rows_holding_owner_records(existing) -> set[int]:
         # whitespace-only note is not a record worth blocking an edit over.
         if row.notes is not None and row.notes.strip():
             holding.add(row.id)
-        elif row.actual_amount is not None:
+        elif row.settled_basis_id is not None:
             holding.add(row.id)
         elif row.reconciled_by_id is not None:
             holding.add(row.id)

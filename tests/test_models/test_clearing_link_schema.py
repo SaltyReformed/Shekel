@@ -53,6 +53,7 @@ from app.models.ref import TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import entry_service, status_seam
+from tests._test_helpers import settlement_columns, settlement_if_settling
 from tests._test_helpers import load_migration_module
 
 _MIGRATION = load_migration_module("d5b8e2c74a19_clearing_is_a_recorded_fact.py")
@@ -129,6 +130,16 @@ def _make_transaction(data, **overrides) -> Transaction:
         "estimated_amount": Decimal("300.00"),
     }
     fields.update(overrides)
+    # A row carrying a settle DAY carries the whole settlement RECORD, because
+    # ``ck_transactions_settle_day_needs_basis`` requires it (plan step
+    # X-au-c3).  The implication runs one way only: the record may outlive the
+    # day, which is what a revert leaves behind.  Resolved here rather than in :func:`_cleared_by`
+    # because that helper also feeds :func:`_make_entry`, and an ENTRY has no
+    # settlement record -- its ``settled_on`` is the day its own purchase
+    # posted.
+    fields.update(
+        settlement_columns(fields.get("settled_on"), fields["estimated_amount"])
+    )
     return Transaction(**fields)
 
 
@@ -451,6 +462,7 @@ class TestALinkCannotOutliveItsSettleDay:
 
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.PROJECTED)),
             )
             db.session.flush()
 
@@ -594,6 +606,7 @@ class TestALinkCannotOutliveItsSettleDay:
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
                 settled_on=opening.observed_on + timedelta(days=2),
+                settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             db.session.flush()
 

@@ -220,6 +220,19 @@ _REF_TABLE_SEEDS = (
     # -- the same dual-seed pattern the posting and recurrence refs use.  Names
     # match the enum ``.value`` strings in ``app/enums.py`` exactly.
     ("AmountSource", ["template", "parent_transfer"]),
+    # The settlement record's discriminator (balance arc, plan step X-au-c3).
+    # HOW a settled row's recorded figure is known: ``derived`` is the app's own
+    # resolution at the moment of the settle, ``corrected`` is a figure a human
+    # read off a statement, ``purchases`` is the sum of the row's own entries and
+    # is the one basis storing no figure at all.  A row that has NOT settled
+    # carries ``settled_basis_id IS NULL``, so there is deliberately no
+    # ``not_settled`` row here -- see :class:`app.enums.SettlementBasisEnum` for
+    # why that state is an absence.  The migration ``e4b8a71c0f36`` inline-seeds
+    # the identical rows so a freshly upgraded DB resolves the enum before this
+    # idempotent reseed runs -- the same dual-seed pattern the amount-model,
+    # posting and recurrence refs use.  Names match the enum ``.value`` strings
+    # in ``app/enums.py`` exactly.
+    ("SettlementBasis", ["derived", "corrected", "purchases"]),
 )
 # pylint: enable=line-too-long
 # fmt: on

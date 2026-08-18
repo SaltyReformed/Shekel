@@ -48,6 +48,7 @@ from tests._test_helpers import (
     create_loan_account,
     create_savings_account,
     default_settle_day,
+    settlement_columns,
     make_investment_account,
     make_salary_profile,
     set_default_grid_account,
@@ -80,9 +81,13 @@ def _add_expense(
         estimated_amount=Decimal(str(amount)),
         due_date=due_date,
         is_deleted=is_deleted,
-        # A settled row must carry the day its money moved; the rule for a
-        # BARE-built fixture row is shared rather than restated (X-f1).
+        # A settled row must carry the day its money moved AND the record of
+        # what moved -- one fact in three columns (plan steps X-f1 / X-au-c3),
+        # both resolved by the shared helpers rather than restated.
         settled_on=default_settle_day(period, status_id),
+        **settlement_columns(
+            default_settle_day(period, status_id), Decimal(str(amount)),
+        ),
     )
     db_session.add(txn)
     db_session.flush()

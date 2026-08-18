@@ -40,6 +40,7 @@ and the Checking totals below are ``1000.00 + effect``.  All money is
 # test bodies bind fixtures (``auth_client``, ``seed_user``, ...) by name.
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -329,7 +330,7 @@ class TestMarkDoneRoutePostsTransaction:
 
             resp = auth_client.post(
                 f"/transactions/{txn_id}/mark-done",
-                data={"actual_amount": "75.00"},
+                data={"settled_amount": "75.00"},
             )
             assert resp.status_code == 200
 
@@ -561,14 +562,42 @@ class TestEnvelopePostingLifecycle:
             )] == Decimal("60.00")
             _assert_reconciles(seed_user["scenario"].id, checking)
 
-    def test_entry_create_on_settled_envelope_resyncs(
+    # The three cases below graded ``_resync_after_entry_change``'s ledger
+    # reconcile on a SETTLED envelope until plan step X-au-c3.  That row shape
+    # is unreachable now -- a settled row's purchases are closed on all three
+    # doors -- so they grade the same reconcile on the shape it is actually
+    # FOR: a PROJECTED envelope whose purchases carry a recorded bank posting
+    # day, which is ruling **R-FM**'s own case and the reason the reconcile is
+    # ungated.  Every end figure is the one the settled ordering produced.
+    #
+    # The posting day is the period start PLUS A DAY throughout, and that
+    # matters: a leg dated ON the opening assertion's day is ABSORBED by its
+    # correction (which is what ``test_recording_a_posting_day_moves_the_leg_
+    # onto_its_own_day`` below is about), so a day inside the assertion would
+    # make every total read $1,000.00 and grade nothing.
+
+    @staticmethod
+    def _posted_purchase(seed_user, txn, amount, *, is_credit=False):
+        """Attach a purchase the bank has TAKEN, and return it.
+
+        Two acts because the entry doors are two: the purchase is recorded, then
+        the day it posted is.  Both fire the reconcile under test.
+        """
+        entry = _add_purchase(seed_user, txn, amount, is_credit=is_credit)
+        db.session.flush()
+        return entry_service.update_entry(
+            entry.id, seed_user["user"].id,
+            settled_on=txn.pay_period.start_date + timedelta(days=1),
+        )
+
+    def test_entry_create_on_a_posted_envelope_resyncs(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Adding a debit entry to a Paid envelope grows its posted outflow.
+        """Adding a purchase the bank took grows the envelope's posted outflow.
 
-        Arithmetic: the envelope settles with one $40 debit (posted -40 / +40).
-        A late $30 debit purchase recomputes ``actual_amount`` to 70, and the
-        entry hook reconciles the +30 delta -> net cash -70.00 / Groceries +70.00.
+        Arithmetic: one $40 debit purchase, posted the day after the opening
+        assertion, books -40 / +40.  A late $30 posted purchase reconciles the
+        +30 delta -> net cash -70.00 / Groceries +70.00, i.e. checking 930.00.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -576,21 +605,24 @@ class TestEnvelopePostingLifecycle:
             txn = create_envelope_txn(
                 seed_user, db.session, seed_periods[0], "Food", Decimal("100.00"),
             )
-            _add_purchase(seed_user, txn, "40.00", is_credit=False)
+            self._posted_purchase(seed_user, txn, "40.00")
             db.session.commit()
             txn_id = txn.id
-            auth_client.post(f"/transactions/{txn_id}/mark-done")
             groceries_ledger = _category_ledger_id(
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             )
             assert _ledger_total(groceries_ledger) == Decimal("40.00")
 
-            entry_service.create_entry(
+            late = entry_service.create_entry(
                 txn_id, user_id,
                 EntryDetails(
                     amount=Decimal("30.00"), description="late",
                     purchased_on=seed_periods[0].start_date, is_credit=False,
                 ),
+            )
+            entry_service.update_entry(
+                late.id, user_id,
+                settled_on=seed_periods[0].start_date + timedelta(days=1),
             )
             db.session.commit()
 
@@ -600,15 +632,15 @@ class TestEnvelopePostingLifecycle:
             ) == Decimal("930.00")
             _assert_reconciles(seed_user["scenario"].id, checking)
 
-    def test_entry_credit_flip_on_settled_envelope_resyncs(
+    def test_entry_credit_flip_on_a_posted_envelope_resyncs(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Flipping a Paid envelope's only entry to credit reverses its outflow.
+        """Flipping a posted purchase to credit reverses its checking outflow.
 
-        Arithmetic: settles with one $40 debit (posted -40 / +40).  Flipping
-        that entry to credit leaves ``actual_amount`` = sum(all) = 40 but makes
-        credit_sum = 40, so the effect drops to 40 - 40 = 0.  The update hook
-        reconciles the ledger back to zero (the $40 now rides its CC Payback).
+        Arithmetic: one $40 posted debit books -40 / +40.  Flipping it to credit
+        says the card paid, not the account, so its checking leg goes and the
+        ledger returns to the $1,000.00 opening (the $40 now rides its CC
+        Payback).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -616,11 +648,9 @@ class TestEnvelopePostingLifecycle:
             txn = create_envelope_txn(
                 seed_user, db.session, seed_periods[0], "Food", Decimal("100.00"),
             )
-            entry = _add_purchase(seed_user, txn, "40.00", is_credit=False)
+            entry = self._posted_purchase(seed_user, txn, "40.00")
             db.session.commit()
             entry_id = entry.id
-            txn_id = txn.id
-            auth_client.post(f"/transactions/{txn_id}/mark-done")
             groceries_ledger = _category_ledger_id(
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             )
@@ -635,14 +665,14 @@ class TestEnvelopePostingLifecycle:
             ) == Decimal("1000.00")
             _assert_reconciles(seed_user["scenario"].id, checking)
 
-    def test_entry_delete_on_settled_envelope_resyncs(
+    def test_entry_delete_on_a_posted_envelope_resyncs(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Deleting one of a Paid envelope's entries shrinks its posted outflow.
+        """Deleting a posted purchase shrinks the envelope's posted outflow.
 
-        Arithmetic: settles with two debits 40 + 30 (posted -70 / +70).
-        Deleting the $30 entry leaves ``actual_amount`` = 40, and the delete
-        hook reconciles the -30 delta -> net cash -40.00 / Groceries +40.00.
+        Arithmetic: two posted debits 40 + 30 book -70 / +70.  Deleting the $30
+        reconciles the -30 delta -> net cash -40.00 / Groceries +40.00, i.e.
+        checking 960.00.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -650,12 +680,10 @@ class TestEnvelopePostingLifecycle:
             txn = create_envelope_txn(
                 seed_user, db.session, seed_periods[0], "Food", Decimal("100.00"),
             )
-            _add_purchase(seed_user, txn, "40.00", is_credit=False)
-            doomed = _add_purchase(seed_user, txn, "30.00", is_credit=False)
+            self._posted_purchase(seed_user, txn, "40.00")
+            doomed = self._posted_purchase(seed_user, txn, "30.00")
             db.session.commit()
             doomed_id = doomed.id
-            txn_id = txn.id
-            auth_client.post(f"/transactions/{txn_id}/mark-done")
             groceries_ledger = _category_ledger_id(
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             )
@@ -706,11 +734,18 @@ class TestEnvelopePostingLifecycle:
         a test checking only the total would pass against a build that recorded
         the day and posted nothing.
 
-        The parent is SETTLED, so ``record_settled_days`` is deliberately not
-        the door used here -- its outstanding scope admits only projected
-        parents (``reconcile_service._purchases._outstanding_scope``), which
-        ``test_reconcile_service.py`` pins directly.  ``update_entry`` is the door a
-        user has for a purchase on an already-settled envelope.
+        **The ORDER of the two acts changed at plan step X-au-c3** and the end
+        state did not.  The parent used to be SETTLED when the day was
+        recorded -- ``update_entry`` was described here as *the door a user has
+        for a purchase on an already-settled envelope*.  That door is closed: a
+        settled row's purchases are closed too, because carry-forward has
+        already moved its leftover into a later period and re-pricing it from a
+        partial record hands spent money back to the projection.  So the day is
+        recorded while the row is still PROJECTED -- which is the order the
+        reconcile panel produces anyway, its purchase arm admitting only
+        projected parents (``reconcile_service._purchases._outstanding_scope``)
+        -- and the close follows.  Every figure below is the one the old
+        ordering produced.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -723,20 +758,24 @@ class TestEnvelopePostingLifecycle:
             entry_id = entry.id
             purchased_on = entry.purchased_on
             txn_id = txn.id
-            auth_client.post(f"/transactions/{txn_id}/mark-done")
-            assert len(_entries_for_transaction(txn_id)) == 1
 
             updated = entry_service.update_entry(
                 entry_id, user_id, settled_on=purchased_on,
             )
             db.session.commit()
+            auth_client.post(f"/transactions/{txn_id}/mark-done")
+            db.session.commit()
 
             # The fact really was recorded -- otherwise "the total did not move"
             # would be true of a no-op and prove nothing.
             assert updated.settled_on == purchased_on
-            # The envelope's own leg reversed, and the purchase took it over on
-            # the day the bank was seen to take the money.
-            assert len(_entries_for_transaction(txn_id)) == 2
+            # The envelope's own leg nets to NOTHING and the purchase carries
+            # the money on the day the bank was seen to take it.  The old
+            # ordering reached the same place in two journal entries -- a close
+            # that posted the $40 and a re-date that reversed it -- where
+            # recording the day FIRST means the close has nothing left to post
+            # and emits none.  Same economics, one fewer entry.
+            assert len(_entries_for_transaction(txn_id)) == 0
             purchase_entries = _entries_for_purchase(entry_id)
             assert len(purchase_entries) == 1
             assert purchase_entries[0].entry_date == purchased_on

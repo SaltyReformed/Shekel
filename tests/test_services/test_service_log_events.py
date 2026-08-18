@@ -971,7 +971,7 @@ class TestTransactionServiceLogging:
         assert record is not None
         assert record.user_id == seed_user["user"].id
         assert record.transaction_id == _envelope_transaction.id
-        assert record.actual_amount == "33.00"
+        assert record.settled_amount == "33.00"
         # The recorded settle DAY, replacing the ``explicit_paid_at`` boolean
         # the event carried while the helper took a (dead) ``paid_at`` knob --
         # a flag about the CALL is not a fact about the money, and plan step

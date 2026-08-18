@@ -47,6 +47,19 @@
 #}
 {% set entry_list_host_id = entry_list_host_id | default("entry-list-" ~ txn.id) %}
 {% set entry_list_host = entry_list_host | default("") %}
+{# A CLOSED row's purchases are closed to RE-PRICING, and this flag is what
+   stops the controls below offering acts the service refuses (plan step
+   X-au-c3).  ``entry_service._doors._reject_settled_parent`` is field-aware: on
+   a settled parent it refuses every cost-bearing field -- amount, description,
+   purchase date, credit flag -- and every add and delete, and it ADMITS
+   ``settled_on``, the day the bank took the purchase.  So the add form and the
+   delete button are withdrawn here and the edit form narrows to that one field,
+   rather than rendering three controls that all 400.
+
+   Read off ``status.is_settled``, the semantic boolean column, never a status
+   NAME (the project-wide ref rule; ``_transaction_full_edit.html`` asks the
+   same question the same way for its settle-day input). #}
+{% set purchases_closed = txn.status and txn.status.is_settled %}
 <div id="{{ entry_list_host_id }}">
   {% if error is defined and error %}
   {# Designed rejection banner: the route re-rendered this list with
@@ -79,6 +92,7 @@
          entry.version_id and short-circuits with 409 when the
          form is stale (commit C-18). #}
       <input type="hidden" name="version_id" value="{{ entry.version_id }}">
+      {% if not purchases_closed %}
       <div class="d-flex gap-1 align-items-end mb-1">
         <input type="number" step="0.01" inputmode="decimal" name="amount" min="0.01"
                value="{{ entry.amount }}"
@@ -87,7 +101,19 @@
                value="{{ entry.description }}"
                class="form-control form-control-sm">
       </div>
+      {% else %}
+      {# The row has closed, so what this purchase COST is settled.  Shown
+         read-only so the user can see which purchase they are dating; the
+         fields are absent rather than ``disabled`` because a disabled input is
+         not submitted either way and an absent one cannot be re-enabled from
+         the console into a request the service would refuse. #}
+      <div class="d-flex justify-content-between align-items-center mb-1 small">
+        <span class="text-truncate me-2">{{ entry.description }}</span>
+        <span class="font-mono">{{ money(entry.amount) }}</span>
+      </div>
+      {% endif %}
       <div class="d-flex gap-1 align-items-center flex-wrap">
+        {% if not purchases_closed %}
         {# The PURCHASE date.  ``max`` is the user's today: an entry records a
            purchase that has already happened, so a forward date is refused by
            entry_service (ruling R-M).  The picker bound is a courtesy that
@@ -101,22 +127,35 @@
                value="{{ entry.purchased_on.isoformat() }}"
                max="{{ today }}"
                class="form-control form-control-sm mw-px-130">
+        {% endif %}
         {# The POSTING date -- the day the bank actually took the money
            (ruling R-DH (e)).  Deliberately NOT on the add form: at the moment
            a purchase is entered there is nothing to have observed, and a
-           value typed then would be a forecast in a fact column.  It carries
-           no ``max``: "I bought this and my bank has not taken it yet" is a
-           true statement, and it is the one ruling R-M could not express while
-           one column held both facts.  Empty clears it, putting the purchase
-           back among the outstanding ones. #}
+           value typed then would be a forecast in a fact column.  Empty clears
+           it, putting the purchase back among the outstanding ones.
+
+           ``max`` is the user's today, and this input CARRIED NO BOUND until
+           now.  The original rationale -- "I bought this and my bank has not
+           taken it yet is a true statement" -- was INVERTED by ruling **R-FM**
+           at plan step X-f3b: a recorded posting day is the moment the money
+           leaves the book, so a forward one releases the purchase's
+           reservation today and books its cash later, taking already-spent
+           money out of the projection.  ``entry_service._doors.
+           _reject_future_posting_day`` has refused it since, so the picker was
+           offering a value its own server answers 400 to.  Browser first,
+           service as the backstop -- the layering ``accounts/form.html`` uses
+           for an anchor's ``observed_on``.  The unposted state is still
+           expressible: leave it EMPTY, which is what it has always meant. #}
         <label class="form-label small text-muted mb-0 me-1"
                for="settled-{{ entry_list_host_id }}-{{ entry.id }}">Posted</label>
         <input type="date" name="settled_on"
                id="settled-{{ entry_list_host_id }}-{{ entry.id }}"
                value="{{ entry.settled_on.isoformat() if entry.settled_on else '' }}"
                min="{{ entry.purchased_on.isoformat() }}"
+               max="{{ today }}"
                class="form-control form-control-sm mw-px-130"
                title="The day your bank took the money.  Leave blank until you see it on a statement.">
+        {% if not purchases_closed %}
         <div class="form-check form-check-inline mb-0">
           <input type="checkbox" name="is_credit" value="true"
                  class="form-check-input" id="edit-cc-{{ entry_list_host_id }}-{{ entry.id }}"
@@ -124,6 +163,7 @@
           <input type="hidden" name="is_credit" value="false">
           <label class="form-check-label small" for="edit-cc-{{ entry_list_host_id }}-{{ entry.id }}">CC</label>
         </div>
+        {% endif %}
         <button type="submit" class="btn btn-sm btn-primary py-0 px-1">
           <i class="bi bi-check"></i>
         </button>
@@ -178,13 +218,19 @@
         </span>
       </span>
       {% endif %}
+      {# On a CLOSED row the pencil still opens the edit form -- narrowed above
+         to the posting date alone -- because dating a purchase against a
+         statement is exactly what a user does after the envelope closes.  The
+         delete is withdrawn: removing a purchase would rewrite what the row
+         cost after its money moved, which the service refuses. #}
       <button class="btn btn-link btn-sm p-0 text-primary"
               hx-get="{{ url_for('entries.list_entries', txn_id=txn.id, editing=entry.id, host=entry_list_host) }}"
               hx-target="#{{ entry_list_host_id }}"
               hx-swap="outerHTML"
-              aria-label="Edit entry">
-        <i class="bi bi-pencil"></i>
+              aria-label="{% if purchases_closed %}Record the day the bank took this purchase{% else %}Edit entry{% endif %}">
+        <i class="bi bi-{% if purchases_closed %}calendar-check{% else %}pencil{% endif %}"></i>
       </button>
+      {% if not purchases_closed %}
       <button class="btn btn-link btn-sm p-0 text-danger"
               hx-delete="{{ url_for('entries.delete_entry', txn_id=txn.id, entry_id=entry.id, host=entry_list_host) }}"
               hx-target="#{{ entry_list_host_id }}"
@@ -193,6 +239,7 @@
               aria-label="Delete entry">
         <i class="bi bi-x-circle"></i>
       </button>
+      {% endif %}
     </div>
   </div>
   {% endif %}
@@ -209,7 +256,18 @@
     </span>
   </div>
 
-  {# Add entry form #}
+  {# Add entry form -- withdrawn once the row has CLOSED.  A new purchase grows
+     what the row cost after its money moved, and a carry-forward has already
+     rolled the envelope's leftover into a later period, so the same dollars
+     would be counted twice; ``_reject_settled_parent`` refuses it.  The notice
+     names the way through, which is the act that refusal's message names. #}
+  {% if purchases_closed %}
+  <div class="txn-card-meta mt-2">
+    <i class="bi bi-lock-fill"></i> This row has settled, so its purchases are
+    final.  You can still record the day your bank took one.  To add, remove or
+    re-price a purchase, set <strong>Status</strong> to Projected first.
+  </div>
+  {% else %}
   <form class="mt-2"
         hx-post="{{ url_for('entries.create_entry', txn_id=txn.id, host=entry_list_host) }}"
         hx-target="#{{ entry_list_host_id }}"
@@ -242,4 +300,5 @@
       </button>
     </div>
   </form>
+  {% endif %}
 </div>

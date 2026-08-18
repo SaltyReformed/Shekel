@@ -15,6 +15,7 @@ from app.models.user import User
 from app.enums import StatusEnum
 from app.services.auth_service import hash_password
 from app.services import account_service
+from tests._test_helpers import settlement_columns
 from tests._test_helpers import add_txn, make_every_period_rule, open_calendar_hole
 from scripts.integrity_check import (
     CheckResult,
@@ -548,30 +549,36 @@ class TestDataConsistency:
             f"Critical failures: {[r.check_id for r in critical_results if not r.passed]}"
         )
 
-    def test_settled_without_actual_is_not_flagged(
+    def test_settled_without_a_correction_is_not_flagged(
         self, app, db, seed_user, seed_periods
     ):
-        """A Paid transaction with no actual_amount passes every check.
+        """A Paid transaction nobody corrected passes every check.
 
-        Pins the DC-01 removal: marking a row paid without typing an
-        actual is the designed workflow (``MarkDoneSchema`` leaves the
-        column untouched; ``effective_amount`` falls back to the
-        estimate), so no consistency check may flag it.  Before the
-        removal this exact row failed DC-01 as critical, turning every
-        backup verification red on routine data.
+        Pins the DC-01 removal: marking a row paid without typing a figure is
+        the designed workflow, so no consistency check may flag it.  Before the
+        removal this exact row failed DC-01 as critical, turning every backup
+        verification red on routine data.
+
+        **What such a row looks like changed at plan step X-au-c3.**  It carried
+        no figure at all and every reader fell back to its estimate; it now
+        RECORDS what the settle booked, on the ``derived`` basis, and the
+        estimate beside it is the plan.  The check must pass on that shape,
+        which is what routing the fixture through ``settlement_columns`` builds.
         """
         status_done = db.session.query(Status).filter_by(name="Paid").one()
         txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
+        settled_on = seed_periods[0].start_date
         txn = Transaction(
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
             status_id=status_done.id,
-            name="Done No Actual",
+            name="Done No Correction",
             transaction_type_id=txn_type.id,
             estimated_amount=Decimal("50.00"),
-            actual_amount=None,
+            settled_on=settled_on,
+            **settlement_columns(settled_on, Decimal("50.00")),
         )
         db.session.add(txn)
         db.session.flush()

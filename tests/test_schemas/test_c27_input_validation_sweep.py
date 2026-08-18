@@ -5,7 +5,7 @@ Direct schema tests for the two schemas added in commit C-27 of the
 2026-04-15 security remediation plan:
 
   - :class:`app.schemas.validation.MarkDoneSchema` -- replaces the
-    raw ``Decimal(request.form.get("actual_amount"))`` parse in
+    raw ``Decimal(request.form.get("settled_amount"))`` parse in
     ``transactions.mark_done`` (both branches) and (transitively)
     any future caller that sets a transaction's actual amount via
     the mark-done endpoint.
@@ -45,7 +45,7 @@ class TestMarkDoneSchema:
 
         The schema treats a missing ``actual_amount`` as "leave the
         column untouched" -- the route reads the loaded dict via
-        ``data.get("actual_amount")`` and only writes the column
+        ``data.get("settled_amount")`` and only writes the column
         when the key is present.  Verifying the empty-payload UX is
         the contract that lets the routes call ``schema.load``
         unconditionally on every mark-done request.
@@ -66,38 +66,38 @@ class TestMarkDoneSchema:
         ``test_explicit_none_passes``), so the form UX is unchanged
         while the loaded shape is now honest about the user's input.
         """
-        result = MarkDoneSchema().load({"actual_amount": ""})
-        assert result == {"actual_amount": None}
+        result = MarkDoneSchema().load({"settled_amount": ""})
+        assert result == {"settled_amount": None}
 
     def test_valid_decimal_round_trips(self):
         """Numeric ``actual_amount`` strings deserialise to Decimal."""
-        result = MarkDoneSchema().load({"actual_amount": "42.50"})
-        assert result["actual_amount"] == Decimal("42.50")
+        result = MarkDoneSchema().load({"settled_amount": "42.50"})
+        assert result["settled_amount"] == Decimal("42.50")
 
     def test_explicit_none_passes(self):
         """``allow_none=True`` -- explicit None is accepted (JSON path).
 
         The HTML form path strips empty strings before they reach
         Marshmallow, but a future JSON caller might post
-        ``{"actual_amount": null}`` to clear the column.  The schema
+        ``{"settled_amount": null}`` to clear the column.  The schema
         accepts that shape; the routes still treat ``None`` as
         "leave untouched" (pre-C-27 behaviour) so the JSON path
         does not regress the column.
         """
-        result = MarkDoneSchema().load({"actual_amount": None})
-        assert result == {"actual_amount": None}
+        result = MarkDoneSchema().load({"settled_amount": None})
+        assert result == {"settled_amount": None}
 
     def test_negative_actual_amount_rejected(self):
         """Negative ``actual_amount`` is rejected by ``Range(min=0)``.
 
         Backstops the DB CHECK ``actual_amount IS NULL OR
-        actual_amount >= 0`` on ``budget.transactions.actual_amount``;
+        actual_amount >= 0`` on ``budget.transactions.settled_amount``;
         without the schema-tier check, a negative value would surface
         as a 500 IntegrityError on commit instead of a clean 400.
         """
         with pytest.raises(ValidationError) as exc:
-            MarkDoneSchema().load({"actual_amount": "-10.00"})
-        assert "actual_amount" in exc.value.messages
+            MarkDoneSchema().load({"settled_amount": "-10.00"})
+        assert "settled_amount" in exc.value.messages
 
     def test_zero_actual_amount_accepted(self):
         """Zero ``actual_amount`` is accepted (DB CHECK is ``>= 0``).
@@ -107,13 +107,13 @@ class TestMarkDoneSchema:
         this period, etc.  The schema's ``min=Decimal("0")`` is
         inclusive (matches the DB CHECK semantics).
         """
-        result = MarkDoneSchema().load({"actual_amount": "0.00"})
-        assert result["actual_amount"] == Decimal("0.00")
+        result = MarkDoneSchema().load({"settled_amount": "0.00"})
+        assert result["settled_amount"] == Decimal("0.00")
 
     def test_an_actual_amount_the_column_cannot_hold_is_rejected(self):
         """A figure at or above ``10 ** 10`` is refused at the SCHEMA tier.
 
-        ``budget.transactions.actual_amount`` is ``numeric(12, 2)``, so
+        ``budget.transactions.settled_amount`` is ``numeric(12, 2)``, so
         anything from ``10_000_000_000.00`` up raises
         ``psycopg2.errors.NumericValueOutOfRange`` at flush.  Nothing
         catches that, so before plan step X-f2-c3 it was a 500 on both
@@ -127,8 +127,8 @@ class TestMarkDoneSchema:
         motivated the shared constant in the first place.
         """
         with pytest.raises(ValidationError) as exc:
-            MarkDoneSchema().load({"actual_amount": "10000000000.00"})
-        assert "actual_amount" in exc.value.messages
+            MarkDoneSchema().load({"settled_amount": "10000000000.00"})
+        assert "settled_amount" in exc.value.messages
 
     def test_the_largest_accepted_actual_amount_still_loads(self):
         """The control for the bound above: its own maximum is ACCEPTED.
@@ -137,8 +137,8 @@ class TestMarkDoneSchema:
         zero) would leave the refusal test green while refusing every
         real correction.
         """
-        result = MarkDoneSchema().load({"actual_amount": "10000000.00"})
-        assert result["actual_amount"] == Decimal("10000000.00")
+        result = MarkDoneSchema().load({"settled_amount": "10000000.00"})
+        assert result["settled_amount"] == Decimal("10000000.00")
 
     def test_non_numeric_actual_amount_rejected(self):
         """A non-numeric ``actual_amount`` produces Marshmallow's coercion error.
@@ -150,8 +150,8 @@ class TestMarkDoneSchema:
         callers can render the per-field message.
         """
         with pytest.raises(ValidationError) as exc:
-            MarkDoneSchema().load({"actual_amount": "abc"})
-        assert "actual_amount" in exc.value.messages
+            MarkDoneSchema().load({"settled_amount": "abc"})
+        assert "settled_amount" in exc.value.messages
 
     def test_unknown_fields_silently_ignored(self):
         """``BaseSchema`` EXCLUDE -- stray form fields do not surface as errors.
@@ -163,11 +163,11 @@ class TestMarkDoneSchema:
         the schema returns just the expected key.
         """
         result = MarkDoneSchema().load({
-            "actual_amount": "12.34",
+            "settled_amount": "12.34",
             "csrf_token": "abc123",
             "hx-target": "foo",
         })
-        assert result == {"actual_amount": Decimal("12.34")}
+        assert result == {"settled_amount": Decimal("12.34")}
 
 
 # ── DebtStrategyCalculateSchema ──────────────────────────────────────

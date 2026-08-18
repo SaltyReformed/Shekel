@@ -25,8 +25,9 @@ from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
 from app.routes._period_options import period_move_options
 from app.routes._render_helpers import (
-    fragment_budgets,
+    fragment_amounts,
     render_transaction_cell,
+    transfer_settlement_amounts,
 )
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._helpers import (
@@ -71,7 +72,7 @@ def get_quick_edit(txn_id):
         # forms are the surfaces where an empty figure is POSTED BACK.  A
         # fallback that ships a blank into a save is the shape this whole step
         # exists to delete, so it may not survive on the edit doors.
-        budgets=fragment_budgets(txn),
+        budgets=fragment_amounts(txn).budgets,
     )
 
 
@@ -92,7 +93,11 @@ def get_full_edit(txn_id):
     # --- Transfer detection: return transfer edit form for shadows ---
     if txn.transfer_id is not None:
         xfer = db.session.get(Transfer, txn.transfer_id)
-        if xfer is None:
+        if xfer is None or xfer.is_deleted:
+            # A deleted parent has no edit surface -- see the transfers
+            # blueprint's own full-edit door for the whole argument, and for why
+            # the refusal is scoped to the edit doors rather than to
+            # ``_get_owned_transfer``.
             return "Not found", 404
         statuses = db.session.query(Status).all()
         categories = (
@@ -105,6 +110,10 @@ def get_full_edit(txn_id):
         # period-move selector when a transfer is edited from a grid
         # shadow cell -- same set the transfers blueprint supplies.
         periods = period_move_options(current_user.id, xfer.pay_period_id)
+        # The pair's recorded and retained figures -- see the transfers
+        # blueprint's own render site: ONE helper answers for both, so the two
+        # doors onto this popover cannot show different figures.
+        xfer_amounts = transfer_settlement_amounts(xfer, current_user.id)
         return render_template(
             "transfers/_transfer_full_edit.html",
             xfer=xfer,
@@ -112,6 +121,8 @@ def get_full_edit(txn_id):
             categories=categories,
             source_txn_id=txn.id,
             periods=periods,
+            settled=xfer_amounts.settled,
+            retained=xfer_amounts.retained,
             # The settle-day correction's bounds -- ``max`` from ruling R-EJ,
             # ``min`` from ruling R-EL.  The USER's today, never
             # ``date.today()``: the process clock is pinned to the display zone
@@ -136,12 +147,25 @@ def get_full_edit(txn_id):
     # the first current period on save).  Periods are per-user; the PATCH
     # handler re-checks ownership of the submitted id (F-029).
     periods = period_move_options(current_user.id, txn.pay_period_id)
+    amounts = fragment_amounts(txn)
     return render_template(
         "grid/_transaction_full_edit.html",
         txn=txn,
         # See ``get_quick_edit`` for why the Estimated field is primed with the
         # RESOLVED amount rather than the column, and why it is a MAP.
-        budgets=fragment_budgets(txn),
+        #
+        # All three travel because :class:`RenderAmounts` is one value and a
+        # surface may not publish two of it, and this card reads every one:
+        # ``budgets`` primes the Estimated field, ``settled`` primes the Actual
+        # box, and ``retained`` draws the re-book notice.  A draft of plan step
+        # X-au-c3 drew that Actual box gated on ``locked`` and then deleted it
+        # as unreachable -- every ``is_settled`` status is also ``is_immutable``,
+        # so it rendered ``disabled`` on 100% of the rows it appeared on.  Being
+        # disabled WAS the defect: a lock protects a budget decision, and what
+        # the bank took is an observation.
+        budgets=amounts.budgets,
+        settled=amounts.settled,
+        retained=amounts.retained,
         statuses=statuses,
         periods=periods,
         # The settle-day correction's bounds (rulings R-EJ / R-EL) -- see the

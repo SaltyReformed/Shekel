@@ -24,8 +24,10 @@ from app.exceptions import NotFoundError, ValidationError
 from app import ref_cache
 from app.enums import RoleEnum, StatusEnum
 from app.services import account_service, pay_period_service, status_seam
+from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
 from app.models.account import AccountAnchorHistory
+from tests._test_helpers import settlement_if_settling
 from tests._test_helpers import mark_purchase_settled
 
 
@@ -439,14 +441,21 @@ class TestCreateEntry:
                     ),
                 )
 
-    def test_create_entry_on_done_transaction(
+    def test_create_entry_on_done_transaction_is_refused(
         self, app, db, seed_user, seed_entry_template,
     ):
-        """Entries allowed on Paid (DONE) transactions for late-posting purchases.
+        """A Paid (DONE) transaction refuses a late-posting purchase.
 
-        Per scope doc section 4.2: "If entries are added to a transaction
-        already in Paid status, the actual amount should update to reflect
-        the new sum."
+        **This asserted the opposite until plan step X-au-c3**, on scope doc
+        section 4.2: *"If entries are added to a transaction already in Paid
+        status, the actual amount should update to reflect the new sum."*  That
+        rule is withdrawn (developer ruling, 2026-08-17).  It re-priced a
+        settled row from a PARTIAL record of its purchases -- a single
+        back-filled ``$42.50`` against a row closed at its estimate -- which
+        moves money in the optimistic direction with no human act, and
+        double-counts against the leftover carry-forward has already rolled into
+        the next period.  A forgotten purchase belongs in the period that now
+        holds the money, or in this row once it is put back to Projected.
         """
         with app.app_context():
             txn_id = seed_entry_template["transaction"].id
@@ -458,21 +467,23 @@ class TestCreateEntry:
             # Through the seam, which writes the settle day in the same call --
             # a bare status assign leaves the row settled-but-undated, which
             # every reader now refuses (plan step X-f1).
-            status_seam.apply_status_change(txn, done.id)
+            status_seam.apply_status_change(txn, done.id, settlement=settlement_if_settling(txn, done.id))
             db.session.flush()
 
-            entry = entry_service.create_entry(
-                transaction_id=txn_id,
-                user_id=user_id,
-                details=entry_service.EntryDetails(
-                    amount=Decimal("42.50"),
-                    description="Late posting purchase",
-                    purchased_on=date(2026, 1, 10),
-                ),
-            )
+            with pytest.raises(ValidationError, match="has settled"):
+                entry_service.create_entry(
+                    transaction_id=txn_id,
+                    user_id=user_id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("42.50"),
+                        description="Late posting purchase",
+                        purchased_on=date(2026, 1, 10),
+                    ),
+                )
 
-            assert entry.id is not None
-            assert entry.amount == Decimal("42.50")
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn_id,
+            ).count() == 0
 
     def test_create_entry_boundary_minimum_amount(
         self, app, db, seed_user, seed_entry_template,
@@ -1368,10 +1379,17 @@ class TestComputeRemaining:
         assert list(sig.parameters) == ["budget", "entries"]
 
 
-class TestComputeActualFromEntries:
-    """Tests for entry_service.compute_actual_from_entries()."""
+class TestPurchasesTotal:
+    """Tests for ``row_valuation.purchases_total()``.
 
-    def test_compute_actual_includes_credit(
+    It was ``entry_service.compute_actual_from_entries`` until plan step
+    **X-au-c3**, which moved it to :mod:`app.services.row_valuation`: the
+    settlement record's own accessor needs it, that module sits under both the
+    cash and loan tiers, and the old name referred to a column the step removed.
+    The tests stay here, beside the envelope behaviour they describe.
+    """
+
+    def test_purchases_total_includes_credit(
         self, app, db, seed_user, seed_entry_template,
     ):
         """Actual = sum of all entries (debit + credit).
@@ -1388,16 +1406,16 @@ class TestComputeActualFromEntries:
                 _make_entry(txn, user, amount="100.00", is_credit=True),
             ]
 
-            actual = entry_service.compute_actual_from_entries(entries)
+            actual = purchases_total(entries)
             assert actual == Decimal("400.00")
 
-    def test_compute_actual_empty(self, app):
+    def test_purchases_total_empty(self, app):
         """Empty entries: actual = 0."""
         with app.app_context():
-            actual = entry_service.compute_actual_from_entries([])
+            actual = purchases_total([])
             assert actual == Decimal("0")
 
-    def test_compute_actual_single_entry(
+    def test_purchases_total_single_entry(
         self, app, db, seed_user, seed_entry_template,
     ):
         """Single entry: actual equals that entry's amount."""
@@ -1405,10 +1423,10 @@ class TestComputeActualFromEntries:
             txn = seed_entry_template["transaction"]
             entry = _make_entry(txn, seed_user["user"], amount="42.50")
 
-            actual = entry_service.compute_actual_from_entries([entry])
+            actual = purchases_total([entry])
             assert actual == Decimal("42.50")
 
-    def test_compute_actual_all_credit(
+    def test_purchases_total_all_credit(
         self, app, db, seed_user, seed_entry_template,
     ):
         """All credit entries: actual still equals their sum.
@@ -1424,7 +1442,7 @@ class TestComputeActualFromEntries:
                 _make_entry(txn, user, amount="120.00", is_credit=True),
             ]
 
-            actual = entry_service.compute_actual_from_entries(entries)
+            actual = purchases_total(entries)
             assert actual == Decimal("200.00")
 
 
@@ -1914,22 +1932,41 @@ class TestTheMarkPurchaseSettledHelperGuardsItsPrecondition:
             ).settled_on == seed_periods[0].start_date
 
 
-class TestAnArchivedRowsPurchasesAreHistory:
-    """Finding **N-229**: the terminal ``Settled`` status refuses entry edits.
+class TestASettledRowsPurchasesAreClosed:
+    """Finding **N-229**, widened to the settled BAND at plan step X-au-c3.
 
-    An archived row's cost is already in the books and the state machine gives
-    ``Settled`` no outgoing edge but identity, so it can never be reopened and
-    re-derived.  Before plan step X-ap a new purchase against one was ACCEPTED,
+    A settled row's money has MOVED, and every entry door would RE-COST it:
+    adding a purchase grows what the row cost, deleting one shrinks it, and
+    re-pricing one does either.  So all three refuse on Paid and Received as
+    well as on the terminal ``Settled`` (developer ruling, 2026-08-17).
+
+    **The refusal is FIELD-AWARE, and the one field it admits is
+    ``settled_on``** -- the day the BANK took a purchase.  That is an
+    observation about money which has ALREADY moved rather than a restatement of
+    how much moved: it re-dates that purchase's cash and changes no total.  The
+    last two cases below are that half of the rule; ``_COST_BEARING_FIELDS`` is
+    where it is stated.
+
+    **What decides the width is carry-forward.**  It rolls an envelope's unspent
+    remainder into the NEXT period's row and then settles the source at what was
+    spent -- so a purchase recorded against the closed source afterwards raises
+    its cost while the later row still holds the rolled-forward money, and the
+    same dollars are counted twice.  A forgotten purchase belongs in the period
+    that now holds the money; the way to record it here is to put the row back
+    to Projected, add it, and close the row again.
+
+    **It was the ARCHIVE status alone until this step**, because a Paid envelope
+    re-derived its figure from its entries and late-posting purchases were
+    therefore meant to land on one.  That re-derivation is deleted: it moved
+    money in the OPTIMISTIC direction with no human act, crashing a ``$500``
+    close to ``$50`` on the first back-filled purchase and handing ``$450`` of
+    already-spent money back to the projection.
+
+    Before plan step X-ap a new purchase against an ARCHIVED row was ACCEPTED,
     persisted, and half-processed: ``actual_amount`` was not recomputed (that
     half graded ``is_done`` -- exactly Paid) while the postings WERE reconciled
     (that half graded the settled BAND), so the ledger moved and the figure it
     was derived from did not.
-
-    Production carries zero rows in this status, which is why the ledger row
-    values the defect at ``$0.00`` and why it had zero coverage --
-    ``StatusEnum.SETTLED`` appeared in neither this module nor
-    ``test_mark_paid_entries``.  It is REACHABLE: the full-edit Status dropdown
-    offers Settled from Paid.
     """
 
     @staticmethod
@@ -1937,9 +1974,20 @@ class TestAnArchivedRowsPurchasesAreHistory:
         """Move *txn* Projected -> Paid -> Settled through the real seam."""
         status_seam.apply_status_change(
             txn, ref_cache.status_id(StatusEnum.DONE),
+            settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
         )
         status_seam.apply_status_change(
             txn, ref_cache.status_id(StatusEnum.SETTLED),
+            settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.SETTLED)),
+        )
+        db.session.flush()
+
+    @staticmethod
+    def _close(txn):
+        """Move *txn* Projected -> Paid through the real seam."""
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.DONE),
+            settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
         )
         db.session.flush()
 
@@ -1954,7 +2002,7 @@ class TestAnArchivedRowsPurchasesAreHistory:
             )
             self._archive(txn)
 
-            with pytest.raises(ValidationError, match="archived"):
+            with pytest.raises(ValidationError, match="has settled"):
                 entry_service.create_entry(
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
@@ -1982,7 +2030,7 @@ class TestAnArchivedRowsPurchasesAreHistory:
             entry = _make_entry(txn, seed_user["user"], amount="50.00")
             self._archive(txn)
 
-            with pytest.raises(ValidationError, match="archived"):
+            with pytest.raises(ValidationError, match="has settled"):
                 entry_service.update_entry(
                     entry.id, seed_user["user"].id, amount=Decimal("500.00"),
                 )
@@ -2001,40 +2049,129 @@ class TestAnArchivedRowsPurchasesAreHistory:
             self._archive(txn)
             entry_id = entry.id
 
-            with pytest.raises(ValidationError, match="archived"):
+            with pytest.raises(ValidationError, match="has settled"):
                 entry_service.delete_entry(entry_id, seed_user["user"].id)
 
             # No rollback: the guard runs BEFORE ``db.session.delete``, so a
             # refused call stages nothing.
             assert db.session.get(TransactionEntry, entry_id) is not None
 
-    def test_a_PAID_row_still_takes_a_late_purchase(
+    def test_a_PAID_row_refuses_a_late_purchase(
         self, app, db, seed_user, seed_entry_template,
     ):
-        """The refusal is the ARCHIVE status, never the settled band.
+        """The refusal is the settled BAND, not the archive status alone.
 
-        A Paid envelope must keep accepting late-posting purchases and
-        re-deriving its actual from them -- that is what the hook exists for,
-        and narrowing the refusal to the whole settled band would break it.
-        $50.00 recorded after the close settles the row at $50.00.
+        **This asserted the opposite until plan step X-au-c3**: a Paid envelope
+        accepted a late purchase and re-derived its figure from it, so a
+        ``$50.00`` purchase recorded after a close at the row's ``$500.00``
+        estimate re-priced the row to ``$50.00`` -- putting ``$450`` of
+        already-spent money back in the projection with no human act, and
+        double-counting it against the leftover carry-forward had already rolled
+        into the next period.
+
+        The row is left exactly as the close left it: worth what it recorded,
+        with no purchase persisted.  Shown to FIRE: narrowing the guard back to
+        ``is_archived`` lets the entry through.
         """
         with app.app_context():
             txn = db.session.get(
                 Transaction, seed_entry_template["transaction"].id,
             )
-            status_seam.apply_status_change(
-                txn, ref_cache.status_id(StatusEnum.DONE),
+            self._close(txn)
+            recorded_before = settled_figure(txn)
+
+            with pytest.raises(ValidationError, match="has settled"):
+                entry_service.create_entry(
+                    transaction_id=txn.id,
+                    user_id=seed_user["user"].id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"),
+                        description="Late purchase",
+                        purchased_on=display_today(),
+                    ),
+                )
+
+            assert settled_figure(txn) == recorded_before
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).count() == 0
+
+    def test_the_BANK_POSTING_DAY_is_still_recordable(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The one edit a closed row admits, and the reason the guard is FIELD-AWARE.
+
+        **Everything above is an argument about what the row COST.  The day the
+        BANK took a purchase is not that** (developer ruling, 2026-08-17).
+        Recording it changes no total: ``cash_ledger.settled_cash_leg``
+        subtracts every POSTED purchase from the row's close, so the purchase's
+        own dated leg and the remainder of the close always sum to the row's
+        whole debit.  What moves is the DAY, which is what a paper statement is
+        reconciled against.
+
+        Refusing it would strand already-spent money on the day the envelope
+        happened to be closed, with no door to correct it: measured on the
+        2026-08-17 production dump, 28 closed envelopes hold 61 debit purchases
+        carrying no posting day, ``$4,360.07`` between them.
+
+        That split is this step's own three-lifetime model read one level down.
+        A purchase's amount is WHAT MOVED and its posting day is an ASSERTION
+        about when -- the same two facts ``settled_amount`` and ``settled_on``
+        are on the parent, with the same answer: the assertion may be recorded,
+        corrected and withdrawn long after the figure is final.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            entry = _make_entry(txn, seed_user["user"], amount="50.00")
+            self._close(txn)
+            recorded_before = settled_figure(txn)
+            posted_on = display_today()
+
+            entry_service.update_entry(
+                entry.id, seed_user["user"].id, settled_on=posted_on,
             )
             db.session.flush()
 
-            entry_service.create_entry(
-                transaction_id=txn.id,
-                user_id=seed_user["user"].id,
-                details=entry_service.EntryDetails(
-                    amount=Decimal("50.00"),
-                    description="Late purchase",
-                    purchased_on=display_today(),
-                ),
-            )
+            assert entry.settled_on == posted_on
+            # What the row COST is untouched -- the whole point of admitting
+            # this field and no other.
+            assert settled_figure(txn) == recorded_before
 
-            assert txn.actual_amount == Decimal("50.00")
+            # And it can be WITHDRAWN again, which is what "the statement does
+            # not actually show it" means.
+            entry_service.update_entry(
+                entry.id, seed_user["user"].id, settled_on=None,
+            )
+            db.session.flush()
+            assert entry.settled_on is None
+            assert settled_figure(txn) == recorded_before
+
+    def test_a_posting_day_edit_that_also_RE_PRICES_is_refused(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """The guard grades the whole submission, not its most innocent field.
+
+        A caller cannot smuggle a re-price past a closed row by sending it
+        alongside the one field the row admits.  ``_reject_settled_parent``
+        refuses when ANY cost-bearing field is present, so the mixed submission
+        is refused whole and neither field lands.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            entry = _make_entry(txn, seed_user["user"], amount="50.00")
+            self._close(txn)
+
+            with pytest.raises(ValidationError, match="has settled"):
+                entry_service.update_entry(
+                    entry.id, seed_user["user"].id,
+                    settled_on=display_today(),
+                    amount=Decimal("500.00"),
+                )
+
+            # The guard runs BEFORE the setattr loop, so nothing is staged.
+            assert entry.amount == Decimal("50.00")
+            assert entry.settled_on is None

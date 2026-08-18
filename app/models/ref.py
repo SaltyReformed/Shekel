@@ -206,8 +206,10 @@ class Status(db.Model):
     status names:
 
         is_settled          -- The real-world transaction has completed
-                               (Paid, Received, Settled).  The balance
-                               calculator uses actual_amount for these.
+                               (Paid, Received, Settled).  Such a row RECORDS
+                               what moved, and the balance counts that record
+                               rather than the row's plan (plan step X-au-c3;
+                               it read actual_amount until then).
         is_immutable        -- The recurrence engine must not overwrite
                                this transaction (Paid, Received, Credit,
                                Cancelled, Settled).
@@ -678,3 +680,40 @@ class AmountSource(db.Model):
 
     def __repr__(self):
         return f"<AmountSource {self.name}>"
+
+
+class SettlementBasis(db.Model):
+    """HOW a settled row's recorded figure is known (plan step **X-au-c3**).
+
+    The catalogue behind ``budget.transactions.settled_basis_id``.  A row that
+    has not settled carries NULL here, no settle day and no settled figure; a
+    row that HAS settled carries all three, and this column says which of the
+    three ways its figure was arrived at -- ``derived`` (the app resolved it at
+    the settle), ``corrected`` (a human read it off a statement) or
+    ``purchases`` (the row's own entries state it, and it is the one basis that
+    stores no figure).
+
+    Its whole reason for existing is that ``actual_amount`` used to answer two
+    questions at once -- WHAT moved, in its value, and WHO said so, in its
+    NULL-ness (ruling **R-FH**).  :class:`app.enums.SettlementBasisEnum` carries
+    the two defects that overload produced and why splitting them is what
+    removes the need to freeze a row's plan at settle.
+
+    Application code resolves these via ``ref_cache.settlement_basis_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+
+    ``budget.transfers`` carries no such column and needs none: a transfer's
+    money moves on its two shadow ``Transaction`` rows, which each record their
+    own leg, and the transfer itself stays a plan for its whole life.
+    """
+
+    __tablename__ = "settlement_bases"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<SettlementBasis {self.name}>"

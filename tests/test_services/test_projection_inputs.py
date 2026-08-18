@@ -42,7 +42,7 @@ from app.services.projection_inputs import (
     load_investment_params_for_accounts,
     load_shadow_income_contributions_for_account,
 )
-from tests._test_helpers import basis_for
+from tests._test_helpers import basis_for, settlement_columns
 
 
 def _flat_id():
@@ -585,15 +585,33 @@ class TestShadowContributionBoundary:
             other for other in transfer.shadow_transactions
             if other.id != shadow.id
         ]
-        if actual is not None:
-            for row in rows:
-                row.actual_amount = Decimal(str(actual))
         if settled:
+            # The whole settlement record in one act, on both legs: the day,
+            # the figure and how the figure is known (plan step X-au-c3).
+            # *actual* is a figure a HUMAN typed, which makes the record
+            # ``corrected``; with none the record is ``derived`` at the row's
+            # own plan.  Written together because
+            # ``ck_transactions_settle_day_needs_basis`` refuses a settle day
+            # that names no figure.
             settled_id = ref_cache.status_id(StatusEnum.RECEIVED)
             for row in rows:
                 row.status_id = settled_id
                 row.settled_on = period.start_date
+                for column, value in settlement_columns(
+                    period.start_date, row.estimated_amount,
+                    submitted=(
+                        Decimal(str(actual)) if actual is not None else None
+                    ),
+                ).items():
+                    setattr(row, column, value)
             transfer.status_id = settled_id
+        elif actual is not None:
+            raise AssertionError(
+                "A figure RECORDS a settle (plan step X-au-c3), so an "
+                "unsettled row cannot carry one -- "
+                "ck_transactions_settled_amount_needs_basis refuses it. Pass "
+                "settled=True beside actual, or drop actual."
+            )
         if cancelled:
             cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
             for row in rows:

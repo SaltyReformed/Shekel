@@ -27,7 +27,7 @@ from decimal import Decimal
 from sqlalchemy import case
 
 from app import ref_cache
-from app.enums import TxnTypeEnum
+from app.enums import SettlementBasisEnum, TxnTypeEnum
 from app.exceptions import ShekelError
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
@@ -39,6 +39,75 @@ from app.utils.balance_predicates import (
     balance_excluded_status_ids,
     settled_status_ids,
 )
+
+
+def settled_figure_clause():
+    """Return the SQL for what a SETTLED transaction records as having moved.
+
+    The query-tier twin of :func:`app.services.row_valuation.settled_figure`, and
+    the ONE spelling of it in SQL (plan step **X-au-c3**): three folds ask it --
+    :func:`settled_transfer_effect`, :func:`settled_transaction_effect` and
+    ``posting_service._settle_effective`` -- and three copies of a money rule is
+    this arc's own root cause 1.
+
+    A ``CASE`` on ``settled_basis_id``, which is the SAME column the Python twin
+    dispatches on.  A ``purchases`` record stores no figure and sums the row's
+    entries; every other basis stores its figure in ``settled_amount``.
+
+    **It reads the basis rather than testing ``settled_amount IS NULL``, and
+    that is a defect fixed rather than a style choice.**  The expression was
+    ``COALESCE(settled_amount, Sigma(entries))``, which is right for every
+    WELL-FORMED row -- the two states are disjoint by
+    :class:`app.services.status_seam.Settlement`'s constructor -- and wrong for
+    the one row that is not: a settled row recording NOTHING has no stored
+    figure and (typically) no entries, so the ``COALESCE`` answered ``0`` where
+    :func:`app.services.row_valuation.settled_figure` RAISES.  A refusal on one
+    tier and a zero on the other is money leaving a balance in silence, and it
+    is the SQL side that writes the ledger.  Dispatching on the basis makes the
+    broken row take NO arm and answer ``NULL``, which a fold drops and
+    ``posting_service._settle_effective`` refuses -- and
+    ``ck_transactions_settle_day_needs_basis`` is what makes it unstorable in the
+    first place, so this arm is the belt to that constraint's braces rather than
+    the only guard.
+
+    **What it replaced was a fallback, and the difference is the point.**  This
+    read was ``COALESCE(actual_amount, estimated_amount)`` -- the settled figure
+    falling back to the row's PLAN, because ``actual_amount`` was populated only
+    when a human had typed a correction.  Two consequences followed, and both are
+    why the FREEZE this step was originally specified to build existed at all: a
+    plan is a derivation, so the fold's answer for a historical row could move
+    when a price series gained a backdated version; and once a per-kind cutover
+    (plan steps X-au-d..X-au-i) emptied that plan, a ``SUM`` over the expression
+    would DROP the row silently rather than raise -- the undercount findings
+    **N-242** and **N-298** describe.  Neither is reachable now: a settled row's
+    figure is its own record, and a row with no record has not settled.
+
+    Callers must still filter to settled rows themselves.  A ``purchases`` row
+    with no entries answers ``0`` rather than ``NULL`` -- the entry sum's own
+    ``COALESCE`` -- and that is correct: an envelope closed empty cost nothing,
+    which is what its records say.
+
+    Returns:
+        A SQLAlchemy expression over :class:`~app.models.transaction.Transaction`
+        evaluating to the recorded figure, or ``NULL`` for a row that records no
+        settlement at all.
+    """
+    purchases_sum = (
+        db.session.query(
+            db.func.coalesce(db.func.sum(TransactionEntry.amount), Decimal("0"))
+        )
+        .filter(TransactionEntry.transaction_id == Transaction.id)
+        .correlate(Transaction)
+        .scalar_subquery()
+    )
+    purchases_basis_id = ref_cache.settlement_basis_id(
+        SettlementBasisEnum.PURCHASES,
+    )
+    return case(
+        (Transaction.settled_basis_id.is_(None), None),
+        (Transaction.settled_basis_id == purchases_basis_id, purchases_sum),
+        else_=Transaction.settled_amount,
+    )
 
 
 class PostingError(ShekelError):
@@ -137,11 +206,13 @@ def settled_transfer_effect(account_id: int, scenario_id: int) -> Decimal:
 
     The balance-side expectation the Commit-6 oracle reconciles the ledger
     against: over the account's settled (``status.is_settled``), non-deleted
-    transfer shadows in *scenario_id*, sum ``+COALESCE(actual, estimated)`` for an income
-    shadow (money in) and the negation for an expense shadow (money
-    out) -- exactly the debit-positive net :func:`account_posting_total`
-    accumulates.  That SQL expression is what the retired ``effective_amount``
-    property computed in Python;
+    transfer shadows in *scenario_id*, sum ``+``:func:`settled_figure_clause`
+    for an income shadow (money in) and the negation for an expense shadow
+    (money out) -- exactly the debit-positive net
+    :func:`account_posting_total` accumulates.  It read
+    ``COALESCE(actual_amount, estimated_amount)`` until plan step X-au-c3
+    renamed that column and made a settled row's figure its own RECORD, so the
+    shadow's plan is no longer consulted for it at all;
     settled statuses are non-excluded by construction (``settled_status_ids``
     is disjoint from the balance-excluded set), so no excluded-status guard is
     needed.
@@ -163,9 +234,7 @@ def settled_transfer_effect(account_id: int, scenario_id: int) -> Decimal:
             "are scenario-scoped); got None."
         )
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    effective = db.func.coalesce(
-        Transaction.actual_amount, Transaction.estimated_amount
-    )
+    effective = settled_figure_clause()
     signed_effect = case(
         (Transaction.transaction_type_id == income_type_id, effective),
         else_=-effective,
@@ -196,7 +265,8 @@ def settled_transaction_effect(account_id: int, scenario_id: int) -> Decimal:
     ``effective - Sigma(credit entries)`` -- ``+`` for income (money in), ``-``
     for an expense (money out) -- exactly the debit-positive net the cash legs
     accumulate via :func:`account_posting_total`.  ``effective`` is
-    ``COALESCE(actual, estimated)``; the per-transaction credit-entry sum is a
+    :func:`settled_figure_clause` -- what the row RECORDED as having moved, not
+    its plan, since plan step X-au-c3; the per-transaction credit-entry sum is a
     correlated subquery (the SQL counterpart of the go-forward
     ``credit_entry_sum``).  Settled statuses are non-excluded by construction
     (``settled_status_ids`` is disjoint from the balance-excluded set), so no
@@ -233,9 +303,7 @@ def settled_transaction_effect(account_id: int, scenario_id: int) -> Decimal:
             "are scenario-scoped); got None."
         )
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    effective = db.func.coalesce(
-        Transaction.actual_amount, Transaction.estimated_amount
-    )
+    effective = settled_figure_clause()
     # Per-transaction sum of credit-card entry amounts, correlated to the outer
     # transaction so it excludes the credit portion exactly as the go-forward
     # ``credit_entry_sum`` does (the CC Payback posts that portion separately).

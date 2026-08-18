@@ -19,13 +19,14 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import UndatedSettleError
 from app.extensions import db
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.services.amortization_engine import PaymentRecord
+from tests._test_helpers import settlement_basis_id
 from app.services.loan_payment_service import (
     compute_contractual_pi,
     get_payment_history,
@@ -272,7 +273,7 @@ class TestGetPaymentHistory:
                 )
                 .one()
             )
-            shadow.actual_amount = Decimal("1450.00")
+            shadow.settled_amount = Decimal("1450.00")
             db.session.commit()
 
             result = get_payment_history(
@@ -427,6 +428,13 @@ class TestGetPaymentHistory:
         would place a real payment on a day nothing recorded; the shared
         accessor refuses instead
         (:func:`app.utils.balance_predicates.settled_day`).
+
+        **The bulk update writes a VALID settlement record beside the status**
+        (plan step X-au-c3), so the row is broken in exactly ONE way -- the
+        missing day -- and this grades the refusal it names.  Without it
+        ``row_valuation.settled_figure`` refuses first, for the different reason
+        that a settled row states what moved, and the test would pass on an
+        error it was not written about.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -441,7 +449,11 @@ class TestGetPaymentHistory:
                 Transaction.account_id == loan.id,
                 Transaction.transaction_type_id == income_type_id,
             ).update(
-                {"status_id": ref_cache.status_id(StatusEnum.DONE)},
+                {
+                    "status_id": ref_cache.status_id(StatusEnum.DONE),
+                    "settled_amount": Decimal("1500.00"),
+                    "settled_basis_id": settlement_basis_id(SettlementBasisEnum.DERIVED),
+                },
                 synchronize_session=False,
             )
             db.session.commit()
