@@ -18,9 +18,10 @@ Three problems, all of them structural:
   different shapes -- a yearly rule showed month AND day, a quarterly rule
   showed month only, a monthly rule showed day only -- with no reason behind
   the difference beyond who wrote which branch;
-* **the vocabulary itself was the ceiling.**  Cadences plan step R8 makes
-  authorable -- ``(2, MONTH)``, ``(1, WEEK)`` -- have no member of the closed
-  set to name them, so no branch could have been written for them; a rule the
+* **the vocabulary itself was the ceiling.**  Cadences the closed set had no
+  member to name -- ``(2, MONTH)``, which plan step R7c-c made authorable, and
+  ``(1, WEEK)``, which is still plan step R8's -- could have no branch written
+  for them at all; a rule the
   seven did not match fell to a fallback that titled the ``ref`` row's own
   ``name``.  That fallback was the last ``.name``-for-display coupling on THIS
   table, and the only reader of the eager-joined ``RecurrenceRule.pattern``
@@ -259,7 +260,7 @@ def _coordinate(resolved: ResolvedRecurrence) -> str:
         # pins -- the same locale dependence the month names moved to
         # ``app.utils.dates`` to escape.  The plural is the honest reading: the
         # rule fires on that weekday every ``interval_n`` weeks.
-        return f"{weekday_name(resolved.anchor_date)}s"
+        return f"{weekday_name(resolved.starts_on)}s"
     day = resolved.day_of_month
     if day is None:
         raise RecurrenceDescriptionError(
@@ -270,7 +271,7 @@ def _coordinate(resolved: ResolvedRecurrence) -> str:
         )
     if resolved.unit is RecurrenceUnitEnum.MONTH and resolved.interval_n == 1:
         return f"day {day}"
-    return f"{month_name(resolved.anchor_date.month, abbr=True)} {day}"
+    return f"{month_name(resolved.starts_on.month, abbr=True)} {day}"
 
 
 def _placement_note(resolved: ResolvedRecurrence) -> str | None:
@@ -293,8 +294,9 @@ def _placement_note(resolved: ResolvedRecurrence) -> str | None:
 
     Raises:
         RecurrenceDescriptionError: When the placement is a member with no
-            wording -- plan step R8 adds a third, and it must be worded here
-            rather than silently read as the default.
+            wording -- plan step **R11** adds a third (the LEAD, plan ledger
+            row **D40**), and it must be worded here rather than silently read
+            as the default.
     """
     if resolved.placement is PeriodPlacementEnum.CONTAINING_DATE:
         return None
@@ -320,11 +322,15 @@ def _parenthetical(resolved: ResolvedRecurrence) -> str | None:
     paycheck on or after the 15th -- so it is stated.
 
     **The collapse names the placement it rests on**, because the implication
-    holds for that member and no other.  Plan step R8 adds a fund-in-ADVANCE
-    placement (ledger row D20): "the last paycheck on or BEFORE the 1st" is
-    NOT the month's first paycheck, it is the previous month's last, so a
-    condition keyed only on unit / interval / day would silently delete the
-    coordinate from a rule whose money moves in a different month.
+    holds for that member and no other.  A LEAD placement -- fund from a
+    paycheck EARLIER than the one containing the occurrence -- would break it:
+    "the paycheck before the one covering the 1st" is NOT the month's first
+    paycheck, it is the previous month's last, so a condition keyed only on
+    unit / interval / day would silently delete the coordinate from a rule
+    whose money moves in a different month.  (Plan ledger row **D20** named
+    that member as "the last paycheck on or before the occurrence" and closed
+    at plan step R8-a on the measurement that such a rule is
+    ``CONTAINING_DATE``; the LEAD is what survived it, under its own row.)
 
     **The ``PERIOD`` unit has no parenthetical at all**, and this is the one
     place that says so.  It has no calendar coordinate -- its occurrences are

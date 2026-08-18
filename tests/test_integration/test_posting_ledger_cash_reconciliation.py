@@ -94,6 +94,7 @@ arithmetic shown per the testing standard.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -116,12 +117,17 @@ from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.models.account import AccountAnchorHistory
 from app.models.transaction_entry import TransactionEntry
 from app.services import ledger_account_service, posting_service, status_seam
-from app.utils.balance_predicates import settled_status_ids
+from app.utils.balance_predicates import (
+    balance_excluded_status_ids,
+    settled_status_ids,
+)
 from tests._test_helpers import (
     add_txn,
     create_account_of_type,
+    create_envelope_txn,
     create_settled_cash_transaction,
     create_settled_transfer,
     linked_ledger_account,
@@ -314,19 +320,63 @@ def _independent_cash_txn_effect(account_id: int, scenario_id: int) -> Decimal:
     )
 
 
+def _independent_posted_purchase_effect(
+    account_id: int, scenario_id: int
+) -> Decimal:
+    """Sum the purchases posted under a NOT-YET-SETTLED parent (independent query).
+
+    The third term of the balance-side truth, and ruling **R-FM** is why it
+    exists (plan step X-f3b): a purchase whose bank posting day the owner
+    recorded books its own cash leg whatever its envelope's status is, so an
+    account's ledger now holds money no SETTLED row's ``effective`` figure
+    accounts for.
+
+    Only the purchases whose PARENT is unsettled.  A purchase on a settled
+    parent is already inside :func:`_independent_cash_txn_effect`: that
+    expression sums ``effective - Sigma(credit)`` over the whole row, which is
+    exactly what the parent's own leg and its purchases' legs add up to, so
+    counting one here would double it.
+
+    Restated in SQL rather than shared with ``posting_service._purchase_posts``,
+    for the reason every helper in this file is: an oracle that imported the
+    rule it grades could not grade it.
+    """
+    return (
+        _db.session.query(
+            _db.func.coalesce(
+                _db.func.sum(-TransactionEntry.amount), Decimal("0")
+            )
+        )
+        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+        .filter(
+            Transaction.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
+            Transaction.transfer_id.is_(None),
+            Transaction.is_deleted.is_(False),
+            Transaction.status_id.notin_(settled_status_ids()),
+            Transaction.status_id.notin_(balance_excluded_status_ids()),
+            TransactionEntry.settled_on.isnot(None),
+            TransactionEntry.is_credit.is_(False),
+        )
+        .scalar()
+    )
+
+
 def _independent_combined_source_effect(
     account_id: int, scenario_id: int
 ) -> Decimal:
     """Sum an account's combined settled transfer + transaction source effect.
 
     The full balance-side truth a linked account's ledger must equal in Step 3:
-    transfer shadows AND ordinary transactions, both signed debit-positive.  The
-    independent restatement of
-    ``settled_transfer_effect + settled_transaction_effect``.
+    transfer shadows AND ordinary transactions, both signed debit-positive, plus
+    the purchases posted under a still-unsettled parent (plan step X-f3b, ruling
+    **R-FM**).  The independent restatement of ``settled_transfer_effect +
+    settled_transaction_effect + posted_purchase_effect``.
     """
     return (
         _independent_transfer_shadow_effect(account_id, scenario_id)
         + _independent_cash_txn_effect(account_id, scenario_id)
+        + _independent_posted_purchase_effect(account_id, scenario_id)
     )
 
 
@@ -466,6 +516,13 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
     was deleted and the row never re-synced) -- precisely why the orphan is
     reconciled by the linkage, not by re-resolving ``category_id``.
 
+    **A PURCHASE's leg is resolved to its PARENT before grouping** (plan step
+    X-f3b, ruling **R-FM**): it links by ``transaction_entry_id`` and carries no
+    ``transaction_id``, so grouping on that column alone would drop every one
+    into the hard-deleted bucket and fail with the wrong cause.  Resolved, the
+    per-transaction expectation stays whole -- a SETTLED row's counter net is
+    its own leg plus its purchases', and an unsettled row's IS its purchases'.
+
     A ``transaction_id IS NULL`` group is a hard-deleted transaction's
     SET-NULL'd legs: the reverse-before-delete pair MUST net to zero, asserted
     here so a stranded (un-reversed) leg would be caught.
@@ -477,9 +534,24 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
     )
     for counter in counters:
         lhs = _ledger_account_sum(counter.id, scenario_id)
+        # A PURCHASE's counter leg links by ``transaction_entry_id`` and carries
+        # NO ``transaction_id`` (plan step X-f3b, ruling **R-FM**), so grouping
+        # on that column alone would drop every one of them into the
+        # hard-deleted bucket below and fail with the wrong cause.  Resolving it
+        # to the purchase's PARENT is what keeps the per-transaction expectation
+        # whole: a settled row's counter net is its own leg plus its purchases'.
+        parent_of_purchase = (
+            _db.session.query(TransactionEntry.transaction_id)
+            .filter(TransactionEntry.id == JournalEntry.transaction_entry_id)
+            .correlate(JournalEntry)
+            .scalar_subquery()
+        )
+        source_transaction_id = _db.func.coalesce(
+            JournalEntry.transaction_id, parent_of_purchase,
+        )
         rows = (
             _db.session.query(
-                JournalEntry.transaction_id,
+                source_transaction_id,
                 _db.func.sum(Posting.amount),
             )
             .select_from(Posting)
@@ -488,7 +560,7 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
                 Posting.ledger_account_id == counter.id,
                 JournalEntry.scenario_id == scenario_id,
             )
-            .group_by(JournalEntry.transaction_id)
+            .group_by(source_transaction_id)
             .all()
         )
         rhs = Decimal("0")
@@ -510,12 +582,27 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
                 f"counter {counter.id}: transaction {transaction_id} linked to "
                 f"a non-zero leg no longer exists (link should have SET NULL)"
             )
-            # A non-zero net on a counter account can only come from a settled,
-            # active, non-transfer transaction (everything else nets to zero).
+            # A non-zero net on a counter account comes from an active,
+            # non-transfer transaction that has either SETTLED or had a purchase
+            # post under it (plan step X-f3b); everything else nets to zero.
             assert txn.transfer_id is None
             assert txn.is_deleted is False
-            assert txn.status.is_settled
-            expected_counter = -_signed_cash_effect(txn)
+            if txn.status.is_settled:
+                # Its own leg plus its purchases' legs, which sum to the whole
+                # confirmed cash effect however that total is split.
+                expected_counter = -_signed_cash_effect(txn)
+            else:
+                # Not settled: the row's own leg is absent, so the net IS its
+                # posted purchases -- an expense's counter leg is a debit, hence
+                # positive.  Restated from the entries rather than read off the
+                # ledger, so the two sides stay independent.
+                expected_counter = sum(
+                    (
+                        entry.amount for entry in txn.entries
+                        if not entry.is_credit and entry.settled_on is not None
+                    ),
+                    Decimal("0"),
+                )
             assert net == expected_counter, (
                 f"counter {counter.id}: transaction {transaction_id} net {net} "
                 f"!= expected counter leg {expected_counter}"
@@ -949,7 +1036,7 @@ class TestEverySettledTransactionPosts:
                 actual_amount="75.00",
             )
             db.session.add(TransactionEntry(
-                transaction_id=all_credit.id, user_id=user_id,
+                transaction_id=all_credit.id, account_id=all_credit.account_id, user_id=user_id,
                 amount=Decimal("75.00"), description="cc purchase",
                 purchased_on=period.start_date, is_credit=True,
             ))
@@ -1361,6 +1448,99 @@ class TestRevertedTransactionReconcilesAtZero:
                 .filter_by(transaction_id=txn_id)
                 .count()
             ) == 2
+            _assert_full_reconciliation(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# A PURCHASE is a posting source of its own (plan step X-f3b, ruling R-FM)
+# ---------------------------------------------------------------------------
+
+
+class TestAPostedPurchaseReconcilesUnderAnUnsettledParent:
+    """The sweep must describe the ledger a posted purchase produces.
+
+    **The whole file was blind to this shape until plan step X-f3b**, and that
+    is the finding it was added for: no test here creates a ``settled_on`` on a
+    purchase, so both sweep assertions could go on passing while the ledger held
+    legs neither of them could account for -- a linked total no ``effective``
+    figure contains, and a counter leg carrying ``transaction_id = NULL`` that
+    the hard-delete branch would have called a failed reversal.
+    """
+
+    def test_a_projected_envelopes_posted_purchase_reconciles_both_sweeps(
+        self, app, db, seed_user,
+    ):
+        """A $40 purchase under a $100 Projected envelope, taken by the bank.
+
+        Arithmetic: the envelope has not settled, so it books nothing of its
+        own; the purchase books ``Checking -40.00 / Groceries-Expense +40.00``
+        on the day the bank took it.  Checking's linked ledger is therefore
+        ``1000.00 - 40.00 = 960.00`` and the Groceries counter is ``+40.00``.
+
+        Both figures are asserted directly AND the full sweep is run, because
+        the sweep is what 15 other tests rely on: its linked arm needs the third
+        source term (`_independent_posted_purchase_effect`) and its counter arm
+        needs a purchase leg resolved to its parent, and neither is exercised by
+        any other test in this file.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            user_id = seed_user["user"].id
+            checking = seed_user["account"]
+            period = seed_user["bootstrap_period"]
+
+            # The purchase is dated AFTER the account's opening assertion, which
+            # is this whole file's stated precondition ("every settle in this
+            # suite is stamped after the origination assertion, so the effects
+            # ride on top of the opening").  Dated on or before it, the opening's
+            # own correction would absorb the leg and the ledger would land on
+            # the asserted balance instead -- true, and a different invariant
+            # from the one these sweeps grade.
+            posted_on = _db.session.query(
+                _db.func.max(AccountAnchorHistory.observed_on),
+            ).filter(
+                AccountAnchorHistory.account_id == checking.id,
+            ).scalar() + timedelta(days=1)
+            txn = create_envelope_txn(
+                seed_user, db.session, period, "Groceries", Decimal("100.00"),
+            )
+            txn.category_id = seed_user["categories"]["Groceries"].id
+            entry = TransactionEntry(
+                transaction_id=txn.id, account_id=txn.account_id,
+                user_id=user_id,
+                amount=Decimal("40.00"),
+                description="Kroger",
+                purchased_on=posted_on,
+                settled_on=posted_on,
+                is_credit=False,
+            )
+            _db.session.add(entry)
+            _db.session.flush()
+            posting_service.sync_transaction_postings(txn, settled=False)
+            db.session.commit()
+
+            groceries_counter = _counter_ledger_id(
+                user_id, LedgerAccountClassEnum.EXPENSE,
+                seed_user["categories"]["Groceries"].id,
+            )
+            assert _independent_ledger_sum(
+                checking.id, scenario_id,
+            ) == Decimal("960.00")
+            assert _ledger_account_sum(
+                groceries_counter, scenario_id,
+            ) == Decimal("40.00")
+            # The parent booked nothing of its own -- otherwise the $40.00
+            # above could be its cash leg rather than the purchase's.
+            assert (
+                _db.session.query(JournalEntry)
+                .filter_by(transaction_id=txn.id)
+                .count()
+            ) == 0
+            assert (
+                _db.session.query(JournalEntry)
+                .filter_by(transaction_entry_id=entry.id)
+                .count()
+            ) == 1
             _assert_full_reconciliation(scenario_id)
 
 

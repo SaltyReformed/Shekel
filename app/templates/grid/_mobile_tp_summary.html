@@ -35,7 +35,8 @@
    refused to ship, on the form factor Mark Paid is used from.
 
    Expected context (* required):
-     period *     -- the PayPeriod being summarised.
+     period *     -- the DerivedPeriod being summarised (its identity
+                     is `period_id`; plan step C2-f2b).
      columns      -- dict[period_id -> GridColumn].  Absent -> whole partial
                      renders nothing (the companion page passes none).
                      Missing this period's key -> the Projected Balance card
@@ -69,9 +70,9 @@
                      include.
 #}
 {% if columns is defined %}
-{% set col = columns.get(period.id) %}
-<div id="mobile-tp-summary-{{ period.id }}"
-     hx-get="{{ url_for('grid.mobile_this_period_summary', period_id=period.id, account_id=account.id) if account else url_for('grid.mobile_this_period_summary', period_id=period.id) }}"
+{% set col = columns.get(period.period_id) %}
+<div id="mobile-tp-summary-{{ period.period_id }}"
+     hx-get="{{ url_for('grid.mobile_this_period_summary', period_id=period.period_id, account_id=account.id) if account else url_for('grid.mobile_this_period_summary', period_id=period.period_id) }}"
      hx-trigger="mobileCardSettled from:body"
      hx-swap="outerHTML"
      aria-live="polite"
@@ -168,11 +169,11 @@
        Only on the HTMX response (oob=true); on the initial include
        these are skipped so the header totals are not duplicated. #}
   {% if oob and col is not none %}
-    <span id="mobile-tp-income-total-{{ period.id }}"
+    <span id="mobile-tp-income-total-{{ period.period_id }}"
           hx-swap-oob="true" class="font-mono fw-bold">
       {% if col.income %}{{ money(col.income, cents=false) }}{% else %}$0{% endif %}
     </span>
-    <span id="mobile-tp-expense-total-{{ period.id }}"
+    <span id="mobile-tp-expense-total-{{ period.period_id }}"
           hx-swap-oob="true" class="font-mono fw-bold">
       {% if col.expense %}{{ money(col.expense, cents=false) }}{% else %}$0{% endif %}
     </span>

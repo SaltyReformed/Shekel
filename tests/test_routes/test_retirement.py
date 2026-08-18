@@ -2,6 +2,7 @@
 Tests for retirement planning routes.
 """
 
+import re
 from datetime import date
 from decimal import Decimal
 
@@ -19,10 +20,12 @@ from app.models.user import UserSettings
 from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.services import account_service
+from app.services.balance_at import BalanceContext
 from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
     RecurrencePattern, TransactionType,
 )
+from tests._test_helpers import make_every_period_rule
 
 
 def _create_salary_profile(seed_user, db_session):
@@ -42,12 +45,7 @@ def _create_salary_profile(seed_user, db_session):
         db_session.add(cat)
         db_session.flush()
 
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=every_period.id,
-    )
-    db_session.add(rule)
-    db_session.flush()
+    rule = make_every_period_rule(db_session, seed_user["user"].id)
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -911,10 +909,13 @@ class TestRetirementProjections:
         # the raise-aware readiness producer's net monthly target exactly
         # (page == service, a strictly stronger pin than the old
         # label-presence check).  The money macro renders "$1,234.56".
-        from app.services import retirement_readiness
+        from app.services import retirement_plan, retirement_readiness
 
-        readiness = retirement_readiness.compute_readiness_data(
-            seed_user["user"].id
+        inputs = retirement_plan.load_retirement_inputs(
+            BalanceContext.build(seed_user["user"].id),
+        )
+        readiness = retirement_readiness.readiness_from_picture(
+            retirement_plan.picture_at(inputs, inputs.stored_plan),
         )
         target = readiness["income_target_net_monthly"]
         assert target > 0
@@ -1658,7 +1659,10 @@ class TestReturnRateClarity:
         as traditional (pre-tax) in the gap analysis projections."""
         from app import ref_cache
         from app.enums import AcctCategoryEnum
-        from app.services.retirement_dashboard_service import compute_gap_data
+        from app.services.retirement_plan import (
+            load_retirement_inputs,
+            picture_at,
+        )
 
         with app.app_context():
             _create_salary_profile(seed_user, db.session)
@@ -1696,9 +1700,13 @@ class TestReturnRateClarity:
             ))
             db.session.commit()
 
-            data = compute_gap_data(seed_user["user"].id)
-            projections = data["retirement_account_projections"]
-            proj = next(p for p in projections if p["account"].id == acct.id)
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            picture = picture_at(inputs, inputs.stored_plan)
+            proj = next(
+                p for p in picture.projections if p["account"].id == acct.id
+            )
             assert proj["is_traditional"] is True
 
     def test_gap_analysis_posttax_type(
@@ -1707,7 +1715,10 @@ class TestReturnRateClarity:
         """A Retirement type with is_pretax=False is NOT flagged as traditional."""
         from app import ref_cache
         from app.enums import AcctCategoryEnum
-        from app.services.retirement_dashboard_service import compute_gap_data
+        from app.services.retirement_plan import (
+            load_retirement_inputs,
+            picture_at,
+        )
 
         with app.app_context():
             _create_salary_profile(seed_user, db.session)
@@ -1745,20 +1756,30 @@ class TestReturnRateClarity:
             ))
             db.session.commit()
 
-            data = compute_gap_data(seed_user["user"].id)
-            projections = data["retirement_account_projections"]
-            proj = next(p for p in projections if p["account"].id == acct.id)
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            picture = picture_at(inputs, inputs.stored_plan)
+            proj = next(
+                p for p in picture.projections if p["account"].id == acct.id
+            )
             assert proj["is_traditional"] is False
 
     def test_gap_analysis_no_retirement_accounts(
         self, app, auth_client, seed_user, db,
     ):
         """Gap analysis returns empty projections when no retirement accounts exist."""
-        from app.services.retirement_dashboard_service import compute_gap_data
+        from app.services.retirement_plan import (
+            load_retirement_inputs,
+            picture_at,
+        )
 
         with app.app_context():
-            data = compute_gap_data(seed_user["user"].id)
-            assert data["retirement_account_projections"] == []
+            inputs = load_retirement_inputs(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            picture = picture_at(inputs, inputs.stored_plan)
+            assert picture.projections == []
 
 
 def _seed_underfunded(seed_user, db_session):
@@ -2145,13 +2166,21 @@ class TestReadinessFragment:
     def test_baseline_fragment_has_verdict_and_no_deltas(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """No overrides: the verdict renders with the OOB income panel.
+        """No overrides: the verdict renders with both OOB siblings.
 
-        Realigned (P3b): the countdown moved from the fragment to the
-        page header, and a STANDALONE fragment response now carries the
-        income panel as an hx-swap-oob sibling so the meter always
-        tracks the verdict; no lever lines ride along without stepper
-        params, and no delta line renders without overrides.
+        Realigned (P3b): the countdown moved from the fragment to the page
+        header, and a STANDALONE fragment response carries the income panel as
+        an hx-swap-oob sibling so the meter always tracks the verdict.  No
+        delta line renders without overrides.
+
+        **The LEVER card is the second sibling since plan step C2-f2d-4**
+        (ledger row **P59**), and this assertion inverted with the developer's
+        ruling.  It used to read ``'data-lever=' not in html`` -- the levers
+        rode along only when a stepper had moved, because they ignored the
+        what-if sliders and so had no new answer to give.  They are solved
+        against the displayed assumptions now, which means every refresh has a
+        new answer and a card left un-refreshed would state a different plan
+        from the verdict beside it.
         """
         _seed_underfunded(seed_user, db.session)
         resp = auth_client.get(
@@ -2164,7 +2193,101 @@ class TestReadinessFragment:
         assert 'id="income-panel"' in html
         assert 'hx-swap-oob="innerHTML"' in html
         assert 'data-readiness="deltas"' not in html
-        assert 'data-lever=' not in html
+        # GRADE THE ONE TOKEN THE FEATURE HANGS ON, as ONE string.  Asserting
+        # the id and `hx-swap-oob` separately passes with the attribute
+        # deleted -- `#income-panel` satisfies the second half -- and the whole
+        # 9,572-test suite was MEASURED green with it removed (adversarial
+        # design review, 2026-08-16), which is `lessons.md`'s N-199 on the very
+        # same attribute name.  Without it the lever card never updates and
+        # C2-f2d-4 does nothing at all in a browser.
+        assert '<div id="levers-region" hx-swap-oob="innerHTML">' in html
+        assert 'data-lever="contribution"' in html
+
+    def test_the_levers_are_solved_at_the_what_if_the_hero_shows(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """One response, ONE set of assumptions -- plan step C2-f2d-4, row P59.
+
+        The failure this replaces was visible on screen and captioned nowhere.
+        The hero honoured the SWR / return / merit sliders while the lever card
+        beside it always solved against the STORED settings, so a page showing
+        "65.3% funded" under a 3.5% withdrawal rate told the owner to
+        contribute the amount that closes the gap at 4%.  Both figures were
+        correct; they were answers to different questions, presented as one
+        plan.
+
+        A tighter withdrawal rate makes the plan need MORE, so the solved
+        contribution must RISE.  Asserted as a directional inequality against
+        the same page's own stored-settings answer rather than against a
+        literal, so the case cannot rot into a restatement of the seeded
+        scenario's arithmetic.
+
+        The retire-later lever is asserted through its OUTCOME LINES rather
+        than through a solved month count, because this fixture is
+        deliberately ``not_within_cap`` on that lever (see
+        :func:`_seed_underfunded`) and so has no solved delay to compare.  The
+        lines render in every state and carry that state's own figures, so a
+        lever card that ignored the what-if would return them byte-identical.
+        """
+        _seed_underfunded(seed_user, db.session)
+
+        def fragment(query):
+            """The lever card's solved contribution and its outcome lines."""
+            resp = auth_client.get(
+                f"/retirement/readiness{query}", headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            amount = re.search(
+                r"\+\$([\d,]+\.\d\d)<span class=\"retire-lever-unit\"> /paycheck",
+                html,
+            )
+            assert amount, "the lever card did not render its solved default"
+            lines = re.search(
+                r'<div id="lever-outcomes".*?</div>', html, re.S,
+            )
+            assert lines, "the lever card did not render its outcome lines"
+            return Decimal(amount.group(1).replace(",", "")), lines.group(0)
+
+        stored_amount, stored_lines = fragment("")
+        tighter_amount, tighter_lines = fragment("?swr=2")
+        assert tighter_amount > stored_amount, (
+            f"a 2% withdrawal rate left the solved contribution at "
+            f"{tighter_amount} against {stored_amount} at the stored 4% -- the "
+            "lever card is not solving against the displayed what-if"
+        )
+        assert tighter_lines != stored_lines, (
+            "both lever outcome lines came back unchanged under a what-if "
+            "that moved the verdict, so the card is stating a different plan "
+            "from the hero above it"
+        )
+
+    def test_a_moved_stepper_keeps_the_owners_value_under_a_what_if(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A what-if re-solves the DEFAULT and keeps the entered amount.
+
+        The trap in refreshing the lever card on every slider move: the card
+        holds the owner's own stepper entries, so an out-of-band swap that
+        re-rendered it from the solved defaults would silently discard what
+        they typed.  It does not, because the refresh request carries
+        ``.lever-param`` and the producer echoes the submitted amount back --
+        so the headline shows the newly solved default while the stepper shows
+        the entry, which is the pair a reader needs to compare.
+        """
+        _seed_underfunded(seed_user, db.session)
+        resp = auth_client.get(
+            "/retirement/readiness?swr=2&contribution=250.00",
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert 'id="lever-contribution"' in html
+        assert 'value="250.00"' in html, (
+            "the what-if refresh discarded the owner's stepper entry"
+        )
+        # And the OUTCOME line states the entered amount, not the solved one.
+        assert "+$250.00/paycheck" in html
 
     def test_swr_override_renders_deltas(
         self, auth_client, seed_user, db, seed_periods_today,

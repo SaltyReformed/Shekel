@@ -270,17 +270,22 @@ _FENCED_MODULE_RULINGS = {
     # this module imports no producer and cannot -- that is the property that
     # made it a separate module.
     "app.services.row_valuation": (frozenset(), frozenset({
-        # The three arms of what one row is worth that need no producer, ruled
+        # The four arms of what one row is worth that need no producer, ruled
         # on exactly the ground the ``cash_ledger._amounts`` valuation family
         # below stands on: each answers what ONE ROW is worth, and none folds,
         # dates, sums, or reads an anchor.  ``fixed_contribution`` is the
         # status / soft-delete / entered-actual gate every other form shares,
         # ``own_figure`` is the refusal that keeps the amount model TOTAL (a
-        # row owning its amount must store one), and ``owned_contribution``
-        # composes the two for a reader that can only ever see rows owning
-        # their figure.
+        # row owning its amount must store one), ``owned_amount`` is that
+        # refusal applied to a transaction's own column, and
+        # ``owned_contribution`` composes it with the gate for a reader that
+        # can only ever see rows owning their figure.  The last two are the
+        # BUDGET / WORTH pair plan step X-au-c2b completed: one answers what a
+        # row's amount IS, the other what it is worth, and a reader takes
+        # whichever question it is asking.
         "fixed_contribution",
         "own_figure",
+        "owned_amount",
         "owned_contribution",
     })),
     # The cash LEDGER leaf (plan steps D1a + D1c): the facts a cash balance is
@@ -307,6 +312,14 @@ _FENCED_MODULE_RULINGS = {
         # are the two anchor WRITE doors, deciding whether a submission changes
         # anything.
         "governing_anchor_on",
+        # The NON-RAISING twin of ``resolve_anchor``, added at plan step
+        # X-f3a-1 for the reconcile panel: same row, same tie-breaks, same
+        # ``_governing_row`` query, and the only difference is that "this
+        # account has never had a balance declared" is an honest empty state to
+        # a panel where it is a broken invariant to a reader.  It carries
+        # ``resolve_anchor``'s ruling verbatim -- a stored user-asserted FACT,
+        # not a computed projection.
+        "governing_anchor",
         # The PLAN loader (plan step X-b), a non-producer on the same ground
         # as its settled twin ``settled_cash_facts`` below: it SELECTS rows and
         # returns them unchanged.  Its WINDOWED sibling
@@ -338,12 +351,19 @@ _FENCED_MODULE_RULINGS = {
         # one-row and batch forms that resolve first.  Each answers what ONE
         # ROW is worth -- none folds, dates, sums, or reads an anchor, and the
         # batch is a dict keyed by row id rather than anything per account.
-        # ``owned_contribution`` is the fourth of them and is ruled with them,
-        # under :data:`_ROW_VALUATION_MODULES` -- it is DEFINED one module down
-        # and only re-exported here, and this fence keys on where a function is
-        # DEFINED.
+        # ``owned_contribution`` and ``owned_amount`` are ruled with them,
+        # under :data:`_ROW_VALUATION_MODULES` -- both are DEFINED one module
+        # down and only re-exported here, and this fence keys on where a
+        # function is DEFINED.
         "live_override",
         "live_amounts",
+        # The COMPOSITION of the two questions a screen asks -- what a row's
+        # amount resolves to, superseded by a live recompute (plan step
+        # X-au-c2b).  A non-producer on the same ground both of its terms are:
+        # a dict keyed by ROW ID, nothing per account, nothing folded or dated.
+        # It exists because an adversarial review found that composition
+        # written twice and differently across the grid and the fragments.
+        "display_amounts_by_id",
         "contributed_amount",
         "contribution_of",
         "contributions_by_id",
@@ -364,6 +384,13 @@ _FENCED_MODULE_RULINGS = {
         "amount_rule",
         "resolve_transaction_amount",
         "resolve_transfer_amount",
+        # The BATCH form of the same answer (plan step X-au-c2b), on the same
+        # ground as ``contributions_by_id`` above: a dict keyed by ROW ID, one
+        # entry per row the caller loaded, and nothing per account.  It differs
+        # from that sibling in the question rather than the tier -- what a row's
+        # amount IS (ruling E-21's budget base) rather than what it is worth --
+        # so a reader that needs a budget stops reaching for a contribution.
+        "amounts_by_id",
         # The ONE statement of "is this movement already inside the balance the
         # user declared" (ruling R-DH (a)), and since the one-partition step it
         # is a METHOD on ``ReconciledThrough`` rather than a free function, so
@@ -396,6 +423,11 @@ _FENCED_MODULE_RULINGS = {
         # the same reasoning one step further along: it is not even an amount
         # per transaction, it is a component of one.
         "credit_entry_sum",
+        # The OTHER term ruling **R-FM** adds to that rule (plan step X-f3b) --
+        # ``Sigma(posted debit purchases)`` for one row -- published for exactly
+        # the reason its sibling above is, and refused for the same one: it is a
+        # component of an amount per transaction, not a balance per account.
+        "posted_purchase_sum",
         # ``_flows`` -- what a SET of rows sums to: what MOVED, not what is HELD
         # at a date.  A peer reduction over the same rows a balance folds, not a
         # step toward one.  ``sum_projected`` is the shared engine BOTH cash
@@ -456,6 +488,35 @@ _FENCED_MODULE_RULINGS = {
         # into corrections at plan step X-d.
         "dated_deltas",
         "walk_cash_ledger",
+        # ``_clearing`` (plan step X-f3a-1, ruling **R-FL**) -- WHICH STATEMENT
+        # showed a line, which is the recorded fact that replaced ``covers``'
+        # date comparison on the cash side.  Five names, one ruling, because
+        # they are one question at three surfaces:
+        # ``clearing_anchor_id`` names the assertion that cleared ONE line,
+        # ``is_cleared`` is that answer reduced to a bool for the entry
+        # reservation, ``statement_coverage`` builds the rule from an account's
+        # assertion facts, ``coverage_for`` is its database twin for a caller
+        # holding no walk, and ``coverage`` is the property on ``CashLedgerWalk``
+        # for a caller holding one.
+        #
+        # Non-producers on exactly the ground ``covers`` and
+        # ``reconciled_through`` stand on, and the classification did not change
+        # when the fact did: each answers whether ONE event is inside ONE
+        # assertion, or which assertion it is inside.  None of them reads a
+        # figure -- an ``account_anchor_history`` id and a bool are not money --
+        # and none folds, dates, sums or samples anything.
+        #
+        # ``latest_statement_day`` is the deliberate escape hatch, ruled here
+        # rather than left to a call site: it returns the raw civil DAY the
+        # entry list captions and the reconcile panel bounds its offer set with,
+        # and it is the exact twin of ``ReconciledThrough.observed_day``, which
+        # the same argument admits.  A day is not a balance.
+        "clearing_anchor_id",
+        "coverage",
+        "coverage_for",
+        "is_cleared",
+        "latest_statement_day",
+        "statement_coverage",
     })),
     # The account-KIND classifier -- why it is scoped is recorded once, at
     # :data:`_KIND_CLASSIFIER_MODULES`.  Its ``find_period_containing_date``
@@ -609,6 +670,15 @@ _FENCED_MODULE_RULINGS = {
         # render.
         "calendar",
         "reported_periods",
+        # The read pass's AMOUNT-MODEL memo (plan step X-au-c2b).  A
+        # NON-producer on the ground ``calendar`` stands on: it hands back an
+        # ``AmountBasis``, which carries the two live DERIVATIONS a row's
+        # amount is priced from and no balance-at-T of any kind -- and
+        # ``cash_ledger.amount_basis`` is a public leaf BELOW this seam that any
+        # consumer may call directly for the identical value.  What this adds is
+        # that the seam and its caller cannot end up pricing one render's rows
+        # two ways.
+        "amounts",
     })),
     # The loan-payment LOADER module (:data:`_LOAN_PAYMENT_SEAM_MODULES`).  It
     # was "the one reader-allowlisted module outside the defining package" until
@@ -631,9 +701,20 @@ _FENCED_MODULE_RULINGS = {
         # figure of any kind.
         "prepare_payments_for_engine",
         # A projected payment's LIVE cash (P&I + current escrow + standing
-        # extra) -- what a payment is worth, not what an account owes.
-        "live_loan_payment_amount",
-        "live_loan_transfer_amounts",
+        # extra) -- what a payment is worth, not what an account owes.  Plan
+        # step X-au-c2b collapsed the two functions that answered this into
+        # ``LoanPricing``: ``live_cash`` is the rule both the display and the
+        # settle freeze ask, ``derive_cash`` its derive-mode arm.  Same
+        # standing as the pair they replaced.
+        "live_cash",
+        "derive_cash",
+        # The scenario's loan-payment CONFIG map (which transfers are loan
+        # payments, in which mode, with what standing extra) and the named
+        # constructor for the derivation holding it.  Configuration and
+        # ingredients; no figure at all in the first, and the second resolves
+        # nothing when it is called.
+        "config_by_transfer",
+        "loan_pricing",
         # Two BOOLEAN-and-a-Decimal settings off a transfer template: does this
         # payment's cash derive from the loan, and what standing extra rides on
         # it.  Public since plan step X-au-b, whose amount resolver has to know

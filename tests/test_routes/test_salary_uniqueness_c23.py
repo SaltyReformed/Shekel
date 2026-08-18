@@ -41,7 +41,7 @@ from app.models.salary_raise import SalaryRaise
 from app.models.transaction_template import TransactionTemplate
 from app.utils.db_errors import is_unique_violation
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import freeze_today, make_every_period_rule
 
 
 # ── Fixtures and helpers ────────────────────────────────────────
@@ -85,11 +85,7 @@ def _create_profile(seed_user):
         db.session.add(cat)
         db.session.flush()
 
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id, pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,

@@ -19,7 +19,6 @@ from app.enums import AcctTypeEnum, RecurrencePatternEnum
 from app.extensions import db
 from app.models.escrow_line import EscrowComponentVersion
 from app.models.loan_payment_settings import LoanPaymentSettings
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
@@ -35,9 +34,39 @@ from tests._test_helpers import (
     add_escrow_line,
     create_loan_account,
     loan_params_for,
+    make_pattern_rule,
 )
 from app.services.row_valuation import owned_contribution
 
+
+def _live_overrides(scenario_id, rows):
+    """The loan-payment live override map for *rows*, built per row.
+
+    Plan step X-au-c2b split ``live_loan_transfer_amounts`` into an owner-scoped
+    DERIVATION (:func:`loan_payment_service.loan_pricing`) and a per-row lookup,
+    and collapsed the settle-time twin ``live_loan_payment_amount`` into the
+    same rule.  The ``{transaction_id: Decimal}`` map this file grades is now
+    something a caller builds, so it is built here and every assertion below
+    keeps its original shape and figures.
+
+    A FRESH pricing per call, deliberately: the tests that mutate an escrow line
+    and re-read must see the new figure, and a derivation memoizes for the
+    length of the read pass it was built for.
+
+    Args:
+        scenario_id: The scenario to resolve each loan against.
+        rows: The shadows to ask about.
+
+    Returns:
+        ``{transaction_id: Decimal}`` over the rows that have a live figure.
+    """
+    pricing = loan_payment_service.loan_pricing(scenario_id, date.today())
+    answers = {}
+    for row in rows:
+        cash = pricing.live_cash(row)
+        if cash is not None:
+            answers[row.id] = cash
+    return answers
 
 def _build_derived_loan_transfer(seed_user, escrow_annual):
     """Create a $200k/6%/360 mortgage + a derive_from_loan recurring transfer.
@@ -70,15 +99,12 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
         effective_date=params.origination_date,
     )
 
-    rule = RecurrenceRule(
-        user_id=user.id,
-        pattern_id=ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.MONTHLY,
-        ),
-        day_of_month=1,
+    # Authored through the write door (plan step R7c-b): the day a rule fires
+    # on is its first occurrence's own day, so "the 1st" is a DATE the fixture
+    # schedule reaches rather than a separate column.
+    rule = make_pattern_rule(
+        user.id, RecurrencePatternEnum.MONTHLY, fires_on_day=1,
     )
-    db.session.add(rule)
-    db.session.flush()
     template = TransferTemplate(
         user_id=user.id,
         from_account_id=checking.id,
@@ -136,9 +162,7 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
         assert shadows, "expected generated shadow transactions"
 
-        overrides = loan_payment_service.live_loan_transfer_amounts(
-            scenario_id, shadows,
-        )
+        overrides = _live_overrides(scenario_id, shadows)
         # Every shadow of this loan's transfer gets the live PITI.
         assert overrides, "expected live overrides for the derive_from_loan transfer"
         assert all(v == Decimal("1499.10") for v in overrides.values())
@@ -157,9 +181,7 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
         escrow.annual_amount = Decimal("4800.00")
         db.session.commit()
 
-        overrides_after = loan_payment_service.live_loan_transfer_amounts(
-            scenario_id, shadows,
-        )
+        overrides_after = _live_overrides(scenario_id, shadows)
         assert all(v == Decimal("1599.10") for v in overrides_after.values())
         # Still no regeneration: stored transfer amounts unchanged.
         stored_after = {
@@ -191,9 +213,7 @@ def test_non_derived_transfer_has_no_live_override(
         db.session.commit()
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = loan_payment_service.live_loan_transfer_amounts(
-            scenario_id, shadows,
-        )
+        overrides = _live_overrides(scenario_id, shadows)
         assert overrides == {}
 
 
@@ -280,9 +300,7 @@ def test_derived_override_is_per_shadow_date_aware(
         db.session.commit()
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = loan_payment_service.live_loan_transfer_amounts(
-            scenario_id, shadows,
-        )
+        overrides = _live_overrides(scenario_id, shadows)
         cutoff = date(2026, 3, 15)
         before = [s for s in shadows if s.due_date < cutoff]
         after = [s for s in shadows if s.due_date >= cutoff]
@@ -350,9 +368,7 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
             < income_shadow.due_date
         )
 
-        overrides = loan_payment_service.live_loan_transfer_amounts(
-            scenario_id, [income_shadow],
-        )
+        overrides = _live_overrides(scenario_id, [income_shadow])
         assert overrides[income_shadow.id] == Decimal("1699.10")
 
         resp = auth_client.post(f"/transactions/{income_shadow.id}/mark-done")
@@ -503,9 +519,9 @@ def test_settled_loan_payment_freeze_is_one_shot(
 
         # The freeze is one-shot: the derivation returns None for a settled
         # shadow, so the settle capture can never fire a second time.
-        assert loan_payment_service.live_loan_payment_amount(
-            settled, scenario_id,
-        ) is None
+        assert loan_payment_service.loan_pricing(
+            scenario_id, date.today(),
+        ).live_cash(settled) is None
 
         # A stale-tab re-settle leaves the frozen figure untouched.
         resp2 = auth_client.post(
@@ -577,9 +593,7 @@ def test_derived_override_includes_standing_extra(
         db.session.commit()
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = loan_payment_service.live_loan_transfer_amounts(
-            scenario_id, shadows,
-        )
+        overrides = _live_overrides(scenario_id, shadows)
         assert overrides
         assert all(v == Decimal("1599.10") for v in overrides.values())
 
@@ -607,9 +621,7 @@ def test_manual_payment_with_extra_gets_base_plus_extra(
         db.session.commit()
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = loan_payment_service.live_loan_transfer_amounts(
-            scenario_id, shadows,
-        )
+        overrides = _live_overrides(scenario_id, shadows)
         assert overrides
         assert all(v == Decimal("1599.10") for v in overrides.values())
 
@@ -657,9 +669,7 @@ def test_manual_extra_keys_to_recurring_base_not_a_typed_actual(
         assert owned_contribution(shadow) == Decimal("1550.00")
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = loan_payment_service.live_loan_transfer_amounts(
-            scenario_id, shadows,
-        )
+        overrides = _live_overrides(scenario_id, shadows)
         # Extra on the recurring base (1499.10 + 100), NOT on the typed actual.
         assert overrides[shadow.id] == Decimal("1599.10")
 
@@ -686,9 +696,7 @@ def test_manual_payment_without_extra_gets_no_override(
         db.session.commit()
 
         shadows = _loan_transfer_shadows(loan.id, scenario_id)
-        overrides = loan_payment_service.live_loan_transfer_amounts(
-            scenario_id, shadows,
-        )
+        overrides = _live_overrides(scenario_id, shadows)
         assert overrides == {}
 
 

@@ -13,11 +13,52 @@ the invariant that the stored ``end_date`` / ``period_index`` equal the
 derivation over the owner's paydays needs exactly one home for plan steps C4,
 C6 and C7 to inherit.  What is left here is the read side, which plan step
 **C2-f** points at ``pay_calendar.PayCalendar``.
+
+**Three of that step's six readers are GONE at C2-f1** and their questions are
+now the calendar's, each answered by ONE derivation over the owner's paydays
+instead of by its own SQL:
+
+======================================= ==================================
+retired reader                          what answers it now
+======================================= ==================================
+``get_overlapping_periods``             ``PayCalendar.overlapping``
+``get_next_period``                     ``PayCalendar.period_starting_after``
+``get_current_and_future_periods``      ``routes._period_options.period_move_options``
+======================================= ==================================
+
+The last one is a FORM-OPTIONS rule rather than a calendar question, which is
+why it left this module for the route layer rather than for the value: an
+already-closed period is not somewhere a user moves an expense TO, and that is
+a policy about editing rather than a fact about the schedule.
+``companion_service.get_previous_period`` -- a copy of ``get_next_period``
+with ``+ 1`` changed to ``- 1`` -- went with them.
+
+**A FOURTH is gone at C2-f2b**, and it went whole rather than by call
+site: ``get_periods_in_range`` -- a window selected by ``period_index``,
+which is one of the two derived columns plan step **C4** drops -- had all
+three of its ``app/`` call sites in the grid route -- ``page.py`` twice and
+``partials.py`` once, that module having become the ``app/routes/grid/``
+package the same branch -- so moving the grid onto
+:meth:`~app.services.pay_calendar.PayCalendar.window` left it with no caller
+at all.  The question it answered is the calendar's:
+
+======================================= ==================================
+retired reader                          what answers it now
+======================================= ==================================
+``get_periods_in_range``                ``PayCalendar.window``
+======================================= ==================================
+
+``get_current_period`` and ``get_all_periods`` remain, for the rest of
+**C2-f2** and then **C2-f3**: only the GRID leaf of that step has landed, and
+``C2-f2c``-``C2-f2e`` still move both readers at ``/investment``,
+``/savings``, ``/retirement``, the budget dashboard and ``/accounts/<id>``.
+**They travel together and may not be separated** (the C2-f decomposition
+ruling, 2026-08-14): 11 functions read both, so splitting them leaves a
+dozen context objects holding an ORM row in one field and a
+:class:`~app.services.pay_calendar.DerivedPeriod` in another.
 """
 
 from datetime import date
-
-from sqlalchemy import or_
 
 from app.extensions import db
 from app.models.pay_period import PayPeriod
@@ -108,29 +149,6 @@ def get_current_period(user_id, as_of=None):
     )
 
 
-def get_periods_in_range(user_id, start_index, count):
-    """Return a window of pay periods by index.
-
-    Args:
-        user_id:     The user's ID.
-        start_index: The first period_index to include.
-        count:       Number of periods to return.
-
-    Returns:
-        List of PayPeriod objects ordered by period_index.
-    """
-    return (
-        db.session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == user_id,
-            PayPeriod.period_index >= start_index,
-            PayPeriod.period_index < start_index + count,
-        )
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
-
-
 def get_all_periods(user_id):
     """Return all pay periods for a user, ordered by index.
 
@@ -143,105 +161,6 @@ def get_all_periods(user_id):
     return (
         db.session.query(PayPeriod)
         .filter_by(user_id=user_id)
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
-
-
-def get_current_and_future_periods(user_id, as_of=None, include_period_id=None):
-    """Return pay periods that have not yet ended, plus an optional extra.
-
-    "Current and future" means every period whose ``end_date`` is on or
-    after ``as_of`` (defaults to today): the period containing today and
-    every later one.  Periods that have already ended are excluded.
-
-    ``include_period_id`` forces one specific period into the result even
-    if it has already ended.  The transaction-move UI passes the moved
-    row's current ``pay_period_id`` so a row that currently sits in a
-    past period stays selectable -- and stays the selected option --
-    instead of the dropdown silently defaulting to the first current
-    period and re-pointing the row on save.
-
-    Args:
-        user_id: The user's ID.
-        as_of: Reference date for the "has ended" test (default: today).
-        include_period_id: Optional pay_period id to always include,
-            even when it has ended.
-
-    Returns:
-        List of PayPeriod objects ordered by period_index.
-    """
-    if as_of is None:
-        as_of = date.today()
-
-    not_ended = PayPeriod.end_date >= as_of
-    if include_period_id is not None:
-        clause = or_(not_ended, PayPeriod.id == include_period_id)
-    else:
-        clause = not_ended
-
-    return (
-        db.session.query(PayPeriod)
-        .filter(PayPeriod.user_id == user_id, clause)
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
-
-
-def get_next_period(period):
-    """Return the pay period immediately following the given one.
-
-    Args:
-        period: A PayPeriod object.
-
-    Returns:
-        The next PayPeriod, or None if it doesn't exist.
-    """
-    return (
-        db.session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == period.user_id,
-            PayPeriod.period_index == period.period_index + 1,
-        )
-        .first()
-    )
-
-
-def get_overlapping_periods(
-    user_id: int,
-    first_day: date,
-    last_day: date,
-) -> list[PayPeriod]:
-    """Return all pay periods that overlap a calendar date range.
-
-    A period overlaps ``[first_day, last_day]`` when
-    ``start_date <= last_day`` AND ``end_date >= first_day``.  The
-    range is inclusive on both ends.
-
-    Used by the calendar, daily-balance series, and spending-report
-    services to find the pay periods that need to be inspected when
-    reporting on a calendar month or year window.  Centralised here so a future
-    change (e.g. excluding inactive scenarios' periods, or adding a
-    second index ordering) is a single edit rather than chasing the
-    inline copies the audit's Issue 1 noted.
-
-    Args:
-        user_id: The user whose pay periods to consider.
-        first_day: Inclusive lower bound of the date range.
-        last_day: Inclusive upper bound of the date range.
-
-    Returns:
-        List of :class:`PayPeriod` objects, ordered by
-        ``period_index`` ascending.  Empty list when no pay period
-        overlaps the range.
-    """
-    return (
-        db.session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == user_id,
-            PayPeriod.start_date <= last_day,
-            PayPeriod.end_date >= first_day,
-        )
         .order_by(PayPeriod.period_index)
         .all()
     )

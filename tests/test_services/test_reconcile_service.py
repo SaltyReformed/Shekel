@@ -13,7 +13,7 @@ list every case below was written against.  Grading the same ids through a new
 shape is what makes the move provably behaviour-preserving.
 """
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import date
 from decimal import Decimal
 
@@ -51,7 +51,7 @@ def _make_entry(transaction, user, amount="50.00", description="Kroger",
     modules' fixtures to one shape for no gain.
     """
     entry = TransactionEntry(
-        transaction_id=transaction.id,
+        transaction_id=transaction.id, account_id=transaction.account_id,
         user_id=user.id,
         amount=Decimal(amount),
         description=description,
@@ -64,6 +64,35 @@ def _make_entry(transaction, user, amount="50.00", description="Kroger",
 
 
 _OBSERVED_ON = date(2026, 1, 10)
+
+
+def _statement(account_id, observed_on=_OBSERVED_ON):
+    """Return the STATEMENT these tests reconcile against, for *account_id*.
+
+    Plan step **X-f3a-1** (ruling **R-FL**) made every door here take the
+    governing ASSERTION rather than a bare civil day, because a tick now records
+    WHICH statement showed the money and production carries three days on which
+    one account holds more than one assertion.
+
+    **The id is the account's REAL assertion and the day is the test's.**  The
+    id has to be real: ``fk_transactions_reconciled_by`` and
+    ``fk_transaction_entries_reconciled_by`` refuse a link to a statement that
+    does not exist, which is exactly what those composite keys are for.  The day
+    does not, and these tests are why it is separable -- they grade the SET
+    OPERATION (which rows a bound admits), so the day is an input to the filter
+    rather than a fact about the seeded account, as this module's own scope note
+    says.
+
+    Args:
+        account_id: The account whose governing assertion to borrow.
+        observed_on: The civil day to present it for.
+
+    Returns:
+        The :class:`~app.services.cash_ledger.AnchorPoint` to reconcile against.
+    """
+    return replace(
+        cash_ledger.governing_anchor(account_id), observed_on=observed_on,
+    )
 _BEFORE_THE_STATEMENT = date(2026, 1, 5)
 _AFTER_THE_STATEMENT = date(2026, 1, 12)
 
@@ -107,7 +136,7 @@ class TestTheOutstandingSet:
         """Run the writer against the seed user's own checking account."""
         return reconcile_service.record_settled_days(
             seed_user["user"].id, seed_user["account"].id,
-            set(entry_ids), _OBSERVED_ON,
+            set(entry_ids), _statement(seed_user["account"].id),
         )
 
     @staticmethod
@@ -116,10 +145,40 @@ class TestTheOutstandingSet:
         return [
             purchase.entry_id
             for group in reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+                seed_user["user"].id, seed_user["account"].id,
+                _statement(seed_user["account"].id),
             ).groups
             for purchase in group.purchases
         ]
+
+    def test_a_tick_records_WHICH_statement_showed_the_purchase(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The purchase arm writes the clearing fact, not just the day.
+
+        Ruling **R-FL**: ``settled_on`` is an upper bound on the true posting
+        day, and ``reconciled_by_id`` is the observation itself.  The day alone
+        cannot carry it, because production holds three days on which Checking
+        has more than one assertion -- so a rule over ``settled_on`` could not
+        say WHICH statement a tick was made against.
+
+        Graded here because this arm's writer is a bulk ``UPDATE``: a column
+        omitted from it fails silently, leaving the panel reporting a
+        reconciliation it did not record.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(txn, seed_user)
+            db.session.commit()
+            statement = _statement(seed_user["account"].id)
+
+            assert self._reconcile(seed_user, [entry.id]) == 1
+            db.session.commit()
+            db.session.expire_all()
+
+            reloaded = db.session.get(TransactionEntry, entry.id)
+            assert reloaded.reconciled_by_id == statement.anchor_id
+            assert reloaded.settled_on == statement.observed_on
 
     def test_an_outstanding_debit_is_listed_and_stamped(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -576,7 +635,8 @@ class TestTheSetIsGroupedByItsParent:
     @staticmethod
     def _resolve(seed_user, observed_on=_OBSERVED_ON):
         return reconcile_service.outstanding_set(
-            seed_user["user"].id, seed_user["account"].id, observed_on,
+            seed_user["user"].id, seed_user["account"].id,
+            _statement(seed_user["account"].id, observed_on),
         )
 
     def test_each_envelope_is_one_block_carrying_its_own_purchases(
@@ -885,7 +945,8 @@ class TestTheTransactionArm:
         return {
             group.settle.transaction_id: group.settle
             for group in reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id, observed_on,
+                seed_user["user"].id, seed_user["account"].id,
+                _statement(seed_user["account"].id, observed_on),
             ).groups
             if group.settle is not None
         }
@@ -909,7 +970,7 @@ class TestTheTransactionArm:
                 entry_ids=set(),
                 transaction_ids=set(ids),
                 corrections=corrections or {},
-                observed_on=observed_on,
+                anchor=_statement(seed_user["account"].id, observed_on),
             ),
         )
 
@@ -935,6 +996,30 @@ class TestTheTransactionArm:
             reloaded = db.session.get(Transaction, txn.id)
             assert reloaded.settled_on == _OBSERVED_ON
             assert reloaded.status_id == ref_cache.status_id(StatusEnum.DONE)
+
+    def test_a_tick_records_WHICH_statement_showed_the_row(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The transaction arm writes the clearing fact beside the settle.
+
+        Ruling **R-FL**.  It is written by the SHARED writer rather than by
+        either arm's settle verb, and that placement is the rule: both verbs are
+        also the grid's Mark Paid, which settles a row without any statement
+        having shown it, so a link written there would record an observation
+        nobody made.  Ticking on this panel IS the observation.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            db.session.commit()
+            statement = _statement(seed_user["account"].id)
+
+            assert self._settle(seed_user, [txn.id]) == 1
+            db.session.commit()
+            db.session.expire_all()
+
+            reloaded = db.session.get(Transaction, txn.id)
+            assert reloaded.reconciled_by_id == statement.anchor_id
+            assert reloaded.settled_on == statement.observed_on
 
     def test_a_row_that_is_not_yet_overdue_is_neither_offered_nor_settled(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1040,7 +1125,8 @@ class TestTheTransactionArm:
             # above would pass for a panel that offered the shadow through the
             # WRONG arm and settled one leg.
             assert shadow.id not in _transactions.outstanding_transactions(
-                seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+                seed_user["user"].id, seed_user["account"].id,
+                _statement(seed_user["account"].id),
             )
 
     def test_a_settled_row_is_neither_offered_nor_re_settled(
@@ -1076,7 +1162,8 @@ class TestTheTransactionArm:
             other_id = seed_user["user"].id + 1000
 
             assert reconcile_service.outstanding_set(
-                other_id, seed_user["account"].id, _OBSERVED_ON,
+                other_id, seed_user["account"].id,
+                _statement(seed_user["account"].id),
             ).groups == ()
             assert reconcile_service.record_reconciliation(
                 reconcile_service.ReconcileSubmission(
@@ -1085,7 +1172,7 @@ class TestTheTransactionArm:
                     entry_ids=set(),
                     transaction_ids={txn.id},
                     corrections={},
-                    observed_on=_OBSERVED_ON,
+                    anchor=_statement(seed_user["account"].id),
                 ),
             ) == 0
 
@@ -1113,7 +1200,7 @@ class TestTheTransactionArm:
             db.session.commit()
 
             assert reconcile_service.outstanding_set(
-                seed_user["user"].id, other.id, _OBSERVED_ON,
+                seed_user["user"].id, other.id, _statement(other.id),
             ).groups == ()
             assert reconcile_service.record_reconciliation(
                 reconcile_service.ReconcileSubmission(
@@ -1122,7 +1209,7 @@ class TestTheTransactionArm:
                     entry_ids=set(),
                     transaction_ids={txn.id},
                     corrections={},
-                    observed_on=_OBSERVED_ON,
+                    anchor=_statement(seed_user["account"].id),
                 ),
             ) == 0
 
@@ -1292,6 +1379,50 @@ class TestTheTransferArm:
     _offered = staticmethod(TestTheTransactionArm._offered)
     _settle = staticmethod(TestTheTransactionArm._settle)
 
+    def test_a_tick_records_the_STATEMENT_on_this_accounts_leg_alone(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The clearing fact is NOT mirrored, where the settle day is.
+
+        Ruling **R-FL**, and the asymmetry is the point.  A transfer leaves one
+        bank and arrives at another: the asserted account's statement showed its
+        own leg, and the other account's statement is a document nobody has read
+        in this act.  ``settled_on`` IS mirrored onto both legs (transfer
+        invariant 3, graded by the test below); ``reconciled_by_id`` must not
+        be, or ticking a savings sweep off a checking statement would record
+        that the savings statement showed the money too.
+
+        This is also what makes the posted walk's per-account shadow read
+        meaningful -- see
+        ``test_account_posting_service.TestWalkAccountLedger``'s own case, which
+        measures what reading the wrong leg's link costs.
+        """
+        with app.app_context():
+            transfer, shadow = self._transfer_out(seed_user, seed_periods)
+            statement = _statement(seed_user["account"].id)
+
+            assert self._settle(seed_user, [shadow.id]) == 1
+            db.session.commit()
+            db.session.expire_all()
+
+            legs = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=transfer.id)
+                .all()
+            )
+            assert len(legs) == 2
+            recorded = {
+                leg.account_id: leg.reconciled_by_id for leg in legs
+            }
+            assert recorded[seed_user["account"].id] == statement.anchor_id
+            other = next(
+                account_id for account_id in recorded
+                if account_id != seed_user["account"].id
+            )
+            assert recorded[other] is None, (
+                "The other account's leg named a statement nobody read."
+            )
+
     def test_a_tick_settles_the_parent_and_BOTH_legs_on_the_statement_day(
         self, app, db, seed_user, seed_periods, seed_entry_template,
     ):
@@ -1338,7 +1469,8 @@ class TestTheTransferArm:
             _transfer, shadow = self._transfer_out(seed_user, seed_periods)
 
             groups = reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+                seed_user["user"].id, seed_user["account"].id,
+                _statement(seed_user["account"].id),
             ).groups
             block = next(
                 group for group in groups
@@ -1369,13 +1501,14 @@ class TestTheTransferArm:
             db.session.commit()
 
             outgoing = reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+                seed_user["user"].id, seed_user["account"].id,
+                _statement(seed_user["account"].id),
             )
             assert outgoing.payment_total >= Decimal("75.00")
             assert outgoing.deposit_count == 0
 
             incoming = reconcile_service.outstanding_set(
-                seed_user["user"].id, savings.id, _OBSERVED_ON,
+                seed_user["user"].id, savings.id, _statement(savings.id),
             )
             assert incoming.deposit_count == 1
             assert incoming.deposit_total == Decimal("75.00")
@@ -1704,7 +1837,8 @@ class TestWhatATickBooks:
             db.session.commit()
 
             result = reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+                seed_user["user"].id, seed_user["account"].id,
+                _statement(seed_user["account"].id),
             )
             assert result.deposit_count == 1
             assert result.deposit_total == Decimal("1958.87")
@@ -1734,7 +1868,8 @@ class TestWhatATickBooks:
             db.session.commit()
 
             result = reconcile_service.outstanding_set(
-                seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+                seed_user["user"].id, seed_user["account"].id,
+                _statement(seed_user["account"].id),
             )
             assert result.purchase_count == 2
             assert result.purchase_total == Decimal("100.00")
@@ -1873,7 +2008,7 @@ class TestTheCashFigureBesideTheBookedOne:
                     entry_ids=set(),
                     transaction_ids={txn.id},
                     corrections={},
-                    observed_on=_OBSERVED_ON,
+                    anchor=_statement(seed_user["account"].id),
                 ),
             ) == 1
             db.session.commit()
@@ -2018,7 +2153,8 @@ class TestTheSectionsAndTheOrder:
     @staticmethod
     def _resolved(seed_user):
         return reconcile_service.outstanding_set(
-            seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+            seed_user["user"].id, seed_user["account"].id,
+            _statement(seed_user["account"].id),
         )
 
     def test_each_arm_TAGS_its_kind_and_income_is_a_DEPOSIT(

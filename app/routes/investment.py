@@ -259,10 +259,24 @@ def create_contribution_transfer(account_id):
         else:
             transfer_amount = _DEFAULT_SUGGESTED_AMOUNT
 
-    # Create every-period recurrence rule (one occurrence per paycheck).
+    # Create every-period recurrence rule (one occurrence per paycheck),
+    # starting at the OPENING of the owner's schedule.
+    #
+    # That is what this route has always done and it is stated rather than
+    # implied since plan step R7c-b made ``starts_on`` required: the spec
+    # carried no opening bound before, and an absent bound resolved to
+    # ``PayCalendar.opening_bound()`` -- so the contribution fans out across
+    # every pay period the owner has, INCLUDING ones that have already closed.
+    # The recurrence FORM defaults its own control to the current paycheck for
+    # exactly that reason (``create_form_default_starts_on``, which measured
+    # $10,000.00 of backdated rent).  Whether these two programmatic routes
+    # should do the same is plan ledger row **D34**, opened rather than decided
+    # here: changing it MOVES MONEY and is nothing this step was asked to do.
     rule = author_rule(
         RecurrenceSpec(
-            user_id=current_user.id, unit=RecurrenceUnitEnum.PERIOD,
+            user_id=current_user.id,
+            unit=RecurrenceUnitEnum.PERIOD,
+            starts_on=calendar.opening_bound(),
         ),
         calendar,
     )

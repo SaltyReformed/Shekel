@@ -1,17 +1,25 @@
 """How often a recurrence fires, with no schedule (plan step R7a-2b).
 
 ``resolve()`` answers what a recurrence MEANS against one owner's pay
-calendar, and most of that answer needs no calendar: a pattern's interval and
-unit are properties of the PATTERN.  ``cadence_of`` is that schedule-free half,
-and it exists because ``obligations_aggregator`` -- which turns every recurring
-template into a monthly figure on ``/savings`` and the Recurring surface -- has
-no calendar and could therefore not use the two-axis vocabulary at all.
+calendar, and most of that answer needs no calendar: the interval, the unit and
+the placement are what the rule itself states.  This module covers that
+schedule-free half.
 
 **Written where the old shapes could not answer.**  The seven-branch switch and
 the three-member ``frozenset`` this replaced were both correct for the cadences
 someone had listed, so a test over those cadences alone cannot tell the
 derivation from the enumeration.  Every case here either uses a cadence the
-closed set cannot name, varies the OWNER, or pins a boundary.
+closed pattern set could not have named, varies the OWNER, or pins a boundary.
+
+**Two classes LEFT at plan step R7c-c**, with the seam they covered:
+``TestCadenceOfReadsAPatternWithNoSchedule`` (``cadence_of`` took a pattern id;
+it takes a RULE now and its cases live in ``test_recurrence_reading``) and
+``TestTheStorageEncodingRoundTrips`` (``encode_cadence`` / ``decode_pattern``
+were inverses of each other and are both deleted).  What is here instead is
+what the freed vocabulary owes: the OFFER SET is exactly the set the app can
+HONOUR (plan step R8-a; it was "the resolvable set" while ``anchor_family``
+gated it), the placement really is inert where the offer set says it is, and
+one rhythm has one spelling.
 
 Clock discipline (``.claude/rules/testing.md``): nothing here reads a clock.
 """
@@ -20,25 +28,32 @@ from decimal import Decimal
 
 import pytest
 
-from app import ref_cache
 from app.enums import (
     PeriodPlacementEnum,
-    RecurrencePatternEnum,
     RecurrenceUnitEnum,
 )
 from app.services.pay_calendar import PayCadence
 from app.services.recurrence import (
+    AuthorableCadence,
     Cadence,
     RecurrenceFrequencyError,
     RecurrenceResolutionError,
-    cadence_of,
-    decode_pattern,
+    authorable_cadences,
+    canonical_cadence,
+    emits_period_starts,
+    fires_on_day_of_month,
+    has_day_of_month_coordinate,
+    is_authorable,
 )
-# The ENCODER is package-private -- ``__init__`` re-exports its inverse and not
-# it, because the write door is its only production caller.  Naming its
-# definition site is what lets the round-trip below test the mapping itself
-# rather than one direction of it.
-from app.services.recurrence._frequency import encode_cadence
+# The row-date rule is package-internal -- ``__init__`` re-exports the two
+# predicates a consumer outside the package asks and not this one, because it
+# states a TRANSITIONAL limit plan step R5 deletes.  Naming its definition site
+# is what lets the offer-set sweep below grade the SET against the thing that
+# withholds, rather than against a second list.
+from app.services.recurrence._frequency import (
+    has_row_date_coordinate,
+    require_row_date_coordinate,
+)
 
 #: 14 days between paydays, 26 a year.
 _BIWEEKLY = PayCadence(cadence_days=14)
@@ -133,232 +148,455 @@ class TestUnitsPerYearIsExact:
             ).units_per_year(_BIWEEKLY)
 
 
-class TestCadenceOfReadsAPatternWithNoSchedule:
-    """The seam the monthly equivalent needed and could not have."""
+class TestTheOfferSetIsWhatTheAppCanHonour:
+    """What a form may offer is what the app can carry out (plan step R8-a).
 
-    @pytest.mark.parametrize(
-        "pattern,interval_n,expected_interval,expected_unit",
-        [
-            (RecurrencePatternEnum.EVERY_PERIOD, 1, 1,
-             RecurrenceUnitEnum.PERIOD),
-            (RecurrencePatternEnum.EVERY_N_PERIODS, 4, 4,
-             RecurrenceUnitEnum.PERIOD),
-            (RecurrencePatternEnum.MONTHLY, 1, 1, RecurrenceUnitEnum.MONTH),
-            (RecurrencePatternEnum.MONTHLY_FIRST, 1, 1,
-             RecurrenceUnitEnum.MONTH),
-            (RecurrencePatternEnum.QUARTERLY, 1, 3, RecurrenceUnitEnum.MONTH),
-            (RecurrencePatternEnum.SEMI_ANNUAL, 1, 6,
-             RecurrenceUnitEnum.MONTH),
-            (RecurrencePatternEnum.ANNUAL, 1, 1, RecurrenceUnitEnum.YEAR),
-        ],
-    )
-    def test_every_modelled_pattern_reads(
-        self, app, pattern, interval_n, expected_interval, expected_unit,
-    ):
-        """All seven, with no calendar anywhere in the call.
-
-        Total over the closed set: a pattern with no entry would raise a
-        ``KeyError`` here rather than silently reading as something else.
-        """
-        with app.app_context():
-            cadence = cadence_of(
-                ref_cache.recurrence_pattern_id(pattern), interval_n,
-            )
-            assert cadence == Cadence(
-                interval_n=expected_interval, unit=expected_unit,
-            )
-
-    def test_the_authored_interval_is_read_only_by_every_n_periods(self, app):
-        """A hidden form input cannot make a Quarterly rule read as monthly.
-
-        ``interval_n`` is a column on every rule but means something for only
-        one pattern, and the form submits its hidden input regardless.  A
-        Quarterly rule carrying ``interval_n = 7`` still reads ``(3, MONTH)``.
-        """
-        with app.app_context():
-            assert cadence_of(
-                ref_cache.recurrence_pattern_id(
-                    RecurrencePatternEnum.QUARTERLY,
-                ), 7,
-            ) == Cadence(interval_n=3, unit=RecurrenceUnitEnum.MONTH)
-
-    def test_an_unmodelled_pattern_is_REFUSED_not_answered(self, app):
-        """The ``None`` this replaced is the point of the change.
-
-        ``amount_to_monthly`` used to answer ``None`` for a pattern the enum
-        does not name, and ``obligations_aggregator`` dropped the template --
-        so the same row 500'd the Recurring surface (through ``read_rule``,
-        which resolves and RAISES) while quietly leaving the obligation out of
-        the ``/savings`` emergency-fund baseline.  One state, two dispositions.
-        Ruled 2026-08-11: refuse, like every other reader of a stored rule.
-        """
-        with app.app_context():
-            surplus = max(
-                ref_cache.recurrence_pattern_id(member)
-                for member in RecurrencePatternEnum
-            ) + 1
-            with pytest.raises(
-                RecurrenceResolutionError,
-                match=f"pattern id {surplus} matches no RecurrencePatternEnum",
-            ):
-                cadence_of(surplus, 1)
-
-    def test_a_non_positive_interval_is_refused(self, app):
-        """Zero would divide by zero in the occurrence rate.
-
-        The refusal names the value and the pattern; it named the owner too
-        until this seam moved out of ``_resolution``, which reads a RULE where
-        this reads a PATTERN and has no owner to name.
-        """
-        with app.app_context():
-            with pytest.raises(
-                RecurrenceResolutionError, match="must be positive, got 0",
-            ):
-                cadence_of(
-                    ref_cache.recurrence_pattern_id(
-                        RecurrencePatternEnum.EVERY_N_PERIODS,
-                    ), 0,
-                )
-
-
-
-class TestTheStorageEncodingRoundTrips:
-    """``encode_cadence`` and ``decode_pattern`` are inverses (plan step R7b).
-
-    **This replaced a tautology, and the replacement is the point.**  The class
-    here before asserted that ``resolve`` and ``cadence_of`` read one pattern
-    the same way -- true by construction, since both consulted the same table
-    through the same helper, and labelled at the time as a change detector
-    rather than a control.  The vocabularies are genuinely two now: a caller
-    AUTHORS ``(interval, unit, placement)`` and the table stores a pattern id,
-    so there is a real mapping with a real direction, and a real way for one
-    side to drift.
-
-    A round trip is what catches that drift, and it catches it in the direction
-    a hand-written inverse fails in -- an entry changed on one side only.  The
-    inverse is COMPUTED from the forward table, so that class of defect is
-    structurally gone; this is what says so rather than assuming it.
+    **The property plan step R7b-2 gave the picker, re-based twice.**  While a
+    cadence had to have a NAME the binding constraint was storage, and the
+    offer set was the ENCODER's table inverted; R7c-c made every reading
+    storable and left the gate on ``anchor_family``, which asked whether a
+    FIRST OCCURRENCE could be derived -- a question ruling **R-R16** had
+    already answered for every unit by making that date authored.  R8-a
+    replaced the router with the two live rules below.  These cases grade the
+    set against those rules rather than against a list written here, which is
+    the difference between a derivation and an enumeration that happens to
+    agree.
     """
 
-    @pytest.mark.parametrize("submitted", [1, 2, 3, 4, 6, 12])
-    def test_every_stored_reading_re_encodes_to_itself(self, app, submitted):
-        """Decode, encode, decode again: the cadence never moves.
+    def test_the_offer_set_is_exactly_these_five_readings(self):
+        """The offer set's EXTENSION, written out, beside the derivation.
 
-        Swept over every pattern the application models AND over intervals
-        that are and are not a pattern's own, because the column is read for
-        exactly one cadence and ignored for the rest -- so a decoder that
-        stopped ignoring it would move only the calendar readings.
+        **This case used to assert ``has_row_date_coordinate(offer.unit)`` over
+        the offer set**, which is the condition ``authorable_cadences`` filters
+        ON -- a tautology whose docstring claimed it proved a row could be
+        dated.  Both adversarial reviews of plan step R8-a named it.  What a
+        test can honestly hold here is the EXTENSION: five readings, written
+        out, so a change to either derived rule surfaces as a diff a reader has
+        to justify rather than as a silently different set.
+
+        The two sweeps below still grade the DERIVATION; this grades the
+        ANSWER, and the pair is the point -- a derivation asserted only against
+        itself agrees with any rule at all.
         """
-        with app.app_context():
-            for member in RecurrencePatternEnum:
-                pattern_id = ref_cache.recurrence_pattern_id(member)
-                reading = decode_pattern(pattern_id, submitted)
+        assert set(authorable_cadences()) == {
+            AuthorableCadence(unit=unit, placement=placement)
+            for unit, placement in [
+                (RecurrenceUnitEnum.PERIOD,
+                 PeriodPlacementEnum.CONTAINING_DATE),
+                (RecurrenceUnitEnum.MONTH,
+                 PeriodPlacementEnum.CONTAINING_DATE),
+                (RecurrenceUnitEnum.MONTH,
+                 PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER),
+                (RecurrenceUnitEnum.YEAR,
+                 PeriodPlacementEnum.CONTAINING_DATE),
+                (RecurrenceUnitEnum.YEAR,
+                 PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER),
+            ]
+        }
 
-                encoded = encode_cadence(
-                    reading.cadence.interval_n,
-                    reading.cadence.unit,
-                    reading.placement,
-                )
-                again = decode_pattern(
-                    ref_cache.recurrence_pattern_id(encoded.pattern),
-                    encoded.interval_n,
-                )
+    def test_every_honourable_pair_is_offered_unless_it_is_inert(self):
+        """And nothing honourable is silently withheld.
 
-                assert again == reading, member
-                # The COLUMN too, and an adversarial review required it: the
-                # decode ignores that column for every pattern but one, so an
-                # encoder that wrote a MONTH count into a column spelled "every
-                # N pay periods" would round-trip green here.
-                assert encoded.interval_n == (
-                    reading.cadence.interval_n
-                    if reading.cadence.unit is RecurrenceUnitEnum.PERIOD
-                    and reading.cadence.interval_n > 1
-                    else 1
-                ), member
+        The REVERSE direction, and it is the one an enumeration fails in: a
+        pair the rules admit but the picker forgot is a cadence the app can run
+        and the user cannot choose.  The only admitted exception is a placement
+        that changes nothing
+        (:func:`~app.services.recurrence.emits_period_starts`), and the case
+        below is what proves that claim rather than trusting it.
+        """
+        honourable = set()
+        for unit in RecurrenceUnitEnum:
+            if not has_row_date_coordinate(unit):
+                continue
+            for placement in PeriodPlacementEnum:
+                if emits_period_starts(unit) and (
+                    placement is not PeriodPlacementEnum.CONTAINING_DATE
+                ):
+                    continue
+                honourable.add(AuthorableCadence(unit=unit, placement=placement))
 
-    def test_the_pattern_itself_round_trips_where_it_names_one_cadence(
-        self, app,
+        assert set(authorable_cadences()) == honourable
+
+    def test_the_week_unit_is_the_ONE_gap_and_it_names_its_step(self):
+        """The single remaining gap, named so the step that closes it sees this.
+
+        A weekly occurrence is neither a payday nor a day of the month, and
+        ``recurrence_engine.compute_due_date`` dates a generated row from
+        nothing else -- so every weekly row would carry the funding PAYDAY and
+        the authored weekday would be discarded.  Plan step **R5** gives a row
+        its own ``occurs_on``; :func:`has_row_date_coordinate` goes with the
+        function it names, and the unit becomes offerable by that deletion.
+
+        Asserted explicitly as well as by the sweep above, because a sweep that
+        agreed with a rule that had quietly started admitting the unit would go
+        green while the form began offering a cadence whose rows are misdated.
+        """
+        offered = set(authorable_cadences())
+        withheld = {
+            AuthorableCadence(unit=unit, placement=placement)
+            for unit in RecurrenceUnitEnum
+            for placement in PeriodPlacementEnum
+            if not has_row_date_coordinate(unit)
+        }
+
+        assert withheld == {
+            AuthorableCadence(
+                unit=RecurrenceUnitEnum.WEEK, placement=placement,
+            )
+            for placement in PeriodPlacementEnum
+        }
+        assert not offered & withheld
+
+    def test_the_year_unit_offers_BOTH_placements(self):
+        """The one reading plan step R8-a WIDENED.
+
+        ``anchor_family`` refused ``(YEAR, first paycheck)`` because
+        ``_resolution._first_of_month_anchor`` would have seated it on "the 1st
+        of the first qualifying month", firing a yearly bill in whichever month
+        the owner's schedule happened to open in.  Ruling **R-R16** deleted
+        that derivation at plan step R7c-b and the refusal outlived it: a
+        year-scale rule fires on its own authored date and defers onto the next
+        paycheck, exactly as its MONTH twin already did.
+
+        Keyed on the YEAR unit rather than on a count of offers, so a later
+        step that adds a placement does not have to edit this case to keep it
+        meaningful.
+        """
+        year_placements = {
+            offer.placement for offer in authorable_cadences()
+            if offer.unit is RecurrenceUnitEnum.YEAR
+        }
+
+        assert year_placements == set(PeriodPlacementEnum)
+
+    def test_month_and_year_are_authorable_on_the_SAME_placements(self):
+        """The property ``canonical_cadence`` rests on, proven not assumed.
+
+        That function rewrites ``(12k, MONTH)`` to ``(k, YEAR)`` with no
+        placement guard from plan step R8-a, and the guard it dropped existed
+        because the two units were authorable on DIFFERENT placement sets.
+        They cannot be now -- both have a day-of-month coordinate and neither
+        emits period starts, so :func:`authorable_cadences`' two rules answer
+        identically for them -- and asserting it here is what makes the
+        substitution safe by derivation rather than by inspection.
+        """
+        by_unit = {}
+        for offer in authorable_cadences():
+            by_unit.setdefault(offer.unit, set()).add(offer.placement)
+
+        assert by_unit[RecurrenceUnitEnum.MONTH] == (
+            by_unit[RecurrenceUnitEnum.YEAR]
+        )
+
+    def test_the_row_date_rule_has_a_RAISING_twin(self):
+        """A reader holding an unhonourable rule refuses rather than answers.
+
+        **The refusal deleting the router deleted by accident** (plan step
+        R8-a).  ``anchor_family`` RAISED for the ``WEEK`` unit, so
+        ``scheduling_day_of_month`` inherited a refusal through
+        ``fires_on_day_of_month``; stating that predicate directly made it
+        answer ``False``, which ``recurrence_engine.compute_due_date`` reads as
+        "date this row from its paycheck" -- so every weekly row would have
+        been dated on the funding payday, silently, with the authored weekday
+        discarded.  An existing migration case caught it, and this pins the
+        rule at its own door.
+
+        **Named rather than branched on the predicate**, because the branching
+        form asserted the twin's own body against itself: it read
+        ``if has_row_date_coordinate(unit): pass else: raises``, which is what
+        the function does.  Naming ``WEEK`` is what makes this fail if the
+        refused SET moves -- which is exactly what plan step **R5** will do to
+        it, and the point at which both functions are deleted.
+        ``test_the_week_unit_is_the_ONE_gap_and_it_names_its_step`` grades the
+        same set from the offer side; the two together are what keep the
+        predicate and its twin from covering different units.
+        """
+        for unit in RecurrenceUnitEnum:
+            if unit is RecurrenceUnitEnum.WEEK:
+                continue
+            require_row_date_coordinate(unit, "a test")
+
+        with pytest.raises(RecurrenceResolutionError, match="generated row"):
+            require_row_date_coordinate(RecurrenceUnitEnum.WEEK, "a test")
+
+    def test_a_row_is_dated_from_a_day_for_exactly_these_two_readings(self):
+        """``fires_on_day_of_month``'s EXTENSION over the whole product.
+
+        **This case asserted the function's own body against itself until an
+        adversarial review of plan step R8-a named it.**  It read
+        ``fires_on_day_of_month(u, p) is (has_day_of_month_coordinate(u) and p
+        is CONTAINING_DATE)``, which after R8-a is character-for-character what
+        the function computes -- a tautology whose docstring claimed to be the
+        measurement that justified collapsing the anchor-family router.  It
+        could not be: that measurement compared the router against this
+        expression, and the router is DELETED, so nothing in the suite can
+        re-derive it.  It is recorded where a retired measurement belongs, in
+        ``historical/recurrence_r8a_as_built_2026-08-16.md``.
+
+        What a live case can hold is the extension, written out.  It is the
+        answer that decides whether a generated row is dated from the cadence
+        or from its paycheck (``_reading.scheduling_day_of_month``), so a
+        change to it moves DATES -- and writing the pairs down is what makes
+        such a change arrive as a diff rather than as a quietly different set.
+        """
+        dated_from_a_day = {
+            (unit, placement)
+            for unit in RecurrenceUnitEnum
+            for placement in PeriodPlacementEnum
+            if fires_on_day_of_month(unit, placement)
+        }
+
+        assert dated_from_a_day == {
+            (RecurrenceUnitEnum.MONTH, PeriodPlacementEnum.CONTAINING_DATE),
+            (RecurrenceUnitEnum.YEAR, PeriodPlacementEnum.CONTAINING_DATE),
+        }
+        # And the two facts it is composed of really are different questions:
+        # every DEFERRING reading of a month-spanning unit has a day-of-month
+        # coordinate and is still dated from its paycheck.  That divergence is
+        # the one plan step R7c-b's wrong-money defect turned on.
+        for unit in (RecurrenceUnitEnum.MONTH, RecurrenceUnitEnum.YEAR):
+            assert has_day_of_month_coordinate(unit)
+            assert not fires_on_day_of_month(
+                unit, PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            )
+
+    def test_the_month_unit_offers_BOTH_placements(self):
+        """Plan ledger row **D32**'s defect ceasing to exist.
+
+        The closed set stored "every 1 month funded from the first paycheck"
+        and had no quarterly or semi-annual twin, so a placement was a property
+        of the ``(unit, interval)`` PAIR: raising a Monthly First rule's
+        interval silently reassigned the funding choice and hid the row.  The
+        offer set names pairs rather than triples now, so the MONTH unit admits
+        both placements at every interval and there is no such reassignment
+        left to notice.
+        """
+        month_placements = {
+            offer.placement for offer in authorable_cadences()
+            if offer.unit is RecurrenceUnitEnum.MONTH
+        }
+
+        assert month_placements == set(PeriodPlacementEnum)
+
+    @pytest.mark.parametrize("interval_n", [1, 2, 3, 6, 7, 12, 500])
+    def test_is_authorable_agrees_with_the_offer_set_at_every_interval(
+        self, interval_n,
     ):
-        """A stored pattern re-encodes to itself, with ONE stated exception.
+        """The validator and the form cannot disagree about the set.
 
-        ``Every N Periods`` with ``N = 1`` and ``Every Period`` are the SAME
-        cadence -- every paycheck -- and the encoder canonicalises onto the
-        named one.  That is deliberate and it is what plan step R7c\'s
-        downgrade needs: two names for one reading make the reverse mapping
-        ambiguous, so the encoder picks and this pins which.
-
-        Every other member is its own round trip, which is what says the
-        inverse table is complete rather than merely non-empty.
+        Swept over intervals the closed set could name and intervals it could
+        not, because the whole content of freeing the interval is that the
+        answer no longer depends on it.
         """
-        with app.app_context():
-            for member in RecurrencePatternEnum:
-                reading = decode_pattern(
-                    ref_cache.recurrence_pattern_id(member), 1,
-                )
-                encoded = encode_cadence(
-                    reading.cadence.interval_n,
-                    reading.cadence.unit,
-                    reading.placement,
+        for unit in RecurrenceUnitEnum:
+            for placement in PeriodPlacementEnum:
+                offered = AuthorableCadence(
+                    unit=unit, placement=placement,
+                ) in set(authorable_cadences())
+
+                assert is_authorable(interval_n, unit, placement) is offered, (
+                    f"{interval_n} {unit} {placement}"
                 )
 
-                expected = (
-                    RecurrencePatternEnum.EVERY_PERIOD
-                    if member is RecurrencePatternEnum.EVERY_N_PERIODS
-                    else member
-                )
-                assert encoded.pattern is expected, member
+    @pytest.mark.parametrize("interval_n", [0, -1, -12])
+    def test_is_authorable_refuses_a_non_positive_interval(self, interval_n):
+        """The one thing about a cadence the interval still decides.
 
-    def test_the_inverse_covers_every_modelled_pattern(self, app):
-        """No member of the enum is unreachable through the encoder.
-
-        A member the inverse table missed would be decodable and NOT
-        encodable: a rule already stored could be read but never re-authored,
-        so the read-modify-re-author idiom every in-place writer uses would
-        raise on it.
+        A negative control for the sweep above: without it that sweep passes
+        against an ``is_authorable`` that ignores the interval entirely, which
+        is exactly what freeing it invites.
         """
+        for offer in authorable_cadences():
+            assert not is_authorable(
+                interval_n, offer.unit, offer.placement,
+            )
+
+
+class TestThePlacementIsReallyInertForPaychecks:
+    """``emits_period_starts`` is a claim about the WALK, proven over one.
+
+    The offer set withholds the pay-period unit's second placement on the
+    ground that both carry a payday back to its own paycheck.  That is an
+    argument in a docstring until something drives it: a wrong answer here
+    would mean the form hides a control that DOES decide which paycheck pays a
+    bill, which is money.
+    """
+
+    def test_both_placements_place_every_payday_identically(self, app):
+        """Over a whole schedule, not a sampled date.
+
+        Every payday the shared calendar holds, under both placements: the
+        pairs are equal or the unit's placement is not inert and the offer set
+        is withholding a real choice.
+        """
+        # Pylint: ``import-outside-toplevel`` -- the shared calendar builder
+        # lives in a sibling test module and importing it at module scope would
+        # make this file's collection depend on that one's.
+        # pylint: disable=import-outside-toplevel
+        from app.services.recurrence import place
+        from tests.test_services.test_recurrence_resolution import (
+            build_calendar,
+        )
+
         with app.app_context():
-            reachable = set()
-            for member in RecurrencePatternEnum:
-                reading = decode_pattern(
-                    ref_cache.recurrence_pattern_id(member), 2,
+            calendar = build_calendar()
+            assert calendar.periods, "the shared schedule must hold periods"
+
+            for period in calendar.periods:
+                payday = period.start_date
+                containing = place(
+                    payday, calendar, PeriodPlacementEnum.CONTAINING_DATE,
                 )
-                reachable.add(
-                    encode_cadence(
-                        reading.cadence.interval_n,
-                        reading.cadence.unit,
-                        reading.placement,
-                    ).pattern
+                starting = place(
+                    payday, calendar,
+                    PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
                 )
 
-            # Swept at interval 2 rather than 1 precisely so ``Every N
-            # Periods`` is reachable.  At 1 it canonicalises onto ``Every
-            # Period`` (the case above pins that), so a sweep at 1 would report
-            # it missing -- and a genuinely absent entry would then be hidden
-            # behind the same symptom.
-            assert reachable == set(RecurrencePatternEnum)
+                assert containing == starting, payday
+
+    def test_a_MID_PERIOD_date_is_where_the_two_differ(self, app):
+        """The negative control, SHOWN to fire.
+
+        Without it the case above passes against a ``place`` that ignored the
+        placement entirely -- which would make every "Funded from" choice on
+        the form inert rather than one unit's.  A date strictly inside a
+        paycheck is the shape the two placements exist to tell apart.
+        """
+        # pylint: disable=import-outside-toplevel
+        from datetime import timedelta
+
+        from app.services.recurrence import place
+        from tests.test_services.test_recurrence_resolution import (
+            build_calendar,
+        )
+
+        with app.app_context():
+            calendar = build_calendar()
+            mid = calendar.periods[0].start_date + timedelta(days=1)
+
+            containing = place(
+                mid, calendar, PeriodPlacementEnum.CONTAINING_DATE,
+            )
+            starting = place(
+                mid, calendar,
+                PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            )
+
+            assert containing != starting
+            assert emits_period_starts(RecurrenceUnitEnum.PERIOD)
+            assert not emits_period_starts(RecurrenceUnitEnum.MONTH)
+
+
+class TestOneRhythmHasOneSpelling:
+    """Ruling **R-R17**, applied at the door (plan step R7c-c).
+
+    Freeing the interval makes ``(12, MONTH)`` authorable, and it is the same
+    rhythm as ``(1, YEAR)``: same month stride, same day-of-month coordinate,
+    same yearly
+    count.  Two spellings is the second vocabulary this arc removed from the
+    table arriving back through the form -- the Recurring surface would word
+    one annual bill "Every 12 months" and another "Yearly", and the obligations
+    filter would group them apart.
+    """
 
     @pytest.mark.parametrize(
-        "interval_n,unit",
+        "interval_n,expected",
         [
-            (2, RecurrenceUnitEnum.MONTH),
-            (2, RecurrenceUnitEnum.YEAR),
-            (1, RecurrenceUnitEnum.WEEK),
-            (4, RecurrenceUnitEnum.MONTH),
+            (12, 1),
+            (24, 2),
+            (120, 10),
         ],
     )
-    def test_a_cadence_with_no_pattern_to_name_it_is_refused(
-        self, app, interval_n, unit,
+    def test_a_whole_number_of_years_in_months_becomes_years(
+        self, interval_n, expected,
     ):
-        """The gap plan step R7c closes, stated once at the encoder.
+        """The substitution itself, at three multiples."""
+        assert canonical_cadence(
+            interval_n, RecurrenceUnitEnum.MONTH,
+        ) == Cadence(interval_n=expected, unit=RecurrenceUnitEnum.YEAR)
 
-        Each of these resolves and walks correctly -- the two-axis model has no
-        trouble with "every 2 months" -- and none of them can be STORED, because
-        the table names its cadence with a closed pattern set.  Refusing is what
-        stops such a rule being written as a DIFFERENT cadence that happens to
-        have a name.
+    @pytest.mark.parametrize("interval_n", [1, 2, 3, 6, 11, 13, 18])
+    def test_a_month_count_that_is_not_whole_years_is_left_alone(
+        self, interval_n,
+    ):
+        """Every other month interval keeps the unit the caller stated.
+
+        18 months is a year and a half and has no YEAR spelling; rewriting it
+        to 1 or 2 years would move every occurrence after the first.
         """
-        with app.app_context():
-            with pytest.raises(RecurrenceResolutionError, match="no recurrence"):
-                encode_cadence(
-                    interval_n, unit, PeriodPlacementEnum.CONTAINING_DATE,
-                )
+        assert canonical_cadence(
+            interval_n, RecurrenceUnitEnum.MONTH,
+        ) == Cadence(interval_n=interval_n, unit=RecurrenceUnitEnum.MONTH)
+
+    @pytest.mark.parametrize("placement", list(PeriodPlacementEnum))
+    def test_the_substitution_holds_under_EVERY_placement(self, placement):
+        """The guard that LEFT at plan step R8-a, replaced by this sweep.
+
+        ``(12, MONTH, first paycheck)`` used to be the one cadence the
+        substitution had to skip: it was authorable while its YEAR spelling was
+        not, so rewriting it would have turned a storable cadence into a
+        refusal at the door about to store it.  That asymmetry was
+        ``anchor_family`` refusing the year-scale deferred reading on a
+        derivation R7c-b had deleted; with the reading admitted the two units
+        are authorable on the same placements by derivation, so the guard
+        checked a state the offer set can no longer produce.
+
+        Swept over the whole placement axis rather than dropped, because that
+        is the claim the deletion rests on: the rewrite must be safe for EVERY
+        placement, not merely for the one it used to skip.
+        """
+        canonical = canonical_cadence(12, RecurrenceUnitEnum.MONTH)
+
+        assert canonical == Cadence(
+            interval_n=1, unit=RecurrenceUnitEnum.YEAR,
+        )
+        assert is_authorable(12, RecurrenceUnitEnum.MONTH, placement)
+        assert is_authorable(
+            canonical.interval_n, canonical.unit, placement,
+        )
+        assert fires_on_day_of_month(RecurrenceUnitEnum.MONTH, placement) is (
+            fires_on_day_of_month(canonical.unit, placement)
+        )
+
+    @pytest.mark.parametrize(
+        "unit", [RecurrenceUnitEnum.PERIOD, RecurrenceUnitEnum.YEAR],
+    )
+    def test_no_other_unit_is_touched(self, unit):
+        """Twelve PAYCHECKS is not a year, and twelve years is not anything.
+
+        The substitution reads a MONTH span, so a unit measured in paychecks
+        has none and a unit already coarse has nothing coarser to become.
+        """
+        assert canonical_cadence(12, unit) == Cadence(
+            interval_n=12, unit=unit,
+        )
+
+    def test_it_is_idempotent(self):
+        """Canonicalising twice is canonicalising once.
+
+        ``resolve`` runs it on every read as well as every write, so a
+        non-idempotent rule would re-spell a stored cadence on each pass.
+        """
+        once = canonical_cadence(24, RecurrenceUnitEnum.MONTH)
+        twice = canonical_cadence(once.interval_n, once.unit)
+
+        assert once == twice
+
+    @pytest.mark.parametrize("interval_n", [12, 24, 120])
+    def test_both_spellings_fire_the_same_number_of_times_a_year(
+        self, interval_n,
+    ):
+        """The substitution is behaviour-preserving, measured not asserted.
+
+        If the two spellings did not name one rhythm, canonicalising would
+        change what a rule COSTS per month on ``/obligations`` -- so the yearly
+        rate is the honest thing to compare.
+        """
+        months = Cadence(
+            interval_n=interval_n, unit=RecurrenceUnitEnum.MONTH,
+        )
+        years = canonical_cadence(interval_n, RecurrenceUnitEnum.MONTH)
+
+        assert years.occurrences_per_year(_BIWEEKLY) == (
+            months.occurrences_per_year(_BIWEEKLY)
+        )

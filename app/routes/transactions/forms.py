@@ -23,7 +23,11 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
-from app.routes._render_helpers import render_transaction_cell
+from app.routes._period_options import period_move_options
+from app.routes._render_helpers import (
+    fragment_budgets,
+    render_transaction_cell,
+)
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._helpers import (
     _get_owned_transaction,
@@ -50,7 +54,25 @@ def get_quick_edit(txn_id):
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
-    return render_template("grid/_transaction_quick_edit.html", txn=txn)
+    return render_template(
+        "grid/_transaction_quick_edit.html",
+        txn=txn,
+        # What the row is worth NOW, which is what the field must be primed
+        # with (plan step X-au-c2b).  It read ``txn.estimated_amount``, the
+        # COLUMN: on a derived row that is empty, so the field would open
+        # BLANK and a save would book whatever the user typed over a figure
+        # they never saw.  Priming it with the resolved amount also makes the
+        # save honest -- typing the same number back is a no-op, where
+        # accepting a blank would not be.
+        #
+        # A MAP the template indexes, not the scalar this first published: an
+        # adversarial review measured that a missing scalar renders
+        # ``value=""`` in SILENCE while a missing map raises, and these two
+        # forms are the surfaces where an empty figure is POSTED BACK.  A
+        # fallback that ships a blank into a save is the shape this whole step
+        # exists to delete, so it may not survive on the edit doors.
+        budgets=fragment_budgets(txn),
+    )
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/full-edit", methods=["GET"])
@@ -82,9 +104,7 @@ def get_full_edit(txn_id):
         # Current + future periods (plus the transfer's own) power the
         # period-move selector when a transfer is edited from a grid
         # shadow cell -- same set the transfers blueprint supplies.
-        periods = pay_period_service.get_current_and_future_periods(
-            current_user.id, include_period_id=xfer.pay_period_id,
-        )
+        periods = period_move_options(current_user.id, xfer.pay_period_id)
         return render_template(
             "transfers/_transfer_full_edit.html",
             xfer=xfer,
@@ -115,12 +135,13 @@ def get_full_edit(txn_id):
     # in a past period stays selected (and is not silently re-pointed at
     # the first current period on save).  Periods are per-user; the PATCH
     # handler re-checks ownership of the submitted id (F-029).
-    periods = pay_period_service.get_current_and_future_periods(
-        current_user.id, include_period_id=txn.pay_period_id,
-    )
+    periods = period_move_options(current_user.id, txn.pay_period_id)
     return render_template(
         "grid/_transaction_full_edit.html",
         txn=txn,
+        # See ``get_quick_edit`` for why the Estimated field is primed with the
+        # RESOLVED amount rather than the column, and why it is a MAP.
+        budgets=fragment_budgets(txn),
         statuses=statuses,
         periods=periods,
         # The settle-day correction's bounds (rulings R-EJ / R-EL) -- see the
@@ -262,13 +283,20 @@ def get_empty_cell():
     if err is not None:
         return err
     category = objs[Category]
-    period = objs[PayPeriod]
     account = objs[Account]
 
     return render_template(
         "grid/_transaction_empty_cell.html",
         category=category,
-        period=period,
+        # The ID, not the row.  The ORM lookup above is the OWNERSHIP check
+        # (the IDOR fix H1) and nothing more; the partial builds one URL from
+        # one integer, and its other render entry -- the desktop grid macro --
+        # has only a ``DerivedPeriod`` to give it since plan step C2-f2b.  One
+        # partial, two callers, one contract they can both keep.  The value is
+        # the request's own ``period_id``, which ``_resolve_owned_fks`` has
+        # just proved belongs to this user; reading it back off the row would
+        # be the same integer by a longer route.
+        period_id=period_id,
         account=account,
         txn_type_id=transaction_type_id,
     )

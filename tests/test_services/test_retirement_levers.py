@@ -4,13 +4,14 @@ Shekel Budget App -- Retirement Lever Solver Tests (P2a / P2b)
 Covers the contribution solver's annuity-factor math (against an engine
 replay oracle), the headroom facts, the retire-later binary search and its
 degenerate states, and the producer's consistency with the readiness
-picture (probe(0) == compute_readiness_data).
+picture, which plan step C2-f2d-2 made an IDENTITY rather than an equality.
 
 **Every hand-computed figure assumes the BIWEEKLY cadence** (:data:`_BIWEEKLY`),
 which plan step R7a-2a made an explicit input to the headroom division where it
 was a hardcoded 26.
 """
 
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -22,17 +23,16 @@ from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import account_service, retirement_levers, retirement_readiness
+from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PayCadence, PeriodWindow
 from app.services.growth_engine import project_balance
+from app.services.retirement_gap_calculator import RetirementGapAnalysis
 from app.services.retirement_levers import (
     _annuity_factor,
     _contribution_outcome,
     _headroom_per_period,
-    _is_funded,
-    _load_probe_inputs,
-    _probe,
-    _ProbeResult,
 )
+from app.services.retirement_plan import load_retirement_inputs, picture_at
 from app.utils.dates import add_months
 from app.utils.money import round_money
 
@@ -43,28 +43,48 @@ from tests._test_helpers import biweekly_window
 _BIWEEKLY = PayCadence(cadence_days=14)
 
 
+def _delayed(inputs, months):
+    """The picture at the owner's stored plan, delayed *months* whole months.
+
+    What the retire-later lever's own ``probe_at`` does, spelled once here so a
+    case grades the solver rather than a second spelling of its search axis.
+
+    Args:
+        inputs: The render's ``RetirementInputs``.
+        months: The delay in whole months.
+
+    Returns:
+        The ``RetirementPicture`` at that delay.
+    """
+    return picture_at(
+        inputs, replace(inputs.stored_plan, month_offset=months),
+    )
+
+
 # ── Fakes ────────────────────────────────────────────────────────
 
 
 def _fake_baseline(*, required, after_tax_projected):
-    """A minimal month-0 probe result for the pure outcome-math tests."""
-    if required == Decimal("0"):
-        funded, no_needed = None, True
-    else:
-        funded = (after_tax_projected / required).quantize(Decimal("0.0001"))
-        no_needed = False
-    return _ProbeResult(
-        retirement_date=date(2046, 6, 1),
-        required=required,
-        after_tax_projected=after_tax_projected,
-        funded_ratio=funded,
-        no_savings_needed=no_needed,
-        projections=[],
-        # The axis the probe ran over.  These tests grade the outcome MATH
-        # (``_contribution_outcome``), which reads the four money fields and
-        # never the axis; it is supplied because a probe result always carries
-        # one, not because anything here reads it.
-        axis=PeriodWindow(periods=()),
+    """A minimal net-frame analysis for the pure outcome-math tests.
+
+    ``_contribution_outcome`` reads exactly the two figures named here, which
+    is why it takes the ANALYSIS rather than the whole retirement picture
+    (plan step C2-f2d-2): a double for the picture would have to carry an
+    axis, a projection list and a pension summary that nothing under test
+    looks at, and every one of those would be a chance to state something
+    false about the case.
+    """
+    return RetirementGapAnalysis(
+        pre_retirement_net_monthly=Decimal("0"),
+        monthly_pension_income=Decimal("0"),
+        after_tax_monthly_pension=Decimal("0"),
+        monthly_income_gap=Decimal("0"),
+        required_retirement_savings=required,
+        projected_total_savings=after_tax_projected,
+        savings_surplus_or_shortfall=after_tax_projected - required,
+        safe_withdrawal_rate=Decimal("0.04"),
+        after_tax_projected_savings=after_tax_projected,
+        after_tax_surplus_or_shortfall=after_tax_projected - required,
     )
 
 
@@ -152,7 +172,8 @@ class TestContributionOutcome:
         )
         af = Decimal("520")
         solved = round_money(
-            (baseline.required - baseline.after_tax_projected) / af
+            (baseline.required_retirement_savings
+             - baseline.after_tax_projected_savings) / af
         )
         assert solved == Decimal("576.92")
 
@@ -325,7 +346,11 @@ class TestComputeLeverData:
     def test_no_horizon_state(self, app, db, seed_user, seed_periods_today):
         """No pension date and no settings date -> the no_horizon state."""
         with app.app_context():
-            data = retirement_levers.compute_lever_data(seed_user["user"].id)
+            data = retirement_levers.compute_lever_data(
+                load_retirement_inputs(
+                    BalanceContext.build(seed_user["user"].id),
+                ),
+            )
             assert data["no_horizon"] is True
             assert "contribution" not in data
 
@@ -348,7 +373,9 @@ class TestComputeLeverData:
                 balance=Decimal("100000.00"),
                 annual_return=Decimal("0.10500"),
             )
-            data = retirement_levers.compute_lever_data(user_id)
+            data = retirement_levers.compute_lever_data(
+                load_retirement_inputs(BalanceContext.build(user_id)),
+            )
             assert data["no_horizon"] is False
 
             baseline = data["baseline"]
@@ -357,8 +384,20 @@ class TestComputeLeverData:
             assert baseline["no_savings_needed"] is False
             assert baseline["funded_ratio"] < Decimal("1")
 
-            # Baseline == the readiness picture (probe(0) consistency).
-            readiness = retirement_readiness.compute_readiness_data(user_id)
+            # The lever baseline states the readiness picture's own figures.
+            # It is worth saying plainly what this assertion IS since plan step
+            # C2-f2d-2: the two used to be independent derivations and this
+            # compared them, which is a real consistency check; they are now
+            # one memoized object, so equality here holds by construction.
+            # ``TestOnePicturePerPlan`` below asserts the identity that makes it
+            # so -- the check with teeth -- and this stays as the statement of
+            # what the page shows.
+            page_inputs = load_retirement_inputs(
+                BalanceContext.build(user_id),
+            )
+            readiness = retirement_readiness.readiness_from_picture(
+                picture_at(page_inputs, page_inputs.stored_plan),
+            )
             assert baseline["funded_ratio"] == readiness["funded_ratio"]
             assert baseline["required_savings"] == readiness["required_savings"]
             assert baseline["projected_after_tax"] == (
@@ -388,9 +427,9 @@ class TestComputeLeverData:
             assert 1 <= solved_months <= 180
             assert retire_later["months"] == solved_months
             assert retire_later["funded_ratio"] >= Decimal("1")
-            inputs = _load_probe_inputs(user_id)
-            assert _is_funded(_probe(inputs, solved_months))
-            assert not _is_funded(_probe(inputs, solved_months - 1))
+            inputs = load_retirement_inputs(BalanceContext.build(user_id))
+            assert _delayed(inputs, solved_months).is_funded
+            assert not _delayed(inputs, solved_months - 1).is_funded
             # The displayed date is the stored plan shifted by the offset.
             assert retire_later["retirement_date"] == add_months(
                 inputs.base_date, solved_months,
@@ -410,8 +449,9 @@ class TestComputeLeverData:
                 balance=Decimal("100000.00"),
                 annual_return=Decimal("0.10500"),
             )
+            inputs = load_retirement_inputs(BalanceContext.build(user_id))
             data = retirement_levers.compute_lever_data(
-                user_id,
+                inputs,
                 contribution_override=Decimal("0"),
                 months_override=24,
             )
@@ -427,9 +467,8 @@ class TestComputeLeverData:
 
             retire_later = data["retire_later"]
             assert retire_later["months"] == 24
-            inputs = _load_probe_inputs(user_id)
-            probe_24 = _probe(inputs, 24)
-            assert retire_later["funded_ratio"] == probe_24.funded_ratio
+            probe_24 = _delayed(inputs, 24)
+            assert retire_later["funded_ratio"] == probe_24.funded_state[0]
             assert retire_later["retirement_date"] == probe_24.retirement_date
 
     def test_already_funded_scenario(
@@ -448,7 +487,9 @@ class TestComputeLeverData:
                 balance=Decimal("5000000.00"),
                 annual_return=Decimal("0.10500"),
             )
-            data = retirement_levers.compute_lever_data(user_id)
+            data = retirement_levers.compute_lever_data(
+                load_retirement_inputs(BalanceContext.build(user_id)),
+            )
             assert data["baseline"]["funded_ratio"] >= Decimal("1")
             assert data["contribution"]["state"] == "already_funded"
             assert data["contribution"]["solved_amount"] == Decimal("0.00")
@@ -475,7 +516,9 @@ class TestComputeLeverData:
                 annual_return=Decimal("0.00500"),
                 pension_multiplier=Decimal("0.00100"),
             )
-            data = retirement_levers.compute_lever_data(user_id)
+            data = retirement_levers.compute_lever_data(
+                load_retirement_inputs(BalanceContext.build(user_id)),
+            )
             retire_later = data["retire_later"]
             assert retire_later["state"] == "not_within_cap"
             assert retire_later["solved_months"] is None
@@ -523,7 +566,9 @@ class TestPastHorizon:
             )
             db.session.commit()
 
-            data = retirement_levers.compute_lever_data(user_id)
+            data = retirement_levers.compute_lever_data(
+                load_retirement_inputs(BalanceContext.build(user_id)),
+            )
             assert data["no_horizon"] is False
             # The hero side: still a shortfall.
             assert data["baseline"]["funded_ratio"] < Decimal("1")

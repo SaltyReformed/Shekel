@@ -49,6 +49,7 @@ from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.services.row_valuation import owned_amount
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import CENTS, HUNDRED, ZERO
 
@@ -215,13 +216,21 @@ def resolved_actual_amount(txn: Transaction) -> Decimal:
     """Return the 'actual' amount for an estimate-vs-actual comparison.
 
     The Variance/surprises kernel's rule: a settled transaction uses its
-    entered ``actual_amount`` when populated, else its ``estimated_amount``
-    (the done-without-actual edge case -- a zero variance, not a spurious
-    one).  A projected transaction has no actual yet, so it reads back its
-    ``estimated_amount`` and its individual variance is exactly zero.  A
-    "surprise" is a row whose resolved actual differs from its estimate --
-    only a settled row with an explicitly entered, different actual can
-    produce one.
+    entered ``actual_amount`` when populated, else the amount it OWNS (the
+    done-without-actual edge case -- a zero variance, not a spurious one).  A
+    projected transaction has no actual yet, so it reads back that same owned
+    amount and its individual variance is exactly zero.  A "surprise" is a row
+    whose resolved actual differs from its estimate -- only a settled row with
+    an explicitly entered, different actual can produce one.
+
+    **Both fall-throughs go through
+    :func:`~app.services.row_valuation.owned_amount` since plan step
+    X-au-c2b**, where they read ``estimated_amount`` directly.  Its one caller
+    (``spending_report_service._build_surprises``) queries settled expenses
+    only, and after the freeze (plan step X-au-c3) a settled row owns its
+    figure -- so the accessor asserts what is true here and REFUSES rather than
+    handing a ``None`` into a subtraction on the day some later reader points a
+    derived row at this kernel.
 
     Args:
         txn: The transaction to resolve.  ``txn.status`` is declared
@@ -230,12 +239,15 @@ def resolved_actual_amount(txn: Transaction) -> Decimal:
 
     Returns:
         The comparison actual as a ``Decimal``.
+
+    Raises:
+        AmountUnresolvable: When the row's amount is DERIVED, so it stores
+            none.  Unreachable from this kernel's only caller, which is
+            settled-only.
     """
-    if txn.status and txn.status.is_settled:
-        if txn.actual_amount is not None:
-            return txn.actual_amount
-        return txn.estimated_amount
-    return txn.estimated_amount
+    if txn.status and txn.status.is_settled and txn.actual_amount is not None:
+        return txn.actual_amount
+    return owned_amount(txn)
 
 
 def calendar_window_bounds(

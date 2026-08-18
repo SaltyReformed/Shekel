@@ -8,6 +8,36 @@ app/db/bare_user fixtures from conftest.
 **The writer's tests moved out at plan step C3-b**, with the writer, to
 ``test_pay_period_write.py``.  What is left here answers "which periods does
 this owner have", which plan step C2-f points at ``pay_calendar.PayCalendar``.
+
+**Three readers' tests moved out at C2-f1, WITH the behaviour they grade** --
+none was deleted, because none of the behaviour was:
+
+* ``get_next_period`` -> ``test_pay_calendar_value.TestPeriodStartingAfter``,
+  beside the ``period_starting_before`` mirror that also replaced
+  ``companion_service.get_previous_period``.
+* ``get_current_and_future_periods`` ->
+  ``tests/test_routes/test_period_options.py``, because the rule it encoded is
+  the FORM's ("an already-closed period is not somewhere a row moves TO")
+  rather than the calendar's.
+* ``get_overlapping_periods`` -> nothing moved, because **it had no direct
+  test call site at all**: the retired SQL was exercised only through
+  ``calendar_service`` and ``spending_report_service``, never graded on its own.
+  ``test_pay_calendar_value``'s ``overlapping`` tests grade the predicate that
+  replaced it, and grade it harder -- they cover the crossed range, which the
+  query answered with an empty list and the calendar refuses.
+
+**A FOURTH reader's tests moved out at C2-f2b**, and it is the first of the
+six to be DELETED rather than re-pointed: ``get_periods_in_range`` had all
+three of its ``app/`` call sites in the grid route (``page.py`` twice,
+``partials.py`` once), so moving the grid onto ``PayCalendar.window`` left it
+with no caller.  Its four cases went to
+``test_pay_calendar_value.TestAWindowIsAViewAndKeepsTheRealEnds``, which
+already graded three of them (the exact window, the partial one past the end,
+and the empty one) on the method that now answers.  The fourth -- a NEGATIVE
+``first_index``, which the SQL expressed as ``period_index >= -1`` and which
+comes back one period SHORT rather than re-based -- had no equivalent there
+and is now its own test in that class, named as inherited coverage.  Reachable
+from ``/grid?offset=-99`` on every schedule.
 """
 
 from datetime import date
@@ -55,119 +85,6 @@ class TestGetCurrentPeriod:
             assert period is not None
             assert period.period_index == 2
             assert period.start_date == date(2026, 1, 30)
-
-
-# ---------------------------------------------------------------------------
-# TestGetCurrentAndFuturePeriods
-# ---------------------------------------------------------------------------
-
-
-class TestGetCurrentAndFuturePeriods:
-    """Tests for get_current_and_future_periods().
-
-    bare_periods are 10 biweekly periods from 2026-01-02:
-      index 0: Jan 2-15,  index 1: Jan 16-29,  index 2: Jan 30-Feb 12, ...
-    """
-
-    def test_excludes_ended_periods(self, app, db, bare_user, bare_periods):
-        """Periods whose end_date is before as_of are excluded.
-
-        as_of=2026-02-01 sits in period 2 (Jan 30-Feb 12); periods 0 and
-        1 have ended, so only 2..9 are returned.
-        """
-        with app.app_context():
-            result = pay_period_service.get_current_and_future_periods(
-                bare_user["user"].id, as_of=date(2026, 2, 1),
-            )
-            assert [p.period_index for p in result] == [2, 3, 4, 5, 6, 7, 8, 9]
-
-    def test_current_period_included_on_its_end_date(
-        self, app, db, bare_user, bare_periods,
-    ):
-        """A period whose end_date equals as_of counts as current.
-
-        as_of=2026-01-15 is period 0's end_date; end_date >= as_of holds,
-        so every period (0..9) is returned.
-        """
-        with app.app_context():
-            result = pay_period_service.get_current_and_future_periods(
-                bare_user["user"].id, as_of=date(2026, 1, 15),
-            )
-            assert [p.period_index for p in result] == list(range(10))
-
-    def test_include_period_id_forces_an_ended_period(
-        self, app, db, bare_user, bare_periods,
-    ):
-        """include_period_id adds one ended period without un-excluding others.
-
-        With as_of in period 2 and include_period_id = period 0, the
-        result is [0, 2, 3, ..., 9]: period 0 is forced back in, but
-        period 1 (also ended, not forced) stays excluded.
-        """
-        with app.app_context():
-            result = pay_period_service.get_current_and_future_periods(
-                bare_user["user"].id,
-                as_of=date(2026, 2, 1),
-                include_period_id=bare_periods[0].id,
-            )
-            assert [p.period_index for p in result] == [
-                0, 2, 3, 4, 5, 6, 7, 8, 9,
-            ]
-
-
-# ---------------------------------------------------------------------------
-# TestGetPeriodsInRange
-# ---------------------------------------------------------------------------
-
-
-class TestGetPeriodsInRange:
-    """Tests for get_periods_in_range()."""
-
-    def test_returns_correct_window_by_index(self, app, db, bare_user, bare_periods):
-        """Requesting start_index=2, count=3 returns indices 2, 3, 4."""
-        with app.app_context():
-            periods = pay_period_service.get_periods_in_range(
-                bare_user["user"].id,
-                start_index=2,
-                count=3,
-            )
-            assert len(periods) == 3
-            assert [p.period_index for p in periods] == [2, 3, 4]
-
-    def test_range_beyond_available_returns_partial(self, app, db, bare_user, bare_periods):
-        """Requesting past the end returns only what exists."""
-        with app.app_context():
-            periods = pay_period_service.get_periods_in_range(
-                bare_user["user"].id,
-                start_index=8,
-                count=5,
-            )
-            assert len(periods) == 2
-            assert [p.period_index for p in periods] == [8, 9]
-
-
-# ---------------------------------------------------------------------------
-# TestGetNextPeriod
-# ---------------------------------------------------------------------------
-
-
-class TestGetNextPeriod:
-    """Tests for get_next_period()."""
-
-    def test_returns_immediately_following_period(self, app, db, bare_user, bare_periods):
-        """Next of period[3] should be period[4]."""
-        with app.app_context():
-            current = bare_periods[3]
-            next_p = pay_period_service.get_next_period(current)
-            assert next_p is not None
-            assert next_p.period_index == 4
-
-    def test_last_period_returns_none(self, app, db, bare_user, bare_periods):
-        """Next of the last period (index 9) returns None."""
-        with app.app_context():
-            last = bare_periods[9]
-            next_p = pay_period_service.get_next_period(last)
-            assert next_p is None
 
 
 # ---------------------------------------------------------------------------
@@ -248,41 +165,6 @@ class TestNegativeAndBoundaryPaths:
             )
             assert period is None
 
-    def test_get_periods_in_range_start_beyond_available(
-        self, app, db, bare_user, bare_periods
-    ):
-        """get_periods_in_range with start_index beyond all periods returns empty list.
-
-        A race condition or stale UI could request a range beyond what exists.
-        bare_periods has indices 0-9; requesting start_index=15 finds nothing.
-        """
-        with app.app_context():
-            periods = pay_period_service.get_periods_in_range(
-                bare_user["user"].id,
-                start_index=15,
-                count=5,
-            )
-            assert periods == []
-
-    def test_get_periods_in_range_negative_start(self, app, db, bare_user, bare_periods):
-        """get_periods_in_range with negative start_index starts from index 0.
-
-        Negative start_index is treated as a literal value in the SQL query.
-        Since no period has a negative index, the filter ``period_index >= -1``
-        effectively starts from index 0.  With count=5, the upper bound is
-        ``period_index < 4``, so indices 0, 1, 2, 3 are returned (4 periods,
-        not the 5 requested).
-        """
-        with app.app_context():
-            # SQL: period_index >= -1 AND period_index < 4
-            periods = pay_period_service.get_periods_in_range(
-                bare_user["user"].id,
-                start_index=-1,
-                count=5,
-            )
-            # Returns 4 periods (indices 0-3), not 5.
-            assert len(periods) == 4
-            assert [p.period_index for p in periods] == [0, 1, 2, 3]
 
 
 

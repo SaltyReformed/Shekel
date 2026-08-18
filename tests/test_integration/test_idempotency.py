@@ -27,6 +27,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from tests._test_helpers import make_every_period_rule
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -48,9 +49,7 @@ def _create_profile(seed_user):
         db.session.add(cat)
         db.session.flush()
 
-    rule = RecurrenceRule(user_id=seed_user["user"].id, pattern_id=every_period.id)
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,

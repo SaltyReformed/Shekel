@@ -36,6 +36,7 @@ from app.services import posting_service, transaction_service
 # the package attribute would grade nothing.
 from app.services.transaction_service import _settle
 from app.services.row_valuation import owned_contribution
+from tests._test_helpers import make_every_period_rule
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -51,6 +52,10 @@ def _make_entry(txn_id, user_id, amount, description, *,
     """
     entry = TransactionEntry(
         transaction_id=txn_id,
+        # The parent's account, resolved from the id this helper takes: an
+        # entry's account IS its parent's, and the schema refuses any other
+        # value (``fk_transaction_entries_parent_account``).
+        account_id=db.session.get(Transaction, txn_id).account_id,
         user_id=user_id,
         amount=Decimal(amount),
         description=description,
@@ -78,12 +83,7 @@ def _make_envelope_template(seed_user, *, txn_type_name="Expense",
         .filter_by(name=txn_type_name).one()
     )
 
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -433,12 +433,7 @@ class TestSettleFromEntriesPreconditions:
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
             )
-            rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
-                pattern_id=every_period.id,
-            )
-            db.session.add(rule)
-            db.session.flush()
+            rule = make_every_period_rule(db.session, seed_user["user"].id)
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,

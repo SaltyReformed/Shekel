@@ -19,9 +19,12 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.routes._render_helpers import render_transaction_cell
+from app.routes._render_helpers import (
+    fragment_budgets,
+    render_transaction_cell,
+)
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
-from app.services import cash_ledger, entry_service
+from app.services import entry_service
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction
 from app.utils.dates import display_today
@@ -140,13 +143,12 @@ def _render_entry_list(
     # The WHOLE derived context, from the one producer that builds it
     # (:func:`app.services.entry_service.entry_list_view`), SPLATTED rather
     # than named key by key.  This route assembled its own until 2026-08-13,
-    # and the grid macro assembled a different one that was missing
-    # ``reconciled_ids`` -- so every initial render showed reconciled
+    # and the grid macro assembled a different one that was missing the
+    # posted-purchase indicator -- so every initial render showed already-posted
     # purchases as outstanding while the projection had released them.  A
     # caller that cannot name the keys cannot forget one.
-    view = entry_service.entry_list_view(
-        txn, entries, cash_ledger.reconciled_through(txn.account_id),
-    )
+    budgets = fragment_budgets(txn)
+    view = entry_service.entry_list_view(txn, entries, budgets[txn.id])
     return render_template(
         "grid/_transaction_entries.html",
         txn=txn,

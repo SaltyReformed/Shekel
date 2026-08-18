@@ -750,7 +750,8 @@ class TestGoalTrajectoryDashboard:
         A $500/month recurring transfer into the savings account with
         $3,000 balance and $6,000 target should produce months_to_goal=6.
         """
-        from app.models.recurrence_rule import RecurrenceRule
+        from app.enums import RecurrencePatternEnum
+        from tests._test_helpers import make_pattern_rule
 
         with app.app_context():
             savings_type = (
@@ -768,16 +769,12 @@ class TestGoalTrajectoryDashboard:
             db.session.add(savings)
             db.session.flush()
 
-            from app.enums import RecurrencePatternEnum
-            monthly_pattern_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.MONTHLY
+            # Authored through the write door (plan step R7c-b): the
+            # two-axis columns are NOT NULL, so a rule naming only a pattern
+            # cannot be stored.
+            rule = make_pattern_rule(
+                seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
             )
-            rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
-                pattern_id=monthly_pattern_id,
-            )
-            db.session.add(rule)
-            db.session.flush()
 
             from app.models.transfer_template import TransferTemplate
             template = TransferTemplate(
@@ -2766,7 +2763,7 @@ def _add_entry(
     from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
 
     db_session.add(TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=user_id,
         amount=amount,
         description=description,
@@ -4076,7 +4073,7 @@ class TestNetWorthHorizon:
                 balance_ctx=BalanceContext.build(seed_user["user"].id),
                 all_periods=[], current_period=None,
             )
-            assert build_horizon(seed_user["user"].id, core, []) is None
+            assert build_horizon(core, []) is None
 
     def test_the_narrow_producers_do_not_need_a_cadence_they_never_use(
         self, app, db, bare_user,
@@ -4426,9 +4423,13 @@ class TestNetWorthHorizon:
 
         The P-AC1 ruling's "the cockpit band equals /retirement by
         construction": re-running the SAME engine
-        (``build_projection_context`` + ``project_retirement_accounts``) at
-        the horizon end and summing the projected balances must equal the
-        horizon retirement band's final sample.
+        (``build_projection_context`` + ``load_projection_batch`` +
+        ``project_accounts_with_batch`` over the context's own axis) at the
+        horizon end and summing the projected balances must equal the horizon
+        retirement band's final sample.  The three are spelled out because the
+        convenience entry that wrapped them had no ``app/`` caller left once
+        the retirement picture became the one producer (plan step C2-f2d-2),
+        and this oracle wants a DIFFERENT horizon from the picture's own.
         """
         with app.app_context():
             # pylint: disable=import-outside-toplevel
@@ -4449,11 +4450,16 @@ class TestNetWorthHorizon:
             # The domain end is the last annual sample (plan step X-q2 deleted
             # the second key that restated it).
             ctx = retirement_projection.build_projection_context(
-                uid, all_periods, current, horizon["dates"][-1], None, None,
+                BalanceContext.build(uid), all_periods, current,
+                horizon["dates"][-1], None, None,
             )
-            projected = retirement_projection.project_retirement_accounts(ctx)
+            projections = retirement_projection.project_accounts_with_batch(
+                ctx,
+                retirement_projection.load_projection_batch(ctx),
+                retirement_projection.resolve_projection_axis(ctx),
+            )
             expected = sum(
-                (p["projected_balance"] for p in projected.projections),
+                (p["projected_balance"] for p in projections),
                 Decimal("0"),
             )
             # 50k at 7% over a decade grows well past 50k.

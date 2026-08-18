@@ -58,10 +58,11 @@ from decimal import Decimal
 
 from app.utils.balance_predicates import is_projected
 
-from ._amounts import ProjectedBasis, _expense_amount, income_amount
+from ._amount_source import AmountBasis
+from ._amounts import _expense_amount, income_amount
 
 
-def sum_projected(transactions, basis: ProjectedBasis):
+def sum_projected(transactions, basis: AmountBasis):
     """Sum projected (unsettled) income and expenses for one pay period.
 
     Part of this module's public surface (no leading underscore): the seam's
@@ -96,14 +97,14 @@ def sum_projected(transactions, basis: ProjectedBasis):
     entries and honors a live override, falling back to the contribution
     otherwise.
 
-    **The basis is REQUIRED, and that is the point of bundling it** (plan step
-    S1-c).  It used to be one optional ``amount_overrides`` map defaulting to
-    ``None``; the entry reservation now also needs the day through which the
-    account's purchases are reconciled, and two optional arguments is two ways
-    for a caller to hand this reduction half a basis -- which would silently
-    value every purchase as outstanding and hold whole budgets back.  One
-    required record, built once per account by the reader that owns the walk,
-    makes that shape unwritable.
+    **The basis is REQUIRED, and that is the point** (plan step S1-c).  It used
+    to be one optional ``amount_overrides`` map defaulting to ``None``, which is
+    a way for a caller to hand this reduction half a basis; one required record,
+    built once per account by the reader that owns the walk, makes that shape
+    unwritable.  It was a ``ProjectedBasis`` wrapper over the amount basis AND
+    the account's clearing rule until plan step X-f3b: ruling **R-FM** made a
+    purchase's posted-ness a fact about the PURCHASE, so the reservation stopped
+    asking about the account and the wrapper had one field left.
 
     **It takes no date (plan step X-c2c1).**  D1c had unified two loops --
     ``balance_resolver``'s private ``_sum_period_as_of``, whose own docstring
@@ -120,17 +121,18 @@ def sum_projected(transactions, basis: ProjectedBasis):
     Scoped honestly, because "no clock" would be a stronger claim than the code
     supports: the *override map* this reduction is HANDED can still be built
     from a wall-clock read one package over
-    (``loan_payment_service.live_loan_transfer_amounts`` calls ``date.today()``
-    for a derive-mode loan-payment shadow -- finding **N-40**, recorded and
-    unchanged here).  This function reads no clock; its inputs are not yet
-    guaranteed to have been built without one.
+    (``loan_payment_service.LoanPricing`` pins ``date.today()`` when the read
+    pass's basis is built, and resolves a derive-mode loan-payment shadow's P&I
+    against it -- finding **N-40**, recorded and unchanged here).  This function
+    reads no clock; its inputs are not yet guaranteed to have been built without
+    one.
 
     Args:
         transactions: Transaction objects for a single pay period.
         basis: The account's
-            :class:`~app.services.cash_ledger._amounts.ProjectedBasis` -- the
-            live override map and the day through which its purchases are
-            reconciled, built once per account by the caller that walked it.
+            :class:`~app.services.cash_ledger._amount_source.AmountBasis` --
+            the ids it was built over and the live producers' answers, built
+            once per account by the caller that walked it.
 
     Returns:
         (total_income, total_expenses) as a Decimal tuple.

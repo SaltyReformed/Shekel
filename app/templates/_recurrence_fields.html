@@ -39,21 +39,28 @@
    and a placement select, replacing the single pattern <select>.
 
    ``picker`` is the PickerModel the route resolved from
-   app.services.recurrence.picker_model.  Its ``options`` are the readings the
-   closed pattern set can actually STORE -- derived from the encoder's own
-   table, not from the pattern enum -- so a cadence encode_cadence would refuse
-   is never offered, and that refusal is unreachable through this form rather
-   than fenced behind it (developer ruling 2026-08-12).  ``options_json`` is
-   the same set for recurrence_form.js, which LINKS the three: the unit decides
-   which intervals may show, and the (unit, interval) pair decides which
-   placements may.  That pair dependency is real -- the closed set stores
-   "every 1 month funded from the first paycheck" and has no quarterly twin --
-   so a placement list keyed on the unit alone would offer the unstorable.
+   app.services.recurrence.picker_model.  Its ``options`` are the (unit,
+   placement) pairs a rule can actually be AUTHORED on -- derived from the two
+   rules that would otherwise refuse them (whether a generated row can be
+   DATED from the cadence, and whether the placement can change which paycheck
+   funds one) -- so a cadence the application cannot honour is never offered,
+   and that refusal is unreachable
+   through this form rather than fenced behind it (developer ruling
+   2026-08-12; the gate was an anchor-family router until plan step R8-a
+   replaced it).  ``options_json`` is the same set for recurrence_form.js, which
+   LINKS the controls: the chosen unit decides which placements may be picked
+   and what the two day-of-month controls do.
+
+   **The (unit, interval) PAIR dependency left at plan step R7c-c.**  It was
+   real while the closed set stored "every 1 month funded from the first
+   paycheck" and had no quarterly twin, so a placement list keyed on the unit
+   alone would have offered the unstorable; with the interval free, the MONTH
+   unit offers both placements at every interval and the pair is a unit again.
 
    ``selected`` is the SelectedCadence the edit routes resolved through
-   edit_form_cadence, or None on a create form AND for a rule whose stored
-   pattern the application no longer models.  The second case renders the
-   controls unset above a flashed explanation: there is no pattern id left to
+   edit_form_cadence, or None on a create form AND for a rule whose stored unit
+   or placement the application does not model.  The second case renders the
+   controls unset above a flashed explanation: there is no stored id left to
    preserve as a trailing option, so there is nothing for the browser to
    silently replace with the first entry -- the destructive "Does not repeat".
 
@@ -62,23 +69,28 @@
    no rule" and the update routes read as "delete the rule this template had"
    (plan step R2e-1).
 
-   Both interval controls post ``interval_n``, so exactly one is ever enabled;
-   a disabled control does not submit, which is what keeps two spellings of one
-   field from reaching the schema together.  The script owns that toggle, and
-   the server renders the state matching ``selected`` so a form is correct
-   before any script runs. #}
+   The interval box is DISABLED while the definition does not repeat, because a
+   disabled control does not submit and an interval beside no unit states half
+   a cadence.  The script owns that toggle, and the server renders the state
+   matching ``selected`` so a form is correct before any script runs. #}
 {% macro recurrence_cadence_controls(picker, selected) %}
 {% set sel_unit = selected.unit_id if selected else none %}
 {% set sel_interval = selected.interval_n if selected else none %}
 {% set sel_placement = selected.placement_id if selected else none %}
-{# Every projection of the offer set is served ready-made off the PickerModel --
-   picker.units, picker.fixed_intervals, picker.placements, and
-   picker.free_unit_ids (the units taking ANY positive N, which is what selects
-   the number box over the fixed <select>).  They were de-duplicating loops and
-   a selectattr chain here until the interval one shipped a visible defect:
-   MONTHLY and MONTHLY_FIRST are two triples over one (1, MONTH) interval, so it
-   rendered "1 month" twice and marked BOTH selected.  A projection is a
-   computation, and this partial displays. #}
+{# Both projections of the offer set are served ready-made off the PickerModel
+   -- picker.units and picker.placements.  They were de-duplicating loops and a
+   selectattr chain here until one shipped a visible defect: MONTHLY and
+   MONTHLY_FIRST are two offers over one MONTH unit, so an un-projected list
+   rendered the entry twice and marked BOTH selected.  A projection is a
+   computation, and this partial displays.
+
+   **The interval is ONE free box since plan step R7c-c.**  There were two
+   controls posting interval_n -- a number box for the one unit whose interval
+   was a column, and a <select> of 1 / 3 / 6 for the months the closed pattern
+   set could name -- with the script enabling exactly one, because a disabled
+   control does not submit.  Every positive interval is authorable for every
+   unit now, so picker.fixed_intervals and picker.free_unit_ids are gone with
+   the <select> and there is one control to enable. #}
 <div class="mb-3" id="cadence-controls" data-cadence-options="{{ picker.options_json }}">
   <label for="recurrence_unit" class="form-label">Repeats</label>
   <div class="row g-2 align-items-center">
@@ -95,27 +107,43 @@
     <div class="col-auto d-none" id="field-interval">
       <div class="input-group">
         <span class="input-group-text">every</span>
-        {# The free-N box: one unit uses it (paychecks), and R7c widens it to
-           every unit when the authored columns land. #}
-        <input type="number" id="interval_n_free" name="interval_n"
+        <input type="number" id="interval_n" name="interval_n"
                class="form-control interval-box" min="1"
                value="{{ sel_interval if sel_interval is not none else 1 }}"
-               {{ '' if sel_unit in picker.free_unit_ids else 'disabled' }}>
-        {# The fixed set: one entry per (unit, interval), each tagged with the
-           unit that offers it so the script can show only that unit's. #}
-        <select id="interval_n_fixed" name="interval_n" class="form-select"
-                {{ 'disabled' if sel_unit in picker.free_unit_ids or sel_unit is none else '' }}>
-          {% for opt in picker.fixed_intervals %}
-          <option value="{{ opt.interval_n }}" data-unit="{{ opt.unit_id }}"
-            {{ 'selected' if sel_unit == opt.unit_id and sel_interval == opt.interval_n else '' }}>
-            {{ opt.interval_n }} {{ opt.unit_label_one if opt.interval_n == 1 else opt.unit_label_many }}
-          </option>
-          {% endfor %}
-        </select>
+               {{ 'disabled' if sel_unit is none else '' }}>
       </div>
     </div>
   </div>
 </div>
+{# The FUNDING control, and it is OFFERED for every cadence since plan step
+   R7c-c (developer ruling 2026-08-16, plan ledger row D32).
+
+   "Offered", not "rendered unconditionally": the row carries d-none here like
+   every other cadence-dependent row on this form (#field-interval,
+   #field-due-dom, #field-end-bound, #field-start-period), and
+   recurrence_form.js reveals it as soon as a cadence is chosen.  What D32's
+   remedy changed is that syncPlacements reveals it for EVERY cadence instead
+   of hiding it whenever exactly one placement was admissible -- the row no
+   longer disappears at the moment its value is being decided for the user.
+   The pre-script hidden state on an edit form is a property of the whole
+   form and predates this step.
+
+   It used to hide itself whenever the chosen cadence admitted one placement,
+   which is how a bill's funding rule came to change with nothing on screen
+   saying so: the closed set stored "every 1 month funded from the month's
+   first paycheck" and had no quarterly twin, so raising a Monthly First rule's
+   interval silently reassigned the placement and hid the row.  Freeing the
+   interval removes that case entirely -- the MONTH unit offers both placements
+   at every interval -- and ONE cadence still admits exactly one: PERIOD, where
+   the placement is inert because a payday resolves to its own paycheck either
+   way.  It was two until plan step R8-a admitted the YEAR unit's deferring
+   reading, whose refusal named an anchor derivation R7c-b had deleted.
+
+   So the row stays, the script enables the placements the chosen unit admits,
+   and the help text says which of the two states the user is in.  Both
+   sentences are rendered HERE, as data-* attributes the script swaps between,
+   for the reason every other copy on this form is: templates display and
+   scripts do not author words.  That is the same idiom #starts-on-help uses. #}
 <div class="mb-3 d-none" id="field-placement">
   <label for="recurrence_placement" class="form-label">Funded from</label>
   <select id="recurrence_placement" name="recurrence_placement" class="form-select">
@@ -125,15 +153,34 @@
     </option>
     {% endfor %}
   </select>
-  <div class="form-text">Which paycheck pays for each occurrence.</div>
+  {% set placement_choice_help = "Which paycheck pays for each occurrence." %}
+  {% set placement_fixed_help =
+       "This cadence has one funding rule, so there is nothing to choose." %}
+  <div id="placement-help" class="form-text"
+       data-choice-text="{{ placement_choice_help }}"
+       data-fixed-text="{{ placement_fixed_help }}">
+    {{- placement_choice_help -}}
+  </div>
 </div>
 {% endmacro %}
 
 
-{# The remaining cadence-dependent fields inside #recurrence-fields: the
-   day / due-day / month row.  recurrence_form.js toggles each on by id from
-   the facts the chosen offer carries.  Does NOT include the pay-period
-   selector, the preview or the "Ends" control (each form places those).
+{# The one remaining cadence-dependent detail inside #recurrence-fields: the
+   bill's real DUE day, when it differs from the day the cadence is scheduled
+   on.  recurrence_form.js toggles it by id from the facts the chosen offer
+   carries.  Does NOT include the pay-period selector, the preview or the
+   "Ends" control (each form places those).
+
+   **Day of Month and Month LEFT at plan step R7c-b** (ruling R-R16).  Three
+   inputs said what one date says: the first occurrence's day IS the cycle's
+   day and its month IS the cycle's residue class, so the "Starts on" control
+   below carries both and the pair cannot state two different cadences.  Row
+   D28 measured what the old split cost -- 18 of 24 live multi-month rules
+   would have fired in the wrong months once the anchor became a column.
+
+   ``due_day_of_month`` survives because it is NOT a coordinate of the cadence:
+   it is the servicer's date for a bill the cadence schedules elsewhere.  Plan
+   step R5 moves it onto the generated ROW as ``due_on``.
 
    The END BOUND left at plan step R7b-3, into recurrence_end_bound below: it
    is not cadence-dependent -- every cadence can stop -- and it needs the
@@ -147,34 +194,17 @@
    off a Quarterly rule's column -- a column whose validity depended on the
    pattern, the exact defect this redesign removes. #}
 {% macro recurrence_detail_fields(template, include_due_day) %}
+{% if include_due_day %}
 <div class="row mb-3">
-  <div class="col d-none" id="field-dom">
-    <label for="day_of_month" class="form-label">Day of Month</label>
-    <input type="number" id="day_of_month" name="day_of_month" class="form-control" min="1" max="31"
-           value="{{ template.recurrence_rule.day_of_month if template and template.recurrence_rule and template.recurrence_rule.day_of_month else '' }}">
-  </div>
-  {% if include_due_day %}
   <div class="col d-none" id="field-due-dom">
     <label for="due_day_of_month" class="form-label">Due Day of Month</label>
     <input type="number" id="due_day_of_month" name="due_day_of_month" class="form-control" min="1" max="31"
            value="{{ template.recurrence_rule.due_day_of_month if template and template.recurrence_rule and template.recurrence_rule.due_day_of_month else '' }}"
-           placeholder="Same as day">
-    <small class="form-text text-muted">Actual bill due day (if different from scheduled day)</small>
-  </div>
-  {% endif %}
-  <div class="col d-none" id="field-moy">
-    <label for="month_of_year" class="form-label">Month</label>
-    <select id="month_of_year" name="month_of_year" class="form-select">
-      <option value="">--</option>
-      {% for num in range(1, 13) %}
-      <option value="{{ num }}"
-        {{ 'selected' if template and template.recurrence_rule and template.recurrence_rule.month_of_year == num else '' }}>
-        {{ num|month_name }}
-      </option>
-      {% endfor %}
-    </select>
+           placeholder="Same as scheduled day">
+    <small class="form-text text-muted">Actual bill due day (if different from the day it is scheduled on)</small>
   </div>
 </div>
+{% endif %}
 {% endmacro %}
 
 
@@ -275,57 +305,148 @@
 {% endmacro %}
 
 
-{# The OPENING bound (plan step R7b-4): "Starts on", a DATE.
+{# The rule's FIRST OCCURRENCE (plan step R7c-b, ruling R-R16): "Starts on",
+   a DATE, plus the one control that says what a clamped date MEANT.
 
-   It replaced a "First paycheck" <select> of pay periods, and the swap is the
-   point rather than the widget: that control named a pay-period ROW, so it
-   could only ever mean a paycheck the schedule already held, it vanished
-   (ON DELETE SET NULL) when that paycheck was rebuilt, and a caller passing
-   its own window bypassed it (defect D2).  A date is unbypassable, survives
-   any schedule operation, and is the same KIND of value as the "Ends" control
-   below -- which is what makes the two read as one validity window.
+   It carries what three inputs used to say.  A recurrence's first occurrence
+   is the earliest thing the cadence produces, its day is the cycle's day and
+   its month is the cycle's residue class -- so "Day of Month" and "Month" are
+   deleted rather than renamed, and the two-representation question this arc
+   kept answering becomes unaskable.  Ledger row D28 is what forced it: a
+   BOUND is not in the cycle's residue class, so freezing the anchor under the
+   earlier reading would have fired 18 of 24 live multi-month rules in the
+   wrong months forever.
 
-   ``locked`` disables it, for the same definition and the same reason
-   recurrence_end_bound is locked: a loan payment's opening bound is the
-   loan's FIRST CONTRACTUAL INSTALLMENT, which loan_recurrence_sync rewrites
-   on every payoff-affecting edit.  Both controls ask ONE predicate
+   The control before that was a "First paycheck" <select> of pay periods,
+   which named a pay-period ROW: it could only ever mean a paycheck the
+   schedule already held, it vanished (ON DELETE SET NULL) when that paycheck
+   was rebuilt, and a caller passing its own window bypassed it (defect D2).
+
+   ``nominal_day`` is the SECOND control and it is rendered only where the
+   date leaves the question open.  A date that is its own month's LAST day in
+   a month shorter than 31 days is ambiguous: 2026-04-30 could be "the 30th"
+   or "the last day of the month", and those are different cadences from May
+   onwards.  Every other date says its day and nothing else -- INCLUDING the
+   31st of a 31-day month, which already IS the last-day idiom because the
+   walk clamps it per month.  The offer set comes from
+   app.services.recurrence.offerable_nominal_days, the same function the write
+   door refuses a bad pair with, so the control cannot offer one the save
+   would reject.
+
+   ``locked`` marks the row READ-ONLY, for the same definition and the same
+   reason recurrence_end_bound is locked: a loan payment's first occurrence is
+   the loan's FIRST CONTRACTUAL INSTALLMENT, which loan_recurrence_sync
+   rewrites on every payoff-affecting edit.  Both controls ask ONE predicate
    (_recurrence_form_render.edit_form_bounds_are_derived), so they cannot lock
-   on different sets.  A disabled control posts nothing, so the key arrives
-   ABSENT -- which the update route reads as "this form said nothing" and
-   leaves the stored bound alone.  The server refuses a crafted submission
-   that sends one anyway (LOAN_PAYMENT_BOUND_IS_DERIVED).
+   on different sets.
 
-   An EMPTY box is a real answer -- "no opening bound", start with the
-   schedule -- so the field is allow_none at the schema and clearing it is a
-   save that clears the bound.  That is why it is not hidden when unset.
+   ``disabled``, exactly like the "Ends" control, so a locked form posts
+   NOTHING for this field and absence keeps one meaning: "not mine to state",
+   which the update path reads as "leave the stored bound alone".
+
+   It was briefly ``readonly`` -- a readonly input still posts, and the schema
+   requires a first occurrence beside any chosen cadence, so disabling it
+   appeared to make a locked form unsubmittable.  That reasoning was wrong at
+   the layer it blamed: the schema's rule belongs on a CREATE, where an
+   unstated start would author a rule that backdates into closed pay periods.
+   An UPDATE that states nothing cannot backdate anything, because the rule it
+   edits already has a start.  Ruled by the developer 2026-08-15; the readonly
+   version refused every ordinary edit of a loan payment
+   (LOAN_PAYMENT_BOUND_IS_DERIVED on a rename), and the obvious patch -- refuse
+   only a DIFFERENT date -- would have made "not mine to state" and "I chose
+   exactly the derived value" identical on the wire.
+
+   The server refusal stands behind the affordance either way
+   (LOAN_PAYMENT_BOUND_IS_DERIVED): disabling is what the user sees, the
+   refusal is what a crafted POST meets.
 
    NO ``d-none`` of its own, unlike every other row in this file.  Those are
-   toggled per cadence by recurrence_form.js -- a day-of-month cell belongs to
-   some cadences and not others -- and EVERY cadence can have an opening
-   bound, so this one shows and hides with the #recurrence-fields container
-   that wraps it.  Carrying a class no script removes is how a control ships
-   permanently invisible; the suite cannot see the difference, which is what
+   toggled per cadence by recurrence_form.js -- a due-day cell belongs to some
+   cadences and not others -- and EVERY cadence has a first occurrence, so
+   this one shows and hides with the #recurrence-fields container that wraps
+   it.  Carrying a class no script removes is how a control ships permanently
+   invisible; the suite cannot see the difference, which is what
    tests/manual/verify_recurrence_form.py exists for. #}
-{% macro recurrence_start_date(selected, date_min, date_max, locked=false) %}
-<div class="mb-3" id="field-start-date">
-  <label class="form-label" for="start_date">Starts on</label>
-  {# ``min`` / ``max`` mirror the schema's own window (EFFECTIVE_DATE_MIN /
-     EFFECTIVE_DATE_MAX), so the browser helps the user avoid the four- or
-     five-digit-year typo that window exists to refuse.  The refusal is still
-     the schema's -- this is the affordance, exactly as ``disabled`` is on the
-     locked controls -- and the two are passed in rather than written here so
-     one window is stated once. #}
-  <input type="date" id="start_date" name="start_date" class="form-control"
-         aria-describedby="start-date-help"
-         min="{{ date_min.isoformat() }}" max="{{ date_max.isoformat() }}"
-         value="{{ selected.isoformat() if selected is not none else '' }}"
-         {{ 'disabled' if locked else '' }}>
-  <div id="start-date-help" class="form-text">
-    {%- if locked -%}
-      Set from the loan's first payment, and updated when the loan changes.
-    {%- else -%}
-      Nothing is generated before this. Leave empty to start with your schedule.
-    {%- endif -%}
+{% macro recurrence_starts_on(picker, selected, date_min, date_max, locked=false, swappable=false) %}
+<div class="mb-3" id="field-starts-on">
+  <label class="form-label" for="starts_on">Starts on</label>
+  <div class="row g-2 align-items-center">
+    <div class="col-auto">
+      {# ``min`` / ``max`` mirror the application's calendar window
+         (app.utils.dates.CALENDAR_DATE_MIN / _MAX, which the schema, the
+         resolution door and ck_recurrence_rules_starts_on_range all read), so
+         the browser helps the user avoid the four- or five-digit-year typo
+         that window exists to refuse.  The refusal is still the server's --
+         this is the affordance, exactly as ``disabled`` is on a locked form --
+         and the two are passed in rather than written here so one window is
+         stated once. #}
+      <input type="date" id="starts_on" name="starts_on" class="form-control"
+             aria-describedby="starts-on-help"
+             min="{{ date_min.isoformat() }}" max="{{ date_max.isoformat() }}"
+             value="{{ selected.starts_on.isoformat() }}"
+             {{ 'disabled' if locked else '' }}>
+    </div>
+    {# The ambiguity control.  The COPY is static and the option set is fixed
+       -- the days a month can fail to hold are 29, 30 and 31 and no other --
+       so nothing here is computed and the script has no wording to repeat.
+       What the server decides is which of them the chosen date leaves OPEN
+       (``day_choices``, from app.services.recurrence.offerable_nominal_days)
+       and therefore whether the row shows at all; recurrence_form.js applies
+       the same rule as the user edits the date, and the write door refuses
+       any pair either of them gets wrong.
+
+       Hidden AND disabled together when there is nothing to ask: a hidden
+       control still submits, and a stale nominal day beside a date that never
+       clamped is exactly what ck_recurrence_rules_nominal_day refuses.  Each
+       option carries ``data-day`` so the script can enable the ones above the
+       chosen day without knowing what any of them are called. #}
+    <div class="col-auto {{ '' if selected.day_choices else 'd-none' }}"
+         id="field-nominal-day">
+      <div class="input-group">
+        <label class="input-group-text" for="nominal_day">repeating on</label>
+        <select id="nominal_day" name="nominal_day" class="form-select"
+                {{ '' if selected.day_choices and not locked else 'disabled' }}>
+          <option value="" {{ 'selected' if selected.nominal_day is none else '' }}>
+            the same day of the month
+          </option>
+          {% for option in picker.nominal_days %}
+          {% set day = option.day %}
+          {% set label = option.label %}
+          <option value="{{ day }}" data-day="{{ day }}"
+            {{ 'selected' if selected.nominal_day == day else '' }}
+            {{ '' if day in selected.day_choices else 'disabled' }}>
+            {{ label }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+  {# Both wordings ride on the element ONLY where the row can change without a
+     reload, which is the transfer CREATE form and nowhere else: its
+     destination is chosen in the form, so the server cannot know at render
+     whether this will be a loan payment and recurrence_form.js swaps the text
+     when a loan account is picked.  It reads these attributes rather than
+     carrying a copy of either sentence -- a second wording in the script is
+     one that can disagree with the server's, the same rule that keeps the
+     nominal day's option labels here and not there.
+
+     ``swappable`` is FALSE everywhere else, and that is not tidiness: the
+     transaction form has no destination account and can never be a loan
+     payment, and an EDIT form already knows.  Shipping the locked sentence to
+     a page that can never use it puts its words into every render -- caught by
+     ``test_template_flags``, which asserts a page carries no success copy and
+     met the word "updated" in an attribute nothing could read. #}
+  {% set starts_on_locked_help =
+       "Set from the loan's first payment, and updated when the loan changes." %}
+  {% set starts_on_open_help =
+       "The first time this happens. It repeats from here, and nothing is generated before it." %}
+  <div id="starts-on-help" class="form-text"
+       {% if swappable %}
+       data-locked-text="{{ starts_on_locked_help }}"
+       data-open-text="{{ starts_on_open_help }}"
+       {% endif %}>
+    {{- starts_on_locked_help if locked else starts_on_open_help -}}
   </div>
 </div>
 {% endmacro %}

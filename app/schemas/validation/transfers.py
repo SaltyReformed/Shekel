@@ -13,10 +13,10 @@ from app.schemas.validation._helpers import (
     EFFECTIVE_DATE_MAX,
     EFFECTIVE_DATE_MIN,
     BaseSchema,
-    RecurrenceFormFieldsMixin,
     RowId,
     _normalize_empty_inputs,
 )
+from app.schemas.validation._recurrence import RecurrenceFormFieldsMixin
 
 
 def _reject_same_account_transfer(data):
@@ -41,6 +41,25 @@ def _reject_same_account_transfer(data):
 class TransferTemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     """Validates POST data for creating a transfer template."""
 
+    # **The ONE create schema that may not require a first occurrence**, and
+    # the exception is the DESTINATION rather than a relaxation (plan step
+    # R7c-b, developer ruling 2026-08-15).  This form offers every active
+    # account as a destination, so a recurring LOAN PAYMENT can be created
+    # here -- and a loan payment's first occurrence is the loan's first
+    # contractual installment, which the app derives and the form therefore
+    # renders locked.  A locked control posts nothing.
+    #
+    # The rule is not dropped, it MOVED to where the destination is known:
+    # ``_transfer_creation_helpers.settle_first_occurrence`` derives it for a
+    # loan and refuses a cadence without one for anything else, with this
+    # module's own ``RECURRENCE_NEEDS_A_START``.  A schema never learns which
+    # accounts are loans, which is the same reason the update path's one
+    # authoring branch is refused in its route.
+    #
+    # ``TemplateCreateSchema`` keeps the requirement: a transaction template
+    # has no destination account and can never be a loan payment.
+    recurrence_start_is_required = False
+
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
         """Drop empty inputs; map empties on nullable fields to None."""
@@ -56,7 +75,7 @@ class TransferTemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     category_id = RowId(required=True)
 
     # Every recurrence control this form submits is on
-    # :class:`~app.schemas.validation._helpers.RecurrenceFormFieldsMixin`.
+    # :class:`~app.schemas.validation._recurrence.RecurrenceFormFieldsMixin`.
     # ``due_day_of_month`` is the transaction form's alone.
 
     # The pay period a NON-REPEATING transfer lands in
@@ -84,6 +103,14 @@ class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):
     ``version_id`` is the optimistic-locking counter; see
     :class:`TransactionUpdateSchema` for the contract.
     """
+
+    # An UPDATE may omit the first occurrence, and the omission MEANS
+    # something: "leave the stored one alone".  See
+    # ``RecurrenceFormFieldsMixin.validate_recurrence_states_a_start`` for the
+    # ruling and for where the one authoring branch of an update is refused
+    # instead.  It is what lets a loan payment -- whose bound the app derives,
+    # and whose control therefore renders disabled -- be renamed at all.
+    recurrence_start_is_required = False
 
     # Override -- all fields optional for update.
     name = fields.String(validate=validate.Length(min=1, max=200))

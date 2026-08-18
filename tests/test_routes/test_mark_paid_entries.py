@@ -24,7 +24,7 @@ from app.models.ref import RecurrencePattern
 from app import ref_cache
 from app.enums import StatusEnum
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import freeze_today, make_every_period_rule
 
 
 @pytest.fixture(autouse=True)
@@ -53,6 +53,10 @@ def _make_entry(txn_id, user_id, amount="50.00", description="Kroger",
     """
     entry = TransactionEntry(
         transaction_id=txn_id,
+        # The parent's account, resolved here rather than taken as an argument:
+        # this helper's whole point is that a caller passes IDS, and an entry's
+        # account IS its parent's (``fk_transaction_entries_parent_account``).
+        account_id=db.session.get(Transaction, txn_id).account_id,
         user_id=user_id,
         amount=Decimal(amount),
         description=description,
@@ -79,12 +83,7 @@ def _create_tracked_txn(seed_user, seed_periods):
     )
     projected = db.session.query(Status).filter_by(name="Projected").one()
 
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,

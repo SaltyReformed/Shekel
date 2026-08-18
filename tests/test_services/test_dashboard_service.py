@@ -29,6 +29,7 @@ from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger, dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    make_every_period_rule,
     add_txn as _add_txn,
     make_investment_account,
     set_default_grid_account,
@@ -69,12 +70,7 @@ class TestBillRowSingleBase:
             db.session.query(RecurrencePattern)
             .filter_by(name="Every Period").one()
         )
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=every_period.id,
-        )
-        db.session.add(rule)
-        db.session.flush()
+        rule = make_every_period_rule(db.session, seed_user["user"].id)
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
@@ -115,12 +111,18 @@ class TestBillRowSingleBase:
         calls rather than passing a literal, so the non-entry-tracked
         assertions below still grade what the row is actually worth instead of
         a number the test handed itself.
+
+        The BUDGET is resolved the same way and off the SAME basis (plan step
+        X-au-c2b): an entry-tracked row answers on ruling E-21's base rather
+        than on its contribution, and the producer takes both.
         """
-        contributions = cash_ledger.contributions_by_id(
-            seed_user["user"].id, txn.scenario_id, [txn],
+        basis = cash_ledger.amount_basis(
+            seed_user["user"].id, txn.scenario_id,
         )
+        contributions = cash_ledger.contributions_by_id([txn], basis)
+        budgets = cash_ledger.amounts_by_id([txn], basis)
         return dashboard_service.txn_to_bill_dict(
-            txn, today, contributions[txn.id],
+            txn, today, contributions[txn.id], budgets[txn.id],
         )
 
     def _add_entries(self, db, seed_user, txn, *amounts):
@@ -129,7 +131,7 @@ class TestBillRowSingleBase:
         from app.models.transaction_entry import TransactionEntry
         for amt in amounts:
             db.session.add(TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal(str(amt)),
                 description="purchase",

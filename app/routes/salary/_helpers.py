@@ -29,6 +29,7 @@ from app.models.ref import (
     RaiseType,
 )
 from app.exceptions import RecurrenceConflict
+from app.routes._recurrence_conflict_chooser import flash_retained_notice
 from app.services import (
     account_service,
     paycheck_calculator,
@@ -172,6 +173,14 @@ def _regenerate_salary_transactions(profile):
         )
     except RecurrenceConflict as e:
         logger.warning("Recurrence conflict during salary regeneration: %s", e)
+        # **A RETAINED row is the owner's business, not just the log's** (plan
+        # step R10-a, adversarial review).  The override / soft-delete halves
+        # of this conflict are deliberately swallowed here -- a salary
+        # regeneration preserves them and there is nothing for the operator to
+        # decide -- but a retained row means this pass declined to apply the
+        # profile's change to a row carrying their own records, which is a
+        # silent no-op unless it is said out loud.
+        flash_retained_notice(e)
     except SQLAlchemyError:
         # Narrow catch (C-46 / F-145): logging hook that re-raises.
         # SQLAlchemy errors from the regenerate flush get the

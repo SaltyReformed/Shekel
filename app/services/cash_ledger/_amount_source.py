@@ -39,7 +39,7 @@ discriminator by tracing -- because two of them are SUBSETS of two others:
      effective-dated series as of the row's OWN due date
      (``template_amount_service.amount_as_of``, plan step X-au-a).
   4. **LOAN_PAYMENT** -- a loan payment's shadow, priced by the loan
-     (``loan_payment_service.live_loan_transfer_amounts``).  A SUBSET of rule 5:
+     (``loan_payment_service.LoanPricing``).  A SUBSET of rule 5:
      a loan payment IS a transfer.
   5. **TRANSFER** -- any other transfer shadow, priced by its parent transfer,
      which is itself priced by rule 1 or rule 3
@@ -66,7 +66,8 @@ flag (``routes/transactions/mutations.py:251``), carry-forward sets it in a bulk
 ``query.update`` no ORM validator sees (``carry_forward_service/_execute.py:157``),
 and Credit and Cancelled leave Projected WITHOUT entering the settled band, so no
 freeze ever fires.  Production carries 7 Cancelled and 2 Credit template-linked
-rows and ``routes/grid.py:226`` loads every one of them with no status predicate,
+rows and ``routes/grid/page.py``'s ``_load_grid_transactions`` loads every one
+of them with no status predicate,
 so the first bucket to derive would have taken out the whole screen.  Asking the
 column instead makes the two agree by construction: the state the CHECK pairs a
 figure with is exactly the state this dispatch answers from that figure.
@@ -94,16 +95,26 @@ would be a ``None`` in a money path.  Zero rows on
 production take any refusal arm (measured 2026-08-12 over all 997), so each one
 carries a seeded control instead.
 
-**The batch tier is separate, and finding N-228 is why.**
-``income_service.live_projected_net`` runs the paycheck engine over the owner's
-WHOLE pay-period set, so asking it per row is quadratic work and was already
-measured as a defect.  :func:`amount_basis` calls each live producer ONCE for a
-row set and hands the resolver two maps; the rules read the map their own kind
-owns, so which rule applies is never decided by which map a row appears in.  That
-distinction is the refuted discriminator one level down.  It is keyed on a
-``(user_id, scenario_id)`` pair rather than on an ``Account`` -- it only ever read
-``account.user_id`` -- so a CROSS-ACCOUNT reader builds one basis for everything
-it loaded instead of grouping its rows by account first (plan step X-au-c2).
+**The DERIVATION tier is separate, and finding N-228 is why.**  The salary
+derivation runs the paycheck engine over the owner's WHOLE pay-period set, so
+asking it per row is quadratic work and was already measured as a defect.
+:func:`amount_basis` holds each live derivation ONCE and hands the resolver
+both; the rules read the derivation their own kind owns, so which rule applies
+is never decided by which map a row appears in.  That distinction is the refuted
+discriminator one level down.  It is keyed on a ``(user_id, scenario_id)`` pair
+rather than on an ``Account`` -- it only ever read ``account.user_id`` -- so a
+CROSS-ACCOUNT reader builds one basis for everything it loaded instead of
+grouping its rows by account first (plan step X-au-c2).
+
+**A basis is pinned to an OWNER and a SCENARIO, not to a row set** (plan step
+X-au-c2b), and that is what makes "one pricing pass per read pass" structural
+rather than a convention each surface remembers.  Everything expensive here is
+scoped that way already -- the paycheck engine by owner, a loan's P&I and escrow
+history by loan -- so storing per-row ANSWERS made a pass row-set-shaped for no
+reason and cost a re-derivation every time a request loaded a second row set
+(findings **N-268**, **N-269**).  A read pass carries its own through
+``balance_at.BalanceContext.amounts``; a write door that prices one row builds
+one and pays only for the rules that row reaches.
 
 Boundary discipline (``CLAUDE.md`` Architecture / B6-01): plain data and ORM
 rows in, ``Decimal`` out; no Flask import, no writes.
@@ -111,17 +122,25 @@ rows in, ``Decimal`` out; no Flask import, no writes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from app import ref_cache
 from app.enums import AmountSourceEnum
 from app.exceptions import AmountUnresolvable
 from app.services import template_amount_service
-from app.services.row_valuation import own_figure
+from app.services.row_valuation import own_figure, owned_amount
 from app.utils.money import round_money
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # Named for the annotations alone.  A runtime import of either would put the
+    # paycheck / loan-resolver stacks on this module's load path, which is the
+    # cycle every call site in this module defers to avoid (finding N-267).
+    from app.services.income_service import SalaryPricing
+    from app.services.loan_payment_service import LoanPricing
 
 
 class AmountRule(Enum):
@@ -161,96 +180,119 @@ class AmountRule(Enum):
 
 @dataclass(frozen=True)
 class AmountBasis:
-    """The live per-row answers, resolved ONCE for an account's rows.
+    """One read pass's live DERIVATIONS, pinned to an owner and a scenario.
 
     Built by :func:`amount_basis` and consumed by
-    :func:`resolve_transaction_amount`.  The two maps stay APART rather than
-    merged, and that is the whole reason this type exists: a merged map makes
-    "which rule applies" a question about map membership, which is the
+    :func:`resolve_transaction_amount`.  The two derivations stay APART rather
+    than merged, and that is the whole reason this type exists: a merged map
+    makes "which rule applies" a question about map membership, which is the
     link-derived discriminator ruling R-FI refuted, and it hides which producer
-    answered.  ``_amounts.live_amount_overrides`` merges them for the callers
-    that still want one map, and does it in one place.
+    answered.  ``_amounts.live_amounts`` merges their ANSWERS for the callers
+    that want one map, and does it in one place.
 
-    **It records the row set it was BUILT over, and an adversarial review is
-    why.**  Without :attr:`priced_ids` a basis MISS is indistinguishable from a
-    producer's deliberate omission, and the two want opposite answers: a manual
-    loan payment is absent from ``loan_cash`` because there is nothing to
-    re-derive, while a row the caller never passed to :func:`amount_basis` is
-    absent because the caller made a mistake.  The review reproduced the
-    consequence -- a manual payment resolved outside its own basis answered
-    ``$1,250.00`` where the correct figure was ``$1,400.00``, silently dropping
-    a standing ``$150.00`` extra with no refusal.  An argument a caller can get
-    wrong is a defect rather than a contract (``docs/plans/lessons.md``), so the
-    set is carried and :func:`resolve_transaction_amount` checks it.
+    **It holds the derivations rather than per-row answers, and that is plan
+    step X-au-c2b's restructure.**  It was
+    ``{priced_ids, {transaction_id: net}, {transaction_id: cash}}`` -- built
+    over ONE row set, because that is the shape both producers returned.  But
+    everything expensive behind those maps is scoped by the OWNER, the SCENARIO
+    and the LOAN, never by the caller's row set: the paycheck engine runs over
+    the owner's whole pay-period set, and a loan's P&I, payment day and escrow
+    history are the loan's.  Storing the lookup's output instead of the
+    derivation behind it is what made a pass row-set-shaped, and three defects
+    followed from that one mistake:
+
+      * a request that loaded two row sets paid every derivation twice --
+        findings **N-268** (the dashboard pulse re-pricing rows the cash fold
+        had priced) and **N-269** (the transfer settle door re-querying the
+        transfer it had just loaded), which are two filings of this one cause;
+      * ``live_loan_transfer_amounts`` and ``live_loan_payment_amount`` were two
+        implementations of ONE rule, the second's docstring stating that it
+        "mirrors" the first's candidate filter -- kept in step by hand;
+      * a row outside the set had no answer, so the basis had to carry
+        ``priced_ids`` as a membership guard: without it a MISS was
+        indistinguishable from a producer's deliberate omission, and an
+        adversarial review reproduced the consequence -- a manual loan payment
+        resolved outside its own basis answered ``$1,250.00`` against a correct
+        ``$1,400.00``, silently dropping a standing ``$150.00`` extra.
+
+    **That guard is DELETED rather than kept, because the failure it caught is
+    now unconstructible.**  Nothing is "absent" from a derivation: a manual
+    payment's cash is COMPUTED from its own config whenever it is asked, so
+    there is no membership question left to answer wrongly.  A guard against a
+    state the model cannot reach is a fence, and this arc's business is making
+    fences structurally unnecessary rather than adding them.
+
+    Both derivations are LAZY, so a pass that prices no paycheck and no loan
+    payment issues no query -- the "fast no-op when there are no candidates"
+    property the row-set producers had, kept rather than traded for the sharing.
 
     Attributes:
-        priced_ids: The ids of every row this basis was built over.  A row
-            outside it cannot be resolved against this basis.
-        salary_net: ``{transaction_id: net pay}`` for salary-linked Projected
-            income (:func:`app.services.income_service.live_projected_net`).
-            Empty when the account holds no such row -- the common case.
-        loan_cash: ``{transaction_id: cash}`` for the DERIVE-mode loan-payment
-            shadows whose cash the loan re-derives
-            (:func:`app.services.loan_payment_service.live_loan_transfer_amounts`).
-            A MANUAL payment may also appear here when it carries a standing
-            extra, and rule 4 ignores it there: the manual base is a stated
-            amount and this producer reads the stored column for it, which is
-            the read ruling R-FI deletes.
+        user_id: The owner these derivations are pinned to.
+        scenario_id: The scenario they resolve under.
+        salary: The owner-and-scenario salary derivation
+            (:class:`app.services.income_service.SalaryPricing`): what each
+            active profile pays, per template and period.
+        loans: The scenario's loan-payment derivation
+            (:class:`app.services.loan_payment_service.LoanPricing`): which
+            transfers are loan payments, and each destination loan's P&I,
+            payment day and escrow history.
     """
 
-    priced_ids: frozenset[int]
-    salary_net: dict[int, Decimal]
-    loan_cash: dict[int, Decimal]
+    user_id: int
+    scenario_id: int
+    salary: "SalaryPricing" = field(compare=False, repr=False)
+    loans: "LoanPricing" = field(compare=False, repr=False)
 
 
-def amount_basis(user_id, scenario_id, transactions) -> AmountBasis:
-    """Resolve the live amounts for *transactions*, one call per producer.
+def amount_basis(user_id, scenario_id) -> AmountBasis:
+    """Return the read pass's :class:`AmountBasis` for an owner and scenario.
 
-    The BATCH half of the resolver.  Both producers pick their own candidates
-    out of the list and ignore the rest, so a caller passes everything it
-    loaded; both return an empty dict after two list comprehensions when there
-    is no candidate, so a row set with neither kind pays no query.
+    Resolves NOTHING -- both derivations behind it are lazy -- so building one
+    is free and a caller may build it before it knows whether any row will need
+    it.  What it costs to ask is paid once per pass however many row sets ask,
+    which is the point of plan step X-au-c2b's restructure.
 
-    Calling it per row is finding **N-228**: ``live_projected_net`` runs
-    ``paycheck_calculator.project_salary`` over the owner's whole pay-period
-    set, because the biweekly rounding residue only reconciles against the
-    complete annual figure.  One basis per read pass is what makes the per-row
-    rules cheap.
+    Calling the derivations per row is finding **N-228**: the paycheck engine
+    runs ``paycheck_calculator.project_salary`` over the owner's whole
+    pay-period set, because the biweekly rounding residue only reconciles
+    against the complete annual figure.  One basis per read pass is what makes
+    the per-row rules cheap; a read pass holds its own through
+    :meth:`app.services.balance_at.BalanceContext.amounts`.
 
     **It takes the OWNER's id rather than an ``Account``, and that is plan step
     X-au-c2's re-keying.**  The only thing it ever read off the account was
-    ``account.user_id`` (the salary producer scopes its profile lookup by owner;
-    the loan producer scopes by scenario alone), so requiring the object forced a
-    CROSS-ACCOUNT reader -- the calendar, the spending report, a dashboard -- to
-    group its rows by account and pay for one basis per group, each running the
-    paycheck engine over the same pay-period set.  A ``(user_id, scenario_id)``
-    pair is the real scope of both producers, so one basis now covers everything
-    a reader loaded.
+    ``account.user_id`` (the salary derivation scopes its profile lookup by
+    owner; the loan derivation scopes by scenario alone), so requiring the
+    object forced a CROSS-ACCOUNT reader -- the calendar, the spending report, a
+    dashboard -- to group its rows by account and pay for one basis per group.
+
+    **The loan derivation's clock is ``date.today()`` and DELIBERATELY not a
+    caller's as-of.**  Resolving a loan's rate-period P&I against the wall clock
+    is finding **N-40**, owned by plan step X-au-g, and handing this a read
+    pass's own ``as_of`` instead is plan step **X-i2**, which MOVES MONEY
+    (``$3,631.74`` today against ``$3,722.53`` at a 2027 read).  Taking it here
+    would ship that move inside a refactor whose gate is byte-identity, so the
+    read stays where it was and is disclosed rather than quietly relocated.
 
     Args:
         user_id: The owner whose rows are being priced; scopes the salary
-            producer's profile lookup.
+            derivation's profile lookup and its pay-period set.
         scenario_id: The scenario the amounts resolve under.
-        transactions: The loaded rows to price.
 
     Returns:
-        The :class:`AmountBasis` for those rows.
+        The unresolved :class:`AmountBasis` for that owner and scenario.
     """
     # Pylint: ``import-outside-toplevel`` -- imported locally to keep the
     # income_service (paycheck/tax) and loan_payment_service (loan-resolver)
     # stacks off this module's load path and out of any import cycle, exactly as
-    # ``_amounts.live_amount_overrides`` has always done; the helpers are only
-    # needed at call time.
+    # ``_amounts`` has always done; the helpers are only needed at call time.
     # pylint: disable=import-outside-toplevel
     from app.services import income_service, loan_payment_service
     return AmountBasis(
-        priced_ids=frozenset(txn.id for txn in transactions),
-        salary_net=income_service.live_projected_net(
-            user_id, scenario_id, transactions,
-        ),
-        loan_cash=loan_payment_service.live_loan_transfer_amounts(
-            scenario_id, transactions,
-        ),
+        user_id=user_id,
+        scenario_id=scenario_id,
+        salary=income_service.salary_pricing(user_id, scenario_id),
+        loans=loan_payment_service.loan_pricing(scenario_id, date.today()),
     )
 
 
@@ -401,7 +443,7 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     Proven equal to the answer the app gives today for **every one of the 997
     rows** on the 2026-08-12 production clone
     (``tests/manual/verify_amount_resolver.py``).  "The answer the app gives
-    today" is not single-valued -- ``routes/grid.py:595`` reads the override map
+    today" is not single-valued -- ``routes/grid/page.py``'s ``index`` reads the override map
     while ``dashboard_service.py:279`` reads the raw column, which IS finding
     **N-224** -- so the oracle grades the OVERRIDE-MAP answer, the one every
     balance surface folds.
@@ -422,18 +464,38 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     hidden: the eager load belongs in the loaders plan step X-au-c2 routes, not
     in a per-row rule.
 
+    **It no longer asks whether *txn* was in the basis's row set** (plan step
+    X-au-c2b).  A basis holds DERIVATIONS pinned to an owner and a scenario, not
+    answers pinned to a row set, so every row of that owner and scenario is
+    resolvable against it and the membership refusal this used to raise has no
+    state left to describe.
+
+    **What it asks INSTEAD is the pin the caller can still get wrong**, and the
+    substitution is the point rather than a smaller guard.  ``priced_ids``
+    caught "this row was not in the set I built over"; it could not catch "this
+    basis belongs to another scenario", which is the mistake that actually
+    changes a figure -- ``LoanPricing`` resolves a loan against ITS scenario's
+    payment history, so a foreign basis answers a different ``monthly_payment``
+    with no error at all.  A row states its own ``scenario_id`` in a column, so
+    the check is free and TOTAL where the membership set was neither.
+
+    An adversarial review of this step's own build is what put it here: the
+    control that replaced the deleted membership test proved the SAFE direction
+    (a basis answers for a row it was not built over) and left the unsafe one --
+    a silently different number -- with nothing asserting it.
+
     Args:
-        txn: The :class:`~app.models.transaction.Transaction` to price.
-        basis: The account's :class:`AmountBasis` (:func:`amount_basis`), built
-            once for the whole row set.
+        txn: The :class:`~app.models.transaction.Transaction` to price.  It must
+            belong to *basis*'s scenario.
+        basis: The read pass's :class:`AmountBasis` (:func:`amount_basis`).
 
     Returns:
         The row's amount as a ``Decimal``.
 
     Raises:
-        AmountUnresolvable: When *txn* is not one of the rows *basis* was built
-            over, or when the rule that owns this row cannot answer for it.  See
-            the module docstring: a refusal is never a fallback.
+        AmountUnresolvable: When *txn* belongs to another scenario than *basis*,
+            or when the rule that owns this row cannot answer for it.  See the
+            module docstring: a refusal is never a fallback.
         UndatedSettleError: Propagated from the DERIVE-mode loan arm, whose
             producer loads the loan's payment history and refuses a settled
             payment carrying no settle day
@@ -441,16 +503,67 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
             catching only :class:`~app.exceptions.AmountUnresolvable` would
             otherwise meet it unannounced.
     """
-    if txn.id not in basis.priced_ids:
+    if txn.scenario_id != basis.scenario_id:
         raise AmountUnresolvable(
-            f"Transaction {txn.id} was not among the rows this AmountBasis was "
-            "built over, so the live producers were never asked about it. "
-            "Resolving it here would answer from a basis that has no opinion: "
-            "a manual loan payment would silently lose its standing extra and a "
-            "salary row would be refused for the wrong reason. Build the basis "
-            "from the row set you are pricing."
+            f"Transaction {txn.id} is in scenario {txn.scenario_id} and this "
+            f"AmountBasis prices scenario {basis.scenario_id}. Resolving it "
+            "here would price it from another scenario's salary profiles and "
+            "another scenario's loans -- a different figure, with nothing to "
+            "say so. Build the basis for the scenario you are pricing."
         )
     return _RULE_ANSWERS[amount_rule(txn)](txn, basis)
+
+
+def amounts_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
+    """Return ``{transaction_id: what the row's amount IS}`` for *rows*.
+
+    **The batch every reader that takes a row's BUDGET uses** (plan step
+    X-au-c2b), and the sibling of
+    :func:`~._amounts.contributions_by_id` rather than a second spelling of it.
+    The two answer different questions and a reader wants one or the other:
+
+      * a CONTRIBUTION is what the row is worth to a balance -- ``0`` for an
+        excluded row, the entered ``actual_amount`` when a human read one off a
+        statement, else the resolved amount;
+      * an AMOUNT is what the row's budget IS, unconditionally.
+
+    **Ruling E-21 is why the second exists.**  An entry-tracked bill row's
+    budget base is ``estimated_amount`` -- never ``actual_amount``, never
+    status-dependent -- so the row's three figures (the amount cell, the
+    remaining, the over-budget flag) all answer one question.  A contribution
+    would break both halves of that: it answers ``$0.00`` for a Cancelled
+    envelope, whose budget is still its budget, and it answers the entered
+    actual for a settled one, which would silently re-base a variance on the
+    number it is being compared against.
+
+    **There is deliberately NO status gate above the resolve**, which is the one
+    place this differs in shape from ``contributions_by_id``.  That batch gates
+    first because an excluded row is worth ``$0.00`` and has no producer to
+    answer it; here the excluded row's budget is exactly what is being asked
+    for, so the resolver is asked for every row.  A per-kind cutover
+    (X-au-d..X-au-i) that declares a row derived owes that row a producer that
+    answers whatever its status -- and rule 2 and rule 4 stopped reading status
+    at this same step precisely so they can.
+
+    Every id in *rows* appears in the result, so a caller indexes it with ``[]``
+    and a row it forgot to price raises a ``KeyError`` where it is read.  There
+    is deliberately no ``.get(id, default)`` shape: a default here is a
+    fabricated figure in a money path.
+
+    Args:
+        rows: The loaded rows to price.  They may span accounts -- the basis is
+            keyed on the owner, not on one account -- but every one must belong
+            to *basis*'s owner and scenario.
+        basis: The read pass's :class:`AmountBasis`.
+
+    Returns:
+        ``{transaction_id: Decimal}`` covering every row.
+
+    Raises:
+        AmountUnresolvable: From the resolver, for a row whose rule cannot
+            answer.  A refusal is never a fallback (see the module docstring).
+    """
+    return {row.id: resolve_transaction_amount(row, basis) for row in rows}
 
 
 def resolve_transfer_amount(xfer) -> Decimal:
@@ -468,9 +581,10 @@ def resolve_transfer_amount(xfer) -> Decimal:
     nobody generated it and no definition states its price.
 
     It takes no :class:`AmountBasis`, and that is a fact about the loan rule
-    rather than an omission: ``live_loan_transfer_amounts`` keys its answer on
-    the SHADOW's id, so a derive-mode loan payment has no transfer-level answer
-    to give.  Such a transfer therefore reaches the series arm and is REFUSED by
+    rather than an omission: ``LoanPricing.derive_cash`` resolves the escrow on
+    the SHADOW's own due date, so a derive-mode loan payment has no
+    transfer-level answer to give.  Such a transfer therefore reaches the series
+    arm and is REFUSED by
     its OWNERSHIP test -- ``template_amount_service.owns_its_amount`` is False
     for a derive-mode payment, and that is the arm that fires rather than the
     empty-series one, because the template may still hold versions stated while
@@ -628,7 +742,7 @@ def _own_answer(txn, _basis: AmountBasis) -> Decimal:
     Returns:
         The row's stored ``estimated_amount``.
     """
-    return own_figure(txn.estimated_amount, "transaction", txn.id)
+    return owned_amount(txn)
 
 
 def _salary_answer(txn, basis: AmountBasis) -> Decimal:
@@ -649,9 +763,19 @@ def _salary_answer(txn, basis: AmountBasis) -> Decimal:
     on a salary-linked template (``live_projected_net`` takes income only).
     Zero such rows on the 2026-08-12 production clone.
 
+    **It reads no STATUS, and that is plan step X-au-c2b's split.**  The map it
+    used to index was built by the read-time repair, which filters to Projected
+    non-overridden rows -- so a Cancelled or hand-priced paycheck was refused
+    here for a reason that has nothing to do with what a paycheck is worth.
+    Pricing asks the definition; whether a row still counts is finding
+    **N-262**'s separate question, answered above this rule by
+    ``row_valuation.fixed_contribution`` and beside it by
+    ``income_service.live_projected_net``.
+
     Args:
         txn: The salary income row being priced.
-        basis: The account's basis; its ``salary_net`` map holds the answer.
+        basis: The read pass's basis; its ``salary`` derivation holds the
+            answer, keyed on the row's template and pay period.
 
     Returns:
         The live net pay for the row's period.
@@ -659,7 +783,12 @@ def _salary_answer(txn, basis: AmountBasis) -> Decimal:
     Raises:
         AmountUnresolvable: When the live recompute has no answer for this row.
     """
-    net = basis.salary_net.get(txn.id)
+    # Pylint: ``import-outside-toplevel`` -- the paycheck / tax stack stays off
+    # this module's load path, the same reason ``amount_basis`` imports it at
+    # call time (finding N-267).
+    # pylint: disable=import-outside-toplevel
+    from app.services.income_service import salary_net_for
+    net = salary_net_for(txn, basis.salary)
     if net is None:
         raise AmountUnresolvable(
             f"Transaction {txn.id} is priced by a salary profile and the live "
@@ -701,9 +830,8 @@ def _loan_payment_answer(txn, basis: AmountBasis) -> Decimal:
 
     * **derive mode** -- the cash is P&I plus the escrow in effect on the
       shadow's own DUE date plus any standing extra, which
-      ``live_loan_transfer_amounts`` has already resolved into
-      ``basis.loan_cash``.  Absent there means the loan would not resolve, and
-      that REFUSES;
+      ``LoanPricing.derive_cash`` computes from the loan's own resolution.  A
+      ``None`` there means the loan would not resolve, and that REFUSES;
     * **manual mode** -- the operator owns the base cash, which is a STATED
       amount, so it is the definition's series (rule 5's arm, reached through
       the parent) plus the standing extra.
@@ -711,7 +839,7 @@ def _loan_payment_answer(txn, basis: AmountBasis) -> Decimal:
     **The mode is read rather than inferred, and an adversarial review is why.**
     The first draft answered "the live map when it has an entry, else the
     parent's series", which made a manual payment resolve TWO different ways:
-    ``live_loan_transfer_amounts`` prices a manual payment from
+    ``LoanPricing.live_cash`` prices a manual payment from
     ``shadow.estimated_amount + extra`` (``_manual_shadow_amount``), so a
     payment with a standing extra was answered from the stored column while the
     same payment without one was answered from its series.  On a shadow whose
@@ -720,9 +848,18 @@ def _loan_payment_answer(txn, basis: AmountBasis) -> Decimal:
     was the one reading the column ruling R-FI exists to stop reading.  Now
     neither manual arm reads it.
 
-    **The derive arm still reads the wall clock, through the producer it
-    delegates to** -- ``live_loan_transfer_amounts`` resolves its basis at
-    ``date.today()``, which is finding **N-40**, owned by plan step X-au-g: the
+    **The derive arm reads no STATUS, and that is plan step X-au-c2b's split.**
+    The map it used to index was built by the read-time repair, which filters to
+    Projected non-overridden shadows -- so a Cancelled or hand-priced loan
+    payment was refused here as though its LOAN would not resolve, which is a
+    different and alarming statement.  Whether a row still counts is finding
+    **N-262**'s separate question, answered above this rule rather than inside
+    it.
+
+    **The derive arm still reads the wall clock, through the derivation it
+    delegates to** -- :class:`~app.services.loan_payment_service.LoanPricing`
+    pins ``date.today()`` when the basis is built,
+    which is finding **N-40**, owned by plan step X-au-g: the
     leaf that rules a shadow's P&I onto its own due date as ruling D5 already
     put its escrow.  The README states clock-freedom as the amount model's
     precondition against the SALARY derivation, where plan step X-as closed it;
@@ -732,8 +869,8 @@ def _loan_payment_answer(txn, basis: AmountBasis) -> Decimal:
 
     Args:
         txn: The loan-payment shadow being priced.
-        basis: The account's basis; its ``loan_cash`` map holds the derive-mode
-            answer.
+        basis: The read pass's basis; its ``loans`` derivation resolves the
+            destination loan and holds its escrow history.
 
     Returns:
         The shadow's live cash.
@@ -749,7 +886,9 @@ def _loan_payment_answer(txn, basis: AmountBasis) -> Decimal:
     from app.services.loan_payment_service import loan_payment_config
     derive, extra = loan_payment_config(txn.transfer.template)
     if derive:
-        live = basis.loan_cash.get(txn.id)
+        live = basis.loans.derive_cash(
+            txn, txn.transfer.to_account_id, extra,
+        )
         if live is None:
             raise AmountUnresolvable(
                 f"Transaction {txn.id} is a DERIVE-mode loan payment and the "

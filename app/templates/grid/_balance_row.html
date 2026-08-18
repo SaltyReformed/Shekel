@@ -85,7 +85,7 @@
       <i class="bi bi-arrow-left-right" aria-hidden="true"></i> Period timing
     </td>
     {% for period in periods %}
-      {% set col = columns.get(period.id) %}
+      {% set col = columns.get(period.period_id) %}
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }}">
         {% if col is not none %}{{ money(col.period_timing, cents=false) }}{% endif %}
       </td>
@@ -98,7 +98,7 @@
       <i class="bi bi-bank2" aria-hidden="true"></i> Book vs bank
     </td>
     {% for period in periods %}
-      {% set col = columns.get(period.id) %}
+      {% set col = columns.get(period.period_id) %}
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }}">
         {% if col is not none %}{{ money(col.book_vs_bank, cents=false) }}{% endif %}
       </td>
@@ -115,7 +115,7 @@
       <i class="bi bi-plus-circle" aria-hidden="true"></i> Contributions
     </td>
     {% for period in periods %}
-      {% set col = columns.get(period.id) %}
+      {% set col = columns.get(period.period_id) %}
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }}">
         {% if col is not none %}{{ money(col.contribution) }}{% endif %}
       </td>
@@ -133,7 +133,7 @@
       <i class="bi bi-percent" aria-hidden="true"></i> {{ accrual_label }}
     </td>
     {% for period in periods %}
-      {% set col = columns.get(period.id) %}
+      {% set col = columns.get(period.period_id) %}
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }}{% if col is not none %}{{ accrual_class(col.accrual) }}{% endif %}">
         {% if col is not none %}{{ accrual_money(col.accrual) }}{% endif %}
       </td>
@@ -145,7 +145,7 @@
       <i class="bi bi-bank"></i> Projected End Balance
     </td>
     {% for period in periods %}
-      {% set col = columns.get(period.id) %}
+      {% set col = columns.get(period.period_id) %}
       {% set bal = col.balance if col is not none else none %}
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }} {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < low_balance_threshold %}balance-low{% endif %}">
         {% if bal is not none %}

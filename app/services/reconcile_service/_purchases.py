@@ -9,12 +9,19 @@ module because the scope being literally shared between the read and the write
 is the security property, not a convenience.
 
 **Its settle is the odd one of the three, and that is why it is first.**
-Settling a purchase writes ONE column on ONE row (``settled_on``) and moves no
-status, so this arm's writer is a single bulk ``UPDATE`` narrowed by the same
-clauses the reader selected on.  The transaction and transfer arms settle
-through a status seam and a posting reconcile, so their writers dispatch to a
+Settling a purchase writes TWO columns on ONE row (``settled_on`` and the
+statement it names) and moves no status, so this arm's writer is a single bulk
+``UPDATE`` narrowed by the same clauses the reader selected on.  The transaction
+and transfer arms settle through a status seam, so their writers dispatch to a
 service verb per row (ruling **R-FA**).  Nothing here should be generalised
 into a shape those two can share until they exist.
+
+**All three now reconcile the LEDGER, and that is plan step X-f3b** (ruling
+**R-FM**): a purchase whose posting day is recorded is a cash movement of its
+own, so stamping one posts its cash leg.  The bulk ``UPDATE`` stays -- the
+column write is still one statement -- and the postings are reconciled per row
+afterwards, which keeps the security property (the SCOPE is what decides which
+rows were stamped) and adds no second definition of "outstanding".
 
 Architecture (``CLAUDE.md``):
   - No Flask imports.  Plain data in, frozen dataclasses out.
@@ -30,6 +37,8 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services import posting_service
+from app.services.cash_ledger import AnchorPoint
 from app.services.reconcile_service._offers import OutstandingPurchase
 from app.utils.balance_predicates import (
     balance_contributing_clause,
@@ -197,21 +206,84 @@ def outstanding_purchases(
     return blocks
 
 
+def _post_stamped_purchases(
+    account_id: int, entry_ids: "set[int]", anchor_id: int,
+) -> None:
+    """Post the cash leg of every purchase the tick just stamped -- ruling **R-FM**.
+
+    Plan step X-f3b's half of this writer.  A purchase carrying a recorded bank
+    posting day is a cash movement of its own, so stamping one is a LEDGER act
+    as well as a column write, exactly as the transaction arm's settle already
+    is.  This arm's writer is a bulk ``UPDATE`` and stays one; the postings are
+    reconciled per row afterwards, which is what
+    ``posting_service.sync_purchase_postings`` is for.
+
+    **The set is re-read rather than assumed**, and both halves of that matter.
+    The ``UPDATE`` ran with ``synchronize_session=False``, so any
+    :class:`~app.models.transaction_entry.TransactionEntry` already in the
+    identity map holds the pre-update values -- ``populate_existing()`` refreshes
+    exactly the rows this touched, so the posting reconcile (and the TRANSACTION
+    arm that runs after it, which reads the same purchases through their
+    parent's ``entries``) both see the day that was just written.  And the
+    filter re-derives WHICH rows landed from the database rather than from
+    *entry_ids*: an id the scope rejected was never stamped and must not be
+    posted.
+
+    ``reconciled_by_id == anchor_id`` identifies them exactly.  An entry inside
+    :func:`_outstanding_scope` carries no ``settled_on``, and
+    ``ck_transaction_entries_cleared_needs_settle_day`` makes a link without one
+    unwritable -- so no entry this call could have stamped already named this
+    statement, and every one that names it now was stamped here.
+
+    **The account clause is redundant and is written anyway.**  A purchase
+    naming this assertion is already on this account by construction --
+    ``fk_transaction_entries_reconciled_by`` is a COMPOSITE key over
+    ``(account_id, reconciled_by_id)``, so a cross-account link is unwritable --
+    but every other read in this arm re-scopes on principle rather than on an
+    argument, and a scope that rests on an argument is one refactor away from
+    resting on nothing.
+
+    Args:
+        account_id: The cash account the balance was asserted for.
+        entry_ids: The ids the user ticked (the superset the ``UPDATE`` was
+            scoped against).
+        anchor_id: The governing assertion's id, just written onto the stamped
+            rows.
+    """
+    stamped = (
+        db.session.query(TransactionEntry)
+        .populate_existing()
+        .filter(
+            TransactionEntry.id.in_(entry_ids),
+            TransactionEntry.account_id == account_id,
+            TransactionEntry.reconciled_by_id == anchor_id,
+        )
+        .all()
+    )
+    for entry in stamped:
+        posting_service.sync_purchase_postings(entry)
+
+
 def record_settled_days(
     owner_id: int,
     account_id: int,
     entry_ids: "set[int]",
-    observed_on: date,
+    anchor: AnchorPoint,
 ) -> int:
-    """Record that the bank had taken *entry_ids* by *observed_on*.
+    """Record that *anchor*'s statement showed *entry_ids*.
 
     This arm's writer: the user ticked these purchases off a statement, so each
-    one's ``settled_on`` becomes the day that statement's balance was true for.
-    The stored date is an UPPER BOUND on the true posting day -- the purchase
-    may have cleared a day or two earlier -- and it is the only bound the
-    reconciliation predicate consumes (``settled_on <= observed_on``), so no
-    answer changes by sharpening it.  A user who wants the exact day off their
-    statement edits the entry.
+    one records WHICH statement showed it (``reconciled_by_id``, ruling
+    **R-FL**) and takes that statement's day as its ``settled_on``.
+
+    **Two columns, two facts, and the second is why this step exists.**
+    ``settled_on`` is an UPPER BOUND on the true posting day -- the purchase may
+    have cleared a day or two earlier, and a user who wants the exact day edits
+    the entry.  ``reconciled_by_id`` is not a bound at all: it is the
+    observation, and it is what the clearing rule reads first.  The day alone
+    could not carry it -- production holds three days on which Checking has more
+    than one assertion, so no rule over ``settled_on`` can name which statement
+    a tick was made against.
 
     **Every id is re-scoped through :func:`_outstanding_scope` rather than
     trusted.**  The ids arrive from a form, so an id belonging to another
@@ -227,14 +299,16 @@ def record_settled_days(
         owner_id: The user_id whose purchases these must be.
         account_id: The cash account the balance was asserted for.
         entry_ids: The entry ids the user ticked.  An empty set is a no-op.
-        observed_on: The civil day the asserted balance was true for, and the
-            day each ticked purchase is recorded as having settled by.
+        anchor: The governing assertion -- the STATEMENT being reconciled.  Its
+            id is what each ticked purchase records, and its ``observed_on`` is
+            the day each is recorded as having settled by.
 
     Returns:
         The number of entries actually stamped.
     """
     if not entry_ids:
         return 0
+    observed_on = anchor.observed_on
 
     # ``synchronize_session=False``, which CLOSES finding **N-223**, and the
     # reasoning that briefly argued the other way is recorded because it was
@@ -262,12 +336,16 @@ def record_settled_days(
             *_outstanding_scope(owner_id, account_id, observed_on),
         )
         .update(
-            {TransactionEntry.settled_on: observed_on},
+            {
+                TransactionEntry.settled_on: observed_on,
+                TransactionEntry.reconciled_by_id: anchor.anchor_id,
+            },
             synchronize_session=False,
         )
     )
 
     if updated:
+        _post_stamped_purchases(account_id, entry_ids, anchor.anchor_id)
         log_event(
             logger, logging.INFO,
             EVT_ENTRIES_SETTLED_DAY_RECORDED, BUSINESS,

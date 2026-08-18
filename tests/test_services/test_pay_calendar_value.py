@@ -308,6 +308,46 @@ class TestTheThreeQuestionsAnswerDifferently:
         assert span.start_date == date(2026, 4, 2)
         assert span.end_date == date(2026, 5, 1)
 
+    def test_containment_SKIPS_an_unsaved_candidate(self):
+        """The materialisation filter on the containment search itself.
+
+        ``period_containing`` said "the SAVED period" in its first line and
+        searched all of them until plan step **C2-f2b**, the last of the five
+        searches here to rest on the argument that no calendar holding an
+        unsaved candidate reaches it.  That argument was true and this package
+        has twice ruled true is not structural -- ``filing_period`` and
+        ``period_starting_after`` were each corrected after an adversarial
+        review fed them a candidate and got a ``period_id`` of ``None`` back
+        for a ``NOT NULL`` column.
+
+        The consumers are why it matters, and both write or filter that same
+        column: ``recurrence._occurrence`` PLACES a generated row on this
+        answer, and ``companion_service`` SCOPES its transaction query by it --
+        where ``pay_period_id == None`` is not an error but ``IS NULL``, which
+        returns no rows silently.  ``WITH_INTERIOR_UNSAVED`` puts the candidate
+        BETWEEN two saved paydays, the position a head-or-tail shape cannot
+        test.
+
+        ``span_containing`` is the control on the same day: it answers, because
+        being TOTAL is its whole contract -- so this pins the filter rather
+        than the calendar's contents.
+        """
+        cal = PayCalendar.from_paydays(WITH_INTERIOR_UNSAVED, 14, user_id=1)
+        candidate = cal.periods[1]
+        assert candidate.period_id is None
+        inside = candidate.start_date + timedelta(days=3)
+
+        assert cal.period_containing(inside) is None
+
+        span = cal.span_containing(inside)
+        assert span is not None
+        assert span.period_id is None
+
+        # The saved periods either side still answer, so the filter removed
+        # the candidate and nothing else.
+        assert cal.period_containing(cal.periods[0].start_date) is cal.periods[0]
+        assert cal.period_containing(cal.periods[2].start_date) is cal.periods[2]
+
 
 class TestTheFilingRuleEqualsTheChainItDeletes:
     """The 2026-08-10 ruling's evidence, re-run as a test."""
@@ -603,6 +643,128 @@ class TestTheTwoOrderingSearchesAreMirrors:
         assert cal.period_starting_on_or_before(beyond) is cal.periods[-1]
 
 
+class TestPeriodStartingAfter:
+    """The STRICT pair, which plan step C2-f1 moved here with two deleted queries.
+
+    ``pay_period_service.get_next_period`` asked ``period_index + 1`` and
+    ``companion_service.get_previous_period`` asked ``period_index - 1`` -- one
+    rule written twice, on the stored ordinal.  The assertions below are the
+    ones those two carried, re-pointed at the value, plus the property their
+    ordinal form could not state: on a DERIVED calendar the ordinal IS payday
+    order, so stepping by index and stepping by payday cannot disagree.
+    """
+
+    def test_next_of_a_period_is_the_one_after_it(self):
+        """``get_next_period(periods[N])`` was ``periods[N + 1]``; it still is."""
+        cal = calendar()
+        assert cal.period_starting_after(cal.periods[1].start_date) is cal.periods[2]
+        assert cal.period_starting_after(cal.periods[0].start_date) is cal.periods[1]
+
+    def test_next_of_the_last_period_is_none(self):
+        """Past the last payday the schedule has not reached there yet."""
+        cal = calendar()
+        assert cal.period_starting_after(cal.periods[-1].start_date) is None
+
+    def test_previous_of_the_first_period_is_none(self):
+        """The mirror's end of the schedule, which the companion nav hides."""
+        cal = calendar()
+        assert cal.period_starting_before(cal.periods[0].start_date) is None
+        assert cal.period_starting_before(cal.periods[2].start_date) is cal.periods[1]
+
+    def test_the_two_are_inverses_across_the_whole_schedule(self):
+        """Step forward then back and land where you started, at every payday.
+
+        The property the two ordinal queries could not have: they read a
+        STORED ``period_index``, so a schedule whose index order disagreed with
+        its payday order would step forward into one period and back into a
+        different one.  Here the ordinal is derived from payday order, so the
+        round trip is closed by construction -- this asserts it rather than
+        assuming it.
+        """
+        cal = calendar()
+        for period in cal.periods[:-1]:
+            forward = cal.period_starting_after(period.start_date)
+            assert forward is not None
+            assert cal.period_starting_before(forward.start_date) is period
+
+    def test_strict_is_what_separates_them_from_the_inclusive_pair(self):
+        """A period's own payday is excluded -- the off-by-one five callers shared.
+
+        ``period_starting_on_or_after(payday)`` answers that period ITSELF, so
+        a caller that reached for the inclusive search to mean "the next one"
+        would file a credit-card payback in the very period it pays back.
+        """
+        cal = calendar()
+        payday = cal.periods[1].start_date
+        assert cal.period_starting_on_or_after(payday) is cal.periods[1]
+        assert cal.period_starting_after(payday) is cal.periods[2]
+        assert cal.period_starting_on_or_before(payday) is cal.periods[1]
+        assert cal.period_starting_before(payday) is cal.periods[0]
+
+    def test_they_SKIP_an_unsaved_candidate(self):
+        """The materialisation filter, which is what makes the FK write safe.
+
+        ``create_cc_payback_transaction`` writes this answer's ``period_id``
+        into ``transactions.pay_period_id``, which is ``NOT NULL``, with no
+        guard of its own -- because the SEARCH cannot answer a period that has
+        none.  A projection is not the risk (these never project); the risk is
+        the other way ``period_id`` is ``None``, an unsaved candidate, which
+        ``derive_periods`` accepts by design and which plan step C3's writer
+        builds.  ``WITH_INTERIOR_UNSAVED`` puts one BETWEEN two saved paydays,
+        which is the position a head-or-tail shape cannot test.
+
+        The INCLUSIVE pair is the control: it still answers the candidate, so
+        this pins the filter rather than the calendar's contents.
+        """
+        cal = PayCalendar.from_paydays(WITH_INTERIOR_UNSAVED, 14, user_id=1)
+        candidate = cal.periods[1]
+        assert candidate.period_id is None
+
+        after = cal.period_starting_after(cal.periods[0].start_date)
+        assert after is cal.periods[2]
+        assert after.period_id == 12
+
+        before = cal.period_starting_before(cal.periods[2].start_date)
+        assert before is cal.periods[0]
+        assert before.period_id == 10
+
+        # The control: the inclusive searches are unfiltered and unchanged,
+        # which is what the recurrence engine reads.
+        assert cal.period_starting_on_or_after(candidate.start_date) is candidate
+        assert cal.period_starting_on_or_before(candidate.start_date) is candidate
+
+    def test_no_materialised_period_at_all_answers_none(self):
+        """Every payday an unsaved candidate leaves nothing to answer with."""
+        cal = PayCalendar.from_paydays(
+            [(None, date(2026, 1, 2)), (None, date(2026, 1, 16))], 14, user_id=1,
+        )
+        assert cal.period_starting_after(date(2026, 1, 2)) is None
+        assert cal.period_starting_before(date(2026, 1, 16)) is None
+
+    def test_a_day_before_the_first_payday_answers_the_first_period(self):
+        """The forward search's other end, which the deleted query never reached.
+
+        ``get_next_period`` took a PERIOD, so it could not be asked about a day
+        below the schedule at all; the calendar can, and the answer is the
+        opening paycheck rather than ``None``.
+        """
+        cal = calendar()
+        assert cal.period_starting_after(date(2020, 1, 1)) is cal.periods[0]
+        assert cal.period_starting_before(date(2020, 1, 1)) is None
+
+    def test_they_answer_off_cadence_from_a_day_inside_a_period(self):
+        """Asked mid-period rather than on a payday, on an irregular schedule.
+
+        OFF_CADENCE on purpose: the searches key on ``start_date``, so a
+        schedule whose paydays are one cadence apart cannot distinguish "the
+        period after this payday" from "the period one cadence later".
+        """
+        cal = PayCalendar.from_paydays(OFF_CADENCE, 14, user_id=1)
+        mid = cal.periods[1].start_date + timedelta(days=3)
+        assert cal.period_starting_after(mid) is cal.periods[2]
+        assert cal.period_starting_before(mid) is cal.periods[1]
+
+
 class TestAWindowIsAViewAndKeepsTheRealEnds:
     """Ledger row P14, made structural by the type."""
 
@@ -656,12 +818,112 @@ class TestAWindowIsAViewAndKeepsTheRealEnds:
         assert window.containing(date(2026, 1, 2)) is None
         assert window.containing(date(2026, 2, 20)) is None
 
+    def test_containing_index_answers_WHERE_in_the_view_that_period_sits(self):
+        """The offset a consumer plotting one point per period needs (C2-f2c).
+
+        ``window[window.containing_index(d)] is window.containing(d)`` wherever
+        either answers, which is what makes the two incapable of disagreeing:
+        they run one bisect between them.
+        """
+        cal = calendar()
+        window = cal.window(first_index=1, count=2)
+        assert window.containing_index(date(2026, 1, 20)) == 0
+        assert window.containing_index(date(2026, 2, 1)) == 1
+        assert window[window.containing_index(date(2026, 2, 1))] is (
+            window.containing(date(2026, 2, 1))
+        )
+
+    def test_containing_index_is_the_VIEWS_ordinal_not_the_calendars(self):
+        """The firing control for the test above.
+
+        A window opening at calendar ordinal 1 answers ``0`` for a day in its
+        own first period.  A consumer deriving the offset as
+        ``found.period_index - window[0].period_index`` gets the same number
+        here; one that read ``found.period_index`` alone would get ``1``, plot
+        its marker one point to the right, and be wrong by more the further
+        into the schedule the window opens.
+        """
+        window = calendar().window(first_index=1, count=2)
+        assert window.containing_index(date(2026, 1, 20)) == 0
+        assert window.containing(date(2026, 1, 20)).period_index == 1
+
+    def test_containing_index_answers_None_outside_the_window(self):
+        """Scoped exactly as :meth:`containing` is, and for the same reason.
+
+        Both bounds, because a day BEFORE the view and a day AFTER it take
+        different branches of the bisect: the first has no candidate at all,
+        the second has one whose ``end_date`` the day is past.  ``0`` is a
+        legal answer here, so a caller testing the result for truthiness rather
+        than for ``None`` would drop the view's own first period -- which is
+        why both of these assert ``is None``.
+        """
+        window = calendar().window(first_index=1, count=2)
+        assert window.containing_index(date(2026, 1, 2)) is None
+        assert window.containing_index(date(2026, 2, 20)) is None
+
+    def test_containing_index_survives_a_window_supplied_out_of_order(self):
+        """The bisect's ordering precondition is the TYPE's, not the caller's.
+
+        ``__post_init__`` sorts, so this cannot be got wrong -- the same
+        argument the containment test one class down makes, asserted for the
+        index answer too because a silently wrong OFFSET moves a chart marker
+        rather than raising.
+        """
+        cal = calendar()
+        window = PeriodWindow(periods=tuple(reversed(cal.periods)))
+        assert window.containing_index(date(2026, 1, 2)) == 0
+        assert window.containing_index(date(2026, 2, 20)) == 3
+
+    def test_an_interior_window_is_exactly_the_ordinals_asked_for(self):
+        """``window(1, 2)`` is ordinals 1 and 2, and no neighbour of theirs.
+
+        **Inherited coverage, named as such.**  This was
+        ``test_pay_period_service.test_returns_correct_window_by_index``,
+        which asserted ``[p.period_index ...] == [2, 3, 4]`` against the SQL
+        ``get_periods_in_range``; plan step **C2-f2b** deleted that reader
+        whole and its tests with it.  The three cases beside it were already
+        covered here (the empty window past the end, the zero count, the
+        partial window the calendar ends first), and the negative
+        ``first_index`` got its own test above -- but nothing asserted an
+        INTERIOR window's exact ordinal list, which is the ordinary case
+        every ``/grid`` render is.
+        """
+        cal = calendar()
+        assert [p.period_index for p in cal.window(1, 2)] == [1, 2]
+        assert [p.period_id for p in cal.window(1, 2)] == [11, 12]
+
     def test_windows_past_the_end_and_of_no_periods_are_empty_not_errors(self):
         """"No periods requested" and "the calendar ends first" are answers."""
         cal = calendar()
         assert len(cal.window(first_index=99, count=3)) == 0
         assert len(cal.window(first_index=0, count=0)) == 0
         assert len(cal.window(first_index=2, count=10)) == 2
+
+    def test_a_negative_first_index_spends_slots_it_cannot_fill(self):
+        """A window opening below ordinal 0 comes back SHORT, not re-based.
+
+        ``first_index`` is an absolute ordinal on the owner's schedule, not an
+        offset to clamp: ``window(-1, 3)`` asks for ordinals -1, 0 and 1, and
+        the calendar holds two of them.  Two periods come back, not three.
+
+        **This case is inherited coverage and is named as such.**  It was the
+        only assertion on ``pay_period_service.get_periods_in_range``'s
+        negative-start behaviour (``period_index >= -1 AND period_index < 2``
+        in SQL), and plan step **C2-f2b** deleted that reader whole -- all
+        three of its ``app/`` call sites were the grid's, and the grid asks
+        this method now.  The reader's own test went with it, so the property
+        is pinned here or nowhere.
+
+        It is reachable rather than hypothetical: the grid's leftmost ordinal
+        is ``current_period.period_index + start_offset`` and ``offset`` is a
+        user-supplied query parameter, so ``/grid?offset=-99`` lands here on
+        every schedule.  A page one column short is the honest answer -- the
+        alternative, silently sliding the window forward to fill the count,
+        would show a window the URL did not ask for.
+        """
+        cal = calendar()
+        assert [period.period_index for period in cal.window(-1, 3)] == [0, 1]
+        assert len(cal.window(-1, 1)) == 0
 
     def test_overlapping_takes_both_bounds_inclusively(self):
         """The calendar-month slice the reporting surfaces ask for."""

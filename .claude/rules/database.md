@@ -29,6 +29,10 @@ Must-knows for models and migrations. Full standards: `docs/coding-standards.md`
   tables, `CASCADE`/`SET NULL` inter-domain). **Name all constraints**:
   `ck_<table>_<desc>`, `uq_<table>_<cols>`, `ix_<table>_<cols>`. Index frequent
   WHERE/JOIN/ORDER BY columns.
+  **EXEMPT: single-column `PRIMARY KEY (id)` / `UNIQUE (name)` on a `ref` lookup
+  table**, which take PostgreSQL's generated names (developer ruling 2026-08-14,
+  ledger row `recurrence:F-3`; 24 of 24 live `ref` tables already do). Those two
+  names are never referenced by anything. Every other constraint is named.
 
 ## Migrations
 

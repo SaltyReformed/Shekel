@@ -17,14 +17,18 @@ recurrence engine resolves, walks and places against this value, and the
 seam's thirteen per-period entries stopped TAKING a period list and now read
 :meth:`PayCalendar.saved` off their read pass, which deleted
 ``_cash_periods._PeriodSpans`` -- a fourth index over the STORED spans.
-**TWO readers of the stored columns survive INSIDE that seam and an earlier
+**TWO readers of the stored columns survived INSIDE that seam and an earlier
 draft of this paragraph claimed none did** (adversarial review, 2026-08-13):
-``balance_at/_cash_fold._cash_plan`` still clamps a projected row against
-``txn.pay_period``'s span, and ``balance_at/_asset_contributions`` still walks
+``balance_at/_cash_fold._cash_plan`` clamps a projected row against
+``txn.pay_period``'s span -- it still does, and it is named in the pay-calendar
+plan's section 3 as ``C4``'s -- and ``balance_at/_asset_contributions`` walked
 ``pay_period_service.get_all_periods``, whose ORDER is the stored ordinal and
-whose order its year-to-date accumulation depends on.  Both are named in the
-pay-calendar plan's section 3 and owned by ``C4``.  ``C2-e`` (the projection
-axis) and ``C2-f`` (``pay_period_service``'s readers) remain.
+whose order its year-to-date accumulation depends on.  **The second went at
+``C2-f2a``** (ledger row **P37**): the contribution tier takes the read pass's
+own calendar, so no module under ``balance_at`` IMPORTS ``pay_period_service``
+and the ordering rule is the derivation rather than a sort at that door.
+``C2-e`` (the projection axis) has since shipped; ``C2-f``'s remaining leaves
+(``pay_period_service``'s readers at every surface outside this seam) have not.
 
 Why the value exists at all: an AST census on 2026-08-10 found **SIX**
 implementations of "which pay period contains this date" in ``app/`` -- ledger
@@ -35,8 +39,8 @@ on the containment PREDICATE.  They disagree at exactly the edges that matter.
 Two bisect and answer ``None`` outside the schedule; one scans linearly and
 falls back past the end of it; one scans SYNTHETIC periods; two are SQL, and one
 of those (``get_current_period``) has no ``ORDER BY`` at all (row **P19**).
-Seven answers to one question is the defect; the number of QUESTIONS is three,
-and they are named here so a caller has to choose:
+Seven answers to one question is the defect; the number of CONTAINMENT
+questions is three, and they are named here so a caller has to choose:
 
 ===================================== ==================================
 question                              method
@@ -52,6 +56,26 @@ which SAVED paycheck does a record    :meth:`PayCalendar.filing_period`
 FILE under                            -- never ``None``; a foreign key
                                       points at the answer
 ===================================== ==================================
+
+**Beside them sit FOUR ORDERING searches, which are a 2x2 rather than a list**,
+and stating it as one is what keeps a caller from reaching for the wrong half:
+the axis is BEFORE or AFTER a day, and the bound is INCLUSIVE or STRICT.
+
+========== ============================================ ====================
+axis       inclusive (the day itself qualifies)         strict (it does not)
+========== ============================================ ====================
+backwards  :meth:`period_starting_on_or_before`         :meth:`period_starting_before`
+forwards   :meth:`period_starting_on_or_after`          :meth:`period_starting_after`
+========== ============================================ ====================
+
+**The strict pair arrived at plan step C2-f1** with the deletion of
+``pay_period_service.get_next_period`` and ``companion_service.get_previous_period``,
+which asked "the next / previous paycheck" as ``period_index +/- 1`` queries.
+Reaching for an INCLUSIVE search to mean "the next one" answers with the SAME
+period, and two of the callers write the answer into
+``transactions.pay_period_id`` -- so the wrong pick files a credit-card payback
+in the paycheck it is paying back.  The 2x2 is above the table for that reason,
+and ``test_pay_calendar_value.TestPeriodStartingAfter`` pins all four corners.
 
 **The filing rule was ruled a second QUESTION, not a compensator** (developer,
 2026-08-10).  ``loan_ledger`` answers it today with a three-branch chain across
@@ -103,7 +127,6 @@ clock.  Every answer is a pure function of the paydays and the cadence the
 caller supplies.
 """
 
-from bisect import bisect_left
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -111,8 +134,8 @@ from datetime import date, timedelta
 from ._cadence import PayCadence
 from ._derive import DerivedPeriod, PayCalendarError, derive_periods
 from ._searches import (
-    _BY_START_DATE,
     containing_period,
+    earliest_started_period,
     earliest_start_in_month,
     final_covered_day,
     latest_started_period,
@@ -343,13 +366,24 @@ class PayCalendar:
         seating a bill in a paycheck whose span does not contain it silently
         misplaces real money.
 
+        **SAVED is ENFORCED rather than described, since plan step C2-f2b** --
+        the last of the five searches here to rest on "no calendar holding an
+        UNSAVED candidate reaches it".  That was true, and this package has
+        twice ruled true is not structural: :meth:`filing_period` and
+        :meth:`period_starting_after` were each corrected after a review fed
+        them a candidate and got ``period_id=None`` back for a ``NOT NULL``
+        column.  Both consumers here write that column -- the recurrence engine
+        PLACES a row on this answer, ``companion_service`` SCOPES its query by
+        it -- and ``== None`` is ``IS NULL``, which returns no rows silently.
+
         Args:
             day: The calendar day to place.
 
         Returns:
-            The containing :class:`~._derive.DerivedPeriod`, or ``None``.
+            The containing :class:`~._derive.DerivedPeriod`, whose ``period_id``
+            is never ``None``, or ``None`` when no saved period covers *day*.
         """
-        return containing_period(self.periods, day)
+        return containing_period(materialised_periods(self.periods), day)
 
     def span_containing(self, day: date) -> "DerivedPeriod | None":
         """Return the span covering *day*, projecting past the horizon.
@@ -377,10 +411,14 @@ class PayCalendar:
         Args:
             day: The calendar day to place.
 
+        Args:
+            day: The calendar day to place.
+
         Returns:
-            The covering :class:`~._derive.DerivedPeriod` -- saved when the
-            schedule reaches *day*, projected when it does not -- or ``None``
-            when the calendar is empty or *day* precedes
+            The covering :class:`~._derive.DerivedPeriod` -- MATERIALISED when
+            the schedule reaches *day* (:meth:`period_containing` answers that
+            half and states its own filter), projected when it does not -- or
+            ``None`` when the calendar is empty or *day* precedes
             :meth:`opening_bound`.
         """
         opening = self.opening_bound()
@@ -514,10 +552,7 @@ class PayCalendar:
             ``None`` when the schedule reaches no such period -- a day past the
             horizon, where the answer is "not yet" rather than "never".
         """
-        index = bisect_left(self.periods, day, key=_BY_START_DATE)
-        if index >= len(self.periods):
-            return None
-        return self.periods[index]
+        return earliest_started_period(self.periods, day)
 
     def period_starting_on_or_before(self, day: date) -> "DerivedPeriod | None":
         """Return the last SAVED period opening on or before *day*, else ``None``.
@@ -541,6 +576,84 @@ class PayCalendar:
             ``None`` when *day* precedes every payday.
         """
         return latest_started_period(self.periods, day)
+
+    def period_starting_after(self, day: date) -> "DerivedPeriod | None":
+        """Return the first MATERIALISED period opening STRICTLY after *day*.
+
+        "The NEXT paycheck after this one", asked by passing that one's own
+        payday.  The strict sibling of :meth:`period_starting_on_or_after`,
+        and it exists as a method for the reason that search does: plan step
+        **C2-f** retired ``pay_period_service.get_next_period`` -- a query on
+        ``period_index + 1`` -- and "add a day, then search from there" is an
+        off-by-one each of its callers would otherwise carry a copy of.  A copy
+        that got it wrong would answer with the SAME paycheck, which for the
+        two credit-payback writers means a payback landing in the period it is
+        paying back.  **FOUR ``app/`` call sites, not the five the retired
+        reader had**: the companion view's two collapsed into one
+        ``_period_neighbours``, which asks this and its mirror together.
+
+        Equal to the ordinal query it replaces by construction: this calendar's
+        ``period_index`` IS payday order, so "the next index" and "the next
+        payday" cannot name different periods -- which is the disagreement
+        ``uq_pay_periods_user_index`` and three runtime fences exist to police
+        on the stored columns.
+
+        **MATERIALISED, and that filter is what makes the answer safe to write
+        into a foreign key** -- the same enforcement :meth:`filing_period`
+        carries, taken here for the same reason and put in before shipping by
+        an adversarial review of C2-f1.  Two of the four callers write this
+        period's id into ``transactions.pay_period_id``, which is ``NOT NULL``,
+        and :attr:`~._derive.DerivedPeriod.period_id` is nullable in general.
+        A projection is NOT the risk (this search never projects); the risk is
+        the OTHER way a period is unmaterialised -- an unsaved candidate, which
+        :func:`~._derive.derive_periods` accepts by design and which plan step
+        C3's writer builds.  A first cut searched all of :attr:`periods` and
+        argued in a docstring that no such calendar reaches these callers;
+        that argument was TRUE and is not a property, which is the distinction
+        :meth:`filing_period` was corrected on one step earlier.  Skipping a
+        candidate is also the right answer on its own terms: a caller asking
+        for the next paycheck wants one a record can point at.
+
+        Args:
+            day: The payday to search forward from, itself excluded.
+
+        Returns:
+            The next materialised period -- its ``period_id`` is never
+            ``None`` -- or ``None`` when *day* falls in or after the last saved
+            period, which is "the schedule has not reached there yet" and which
+            every caller answers rather than projecting past.
+        """
+        return earliest_started_period(
+            materialised_periods(self.periods), day + timedelta(days=1),
+        )
+
+    def period_starting_before(self, day: date) -> "DerivedPeriod | None":
+        """Return the last MATERIALISED period opening STRICTLY before *day*.
+
+        "The PREVIOUS paycheck", the exact mirror of
+        :meth:`period_starting_after` and the half ``companion_service`` held
+        as its own ``period_index - 1`` query until plan step **C2-f**.  Both
+        halves of the companion view's period navigation ask one value now, so
+        stepping back and then forward cannot land somewhere else -- a property
+        two independent ordinal queries never had, and one
+        ``test_pay_calendar_value`` asserts across the whole schedule.
+
+        MATERIALISED for the reason :meth:`period_starting_after` gives, and
+        symmetrically rather than because this side writes a foreign key: its
+        one caller builds a URL from the id, and a link to ``/companion/period/None``
+        is the same defect one register down.
+
+        Args:
+            day: The payday to search backward from, itself excluded.
+
+        Returns:
+            The previous materialised period -- its ``period_id`` is never
+            ``None`` -- or ``None`` when *day* is at or before the owner's
+            first payday.
+        """
+        return latest_started_period(
+            materialised_periods(self.periods), day - timedelta(days=1),
+        )
 
     # ---- identity, and the month a paycheck opens --------------------
 

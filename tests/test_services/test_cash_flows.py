@@ -32,12 +32,15 @@ transaction TYPE.
 
 **The basis is a REQUIRED argument since plan step S1-c** (ruling R-DH (d)).
 ``sum_projected`` took one optional ``amount_overrides`` map defaulting to
-``None``; the entry reservation now also needs the day through which the
-account's purchases are reconciled, and two optional arguments is two ways for a
-caller to hand this reduction half a basis -- which would silently value every
-purchase as outstanding and hold whole budgets back.  Every call below therefore
-states its :class:`~app.services.cash_ledger.ProjectedBasis` explicitly, and the
-day it states is what decides the bucket each purchase falls in.
+``None``, and one optional argument is one way for a caller to hand this
+reduction half a basis.  Every call below therefore states its
+:class:`~app.services.cash_ledger.AmountBasis` explicitly.
+
+**It was a ``ProjectedBasis`` carrying the account's clearing rule until plan
+step X-f3b** (ruling **R-FM**), and the day that record stated was what decided
+which bucket each purchase fell in.  A purchase's own ``settled_on`` decides it
+now, so every fixture below says the bucket it means at the entry rather than
+in a basis one screen away.
 """
 
 from datetime import date
@@ -45,18 +48,14 @@ from decimal import Decimal
 
 from app.enums import StatusEnum
 from app.models.transaction import Transaction
-from app.services.cash_ledger._amount_source import AmountBasis
-from app.services.cash_ledger import (
-    ProjectedBasis,
-    ReconciledThrough,
-    sum_projected,
-)
+from app.services.cash_ledger import sum_projected
 from tests._test_helpers import (
     add_entry,
     add_txn,
     create_envelope_txn,
     create_savings_account,
     create_transfer,
+    planted_basis,
 )
 
 
@@ -72,19 +71,14 @@ _ZERO = Decimal("0.00")
 def _unreconciled(*rows):
     """The reduction's basis over *rows*, with no live producer and no override.
 
-    A function rather than the module constant it replaced, because since plan
-    step X-au-c2 a basis records the row SET it was built over: the resolver
-    refuses a row outside it, so one shared object would either have to be built
-    over every row in the file or would grade the contract rather than the rule.
+    Both live derivations are planted EMPTY
+    (:class:`~tests._test_helpers.PlantedPricing`), so every row here is worth
+    what its own rule says and nothing supersedes it.  A basis is keyed on an
+    owner and a scenario rather than on a row set since plan step X-au-c2b; the
+    rows are still named at each call site because they record what that test
+    was valuing.
     """
-    return ProjectedBasis(
-        amounts=AmountBasis(
-            priced_ids=frozenset(row.id for row in rows),
-            salary_net={},
-            loan_cash={},
-        ),
-        reconciled_through=ReconciledThrough(date(2026, 1, 1)),
-    )
+    return planted_basis(*rows)
 
 
 def _set_status(txn, status_enum):
@@ -269,11 +263,12 @@ class TestTheTwoLegs:
         because what a row is worth is a function of the row and its account
         rather than of the reader's clock.
 
-        This is the one test in the file with its own basis, and it is the one
-        that needs a reconciled-through day covering both purchases; the shared
-        ``_unreconciled`` would leave both on the floor and answer 500.00.  The
-        day is stated here rather than widened globally so every other test's
-        bucket stays fixed.
+        It built its OWN basis until plan step X-f3b, carrying a
+        reconciled-through day that covered both purchases, because the shared
+        ``_unreconciled`` would otherwise have left both on the floor and
+        answered 500.00.  Ruling **R-FM** moved the bucket onto each purchase's
+        own ``settled_on`` -- which these two carry -- so the shared basis says
+        the same thing and the special case is gone.
         """
         with app.app_context():
             txn = create_envelope_txn(
@@ -286,16 +281,9 @@ class TestTheTwoLegs:
                     date(2026, 1, day), settled_on=date(2026, 1, day),
                 )
             db.session.commit()
-            basis = ProjectedBasis(
-                amounts=AmountBasis(
-                    priced_ids=frozenset({txn.id}),
-                    salary_net={},
-                    loan_cash={},
-                ),
-                reconciled_through=ReconciledThrough(date(2026, 1, 31)),
-            )
-
-            assert sum_projected([txn], basis) == (_ZERO, Decimal("50.00"))
+            assert sum_projected(
+                [txn], _unreconciled(txn),
+            ) == (_ZERO, Decimal("50.00"))
 
 
 class TestTheReductionIsAdditiveOverRows:

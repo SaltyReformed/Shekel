@@ -30,6 +30,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services import companion_service
 from app.services.auth_service import hash_password
+from app.services.pay_calendar import calendar_for
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -127,9 +128,10 @@ class TestVisibilityFiltering:
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, period = companion_service.get_visible_transactions(
+        view = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
         )
+        txns, period = view.transactions, view.period
         names = [t.name for t in txns]
         assert len(txns) == 2
         assert "Groceries" in names
@@ -150,9 +152,10 @@ class TestVisibilityFiltering:
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, period = companion_service.get_visible_transactions(
+        view = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
         )
+        txns, period = view.transactions, view.period
         assert txns == []
         assert period is not None
 
@@ -175,9 +178,9 @@ class TestVisibilityFiltering:
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, _ = companion_service.get_visible_transactions(
+        txns = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
-        )
+        ).transactions
         assert len(txns) == 2
 
     def test_visible_template_no_transactions_in_period(
@@ -193,9 +196,9 @@ class TestVisibilityFiltering:
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, _ = companion_service.get_visible_transactions(
+        txns = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
-        )
+        ).transactions
         assert txns == []
 
     def test_soft_deleted_transactions_excluded(
@@ -212,9 +215,9 @@ class TestVisibilityFiltering:
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, _ = companion_service.get_visible_transactions(
+        txns = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
-        )
+        ).transactions
         assert len(txns) == 0
 
     def test_ad_hoc_transactions_excluded(
@@ -244,9 +247,9 @@ class TestVisibilityFiltering:
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, _ = companion_service.get_visible_transactions(
+        txns = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
-        )
+        ).transactions
         assert len(txns) == 0
 
     def test_transactions_ordered_by_name(
@@ -260,9 +263,9 @@ class TestVisibilityFiltering:
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, _ = companion_service.get_visible_transactions(
+        txns = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
-        )
+        ).transactions
         assert txns[0].name == "Apples Budget"
         assert txns[1].name == "Zucchini Fund"
 
@@ -313,9 +316,9 @@ class TestVisibilityFiltering:
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, _ = companion_service.get_visible_transactions(
+        txns = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
-        )
+        ).transactions
 
         # Both rows are returned -- the override sibling stays visible.
         ids = sorted(t.id for t in txns)
@@ -347,20 +350,28 @@ class TestPeriodIsolation:
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, period = companion_service.get_visible_transactions(
+        view = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
         )
+        txns, period = view.transactions, view.period
         assert len(txns) == 1
         assert txns[0].name == "Groceries P0"
-        assert period.id == seed_periods_today[0].id
+        assert period.period_id == seed_periods_today[0].id
 
     def test_period_id_belonging_to_different_owner_raises(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
         """Plan 10.13: Companion with period from a different owner raises NotFoundError.
 
-        The service verifies period.user_id == linked_owner_id and
-        rejects periods belonging to other users.
+        **The comparison this used to name is GONE, and the guarantee is
+        stronger for it** (plan step C2-f2b).  The service resolved the id with
+        ``db.session.get(PayPeriod, ...)`` and then checked
+        ``period.user_id != owner_id`` by hand; it asks
+        ``calendar.period_by_id`` on the linked OWNER's calendar now, so a
+        period belonging to anyone else is ABSENT rather than rejected and
+        there is no comparison a later edit can drop.  ``NotFoundError`` still
+        carries one message for both "no such period" and "not yours", which is
+        the project's security response rule.
         """
         # Create a second owner with their own period.
         second_user = User(
@@ -393,11 +404,13 @@ class TestPeriodIsolation:
     ):
         """period_id=None returns the current period's transactions.
 
-        get_current_period picks the period containing today.
+        ``calendar.period_containing(display_today())`` picks it -- the
+        owner's derived calendar and the USER's civil day since plan step
+        C2-f2b, where it was ``get_current_period`` on the process clock.
         We create a template+transaction in the first period and call
         with period_id=None.  If today falls in that period, the
         transaction is returned; otherwise we get a different period.
-        Either way, a valid (transactions, period) tuple is returned.
+        Either way, a valid ``CompanionPageRead`` is returned.
         """
         template = _make_template(seed_user, companion_visible=True, name="Groceries")
         _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
@@ -406,7 +419,8 @@ class TestPeriodIsolation:
         companion = seed_companion["user"]
         # This may return a different period than seed_periods_today[0]
         # depending on the current date, but it should not raise.
-        txns, period = companion_service.get_visible_transactions(companion.id)
+        view = companion_service.get_visible_transactions(companion.id)
+        txns, period = view.transactions, view.period
         assert period is not None
 
     def test_nonexistent_period_id_raises(
@@ -476,9 +490,10 @@ class TestUserValidation:
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, period = companion_service.get_visible_transactions(
+        view = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
         )
+        txns, period = view.transactions, view.period
         assert period is not None
 
 
@@ -506,7 +521,7 @@ class TestEntryEagerLoading:
             name="Groceries", amount=Decimal("500.00"),
         )
         entry = TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=Decimal("42.50"),
             description="Kroger",
@@ -516,9 +531,9 @@ class TestEntryEagerLoading:
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, _ = companion_service.get_visible_transactions(
+        txns = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
-        )
+        ).transactions
         assert len(txns) == 1
         # Access entries -- they should be loaded already.
         assert len(txns[0].entries) == 1
@@ -552,21 +567,21 @@ class TestEntryDataComputation:
             name="Groceries", amount=Decimal("500.00"),
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("100.00"), description="Kroger",
             purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="Walmart",
             purchased_on=date(2026, 1, 6),
         ))
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, _ = companion_service.get_visible_transactions(
+        txns = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
-        )
+        ).transactions
         assert len(txns) == 1
         assert len(txns[0].entries) == 2
 
@@ -595,79 +610,131 @@ class TestEntryDataComputation:
             name="Gas", amount=Decimal("100.00"),
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("70.00"), description="Shell",
             purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="BP",
             purchased_on=date(2026, 1, 6),
         ))
         db.session.commit()
 
         companion = seed_companion["user"]
-        txns, _ = companion_service.get_visible_transactions(
+        txns = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
-        )
+        ).transactions
         from app.services.entry_service import compute_remaining
         remaining = compute_remaining(txns[0].estimated_amount, txns[0].entries)
         assert remaining == Decimal("-20.00")
 
 
-# ── get_companion_periods ────────────────────────────────────────────
+# ── period navigation ────────────────────────────────────────────────
 
 
-class TestGetCompanionPeriods:
-    """Verify period navigation helper."""
+class TestPeriodNavigationMovedToTheCalendar:
+    """``get_previous_period`` is GONE; its two cases are graded on the READ.
 
-    def test_returns_all_owner_periods(
+    Plan step **C2-f1**.  That function was ``pay_period_service.get_next_period``
+    with ``+ 1`` changed to ``- 1`` -- one rule written twice on the stored
+    ordinal -- and the companion view asked both, so a schedule whose
+    ``period_index`` disagreed with its payday order could step forward into
+    one period and back into another.  Both halves are now searches of the
+    owner's ONE derived calendar, and since plan step **C2-f2b** they are
+    answered by :func:`companion_service.get_visible_transactions` itself:
+    ``previous`` and ``next_period`` ride on the page read beside the period
+    they flank.  The assertions below are the deleted tests' own, re-pointed
+    twice.
+
+    **They were on ``routes.companion._period_neighbours`` until C2-f2b**, and
+    that helper is gone rather than moved: an adversarial design review of that
+    step found the service handing its whole ``PayCalendar`` across its own
+    security boundary so one route helper could ask it two searches.  Answering
+    them where the owner was validated is what removed it.
+
+    **``TestGetCompanionPeriods`` sat above this class until C2-f2b and went
+    with the function it graded.**  ``companion_service.get_companion_periods``
+    answered "every pay period of the linked owner", built for a jump-to
+    ``<select>`` that ``companion/index.html`` now replaces with its own prev /
+    next links -- and an AST census that day found it with ZERO callers in
+    ``app/``.  Its three tests were the only thing keeping a dead
+    ``get_all_periods`` reader alive.  Nothing moved with them because nothing
+    the application does was graded by them; the navigation they were written
+    for is what this class covers.
+    """
+
+    @staticmethod
+    def _read(companion, period):
+        """Return the companion page read for *period*."""
+        return companion_service.get_visible_transactions(
+            companion.id, period_id=period.id,
+        )
+
+    def test_returns_previous_and_next_together(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """Returns all periods belonging to the linked owner."""
-        companion = seed_companion["user"]
-        periods = companion_service.get_companion_periods(companion.id)
-        assert len(periods) == len(seed_periods_today)
+        """Period 1's neighbours are periods 0 and 2, from ONE calendar load."""
+        with app.app_context():
+            view = self._read(seed_companion["user"], seed_periods_today[1])
+            assert view.previous is not None
+            assert view.previous.period_id == seed_periods_today[0].id
+            assert view.next_period is not None
+            assert view.next_period.period_id == seed_periods_today[2].id
 
-    def test_misconfigured_companion_returns_empty(self, app, db, seed_user):
-        """Companion with no linked_owner_id returns empty list (not error)."""
-        orphan = User(
-            email="orphan2@test.local",
-            password_hash=hash_password("orphanpass2"),
-            display_name="Orphan2",
-            role_id=ref_cache.role_id(RoleEnum.COMPANION),
-            linked_owner_id=None,
-        )
-        db.session.add(orphan)
-        db.session.flush()
-        settings = UserSettings(user_id=orphan.id)
-        db.session.add(settings)
-        db.session.commit()
-
-        periods = companion_service.get_companion_periods(orphan.id)
-        assert periods == []
-
-    def test_nonexistent_user_returns_empty(self, app, db):
-        """Non-existent user_id returns empty list (not error)."""
-        periods = companion_service.get_companion_periods(999999)
-        assert periods == []
-
-
-# ── get_previous_period ──────────────────────────────────────────────
-
-
-class TestGetPreviousPeriod:
-    """Verify previous period navigation."""
-
-    def test_returns_previous_period(self, app, db, seed_user, seed_periods_today):
-        """Returns the period with period_index - 1."""
-        prev = companion_service.get_previous_period(seed_periods_today[1])
-        assert prev is not None
-        assert prev.id == seed_periods_today[0].id
-
-    def test_returns_none_for_first_period(
-        self, app, db, seed_user, seed_periods_today,
+    def test_returns_none_for_the_first_period(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """Returns None for the first period (no previous)."""
-        prev = companion_service.get_previous_period(seed_periods_today[0])
-        assert prev is None
+        """The first period has no previous, which is what hides the back link."""
+        with app.app_context():
+            view = self._read(seed_companion["user"], seed_periods_today[0])
+            assert view.previous is None
+            assert view.next_period is not None
+            assert view.next_period.period_id == seed_periods_today[1].id
+
+    def test_returns_none_for_the_last_period(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """The mirror the deleted pair never had a test for.
+
+        ``get_previous_period`` was tested at the schedule's head and
+        ``get_next_period`` at its tail, in two different files, so neither
+        end was covered on both sides.  One read answers both, so both ends
+        are graded here.
+        """
+        with app.app_context():
+            view = self._read(seed_companion["user"], seed_periods_today[-1])
+            assert view.next_period is None
+            assert view.previous is not None
+            assert view.previous.period_id == seed_periods_today[-2].id
+
+    def test_it_reads_the_LINKED_OWNERS_calendar(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """The schedule the page navigates is the linked OWNER's, not the requester's.
+
+        A companion holds no paydays of their own by design, so a read that
+        resolved the calendar from the REQUESTING user would answer ``None`` on
+        both sides and silently remove the navigation.  The control is the
+        companion's own empty calendar beside the owner's answer.
+
+        **The assertion moved DOWN a layer at plan step C2-f2b, and that is the
+        point.**  ``routes.companion._period_neighbours`` used to pick the owner
+        itself, off the ``user_id`` of the ORM row it was handed -- a correct
+        answer reached from the render's data rather than from the security
+        check.  The neighbours are resolved inside the function that has
+        already validated the companion and resolved ``linked_owner_id``, so
+        the owner is chosen exactly once and a presentation layer never sees a
+        calendar at all.
+        """
+        with app.app_context():
+            companion = seed_companion["user"]
+            assert companion.linked_owner_id == seed_user["user"].id
+
+            view = self._read(companion, seed_periods_today[1])
+            assert view.period.period_id == seed_periods_today[1].id
+            assert view.previous is not None and view.next_period is not None
+
+            # The control: the requester's OWN calendar is empty, so a read
+            # built from ``current_user`` would hide both links.
+            assert calendar_for(companion.id).periods == ()

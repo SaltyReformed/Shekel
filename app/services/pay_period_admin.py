@@ -619,9 +619,15 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     # 5): the wipe CASCADEd their opening / true-up ENTRIES with the old
     # periods, but no longer their assertions (ruling R-EO), so this re-derives
     # every real assertion's correction onto the rebuilt schedule.  Post-reset
-    # is clean by construction: the zero-settled gate guarantees no posted
-    # source effects survive, so each account walks to exactly the balance its
-    # latest assertion declares.
+    # is clean by construction, and since plan step X-f3b the reason is the
+    # CASCADE rather than the gate alone: a PURCHASE whose bank posting day is
+    # recorded posts its own cash leg even under a Projected envelope (ruling
+    # **R-FM**), so the zero-settled gate no longer implies "nothing has
+    # posted".  What it does still imply, and what matters here, is that every
+    # journal entry the wipe reaches carries a ``pay_period_id`` and goes WHOLE
+    # -- both legs of each balanced pair -- along with the transactions and
+    # purchases that sourced them.  So each account walks to exactly the
+    # balance its latest assertion declares.
     account_posting_service.resync_user_account_anchor_postings(user_id)
     return new_periods
 

@@ -11,10 +11,17 @@
      analogous header is hardcoded to ``/grid?periods=1&offset=N``.
      The include below sets ``show_period_nav=False`` (via the
      companion route's context build) to suppress the partial's
-     own header so this one is the sole period-nav source. #}
+     own header so this one is the sole period-nav source.
+
+     ``period``, ``prev_period`` and ``next_period`` are ALL ``DerivedPeriod``
+     values off the linked owner's ONE pay calendar, so their identity is
+     ``period_id``.  ``prev`` / ``next`` moved at plan step C2-f and ``period``
+     itself at C2-f2b -- which is what let the include below stay one shared
+     partial with the owner's mobile grid, rather than a template answering
+     ``.period_id`` for one caller and ``.id`` for the other. #}
   <div class="d-flex justify-content-between align-items-center my-3">
     {% if prev_period %}
-    <a href="{{ url_for('companion.period_view', period_id=prev_period.id) }}"
+    <a href="{{ url_for('companion.period_view', period_id=prev_period.period_id) }}"
        class="btn btn-outline-secondary btn-sm"
        aria-label="Previous period">
       <i class="bi bi-chevron-left"></i>
@@ -28,7 +35,7 @@
     </h5>
 
     {% if next_period %}
-    <a href="{{ url_for('companion.period_view', period_id=next_period.id) }}"
+    <a href="{{ url_for('companion.period_view', period_id=next_period.period_id) }}"
        class="btn btn-outline-secondary btn-sm"
        aria-label="Next period">
       <i class="bi bi-chevron-right"></i>

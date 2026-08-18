@@ -1,6 +1,6 @@
 """Ruling R-DH's invariants, at the grain the user actually reads.
 
-``docs/audits/balance_architecture/anchor_settle_partition.md``.  R-DH answers
+``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.  R-DH answers
 one question -- *is this settled row already inside the balance the user
 asserted?* -- and the three properties below are the ones the ruling STATES as
 its acceptance criteria.  None of them existed in ``tests/`` when the fix
@@ -268,11 +268,18 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
         bulk clear.  Returns how many rows were actually stamped, which the
         callers assert on: a reconcile that silently matched nothing would make
         every figure below hold for the wrong reason.
+
+        **It resolves the governing ASSERTION, not its day** (plan step X-f3a-1,
+        ruling **R-FL**): a tick records WHICH statement showed the purchase, so
+        the writer takes the row the tick is being made against rather than a
+        ``MAX`` over the day column, which cannot name one.  Every figure below
+        is unchanged, which is exactly what R-DH (c)'s invariant asks of a step
+        whose whole claim is that it records a fact and moves no money.
         """
-        observed_on = cash_ledger.reconciled_through(account.id).observed_day
         recorded = reconcile_service.record_settled_days(
             seed_user["user"].id, account.id,
-            {entry.id for entry in envelope.entries}, observed_on,
+            {entry.id for entry in envelope.entries},
+            cash_ledger.governing_anchor(account.id),
         )
         _db.session.commit()
         return recorded

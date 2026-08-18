@@ -24,7 +24,7 @@
    nav can drive to `periods=1`).
 
    Expected Jinja context (* required):
-     plan_periods *            -- list[PayPeriod] in period-index
+     plan_periods *            -- a `PeriodWindow` in period-index
                                   order, up to PLAN_WINDOW_PERIODS
                                   long, starting at `current_period`.
      plan_income_row_keys *    -- list[RowKey] for income across the
@@ -65,7 +65,7 @@
 {% if plan_periods %}
 <div class="accordion" id="plan-accordion">
   {% for period in plan_periods %}
-    {% set col = plan_columns.get(period.id) if plan_columns is defined else none %}
+    {% set col = plan_columns.get(period.period_id) if plan_columns is defined else none %}
     {% set bal = col.balance if col is not none else none %}
     {% set _bal_class = '' %}
     {% if bal is not none %}
@@ -78,7 +78,7 @@
     {% set _income_rows = [] %}
     {% if plan_income_row_keys is defined %}
       {% for rk in plan_income_row_keys %}
-        {% if plan_matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id)) %}
+        {% if plan_matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id)) %}
           {% set _ = _income_rows.append(rk) %}
         {% endif %}
       {% endfor %}
@@ -86,7 +86,7 @@
     {% set _expense_rows = [] %}
     {% if plan_expense_row_keys is defined %}
       {% for rk in plan_expense_row_keys %}
-        {% if plan_matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id)) %}
+        {% if plan_matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id)) %}
           {% set _ = _expense_rows.append(rk) %}
         {% endif %}
       {% endfor %}
@@ -104,9 +104,9 @@
       <button type="button"
               class="btn w-100 text-start p-3 collapsed plan-period-toggle"
               data-bs-toggle="collapse"
-              data-bs-target="#plan-period-{{ period.id }}"
+              data-bs-target="#plan-period-{{ period.period_id }}"
               aria-expanded="false"
-              aria-controls="plan-period-{{ period.id }}">
+              aria-controls="plan-period-{{ period.period_id }}">
         <div class="d-flex justify-content-between align-items-center w-100">
           <div class="text-start">
             <div class="fw-bold">
@@ -171,7 +171,7 @@
          what gives the stack mutually-exclusive expansion -- opening
          one card auto-closes any other open card under
          `#plan-accordion`. #}
-      <div id="plan-period-{{ period.id }}"
+      <div id="plan-period-{{ period.period_id }}"
            class="collapse"
            data-bs-parent="#plan-accordion">
         <div class="p-2">
@@ -189,7 +189,7 @@
                       {{ rk.group_name }}
                     </li>
                   {% endif %}
-                  {{ render_row_static(rk, period, plan_matched_by_row_period) }}
+                  {{ render_row_static(rk, period, plan_matched_by_row_period, budgets) }}
                 {% endfor %}
               </ul>
             </div>
@@ -209,7 +209,7 @@
                       {{ rk.group_name }}
                     </li>
                   {% endif %}
-                  {{ render_row_static(rk, period, plan_matched_by_row_period) }}
+                  {{ render_row_static(rk, period, plan_matched_by_row_period, budgets) }}
                 {% endfor %}
               </ul>
             </div>

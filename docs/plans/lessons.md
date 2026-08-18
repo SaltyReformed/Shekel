@@ -26,9 +26,19 @@ no reconciler.
   answers until one is deleted.
 - **When two figures PARTITION a set, write both halves from ONE predicate**, or the boundary drifts
   and both halves look right.
+- **CENTRALISING one clock WIDENS the gap to every clock it did not centralise.** `C2-f2d-1` closed
+  a `$4.18` split and opened a `$2,173.38` one, an `as_of=None` default a whole producer away.
 - **When a rule is re-keyed, the complement must move with it**, or replay and projection stop being
   exact complements.
 - **When two sides of one problem have different SHAPES, the loose side is where the next hole is.**
+- **A RULING THAT FALSIFIES A PREMISE MUST BE GREPPED FOR THE PREMISE, NOT THE SYMPTOM.** X-f3b made
+  a Projected row able to hold ledger postings; six write paths were safe only because it could not,
+  and its own adversarial review found four of them (bulk template archive / restore / delete, the
+  conflict chooser, carry-forward's discrete move). Search for the SENTENCE the old code relied on.
+- **A BOUND JUSTIFIED BY "THIS DIRECTION IS CONSERVATIVE" INVERTS WHEN WHAT IT BOUNDS CHANGES
+  MEANING.** `TransactionEntry.settled_on` was deliberately unbounded above -- a forward posting day
+  held the whole budget back -- and the same forward day RELEASES it the moment a posting day books
+  cash (X-f3b / R-FM). Re-read every bound whose reason is a direction, not a fact.
 - **WHEN TWO VALUES HAVE ALWAYS BEEN EQUAL BY CONSTRUCTION, THE CODE THAT COUPLES THEM DOES NOT
   EXIST.** Ask which values a field has silently equalled before widening what it holds (X-f1c4c).
 - **Ask what a producer says the SECOND time.** One correct on the ordinary path can be inverted on
@@ -100,6 +110,10 @@ no reconciler.
 - **A NEW FIXTURE IS A NEW CONTROL, AND IT CAN BE BORN DEAD.** SQLAlchemy accepts an assignment to a
   field that does not exist.
 - **A test whose fixture has no data cannot distinguish two producers.**
+- **WHEN A CHANGE MAKES THE CORRECT FIGURE EQUAL THE OLD DEFECT'S FIGURE, THE FIXTURE MUST MOVE.**
+  X-f3b made a part-spent envelope's subtotal `posted + reserved`, which for an under-budget row is
+  exactly the estimate the F-002 defect printed -- so the guard's `$500` assertion could no longer
+  tell them apart, and the fixture had to be OVERSPENT to separate all three answers.
 - **`hasattr` on a dataclass is not a test**, and neither is `is not None` after `isinstance`.
 - **A list returned for its COUNT must have its count asserted.**
 - **CONVERTING A SURFACE TO "RAISE" BLINDS EVERY TEST WHOSE FIXTURE CANNOT REACH IT.**
@@ -110,14 +124,21 @@ no reconciler.
 - **A guard written against the wrong failure mode can still be a good guard** -- write the reason
   beside it.
 - **A skip is safer to state than a fire**, when the operation being guarded is the one under test.
+- **A GATE OVER A MAPPING NEEDS BOTH ARMS, OR IT CATCHES A RENAME AND MISSES AN ADDITION**, and its
+  docstring will claim otherwise -- read what a gate asserts, not what it says it asserts (R7c-c).
+- **AN ASSERTION ABOUT PERSISTED STATE MUST NAME THE STORE THE CODE UNDER TEST WRITES TO.** A
+  hard-coded database name beside an app pointed at a copy passes with every refusal ACCEPTED.
 
 ## Instruments, oracles and censuses
 
 - **AN INSTRUMENT MUST BE SHOWN TO HAVE REACHED ITS SUBJECT.** One that cannot authenticate reports
   no differences, loudly and wrongly. Assert the identity a result is attributed to, not just that a
   result came back.
-- **A GATE MUST BE EXERCISED AGAINST THE ARTIFACT IT GRADES, never read or tested only
-  synthetically.** A pattern that matches the real file nowhere passes every synthetic control.
+- **A HARNESS THAT ADAPTS TO BOTH SIDES CAN GRADE NEITHER'S CONFIGURATION.** `C2-f2d-1`'s ran a pass
+  per producer on both, so 37,295 identical lines said nothing about the SHARING that shipped.
+- **A GATE MUST BE EXERCISED AGAINST THE ARTIFACT IT GRADES**, never only synthetically: row
+  **P52**'s `grep` canary is line-based against a call site that WRAPS, so "the gate passes" has
+  always meant "nothing matched".
 - **An ORACLE that states a different rule than the engine lets both be wrong together.**
 - **AN AGREEMENT ORACLE CANNOT SEE A PRODUCER THAT READS THE VALUE IT IS REPLACING.** The control
   that sees it is INVARIANCE -- perturb the input the new rule must not be reading and require the
@@ -134,6 +155,14 @@ no reconciler.
 - **A CENSUS THAT IS NOT COMMITTED IS AN UNCITED CLAIM.**
 - **COUNT THE CALL GRAPH, NOT THE CALL SITES.** One finding said four spellings; the tree held 18.
 - **A COUNT IN A DOCSTRING IS A CLAIM, AND THIS ARC KEEPS WRITING IT WRONG.**
+- **BEFORE READING A CLEAN DIFF, CHECK THE FIGURE THE STEP IS ABOUT IS NOT NULL IN IT.** C2-f2c's
+  harness was byte-identical over 39,939 lines while `retirement_marker_index` -- the one figure its
+  row (**P48**) names -- was `None` on every one. A clone samples one owner's CHOICES, not the state
+  space: WRITE the state in and re-capture both sides.
+- **PLANT THE FIRING CONTROL AT EVERY WIRING SITE, AND CHECK THE PLANTED DEFECT IS REACHABLE ON THE
+  REAL DATA.** C2-f2a's first dropped the axis's FIRST period and moved `$0.00` -- those periods
+  precede the account's latest assertion -- so the harness read blind when it was not; at the LAST
+  period it moved `-$182.29` and `-$190.39`.
 
 ## Working this plan
 

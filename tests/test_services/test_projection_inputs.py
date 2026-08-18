@@ -42,6 +42,7 @@ from app.services.projection_inputs import (
     load_investment_params_for_accounts,
     load_shadow_income_contributions_for_account,
 )
+from tests._test_helpers import basis_for
 
 
 def _flat_id():
@@ -58,9 +59,17 @@ class _FakeDeduction:
 
 @dataclass
 class _FakePeriod:
-    id: int
+    """The one thing ``calculate_investment_inputs`` reads off a period.
+
+    A ``start_date`` and nothing else since plan step C2-f2c, which is the
+    whole surface that function has left: the period LIST it took to translate
+    a contribution's ``pay_period_id`` into a payday is gone, because the
+    loader dates each contribution at the boundary.  Both real period types --
+    :class:`~app.models.pay_period.PayPeriod` and
+    :class:`~app.services.pay_calendar.DerivedPeriod` -- satisfy exactly this.
+    """
+
     start_date: date
-    period_index: int
 
 
 @dataclass
@@ -110,16 +119,16 @@ class TestBuildInvestmentProjectionInputsEquivalence:
             ),
         ]
         periods = [
-            _FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0),
-            _FakePeriod(id=2, start_date=date(2026, 1, 16), period_index=1),
+            _FakePeriod(start_date=date(2026, 1, 2)),
+            _FakePeriod(start_date=date(2026, 1, 16)),
         ]
         contributions = [
             PricedContribution(
-                account_id=1, pay_period_id=1,
+                account_id=1, payday=periods[0].start_date,
                 amount=Decimal("200"), is_confirmed=True,
             ),
             PricedContribution(
-                account_id=1, pay_period_id=2,
+                account_id=1, payday=periods[1].start_date,
                 amount=Decimal("200"), is_confirmed=True,
             ),
         ]
@@ -142,13 +151,12 @@ class TestBuildInvestmentProjectionInputsEquivalence:
             investment_params=params,
             deductions=deductions,
             all_contributions=contributions,
-            all_periods=periods,
             current_period=periods[1],
             salary_gross_biweekly=gross_biweekly,
         )
 
         helper_result = build_investment_projection_inputs(
-            params, deductions, contributions, periods, periods[1], gross_biweekly,
+            params, deductions, contributions, periods[1], gross_biweekly,
         )
 
         assert isinstance(helper_result, InvestmentInputs)
@@ -175,7 +183,7 @@ class TestBuildInvestmentProjectionInputsEquivalence:
         params, deductions, contributions, periods = self._fixture_inputs()
         gross_biweekly = Decimal("3846.15")
         result = build_investment_projection_inputs(
-            params, deductions, contributions, periods, periods[1], gross_biweekly,
+            params, deductions, contributions, periods[1], gross_biweekly,
         )
         assert result.periodic_contribution == Decimal("700.00")
         assert result.ytd_contributions == Decimal("400")
@@ -545,7 +553,11 @@ class TestShadowContributionBoundary:
         # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum
         from app.models.transaction import Transaction
-        from tests._test_helpers import create_transfer, make_investment_account
+        from tests._test_helpers import (
+            basis_for,
+            create_transfer,
+            make_investment_account,
+        )
 
         if account is None:
             account = make_investment_account(
@@ -617,7 +629,7 @@ class TestShadowContributionBoundary:
             db.session.commit()
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [seed_periods[0].id],
             ).records
 
@@ -625,7 +637,7 @@ class TestShadowContributionBoundary:
             assert records[0].amount == Decimal("400")
             assert records[0].is_confirmed is True
             assert records[0].account_id == account.id
-            assert records[0].pay_period_id == seed_periods[0].id
+            assert records[0].payday == seed_periods[0].start_date
 
     def test_periodic_contribution_uses_the_realized_actual(
         self, app, db, seed_user, seed_periods,
@@ -644,13 +656,12 @@ class TestShadowContributionBoundary:
             period = seed_periods[0]
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [period.id],
             ).records
             result = calculate_investment_inputs(
                 investment_params=self._params(), deductions=[],
-                all_contributions=records, all_periods=[period],
-                current_period=period,
+                all_contributions=records, current_period=period,
             )
 
             # effective $400 / 1 period = $400 (NOT estimated $500).
@@ -675,13 +686,13 @@ class TestShadowContributionBoundary:
             period = seed_periods[0]
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [period.id],
             ).records
             result = calculate_investment_inputs(
                 investment_params=self._params(limit=Decimal("23500")),
                 deductions=[], all_contributions=records,
-                all_periods=[period], current_period=period,
+                current_period=period,
             )
 
             assert result.periodic_contribution == Decimal("500")
@@ -709,7 +720,7 @@ class TestShadowContributionBoundary:
             db.session.commit()
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [p.id for p in periods],
             ).records
             assert len(records) == 3
@@ -717,7 +728,7 @@ class TestShadowContributionBoundary:
             result = calculate_investment_inputs(
                 investment_params=self._params(limit=Decimal("23500")),
                 deductions=[], all_contributions=records,
-                all_periods=periods, current_period=periods[2],
+                current_period=periods[2],
             )
 
             assert result.ytd_contributions == Decimal("1200")
@@ -744,17 +755,16 @@ class TestShadowContributionBoundary:
             period = seed_periods[0]
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [period.id],
             ).records
             inputs = calculate_investment_inputs(
                 investment_params=self._params(), deductions=[],
-                all_contributions=records, all_periods=[period],
-                current_period=period,
+                all_contributions=records, current_period=period,
             )
             timeline = build_contribution_timeline(
                 deductions=[], contribution_transactions=records,
-                periods=[period],
+                periods=[period], as_of=period.start_date,
             )
 
             assert inputs.periodic_contribution == Decimal("400")
@@ -789,20 +799,18 @@ class TestShadowContributionBoundary:
             db.session.commit()
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [seed_periods[0].id, seed_periods[1].id],
             ).records
 
             # The Cancelled row is gone entirely -- not present as a zero.
             assert len(records) == 1
             assert records[0].amount == Decimal("400")
-            assert records[0].pay_period_id == seed_periods[0].id
+            assert records[0].payday == seed_periods[0].start_date
 
             result = calculate_investment_inputs(
                 investment_params=self._params(), deductions=[],
-                all_contributions=records,
-                all_periods=[seed_periods[0], seed_periods[1]],
-                current_period=seed_periods[1],
+                all_contributions=records, current_period=seed_periods[1],
             )
             # ONE period contributed, so the average is the full $400.  A
             # zero-carrying record would have made this $200.
@@ -828,7 +836,7 @@ class TestShadowContributionBoundary:
             db.session.commit()
 
             records = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [seed_periods[0].id],
             ).records
 
@@ -858,7 +866,7 @@ class TestShadowContributionBoundary:
             db.session.commit()
 
             loaded = load_shadow_income_contributions_for_account(
-                seed_user["user"].id, seed_user["scenario"].id,
+                basis_for(account, seed_user["scenario"]),
                 account.id, [seed_periods[0].id],
             )
 

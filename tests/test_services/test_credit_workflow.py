@@ -305,7 +305,7 @@ class TestCreditWorkflow:
             txn = self._create_expense(seed_user, seed_periods)
             txn.is_envelope = True
             entry = TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("40.00"),
                 description="Card purchase",

@@ -18,7 +18,7 @@ stops the 76th declaration from being written with the lax field.
 import pytest
 from marshmallow import ValidationError, fields
 
-from app.schemas.validation import _helpers
+from app.schemas.validation import _helpers, _recurrence
 from app.schemas.validation._helpers import RowId
 from app.schemas.validation.transactions import TransactionCreateSchema
 
@@ -275,7 +275,12 @@ _NON_ROW_ID_INTEGERS = frozenset({
     "cadence_days",
     "consecutive_high_years",
     "contribution_limit_year",
-    "day_of_month",
+    # ``day_of_month`` and ``month_of_year`` LEFT this set at plan step R7c-b
+    # with the schema fields themselves: a rule's first occurrence is AUTHORED
+    # (ruling R-R16), so its date carries the cycle's day and its residue
+    # class, and the form collects ``starts_on`` instead of restating either.
+    # ``nominal_day`` below is what survives of the pair -- the 0-or-1 day a
+    # short month clamped.
     "deductions_per_year",
     "due_day_of_month",
     "effective_month",
@@ -298,9 +303,15 @@ _NON_ROW_ID_INTEGERS = frozenset({
     "max_occurrences",
     "max_term_months",
     "merit_raise_horizon_years",
-    "month_of_year",
     "months",
     "new_term_months",
+    # ``nominal_day`` is the DAY a rule means when its first occurrence's own
+    # month was too short to hold it (ruling R-R3), not a row: plan step
+    # R7c-b's form posts it beside ``starts_on`` only where the chosen date
+    # leaves the question open.  29-31 here, refused again by
+    # ``RecurrenceSpec.__post_init__`` and again by
+    # ``ck_recurrence_rules_nominal_day``.
+    "nominal_day",
     "num_periods",
     # ``offset_periods`` LEFT this set at plan step R7b-2 with the schema field
     # itself (defect D8): no form ever rendered an input for it, so every
@@ -568,14 +579,32 @@ class TestNoIdFieldWasMissed:
         ``RowId``, so without this arm the cheapest way past the gate below
         would be to add a name to that set -- a hole in exactly the shape the
         gate exists to close.  Each name is resolved against the schema
-        helpers module and must be a real ``RowId`` subclass, so a strict
+        helper modules and must be a real ``RowId`` subclass, so a strict
         spelling is strict by inheritance rather than by assertion.
+
+        **Resolved against BOTH helper modules since plan step R7c-b**, which
+        moved the recurrence form's two axis fields to ``_recurrence`` when
+        ``_helpers`` met the 1,000-line cap.  Searching one module made the
+        gate report a MISSING class for a field that had merely moved -- which
+        is the right failure (a strict spelling that resolves to nothing is
+        exactly what this arm refuses), and the fix is to name where the
+        spellings actually live rather than to shorten the list.
         """
+        helper_modules = (_helpers, _recurrence)
         for spelling in _STRICT_ROW_ID_SPELLINGS:
-            field_cls = getattr(_helpers, spelling, None)
+            field_cls = next(
+                (
+                    found for found in (
+                        getattr(module, spelling, None)
+                        for module in helper_modules
+                    ) if found is not None
+                ),
+                None,
+            )
             assert field_cls is not None, (
                 f"{spelling} is allowlisted as a strict row-id field class but "
-                "does not exist in app.schemas.validation._helpers"
+                "exists in none of "
+                + ", ".join(module.__name__ for module in helper_modules)
             )
             assert issubclass(field_cls, RowId), (
                 f"{spelling} is allowlisted as strict but does not derive from "

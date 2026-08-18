@@ -46,8 +46,10 @@ import pytest
 from app.models.account import Account
 from app.models.ref import AccountType
 from app.models.scenario import Scenario
+from app.models.transfer_template import TransferTemplate
 from app.services import account_service
 from tests._test_helpers import (
+    cadence_payload,
     create_hysa_account,
     create_loan_account,
     make_appreciating_account,
@@ -380,6 +382,55 @@ class TestTheHandlerItself:
                   if getattr(r, "event", None) == "baseline_missing"]
         assert events
         assert events[0].context_user_id == baseline_less_owner["user_id"]
+
+    def test_a_transfer_create_refuses_instead_of_reporting_success(
+        self, app, auth_client, db, seed_user, baseline_less_owner,
+    ):
+        """A CREATE that materialises nothing may not say it created something.
+
+        Ledger row **F-9**, closed by routing both transfer create paths onto
+        ``require_baseline_scenario``.  They resolved the NULLABLE form and
+        treated absence as a defined answer -- ``_materialize_one_time_transfer``
+        returned ``None``, which is its caller's signal for "created, go ahead
+        and commit", and ``generate_transfers_for_all_periods`` simply did not
+        generate.  Either way the template was COMMITTED and the user was told a
+        transfer existed that did not.
+
+        Both branches are exercised because ``rule is None`` is what tells them
+        apart: a one-time transfer takes the first path, a cadence the second.
+        The assertion is on the DATABASE as well as the page, because the page
+        alone passed before the fix on the recurring branch (it redirected to a
+        cheerful "created" flash).
+        """
+        ids = baseline_less_owner
+        base = {
+            "default_amount": "150.00",
+            "from_account_id": ids["checking"],
+            "to_account_id": ids["hysa"],
+            "category_id": str(seed_user["categories"]["Rent"].id),
+        }
+        one_time = {**base, "name": "F9 One Time",
+                    "start_period_id": ids["period"]}
+        recurring = {**base, "name": "F9 Recurring", **cadence_payload()}
+
+        for payload in (one_time, recurring):
+            resp = auth_client.post(
+                "/transfers", data=payload, follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert "Setup Incomplete" in resp.data.decode(), (
+                f"the create door answered {payload['name']!r} with something "
+                f"other than the repair page"
+            )
+            with app.app_context():
+                assert db.session.query(TransferTemplate).filter_by(
+                    user_id=ids["user_id"], name=payload["name"],
+                ).count() == 0, (
+                    f"{payload['name']!r} was committed for an owner with no "
+                    f"baseline scenario, so a definition exists that "
+                    f"generated nothing"
+                )
 
     def test_a_user_with_a_baseline_is_untouched(self, app, auth_client,
                                                  seed_user, seed_periods_today):

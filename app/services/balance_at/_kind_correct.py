@@ -193,6 +193,9 @@ def _modelled_scalar(
 
     Returns:
         The cent-quantized ``Decimal`` balance at *as_of*.
+
+    Raises:
+        PayCalendarError: See :func:`._asset_fold._assemble`.
     """
     return _asset_fold.fold_asset_balances(
         account, ctx, [as_of], _contribution_inputs_for_account(account),
@@ -274,6 +277,10 @@ def balance_at(
         BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
             subclass; ONE application-level handler answers it (plan step
             X-v2, ruling R-BW), so no caller pre-checks.
+        PayCalendarError: The owner's paydays cannot define a calendar.  The
+            REPLAY arm reaches it through :func:`._asset_fold._assemble`
+            since plan step C2-f2a; that function's ``Raises`` censuses
+            which surfaces the widening reached.  The loan arm does not.
     """
     _require_scenario(ctx)
     if configured_loan(account, ctx) is not None:
@@ -324,8 +331,15 @@ def investment_growth_since_anchor(
     Args:
         account: The investment account.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-        current_period: The current :class:`~app.models.pay_period.PayPeriod`,
-            or ``None``.
+        current_period: The pay period covering the caller's clock, or
+            ``None``.  Anything carrying an ``end_date``: its one ``app/``
+            caller passes a
+            :class:`~app.services.pay_calendar.DerivedPeriod` since plan step
+            C2-f2c, where it passed an ORM
+            :class:`~app.models.pay_period.PayPeriod` before.  That end is
+            DERIVED now -- the day before the next payday -- which is the same
+            end :func:`~app.services.balance_at.balance_map` keys the headline
+            this chip explains, so the two cannot be read at different days.
 
     Returns:
         ``(growth, contributed)`` cent-precise ``Decimal``s, or ``None`` when
@@ -340,6 +354,10 @@ def investment_growth_since_anchor(
         BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
             subclass; ONE application-level handler answers it (plan step
             X-v2, ruling R-BW), so no caller pre-checks.
+        PayCalendarError: The owner's paydays cannot define a calendar.  The
+            REPLAY arm reaches it through :func:`._asset_fold._assemble`
+            since plan step C2-f2a; that function's ``Raises`` censuses
+            which surfaces the widening reached.  The loan arm does not.
     """
     _require_scenario(ctx)
     inputs = _contribution_inputs_for_account(account)

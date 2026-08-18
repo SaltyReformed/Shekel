@@ -23,15 +23,19 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.pay_period import PayPeriod
-from app.services import growth_engine, pay_period_service
-from app.services.cash_ledger import ReconciledThrough, contributions_by_id
+from app.services import growth_engine
+from app.services.cash_ledger import (
+    AmountBasis,
+    ReconciledThrough,
+    contributions_by_id,
+)
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -42,6 +46,7 @@ from app.services.investment_projection import (
     employer_contribution_params,
 )
 from app.services.loan_loaders import query_shadow_income
+from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 
 _ZERO = Decimal("0")
 
@@ -135,7 +140,7 @@ class _ContributionPlan:
 
 
 def _recorded_contributions(
-    user_id: int, account_id: int, scenario_id: int,
+    basis: AmountBasis, account_id: int,
 ) -> dict[int, Decimal]:
     """Return the transfer-linked contributions recorded per pay period.
 
@@ -166,17 +171,18 @@ def _recorded_contributions(
     costs two list comprehensions and no query.
 
     Args:
-        user_id: The owner; scopes the amount basis.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`, carrying the owner
+            and the scenario the rows live in.
         account_id: The account receiving the contributions.
-        scenario_id: The budget scenario the rows live in.
 
     Returns:
         ``{pay_period_id: total}`` over what each row CONTRIBUTES -- the
         realized actual for a settled shadow, else its resolved amount.  ``{}``
         for an account with none.
     """
-    rows = query_shadow_income(account_id, scenario_id).all()
-    contributions = contributions_by_id(user_id, scenario_id, rows)
+    rows = query_shadow_income(account_id, basis.scenario_id).all()
+    contributions = contributions_by_id(rows, basis)
     totals: dict[int, Decimal] = {}
     for txn in rows:
         totals[txn.pay_period_id] = (
@@ -186,7 +192,7 @@ def _recorded_contributions(
 
 
 def _plan_for(
-    account: Account, scenario_id: int, inputs: ContributionInputs,
+    account: Account, basis: AmountBasis, inputs: ContributionInputs,
 ) -> "_ContributionPlan | None":
     """Assemble *account*'s modelled contribution plan, or ``None`` if it has none.
 
@@ -199,7 +205,8 @@ def _plan_for(
 
     Args:
         account: The investment account.
-        scenario_id: The budget scenario the recorded contributions live in.
+        basis: The read pass's amount basis, carrying the scenario the recorded
+            contributions live in and the derivations pricing them.
         inputs: The account's :class:`ContributionInputs`.  Its
             ``investment_params`` is not ``None`` -- :func:`contribution_events`
             guards that.
@@ -219,71 +226,88 @@ def _plan_for(
         per_period=per_period,
         employer_params=employer_params,
         annual_limit=inputs.investment_params.annual_contribution_limit,
-        recorded_by_period=_recorded_contributions(
-            account.user_id, account.id, scenario_id,
-        ),
+        recorded_by_period=_recorded_contributions(basis, account.id),
     )
 
 
 def contribution_events(
     account: Account,
-    scenario_id: int,
+    basis: AmountBasis,
     inputs: ContributionInputs,
     reconciled_through: ReconciledThrough,
+    periods: PeriodWindow,
 ) -> "list[tuple[date, Decimal]]":
     """Return *account*'s modelled CONTRIBUTION events, dated.
 
     The tier's ONE entry, so the replay asks "what does this account's payroll
-    put in, and when" and never has to know that answering it needs the user's
-    whole pay-period calendar, the recorded-contribution feed, or the annual
-    limit's year boundary.
+    put in, and when" and never has to know that answering it needs the
+    recorded-contribution feed or the annual limit's year boundary.
 
-    Empty -- with no query issued and no calendar loaded -- for every account
-    that cannot have a modelled feed: any kind but INVESTMENT (an INTEREST
-    account's payroll does not fund it, and a Property's certainly does not),
-    and an INVESTMENT with no :class:`~app.models.investment_params.InvestmentParams`
-    to carry the limit and the employer configuration.
+    Empty -- with no query issued -- for every account that cannot have a
+    modelled feed: any kind but INVESTMENT (an INTEREST account's payroll does
+    not fund it, and a Property's certainly does not), and an INVESTMENT with
+    no :class:`~app.models.investment_params.InvestmentParams` to carry the
+    limit and the employer configuration.
+
+    **The pay periods are the READ PASS'S, handed in** (plan step **C2-f2a**,
+    ledger row **P37**).  This function issued its own
+    ``pay_period_service.get_all_periods`` until then -- a SECOND read of the
+    owner's schedule inside a pass that already holds it, and the last reader
+    of that module anywhere under :mod:`app.services.balance_at`.  Its ONE
+    caller, :func:`._asset_fold.resolve`, now derives the window from the
+    pass's own :class:`~app.services.pay_calendar.PayCalendar` -- the same
+    derivation every other per-period seam entry reports over, so the
+    contribution tier and the cash columns beside it cannot be resolved
+    against two readings of one schedule, and no caller states a window at all.
+
+    **The explicit sort went with the query, and the ORDER did not become an
+    assumption -- it became a type.**  This door used to sort by ``start_date``
+    because ``get_all_periods`` orders by the stored ``period_index``, an
+    equation nothing in the schema enforces and one
+    :meth:`~app.services.pay_calendar.PayCalendar.filing_period` measures
+    parting company with date order on 800 of 872 probed days.  A
+    :class:`~app.services.pay_calendar.PeriodWindow` sorts at construction and
+    is frozen, so payday order is a property of the value rather than a step
+    at this door that a second door could forget.  :func:`_dated_events` stays
+    ORDER-SENSITIVE by design -- a calendar-year limit is an accumulation --
+    which is why it takes the looser sequence type and this entry takes the
+    window.
 
     Args:
         account: The account to resolve.  Its ``account_type`` drives the
-            classifier and its ``user_id`` the period calendar.
-        scenario_id: The budget scenario the recorded contributions live in.
+            classifier and its ``user_id`` scopes the RECORDED feed -- which
+            is the pass owner's too, since plan step C2-f2a took the AXIS off
+            the context's calendar rather than off this account (the seam's
+            standing contract makes them one owner).
+        basis: The read pass's amount basis, carrying the scenario the
+            recorded contributions live in and the derivations pricing them.
         inputs: The account's :class:`ContributionInputs`.
         reconciled_through: The account's coverage boundary -- the assertion
             :func:`_dated_events` admits an event strictly after (ruling R-Z).
+        periods: The owner's SAVED pay periods, as
+            :meth:`~app.services.pay_calendar.PayCalendar.saved` yields them.
+            The WHOLE schedule, never a slice: the year-boundary reset and the
+            limit accounting are wrong over one (see :func:`_dated_events`).
+            That is a precondition no window type can carry, which is why
+            :func:`._asset_fold.resolve` takes the CALENDAR and derives this
+            rather than accepting one.
 
     Returns:
-        ``[(payday, amount), ...]`` in period order, one entry per period that
+        ``[(payday, amount), ...]`` in payday order, one entry per period that
         contributes a non-zero amount.  ``[]`` when the account models none.
     """
     if (classify_account(account) is not AccountProjectionKind.INVESTMENT
             or inputs.investment_params is None):
         return []
-    plan = _plan_for(account, scenario_id, inputs)
+    plan = _plan_for(account, basis, inputs)
     if plan is None:
         return []
-    # Ordered by the PAYDAY, explicitly, rather than by whatever
-    # ``get_all_periods`` happens to order by (the stored ``period_index``).
-    # :func:`_dated_events` accumulates a calendar year's contributions in
-    # iteration order and resets on a year change, so the order decides which
-    # periods the annual limit caps -- and index order and date order are two
-    # different things this arc exists because nothing reconciles
-    # (``PayCalendar.filing_period`` measures them parting company on 800 of
-    # 872 probed days).  Stating the order here makes the consumer's
-    # precondition true instead of inherited.
-    return _dated_events(
-        plan,
-        sorted(
-            pay_period_service.get_all_periods(account.user_id),
-            key=lambda period: period.start_date,
-        ),
-        reconciled_through,
-    )
+    return _dated_events(plan, periods, reconciled_through)
 
 
 def _dated_events(
     plan: _ContributionPlan,
-    periods: "list[PayPeriod]",
+    periods: "Iterable[DerivedPeriod]",
     reconciled_through: ReconciledThrough,
 ) -> "list[tuple[date, Decimal]]":
     """Resolve the plan into dated events, one per paying period.
@@ -333,10 +357,17 @@ def _dated_events(
             **This read "ordered by ``period_index``" until plan step C2-c**,
             an equation nothing in the schema enforces and which
             ``PayCalendar.filing_period`` measures parting company with date
-            order on 800 of 872 probed days; the caller sorts explicitly now.
-            The whole calendar rather than a caller's window, too -- the
-            year-boundary reset and the limit accounting are wrong over a
-            slice.
+            order on 800 of 872 probed days; C2-c made the caller sort, and
+            plan step **C2-f2a** replaced the sort with the ordered type --
+            :func:`contribution_events` takes a
+            :class:`~app.services.pay_calendar.PeriodWindow`, which sorts at
+            construction.  **This parameter stays the looser sequence, and
+            that is deliberate**: the walk below is order-SENSITIVE, and a
+            control that shows it answering differently for the same plan in a
+            different order is what proves the door's guarantee is
+            load-bearing: only a window can express it, and only a list can
+            violate it.  The whole schedule rather than a slice, too -- the
+            year-boundary reset and the limit accounting are wrong over one.
         reconciled_through: The account's coverage boundary -- the latest
             assertion, as the rule that decides what it already contains.
 
@@ -353,7 +384,7 @@ def _dated_events(
             ytd = _ZERO
         prev_year = period_year
 
-        recorded = plan.recorded_by_period.get(period.id, _ZERO)
+        recorded = plan.recorded_by_period.get(period.period_id, _ZERO)
         ytd += recorded
         if reconciled_through.covers(period.start_date):
             continue

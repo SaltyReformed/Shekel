@@ -42,7 +42,7 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transfer import Transfer
 from app.services import loan_recurrence_sync, transfer_service
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.scenario_resolver import require_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._transfer_creation_helpers import (
     generate_transfers_for_all_periods,
@@ -128,6 +128,13 @@ def _materialize_one_time_transfer(template, start_period_id):
         A redirect ``Response`` on an invalid period or a service rejection
         (e.g. a loan as the source account) -- the caller returns it verbatim;
         ``None`` on success so the caller proceeds to commit.
+
+    Raises:
+        BaselineMissingError: When the owner has no baseline scenario, so the
+            transfer has no scenario to be created IN.  Answered by the one
+            application-level handler, which rolls the pending create back --
+            the same guarantee :func:`_rollback_and_refuse` gives.
+            Unreachable through any door today.
     """
     if not start_period_id:
         return _rollback_and_refuse(ONE_TIME_TRANSFER_NEEDS_PERIOD)
@@ -136,9 +143,13 @@ def _materialize_one_time_transfer(template, start_period_id):
     if not period or period.user_id != current_user.id:
         return _rollback_and_refuse("Invalid pay period for one-time transfer.")
 
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario is None:
-        return None
+    # The REQUIRING form (ruling R-BW), and the nullable one it replaces was
+    # ledger row F-9: this returned ``None`` -- the caller's signal for
+    # "created, go ahead and commit" -- having materialised nothing, so the
+    # user was told a transfer existed that did not.  A transfer that does not
+    # repeat moves money exactly once, so absence has no defined answer here
+    # and the app already has one place that says so.
+    scenario = require_baseline_scenario(current_user.id)
 
     try:
         transfer_service.create_transfer(

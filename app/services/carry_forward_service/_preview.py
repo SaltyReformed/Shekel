@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import List, Optional
 
 from app.models.transaction import Transaction
+from app.services.cash_ledger import resolve_transaction_amount
 from app.services.entry_service import compute_actual_from_entries
 
 from ._context import (
@@ -48,8 +49,13 @@ class CarryForwardPlan:  # pylint: disable=too-many-instance-attributes
     Attributes:
         transaction: The source Transaction the plan applies to.
             Held by reference so the modal template can render
-            ``txn.name``, ``txn.estimated_amount``, ``txn.entries``,
-            etc. without a re-query.
+            ``txn.name``, ``txn.entries``, etc. without a re-query.
+        budget: What the row's amount RESOLVES to, carried for EVERY kind
+            because all three modal sentences name it.  The template read
+            ``plan.transaction.estimated_amount`` until plan step X-au-c2b --
+            the COLUMN, which a derived row does not carry, and which the
+            preview would then render blank while the execution rolled a real
+            figure.  Resolved once per request against ``ctx.basis``.
         kind: One of ``PLAN_KIND_ENVELOPE`` / ``PLAN_KIND_DISCRETE`` /
             ``PLAN_KIND_TRANSFER``.  Drives the action-label rendering
             and is the partition the mutating service uses too.
@@ -82,7 +88,7 @@ class CarryForwardPlan:  # pylint: disable=too-many-instance-attributes
             template, finalised-only or soft-deleted-only destination).
             ``False`` when an existing mutable row is bumped in place.
 
-    Pylint: ``too-many-instance-attributes`` (10/7) -- this is a cohesive
+    Pylint: ``too-many-instance-attributes`` (11/7) -- this is a cohesive
     value record -- one source row's planned carry-forward action -- read
     flat by its sole consumer, the carry-forward preview modal, which
     iterates ``preview.plans`` and renders one list item per plan.  The
@@ -96,6 +102,7 @@ class CarryForwardPlan:  # pylint: disable=too-many-instance-attributes
 
     transaction: Transaction
     kind: str
+    budget: Decimal
     blocked: bool = False
     block_reason_code: Optional[str] = None
     block_reason: Optional[str] = None
@@ -224,19 +231,19 @@ def preview_carry_forward(
     for txn in ctx.envelope_txns:
         plans.append(
             _build_envelope_plan(
-                txn, ctx.target_period, scenario_id, ctx.schedule,
+                txn, ctx.target_period, ctx.basis, ctx.schedule,
             ),
         )
 
     for txn in ctx.discrete_txns:
-        plans.append(_build_discrete_plan(txn))
+        plans.append(_build_discrete_plan(txn, ctx.basis))
 
     seen_transfers = set()
     for txn in ctx.shadow_txns:
         if txn.transfer_id in seen_transfers:
             continue
         seen_transfers.add(txn.transfer_id)
-        plans.append(_build_transfer_plan(txn))
+        plans.append(_build_transfer_plan(txn, ctx.basis))
 
     return CarryForwardPreview(
         source_period=ctx.source_period,
@@ -245,8 +252,7 @@ def preview_carry_forward(
     )
 
 
-def _build_envelope_plan(source_txn, target_period, scenario_id,
-                         schedule):
+def _build_envelope_plan(source_txn, target_period, basis, schedule):
     """Compute the envelope-rollover plan for *source_txn*.
 
     Shares the destination decision with the mutating path through
@@ -268,15 +274,20 @@ def _build_envelope_plan(source_txn, target_period, scenario_id,
     on one branch.
     """
     entries_sum = compute_actual_from_entries(source_txn.entries)
-    leftover = max(
-        Decimal("0"), source_txn.estimated_amount - entries_sum,
-    )
+    # The source's BUDGET, resolved rather than read off the column, and the
+    # SAME expression the mutating path uses (plan step X-au-c2b): a preview
+    # that predicted a leftover from a different base than the execution rolls
+    # would be exactly the drift ``_classify_leftover_target`` exists to
+    # prevent, one term further out.
+    budget = resolve_transaction_amount(source_txn, basis)
+    leftover = max(Decimal("0"), budget - entries_sum)
     target_fields = _resolve_envelope_target_fields(
-        source_txn, target_period, scenario_id, leftover, schedule,
+        source_txn, target_period, basis, leftover, schedule,
     )
     return CarryForwardPlan(
         transaction=source_txn,
         kind=PLAN_KIND_ENVELOPE,
+        budget=budget,
         entries_sum=entries_sum,
         leftover=leftover,
         **target_fields,
@@ -284,7 +295,7 @@ def _build_envelope_plan(source_txn, target_period, scenario_id,
 
 
 def _resolve_envelope_target_fields(source_txn, target_period,
-                                    scenario_id, leftover, schedule):
+                                    basis, leftover, schedule):
     """Decide the target-row half of an envelope plan.
 
     Returns a dict of ``CarryForwardPlan`` fields covering the
@@ -318,7 +329,7 @@ def _resolve_envelope_target_fields(source_txn, target_period,
         return {}
 
     resolution = _classify_leftover_target(
-        source_txn, target_period, scenario_id, schedule,
+        source_txn, target_period, basis, schedule,
     )
 
     if resolution.kind is _TargetKind.AMBIGUOUS:
@@ -341,22 +352,27 @@ def _resolve_envelope_target_fields(source_txn, target_period,
     }
 
 
-def _build_discrete_plan(source_txn):
+def _build_discrete_plan(source_txn, basis):
     """Plan for a discrete (non-envelope) row: defer whole.
 
     Discrete carry-forward never blocks: the relaxed partial unique
     index allows the moved row to coexist with any rule-generated
     sibling in the target period, and ad-hoc rows have no template
     constraint at all.
+
+    Args:
+        source_txn: The row that would move whole.
+        basis: The request's amount basis, for the figure the modal names.
     """
     return CarryForwardPlan(
         transaction=source_txn,
         kind=PLAN_KIND_DISCRETE,
+        budget=resolve_transaction_amount(source_txn, basis),
         blocked=False,
     )
 
 
-def _build_transfer_plan(shadow_txn):
+def _build_transfer_plan(shadow_txn, basis):
     """Plan for a shadow row's parent transfer: move whole.
 
     The mutating path delegates to ``transfer_service.update_transfer``
@@ -364,9 +380,14 @@ def _build_transfer_plan(shadow_txn):
     conditions exist in the carry-forward usage of that service
     (target period ownership and is_override are both already
     validated upstream).
+
+    Args:
+        shadow_txn: Either leg of the transfer that would move.
+        basis: The request's amount basis, for the figure the modal names.
     """
     return CarryForwardPlan(
         transaction=shadow_txn,
         kind=PLAN_KIND_TRANSFER,
+        budget=resolve_transaction_amount(shadow_txn, basis),
         blocked=False,
     )

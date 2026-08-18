@@ -148,17 +148,15 @@ class RecurrencePatternEnum(enum.Enum):
     the row with the table; migration ``d4a71f6e30bb`` carries the full
     reasoning.
 
-    Every recurrence surface reads this enum rather than the table
-    (:mod:`app.services.recurrence._vocabulary`), so the surplus row is
-    unreachable.  Since plan step R7b-2 it is unreachable more simply than
-    that: no form posts a pattern id at all -- a submission states
-    ``(interval_n, unit, placement)`` and the write door ENCODES it -- so the
-    row cannot be offered, accepted or previewed because there is no control
-    that speaks its vocabulary.  The one surface that still reads a STORED
-    pattern id is the edit form deciding what to preselect, and
-    ``modelled_pattern`` answers ``None`` for it there.  "Does not recur" is
-    ``recurrence_rule_id IS NULL``, the shape transaction templates always
-    used.
+    **Nothing in ``app/`` reads this enum for a cadence any more, from plan
+    step R7c-c.**  No form posts a pattern id (plan step R7b-2: a submission
+    states ``(interval_n, unit, placement)``), and that step dropped
+    ``budget.recurrence_rules.pattern_id`` along with the encode / decode pair
+    and ``modelled_pattern``, the last reader of a STORED one -- so the enum
+    names a vocabulary no surface speaks in either direction.  What is left is
+    ``ref_cache``, which seeds and caches the ``ref`` rows, and R9 is the step
+    that drops both.  "Does not recur" is ``recurrence_rule_id IS NULL``, the
+    shape transaction templates always used.
     """
 
     EVERY_PERIOD = "Every Period"
@@ -344,12 +342,24 @@ class CompoundingFrequencyEnum(enum.Enum):
 class LedgerAccountClassEnum(enum.Enum):
     """Ledger account class values for the double-entry posting ledger.
 
-    The five fundamental accounting classes (Build-Order Step 2).  Values
-    match ``ref.ledger_account_classes.name``.  Asset and Expense are
-    debit-normal; Liability, Income, and Equity are credit-normal -- the
+    The five fundamental accounting classes (Build-Order Step 2) plus the
+    reporting class ruling **R-FO** added (plan step X-f3d).  Values match
+    ``ref.ledger_account_classes.name``.  Asset and Expense are debit-normal;
+    Liability, Income, Equity and Unrealized are credit-normal -- the
     natural-balance side is stored as the ``is_debit_normal`` boolean on
     each row and read via ``ref_cache.ledger_class_is_debit_normal``,
     never inferred from these member names.
+
+    ``UNREALIZED`` is OTHER COMPREHENSIVE INCOME: a price movement the owner
+    has not sold into cash.  It is a class of its own rather than more Income
+    because ``net_income = income - expense``, so a ``$40,000`` house
+    revaluation booked as Income would read as ``$40,000`` earned.  The income
+    statement reports it BELOW the net-income line and the balance sheet folds
+    it into Equity as one derived accumulated line, exactly as Income and
+    Expense are folded into Retained Earnings -- so the trial balance closes
+    with it, not despite it.  Its accounts are per-account
+    (``LedgerAccountKindEnum.UNREALIZED_CHANGE``) and are booked by an
+    ``INVESTMENT`` / ``APPRECIATING`` account's balance-assertion true-up.
     """
 
     ASSET = "Asset"
@@ -357,6 +367,11 @@ class LedgerAccountClassEnum(enum.Enum):
     INCOME = "Income"
     EXPENSE = "Expense"
     EQUITY = "Equity"
+    # ``String(12)`` on the ref column, which is why the member value is the
+    # bare adjective rather than "Change in Value": the class NAME is an
+    # identifier (matched to the enum by ``ref_cache.init``), and the reader's
+    # section headings carry the prose.
+    UNREALIZED = "Unrealized"
 
 
 class PostingKindEnum(enum.Enum):
@@ -407,12 +422,18 @@ class PostingSourceEnum(enum.Enum):
     they make every non-loan linked ledger sum to an ABSOLUTE balance, closing
     the app-wide trial balance.  None of the four links a transfer or a
     transaction (both source FKs are nullable); the source kind is what
-    disambiguates them.  Later steps add ``paycheck`` and ``credit_payback``
-    via data migrations.  Values match ``ref.posting_sources.name``.
+    disambiguates them.  ``purchase`` is a single PURCHASE recorded against an
+    envelope whose bank posting day the owner has recorded (plan step X-f3b,
+    ruling **R-FM**): it links ``transaction_entry_id`` and carries NULL in the
+    other two source FKs, and it books its own cash leg on its own day so its
+    envelope's close books only the remainder.  Later steps add ``paycheck``
+    and ``credit_payback`` via data migrations.  Values match
+    ``ref.posting_sources.name``.
     """
 
     TRANSFER = "transfer"
     TRANSACTION = "transaction"
+    PURCHASE = "purchase"
     LOAN_PAYMENT = "loan_payment"
     LOAN_OPENING = "loan_opening"
     LOAN_TRUEUP = "loan_trueup"
@@ -463,6 +484,21 @@ class LedgerAccountKindEnum(enum.Enum):
                          partial unique that Step 5's chart migration re-keys
                          ``uq_ledger_accounts_account`` into.
 
+    Ruling **R-FO** (plan step X-f3d) adds the two kinds that say what a
+    TRUE-UP's difference WAS, dispatched over the account's projection kind:
+
+        interest_income  -- an ``INTEREST`` account's per-account Interest
+                            Income account (Income class).
+        unrealized_change  -- an ``INVESTMENT`` or ``APPRECIATING`` account's
+                            per-account Change in Value account
+                            (``LedgerAccountClassEnum.UNREALIZED``).
+
+    Both carry ``account_id`` and share the ``anchor_equity`` shape and its
+    ``(account_id, kind_id)`` unique exactly, so no new index exists for them.
+    An account's OPENING keeps booking to ``anchor_equity`` whatever its kind:
+    an opening is capital brought onto the books, not something earned (a
+    Property's ``$350,000.00`` opening is not a gain).
+
     Application code resolves these via ``ref_cache.ledger_account_kind_id``
     and compares against the integer ID -- never the string ``name`` --
     matching the project-wide ``ref-table: IDs for logic, strings for display
@@ -478,6 +514,8 @@ class LedgerAccountKindEnum(enum.Enum):
     LOAN_REFUND = "loan_refund"
     EQUITY_OPENING = "equity_opening"
     ANCHOR_EQUITY = "anchor_equity"
+    INTEREST_INCOME = "interest_income"
+    UNREALIZED_CHANGE = "unrealized_change"
 
 
 class AmountSourceEnum(enum.Enum):

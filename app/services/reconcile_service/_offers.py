@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.services.cash_ledger import AnchorPoint
+
 
 class OfferKind(enum.Enum):
     """What a block IS, for the two rules ruling **R-FC** puts on the order.
@@ -494,8 +496,14 @@ class ReconcileSubmission:
             boxes.  Passed through: the arm decides which of them it may READ
             (ruling **R-FF**) and the settle verb decides whether each is a
             correction or an echo of the prefill.
-        observed_on: The civil day the asserted balance was true for, and the
-            day every settled row records its money as having moved.
+        anchor: The governing
+            :class:`~app.services.cash_ledger.AnchorPoint` -- the STATEMENT
+            being reconciled against.  Its id is what every ticked row records
+            as having shown it (ruling **R-FL**) and its ``observed_on`` is the
+            day every settled row records its money as having moved.  It
+            carried the bare day until plan step X-f3a-1; a civil day cannot
+            name a statement, because production holds three days on which
+            Checking carries more than one assertion.
     """
 
     owner_id: int
@@ -503,4 +511,4 @@ class ReconcileSubmission:
     entry_ids: "set[int]"
     transaction_ids: "set[int]"
     corrections: "dict[int, Decimal]"
-    observed_on: date
+    anchor: AnchorPoint

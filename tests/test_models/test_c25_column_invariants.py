@@ -48,7 +48,6 @@ F_068_LOCKED_COLUMNS = [
     ("budget", "categories", "is_active", "true"),
     ("budget", "categories", "sort_order", "0"),
     ("budget", "recurrence_rules", "interval_n", "1"),
-    ("budget", "recurrence_rules", "offset_periods", "0"),
     ("budget", "savings_goals", "is_active", "true"),
     ("budget", "scenarios", "is_baseline", "false"),
     ("budget", "transaction_templates", "is_active", "true"),
@@ -255,36 +254,54 @@ def test_server_default_fills_omitted_sort_order_integer(db, seed_user):
 
 
 def test_server_default_fills_omitted_recurrence_integers(db, seed_user):
-    """A raw INSERT omitting interval_n / offset_periods gets 1 / 0.
+    """A raw INSERT omitting ``interval_n`` gets 1.
 
-    These two recurrence integers are logic-bearing divisors
-    (``interval_n`` is the modulus in the PERIOD-unit occurrence walk;
-    ``offset_periods`` shifts the cycle), and their CHECK constraints
-    (``interval_n > 0`` / ``offset_periods >= 0``) treat a NULL operand
-    as satisfied, so before this migration a raw INSERT could land a
-    meaningless NULL.  The server_default must now fill the documented
-    logical defaults on a storage-tier-only INSERT.
+    It is a logic-bearing divisor -- the modulus in the PERIOD-unit occurrence
+    walk and the divisor in every monthly equivalent -- and its CHECK
+    (``interval_n > 0``) treats a NULL operand as satisfied, so before this
+    migration a raw INSERT could land a meaningless NULL.  The server_default
+    must fill the documented logical default on a storage-tier-only INSERT.
+
+    **``offset_periods`` left this case at plan step R7c-c** with the column.
+    It was the second logic-bearing integer here -- the cycle phase, under
+    ``offset_periods >= 0`` -- and the phase is derived from the rule's first
+    occurrence on every read now, so there is no stored value for a default to
+    fill.
     """
     from app import ref_cache  # pylint: disable=import-outside-toplevel
     from app.enums import (  # pylint: disable=import-outside-toplevel
-        RecurrencePatternEnum,
+        BusinessDayShiftEnum,
+        PeriodPlacementEnum,
+        RecurrenceUnitEnum,
     )
 
     user_id = seed_user["user"].id
-    pattern_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.EVERY_PERIOD,
-    )
+    # The cadence columns are stated because plan step R7c-b made them NOT
+    # NULL.  Omitting them would make this INSERT fail on a null before the
+    # server_default under test was ever reached -- which is the same
+    # IntegrityError, from a different cause, on a case whose whole point is
+    # that a storage-tier-only INSERT lands the documented default.
     db.session.execute(db.text(
-        "INSERT INTO budget.recurrence_rules (user_id, pattern_id) "
-        "VALUES (:user_id, :pattern_id)"
-    ), {"user_id": user_id, "pattern_id": pattern_id})
+        "INSERT INTO budget.recurrence_rules "
+        "(user_id, unit_id, placement_id, shift_id, starts_on) "
+        "VALUES (:user_id, :unit_id, :placement_id, :shift_id, "
+        "DATE '2026-01-02')"
+    ), {
+        "user_id": user_id,
+        "unit_id": ref_cache.recurrence_unit_id(RecurrenceUnitEnum.PERIOD),
+        "placement_id": ref_cache.period_placement_id(
+            PeriodPlacementEnum.CONTAINING_DATE,
+        ),
+        "shift_id": ref_cache.business_day_shift_id(
+            BusinessDayShiftEnum.NONE,
+        ),
+    })
     db.session.commit()
     row = db.session.execute(db.text(
-        "SELECT interval_n, offset_periods FROM budget.recurrence_rules "
-        "WHERE user_id = :user_id AND pattern_id = :pattern_id"
-    ), {"user_id": user_id, "pattern_id": pattern_id}).one()
+        "SELECT interval_n FROM budget.recurrence_rules "
+        "WHERE user_id = :user_id"
+    ), {"user_id": user_id}).one()
     assert row.interval_n == 1
-    assert row.offset_periods == 0
 
 
 def test_transactions_is_override_and_is_deleted_default_to_false(

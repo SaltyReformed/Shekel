@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from ._derive import DerivedPeriod, PayCalendarError
-from ._searches import _BY_START_DATE, containing_period
+from ._searches import _BY_START_DATE, containing_index, containing_period
 
 
 @dataclass(frozen=True)
@@ -138,6 +138,39 @@ class PeriodWindow:
             *day* falls outside every period in this window.
         """
         return containing_period(self.periods, day)
+
+    def containing_index(self, day: date) -> "int | None":
+        """Return WHERE in this window the period covering *day* sits, else ``None``.
+
+        The same question :meth:`containing` answers, asked by a consumer that
+        plots one thing per period and needs to mark the right one: the answer
+        is an index into THIS view, in the same ordinal
+        :meth:`__getitem__` takes, so ``window[window.containing_index(d)]`` is
+        ``window.containing(d)`` whenever either answers.
+
+        **Its consumer is the /investment growth chart** (plan step C2-f2c).
+        That module scanned the window period by period for the one holding the
+        planned retirement date, which is this predicate written a second time
+        and the last HAND-ROLLED member of ledger row **P6**'s census -- the
+        census names one other survivor, ``pay_period_service.get_current_period``,
+        which is SQL rather than a scan and which plan step **C2-f3** retires.
+        The scan and this agree over a tiling window, so retiring it removed a
+        duplicate rather than a divergence.
+
+        **Not derived from ``period_index``.**  A window is a slice of a tiling
+        calendar, so ``found.period_index - self[0].period_index`` gives the
+        same number today -- but that is a second rule about how a view's
+        ordinals relate to the calendar's, stated at the caller and enforced
+        nowhere, where this is the bisect :meth:`containing` already runs.
+
+        Args:
+            day: The calendar day to place.
+
+        Returns:
+            The 0-based position within this window, or ``None`` when *day*
+            falls outside every period in it.
+        """
+        return containing_index(self.periods, day)
 
     def __iter__(self) -> "Iterator[DerivedPeriod]":
         """Iterate the window's periods in ``start_date`` order.

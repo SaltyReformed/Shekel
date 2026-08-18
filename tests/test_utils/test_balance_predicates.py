@@ -548,7 +548,7 @@ class TestIsCancelled:
     """Pins ``is_cancelled`` (Commit 29 / MED-02 residual).
 
     Centralizes the inline ``status_id == cancelled_id`` comparisons
-    in ``app/routes/grid.py`` (skip-cancelled row-key collection,
+    in ``app/routes/grid/`` (skip-cancelled row-key collection,
     mirroring the templates' ``!= STATUS_CANCELLED`` guards) and
     ``entry_service.create_entry`` (block entries on
     cancelled-status transactions). Narrower than

@@ -31,6 +31,7 @@ from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
+from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
@@ -38,7 +39,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.cash_ledger import contributions_by_id
+from app.services.cash_ledger import AmountBasis, contributions_by_id
 from app.services.investment_projection import (
     InvestmentInputs,
     PricedContribution,
@@ -259,7 +260,7 @@ def load_investment_params_for_accounts(
 
 
 def load_shadow_income_contributions_for_accounts(
-    user_id: int, scenario_id: int,
+    basis: AmountBasis,
     account_ids: list[int], period_ids: list[int],
 ) -> ShadowContributions:
     """Return PRICED shadow-income contributions across many accounts.
@@ -283,6 +284,19 @@ def load_shadow_income_contributions_for_accounts(
     one per account (finding **N-228**, and what re-keying the basis on the
     OWNER rather than an ``Account`` bought).
 
+    **It is also where a contribution is DATED, since plan step C2-f2c**, and
+    that is the same argument applied to the same record's other derived fact.
+    Every reader downstream buckets contributions by pay period and then needs
+    that period's PAYDAY -- the YTD windows to compare it against the current
+    period's, the timeline to stamp it on a
+    :class:`~app.services.growth_engine.ContributionRecord`.  Carrying the id
+    alone made each of them take the owner's whole period list as a lookup
+    table, so three public signatures held a join this query can do in one
+    ``JOIN``.  ``PayPeriod.start_date`` is the paydays' own column and the one
+    plan step **C4** keeps, so this reads a fact rather than a derivation; the
+    join is INNER, which drops nothing, because the filter below already
+    excludes a ``NULL`` ``pay_period_id``.
+
     **Rows that contribute nothing are DROPPED rather than priced at zero.**
     :func:`~app.services.investment_projection._average_transfer_contribution`
     divides by the number of distinct pay periods it sees, so a Cancelled
@@ -297,9 +311,12 @@ def load_shadow_income_contributions_for_accounts(
     that is no longer optional.
 
     Args:
-        user_id: The owner of the accounts; scopes the salary producer behind
-            the amount basis.
-        scenario_id: The scenario the amounts resolve under.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis` -- the owner and the
+            scenario these amounts resolve under, and the derivations they
+            resolve through.  Taken rather than built here since plan step
+            X-au-c2b, so a caller that also prices its own rows pays for the
+            paycheck engine once (findings **N-268**, **N-269**).
         account_ids: Investment / retirement account ids to scope to.
         period_ids: Pay-period ids to scope the contribution window
             against.
@@ -323,39 +340,54 @@ def load_shadow_income_contributions_for_accounts(
         return ShadowContributions(records=[], linked_account_ids=frozenset())
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
     rows = (
-        db.session.query(Transaction)
+        db.session.query(Transaction, PayPeriod.start_date)
+        .join(PayPeriod, PayPeriod.id == Transaction.pay_period_id)
         .options(joinedload(Transaction.status))
         .filter(
             Transaction.account_id.in_(account_ids),
             Transaction.transfer_id.isnot(None),
             Transaction.transaction_type_id == income_type_id,
             Transaction.pay_period_id.in_(period_ids),
+            # The BASIS's scenario, and closing finding **N-271** is what this
+            # line is (plan step X-au-c2b, after an adversarial review).  The
+            # query scoped by account, transfer, income type, period and soft
+            # delete only, so one batch could straddle scenarios while every
+            # row in it was priced against a single baseline basis.  That was
+            # `$0.00` while every row is OWN and becomes a wrong figure at the
+            # first cutover that makes a contribution shadow derived.  Scoping
+            # the query is the remedy the row named, and it is the one that
+            # keeps this batch's rows and its pricing in agreement by
+            # construction rather than by the caller's care.
+            Transaction.scenario_id == basis.scenario_id,
             Transaction.is_deleted.is_(False),
         )
         .all()
     )
-    counted = [row for row in rows if status_contributes_to_balance(row)]
-    amounts = contributions_by_id(user_id, scenario_id, counted)
+    counted = [
+        (row, payday) for row, payday in rows
+        if status_contributes_to_balance(row)
+    ]
+    amounts = contributions_by_id([row for row, _ in counted], basis)
     return ShadowContributions(
         records=[
             PricedContribution(
                 account_id=row.account_id,
-                pay_period_id=row.pay_period_id,
+                payday=payday,
                 amount=amounts[row.id],
                 is_confirmed=row.status.is_settled,
             )
-            for row in counted
+            for row, payday in counted
         ],
         # Taken from the UNSCREENED rows: a Cancelled contribution counts
         # nothing but is still a LINK, and the consumer asking whether an
         # account has one is asking a different question from the consumers
         # that sum amounts.
-        linked_account_ids=frozenset(row.account_id for row in rows),
+        linked_account_ids=frozenset(row.account_id for row, _ in rows),
     )
 
 
 def load_shadow_income_contributions_for_account(
-    user_id: int, scenario_id: int,
+    basis: AmountBasis,
     account_id: int, period_ids: list[int],
 ) -> ShadowContributions:
     """Return PRICED shadow-income contributions into a single account.
@@ -368,8 +400,7 @@ def load_shadow_income_contributions_for_account(
     not issue an ``IN ()`` query against PostgreSQL.
 
     Args:
-        user_id: The account's owner; scopes the amount basis.
-        scenario_id: The scenario the amounts resolve under.
+        basis: The read pass's amount basis (see the batch variant).
         account_id: ID of the investment / retirement account.
         period_ids: Pay-period ids to scope the contribution window
             against.
@@ -379,15 +410,14 @@ def load_shadow_income_contributions_for_account(
         records (see the batch variant for what pricing at this boundary buys).
     """
     return load_shadow_income_contributions_for_accounts(
-        user_id, scenario_id, [account_id], period_ids,
+        basis, [account_id], period_ids,
     )
 
 
-def build_investment_projection_inputs(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def build_investment_projection_inputs(
     params: InvestmentParams,
     deductions: list,
     contributions: list,
-    all_periods: list,
     current_period,
     salary_gross_biweekly,
 ) -> InvestmentInputs:
@@ -400,11 +430,12 @@ def build_investment_projection_inputs(  # pylint: disable=too-many-arguments,to
     the R0801 duplicate and means a future signature change to
     ``calculate_investment_inputs`` only needs to update one site.
 
-    Pylint: ``too-many-arguments`` (6/5) /
-    ``too-many-positional-arguments`` (6/5) -- the scoped disable mirrors
-    the wrapped ``calculate_investment_inputs``: this is a thin 1:1
-    forward of the same six independent projection inputs, so bundling
-    them would be the same stamp coupling rejected there.
+    **The owner's period LIST left this signature at plan step C2-f2c**, and
+    the ``too-many-arguments`` disable that justified six went with it.  The
+    list served the wrapped function's two YTD windows alone, as a lookup from
+    a contribution's pay period to that period's payday;
+    :func:`load_shadow_income_contributions_for_accounts` dates each
+    contribution now, so there is nothing left to look up.
 
     Callers supply ``deductions`` (already adapted via
     :func:`~app.services.investment_projection.adapt_deductions`) and
@@ -430,8 +461,11 @@ def build_investment_projection_inputs(  # pylint: disable=too-many-arguments,to
         contributions: List of
             :class:`~app.services.investment_projection.PricedContribution`
             records already filtered to this account.
-        all_periods: All pay periods for the user.
-        current_period: The current :class:`PayPeriod`, or ``None``.
+        current_period: The pay period covering the read pass's clock, or
+            ``None``.  Anything carrying a ``start_date``: an ORM
+            :class:`~app.models.pay_period.PayPeriod` on ``/retirement``, a
+            :class:`~app.services.pay_calendar.DerivedPeriod` on
+            ``/investment``.
         salary_gross_biweekly: Raise-aware engine gross per pay period
             (typically from
             :func:`app.services.income_service.get_current_gross_biweekly`).
@@ -445,7 +479,6 @@ def build_investment_projection_inputs(  # pylint: disable=too-many-arguments,to
         investment_params=params,
         deductions=deductions,
         all_contributions=contributions,
-        all_periods=all_periods,
         current_period=current_period,
         salary_gross_biweekly=salary_gross_biweekly,
     )

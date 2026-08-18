@@ -83,17 +83,29 @@ logger = logging.getLogger(__name__)
 # out of step with the screen, on the one surface this arc exists to keep in
 # step.
 #
+#
+# ``pay_period_id`` IS here since plan step X-f3b (ruling **R-FM**), and the
+# reason it was not is the reason it must be: the omission was justified by "a
+# settled row's period cannot move anyway (the finalised-edit lock blocks
+# editing it unless the same PATCH reverts to Projected)", which was sound
+# while only a SETTLED row held postings.  A PROJECTED envelope now holds one
+# per purchase whose bank posting day is recorded, and a posting carries the
+# BUDGET column its source row is attributed to -- so moving such a row without
+# a reconcile leaves its purchases' legs filed under the period it left, which
+# is the R2 attribution rule broken on the one row type that can now reach it.
+# The reconcile keys by ``(period, entry date)``, so the move reverses the old
+# key and posts the new one in one balanced pair, exactly as a revert-and-move
+# already does for a settled row.
+#
 # The other PATCH fields (``notes`` / ``name`` / ``due_date`` /
-# ``pay_period_id`` / ``is_envelope`` / the visibility flags) move none of
-# those, so a metadata-only edit raises no reconcile -- and a settled row's
-# period / due-date cannot move anyway (the finalised-edit lock blocks editing
-# them unless the same PATCH reverts to Projected).  The reconcile is
+# ``is_envelope`` / the visibility flags) move none of
+# those, so a metadata-only edit raises no reconcile.  The reconcile is
 # idempotent, so listing a field that did not move the effect is a harmless
 # no-op; this set is the cheap pre-filter that avoids a ledger round-trip on a
 # pure metadata edit.
 _POSTING_RELEVANT_FIELDS = frozenset({
     "status_id", "estimated_amount", "actual_amount", "category_id",
-    "settled_on",
+    "settled_on", "pay_period_id",
 })
 
 # The PATCH fields the status seam writes, so the generic ``setattr`` loop in
@@ -247,6 +259,20 @@ def _apply_field_updates(txn, data):
         if field in _SEAM_OWNED_FIELDS:
             continue
         setattr(txn, field, value)
+
+    if "estimated_amount" in data:
+        # A typed figure makes the row's amount its OWN, so the relation that
+        # priced it is CLEARED in the same act (plan step X-au-c2b).
+        # ``ck_transactions_amount_ownership`` pairs the two -- a row states
+        # either a figure or the relation that prices it, never both -- so
+        # writing the column while a relation still claimed the row is an
+        # ``IntegrityError``.  It is a no-op on today's data, because nothing
+        # is declared derived yet, and it is written now because the amount
+        # model's own dispatch already ASSERTS it: "a row a human RE-PRICED
+        # owns its figure because the write door CLEARS its source".  That was
+        # true at one write door of three when an adversarial review counted
+        # them.
+        txn.amount_source_id = None
 
     if txn.template_id and ("estimated_amount" in data or "pay_period_id" in data):
         txn.is_override = True

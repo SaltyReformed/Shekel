@@ -170,12 +170,24 @@ def create_payment_transfer(account_id):
     # base (manual).  Schema default 0.00 when the field is blank.
     extra_principal = data["extra_principal"]
 
-    # Create monthly recurrence rule.
+    # Create the monthly recurrence rule, ALREADY bounded by the loan's own
+    # contract (developer ruling 2026-08-15, plan step R7c-b).  Its first
+    # occurrence is the first contractual installment, and ``nominal_day``
+    # carries a servicer's day-31 payment through a 30-day origination month --
+    # both from ``loan_recurrence_sync.loan_cadence_start``, the ONE producer of
+    # that answer.  It used to be typed here as ``day_of_month=payment_day`` and
+    # then overwritten by ``bind_rule_to_loan`` a few lines below, which is the
+    # shape that let the GENERIC transfer form discard a user's typed date
+    # without saying so.
+    cadence_start = loan_recurrence_sync.loan_cadence_start(
+        RecurrenceUnitEnum.MONTH, params,
+    )
     rule = author_rule(
         RecurrenceSpec(
             user_id=current_user.id,
             unit=RecurrenceUnitEnum.MONTH,
-            day_of_month=params.payment_day,
+            starts_on=cadence_start.starts_on,
+            nominal_day=cadence_start.nominal_day,
         ),
         calendar_for(current_user.id),
     )
@@ -353,7 +365,7 @@ def track_payment(account_id):
     resets the stored base (``default_amount``) to today's contract so every
     surface that reads it shows the current figure.  No shadow regeneration is
     needed -- a derive payment's projected cash is recomputed LIVE at read time
-    (:func:`app.services.loan_payment_service.live_loan_transfer_amounts`), the
+    (:meth:`~app.services.loan_payment_service.LoanPricing.live_cash`), the
     same mechanism a freshly-created derive transfer relies on -- and the
     recurrence end date is re-synced since a higher tracked payment can move the
     projected payoff.

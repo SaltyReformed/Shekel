@@ -189,14 +189,14 @@ in the plan document's git history at the commit that recorded it.
 | **R-AE** | 2026-07-27 | The forward-projection SEED is the modelled balance at the day before the window, with NOTHING filtered out -- `asset_seed_at` DELETES and `investment_seed_map` leaves with no successor at all |
 | **R-AH** | 2026-07-27 | The grid renders the two modelled tiers as TWO conditional rows, on ruling R-O's own non-zero rule and on both form factors (R-P) |
 | **R-AI** | 2026-07-27 | The accrual row's label is PER KIND, resolved in the ROUTE from `classify_account`; the contribution row is unconditionally "Contributions" |
-| **R-AJ** | 2026-07-27 | `grid_balance_view` assembles the account's REAL `ContributionInputs`, its kind GATE deletes, and `GridColumn |
+| **R-AJ** | 2026-07-27 | `grid_balance_view` assembles the account's REAL `ContributionInputs`, its kind GATE is deleted, and `GridColumn.interest` becomes a non-optional `accrual` beside a new `contribution` |
 | **R-AL** | 2026-07-27 | The accrual row's CSS marker renames kind-neutral: `interest-row` -> `modelled-accrual-row`, and the new row is `modelled-contribution-row` |
 | **R-AM** | 2026-07-27 | The accrual figure's sign treatment is THREE-WAY -- `> 0` green with an explicit `+`, `< 0` the danger token, `== 0` neither -- and NOT `/investment`'s `>= 0` |
 | **R-AN** | 2026-07-27 | The two MODELLED rows render CENTS; the four rows around them stay whole-dollar |
 | **R-AR** | 2026-07-27 | X-g4 and X-c2c4 ship as TWO commits: X-g4a the PORT, then X-g4b the WHOLE deletion |
-| **R-AS** | 2026-07-27 | `_interest |
+| **R-AS** | 2026-07-27 | `_interest.py` DELETES WHOLE and its one surviving predicate folds into its one caller, which removes a redundant second `classify_account`; ruling R-L's window history and the day-count lesson are restated in `_asset_fold`'s docstring rather than deleted with the file |
 | **R-AT** | 2026-07-27 | The ported 52-period drift oracle exercises ALL THREE of the fold's tiers, not the one the original had |
-| **R-AU** | 2026-07-27 | `test_asset_fold_parallel |
+| **R-AU** | 2026-07-27 | `test_asset_fold_parallel.py` KEEPS the two classes graded against something other than the dying incumbent (the grain class's `growth_engine.project_balance` comparison and the properties-of-the-replay class) and LOSES the three that are not |
 | **R-AV** | 2026-07-27 | X-o ships the predicate alone; the second debt-free producer gets its OWN step, X-q, and both are built now |
 | **R-AW** | 2026-07-27 | The per-account projection dict carries the seam's `LoanFigures`, and the six flat copies go -- in its OWN commit, AFTER the defect is fixed |
 | **R-AX** | 2026-07-27 | "Debt-free" stays LOAN-ONLY, and the surfaces say so |
@@ -223,7 +223,7 @@ in the plan document's git history at the commit that recorded it.
 | **R-BT** | 2026-07-28 | `_project_debt_accounts` is INLINED into `compute_debt_summary` and deleted |
 | **R-BV** | 2026-07-28 | `/savings` does not render the new field, and X-u adds no pixel |
 | **R-BW** | 2026-07-28 | The no-baseline state gets ONE answer, and it is a NAMED exception with ONE handler -- not nineteen invented values |
-| **R-BX** | 2026-07-28 | `BalanceContext |
+| **R-BX** | 2026-07-28 | `BalanceContext.scenario_id` becomes the RAISING accessor (`-> int`) so the nullable cannot escape the context: five sites dereference it to SCOPE A QUERY, and each would otherwise raise `AttributeError` on `None` -- a 500 of the wrong type, which the handler cannot answer |
 | **R-BY** | 2026-07-28 | TWO guards keep their own explicit handling, and the reason is written at each |
 | **R-BZ** | 2026-07-28 | X-t2's `/savings` no-baseline degradation is REVERSED, and this row is where that is findable |
 | **R-CA** | 2026-07-28 | N-113 is closed by DELETION, not by inventing a display vocabulary for a state no page can now reach |
@@ -235,12 +235,12 @@ in the plan document's git history at the commit that recorded it.
 | **R-CI** | 2026-07-30 | Every RECORD container crossing a module boundary on this path is a value object; the four that are not records stay dicts, with the reason written |
 | **R-CJ** | 2026-07-30 | A map that is TOTAL over its input is INDEXED, not defaulted |
 | **R-CK** | 2026-07-30 | A total map is INDEXED at every reader, and indexing is not a policy -- it is the absence of one |
-| **R-CL** | 2026-07-30 | `TrendPoint |
+| **R-CL** | 2026-07-30 | `TrendPoint.period_index` is DELETED: an AST census found ZERO production readers, so it is finding N-100's defect inside the step that deletes `goal_mode_id` for the same reason |
 | **R-CM** | 2026-07-30 | The one-record design STANDS and the INSTRUMENT is what changes |
 | **R-CN** | 2026-07-30 | A type that crosses this package's boundary is re-exported, and a region's type lives with its own fields |
 | **R-CO** | 2026-07-30 | Both records are typed at their producer, and the unreachable nullable X-w4 wrote goes with them |
 | **R-CP** | 2026-07-30 | ONE classifier answers the CATEGORY, and both existing questions BUILD ON it |
-| **R-CQ** | 2026-07-30 | The classifier's module is RENAMED to `app/services/account_category |
+| **R-CQ** | 2026-07-30 | The classifier's module is RENAMED to `app/services/account_category.py` and stays PUBLIC at the service layer: the classification rule is account metadata, not a cockpit display decision |
 | **R-CR** | 2026-07-30 | ONE category map per render, and the Jinja spelling of the liability key is GATED |
 | **R-CS** | 2026-07-30 | The three coverage units are each quantized ONCE, from the RAW ratio -- and the two inputs that cannot be `None` stop being nullable |
 | **R-CT** | 2026-07-30 | The category rides on `AccountProjection`, and the per-account map X-z2 threaded is DELETED |
@@ -249,7 +249,7 @@ in the plan document's git history at the commit that recorded it.
 | **R-DF** | 2026-07-31 | The hole's reconciliation defect is finding N-128 with plan step X-l as its owner, and R-CX's false sentence is corrected in the same commit |
 | **R-DG** | 2026-07-31 | The whole residue is fixed and RE-REVIEWED before anything is committed; nothing ships piecemeal |
 | **R-DI** | 2026-08-02 | The residue arm is DELETED, and a posting the source rows cannot explain becomes a LOUD refusal instead of a silent absorption |
-| **R-DJ** | 2026-08-02 | Two distinct civil-day TYPES, and `ReconciledThrough |
+| **R-DJ** | 2026-08-02 | Two distinct civil-day TYPES -- `CashAnchorFact.observed_on` becomes an `ObservedOn` and `CashSourceFact.settled_on` a `MovedOn`, each ordered against its OWN kind only -- and `ReconciledThrough.covers` narrows to the event one, which makes the line plan step 3 deleted a `TypeError` |
 | **R-DL** | 2026-08-02 | The anchor reconcile resolves its two ledger accounts ONCE per account rather than once per correction, and the fix rides INSIDE X-d |
 | **R-DX** | 2026-08-03 | The IDENTITY invariants go to the DATABASE tier where they CAN go |
 | **R-DZ** | 2026-08-03 | R2 for anchor corrections is a KEY-SHAPE change with NO migration in it, and it ships FIRST, alone, as plan step X-ai-r |

@@ -35,15 +35,17 @@ from app.services.cash_ledger import (
     settled_cash_facts,
     walk_cash_ledger,
 )
+from app.services.balance_at._cash_fold import fold_cash_balances
 from app.enums import StatusEnum
 from app.exceptions import UndatedSettleError
 from app.utils.dates import DISPLAY_TIMEZONE, display_today, to_display_date
 from tests._test_helpers import (
     add_txn,
     append_balance_assertion,
+    basis_for,
+    create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
-    create_savings_account,
     freeze_today,
     restamp_opening_assertion,
 )
@@ -116,6 +118,34 @@ def _running_balance(account, scenario):
     )
 
 
+def _fold_at(account, scenario, day):
+    """Return the balance a SCREEN renders for *account* on *day*.
+
+    The real producer (``balance_at._cash_fold.fold_cash_balances``), not a
+    hand-rolled prefix sum, because the property under test is what a user sees
+    and a replay written beside the thing it grades can agree with a wrong
+    answer.
+
+    **This module's other helpers read the WALK, and that difference is what an
+    adversarial review caught.**  ``balance_before`` is an INPUT to a
+    correction; the fold prefix-sums ``dated_deltas``, which emits each source
+    at its OWN settle day.  A first version of the clearing-link tests graded
+    the corrections alone, and was green while the rendered balance on an
+    assertion's own day was ``$500.00`` short of what the user had asserted.
+
+    Args:
+        account: The account to value.
+        scenario: Its scenario.
+        day: The valuation date, passed as the reader's as-of too -- the
+            ordinary case, and it keeps the PLANNED tier out of the way (ruling
+            R-G clamps a plan to ``as_of + 1``).
+
+    Returns:
+        The folded balance as a ``Decimal``.
+    """
+    return fold_cash_balances(account, basis_for(account, scenario), day, [day])[day]
+
+
 def _replay_terminal_balance(account, scenario):
     """Reconstruct the walk's end balance WITHOUT :func:`dated_deltas`.
 
@@ -149,8 +179,17 @@ def _linked_ledger_net(account, scenario, *, transaction_id=None):
     The posted-side window the walk's deltas are graded against.  Reads a
     DIFFERENT join shape from anything production runs, so the two cannot share
     a lookup bug -- the same rule the loan reconciliation suite follows.
+
+    **``transaction_id`` scopes to a row's whole posted FAMILY** since plan step
+    X-f3b (ruling **R-FM**): the row's own cash leg, plus every leg its
+    PURCHASES booked on their own days.  A purchase links by
+    ``transaction_entry_id`` and carries no ``transaction_id``, so the two are
+    unioned here rather than read as one column -- which is also what keeps the
+    grading window a different shape from the production reconcile, whose two
+    halves each read exactly one of them.
     """
     from app.models.journal_entry import JournalEntry, Posting  # pylint: disable=import-outside-toplevel
+    from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
     from app.services.posting_reads import _ledger_account_for  # pylint: disable=import-outside-toplevel
 
     linked = _ledger_account_for(account.id)
@@ -163,7 +202,14 @@ def _linked_ledger_net(account, scenario, *, transaction_id=None):
         )
     )
     if transaction_id is not None:
-        query = query.filter(JournalEntry.transaction_id == transaction_id)
+        query = query.filter(db.or_(
+            JournalEntry.transaction_id == transaction_id,
+            JournalEntry.transaction_entry_id.in_(
+                db.session.query(TransactionEntry.id).filter(
+                    TransactionEntry.transaction_id == transaction_id,
+                )
+            ),
+        ))
     return Decimal(str(query.scalar()))
 
 
@@ -182,7 +228,7 @@ class TestTheClosingBalancePartition:
     the settle day was ``db.func.now()`` at the click, before plan step X-f1, and
     an ``AccountAnchorHistory`` row has no date column at all -- so it decided
     which of two BUTTONS was pressed first and spent that answer on cash.  See
-    ``docs/audits/balance_architecture/anchor_settle_partition.md``.
+    ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.
     """
 
     def test_a_settle_recorded_after_the_assertion_is_still_absorbed(
@@ -464,12 +510,21 @@ class TestSourceFactValuation:
         purchase and an $80.00 credit-card purchase moved only $120.00 out of
         checking -- the credit portion leaves when its CC Payback sibling
         settles, so counting it here debits the money twice.  Hand-computed:
-        1000 - 120 = 880.00, and the walk's delta is -$120.00 not -$200.00.
+        1000 - 120 = 880.00.
 
         Measured on production 2026-07-25 before the shared
         :func:`~app.services.cash_ledger.settled_cash_leg` was adopted: an
         ``effective_amount`` walk diverged from the posted ledger on 10 of the
         real Checking account's 130 settled rows, by up to $181.58.
+
+        **The $120.00 is now TWO facts, and ruling R-FM is why** (plan step
+        X-f3b).  The debit purchase carries the day the bank took it (01-05), so
+        it is a movement of its own on THAT day; the envelope's close on 02-01
+        then books ``200 - 80 credit - 120 already posted = $0.00``.  The
+        account is $120.00 lighter either way -- what moved is WHEN, from the
+        day the owner finished the envelope to the day the money actually left,
+        which is the whole point of the step.  Both figures are asserted so a
+        regression that lost either half of the split fails as itself.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
@@ -490,7 +545,7 @@ class TestSourceFactValuation:
             (Decimal("80.00"), True, date(2026, 1, 6)),
         ):
             db.session.add(TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=amount,
                 description="purchase",
@@ -516,8 +571,15 @@ class TestSourceFactValuation:
         posting_service.sync_transaction_postings(txn, settled=True)
         db.session.commit()
 
-        fact, = settled_cash_facts(account.id, scenario.id)
-        assert fact.delta == Decimal("-120.00")
+        purchase_fact, close_fact = settled_cash_facts(account.id, scenario.id)
+        assert (purchase_fact.settled_on, purchase_fact.delta) == (
+            date(2026, 1, 5), Decimal("-120.00"),
+        )
+        assert purchase_fact.entry_id is not None
+        assert (close_fact.settled_on, close_fact.delta) == (
+            date(2026, 2, 1), Decimal("0.00"),
+        )
+        assert close_fact.entry_id is None
         assert _running_balance(account, scenario) == Decimal("880.00")
         # The claim the whole ``settled_cash_leg`` move rests on: the walk's
         # delta IS the amount the writer booked on the linked ledger, in the
@@ -526,7 +588,7 @@ class TestSourceFactValuation:
         # every entry, so nothing else would catch it.
         assert _linked_ledger_net(
             account, scenario, transaction_id=txn.id,
-        ) == fact.delta
+        ) == purchase_fact.delta + close_fact.delta
 
     def test_a_transfer_shadow_participates_like_any_other_row(
         self, db, seed_user, seed_periods,
@@ -664,7 +726,7 @@ class TestTheWalkSeesOnlyItsOwnRows:
             settled_on=date(2026, 2, 1), name="deleted envelope",
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=Decimal("80.00"),
             description="credit purchase",
@@ -1175,23 +1237,307 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
         )
 
 
+class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
+    """A link may sharpen WITHIN a day; across one the date rule answers.
+
+    Ruling **R-FL** records which statement showed a line.  While an assertion
+    RESETS the ledger, that record is not free to disagree with the day, and the
+    constraint is a theorem about the fold rather than a policy -- see
+    ``StatementCoverage._recorded_anchor_id``, which carries the derivation.
+
+    **A first implementation of this step let the link outrank the date and an
+    adversarial review refuted it with money.**  Measured on a production clone:
+    moving one ``$500.00`` source's link to a later assertion made the fold
+    render ``$2,246.58`` on 2026-03-27 for an account whose owner had asserted
+    ``$2,746.58`` that day -- ruling **R-S** ("an assertion always wins") broken
+    on the assertion's own day.  The mirror direction reads ``anchor + X``,
+    which is the ``$4,001.42`` class.  The tests below grade the refusal AND the
+    balance the refusal protects, because the earlier version graded
+    ``balance_before`` alone and was green while the rendered balance was wrong.
+    """
+
+    def test_a_link_across_a_statement_boundary_does_not_move_the_balance(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The state the fold cannot render answers the DATE rule instead.
+
+        Opening $1,000.00 on 01-01, a $100.00 expense whose cash moved 02-10,
+        and two assertions closing 02-15 and 02-28.  The date rule puts the
+        expense inside the 02-15 balance; a link to the 02-28 statement claims
+        otherwise, and no arrangement of the fold's steps satisfies both that
+        claim and the 02-15 assertion's own balance.
+
+        **Honouring it was measured**: on a production clone one such link made
+        the fold render ``$2,246.58`` on a day its owner had asserted
+        ``$2,746.58``.  So the record is kept on the row and the date rule
+        answers, and the balance is what the user declared -- with the link
+        present and without it.
+
+        **It does not RAISE, and an adversarial review's own question is why.**
+        A user may record a BACK-DATED assertion between a line's settle day and
+        its statement's, which re-points the date rule and strands a link that
+        was consistent when it was written.  A refusal would be a 500 on every
+        screen showing that account, reached by an ordinary act.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _restamp_opening(account, _instant(2026, 1, 1))
+        txn = create_settled_cash_transaction(
+            seed_user, db.session, seed_periods[0], Decimal("100.00"),
+            settled_on=date(2026, 2, 10), name="late-posting debit",
+        )
+        first_at = _instant(2026, 2, 15, 9, 0, 0)
+        _assert_balance(
+            account, seed_periods[0], Decimal("2000.00"), first_at,
+        )
+        later = _assert_balance(
+            account, seed_periods[0], Decimal("3000.00"),
+            _instant(2026, 2, 28, 9, 0, 0),
+        )
+        db.session.commit()
+
+        control = _corrections(account, scenario)[first_at][0]
+        control_balance = _fold_at(account, scenario, date(2026, 2, 15))
+
+        txn.reconciled_by_id = later.id
+        db.session.commit()
+
+        assert _corrections(account, scenario)[first_at][0] == control
+        assert _fold_at(account, scenario, date(2026, 2, 15)) == control_balance
+        assert _fold_at(account, scenario, date(2026, 2, 15)) == Decimal(
+            "2000.00",
+        ), (
+            "The 02-15 assertion is still that day's closing balance -- ruling "
+            "R-S, which honouring the link would have broken by $100.00."
+        )
+
+    def test_an_assertion_BACK_DATED_under_a_link_moves_no_balance(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The act that strands a link is ordinary, and it costs nothing.
+
+        A user ticks a line on the 02-28 statement -- consistent when written,
+        because 02-28 is then the first assertion closing over its 02-10 settle
+        day -- and later records a balance they read for 02-20.  The date rule
+        re-points to 02-20 and the stored link is now the wrong side of it.
+
+        This is the case that decided the rule must FALL BACK rather than
+        refuse: every screen for this account would otherwise 500, with no
+        in-app repair, after two acts the app invites.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _restamp_opening(account, _instant(2026, 1, 1))
+        txn = create_settled_cash_transaction(
+            seed_user, db.session, seed_periods[0], Decimal("100.00"),
+            settled_on=date(2026, 2, 10), name="ticked on the 28th",
+        )
+        ticked = _assert_balance(
+            account, seed_periods[0], Decimal("3000.00"),
+            _instant(2026, 2, 28, 9, 0, 0),
+        )
+        txn.reconciled_by_id = ticked.id
+        db.session.commit()
+
+        assert _fold_at(account, scenario, date(2026, 2, 28)) == Decimal(
+            "3000.00",
+        )
+
+        _assert_balance(
+            account, seed_periods[0], Decimal("2500.00"),
+            _instant(2026, 2, 20, 9, 0, 0),
+        )
+        db.session.commit()
+
+        assert _fold_at(account, scenario, date(2026, 2, 20)) == Decimal(
+            "2500.00",
+        )
+        assert _fold_at(account, scenario, date(2026, 2, 28)) == Decimal(
+            "3000.00",
+        )
+
+    def test_a_link_WITHIN_a_statement_day_is_admitted_and_moves_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Two assertions on ONE day: the link picks between them, freely.
+
+        This is the case the reconcile panel actually writes -- it links to the
+        GOVERNING assertion while the date rule takes the FIRST of that day --
+        and production carries three days on which Checking holds more than one
+        assertion, so it is ordinary rather than exotic.
+
+        Hand-computed.  Opening $1,000.00 on 01-01, a $100.00 expense whose cash
+        moved 02-10, and two assertions both closing 02-15: $2,000.00 recorded
+        at 09:00 and $2,500.00 at 17:00.  Linked to the SECOND, the split moves:
+
+            first  balance_before = 1000.00            (nothing cleared)
+            second balance_before = 2000.00 - 100.00 = 1900.00
+
+        against 900.00 / 2000.00 unlinked.  The corrections differ and the
+        RENDERED balance does not, which is the whole licence for admitting this
+        case: the fold reads a day's boundary after every step on it, so a
+        source moved between two assertions sharing a day is unobservable in any
+        balance.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _restamp_opening(account, _instant(2026, 1, 1))
+        txn = create_settled_cash_transaction(
+            seed_user, db.session, seed_periods[0], Decimal("100.00"),
+            settled_on=date(2026, 2, 10), name="ticked on the second reading",
+        )
+        first_at = _instant(2026, 2, 15, 9, 0, 0)
+        second_at = _instant(2026, 2, 15, 17, 0, 0)
+        _assert_balance(
+            account, seed_periods[0], Decimal("2000.00"), first_at,
+        )
+        governing = _assert_balance(
+            account, seed_periods[0], Decimal("2500.00"), second_at,
+        )
+        db.session.commit()
+
+        control = _corrections(account, scenario)
+        assert control[first_at][0] == Decimal("900.00"), (
+            "CONTROL: unlinked, the date rule puts the expense in the FIRST "
+            "assertion of that day -- 1000.00 - 100.00."
+        )
+        assert control[second_at][0] == Decimal("2000.00")
+        control_balance = _fold_at(account, scenario, date(2026, 2, 15))
+
+        txn.reconciled_by_id = governing.id
+        db.session.commit()
+
+        corrections = _corrections(account, scenario)
+        assert corrections[first_at][0] == Decimal("1000.00")
+        assert corrections[second_at][0] == Decimal("1900.00")
+        assert _fold_at(account, scenario, date(2026, 2, 15)) == control_balance
+        assert _fold_at(account, scenario, date(2026, 2, 15)) == Decimal(
+            "2500.00",
+        ), (
+            "The day's LAST assertion is that day's closing balance, linked or "
+            "not -- ruling R-S, which is what the refusal above protects."
+        )
+
+    def test_a_PURCHASE_carries_its_OWN_link_not_its_parents(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The per-purchase clearing path, which nothing else in the suite reads.
+
+        Plan step X-f3b (ruling **R-FM**) made a purchase a cash movement of its
+        own, and with it a SECOND row type carrying ``reconciled_by_id``.  The
+        chain from that column to the fold -- ``_posted_purchase_facts`` ->
+        ``CashSourceFact.reconciled_by_id`` -> ``StatementCoverage`` -- is read
+        by no other test, so a regression that dropped a purchase's link, or
+        read its PARENT's, would be silent everywhere.
+
+        **It is the WITHIN-A-DAY shape deliberately**, and the sibling test
+        above is why: across a statement boundary the record may not move a
+        line, so a dropped link answers identically and a test built on that
+        shape cannot fail.  Two assertions sharing 02-15 is the case the link
+        genuinely decides -- and the case the reconcile panel actually writes.
+
+        Hand-computed.  Opening $1,000.00 on 01-01, a $100.00 purchase the bank
+        took on 02-10 under an envelope that has NOT settled (so it carries no
+        link of its own to borrow), and two assertions both closing 02-15:
+        $2,000.00 at 09:00 and $2,500.00 at 17:00.  Linked to the SECOND:
+
+            first  balance_before = 1000.00            (nothing cleared)
+            second balance_before = 2000.00 - 100.00 = 1900.00
+
+        against 900.00 / 2000.00 unlinked -- the same split its transaction twin
+        makes, from the purchase's own column.
+        """
+        from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_envelope_txn  # pylint: disable=import-outside-toplevel
+
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _restamp_opening(account, _instant(2026, 1, 1))
+        txn = create_envelope_txn(
+            seed_user, db.session, seed_periods[0], "Groceries",
+            Decimal("500.00"),
+        )
+        entry = TransactionEntry(
+            transaction_id=txn.id, account_id=txn.account_id,
+            user_id=seed_user["user"].id,
+            amount=Decimal("100.00"),
+            description="ticked on the second reading",
+            purchased_on=date(2026, 2, 10),
+            settled_on=date(2026, 2, 10),
+            is_credit=False,
+        )
+        db.session.add(entry)
+        db.session.flush()
+        first_at = _instant(2026, 2, 15, 9, 0, 0)
+        second_at = _instant(2026, 2, 15, 17, 0, 0)
+        _assert_balance(
+            account, seed_periods[0], Decimal("2000.00"), first_at,
+        )
+        governing = _assert_balance(
+            account, seed_periods[0], Decimal("2500.00"), second_at,
+        )
+        db.session.commit()
+
+        # The purchase really is a fact of the walk, dated its OWN day and
+        # carrying its OWN (empty) link -- otherwise every figure below would be
+        # true of a fold that never saw it.
+        fact, = [
+            source for source in walk_cash_ledger(
+                account.id, scenario.id,
+            ).source_facts
+            if source.entry_id == entry.id
+        ]
+        assert (fact.settled_on, fact.delta, fact.reconciled_by_id) == (
+            date(2026, 2, 10), Decimal("-100.00"), None,
+        )
+
+        control = _corrections(account, scenario)
+        assert control[first_at][0] == Decimal("900.00"), (
+            "CONTROL: unlinked, the date rule puts the purchase in the FIRST "
+            "assertion of that day -- 1000.00 - 100.00."
+        )
+        assert control[second_at][0] == Decimal("2000.00")
+        control_balance = _fold_at(account, scenario, date(2026, 2, 15))
+
+        entry.reconciled_by_id = governing.id
+        db.session.commit()
+
+        corrections = _corrections(account, scenario)
+        assert corrections[first_at][0] == Decimal("1000.00"), (
+            "the purchase's OWN link moved it to the governing assertion; "
+            "reading the parent's (there is none) would leave it here"
+        )
+        assert corrections[second_at][0] == Decimal("1900.00")
+        assert _fold_at(account, scenario, date(2026, 2, 15)) == control_balance
+        assert _fold_at(account, scenario, date(2026, 2, 15)) == Decimal(
+            "2500.00",
+        ), (
+            "The day's LAST assertion is that day's closing balance, linked or "
+            "not -- ruling R-S."
+        )
+
+
 class TestTheSourceOrderIsLoadBearing:
-    """The walk absorbs by DAY, so its sources must arrive in day order.
+    """A source with no recorded statement lands on the first assertion to close.
 
-    ``settled_cash_facts`` sorts ``(settled_on, transaction_id)`` and the two
-    replays then advance a MONOTONIC pointer over that list.  Nothing re-sorts
-    downstream: the read side used to, inside the deleted
-    ``merge_anchor_and_cash_events``, and the one-partition step removed it on
-    ruling N-133 / R1's "one ordering, stated where the rows are read".
+    The ASSERTION order is what carries this now.
+    ``cash_anchor_facts`` returns its rows ``(observed_on, created_at, id)``
+    ascending and :func:`~app.services.cash_ledger.statement_coverage` BISECTS
+    that day list, so a fact list not ascending in ``observed_on`` sends an
+    unlinked source to the wrong statement.  Nothing re-sorts downstream: the
+    read side used to, inside the deleted ``merge_anchor_and_cash_events``, and
+    the one-partition step removed it on ruling N-133 / R1's "one ordering,
+    stated where the rows are read".
 
-    **That made the loader's sort load-bearing for the first time, and an
-    adversarial review proved nothing tested it**: dropping ``settled_on``
-    from the sort key left all 7,726 tests green.  It is not inert.  A
-    monotonic pointer over a list that is not non-decreasing in its day STOPS
-    at the first out-of-order row and never absorbs the rest, so a movement
-    the declared balance already contains is subtracted from the projection a
-    second time -- which is the ``-$4,001.42`` production defect this whole
-    document exists about, reached by a different route.
+    **That made the loaders' sorts load-bearing for the first time, and an
+    adversarial review proved nothing tested them**: dropping ``settled_on``
+    from ``settled_cash_facts``' key left all 7,726 tests green.  The MECHANISM
+    it broke was a monotonic pointer, which plan step X-f3a-1 deleted -- a
+    recorded clearing fact is not monotone in the day, so a pointer could not
+    survive one (``TestARecordedClearingFactOutranksTheDay`` grades that).  What
+    survives is this: the SOURCE order no longer decides which assertion
+    absorbs what, and the case below now grades the rule's day arm directly
+    rather than the pointer's precondition.  It is kept, and kept green by a
+    different mechanism, because the property it names -- a movement the
+    declared balance already contains is not subtracted from the projection a
+    second time -- is the ``-$4,001.42`` production defect this whole document
+    exists about.
 
     The discriminating shape is an id order that DISAGREES with the day order,
     which is ordinary: a purchase entered late carries a higher id and an
@@ -1211,10 +1557,15 @@ class TestTheSourceOrderIsLoadBearing:
 
             balance_before = 1000.00 - 100.00 = 900.00
 
-        Sorted by id instead of by day, the pointer meets the 02-20 row first,
-        ``covers`` answers False, absorption halts, and the assertion books
-        ``$1,000.00`` -- carrying the $100.00 that was already inside the
-        declared balance forward to be subtracted again.
+        **What this discriminates changed at plan step X-f3a-1 and the figure
+        did not.**  It caught a monotonic pointer halting at the 02-20 row --
+        the assertion would book ``$1,000.00`` and carry the $100.00 already
+        inside the declared balance forward to be subtracted again.  That
+        mechanism is gone; the rule now assigns each source independently, so
+        this case grades the DAY arm itself: each source lands on the first
+        assertion to close on or after it, whatever order the loader returned
+        them in.  The expected figure is unchanged, which is the point of
+        keeping it.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         _restamp_opening(account, _instant(2026, 1, 1))

@@ -1,6 +1,6 @@
 """an account's balance assertion carries the civil day it was TRUE
 
-Plan step 2 of ``docs/audits/balance_architecture/anchor_settle_partition.md``,
+Plan step 2 of ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``,
 opening half -- pulled forward from "after the civil-day seam" to "now" by the
 developer's ruling on finding N-133 / F1 (2026-07-31).
 

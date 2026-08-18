@@ -74,14 +74,13 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from app import ref_cache
-from app.enums import RecurrencePatternEnum
+from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
     RecurrenceSpec,
-    decode_pattern,
+    build_transient_rule,
     end_bound_from_columns,
 )
 # Both imported as MODULES, not as names, and the recurrence producer is
@@ -95,8 +94,17 @@ from app.services.recurrence import (
 # mode the balance arc's verification standard names (plan Section 7.2).
 # ``_reading`` is package-private to ``app/`` (the W9910 checker runs on
 # ``pylint app/``); a test naming it is naming the thing it is testing.
-from app.services import recurrence_engine
+#
+# **``compute_due_date`` follows the same rule since plan step R10-a**, and it
+# had to start doing so at that step: ``recurrence_engine`` was a flat module
+# until then, so the package attribute WAS the definition and this module
+# already obeyed the paragraph above by accident.  The split made it a
+# re-export, which silently turned the due-date firing control into the exact
+# thing this comment says to avoid -- a proof that the oracle can read its own
+# alias.  Caught by an adversarial review of that step.
+from app.services.recurrence_engine import _plan
 from app.services.recurrence import _reading
+from app.services.recurrence._months import clamped_day, month_ordinal
 
 #: The baseline schedule's first payday.  A literal, and a LEAP year, so
 #: February 29 clamping is covered rather than assumed.
@@ -139,6 +147,88 @@ _DUE_SWEEP_DAYS: tuple[int, ...] = (1, 15, 22, 31)
 
 
 @dataclass(frozen=True)
+class ShapeCadence:
+    """The cadence one shape states, as ``budget.recurrence_rules`` holds it.
+
+    **A shape stated a closed-set PATTERN until plan step R7c-c**, and the
+    seven constants below carry the names those members had, so every call site
+    reads as it always did and every LABEL in the blob is untouched.  What
+    changed underneath is the vocabulary: ``pattern_id`` is dropped, and a rule
+    states its cadence in ``interval_n`` / ``unit_id`` / ``placement_id``.
+
+    That is the same substitution R7c-b made one leaf earlier for the anchor --
+    a shape stated ``(day_of_month, month_of_year, start_date)`` and now states
+    ``starts_on`` -- and it is made the same way, for the same reason: re-keying
+    the labels would make the diff unreadable at exactly the step whose whole
+    evidence is that the diff is EMPTY.
+
+    Attributes:
+        interval_n: The interval this cadence fixes, or ``None`` when the SHAPE
+            states its own -- true of exactly the paycheck-space cadence the
+            ``every_n_periods`` sweep varies.
+        unit: The cadence unit.
+        placement: Which pay period funds an occurrence.
+    """
+
+    interval_n: int | None
+    unit: RecurrenceUnitEnum
+    placement: PeriodPlacementEnum
+
+
+#: The seven cadences the closed pattern set could name, under its own names.
+#:
+#: Verbatim what ``recurrence._frequency.PATTERN_DERIVATIONS`` held before plan
+#: step R7c-c deleted it, which is why the blob does not move: each shape
+#: resolves to the reading its pattern always decoded to.
+EVERY_PERIOD = ShapeCadence(
+    1, RecurrenceUnitEnum.PERIOD, PeriodPlacementEnum.CONTAINING_DATE,
+)
+EVERY_N_PERIODS = ShapeCadence(
+    None, RecurrenceUnitEnum.PERIOD, PeriodPlacementEnum.CONTAINING_DATE,
+)
+MONTHLY = ShapeCadence(
+    1, RecurrenceUnitEnum.MONTH, PeriodPlacementEnum.CONTAINING_DATE,
+)
+MONTHLY_FIRST = ShapeCadence(
+    1, RecurrenceUnitEnum.MONTH,
+    PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+)
+QUARTERLY = ShapeCadence(
+    3, RecurrenceUnitEnum.MONTH, PeriodPlacementEnum.CONTAINING_DATE,
+)
+SEMI_ANNUAL = ShapeCadence(
+    6, RecurrenceUnitEnum.MONTH, PeriodPlacementEnum.CONTAINING_DATE,
+)
+ANNUAL = ShapeCadence(
+    1, RecurrenceUnitEnum.YEAR, PeriodPlacementEnum.CONTAINING_DATE,
+)
+
+#: The seven, under the display names ``ref.recurrence_patterns`` carried.
+#:
+#: **The ONE place in ``tests/`` that says what a closed-set name meant**, and
+#: it lives here because this module is where the hand-checked cases are.
+#: ``tests._test_helpers.make_pattern_rule`` reads it, so a fixture asking for
+#: "a Quarterly rule" and a frozen shape labelled ``quarterly`` cannot come to
+#: mean different cadences.
+#:
+#: Keyed by plain STRING rather than by
+#: :class:`~app.enums.RecurrencePatternEnum`, deliberately: plan step **R9**
+#: deletes that enum with ``ref.recurrence_patterns``, and a test vocabulary
+#: that outlives the column it was named after should not take the enum down
+#: with it.  These are test-side SHORTHAND for a cadence from plan step R7c-c
+#: on, not a thing the application stores.
+CADENCE_BY_LEGACY_NAME: dict[str, ShapeCadence] = {
+    "Every Period": EVERY_PERIOD,
+    "Every N Periods": EVERY_N_PERIODS,
+    "Monthly": MONTHLY,
+    "Monthly First": MONTHLY_FIRST,
+    "Quarterly": QUARTERLY,
+    "Semi-Annual": SEMI_ANNUAL,
+    "Annual": ANNUAL,
+}
+
+
+@dataclass(frozen=True)
 class RuleShape:
     """One rule configuration to freeze the engine's answer for.
 
@@ -147,35 +237,45 @@ class RuleShape:
     it by :func:`build_shape_rule` at capture time, so the shape can be
     declared without an app context while the rule cannot.
 
+    **The shape's own vocabulary moved at plan step R7c-b**, and every
+    captured line survived it.  A shape stated ``(day_of_month, month_of_year,
+    start_date)`` until then, three fields the resolver RECONSTRUCTED a first
+    occurrence from on every read; ruling R-R16 made that date the authored
+    value, so each shape states it directly.  The translation was computed on
+    the pre-cutover tree by driving ``resolve`` over all 434 shapes, and the
+    blob is what proves it landed: a shape that now means something else moves
+    its own lines, and none did.
+
     Attributes:
         label: Stable, sortable identity for this shape in the blob.  Encodes
             every field that differs from the defaults, so a reader diffing the
             snapshot can reconstruct the rule without consulting this file.
-        pattern: The pattern enum member, resolved to an integer id at capture.
+            **Unchanged across the vocabulary move**, deliberately: a label
+            keyed on ``moy11.dom01`` still names the shape it always named, and
+            re-keying them would have made the diff unreadable at exactly the
+            step whose whole evidence is that the diff is empty.
+        cadence: What the rule's cadence columns hold, as one of the seven
+            :class:`ShapeCadence` constants above.  Still keyed under the closed
+            set's own names because every case here was hand-checked under one.
         interval_n: ``EVERY_N_PERIODS`` interval; 1 elsewhere.
-        day_of_month: Scheduling day for the calendar patterns.
+        starts_on: The rule's FIRST OCCURRENCE (ruling R-R16) -- for a
+            paycheck-space cadence a date anywhere in the paycheck it bills in,
+            which the write door normalises onto that paycheck's payday.
+        nominal_day: The day the rule MEANS when *starts_on*'s own month was
+            too short to hold it, and ``None`` otherwise.
         due_day_of_month: Real bill due day when it differs from the
             scheduling day.
-        month_of_year: Cycle-start month for quarterly / semi-annual / annual.
-        start_date: The rule's opening validity bound (unbypassable), and
-            since plan step R7b-4 the whole of what a rule says about when it
-            begins -- including the ``EVERY_N_PERIODS`` phase, which is the
-            ordinal of the paycheck this date falls in.  An ``offset_periods``
-            field sat beside it until then; see
-            :func:`_add_period_space_shapes` for why removing it moved no
-            captured line.
         end_date: The rule's closing validity bound.
         long_cadence: Capture this shape against the 90-day schedule instead
             of the biweekly one (the D3 shapes).
     """
 
     label: str
-    pattern: RecurrencePatternEnum
+    cadence: ShapeCadence
+    starts_on: date = SCHEDULE_START
     interval_n: int = 1
-    day_of_month: int | None = None
+    nominal_day: int | None = None
     due_day_of_month: int | None = None
-    month_of_year: int | None = None
-    start_date: date | None = None
     end_date: date | None = None
     long_cadence: bool = False
 
@@ -194,7 +294,7 @@ class _ShapeAccumulator:
 def build_schedule(
     start: date, cadence_days: int, count: int,
 ) -> list[PayPeriod]:
-    """Return ``count`` contiguous unsaved pay periods.
+    """Return ``count`` contiguous unflushed pay periods, each with an id.
 
     Mirrors ``pay_period_service.generate_pay_periods`` exactly: each period
     ends ``cadence_days - 1`` after it starts, and the next begins the
@@ -203,19 +303,40 @@ def build_schedule(
     forward placement depends on, so the baseline must be built the same way
     the app builds one.
 
+    **Each row carries an explicit ``id`` since pay-calendar plan step
+    C2-f2b**, and the reason is fidelity rather than plumbing.  These rows are
+    never flushed, so SQLAlchemy left ``id`` as ``None`` and
+    :func:`build_shape_calendar` handed the resulting ``(None, payday)`` pairs
+    to :meth:`PayCalendar.from_paydays` -- giving the oracle a calendar every
+    one of whose periods is an UNSAVED CANDIDATE.  The application cannot
+    produce one: ``calendar_for`` reads saved rows, so every period the
+    recurrence engine actually places against has an id.  The baseline was
+    therefore grading the engine on a schedule shape production never holds,
+    which C2-f2b surfaced by making
+    :meth:`~app.services.pay_calendar.PayCalendar.period_containing` filter to
+    materialised periods -- the same filter its four sibling searches already
+    apply, because this answer becomes ``transactions.pay_period_id`` and that
+    column is ``NOT NULL``.
+
+    The ids are positional and start at 1 so they cannot be confused with the
+    0-based ``period_index`` beside them (ledger row **P13**'s confusion).  The
+    430-shape snapshot records period INDICES and does not move.
+
     Args:
         start: The first payday.
         cadence_days: Days between paydays.
         count: How many periods to build.
 
     Returns:
-        Unsaved :class:`~app.models.pay_period.PayPeriod` rows ordered by
-        ``period_index``, which starts at 0 as the real generator's does.
+        Unflushed :class:`~app.models.pay_period.PayPeriod` rows ordered by
+        ``period_index``, which starts at 0 as the real generator's does, each
+        carrying a 1-based ``id``.
     """
     periods = []
     for index in range(count):
         period_start = start + timedelta(days=cadence_days * index)
         periods.append(PayPeriod(
+            id=index + 1,
             start_date=period_start,
             end_date=period_start + timedelta(days=cadence_days - 1),
             period_index=index,
@@ -230,7 +351,9 @@ def build_schedule(
 SHAPE_USER_ID: int = 1
 
 
-def build_shape_rule(shape: RuleShape) -> RecurrenceRule:
+def build_shape_rule(
+    shape: RuleShape, calendar: PayCalendar,
+) -> RecurrenceRule:
     """Return a real, unsaved rule for *shape*.
 
     Requires an app context: ``pattern_id`` is resolved through
@@ -251,21 +374,7 @@ def build_shape_rule(shape: RuleShape) -> RecurrenceRule:
     Returns:
         An unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
-    return RecurrenceRule(
-        # The owner is STATED, and until plan step R4b-1 it did not need to
-        # be: period selection built the calendar from ``rule.user_id``, so
-        # the resolver's owner check compared a value against itself.  The
-        # calendar is an argument now, so the rule has to name the same owner
-        # the schedule does -- which is that check finally doing its job.
-        user_id=SHAPE_USER_ID,
-        pattern_id=ref_cache.recurrence_pattern_id(shape.pattern),
-        interval_n=shape.interval_n,
-        day_of_month=shape.day_of_month,
-        due_day_of_month=shape.due_day_of_month,
-        month_of_year=shape.month_of_year,
-        start_date=shape.start_date,
-        end_date=shape.end_date,
-    )
+    return build_transient_rule(build_shape_spec(shape), calendar)
 
 
 #: Parses one captured blob line back into its label, period index and due
@@ -316,18 +425,17 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
     Returns:
         The :class:`~app.services.recurrence.RecurrenceSpec`.
     """
-    reading = decode_pattern(
-        ref_cache.recurrence_pattern_id(shape.pattern), shape.interval_n,
-    )
     return RecurrenceSpec(
         user_id=SHAPE_USER_ID,
-        unit=reading.cadence.unit,
-        interval_n=reading.cadence.interval_n,
-        placement=reading.placement,
-        day_of_month=shape.day_of_month,
+        unit=shape.cadence.unit,
+        starts_on=shape.starts_on,
+        interval_n=(
+            shape.interval_n if shape.cadence.interval_n is None
+            else shape.cadence.interval_n
+        ),
+        placement=shape.cadence.placement,
+        nominal_day=shape.nominal_day,
         due_day_of_month=shape.due_day_of_month,
-        month_of_year=shape.month_of_year,
-        start_date=shape.start_date,
         # Read through the same column-to-bound seam the READ DOOR uses
         # (plan step R7b-3), for the reason the pattern is decoded rather than
         # passed: a shape is a set of stored COLUMN values, so building the
@@ -434,6 +542,44 @@ def parse_baseline(blob: str) -> dict[str, list[int]]:
     }
 
 
+
+def _cycle_start(
+    cycle_month: int, day: int, months_per_cycle: int,
+) -> tuple[date, int | None]:
+    """Return the first occurrence a ``(cycle_month, day)`` cadence names.
+
+    **The translation plan step R7c-b's vocabulary move needed**, and it is a
+    statement of the SHAPE rather than a copy of the resolver: a cycle that
+    skips months fires in a RESIDUE CLASS of them, so "quarterly, cycle month
+    November" first fires in whichever month of that class the schedule's
+    opening month reaches first -- February 2024, not November.  Sweeping the
+    twelve cycle months is what covers every residue class of every cycle
+    length, and keeping the sweep keyed on the cycle month is what keeps each
+    shape's label naming the shape it always named.
+
+    The schedule opens in JANUARY of a year, so its month ordinal is divisible
+    by 12 and therefore by 3, 6 and 12 -- which is what makes the aligned
+    ordinal simply ``opening + (cycle_month - 1) % months_per_cycle``, with no
+    walk.  That is checked rather than assumed: :func:`build_shapes`' own
+    assertion below would fail on a schedule opening in any other month.
+
+    Args:
+        cycle_month: The cycle's start month, 1-12.
+        day: The day of the month the rule means, before clamping.
+        months_per_cycle: 3 for quarterly, 6 for semi-annual, 12 for annual.
+
+    Returns:
+        ``(starts_on, nominal_day)`` -- the clamped first occurrence, and the
+        day it MEANT when that month was too short to hold it.
+    """
+    ordinal = (
+        month_ordinal(SCHEDULE_START)
+        + (cycle_month - 1) % months_per_cycle
+    )
+    starts_on = clamped_day(ordinal, day)
+    return starts_on, (day if day > starts_on.day else None)
+
+
 def _add_period_space_shapes(acc: _ShapeAccumulator) -> None:
     """Every shape of the two pay-period-space patterns.
 
@@ -461,15 +607,15 @@ def _add_period_space_shapes(acc: _ShapeAccumulator) -> None:
     phase is also the stronger sweep, because it exercises the DERIVATION over
     the whole space instead of assuming it.
     """
-    acc.add(RuleShape("every_period", RecurrencePatternEnum.EVERY_PERIOD))
-    acc.add(RuleShape("monthly_first", RecurrencePatternEnum.MONTHLY_FIRST))
+    acc.add(RuleShape("every_period", EVERY_PERIOD))
+    acc.add(RuleShape("monthly_first", MONTHLY_FIRST))
     for interval in range(1, 9):
         for offset in range(interval):
             acc.add(RuleShape(
                 f"every_n_periods.n{interval:02d}.off{offset:02d}",
-                RecurrencePatternEnum.EVERY_N_PERIODS,
+                EVERY_N_PERIODS,
                 interval_n=interval,
-                start_date=SCHEDULE_START + timedelta(
+                starts_on=SCHEDULE_START + timedelta(
                     days=SCHEDULE_CADENCE_DAYS * offset,
                 ),
             ))
@@ -483,10 +629,14 @@ def _add_monthly_shapes(acc: _ShapeAccumulator) -> None:
     of the month" (it clamps), so no day here is redundant with another.
     """
     for day in range(1, 32):
+        # January holds every day 1-31, so a monthly shape's first occurrence
+        # is that day of the schedule's opening month and no clamp arises.
         acc.add(RuleShape(
             f"monthly.dom{day:02d}",
-            RecurrencePatternEnum.MONTHLY,
-            day_of_month=day,
+            MONTHLY,
+            starts_on=date(
+                SCHEDULE_START.year, SCHEDULE_START.month, day,
+            ),
         ))
 
 
@@ -498,18 +648,21 @@ def _add_calendar_cycle_shapes(acc: _ShapeAccumulator) -> None:
     docstring justifies branch by branch.
     """
     cycles = (
-        ("quarterly", RecurrencePatternEnum.QUARTERLY),
-        ("semi_annual", RecurrencePatternEnum.SEMI_ANNUAL),
-        ("annual", RecurrencePatternEnum.ANNUAL),
+        ("quarterly", QUARTERLY, 3),
+        ("semi_annual", SEMI_ANNUAL, 6),
+        ("annual", ANNUAL, 12),
     )
-    for name, pattern in cycles:
+    for name, pattern, months_per_cycle in cycles:
         for month in range(1, 13):
             for day in _CLAMP_DAYS:
+                starts_on, nominal_day = _cycle_start(
+                    month, day, months_per_cycle,
+                )
                 acc.add(RuleShape(
                     f"{name}.moy{month:02d}.dom{day:02d}",
                     pattern,
-                    month_of_year=month,
-                    day_of_month=day,
+                    starts_on=starts_on,
+                    nominal_day=nominal_day,
                 ))
 
 
@@ -526,8 +679,10 @@ def _add_due_day_shapes(acc: _ShapeAccumulator) -> None:
         for due_dom in range(1, 32):
             acc.add(RuleShape(
                 f"due_sweep.dom{dom:02d}.due{due_dom:02d}",
-                RecurrencePatternEnum.MONTHLY,
-                day_of_month=dom,
+                MONTHLY,
+                starts_on=date(
+                    SCHEDULE_START.year, SCHEDULE_START.month, dom,
+                ),
                 due_day_of_month=due_dom,
             ))
 
@@ -544,24 +699,83 @@ Both bounds are UNBYPASSABLE by a caller's ``effective_from`` -- the property
     moved both onto the occurrence and four of these eight shapes dropped a row
     each -- exactly the rows ruling R-R6 predicted.
     """
+    # **Each ``starts_on`` is the date the OLD derivation answered for that
+    # shape's opening bound**, computed on the pre-cutover tree over all 434
+    # shapes and pinned here rather than recomputed: a day-15 monthly rule
+    # bounded at 2024-06-05 first occurred 2024-06-15, one bounded at
+    # 2024-06-16 first occurred 2024-07-15, and an unbounded one first occurred
+    # 2024-01-15.  The blob is what proves the pinning: a wrong date here moves
+    # that shape's own lines and no others.
     bounds = (
-        ("start.midperiod", date(2024, 6, 5), None),
-        ("start.on_period_start", date(2024, 6, 3), None),
-        ("start.on_period_end", date(2024, 6, 16), None),
-        ("end.midperiod", None, date(2025, 6, 5)),
-        ("end.on_period_start", None, date(2025, 6, 2)),
-        ("end.on_period_end", None, date(2025, 6, 15)),
-        ("window.both", date(2024, 6, 5), date(2025, 6, 5)),
-        ("window.inverted", date(2025, 6, 5), date(2024, 6, 5)),
+        ("start.midperiod", date(2024, 6, 15), None),
+        ("start.on_period_start", date(2024, 6, 15), None),
+        ("start.on_period_end", date(2024, 7, 15), None),
+        ("end.midperiod", date(2024, 1, 15), date(2025, 6, 5)),
+        ("end.on_period_start", date(2024, 1, 15), date(2025, 6, 2)),
+        ("end.on_period_end", date(2024, 1, 15), date(2025, 6, 15)),
+        ("window.both", date(2024, 6, 15), date(2025, 6, 5)),
+        ("window.inverted", date(2025, 6, 15), date(2024, 6, 5)),
     )
-    for name, start, end in bounds:
+    for name, starts_on, end in bounds:
         acc.add(RuleShape(
             f"bounds.{name}",
-            RecurrencePatternEnum.MONTHLY,
-            day_of_month=15,
-            start_date=start,
+            MONTHLY,
+            starts_on=starts_on,
             end_date=end,
         ))
+
+
+def _add_anchor_normalisation_shapes(acc: _ShapeAccumulator) -> None:
+    """The shapes where the FIRST OCCURRENCE is not the opening bound.
+
+    **An oracle hole this builder closes, measured 2026-08-15 while preparing
+    plan step R7c-b**: over all 430 shapes the set held until then,
+    ``anchor_date`` equalled ``first_occurrence`` in every single one -- so no
+    line of the blob varied along the axis that step moves.  Two families were
+    missing and each hides a different way of getting the first occurrence
+    wrong:
+
+    * **A pay-period-space rule bounded MID-PERIOD.**  Ruling R-R8 anchors such
+      a rule on the bound itself, and the first occurrence is the payday of the
+      paycheck that bound falls IN -- earlier than the bound (plan ledger row
+      **D6**).  Every period-space shape above states a bound that is already a
+      payday (``SCHEDULE_START + 14k``), where the two coincide, so the
+      asymmetry was invisible.  ``n03`` carries it into the PHASE as well: the
+      cycle is read off the paycheck the bound lands in, not off the bound.
+    * **A calendar rule whose ANCHOR MONTH is too short to hold its day.**  The
+      schedule opens 1 January, which holds a 31st, so ``monthly.dom31`` never
+      clamped and no ``MONTHLY`` shape reached ``nominal_day`` at all -- the 22
+      that do are all quarterly / semi-annual / annual.  A day-31 monthly bill
+      first falling in February is the ordinary "last day of the month" case.
+
+    Added BEFORE the cutover and captured against the engine as it stood, so
+    the lines they contribute are frozen the same way every other line is.
+    """
+    # The mid-period date is stated VERBATIM rather than pre-normalised, which
+    # is the whole point of these two: the write door answers the payday of the
+    # paycheck 2024-06-05 falls in (2024-06-03), so a shape declaring the raw
+    # date and one declaring the payday must capture identically.  That is the
+    # axis no other shape varies along.
+    for name, starts_on in (
+        ("period.midperiod_bound", date(2024, 6, 5)),
+        ("period.on_period_start", date(2024, 6, 3)),
+    ):
+        acc.add(RuleShape(
+            f"anchor.{name}", EVERY_PERIOD,
+            starts_on=starts_on,
+        ))
+    acc.add(RuleShape(
+        "anchor.period.n03.midperiod_bound",
+        EVERY_N_PERIODS,
+        interval_n=3,
+        starts_on=date(2024, 6, 5),
+    ))
+    acc.add(RuleShape(
+        "anchor.monthly.dom31.short_anchor_month",
+        MONTHLY,
+        starts_on=date(2024, 2, 29),
+        nominal_day=31,
+    ))
 
 
 def _add_horizon_bound_shapes(acc: _ShapeAccumulator) -> None:
@@ -605,13 +819,13 @@ def _add_horizon_bound_shapes(acc: _ShapeAccumulator) -> None:
     """
     acc.add(RuleShape(
         "horizon_bound.monthly_first",
-        RecurrencePatternEnum.MONTHLY_FIRST,
-        start_date=date(2027, 1, 5),
+        MONTHLY_FIRST,
+        starts_on=date(2027, 2, 1),
     ))
     acc.add(RuleShape(
         "horizon_bound.long_cadence.monthly_first",
-        RecurrencePatternEnum.MONTHLY_FIRST,
-        start_date=date(2026, 10, 1),
+        MONTHLY_FIRST,
+        starts_on=date(2026, 11, 1),
         long_cadence=True,
     ))
 
@@ -658,32 +872,35 @@ def _add_long_cadence_shapes(acc: _ShapeAccumulator) -> None:
     for day in (1, 15, 31):
         acc.add(RuleShape(
             f"long_cadence.monthly.dom{day:02d}",
-            RecurrencePatternEnum.MONTHLY,
-            day_of_month=day,
+            MONTHLY,
+            starts_on=date(SCHEDULE_START.year, SCHEDULE_START.month, day),
             long_cadence=True,
         ))
     cycles = (
-        ("quarterly", RecurrencePatternEnum.QUARTERLY),
-        ("semi_annual", RecurrencePatternEnum.SEMI_ANNUAL),
-        ("annual", RecurrencePatternEnum.ANNUAL),
+        ("quarterly", QUARTERLY),
+        ("semi_annual", SEMI_ANNUAL),
+        ("annual", ANNUAL),
     )
     for name, pattern in cycles:
         for day in (1, 15):
+            # Cycle month 1 IS the schedule's opening month, so every cycle
+            # length aligns there and the first occurrence is that day of it.
             acc.add(RuleShape(
                 f"long_cadence.{name}.moy01.dom{day:02d}",
                 pattern,
-                month_of_year=1,
-                day_of_month=day,
+                starts_on=date(
+                    SCHEDULE_START.year, SCHEDULE_START.month, day,
+                ),
                 long_cadence=True,
             ))
     acc.add(RuleShape(
         "long_cadence.monthly_first",
-        RecurrencePatternEnum.MONTHLY_FIRST,
+        MONTHLY_FIRST,
         long_cadence=True,
     ))
     acc.add(RuleShape(
         "long_cadence.every_period",
-        RecurrencePatternEnum.EVERY_PERIOD,
+        EVERY_PERIOD,
         long_cadence=True,
     ))
 
@@ -705,6 +922,7 @@ def build_shapes() -> list[RuleShape]:
     _add_calendar_cycle_shapes(acc)
     _add_due_day_shapes(acc)
     _add_bound_shapes(acc)
+    _add_anchor_normalisation_shapes(acc)
     _add_horizon_bound_shapes(acc)
     _add_long_cadence_shapes(acc)
     return sorted(acc.shapes, key=lambda shape: shape.label)
@@ -744,7 +962,8 @@ def capture_shape(
     Returns:
         One line per matched period, or a single ``(none)`` line.
     """
-    rule = build_shape_rule(shape)
+    calendar = build_shape_calendar(periods, cadence_days)
+    rule = build_shape_rule(shape, calendar)
     # The whole schedule, as plan step R4b-1 made explicit: the baseline has
     # always captured against the FULL period list, so building the calendar
     # from the same list is the same measurement.  There is no lower window
@@ -760,16 +979,14 @@ def capture_shape(
     # them, so ``tests/test_services/test_recurrence_occurrence.py``'s
     # ``_EXPECTED_UNPLACED`` names each one exactly and is what gates them.
     matched = _reading.placed_periods(
-        _reading.rule_occurrences(
-            rule, build_shape_calendar(periods, cadence_days),
-        ),
+        _reading.rule_occurrences(rule, calendar),
     )
     if not matched:
         return [f"{shape.label} (none)"]
     return [
         f"{shape.label} idx={period.period_index:03d} "
         f"period={period.start_date.isoformat()}..{period.end_date.isoformat()} "
-        f"due={recurrence_engine.compute_due_date(rule, period).isoformat()}"
+        f"due={_plan.compute_due_date(rule, period).isoformat()}"
         for period in matched
     ]
 

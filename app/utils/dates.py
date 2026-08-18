@@ -29,6 +29,33 @@ from zoneinfo import ZoneInfo
 # sharing a UTC day collide (finding N-133 / F12).
 DISPLAY_TIMEZONE = ZoneInfo("America/New_York")
 
+# How far this application's calendar reaches: the ONE opinion every layer
+# states about which dates a user may put on record.
+#
+# **Here rather than in the validation layer, since plan step R7c-b.**  They
+# were declared in ``app/schemas/validation/_helpers.py``, which is the right
+# home while only a SCHEMA enforces them -- and it stopped being the only one:
+# ``budget.recurrence_rules.starts_on`` is authored, ``NOT NULL`` and reachable
+# through a door no schema stands in front of (the recurrence preview reads it
+# from ``request.args``), so ``services/recurrence/_resolution.py`` mirrors the
+# bound too.  A service may not import from the validation layer, and the
+# alternative was a second pair of numbers that could drift from these; this
+# module is what both layers already depend on.  The schema keeps its names as
+# re-exports, so nothing that imported them from there had to move.
+#
+# The values are the ones ``routes/salary/tax_config.py`` uses for a tax YEAR.
+# Two tables mirror them for writers that never see a schema:
+# ``ck_template_amount_versions_effective_date_range`` and
+# ``ck_recurrence_rules_starts_on_range``.
+#
+# An HTML date input accepts a four- or five-digit-year typo, and both columns
+# STORE what they are given: a stray ``0202`` becomes a template's earliest
+# amount version -- anchoring every date before the series, which the
+# withdrawal door refuses to remove -- and a stray ``9999`` overflows the pay
+# calendar's forward projection with an ``OverflowError`` no handler catches.
+CALENDAR_DATE_MIN: date = date(2000, 1, 1)
+CALENDAR_DATE_MAX: date = date(2100, 12, 31)
+
 
 def to_display_tz(value: datetime) -> datetime:
     """Convert a stored UTC instant to the UI display timezone.
@@ -435,16 +462,77 @@ def month_name(value: int | None, abbr: bool = False) -> str:
     return names[index - 1]
 
 
+def pay_period_label(start_date: date, end_date: date) -> str:
+    """Return a pay period's human label (``"02/21 - 03/06"``).
+
+    **One rule, two accessors**, and that is why it is here rather than on
+    either of them.  A pay period is answered by TWO types in this
+    application: the ORM row (:class:`app.models.pay_period.PayPeriod`) and
+    the derived value
+    (:class:`app.services.pay_calendar.DerivedPeriod`), which plan step
+    **C2-f** moved every "which paycheck" reader onto -- a period-move
+    ``<select>`` renders one and the conflict chooser the other.  **What this
+    buys is that the FORMAT is stated once; it does not yet make the two
+    labels equal**, and saying so is the honest form: the row feeds it the
+    STORED ``end_date`` and the derived value the DERIVED one, so on the last
+    period under the P12 / P28 shape the two screens still render one paycheck
+    two ways.  Plan step C4 closes that by deleting the stored column.
+    Neither type can import the other's
+    module (the model would close a cycle through
+    ``pay_calendar._loader``, and the calendar package is deliberately
+    model-free), so the shared rule lives in this one, which both already
+    depend on.
+
+    **Plan step C4 deletes the model accessor with the column it reads**
+    (``budget.pay_periods.end_date``); this function and the derived value's
+    property are what survive it, which is the other reason the rule is not
+    written inside the model.
+
+    The year is shown only when the period STRADDLES one, because that is
+    the only time it disambiguates: ``"12/26/26 - 01/08/27"`` says which
+    January, while ``"02/21/26 - 03/06/26"`` says nothing ``"02/21 -
+    03/06"`` did not.
+
+    Args:
+        start_date: The payday that opens the period.
+        end_date: The last day the period covers.
+
+    Returns:
+        The label, with a two-digit year on both halves when the period
+        crosses a year boundary and no year at all when it does not.
+    """
+    if start_date.year != end_date.year:
+        return (
+            f"{start_date.strftime('%m/%d/%y')} - "
+            f"{end_date.strftime('%m/%d/%y')}"
+        )
+    return f"{start_date.strftime('%m/%d')} - {end_date.strftime('%m/%d')}"
+
+
 def attribution_date(
     preferred: date | None, period_start: date, period_end: date,
 ) -> date:
     """Return the calendar day a pay-period item is attributed to, clamped.
 
-    The single attribution rule shared by the calendar's day-cell grouping
-    (``calendar_service``) and the balance-at seam's daily running-balance
-    ramp (``balance_resolver.daily_cash_balance_series``), so a flow's cell
-    and the balance line's step for it land on the SAME day (the design
-    principle "a figure and its caption never disagree").  An item lands on
+    The single BUDGET-attribution rule, shared by the calendar's day-cell
+    grouping (``calendar_service._get_display_day``) and the balance-at seam's
+    PLANNED tier (``balance_at._cash_fold._cash_plan``), so the two cannot come
+    to disagree about which day a planned item is BUDGETED to.
+
+    **Both halves of this paragraph were false and ledger row N-97 is the
+    correction.**  The seam's caller was named as
+    ``balance_resolver.daily_cash_balance_series`` -- a producer plan step
+    X-c2b3 had DELETED a month earlier, so the citation resolved to nothing.
+    And the guarantee stated here was that a flow's cell and the balance line's
+    step for it land on the SAME day: that stopped holding at plan step X-c2b2,
+    when the balance line became the cash fold, which steps a SETTLED row on the
+    day its money moved and a projected one on ``max(attribution, as_of + 1)``
+    (rulings R-DH (b) and R-G).  Neither is this date, so a chip and its own
+    step can sit days apart -- median 2, p75 6, max 25 on the real Checking
+    account.  That divergence is finding **N-58**, it is an open fork rather
+    than a settled rule, and ``calendar_service._get_display_day`` states it at
+    the site.  What this function still guarantees is the budget attribution
+    itself, which is what both readers ask it for.  An item lands on
     ``preferred`` -- its ``due_date`` -- falling back to the pay period's
     ``start_date`` when it has none; the result is then clamped into the
     item's own pay period ``[period_start, period_end]`` span.

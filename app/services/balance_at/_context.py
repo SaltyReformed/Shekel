@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING, TypeVar
 from app.exceptions import BaselineMissingError
 from app.models.account import Account
 from app.models.scenario import Scenario
+from app.services.cash_ledger import AmountBasis, amount_basis
 from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
 from app.services.pay_calendar import PayCalendar, PeriodWindow, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
@@ -166,6 +167,8 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             filled by :meth:`calendar` -- private for the reason ``_walks`` is,
             because this module owns the derivation rather than storing a
             sibling's.
+        _amount_bases: The pass's amount-model memo, keyed by ``scenario_id``
+            and filled by :meth:`amounts`.  Private for the same reason.
     """
 
     user_id: int
@@ -184,6 +187,9 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         default_factory=dict, repr=False, compare=False,
     )
     _calendars: "dict[int, PayCalendar]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    _amount_bases: "dict[int, AmountBasis]" = field(
         default_factory=dict, repr=False, compare=False,
     )
 
@@ -396,6 +402,54 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         if self.user_id not in self._calendars:
             self._calendars[self.user_id] = calendar_for(self.user_id)
         return self._calendars[self.user_id]
+
+    def amounts(self) -> AmountBasis:
+        """Return the pass's amount-model basis, building it once.
+
+        The memo that makes "one pricing pass per read pass" structural, and
+        plan step **X-au-c2b** put it here -- the override-map half of what plan
+        step X-i1 names.  What a row's amount RESOLVES to is a derivation like
+        any other on this object: the paycheck engine over the owner's whole
+        pay-period set, and each destination loan's P&I, payment day and escrow
+        history.  A render that asks four surfaces for a figure would otherwise
+        derive all of that once per surface, which is findings **N-268** and
+        **N-269** -- the dashboard pulse re-pricing rows the cash fold had just
+        priced, and the transfer settle door re-querying the transfer it had
+        just loaded.
+
+        **Nothing is resolved until something asks**, so a pass that reads no
+        cash figure pays nothing for holding one: both derivations behind
+        :class:`~app.services.cash_ledger.AmountBasis` are lazy, and each
+        answers ``None`` from a row's own columns before it touches them.
+
+        **It pins no as-of, deliberately.**  The basis reads ``date.today()``
+        for the loan half rather than this pass's :attr:`as_of`, which is
+        finding **N-40** and plan step **X-i2** -- and X-i2 MOVES MONEY, so
+        handing it ``self.as_of`` here would ship that move inside a refactor
+        whose gate is byte-identity.  The read is disclosed rather than quietly
+        relocated; X-i2 is where a pass's one clock reaches this derivation too.
+
+        **The derivation is imported outright**, so like :meth:`calendar` beside
+        it this memo is filled here rather than by the seam:
+        ``cash_ledger`` is a leaf BELOW the seam (it imports no ``balance_at``
+        module at all -- its own docstring states the arrow), so filling it here
+        opens no cycle.
+
+        Returns:
+            The pass's :class:`~app.services.cash_ledger.AmountBasis`.
+
+        Raises:
+            BaselineMissingError: When this pass has no baseline scenario.  A
+                row's amount rule resolves against a scenario -- which profile
+                prices a paycheck, which loan a payment derives from -- so there
+                is no scenario-free answer to substitute.
+        """
+        scenario_id = self.scenario_id
+        if scenario_id not in self._amount_bases:
+            self._amount_bases[scenario_id] = amount_basis(
+                self.user_id, scenario_id,
+            )
+        return self._amount_bases[scenario_id]
 
     def reported_periods(self) -> PeriodWindow:
         """Return the pay periods every per-period seam entry reports over.

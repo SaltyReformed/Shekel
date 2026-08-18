@@ -142,20 +142,20 @@
         {% set current_year = today.year %}
         {% for period in periods %}
         <th scope="col" class="text-center period-header
-            {{ 'current-period' if period.id == current_period.id else '' }}{{ mstart(periods, loop.index0) }}">
+            {{ 'current-period' if period.period_id == current_period.period_id else '' }}{{ mstart(periods, loop.index0) }}">
           {% if period.start_date.year == current_year %}
           <div class="fw-bold">{{ period.start_date.strftime('%-m/%-d') }}</div>
           {% else %}
           <div class="fw-bold">{{ period.start_date.strftime('%-m/%-d/%y') }}</div>
           {% endif %}
-          {% if period.start_date < today and period.id != current_period.id %}
+          {% if period.start_date < today and period.period_id != current_period.period_id %}
           {# Carry-forward button -- opens the preview modal first.
              The preview endpoint returns the modal partial; the modal
              auto-shows on swap (data-modal-auto-show, app.js).  The
              user reviews the planned actions and confirms via the
              modal's own button, which posts to transactions.carry_forward. #}
           <button type="button" class="btn btn-warning btn-sm mt-1"
-                  hx-get="{{ url_for('transactions.carry_forward_preview', period_id=period.id) }}"
+                  hx-get="{{ url_for('transactions.carry_forward_preview', period_id=period.period_id) }}"
                   hx-target="#modal-mount"
                   hx-swap="innerHTML"
                   hx-disabled-elt="this"
@@ -222,8 +222,8 @@
         {% endif %}
 
         {{ render_row_cells(rk, periods, matched_by_row_period,
-                             entry_sums, TXN_TYPE_INCOME, account, today,
-                             current_period_id=current_period.id,
+                             entry_sums, budgets, TXN_TYPE_INCOME, account, today,
+                             current_period_id=current_period.period_id,
                              band=ns.band % 2) }}
         {% set ns.band = ns.band + 1 %}
       {% endfor %}
@@ -285,8 +285,8 @@
         {% endif %}
 
         {{ render_row_cells(rk, periods, matched_by_row_period,
-                             entry_sums, TXN_TYPE_EXPENSE, account, today,
-                             current_period_id=current_period.id,
+                             entry_sums, budgets, TXN_TYPE_EXPENSE, account, today,
+                             current_period_id=current_period.period_id,
                              band=ns2.band % 2) }}
         {% set ns2.band = ns2.band + 1 %}
       {% endfor %}
@@ -375,8 +375,8 @@
             <label class="form-label" for="add_txn_period">Pay Period</label>
             <select id="add_txn_period" name="pay_period_id" class="form-select" required>
               {% for p in all_periods %}
-              <option value="{{ p.id }}"
-                {{ 'selected' if p.id == current_period.id else '' }}>
+              <option value="{{ p.period_id }}"
+                {{ 'selected' if p.period_id == current_period.period_id else '' }}>
                 {{ p.label }}
               </option>
               {% endfor %}

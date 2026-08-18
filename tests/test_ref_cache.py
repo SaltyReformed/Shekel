@@ -491,9 +491,12 @@ class TestLedgerAccountClassRefCache:
 
         Fundamental double-entry accounting: a debit increases an Asset or
         Expense balance (debit-normal -> True); a credit increases a
-        Liability, Income (revenue), or Equity balance (credit-normal ->
-        False).  These five values are the entire reason the
-        ``LedgerAccountClass`` table exists, so they are pinned by hand.
+        Liability, Income (revenue), Equity, or Unrealized-gain balance
+        (credit-normal -> False).  These values are the entire reason the
+        ``LedgerAccountClass`` table exists, so they are pinned by hand -- and
+        the map is asserted TOTAL over the enum, because a class seeded with
+        the wrong side would present every one of its accounts inverted and
+        nothing else in the suite would say so.
         """
         expected = {
             LedgerAccountClassEnum.ASSET: True,
@@ -501,7 +504,13 @@ class TestLedgerAccountClassRefCache:
             LedgerAccountClassEnum.INCOME: False,
             LedgerAccountClassEnum.EXPENSE: True,
             LedgerAccountClassEnum.EQUITY: False,
+            # Other comprehensive income (ruling R-FO): a gain is a CREDIT.
+            LedgerAccountClassEnum.UNREALIZED: False,
         }
+        assert set(expected) == set(LedgerAccountClassEnum), (
+            "every ledger account class must pin its natural-balance side "
+            f"here; unpinned: {set(LedgerAccountClassEnum) - set(expected)}"
+        )
         with app.app_context():
             for member, is_debit_normal in expected.items():
                 class_id = ref_cache.ledger_account_class_id(member)

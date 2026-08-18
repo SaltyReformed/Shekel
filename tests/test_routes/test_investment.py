@@ -7,7 +7,6 @@ import pathlib
 import re
 from datetime import date, timedelta
 from decimal import Decimal
-from types import SimpleNamespace
 
 from app import ref_cache
 from app.enums import (
@@ -18,9 +17,11 @@ from app.enums import (
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
+from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
+from app.models.user import UserSettings
 from app.services import (
     account_service,
     balance_at,
@@ -44,7 +45,85 @@ from tests._test_helpers import (
     settle_instant_on,
 )
 from app.services.investment_dashboard_service import _cards as investment_cards
-from tests._test_helpers import freeze_today, make_investment_account
+from app.services.investment_dashboard_service import _chart as investment_chart
+from app.services.investment_dashboard_service._context import (
+    _ProjectionContext,
+)
+from app.services.pay_calendar import PayCalendar
+from tests._test_helpers import (
+    make_investment_account,
+    read_pass_over_paydays,
+)
+
+
+def _cards_context(*, limit, ytd, paydays, current_index, as_of, cadence=14,
+                   retirement_date=None):
+    """Build a REAL ``_ProjectionContext`` for the card helpers' unit cases.
+
+    The card helpers take the shared per-request feed since plan step C2-f2c,
+    because the three things they read -- the owner's periods, the period
+    covering the clock, and the clock itself -- must all come off ONE read
+    pass, and three separate arguments are three ways to pair one pass's
+    calendar with another's day.  So a case has to supply a context.
+
+    **Every type here is the real one.**  The calendar is a real
+    :class:`~app.services.pay_calendar.PayCalendar` derived from real paydays,
+    the pass is a real :class:`~app.services.balance_at.BalanceContext` whose
+    pay-calendar memo is filled at construction rather than loaded, and the
+    feed is the real frozen dataclass -- so a field these helpers read cannot
+    drift from the one the application fills.  Filling the memo is what keeps
+    these cases pure: the arithmetic under test is a function of a payday set
+    and a day, and a database would only supply those two values less
+    legibly.
+
+    **The seeding goes through ONE shared door**
+    (:func:`tests._test_helpers.read_pass_over_paydays`, plan finding **P54**,
+    ruled by the developer 2026-08-16).  This was the first site to name the
+    pass's PRIVATE calendar memo, and plan step ``C2-f2d`` brings two more
+    packages wanting the same fixture; N sites reaching into one private field
+    is how a memo becomes a de-facto public seam.  That helper's docstring
+    carries the two alternatives that were refused and why.
+
+    The fields no card helper reads are filled with the degenerate value their
+    type admits.  Nothing here asserts on them, and a helper that started
+    reading one would fail loudly rather than silently agreeing with a fake.
+
+    Args:
+        limit: The account's ``annual_contribution_limit`` (or ``None``).
+        ytd: Contributions already made this calendar year.
+        paydays: The owner's paydays, ascending.
+        current_index: Which payday's period covers the clock, or ``None``.
+        as_of: The read pass's clock.
+        cadence: Days between paydays.
+        retirement_date: The owner's planned retirement date, or ``None``.
+
+    Returns:
+        The ``_ProjectionContext``.
+    """
+    balance_ctx = read_pass_over_paydays(paydays, cadence, as_of)
+    saved = balance_ctx.calendar().saved()
+    return _ProjectionContext(
+        params=InvestmentParams(annual_contribution_limit=limit),
+        current_balance=Decimal("0"),
+        projection_start=as_of,
+        projection_ytd=ytd,
+        projection_seed=Decimal("0"),
+        inputs=InvestmentInputs(
+            periodic_contribution=Decimal("0"),
+            employer_params=None,
+            annual_contribution_limit=limit,
+            ytd_contributions=ytd,
+            ytd_contributions_seed=ytd,
+            gross_biweekly=Decimal("0"),
+        ),
+        contributions=[],
+        deductions=[],
+        active_profile=None,
+        balance_ctx=balance_ctx,
+        anchor_as_of=None,
+        planned_retirement_date=retirement_date,
+        current_period=None if current_index is None else saved[current_index],
+    )
 
 
 def _create_investment_account(seed_user, db_session, type_name="401(k)",
@@ -299,9 +378,13 @@ class TestContributionLimitZeroCap:
     from ``None`` ("no cap configured").  The cleanup left those three
     branches in ``_compute_limit_info`` and the zero-cap branch in
     ``_compute_suggested_contribution`` unpinned; these unit tests assert
-    each on hand-reasoned values.  Both helpers read only
-    ``annual_contribution_limit``, so an in-memory params object and an
-    empty period list keep them pure (no DB, no engine).
+    each on hand-reasoned values.
+
+    ``_compute_limit_info`` reads only ``annual_contribution_limit``, so an
+    in-memory params object keeps it pure.  ``_compute_suggested_contribution``
+    takes the shared per-request feed since plan step C2-f2c and so needs a
+    context; :func:`_cards_context` builds a real one over a real calendar,
+    which is still pure (no DB, no engine).
     """
 
     def test_limit_info_zero_cap_with_ytd_is_fully_used(self):
@@ -421,9 +504,12 @@ class TestContributionLimitZeroCap:
         period list.  Pins that a zero cap suggests nothing within the
         cap rather than the legacy $500 fallback truthiness once produced.
         """
-        params = InvestmentParams(annual_contribution_limit=Decimal("0"))
         result = investment_cards._compute_suggested_contribution(
-            params, Decimal("0"), [], None,
+            _cards_context(
+                limit=Decimal("0"), ytd=Decimal("0"),
+                paydays=[date(2026, 1, 1)], current_index=None,
+                as_of=date(2026, 1, 15),
+            ),
         )
         assert result == Decimal("0.00")
 
@@ -435,81 +521,385 @@ class TestContributionLimitZeroCap:
         contrast to a positive cap and guards against a reintroduced
         non-zero default for the no-cap case.
         """
-        params = InvestmentParams(annual_contribution_limit=None)
         result = investment_cards._compute_suggested_contribution(
-            params, Decimal("0"), [], None,
+            _cards_context(
+                limit=None, ytd=Decimal("0"),
+                paydays=[date(2026, 1, 1)], current_index=None,
+                as_of=date(2026, 1, 15),
+            ),
         )
         assert result == Decimal("0")
 
-    def test_suggested_contribution_excludes_current_period_from_remaining(
-        self, monkeypatch,
-    ):
-        """remaining_periods is anchored on current_period, not date.today().
+    #: The four same-year paydays both boundary cases below spread over.
+    _SPREAD_PAYDAYS = [
+        date(2026, 1, 1), date(2026, 1, 15),
+        date(2026, 1, 29), date(2026, 2, 12),
+    ]
+
+    def test_suggested_contribution_excludes_current_period_from_remaining(self):
+        """remaining_periods is anchored on current_period, not on the clock.
 
         deep-quality-hunt #59: the YTD subtracted from the limit is summed
-        over periods ``<= current_period.start_date``
-        (``investment_projection._current_year_period_ids``), so the
+        over periods whose payday is ``<= current_period.start_date``
+        (``investment_projection._ytd_contributions``), so the
         per-period suggestion must spread the remainder over the periods
         STRICTLY AFTER the current period -- else the current period is
         double-counted (in YTD *and* in the remaining spread) on the single
         calendar day a period begins (``today == period start``).  Four
         same-year periods (Jan 1/15/29, Feb 12), current = the Jan 15 period,
-        with today frozen to Jan 15 (the period-start edge that triggered the
-        old bug): $7,000 limit - $3,000 YTD = $4,000 spread over the two
+        with the pass's clock ON Jan 15 (the period-start edge that triggered
+        the old bug): $7,000 limit - $3,000 YTD = $4,000 spread over the two
         strictly-after periods (Jan 29, Feb 12) = $2,000.00.  Revert-proof:
-        the old ``start_date >= date.today()`` window includes the Jan 15
+        the old ``start_date >= today`` window includes the Jan 15
         current period (3 periods) -> $1,333.33.
+
+        **The clock is the read pass's, stated rather than frozen** (plan step
+        C2-f2c).  This monkeypatched ``date.today`` in the ``_cards`` module
+        until then, which pinned only that module -- the pass around it went on
+        reading the real day.
         """
-        freeze_today(
-            monkeypatch, date(2026, 1, 15),
-            modules=("app.services.investment_dashboard_service._cards",),
-        )
-        periods = [
-            SimpleNamespace(start_date=date(2026, 1, 1)),
-            SimpleNamespace(start_date=date(2026, 1, 15)),
-            SimpleNamespace(start_date=date(2026, 1, 29)),
-            SimpleNamespace(start_date=date(2026, 2, 12)),
-        ]
-        current_period = periods[1]
-        params = InvestmentParams(annual_contribution_limit=Decimal("7000"))
         result = investment_cards._compute_suggested_contribution(
-            params, Decimal("3000"), periods, current_period,
+            _cards_context(
+                limit=Decimal("7000"), ytd=Decimal("3000"),
+                paydays=self._SPREAD_PAYDAYS, current_index=1,
+                as_of=date(2026, 1, 15),
+            ),
         )
         # 7000 - 3000 = 4000; periods strictly after Jan 15 = {Jan 29,
         # Feb 12} = 2; 4000 / 2 = 2000.00 (NOT the old 4000 / 3 = 1333.33).
         assert result == Decimal("2000.00")
 
-    def test_suggested_contribution_mid_period_today_is_behaviour_neutral(
-        self, monkeypatch,
-    ):
+    def test_suggested_contribution_mid_period_today_is_behaviour_neutral(self):
         """Anchoring on current_period leaves the typical case unchanged.
 
-        deep-quality-hunt #59: when today falls strictly inside the current
+        deep-quality-hunt #59: when the clock falls strictly inside the current
         period (the common case), no period starts in (current.start, today],
         so the current-period boundary (``> current.start``) and the old
         today boundary (``>= today``) select the SAME set -- the fix is
-        behaviour-neutral here.  Same four periods, current = Jan 15, but
-        today frozen to Jan 22 (mid-period): both windows yield the two
+        behaviour-neutral here.  Same four periods, current = Jan 15, but the
+        clock on Jan 22 (mid-period): both windows yield the two
         strictly-after periods, so the suggestion is $2,000.00, identical to
         what the old ``>= today`` rule produced.
         """
-        freeze_today(
-            monkeypatch, date(2026, 1, 22),
-            modules=("app.services.investment_dashboard_service._cards",),
-        )
-        periods = [
-            SimpleNamespace(start_date=date(2026, 1, 1)),
-            SimpleNamespace(start_date=date(2026, 1, 15)),
-            SimpleNamespace(start_date=date(2026, 1, 29)),
-            SimpleNamespace(start_date=date(2026, 2, 12)),
-        ]
-        current_period = periods[1]
-        params = InvestmentParams(annual_contribution_limit=Decimal("7000"))
         result = investment_cards._compute_suggested_contribution(
-            params, Decimal("3000"), periods, current_period,
+            _cards_context(
+                limit=Decimal("7000"), ytd=Decimal("3000"),
+                paydays=self._SPREAD_PAYDAYS, current_index=1,
+                as_of=date(2026, 1, 22),
+            ),
         )
         # 4000 spread over {Jan 29, Feb 12} = 2 -> 2000.00 (same as old).
         assert result == Decimal("2000.00")
+
+    def test_suggested_contribution_falls_back_to_the_PASSES_clock(self):
+        """With no current period the boundary is ``balance_ctx.as_of``.
+
+        The arm that read ``date.today()`` until plan step C2-f2c.  A pass
+        valued at Jan 22 spreads over the paydays after it -- Jan 29 and
+        Feb 12 -- so $4,000 / 2 = $2,000.00.
+
+        **It cannot pass by the two clocks coinciding**, and the reason is the
+        paydays rather than the year: every one of them is a January or
+        February day of a year the suite has already passed, so a reverted
+        process-clock read finds ZERO periods strictly after it and answers
+        $4,000.00.  A draft of this docstring claimed the schedule's YEAR was
+        not the suite's, which was false -- the conclusion held for a different
+        reason, and a control whose stated reason is wrong is one nobody can
+        re-check (adversarial review, 2026-08-15).
+        """
+        result = investment_cards._compute_suggested_contribution(
+            _cards_context(
+                limit=Decimal("7000"), ytd=Decimal("3000"),
+                paydays=self._SPREAD_PAYDAYS, current_index=None,
+                as_of=date(2026, 1, 22),
+            ),
+        )
+        assert result == Decimal("2000.00")
+
+
+class TestTheDefaultHorizonComesOffTheReadPass:
+    """``_compute_default_horizon``: three arms, none of them reading a clock.
+
+    Untested until plan step C2-f2c beyond the route's own smoke coverage,
+    which is how the ``date.today()`` reads in it survived: the slider's
+    default is an integer nobody asserted, and the route renders whatever it
+    is.  All three arms are graded here against the pass's own ``as_of``.
+    """
+
+    def test_a_planned_retirement_date_wins_and_counts_from_the_pass(self):
+        """Years from the pass's clock to the retirement YEAR."""
+        assert investment_cards._compute_default_horizon(
+            _cards_context(
+                limit=None, ytd=Decimal("0"),
+                paydays=[date(2026, 1, 1)], current_index=0,
+                as_of=date(2026, 6, 15), retirement_date=date(2046, 3, 1),
+            ),
+        ) == 20
+
+    def test_a_retirement_date_already_past_still_answers_one_year(self):
+        """The floor, which keeps the slider from asking for zero periods."""
+        assert investment_cards._compute_default_horizon(
+            _cards_context(
+                limit=None, ytd=Decimal("0"),
+                paydays=[date(2026, 1, 1)], current_index=0,
+                as_of=date(2026, 6, 15), retirement_date=date(2020, 3, 1),
+            ),
+        ) == 1
+
+    def test_without_one_it_runs_a_year_past_the_LAST_SAVED_period(self):
+        """The second arm: the LAST period's year, plus one.
+
+        **Every term is separately graded, and an earlier draft of this case
+        graded none of them** (adversarial review, 2026-08-15).  That draft put
+        both paydays in 2026 against a 2026 clock, so the arm computed
+        ``max(1, (2026 - 2026) + 1) = 1`` -- which is also what the ``max(1,
+        ...)`` floor returns, what ``periods[0]`` would return, and what
+        dropping the ``+ 1`` would return.  It could only distinguish this arm
+        from the CONSTANT.
+
+        Here the paydays straddle a year boundary: the FIRST period ends
+        2028-06-14 and the LAST ends 2029-01-16, so ``[-1]`` and ``[0]`` differ
+        (4 against 3), the ``+ 1`` differs (4 against 3), and the floor differs
+        (4 against 1).  The last end is DERIVED -- the day the cadence projects
+        past the final payday -- which is the whole point of reading the pass's
+        calendar rather than a stored column.
+        """
+        assert investment_cards._compute_default_horizon(
+            _cards_context(
+                limit=None, ytd=Decimal("0"),
+                paydays=[
+                    date(2028, 6, 1), date(2028, 6, 15), date(2029, 1, 3),
+                ],
+                current_index=0, as_of=date(2026, 6, 15),
+            ),
+        ) == 4
+
+    def test_an_owner_with_no_paydays_takes_the_constant(self):
+        """The third arm, and the one an empty window must not crash on.
+
+        A :class:`~app.services.pay_calendar.PeriodWindow` defines ``__len__``
+        and no ``__bool__``, so Python's truthiness falls through to the
+        length and ``if periods:`` is exactly the emptiness test -- which is
+        what the code says.  A draft of this case justified an explicit
+        ``len(...)`` by claiming otherwise (adversarial review, 2026-08-15).
+        """
+        assert investment_cards._compute_default_horizon(
+            _cards_context(
+                limit=None, ytd=Decimal("0"), paydays=[],
+                current_index=None, as_of=date(2026, 6, 15),
+            ),
+        ) == investment_cards._FALLBACK_HORIZON_YEARS
+
+
+class TestTheCutoverReadsTheDERIVEDPeriodEnd:
+    """The ONE axis on which this cutover can move a number.
+
+    Plan step C2-f2c swaps ``pay_period_service``'s ORM rows for the read
+    pass's own :class:`~app.services.pay_calendar.PayCalendar`, and the claim
+    that no figure moves rests on a PRECONDITION rather than on an identity:
+    the stored ``end_date`` / ``period_index`` columns equal what
+    :func:`~app.services.pay_calendar.derive_periods` computes from the
+    paydays.  ``pay_period_write`` has materialised that on every write since
+    plan step C3-b, and the production clone the cutover was verified against
+    carries ZERO mismatches -- which is exactly why a byte-identical harness
+    run cannot grade this: **the database it ran on cannot express the
+    disagreement.**  Neither can any fixture, since every one of them builds
+    its periods through that same writer.
+
+    So the disagreement is planted here by hand, and the assertion is which
+    column the code follows.  An adversarial review of this step found the
+    harness CLAIMING this axis was covered by hand-computed cases when it was
+    covered by nothing (2026-08-15).
+
+    It is not a reachable production state today; it is the state plan step
+    **C4** makes unreachable by DROPPING the column, and until then the only
+    door to it is ``resolve_cadence``'s legacy fallback (finding **P8**).  What
+    this case pins is the direction: this package reads the derivation.
+    """
+
+    def test_the_horizon_follows_the_DERIVED_end_not_the_stored_column(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A stored end five years out must not stretch the slider.
+
+        ``seed_periods`` runs ten biweekly periods from 2026-01-02, so the last
+        payday is 2026-05-08 and its DERIVED end is 2026-05-21 -- the cadence
+        projected past the final payday.  The stored column is then rewritten
+        to 2031-12-31, which is legal (``ck_pay_periods_date_order`` only wants
+        ``start < end``) and which no write door would produce.
+
+        The owner keeps their ``pay_schedule`` row, so
+        ``pay_schedule_service.resolve_cadence`` never reaches the legacy
+        fallback that would INFER a cadence from the length just corrupted --
+        without that the plant would move the derivation too and the case would
+        grade nothing.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            last = seed_periods[-1]
+            assert last.start_date == date(2026, 5, 8), (
+                "this case hand-computes off the fixture's dates"
+            )
+            acct = _create_investment_account(
+                seed_user, db.session, name="Derived-end 401k",
+                balance="10000.00",
+            )
+            _create_investment_params(db.session, acct.id)
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=user_id,
+            ).one_or_none()
+            if settings is not None:
+                settings.planned_retirement_date = None
+            db.session.commit()
+
+            # The plant, and the control that it took.
+            db.session.query(PayPeriod).filter_by(id=last.id).update(
+                {"end_date": date(2031, 12, 31)},
+            )
+            db.session.commit()
+            assert db.session.get(PayPeriod, last.id).end_date == (
+                date(2031, 12, 31)
+            )
+
+            ctx = _load_projection_context(
+                user_id, acct, _load_investment_params(acct.id),
+            )
+            derived_end = ctx.balance_ctx.reported_periods()[-1].end_date
+            assert derived_end == date(2026, 5, 21), (
+                "the derivation must be untouched by the stored column"
+            )
+
+            horizon = investment_cards._compute_default_horizon(ctx)
+            as_of = ctx.balance_ctx.as_of
+            # Reading the DERIVED end: (2026 - as_of.year) + 1, floored at 1.
+            assert horizon == max(1, (2026 - as_of.year) + 1)
+            # Reading the STORED column would answer this instead, and the two
+            # differ by five years -- so the assertion above is a real choice
+            # rather than a coincidence of the fixture's dates.
+            assert horizon != (2031 - as_of.year) + 1
+
+
+class TestTheChartMarkersAskTheWindowWhereTheDateFALLS:
+    """``_build_chart_markers``: ledger row **P48**, and its first tests.
+
+    That row is the last live member of row **P6**'s census of "which pay
+    period contains this date" implementations: this function walked the
+    projection window period by period testing ``start_date <= d <= end_date``,
+    which is
+    :meth:`~app.services.pay_calendar.PeriodWindow.containing`'s own predicate.
+    It had NO test coverage at all -- ``retirement_marker_index`` is an integer
+    nothing asserted on -- which is how a duplicate predicate went unnoticed
+    long enough to need a census to find.
+
+    Every case here builds a REAL window off a REAL calendar, because the
+    property under test is about a VIEW's ordinals and a fake list of periods
+    could not express the distinction.
+    """
+
+    @staticmethod
+    def _axis(first_index=0, count=6):
+        """A real window over a real biweekly calendar opening 2026-01-02."""
+        calendar = PayCalendar.from_paydays(
+            [
+                (index + 1, date(2026, 1, 2) + timedelta(days=14 * index))
+                for index in range(10)
+            ],
+            14, user_id=1,
+        )
+        return calendar.window(first_index=first_index, count=count)
+
+    @staticmethod
+    def _ctx(retirement_date):
+        return _cards_context(
+            limit=None, ytd=Decimal("0"), paydays=[date(2026, 1, 2)],
+            current_index=0, as_of=date(2026, 1, 2),
+            retirement_date=retirement_date,
+        )
+
+    def test_the_marker_is_the_history_length_plus_the_WINDOW_offset(self):
+        """The chart plots history then one point per axis period.
+
+        A window opening at calendar ordinal 3 covers 2026-02-13 onward; the
+        date 2026-03-01 falls in its SECOND period (2026-02-27..2026-03-12), so
+        the marker is ``history_len + 1``.
+        """
+        markers = investment_chart._build_chart_markers(
+            self._ctx(date(2026, 3, 1)), 7, self._axis(first_index=3),
+        )
+        assert markers["retirement_marker_index"] == 8
+        assert markers["today_boundary_index"] == 7
+        assert markers["retirement_year"] == 2026
+
+    def test_it_is_the_VIEWS_ordinal_not_the_CALENDARS(self):
+        """The firing control, and the defect the harness was shown catching.
+
+        The same date on the same window: its period's ``period_index`` is 4,
+        the window's own offset for it is 1.  A reader taking the calendar
+        ordinal would put the marker at ``7 + 4 = 11`` rather than ``7 + 1 =
+        8`` -- measured on production at 241 against 252, an eleven-point slide
+        that plants the retirement line in the wrong year with no error
+        anywhere.
+        """
+        window = self._axis(first_index=3)
+        assert window.containing(date(2026, 3, 1)).period_index == 4
+        assert investment_chart._build_chart_markers(
+            self._ctx(date(2026, 3, 1)), 7, window,
+        )["retirement_marker_index"] == 8
+
+    def test_a_date_BEFORE_the_window_marks_nothing(self):
+        """Outside the axis is ``None``, not a clamp to its first point."""
+        assert investment_chart._build_chart_markers(
+            self._ctx(date(2026, 1, 5)), 7, self._axis(first_index=3),
+        )["retirement_marker_index"] is None
+
+    def test_a_date_PAST_the_window_marks_nothing(self):
+        """The horizon side of the same rule -- the ordinary state.
+
+        A retirement date decades out sits past any one-year axis, which is
+        what the /investment slider's shortest position renders.
+        """
+        assert investment_chart._build_chart_markers(
+            self._ctx(date(2046, 6, 30)), 7, self._axis(),
+        )["retirement_marker_index"] is None
+
+    def test_a_date_past_the_window_still_reports_its_YEAR(self):
+        """The two answers are independent, and the caption survives.
+
+        The verdict strip captions the retirement YEAR whether or not the
+        chart can plot a line at it, so an off-axis date must not blank the
+        caption as well as the marker.
+        """
+        markers = investment_chart._build_chart_markers(
+            self._ctx(date(2046, 6, 30)), 7, self._axis(),
+        )
+        assert markers["retirement_year"] == 2046
+        assert markers["retirement_marker_index"] is None
+
+    def test_no_retirement_date_leaves_only_the_today_boundary(self):
+        """The unset state -- production's own, until this step measured it.
+
+        The clone the cutover was verified against carried no planned
+        retirement date, so every marker probe on it came back ``None`` and the
+        byte-identical diff said nothing about this function.  Setting one is
+        what made the harness able to fail; this is the arm it then could not
+        reach.
+        """
+        markers = investment_chart._build_chart_markers(
+            self._ctx(None), 7, self._axis(),
+        )
+        assert markers == {
+            "today_boundary_index": 7,
+            "retirement_year": None,
+            "retirement_marker_index": None,
+        }
+
+    def test_an_empty_axis_marks_nothing_and_raises_nothing(self):
+        """A horizon the calendar does not reach yields no window at all."""
+        markers = investment_chart._build_chart_markers(
+            self._ctx(date(2026, 3, 1)), 0, self._axis(first_index=99),
+        )
+        assert markers["retirement_marker_index"] is None
+        assert markers["today_boundary_index"] == 0
 
 
 class TestInvestmentParams:
@@ -980,14 +1370,12 @@ class TestContributionAwareDashboard:
 def _create_transfer_template(db_session, user_id, from_id, to_id,
                                is_active=True):
     """Create a recurring transfer template targeting an account."""
-    from app.enums import RecurrencePatternEnum as RPE
-    from app.models.recurrence_rule import RecurrenceRule
     from app.models.transfer_template import TransferTemplate
+    from tests._test_helpers import make_every_period_rule
 
-    every_id = ref_cache.recurrence_pattern_id(RPE.EVERY_PERIOD)
-    rule = RecurrenceRule(user_id=user_id, pattern_id=every_id)
-    db_session.add(rule)
-    db_session.flush()
+    # Authored through the write door (plan step R7c-b): the two-axis columns
+    # are NOT NULL, so a rule naming only a pattern cannot be stored.
+    rule = make_every_period_rule(db_session, user_id)
     tpl = TransferTemplate(
         user_id=user_id,
         from_account_id=from_id,
@@ -1875,7 +2263,7 @@ def _add_envelope_expense_with_cleared_entries_inv(
 
     for amt in cleared_amounts:
         db_session.add(TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=user_id,
             amount=amt,
             description="Cleared purchase",
@@ -2478,14 +2866,16 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
         in that state, so both arms returned the same figure -- a branch that
         cannot change the answer, which CLAUDE.md rule 1 forbids shipping.  This
         pins the fact the deletion rests on, in the module that owns it.
+
+        The two totals became ONE function over an ``inclusive`` flag at plan
+        step C2-f2c, which is what they always were; the fact this test rests
+        on is unchanged, and the no-current-period arm is the branch that
+        answers ZERO before either bound is consulted.
         """
         # pylint: disable=import-outside-toplevel
-        from app.services.investment_projection import (
-            _ytd_contributions,
-            _ytd_contributions_seed,
-        )
-        assert _ytd_contributions([], [], None) == Decimal("0")
-        assert _ytd_contributions_seed([], [], None) == Decimal("0")
+        from app.services.investment_projection import _ytd_contributions
+        assert _ytd_contributions([], None, inclusive=True) == Decimal("0")
+        assert _ytd_contributions([], None, inclusive=False) == Decimal("0")
 
     def test_the_chart_reads_the_resolved_ytd(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -2508,8 +2898,6 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
         ctx = investment_context._load_projection_context(
             seed_user["user"].id, acct,
             investment_context._load_investment_params(acct.id),
-            pay_period_service.get_all_periods(seed_user["user"].id),
-            current,
         )
         # The two fields differ, and the resolved one is the through-current.
         assert ctx.inputs.ytd_contributions == Decimal("1000.00")
@@ -2561,9 +2949,14 @@ class TestTheProjectionMeetsItsSeedOnALapsedSchedule:
 
             ctx = _load_projection_context(
                 user_id, acct, _load_investment_params(acct.id),
-                pay_period_service.get_all_periods(user_id),
-                None,
             )
+            # The feed PRESERVES the "no current period" answer (plan step
+            # C2-f2c, ledger row P19).  It resolves the period from the pass's
+            # own calendar now, and the TOTAL search beside the one it uses
+            # would answer here with a PROJECTED period carrying
+            # ``period_id = None`` -- which ``_resolve_current_balance`` would
+            # then use to index a map keyed by ``budget.pay_periods.id``.
+            assert ctx.current_period is None
             axis = ctx.balance_ctx.calendar().projection_axis(
                 ctx.projection_start, ctx.projection_start + timedelta(days=365),
             )
@@ -2602,8 +2995,6 @@ class TestTheProjectionMeetsItsSeedOnALapsedSchedule:
             )
             ctx = _load_projection_context(
                 user_id, acct, _load_investment_params(acct.id),
-                pay_period_service.get_all_periods(user_id),
-                None,
             )
             head = ctx.balance_ctx.calendar().projection_axis(
                 ctx.projection_start, ctx.projection_start + timedelta(days=365),

@@ -53,6 +53,7 @@ import re
 from pathlib import Path
 
 import _registry as registry
+from _tables import UNESCAPED_PIPE_RX
 from _plan_gate import _blank_fenced_regions
 
 def live_docs() -> dict[str, Path]:
@@ -218,7 +219,7 @@ def _units(text: str) -> list[str]:
             if paragraph:
                 units.append(" ".join(paragraph))
                 paragraph = []
-            units.extend(registry.UNESCAPED_PIPE_RX.split(line))
+            units.extend(UNESCAPED_PIPE_RX.split(line))
             continue
         if line.strip():
             paragraph.append(line.strip())

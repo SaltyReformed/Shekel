@@ -66,7 +66,7 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
-from app.services.pay_calendar import PayCalendarError
+from app.services.pay_calendar import DerivedPeriod, PayCalendarError
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
@@ -2708,7 +2708,7 @@ class TestTheContributionRowOnARealFeed:
             assert view.columns[periods[3].id].contribution == self._EMPLOYEE
             assert view.columns[periods[4].id].contribution == self._EMPLOYEE
             # And the row therefore renders (ruling R-O's visibility rule).
-            assert view.row_flags(periods).contribution is True
+            assert view.row_flags(bctx.reported_periods()).contribution is True
             _assert_grid_view_reconciles(view)
 
     def test_an_employer_match_is_in_the_same_column(
@@ -3095,7 +3095,7 @@ class TestGridBalanceView:
             live = {income_txn.id: Decimal("1500.00")}
             monkeypatch.setattr(
                 income_service, "live_projected_net",
-                lambda uid, sid, txns: dict(live),
+                lambda txn, pricing: live.get(txn.id),
             )
 
             view = balance_at.grid_balance_view(hysa, bctx)
@@ -3183,8 +3183,34 @@ class TestGridRowFlags:
 
     @staticmethod
     def _periods(*ids):
-        """Return period stand-ins carrying only the id the rule reads."""
-        return [SimpleNamespace(id=pid) for pid in ids]
+        """Return real :class:`DerivedPeriod` values for the given period ids.
+
+        REAL periods rather than ``SimpleNamespace`` stand-ins since plan step
+        C2-f2b, where ``row_flags`` stopped taking ORM rows: a stand-in cannot
+        go stale against the type it imitates, it just keeps answering the
+        attribute the producer stopped asking for.
+
+        **A plain list, not a ``PeriodWindow``.**  A first cut of that step
+        typed the parameter to the window and an adversarial design review
+        refuted it: this rule reads ``period_id`` alone, so the window's two
+        guarantees -- order and contiguity -- take no part in the answer, and
+        the one that WOULD matter here (whose calendar these came from) is not
+        one that type carries.  Typing to the container forced this builder to
+        invent start and end dates for a rule that never reads them, which is
+        the tell.  They are still real dates because the value type requires
+        them; no assertion in this class depends on one.
+        """
+        opening = date(2026, 1, 2)
+        return [
+            DerivedPeriod(
+                period_id=pid,
+                period_index=index,
+                start_date=opening + timedelta(days=14 * index),
+                end_date=opening + timedelta(days=14 * index + 13),
+                end_is_projected=False,
+            )
+            for index, pid in enumerate(ids)
+        ]
 
     def test_all_zero_window_renders_no_row(self):
         """Every column zero -> all four rows hidden (the ordinary cash grid)."""
@@ -3492,7 +3518,9 @@ class TestTheViewOwnsTheLiveOverrideMap:
             db.session.commit()
             monkeypatch.setattr(
                 income_service, "live_projected_net",
-                lambda uid, sid, txns: {income_txn.id: Decimal("1500.00")},
+                lambda txn, pricing: (
+                    Decimal("1500.00") if txn.id == income_txn.id else None
+                ),
             )
 
             view = balance_at.grid_balance_view(account, bctx)
@@ -3562,7 +3590,7 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
                 and column.book_vs_bank == Decimal("0.00")
                 for column in view.columns.values()
             )
-            flags = view.row_flags(periods)
+            flags = view.row_flags(bctx.reported_periods())
             assert flags.period_timing is False
             assert flags.book_vs_bank is False
             _assert_grid_view_reconciles(view)
@@ -3614,7 +3642,7 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
                 column.book_vs_bank == Decimal("0.00")
                 for column in view.columns.values()
             )
-            flags = view.row_flags(periods)
+            flags = view.row_flags(bctx.reported_periods())
             assert flags.period_timing is True
             assert flags.book_vs_bank is False
             _assert_grid_view_reconciles(view)

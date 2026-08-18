@@ -29,7 +29,7 @@ consistency relation in between.
 import ast
 import inspect
 from dataclasses import fields, replace
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -39,20 +39,20 @@ from app.enums import (
     AcctTypeEnum,
     BusinessDayShiftEnum,
     PeriodPlacementEnum,
-    RecurrencePatternEnum,
     RecurrenceUnitEnum,
 )
 from app.extensions import db as _db
-from app.models.recurrence_anchors import RecurrenceMonthAnchor
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import FilingStatus
 from app.services import loan_recurrence_sync, pay_period_admin
 from app.services.pay_calendar import calendar_for
+from tests.oracles.recurrence_baseline import CADENCE_BY_LEGACY_NAME
 from app.services.recurrence import (
     RecurrenceSpec,
     ResolvedRecurrence,
     author_rule,
-    decode_pattern,
+    occurrence_placements,
+    scheduling_day_of_month,
     reauthor_rule,
     recurrence_spec,
     resolve,
@@ -65,14 +65,49 @@ from app.services.recurrence import _authoring
 from tests._test_helpers import create_loan_account
 
 
-#: Every column of ``budget.recurrence_rules`` a user authors.  Named once so
+#: Every column of ``budget.recurrence_rules`` a CALLER states.  Named once so
 #: :func:`authored_columns` cannot silently stop covering one that is added,
-#: and pinned against the table itself by
+#: and pinned against the table by
 #: :class:`TestTheAuthoredSurfaceIsWholeAndClosed`.
+#:
+#: **A caller's request decides these and nothing else does**, which is what
+#: makes "re-authoring changes nothing" and "a schedule rebuild changes
+#: nothing" meaningful assertions about them.
+#:
+#: **The list SHRANK at plan step R7c-c, and the cadence columns moved to the
+#: DERIVED list rather than leaving the table.**  ``interval_n`` and ``unit_id``
+#: are what a caller states, but they are not what is necessarily WRITTEN: the
+#: door takes both off the ``resolve`` call, which canonicalises a whole number
+#: of years authored in months onto the YEAR unit (ruling R-R17).  A column
+#: whose stored value can differ from the request is derived, whatever the
+#: request looks like -- and filing it here would have made
+#: :func:`assert_reauthoring_changes_nothing` assert the wrong thing about it.
 _AUTHORED_COLUMNS = (
-    "user_id", "pattern_id", "interval_n", "offset_periods", "day_of_month",
-    "due_day_of_month", "month_of_year", "start_date",
-    "end_date", "max_occurrences",
+    "user_id", "due_day_of_month", "end_date", "max_occurrences",
+)
+
+#: Every column the write door DERIVES, from ``resolve`` and the owner's
+#: schedule rather than from the request.
+#:
+#: **They are a separate list because they answer a different question**, and
+#: plan step R7c-a is what made the difference observable.  ``starts_on`` is the
+#: first occurrence measured against the schedule the owner has NOW, so a full
+#: rebuild legitimately moves it -- which ``TestScheduleRebuildRepoint``'s own
+#: docstring already said about the anchor, one paragraph before this list
+#: forced the two together.
+#:
+#: The distinction is not bookkeeping.  A derived column that failed to move
+#: with its inputs would be the stale cache plan step R2d refused, and
+#: :meth:`TestTheAuthoredSurfaceIsWholeAndClosed.test_the_derived_columns_equal_the_resolver`
+#: is what says it moves.
+#:
+#: **``offset_periods`` left at plan step R7c-c** with the column: the phase is
+#: derived on every read and stored nowhere.  ``interval_n`` ARRIVED in the same
+#: step, from the authored list -- see it for why a canonicalised cadence makes
+#: it a derived value even though a caller states it.
+_DERIVED_COLUMNS = (
+    "interval_n", "unit_id", "placement_id", "shift_id", "starts_on",
+    "nominal_day",
 )
 
 #: The two columns the DATABASE assigns, which no caller may author: the
@@ -86,16 +121,20 @@ _DB_ASSIGNED_COLUMNS = frozenset({"id", "created_at"})
 #: the point.  The census below is the gate that catches a column the write
 #: door FORGOT -- one that would keep its server default forever while every
 #: behavioural test passed, because a value nobody writes also never changes.
-#: ``start_period_id`` is not forgotten: plan step R7b-4 folded it into
-#: ``start_date`` (a MAXIMUM, measured equal on all 46 live rules), NULLed it
-#: in that migration, and deleted its last reader.  Dropping the column
-#: belongs with the four others plan step R7c drops in one transaction.
+#: Naming a retired column here is what keeps that gate STRICT for everything
+#: else: a column added and forgotten still fails, because it will not be on
+#: this list.
 #:
-#: Naming it here is what keeps the gate STRICT for everything else: a column
-#: added and forgotten still fails, because it will not be on this list.  The
-#: list must EMPTY at R7c, and a name left on it after its column is dropped
-#: fails :meth:`TestTheAuthoredSurfaceIsWholeAndClosed.test_every_retired_column_still_exists`.
-_RETIRED_COLUMNS = frozenset({"start_period_id"})
+#: **It is EMPTY from plan step R7c-c, which is what the leaf means.**  It held
+#: ``start_period_id`` (retired at R7b-4), then ``month_of_year`` and
+#: ``start_date`` (retired at R7b-c) -- three columns on the table that nothing
+#: wrote and nothing read, kept only because dropping a column belongs with the
+#: leaf that drops the rest.  That leaf ran: every column of
+#: ``budget.recurrence_rules`` is now authored, derived, or assigned by the
+#: database, and there is no fourth category.  This list emptying is the
+#: three-leaf expand / migrate / contract (ruling R-R18) finishing, and the
+#: paragraph that used to predict it can be read in ``900e761a``.
+_RETIRED_COLUMNS: frozenset[str] = frozenset()
 
 
 def authored_columns(rule: RecurrenceRule) -> dict:
@@ -108,6 +147,18 @@ def authored_columns(rule: RecurrenceRule) -> dict:
         ``{column_name: value}`` over :data:`_AUTHORED_COLUMNS`.
     """
     return {name: getattr(rule, name) for name in _AUTHORED_COLUMNS}
+
+
+def derived_columns(rule: RecurrenceRule) -> dict:
+    """Return every DERIVED column of *rule* as a plain dict.
+
+    Args:
+        rule: The rule to read.
+
+    Returns:
+        ``{column_name: value}`` over :data:`_DERIVED_COLUMNS`.
+    """
+    return {name: getattr(rule, name) for name in _DERIVED_COLUMNS}
 
 
 def resolved_for(rule: RecurrenceRule) -> ResolvedRecurrence:
@@ -126,41 +177,48 @@ def resolved_for(rule: RecurrenceRule) -> ResolvedRecurrence:
     return resolve(recurrence_spec(rule), calendar_for(rule.user_id))
 
 
-def spec_for(pattern: RecurrencePatternEnum, **overrides) -> RecurrenceSpec:
-    """Return a spec for the cadence *pattern* names, with *overrides* applied.
+def spec_for(cadence_name: str, **overrides) -> RecurrenceSpec:
+    """Return a spec for the cadence *cadence_name* names, with *overrides*.
 
-    Keyed on the closed-set member for the reason the twin helper in
+    Keyed on the closed set's old NAMES for the reason the twin helper in
     ``test_recurrence_resolution.py`` is: every case here was written against a
     named pattern and re-keying them by hand would be a silent opportunity to
     change what each one measures.  The translation goes through
-    :func:`~app.services.recurrence.decode_pattern`, the same seam the read door
-    uses.
+    :data:`~tests.oracles.recurrence_baseline.CADENCE_BY_LEGACY_NAME`, which is
+    where ``tests/`` states that mapping once (plan step R7c-c).
 
     ``interval_n`` is applied AFTER the decode, so a case may state a cadence
     the pattern's own name does not -- which is the whole point of the two-axis
     vocabulary.
 
+    ``starts_on`` defaults to the owner's OPENING PAYDAY, which is what an
+    unbounded rule of any cadence resolved to before plan step R7c-b made the
+    first occurrence authored.  A case that cares about the date states one;
+    the rest are about columns and round trips, and they measure the same
+    thing they always did.
+
     Args:
-        pattern: The pattern member whose cadence to build.
+        cadence_name: One of that table's keys.
         **overrides: Any :class:`~app.services.recurrence.RecurrenceSpec`
             field to set.  ``user_id`` is required, as it is on the spec.
 
     Returns:
         The spec.
     """
-    # Decoded at TWO for the reason the twin helper in
-    # ``test_recurrence_resolution.py`` records: at one, ``Every N Periods``
-    # reads identically to ``Every Period`` and drops out of every whole-enum
-    # sweep built on this helper.
+    # TWO for the reason the twin helper in ``test_recurrence_resolution.py``
+    # records: at one, ``Every N Periods`` reads identically to
+    # ``Every Period`` and drops out of every whole-vocabulary sweep built on
+    # this helper.
     interval_override = overrides.pop("interval_n", None)
-    reading = decode_pattern(ref_cache.recurrence_pattern_id(pattern), 2)
+    cadence = CADENCE_BY_LEGACY_NAME[cadence_name]
+    stated = 2 if cadence.interval_n is None else cadence.interval_n
+    overrides.setdefault(
+        "starts_on", calendar_for(overrides["user_id"]).opening_bound(),
+    )
     return RecurrenceSpec(
-        unit=reading.cadence.unit,
-        interval_n=(
-            reading.cadence.interval_n if interval_override is None
-            else interval_override
-        ),
-        placement=reading.placement,
+        unit=cadence.unit,
+        interval_n=stated if interval_override is None else interval_override,
+        placement=cadence.placement,
         **overrides,
     )
 
@@ -178,10 +236,19 @@ def assert_reauthoring_changes_nothing(rule: RecurrenceRule) -> None:
         rule: The persisted rule to round-trip.
     """
     before = authored_columns(rule)
+    before_derived = derived_columns(rule)
 
     reauthor_rule(rule, recurrence_spec(rule), calendar_for(rule.user_id))
 
     assert authored_columns(rule) == before
+    # The DERIVED columns are stable too, and they are asserted separately
+    # because they are stable for a different reason: an authored column
+    # survives because nothing rewrote it, a derived one because the same
+    # inputs produce the same answer.  A caller that re-authors after the
+    # SCHEDULE moved gets a different answer legitimately -- see
+    # ``TestScheduleRebuildRepoint``, which is why this helper is not used
+    # across a reset.
+    assert derived_columns(rule) == before_derived
 
 
 def assert_resolves_completely(rule: RecurrenceRule) -> None:
@@ -196,7 +263,7 @@ def assert_resolves_completely(rule: RecurrenceRule) -> None:
     """
     resolved = resolved_for(rule)
 
-    assert resolved.anchor_date is not None
+    assert resolved.starts_on is not None
     assert isinstance(resolved.unit, RecurrenceUnitEnum)
     assert isinstance(resolved.placement, PeriodPlacementEnum)
     assert isinstance(resolved.shift, BusinessDayShiftEnum)
@@ -252,8 +319,15 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
     the spec carries and the door forgets, which the old comparison could not
     see.
 
-    This is what will fail, on purpose, at plan step R7c, when ``unit_id`` /
-    ``anchor_date`` / ``placement_id`` / ``shift_id`` arrive as columns.
+    **It DID fail, on purpose, at plan step R7c-a**, which is what this
+    paragraph used to predict -- though it named ``anchor_date``, a column the
+    D28 ruling of 2026-08-14 replaced with ``starts_on``.  Exactly one of the
+    two arms fired, and which one is the useful part: the door already assigned
+    all five new columns, so the census passed; what failed was
+    :meth:`test_the_helper_covers_every_authored_column`, because the list the
+    comparison helpers read had not grown with the table.  That is the arm
+    catching a column that would otherwise sit outside every round-trip
+    assertion in this file.
     """
 
     def test_the_write_door_assigns_every_column_the_database_does_not(self):
@@ -272,20 +346,79 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
             "value nobody writes also never changes."
         )
 
-    def test_the_helper_covers_every_authored_column(self):
-        """:data:`_AUTHORED_COLUMNS` is every authored column, not a subset.
+    def test_the_helpers_cover_every_column_between_them(self):
+        """The two lists PARTITION the table, so no column escapes both.
 
         The comparison helpers in this file read only these names, so a name
-        missing here would exempt that column from every assertion built on
-        them.  Keyed on the TABLE because that is what they ``getattr`` off.
+        missing from both would exempt that column from every assertion built
+        on them.  Keyed on the TABLE because that is what they ``getattr`` off.
+
+        **Disjointness is asserted too**: a column on both lists would be
+        claimed as caller-stated AND as resolver-derived, and the two carry
+        opposite expectations under a schedule rebuild -- one must not move,
+        the other legitimately does.
         """
+        assert not set(_AUTHORED_COLUMNS) & set(_DERIVED_COLUMNS), (
+            "a column cannot be both authored and derived: the reset and "
+            "round-trip assertions expect it to hold still, and the resolver "
+            "assertion expects it to follow the schedule."
+        )
         table_columns = {
             column.key for column in RecurrenceRule.__table__.columns
         }
 
-        assert set(_AUTHORED_COLUMNS) == (
+        assert set(_AUTHORED_COLUMNS) | set(_DERIVED_COLUMNS) == (
             table_columns - _DB_ASSIGNED_COLUMNS - _RETIRED_COLUMNS
         )
+
+    def test_the_derived_columns_equal_the_resolver(self, seed_user, db, seed_periods):  # pylint: disable=unused-argument
+        """Every DERIVED column holds what the resolver answers, per cadence.
+
+        **What this proves, stated narrowly because an adversarial review of
+        plan step R7c-a found the wider claim false.**  It says the write door
+        ASSIGNS every derived column from the resolver and that the read door
+        round-trips them -- so a door that forgot one, or a read that lost a
+        field, fails here.  It does **not** grade ``first_occurrence``: both
+        sides of the comparison call it, so it is a producer checked against
+        itself, which ``docs/plans/verification.md`` standard 2 rules out.
+        The independent oracle for that function is the occurrence WALK, in
+        ``test_recurrence_occurrence.TestTheFirstOccurrenceIsTheWalksFirstYield``.
+
+        Asserted per cadence rather than once because the door's branch set is
+        per unit -- a pay-period rule's ``starts_on`` is a PAYDAY and a
+        calendar rule's is the anchor date.
+
+        Args:
+            seed_user: The owner fixture.
+            db: The session fixture.
+            seed_periods: The owner's schedule.
+        """
+        user_id = seed_user["user"].id
+        calendar = calendar_for(user_id)
+        for cadence_name in CADENCE_BY_LEGACY_NAME:
+            rule = author_rule(
+                spec_for(
+                    cadence_name, user_id=user_id,
+                    starts_on=date(2026, 1, 15),
+                ),
+                calendar,
+            )
+            db.session.flush()
+            resolved = resolve(recurrence_spec(rule), calendar)
+            assert derived_columns(rule) == {
+                "interval_n": resolved.interval_n,
+                "unit_id": ref_cache.recurrence_unit_id(resolved.unit),
+                "placement_id": ref_cache.period_placement_id(
+                    resolved.placement,
+                ),
+                "shift_id": ref_cache.business_day_shift_id(resolved.shift),
+                "starts_on": resolved.starts_on,
+                "nominal_day": resolved.nominal_day,
+            }, (
+                f"the {cadence_name} rule's stored cadence columns disagree "
+                f"with what the resolver answers for it, so the table states "
+                f"its cadence twice and the two have drifted."
+            )
 
     def test_every_retired_column_still_exists(self):
         """:data:`_RETIRED_COLUMNS` names columns, not memories.
@@ -321,20 +454,34 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
         (defect **D1**'s fix).  A field a caller can state and the door
         ignores is a field that lies about what it does, so R7b-4 removed it
         from the spec rather than from this list: nobody authors a phase now.
+
+        **Two names, not one, since plan step R7c-b.**  A spec field reaches
+        the row by one of two routes: the door copies it (``spec.x``) or the
+        RESOLVER answers it and the door copies that (``resolved.x``).
+        ``starts_on`` travels the second route and must -- a paycheck-space
+        rule's first occurrence is normalised onto a payday, so the value the
+        column holds is deliberately not the one the caller stated -- and
+        counting only ``spec.`` reads would have reported it as dropped.
+        Widening the census does not weaken it: a field on NEITHER name is
+        still a field nothing carries, and whether ``resolve`` carries what it
+        is handed is graded separately, by
+        ``test_recurrence_resolution.TestTotality``.
         """
         source = inspect.getsource(_authoring)
+        carriers = {"spec", "resolved"}
         read_from_spec = {
             node.attr
             for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
-            and node.value.id == "spec"
+            and node.value.id in carriers
         }
         spec_fields = {field.name for field in fields(RecurrenceSpec)}
 
         assert spec_fields - read_from_spec == set(), (
-            "a RecurrenceSpec field the write door never reads is one a "
-            "caller can state and the table will not carry."
+            "a RecurrenceSpec field the write door never reads -- on the spec "
+            "OR on the value the resolver returns -- is one a caller can "
+            "state and the table will not carry."
         )
 
 
@@ -368,7 +515,7 @@ class TestSalaryProfileWriter:
         assert_resolves_completely(rule)
         assert_reauthoring_changes_nothing(rule)
         resolved = resolved_for(rule)
-        assert resolved.anchor_date == seed_periods[0].start_date
+        assert resolved.starts_on == seed_periods[0].start_date
         assert resolved.unit is RecurrenceUnitEnum.PERIOD
         assert resolved.interval_n == 1
 
@@ -380,15 +527,25 @@ class TestLoanPaymentTransferWriter:
     def test_the_created_rule_anchors_on_the_loans_contractual_day(
         self, auth_client, seed_user, db,
     ):
-        """The anchor is the first payment day at or after the first installment.
+        """The first occurrence IS the loan's first contractual installment.
 
-        The route creates the rule with ``day_of_month = payment_day`` and
-        then ``bind_rule_to_loan`` stamps ``start_date`` = the loan's first
-        contractual installment, re-authoring it.  With an origination of
-        2023-06-01 and a payment day of 1, that installment is 2023-07-01 --
-        which precedes the schedule opening (2026-01-02), so the effective
-        bound is the opening and the first day-1 occurrence at or after it is
-        2026-02-01.
+        With an origination of 2023-06-01 and a payment day of 1, that
+        installment is 2023-07-01, and since plan step R7c-b that is what the
+        column holds: ``loan_cadence_start`` derives it once, before the rule
+        is built (developer ruling, Fork 2).
+
+        **It used to hold 2026-02-01**, the first day-1 occurrence at or after
+        the schedule's opening -- because the date was an opening BOUND and the
+        resolver clamped it to the schedule before deriving an anchor.  That
+        made the stored value HORIZON-DEPENDENT, which is plan ledger row
+        D10's own shape: extending the schedule backwards moved it.  The
+        loan's first installment is a fact about the loan.
+
+        **Generation is unchanged, and that was measured rather than assumed**:
+        the walk emits 35 occurrences from 2023-07-01, of which 4 place -- the
+        first at 2026-02-01, exactly as before.  The 31 that precede the
+        schedule place nowhere and are dropped, which is the same reason a
+        payment does not generate before its loan exists.
         """
         loan = create_loan_account(
             seed_user, db.session, name="Mortgage",
@@ -408,11 +565,21 @@ class TestLoanPaymentTransferWriter:
         ).one()
         assert_resolves_completely(rule)
         assert_reauthoring_changes_nothing(rule)
-        assert rule.day_of_month == 1
-        assert rule.start_date == date(2023, 7, 1)
+        assert scheduling_day_of_month(rule) == 1
+        assert rule.starts_on == date(2023, 7, 1)
         resolved = resolved_for(rule)
-        assert resolved.anchor_date == date(2026, 2, 1)
+        assert resolved.starts_on == date(2023, 7, 1)
         assert resolved.unit is RecurrenceUnitEnum.MONTH
+        # The first occurrence the SCHEDULE can host is still 2026-02-01, so
+        # what generates is unchanged; only where the fact is recorded moved.
+        placed = [
+            placement
+            for placement in occurrence_placements(
+                resolved, calendar_for(rule.user_id),
+            )
+            if placement.period is not None
+        ]
+        assert placed[0].occurrence == date(2026, 2, 1)
 
     @pytest.mark.usefixtures("seed_periods")
     def test_a_payment_day_edit_moves_the_anchor_with_it(
@@ -420,14 +587,17 @@ class TestLoanPaymentTransferWriter:
     ):
         """Moving the payment day moves the first occurrence with it.
 
-        The anchor is computed from ``day_of_month``, so the two cannot
-        disagree -- which is the point of plan step R2d.  Before the write
-        door existed, ``_sync_loan_cadence`` wrote ``day_of_month`` and
+        The first occurrence is DERIVED from the loan's terms, so the two
+        cannot disagree -- which is the point of plan step R2d, and of the
+        ruling that made ``loan_cadence_start`` the one producer.  Before the
+        write door existed, ``_sync_loan_cadence`` wrote ``day_of_month`` and
         ``start_date`` alone; while the anchor was a stored column that left
         it on the day the servicer no longer bills, with no query able to tell
-        the stale value from a fresh one.  Moving the payment day from the 1st
-        to the 20th must move the first occurrence from 2026-02-01 to
-        2026-01-20.
+        the stale value from a fresh one.
+
+        Origination 2023-06-01: at payment day 1 the first installment is
+        2023-07-01, and at 20 it is 2023-07-20 -- the first billing month
+        is the one after origination either way, so only the DAY moves.
         """
         loan = create_loan_account(
             seed_user, db.session, name="Auto",
@@ -437,23 +607,23 @@ class TestLoanPaymentTransferWriter:
         )
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.MONTHLY,
+                "Monthly",
                 user_id=seed_user["user"].id,
-                day_of_month=1,
+                starts_on=date(2026, 2, 1),
             ),
             calendar_for(seed_user["user"].id),
         )
         loan_recurrence_sync.bind_rule_to_loan(rule, loan.id)
         db.session.flush()
-        assert resolved_for(rule).anchor_date == date(2026, 2, 1)
+        assert resolved_for(rule).starts_on == date(2023, 7, 1)
 
         params = loan.loan_params
         params.payment_day = 20
         loan_recurrence_sync.bind_rule_to_loan(rule, loan.id)
         db.session.flush()
 
-        assert rule.day_of_month == 20
-        assert resolved_for(rule).anchor_date == date(2026, 1, 20)
+        assert scheduling_day_of_month(rule) == 20
+        assert resolved_for(rule).starts_on == date(2023, 7, 20)
         assert_reauthoring_changes_nothing(rule)
 
 
@@ -486,14 +656,14 @@ class TestScheduleRebuildRepoint:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.EVERY_PERIOD,
+                "Every Period",
                 user_id=user_id,
-                start_date=seed_periods[0].start_date,
+                starts_on=seed_periods[0].start_date,
             ),
             calendar_for(user_id),
         )
         db.session.flush()
-        assert resolved_for(rule).anchor_date == date(2026, 1, 2)
+        assert resolved_for(rule).starts_on == date(2026, 1, 2)
         before = authored_columns(rule)
 
         new_periods = pay_period_admin.reset_pay_periods(
@@ -503,7 +673,34 @@ class TestScheduleRebuildRepoint:
 
         assert new_periods[0].start_date == date(2027, 3, 5)
         assert authored_columns(rule) == before
-        assert resolved_for(rule).anchor_date == date(2027, 3, 5)
+        assert resolved_for(rule).starts_on == date(2027, 3, 5)
+
+        # **The stored date is stale and the READ answer is not, which is what
+        # plan step R7c-b narrowed this to.**  The door writes ``starts_on`` on
+        # every RULE write and on no other event, so a schedule rebuilt with
+        # nothing rewriting the rule leaves the column holding a payday the
+        # owner no longer has.  What changed at R7c-b is the blast radius: a
+        # CALENDAR cadence's date is authored and a rebuild must not move it at
+        # all, while a PAY-PERIOD one is normalised onto the paycheck that
+        # hosts it -- so the READ re-normalises against whatever schedule
+        # exists now and answers the new opening payday.  The stored value is
+        # repaired by the next write, and nothing reads it without resolving.
+        #
+        # The MIGRATION re-ran the backfill for exactly this reason: a database
+        # that sat between R7c-a and R7c-b through a rebuild would otherwise
+        # have carried the stale date into the leaf that makes it
+        # authoritative.
+        new_calendar = calendar_for(user_id)
+        assert rule.starts_on == date(2026, 1, 2)
+        assert resolve(
+            recurrence_spec(rule), new_calendar,
+        ).starts_on == date(2027, 3, 5)
+
+        reauthor_rule(rule, recurrence_spec(rule), new_calendar)
+        db.session.flush()
+        assert rule.starts_on == date(2027, 3, 5), (
+            "a rule REWRITTEN after the rebuild must pick the new schedule up"
+        )
         assert_reauthoring_changes_nothing(rule)
 
     def test_a_reset_keeps_a_bound_that_falls_INSIDE_the_new_schedule(
@@ -516,20 +713,20 @@ class TestScheduleRebuildRepoint:
         2026-01-02 while a rule states it starts 2026-03-27, and the re-point
         answered "starts 2026-01-02" -- silently discarding the user's stated
         start because the FK it had to restore could only name the first
-        period.  A date has nothing to restore: the bound survives, and
-        ``max(2026-01-02, 2026-03-27)`` keeps it.
+        period.  A date has nothing to restore: it survives the rebuild
+        untouched.
 
-        Index 5 of a 14-day schedule opening 2026-01-02 is 2026-03-13, so a
-        bound of 2026-03-27 lands inside index 6 and the rule opens there
-        rather than at the schedule's own start.
+        2026-01-02 + 6 x 14 days is 2026-03-27, so the stated date IS index
+        6's payday -- which is what makes it a legal first occurrence for a
+        paycheck-space rule, and why the normalisation leaves it alone.
         """
         user_id = seed_user["user"].id
         stated_start = date(2026, 3, 27)
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.EVERY_PERIOD,
+                "Every Period",
                 user_id=user_id,
-                start_date=stated_start,
+                starts_on=stated_start,
             ),
             calendar_for(user_id),
         )
@@ -540,8 +737,8 @@ class TestScheduleRebuildRepoint:
         )
         db.session.flush()
 
-        assert rule.start_date == stated_start
-        assert resolved_for(rule).anchor_date == stated_start
+        assert rule.starts_on == stated_start
+        assert resolved_for(rule).starts_on == stated_start
 
     def test_a_reset_re_phases_an_every_n_rule_through_the_new_schedule(
         self, seed_user, db, seed_periods,
@@ -563,10 +760,10 @@ class TestScheduleRebuildRepoint:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.EVERY_N_PERIODS,
+                "Every N Periods",
                 user_id=user_id,
                 interval_n=3,
-                start_date=seed_periods[2].start_date,
+                starts_on=seed_periods[2].start_date,
             ),
             calendar_for(user_id),
         )
@@ -582,16 +779,18 @@ class TestScheduleRebuildRepoint:
         assert resolved.offset_periods == 0  # new index 0 % interval 3
         assert resolved.interval_n == 3
 
-        # The COLUMN still holds the OLD schedule's phase, and re-authoring is
-        # what brings it into line.  Asserted rather than glossed, because it
-        # is the one place a reader could suspect the reset left something
-        # wrong: the column is a stale DERIVATIVE, not a stale fact.  Nothing
-        # reads it (plan step R7b-4), so the resolved answer above is what
-        # every consumer sees, and plan step R7c drops it.
-        assert rule.offset_periods == 2
+        # **The stale-phase COLUMN this used to assert about is DROPPED**
+        # (plan step R7c-c).  It held the OLD schedule's phase until a
+        # re-author brought it into line, and the case pinned both halves
+        # because a reader could otherwise suspect the reset had left
+        # something wrong.  There is no column to be stale: the phase is
+        # derived from the first occurrence on every read, which is what the
+        # assertion above already measures.  Re-authoring is still exercised,
+        # because idempotence after a reset is a different claim from the
+        # resolved answer being right.
         reauthor_rule(rule, recurrence_spec(rule), calendar_for(user_id))
         db.session.flush()
-        assert rule.offset_periods == 0
+        assert resolved_for(rule).offset_periods == 0
 
     def test_a_rule_with_NO_start_period_follows_the_reset_without_a_write(
         self, seed_user, db, seed_periods,
@@ -615,14 +814,14 @@ class TestScheduleRebuildRepoint:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.EVERY_PERIOD,
+                "Every Period",
                 user_id=user_id,
             ),
             calendar_for(user_id),
         )
         db.session.flush()
-        assert rule.start_date is None
-        assert resolved_for(rule).anchor_date == seed_periods[0].start_date
+        assert rule.starts_on == seed_periods[0].start_date
+        assert resolved_for(rule).starts_on == seed_periods[0].start_date
         before = authored_columns(rule)
 
         pay_period_admin.reset_pay_periods(
@@ -637,18 +836,27 @@ class TestScheduleRebuildRepoint:
         # stored anchor had.
         assert authored_columns(rule) == before
         # And it still answers for the schedule that exists now.
-        assert resolved_for(rule).anchor_date == date(2027, 3, 5)
+        assert resolved_for(rule).starts_on == date(2027, 3, 5)
 
 
-class TestTheClampIsResolvedNeverStored:
-    """The month-end clamp is carried by the resolved value, not a row.
+class TestTheClampIsResolvedAndStoredOnTheRule:
+    """The month-end clamp is carried by the RULE, never by a subtype row.
 
-    ``budget.recurrence_month_anchors`` exists to hold the day an
-    ``anchor_date`` COLUMN clamped -- and there is no such column until plan
-    step R7c, so the table must stay empty.  These are the regression guard
-    for re-introducing subtype writing ahead of the column it describes: an
-    anchor row written now would describe a value nothing stores, and nothing
-    would read it.
+    **Rewritten at plan step R7c-a**, which falsified what this class used to
+    say: that ``budget.recurrence_month_anchors`` holds the day a clamped
+    anchor lost and that "there is no such column until plan step R7c, so the
+    table must stay empty".  There is such a column now --
+    ``recurrence_rules.nominal_day`` -- and ruling R-R16 means the satellite
+    table is never written at all: it is dropped unwritten at R7c-c.
+
+    So the guard flips.  It is no longer "nothing is stored"; it is **the
+    clamp is stored on the rule and cleared from the rule**, and the subtype
+    stays empty because it has no writer and never will.  Asserting the
+    CLEARING is what the previous version could not: it checked the resolved
+    value only, and a write door that set ``nominal_day`` and never unset it
+    would have passed -- restoring the 31st on the next read of a rule the
+    user had moved to the 15th, which is the exact residue the old row-based
+    design was rejected for.
     """
 
     @pytest.mark.usefixtures("seed_periods")
@@ -657,28 +865,32 @@ class TestTheClampIsResolvedNeverStored:
     ):
         """A day-31 rule anchored in a 30-day month: April has no 31st.
 
-        The rule's own ``day_of_month`` still holds 31, and the resolved
-        anchor clamps to 2026-04-30 while ``nominal_day`` carries the 31 the
-        user meant -- so nothing is lost and nothing is written.
+        The resolved anchor clamps to 2026-04-30 while ``nominal_day``
+        carries the 31 the user meant, so nothing is lost -- and the day the
+        rule fires on is that pair READ TOGETHER rather than a third column
+        holding it, which is what ruling R-R16 collapsed and plan step R7c-c
+        dropped.
         """
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.MONTHLY,
+                "Monthly",
                 user_id=user_id,
-                day_of_month=31,
-                start_date=date(2026, 4, 1),
+                starts_on=date(2026, 4, 30),
+                nominal_day=31,
             ),
             calendar_for(user_id),
         )
         db.session.flush()
 
         resolved = resolved_for(rule)
-        assert resolved.anchor_date == date(2026, 4, 30)
+        assert resolved.starts_on == date(2026, 4, 30)
         assert resolved.nominal_day == 31
-        assert rule.day_of_month == 31
-        assert rule.month_anchor is None
-        assert db.session.query(RecurrenceMonthAnchor).count() == 0
+        assert scheduling_day_of_month(rule) == 31
+        # The COLUMNS carry what the resolved value carries (plan step
+        # R7c-a): the date the month could hold, and the day the rule meant.
+        assert rule.starts_on == date(2026, 4, 30)
+        assert rule.nominal_day == 31
 
     @pytest.mark.usefixtures("seed_periods")
     def test_changing_the_day_changes_the_resolved_clamp(
@@ -694,10 +906,10 @@ class TestTheClampIsResolvedNeverStored:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.MONTHLY,
+                "Monthly",
                 user_id=user_id,
-                day_of_month=31,
-                start_date=date(2026, 4, 1),
+                starts_on=date(2026, 4, 30),
+                nominal_day=31,
             ),
             calendar_for(user_id),
         )
@@ -706,16 +918,87 @@ class TestTheClampIsResolvedNeverStored:
 
         reauthor_rule(
             rule,
-            replace(recurrence_spec(rule), day_of_month=15),
+            replace(
+                recurrence_spec(rule),
+                starts_on=date(2026, 4, 15), nominal_day=None,
+            ),
             calendar_for(user_id),
         )
         db.session.flush()
 
         resolved = resolved_for(rule)
-        assert resolved.anchor_date == date(2026, 4, 15)
+        assert resolved.starts_on == date(2026, 4, 15)
         assert resolved.nominal_day is None
-        assert db.session.query(RecurrenceMonthAnchor).count() == 0
+        # **The CLEARING, which is what this case exists for.**  A door that
+        # set the column and never unset it would leave 31 here and restore
+        # the month-end on the next read.
+        assert rule.starts_on == date(2026, 4, 15)
+        assert rule.nominal_day is None
+        assert scheduling_day_of_month(rule) == 15
         assert_reauthoring_changes_nothing(rule)
+
+
+class TestTheIntervalColumnSaysWhatTheCadenceSays:
+    """``interval_n`` and the resolved cadence agree, for every cadence.
+
+    **This class asserted the OPPOSITE until plan step R7c-c, deliberately.**
+    ``encode_cadence`` wrote ``1`` for every pattern whose interval was baked
+    into its NAME, so a Quarterly rule stored ``(unit_id = month, interval_n =
+    1)`` -- read at face value, MONTHLY: 12 occurrences a year where 4 are
+    owed, over the whole projection, in generated rows and in the projected
+    balance.  Nothing read it that way, because every reader went through
+    ``decode_pattern``; the class pinned the inequality so that it would go red
+    the moment someone re-pointed the column, and whoever did that would be the
+    person who had to move the readers with it.
+
+    That happened.  The migration re-points the column and drops the pattern it
+    had to be read through, so the pair can be honest and this class says so.
+    It is the same guard turned around: it goes red if an encoding ever comes
+    back.
+    """
+
+    @pytest.mark.usefixtures("seed_periods")
+    @pytest.mark.parametrize(
+        ("cadence_name", "two_axis_interval"),
+        [
+            ("Every Period", 1),
+            ("Monthly", 1),
+            ("Monthly First", 1),
+            ("Quarterly", 3),
+            ("Semi-Annual", 6),
+            ("Annual", 1),
+        ],
+    )
+    def test_the_column_holds_the_cadences_own_interval(
+        self, seed_user, db, cadence_name, two_axis_interval,
+    ):
+        """The stored column and the resolved cadence name one number.
+
+        Swept over every named cadence rather than the two the encoding
+        touched, because the property is now about all of them: a re-introduced
+        encoding would show up on whichever one it re-encoded.
+
+        Args:
+            seed_user: The owner fixture.
+            db: The session fixture.
+            cadence_name: The cadence to author.
+            two_axis_interval: The interval it means.
+        """
+        user_id = seed_user["user"].id
+        rule = author_rule(
+            spec_for(
+                cadence_name, user_id=user_id, starts_on=date(2026, 1, 15),
+            ),
+            calendar_for(user_id),
+        )
+        db.session.flush()
+
+        assert rule.interval_n == two_axis_interval, (
+            "the column stopped saying what the cadence says.  A stored "
+            "interval that disagrees with the rule's own rhythm generates a "
+            "bill at the wrong frequency for the life of the projection"
+        )
+        assert resolved_for(rule).interval_n == two_axis_interval
 
 
 class TestPhasePreservedAcrossAnEdit:
@@ -745,15 +1028,19 @@ class TestPhasePreservedAcrossAnEdit:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.EVERY_N_PERIODS,
+                "Every N Periods",
                 user_id=user_id,
                 interval_n=3,
-                start_date=seed_periods[2].start_date,
+                starts_on=seed_periods[2].start_date,
             ),
             calendar_for(user_id),
         )
         db.session.flush()
-        assert rule.offset_periods == 2  # index 2 % interval 3
+        # index 2 % interval 3.  Read through the RESOLVER since plan step
+        # R7c-c dropped the column: the phase is derived from the rule's
+        # first occurrence on every read, which is the whole reason defect
+        # D1's stale-column shape is now unconstructible rather than guarded.
+        assert resolved_for(rule).offset_periods == 2
 
         # An amount-only edit: read the rule whole, change nothing the phase
         # depends on, write it whole.
@@ -762,207 +1049,160 @@ class TestPhasePreservedAcrossAnEdit:
         )
         db.session.flush()
 
-        assert rule.offset_periods == 2
+        assert resolved_for(rule).offset_periods == 2
 
 
-class TestWhatTheEncodingNORMALISES:
-    """The two columns a re-author moves, stated rather than discovered.
+class TestWhatTheWriteDoorNORMALISES:
+    """The one column a re-author still moves, stated rather than discovered.
 
-    Plan step R7b-1 claimed "no behaviour change" and an adversarial review
-    measured two exceptions.  Neither moves an occurrence, a pay period or an
-    amount -- the cadence is identical both times -- but both change a STORED
-    column, and a claim that broad has to be either true or narrowed.  Narrowed:
-    **no occurrence, period or amount moves.**
+    **Two normalisations left at plan step R7c-c with the encoding that made
+    them**: "every 1 paycheck" was stored under ``Every Period``'s name (two
+    names for one reading, which the closed set forced a choice between), and a
+    stale ``offset_periods`` was rewritten to 0 (that column is dropped, and
+    the phase is derived on every read).
 
-    Neither is visible in the two pieces of evidence the step leaned on, and
-    that is worth saying: the 430-shape baseline sets columns directly and never
-    calls the write door at all, and the production clone holds no rule of
-    either shape.  A control has to be written for a state the corpus does not
-    contain.
+    What survives is the pay-period NORMALISATION of the first occurrence,
+    which is not an encoding at all: a paycheck-space cadence fires on PAYDAYS,
+    so a caller may author any date and ``resolve`` answers the payday of the
+    paycheck that hosts it.  A stored value that was not a real occurrence is
+    what ruling R-R16 removed, and this is the case that says the door applies
+    it.
     """
 
     @pytest.mark.usefixtures("seed_periods")
-    def test_every_one_paycheck_is_stored_under_its_own_name(
-        self, seed_user, db,
+    def test_a_mid_period_date_is_seated_on_its_paychecks_payday(
+        self, seed_user, db, seed_periods,
     ):
-        """"Every 1 paycheck" and "every paycheck" are ONE cadence.
+        """A pay-period cadence stores a PAYDAY, never the authored date.
 
-        Reachable from the form -- the interval input's floor is 1 on both the
-        schema (``Range(min=1)``) and the markup -- so a user who picks "Every
-        N paychecks" with N = 1 now gets a row stored as ``Every Period``, and
-        the edit page afterwards reads "Every paycheck" with the interval
-        control hidden.
-
-        The canonicalisation is deliberate: two names for one reading make plan
-        step R7c's downgrade ambiguous, so the encoder picks the named one.
-        Pinned HERE as well as at the encoder because this is the shape a user
-        can actually reach, and because nothing else in the suite authors an
-        every-N rule at interval 1.
+        Asserted with the occurrences either side, because a column pinned
+        alone says nothing about whether the rule fires where the user meant:
+        the first occurrence the walk yields must BE the stored value, which is
+        what makes ``starts_on`` a real occurrence by construction rather than
+        by two functions agreeing.
         """
         user_id = seed_user["user"].id
+        payday = seed_periods[1].start_date
+        mid_period = payday + timedelta(days=3)
+
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.EVERY_N_PERIODS,
-                user_id=user_id, interval_n=1,
+                "Every Period", user_id=user_id, starts_on=mid_period,
             ),
             calendar_for(user_id),
         )
         db.session.flush()
 
-        assert rule.pattern_id == ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.EVERY_PERIOD,
+        assert rule.starts_on == payday
+        assert rule_occurrences(rule, calendar_for(user_id))[0].occurrence == (
+            payday
         )
-        assert resolved_for(rule).interval_n == 1
-        assert resolved_for(rule).unit is RecurrenceUnitEnum.PERIOD
-
-    def test_a_stale_phase_on_a_every_paycheck_rule_is_normalised_to_zero(
-        self, seed_user, db, seed_periods,
-    ):
-        """A phase means nothing at interval 1, and a re-author says so.
-
-        ``ck_recurrence_rules_valid_offset`` is only ``offset_periods >= 0``,
-        so ``(interval_n = 1, offset_periods = 2)`` is a DB-legal row -- and the
-        old derivation, keyed on the pattern rather than the cadence, carried
-        that 2 back out untouched.  The new one returns 0, because every
-        paycheck satisfies ``(index - offset) % 1``.
-
-        Inert by construction, and asserted as such: the occurrences either
-        side of the re-author are identical.  Without that half this case would
-        pin a column and say nothing about whether money moved.
-        """
-        user_id = seed_user["user"].id
-        rule = author_rule(
-            spec_for(RecurrencePatternEnum.EVERY_PERIOD, user_id=user_id),
-            calendar_for(user_id),
-        )
-        db.session.flush()
-        rule.offset_periods = 2
-        db.session.flush()
-        before = [
-            placement.occurrence
-            for placement in rule_occurrences(rule, calendar_for(user_id))
-        ]
-
-        reauthor_rule(rule, recurrence_spec(rule), calendar_for(user_id))
-        db.session.flush()
-
-        assert rule.offset_periods == 0
-        assert [
-            placement.occurrence
-            for placement in rule_occurrences(rule, calendar_for(user_id))
-        ] == before
-
-
-class TestTheIntervalSurvivesTheStorageEncoding:
-    """A cadence's interval means the same thing after a round trip through the
-    closed-set columns.
-
-    **This class changed subject at plan step R7b and the old subject is now
-    impossible.**  It used to assert that a calendar PATTERN names its own
-    interval so the form's hidden input could not reach it.  A caller now
-    states the interval directly, so there is no submitted value to be immune
-    to -- and the protection did not disappear, it MOVED: the route decodes the
-    posted pattern id through
-    :func:`~app.services.recurrence.decode_pattern`, which ignores the posted
-    interval for every pattern that names its own.  That is the first case
-    below.
-
-    What replaces it is the property the whole seam rests on: an authored
-    cadence written through the door and read back through
-    ``recurrence_spec`` is the SAME cadence, even though the column it passed
-    through cannot hold it.
-    """
-
-    @pytest.mark.parametrize("submitted", [1, 3, 7, 99])
-    def test_a_posted_interval_cannot_change_a_named_cadence(
-        self, app, submitted,
-    ):
-        """Decoding a Quarterly id answers every 3 months, whatever is posted.
-
-        The form collects an interval only for the paycheck cadence, but a
-        hidden input still SUBMITS its default of 1 for every pattern.  If
-        that 1 became the two-axis interval, ``(1, MONTH)`` IS monthly --
-        three times the projected spend for a quarterly bill.  The decoder
-        reads the interval off the PATTERN, so no posted value can say
-        anything about a Quarterly rule.
-        """
-        with app.app_context():
-            reading = decode_pattern(
-                ref_cache.recurrence_pattern_id(
-                    RecurrencePatternEnum.QUARTERLY,
-                ),
-                submitted,
-            )
-
-        assert reading.cadence.interval_n == 3
-        assert reading.cadence.unit is RecurrenceUnitEnum.MONTH
 
     @pytest.mark.usefixtures("seed_periods")
-    def test_a_quarterly_cadence_round_trips_through_a_column_that_holds_1(
+    def test_a_whole_number_of_years_in_months_is_stored_as_years(
         self, seed_user, db,
     ):
-        """Every 3 months stores ``interval_n = 1`` and reads back as 3.
+        """Ruling **R-R17** at the door: one rhythm, one spelling.
 
-        The column is spelled "repeat every N pay PERIODS" and cannot hold a
-        month count, so the encoder puts the interval in the pattern's NAME and
-        writes 1.  Both halves are asserted: the stored column, because a
-        regression that wrote 3 there would give the row two meanings while
-        every ``resolved_for`` assertion in this file stayed green; and the
-        decoded cadence, because that is what every reader consumes.
+        Reachable from the form the moment the interval became a free box --
+        a user may type "every 12 months" -- and it is the same rhythm as
+        "every 1 year".  Two spellings would word one annual bill two ways on
+        the Recurring surface and group them apart in the obligations filter.
+
+        The pure substitution is covered in ``test_recurrence_frequency``; this
+        is what says the DOOR applies it, which is what stores it.
         """
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.QUARTERLY,
-                user_id=user_id,
-                month_of_year=2, day_of_month=10,
+                "Monthly", user_id=user_id, interval_n=12,
+                starts_on=date(2026, 3, 15),
             ),
             calendar_for(user_id),
         )
         db.session.flush()
 
         assert rule.interval_n == 1
-        assert recurrence_spec(rule).interval_n == 3
-        assert resolved_for(rule).interval_n == 3
-        assert resolved_for(rule).unit is RecurrenceUnitEnum.MONTH
+        assert rule.unit_id == ref_cache.recurrence_unit_id(
+            RecurrenceUnitEnum.YEAR,
+        )
+        assert resolved_for(rule).unit is RecurrenceUnitEnum.YEAR
+        assert_reauthoring_changes_nothing(rule)
 
-    def test_a_paycheck_cadence_keeps_its_interval_in_the_column(
-        self, seed_user, db, seed_periods,
+
+class TestTheIntervalRoundTripsThroughTheColumn:
+    """An authored interval is the interval read back, for every unit.
+
+    **This class changed subject twice.**  It first asserted that a calendar
+    PATTERN named its own interval so the form's hidden input could not reach
+    it; plan step R7b moved that protection into ``decode_pattern``, which
+    ignored a posted interval for every pattern that named one; plan step R7c-c
+    deletes both, because there is no encoding left for a value to survive.
+
+    What is left is the property the whole seam rests on and the only one that
+    was ever about money: an authored cadence written through the door and read
+    back is the SAME cadence.  It is now a straight round trip through one
+    column, which is the point of the leaf.
+    """
+
+    @pytest.mark.usefixtures("seed_periods")
+    @pytest.mark.parametrize(
+        ("cadence_name", "interval_n"),
+        [
+            ("Every N Periods", 4),
+            ("Monthly", 2),
+            ("Monthly", 5),
+            ("Quarterly", 3),
+            ("Annual", 2),
+        ],
+    )
+    def test_an_authored_interval_reads_back_unchanged(
+        self, seed_user, db, cadence_name, interval_n,
     ):
-        """Every 4 paychecks is the one cadence the column itself carries."""
+        """Including the intervals the closed pattern set could not name.
+
+        ``(2, MONTH)`` and ``(2, YEAR)`` are the two cadences this arc exists
+        for: they resolve and walk correctly and had nowhere to be written
+        until this leaf.  Sweeping them beside the ones the closed set could
+        name is what says the column is general rather than widened for a case.
+
+        Args:
+            seed_user: The owner fixture.
+            db: The session fixture.
+            cadence_name: The cadence whose unit and placement to author.
+            interval_n: The interval to state.
+        """
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.EVERY_N_PERIODS,
-                user_id=user_id,
-                interval_n=4,
-                start_date=seed_periods[0].start_date,
+                cadence_name, user_id=user_id, interval_n=interval_n,
+                starts_on=date(2026, 2, 10),
             ),
             calendar_for(user_id),
         )
         db.session.flush()
 
-        assert rule.interval_n == 4
-        assert resolved_for(rule).interval_n == 4
-        assert resolved_for(rule).unit is RecurrenceUnitEnum.PERIOD
+        assert rule.interval_n == interval_n
+        assert recurrence_spec(rule).interval_n == interval_n
+        assert resolved_for(rule).interval_n == interval_n
 
     def test_switching_from_paychecks_to_quarterly_restates_the_cadence(
         self, seed_user, db, seed_periods,
     ):
         """An edit that changes the UNIT changes the interval with it.
 
-        The reverse case the old pattern-scoped guard left open, and under the
-        two-axis vocabulary it is no longer a guard at all: a caller states
-        ``(3, MONTH)`` and the row cannot come to mean "every 4 months",
-        because the interval it stated is what it gets back.
+        A caller states ``(3, MONTH)`` and the row cannot come to mean "every 4
+        months", because the interval it stated is what it gets back.  The
+        column carried a PAYCHECK count before the edit, so this is also the
+        case that says nothing of the old cadence survives into the new one.
         """
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.EVERY_N_PERIODS,
+                "Every N Periods",
                 user_id=user_id,
                 interval_n=4,
-                start_date=seed_periods[0].start_date,
+                starts_on=seed_periods[0].start_date,
             ),
             calendar_for(user_id),
         )
@@ -974,7 +1214,7 @@ class TestTheIntervalSurvivesTheStorageEncoding:
                 recurrence_spec(rule),
                 unit=RecurrenceUnitEnum.MONTH,
                 interval_n=3,
-                month_of_year=2, day_of_month=10,
+                starts_on=date(2026, 2, 10),
             ),
             calendar_for(user_id),
         )
@@ -984,34 +1224,33 @@ class TestTheIntervalSurvivesTheStorageEncoding:
         assert resolved.interval_n == 3
         assert resolved.unit is RecurrenceUnitEnum.MONTH
         assert resolved.placement is PeriodPlacementEnum.CONTAINING_DATE
-        # The paycheck interval did not survive into a column that now means
-        # something else.
-        assert rule.interval_n == 1
+        assert rule.interval_n == 3
         assert_reauthoring_changes_nothing(rule)
 
 
-class TestEveryPatternAuthorsAndResolves:
-    """Both invariants, stated over every pattern the application can author."""
+class TestEveryCadenceAuthorsAndResolves:
+    """Both invariants, stated over every cadence the app can author."""
 
-    @pytest.mark.parametrize("pattern", list(RecurrencePatternEnum))
+    @pytest.mark.parametrize(
+        "cadence_name", list(CADENCE_BY_LEGACY_NAME),
+    )
     def test_an_authored_rule_resolves_and_round_trips(
-        self, seed_user, db, seed_periods, pattern,
+        self, seed_user, db, seed_periods, cadence_name,
     ):
-        """Every pattern resolves completely, and re-authoring is a no-op.
+        """Every cadence resolves completely, and re-authoring is a no-op.
 
-        Parametrised over the whole enum rather than a sample.  Completeness
-        is the property plan step R7c's NOT NULL columns will rest on -- a
-        pattern that resolved partially becomes an un-migratable row there --
-        and idempotence is what makes the read-modify-re-author idiom safe for
+        Parametrised over the whole shared vocabulary rather than a sample.
+        Completeness is the property the ``NOT NULL`` columns rest on -- a
+        cadence that resolved partially would be an un-storable row -- and
+        idempotence is what makes the read-modify-re-author idiom safe for
         every writer in the application.
         """
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                pattern,
+                cadence_name,
                 user_id=user_id,
-                day_of_month=15, month_of_year=3,
-                start_date=seed_periods[1].start_date,
+                starts_on=seed_periods[1].start_date,
             ),
             calendar_for(user_id),
         )
@@ -1028,7 +1267,7 @@ class TestEveryPatternAuthorsAndResolves:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                RecurrencePatternEnum.EVERY_PERIOD,
+                "Every Period",
                 user_id=user_id,
             ),
             calendar_for(user_id),

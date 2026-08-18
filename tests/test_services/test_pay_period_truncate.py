@@ -26,6 +26,7 @@ from app import ref_cache
 from app.enums import (
     PostingKindEnum,
     PostingSourceEnum,
+    RecurrencePatternEnum,
     StatusEnum,
 )
 from app.exceptions import (
@@ -62,6 +63,7 @@ from tests._test_helpers import (
     create_savings_account,
     make_every_period_rule,
     make_expense_template,
+    make_pattern_rule,
     make_transfer_template,
     seam_cash_balance_at,
 )
@@ -569,14 +571,29 @@ class TestTruncateHardLocks:
 
         Both halves are asserted, because deleting a hard lock is only safe if
         the thing it protected really does survive: the periods go, and the
-        rule's ``start_date`` is unchanged afterwards.
+        rule's ``starts_on`` is unchanged afterwards.
+
+        **Two things rotted at plan step R7c-b and both are fixed here.**  The
+        assertion read ``start_date``, a column the write door stopped writing
+        -- so it read ``None`` forever and held for any truncate, including one
+        that erased the bound.  And the rule was built by
+        ``make_every_period_rule``, which authors ``starts_on`` at the
+        SCHEDULE'S OPENING; the periods below start at 2026-07-03, so the rule
+        no longer started in the truncated period at all and the case had
+        stopped describing its own subject.  It is authored ON that period now.
         """
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=6)
             user_id = seed_user["user"].id
-            rule = make_every_period_rule(db.session, user_id)
-            rule.start_date = periods[2].start_date  # index 3
-            stated_start = rule.start_date
+            stated_start = periods[2].start_date  # index 3
+            rule = make_pattern_rule(
+                user_id, RecurrencePatternEnum.EVERY_PERIOD,
+                starts_on=stated_start,
+            )
+            assert rule.starts_on == stated_start, (
+                "the rule must start IN the period this truncates, or the "
+                "case is not about the lock it names"
+            )
             # Read the id BEFORE the delete: the instance is expired
             # afterwards and attribute access raises rather than answering.
             truncated_id = periods[2].id
@@ -590,7 +607,7 @@ class TestTruncateHardLocks:
             assert db.session.query(PayPeriod).filter_by(
                 id=truncated_id,
             ).one_or_none() is None
-            assert rule.start_date == stated_start
+            assert rule.starts_on == stated_start
 
 
 class TestTruncateDiscardGate:

@@ -1,11 +1,13 @@
 """Confirmed-ledger balance sheet (Build-Order Step 5).
 
 The posted ledger's position as of a date: Assets, Liabilities, and Equity
-sections folded from the display-timezone attribution core, plus the derived
-retained-earnings line that closes Income + Expense into equity (reader-contract
-C-5 -- never posted).  A two-part tie-out reports whether the ledger closes: the
-presented accounting identity (Assets == Liabilities + Equity) AND the mechanical
-double-entry self-check (every included debit-positive posting nets to zero).
+sections folded from the display-timezone attribution core, plus the two derived
+lines that close the income-statement classes into equity (reader-contract C-5
+-- never posted): retained earnings for Income + Expense, and accumulated
+change in value for the Unrealized class (ruling **R-FO**).  A two-part
+tie-out reports whether the ledger closes: the presented accounting identity
+(Assets == Liabilities + Equity) AND the mechanical double-entry self-check
+(every included debit-positive posting nets to zero).
 
 This is the POSTED ledger's statement.  It reflects only asserted anchor facts
 and settled activity; it excludes modeled growth / appreciation / interest
@@ -41,15 +43,18 @@ from ._types import (
 
 _ZERO_MONEY = Decimal("0.00")
 _RETAINED_EARNINGS_LABEL = "Retained Earnings"
+_ACCUMULATED_VALUE_CHANGE_LABEL = "Accumulated Change in Value"
 
 
 def compute_balance_sheet(user_id: int, as_of: date) -> BalanceSheetReport:
     """Return the confirmed-ledger balance sheet for a user as of a date.
 
     Folds every posted source attributed on or before *as_of* into per-account
-    cumulative positions, sections them by accounting class, derives retained
-    earnings, and reports the two-part tie-out.  A user with no baseline scenario
-    yields an empty sheet whose tie-out is green (0 == 0).
+    cumulative positions, sections them by accounting class, derives the two
+    closing equity lines -- retained earnings, and the accumulated change in
+    value where there is one (ruling **R-FO**) -- and reports the two-part
+    tie-out.  A user with no baseline scenario yields an empty sheet whose
+    tie-out is green (0 == 0).
 
     Args:
         user_id: The owner whose balance sheet to compute.
@@ -162,13 +167,23 @@ def _equity_section(
     chart: dict[int, LedgerAccount],
     class_ids: StatementClassIds,
 ) -> StatementSection:
-    """Return the Equity section, with the derived retained-earnings line last.
+    """Return the Equity section, with its two derived closing lines last.
 
     The Equity accounts (:func:`._attribution.section_lines`) plus the derived
-    retained-earnings line (reader-contract C-5) appended AFTER them so it reads
-    as the section's closing line, with the total summing all of them.  Built
-    directly rather than via :func:`._attribution.build_section` because that
-    closing line is computed, not a posted account.
+    closing lines (reader-contract C-5) appended AFTER them, with the total
+    summing all of them.  Built directly rather than via
+    :func:`._attribution.build_section` because those closing lines are
+    computed, not posted accounts.
+
+    Two lines close, one per class set the income statement reports and the
+    balance sheet does not: **Retained Earnings** closes Income + Expense, and
+    **Accumulated Change in Value** closes the Unrealized class (ruling
+    **R-FO**).  The second is not decoration -- the presented tie-out is
+    ``assets == liabilities + equity``, which holds only because every class
+    outside Assets and Liabilities is folded into equity exactly once.  Adding
+    a reporting class without its closing line would put the sheet out of
+    balance by that class's whole net (``$10,623.66`` on a production clone
+    2026-08-13).
 
     Args:
         cumulative: ``{ledger_account_id: cumulative_debit_net}`` through the
@@ -182,45 +197,68 @@ def _equity_section(
     lines = section_lines(cumulative, chart, class_ids.equity)
     lines.append(StatementLine(
         label=_RETAINED_EARNINGS_LABEL,
-        amount=_retained_earnings(cumulative, chart, class_ids),
+        amount=_closed_class_total(
+            cumulative, chart, (class_ids.income, class_ids.expense),
+        ),
         ledger_account_id=None,
     ))
+    accumulated_unrealized = _closed_class_total(
+        cumulative, chart, (class_ids.unrealized,),
+    )
+    # Dropped when it is zero, which is the rule :func:`section_lines` already
+    # applies to a POSTED account with no position -- an owner holding no
+    # investment or property has no unrealized position to report, and a
+    # ``$0.00`` line would say they do.  Retained earnings is unconditional by
+    # contrast: it is this statement's own closing line, and zero cumulative
+    # net income is a real answer.  Dropping a zero cannot move the section
+    # total, so the tie-out is untouched either way.
+    if accumulated_unrealized != 0:
+        lines.append(StatementLine(
+            label=_ACCUMULATED_VALUE_CHANGE_LABEL,
+            amount=accumulated_unrealized,
+            ledger_account_id=None,
+        ))
     return StatementSection(
         lines=lines,
         total=sum((line.amount for line in lines), _ZERO_MONEY),
     )
 
 
-def _retained_earnings(
+def _closed_class_total(
     cumulative: dict[int, Decimal],
     chart: dict[int, LedgerAccount],
-    class_ids: StatementClassIds,
+    closed_class_ids: tuple[int, ...],
 ) -> Decimal:
-    """Return the derived retained-earnings equity line (reader-contract C-5).
+    """Return the natural equity value of a class set closed into equity (C-5).
 
-    The accumulated net income through the as-of date: the NEGATED cumulative
-    debit net of every Income and Expense account (Income credits and Expense
-    debits net to income, and equity presents credit-normal, so the natural
-    line is the negated debit net).  Computed, never posted -- there are no
-    closing entries in this ledger.
+    The accumulated position of *closed_class_ids* through the as-of date, as
+    an equity line: the NEGATED cumulative debit net of every account in those
+    classes.  Income credits and Expense debits net to income, an unrealized
+    gain is a credit, and equity presents credit-normal -- so in both cases the
+    natural line is the negated debit net.  Computed, never posted; there are
+    no closing entries in this ledger.
+
+    ONE function for both closing lines rather than one each: they differ only
+    in which classes they gather, and two copies of "negate the cumulative
+    debit net of these classes" is exactly the kind of duplicate the next
+    reporting class would triple.
 
     Args:
         cumulative: ``{ledger_account_id: cumulative_debit_net}`` through the
             as-of date.
         chart: The user's chart, supplying each account's class.
-        class_ids: The resolved accounting-class ids.
+        closed_class_ids: The accounting-class ref ids this line closes.
 
     Returns:
-        The retained-earnings amount as a ``Decimal`` (positive when
-        cumulatively profitable).
+        The line's natural-balance amount as a ``Decimal`` (positive when the
+        closed classes are cumulatively in credit -- profitable, or in gain).
     """
-    income_expense = (class_ids.income, class_ids.expense)
-    net_income_debit = sum(
+    closed_debit = sum(
         (
             debit_net
             for ledger_account_id, debit_net in cumulative.items()
-            if chart[ledger_account_id].class_id in income_expense
+            if chart[ledger_account_id].class_id in closed_class_ids
         ),
         _ZERO_MONEY,
     )
-    return _ZERO_MONEY - net_income_debit
+    return _ZERO_MONEY - closed_debit

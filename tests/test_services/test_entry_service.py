@@ -40,7 +40,7 @@ def _make_entry(transaction, user, amount="50.00", description="Kroger",
     the full create_entry validation chain.
     """
     entry = TransactionEntry(
-        transaction_id=transaction.id,
+        transaction_id=transaction.id, account_id=transaction.account_id,
         user_id=user.id,
         amount=Decimal(amount),
         description=description,
@@ -1347,19 +1347,25 @@ class TestComputeRemaining:
 
     def test_compute_remaining_signature_excludes_actual_and_status(self):
         """C30-3 partner: the function signature cannot consult
-        ``actual_amount`` or ``status`` -- it accepts only
-        ``estimated_amount`` and ``entries`` -- so a future change
+        ``actual_amount`` or ``status`` -- it accepts only the declared
+        ``budget`` and ``entries`` -- so a future change
         cannot silently shift the entry-tracked row's base away from
-        E-21 / MED-03 estimated_amount without an explicit signature
+        the E-21 / MED-03 base without an explicit signature
         change (which would surface in review).
+
+        **The first parameter is named ``budget`` since plan step X-au-c2b**,
+        where it was ``estimated_amount``.  That rename is the assertion's
+        subject rather than incidental: a parameter named after a COLUMN
+        invites the next caller to pass that column, and under the amount model
+        a derived row's is ``NULL``.  The base is what the row's amount
+        RESOLVES to, and the name says so.
         """
         # pylint: disable=import-outside-toplevel
         import inspect
         sig = inspect.signature(entry_service.compute_remaining)
-        # E-21 base contract: the only inputs are the declared base
-        # (estimated_amount) and the entries to subtract.  No txn, no
-        # status, no actual.
-        assert list(sig.parameters) == ["estimated_amount", "entries"]
+        # E-21 base contract: the only inputs are the declared base and the
+        # entries to subtract.  No txn, no status, no actual.
+        assert list(sig.parameters) == ["budget", "entries"]
 
 
 class TestComputeActualFromEntries:

@@ -18,6 +18,11 @@ from app.exceptions import NotFoundError
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.services.cash_ledger import (
+    AmountBasis,
+    amount_basis,
+    resolve_transaction_amount,
+)
 from app.services.generation_schedule import GenerationSchedule
 from app.utils.balance_predicates import is_projected_clause
 
@@ -31,10 +36,11 @@ class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
     paths see exactly the same partition (DRY: the partition logic
     lives once).
 
-    Pylint: ``too-many-instance-attributes`` (8/7) -- these eight ARE one
+    Pylint: ``too-many-instance-attributes`` (9/7) -- these nine ARE one
     carry-forward request: the two validated periods, who and which scenario
-    they belong to, the three-way partition of the rows to move, and the
-    pay-period schedule the envelope branch resolves against.  Splitting them
+    they belong to, the three-way partition of the rows to move, the
+    pay-period schedule the envelope branch resolves against, and the amount
+    basis it prices through.  Splitting them
     would put one request's facts in two objects both paths must then keep in
     step, which is the coupling this value exists to remove.  Mirrors the
     :class:`~app.services.recurrence.ResolvedRecurrence` precedent.
@@ -53,6 +59,13 @@ class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
     # the same target, and building this per row would repeat the schedule
     # query -- and the forward occurrence walk -- once per row.
     schedule: object  # GenerationSchedule
+    # The request's amount basis (plan step X-au-c2b), for the same reason and
+    # on the same terms: a rollover's leftover is the source row's BUDGET minus
+    # what was spent, and its top-up adds that to the target's, so both ends
+    # read what the row's amount RESOLVES to rather than the column a derived
+    # row does not carry.  Pinned to ``user_id`` / ``scenario_id`` above, so it
+    # is those two facts in the form the amount model takes them.
+    basis: AmountBasis
 
 
 def _build_carry_forward_context(source_period_id, target_period_id,
@@ -95,6 +108,10 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     # target; building this per row would repeat the schedule query and the
     # forward occurrence walk once per row.
     schedule = GenerationSchedule.for_periods(user_id, [target])
+    # ONE basis for the whole request, on the same terms as the schedule above:
+    # every envelope row is priced against the same owner and scenario, and it
+    # resolves nothing until the first row asks.
+    basis = amount_basis(user_id, scenario_id)
 
     if source_period_id == target_period_id:
         return _CarryForwardContext(
@@ -106,6 +123,7 @@ def _build_carry_forward_context(source_period_id, target_period_id,
             envelope_txns=[],
             discrete_txns=[],
             schedule=schedule,
+            basis=basis,
         )
 
     # Routed through ``is_projected_clause`` (D6-09 / MED-02) so the
@@ -151,6 +169,7 @@ def _build_carry_forward_context(source_period_id, target_period_id,
         envelope_txns=envelope_txns,
         discrete_txns=discrete_txns,
         schedule=schedule,
+        basis=basis,
     )
 
 
@@ -222,11 +241,13 @@ class _TargetResolution:
         kind: One of the :class:`_TargetKind` outcomes.
         row: The row to bump -- set only for ``TOP_UP``; ``None``
             otherwise.
-        base: The destination row's pre-bump estimated amount --
-            ``row.estimated_amount`` for ``TOP_UP``, the template's
-            ``default_amount`` for ``GENERATE``, and ``Decimal("0")``
-            for ``CREATE`` (a fresh row starts empty and the caller's
-            bump folds the leftover on top).  ``None`` for ``AMBIGUOUS``.
+        base: The destination row's pre-bump amount -- what the existing row's
+            amount RESOLVES to for ``TOP_UP`` (plan step X-au-c2b; it was that
+            row's ``estimated_amount`` COLUMN, which a derived row does not
+            carry), the template's ``default_amount`` for ``GENERATE``, and
+            ``Decimal("0")`` for ``CREATE`` (a fresh row starts empty and the
+            caller's bump folds the leftover on top).  ``None`` for
+            ``AMBIGUOUS``.
     """
 
     kind: _TargetKind
@@ -234,8 +255,7 @@ class _TargetResolution:
     base: Optional[Decimal] = None
 
 
-def _classify_leftover_target(source_txn, target_period, scenario_id,
-                              schedule):
+def _classify_leftover_target(source_txn, target_period, basis, schedule):
     """Decide where an envelope leftover lands in the destination period.
 
     Pure read-only classification shared by ``carry_forward_unpaid``
@@ -267,8 +287,9 @@ def _classify_leftover_target(source_txn, target_period, scenario_id,
         source_txn: The envelope source row being carried forward; its
             ``template`` / ``template_id`` drive the lookup.
         target_period: The destination PayPeriod.
-        scenario_id: Scenario filter for the lookup and the
-            recurrence-engine prediction.
+        basis: The request's :class:`~app.services.cash_ledger.AmountBasis`;
+            its ``scenario_id`` filters the lookup and the recurrence-engine
+            prediction, and it prices the TOP_UP row's pre-bump base.
         schedule: The request's
             :class:`~app.services.generation_schedule.GenerationSchedule`
             (``ctx.schedule``), threaded so the prediction resolves against the
@@ -284,7 +305,7 @@ def _classify_leftover_target(source_txn, target_period, scenario_id,
     from app.services import recurrence_engine  # pylint: disable=import-outside-toplevel
 
     all_rows = _target_canonical_rows(
-        source_txn, target_period, scenario_id, include_deleted=True,
+        source_txn, target_period, basis.scenario_id, include_deleted=True,
     )
     non_deleted = [r for r in all_rows if not r.is_deleted]
     mutable = [r for r in non_deleted if not _is_finalised(r)]
@@ -293,12 +314,13 @@ def _classify_leftover_target(source_txn, target_period, scenario_id,
         return _TargetResolution(_TargetKind.AMBIGUOUS)
     if len(mutable) == 1:
         return _TargetResolution(
-            _TargetKind.TOP_UP, row=mutable[0], base=mutable[0].estimated_amount,
+            _TargetKind.TOP_UP, row=mutable[0],
+            base=resolve_transaction_amount(mutable[0], basis),
         )
     if (not non_deleted
             and source_txn.template is not None
             and recurrence_engine.can_generate_in_period(
-                source_txn.template, target_period, scenario_id,
+                source_txn.template, target_period, basis.scenario_id,
                 schedule=schedule,
             )):
         return _TargetResolution(

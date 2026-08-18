@@ -27,6 +27,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
+    make_every_period_rule,
     append_balance_assertion,
     freeze_today,
     settle_instant_on,
@@ -71,7 +72,7 @@ def _add_entry(txn, user, amount, description,
     """
     uid = user["user"].id if isinstance(user, dict) else user.id
     entry = TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=uid,
         amount=Decimal(str(amount)),
         description=description,
@@ -107,12 +108,7 @@ def _create_visible_tracked_txn(seed_user, seed_periods):
         name="Projected",
     ).one()
 
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     category = seed_user["categories"]["Groceries"]
     template = TransactionTemplate(
@@ -954,25 +950,28 @@ class TestDeleteEntry:
 
 # ---- Manual is_cleared toggle ------------------------------------------
 
-class TestTheDerivedReconciledIndicator:
+class TestTheDerivedPostedIndicator:
     """The read-only indicator that replaced the cleared TOGGLE route.
 
     ``PATCH /transactions/<txn_id>/entries/<entry_id>/cleared`` is DELETED with
     the ``is_cleared`` column it wrote (plan step S1-c, ruling R-DH (d)).  A
     stored flag a user could flip let the indicator and the projection be set
-    against each other, and when reconciliation is wrong the fact that is
-    actually wrong is the POSTING DAY -- which the edit form carries, and which
+    against each other, and when it is wrong the fact that is actually wrong is
+    the POSTING DAY -- which the edit form carries, and which
     :class:`TestTheSettledOnEditPath` below grades.
 
-    So the entry row now shows a DERIVED answer:
-    ``reconciled_through.covers(entry.settled_on)``, computed per render from
-    the account's own coverage boundary.  These tests
-    drive the real ``GET`` list route and read the rendered row.
+    So the entry row shows a DERIVED answer, and since plan step X-f3b (ruling
+    **R-FM**) it is the SAME fact the reservation buckets on: has this
+    purchase's bank posting day been recorded.  It asked the account's clearing
+    rule until then -- ``coverage.is_cleared(entry)`` -- which gave the tooltip
+    a third state, *"posted, but after the balance you last entered, so the
+    budget is still held back"*, that is no longer true of anything.  These
+    tests drive the real ``GET`` list route and read the rendered row.
     """
 
     #: The screen-reader text of each arm -- the accessible name is what the
     #: indicator MEANS, and it is stable where an icon class is decoration.
-    _INSIDE = b"Already inside your last balance"
+    _INSIDE = b"Already left your account"
     _OUTSTANDING = b"Still outstanding"
 
     @staticmethod
@@ -982,15 +981,16 @@ class TestTheDerivedReconciledIndicator:
         assert resp.status_code == 200
         return resp.data
 
-    def test_a_purchase_inside_the_asserted_balance_reads_reconciled(
+    def test_a_purchase_with_a_posting_day_reads_posted(
         self, app, auth_client, seed_user, seed_periods,
         seed_entry_template,
     ):
-        """settled_on <= the account's latest asserted day -> reconciled.
+        """A recorded posting day -> the money has left, and the row says so.
 
-        The account asserts a balance for 2026-01-10; the purchase was made
-        and posted on the 5th, so it is inside that balance and the row says
-        so.
+        The account asserts a balance for 2026-01-10; the purchase was made and
+        taken by the bank on the 5th.  The assertion is left in the fixture
+        deliberately -- the answer must not depend on it, which is what the
+        sibling test below (posted AFTER that day, same answer) proves.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -1037,16 +1037,24 @@ class TestTheDerivedReconciledIndicator:
         assert self._OUTSTANDING in body
         assert self._INSIDE not in body
 
-    def test_a_purchase_posted_after_the_statement_reads_outstanding(
+    def test_a_purchase_posted_after_the_statement_reads_posted_TOO(
         self, app, auth_client, seed_user, seed_periods,
         seed_entry_template,
     ):
-        """settled_on AFTER the asserted day -> still outstanding.
+        """settled_on AFTER the asserted day -> posted, exactly the same.
 
-        The case the retired flag could not express at all: the user knows the
-        bank will take this, but it had not when they read their balance, so
-        the budget is still held back.  A flag saying "cleared" would have
-        subtracted it from a reservation whose anchor never contained it.
+        **Re-ruled at plan step X-f3b** (ruling **R-FM**), and this pair is the
+        control for it: the row read "Still outstanding" while the indicator
+        asked whether a declared balance contained the purchase, and it reads
+        "Already left your account" now that it asks whether the bank took the
+        money.  Which statement CLEARED that movement is a separate question the
+        walk asks, and no longer one this row answers.
+
+        It must move WITH the reservation and not merely alongside it: the same
+        purchase is released from its envelope's budget
+        (``cash_ledger._amounts._entry_checking_impact``), so a row still saying
+        "the budget is still held back" would contradict the number beside it --
+        the exact defect ``entry_list_view`` was created to make unrepresentable.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -1063,8 +1071,8 @@ class TestTheDerivedReconciledIndicator:
 
             body = self._list(auth_client, txn.id)
 
-        assert self._OUTSTANDING in body
-        assert self._INSIDE not in body
+        assert self._INSIDE in body
+        assert self._OUTSTANDING not in body
 
     def test_a_credit_purchase_shows_no_indicator_at_all(
         self, app, auth_client, seed_user, seed_periods,
@@ -1126,6 +1134,56 @@ class TestTheSettledOnEditPath:
     there is nothing to have observed, and a value typed then would be a
     forecast in a fact column.
     """
+
+    def test_flipping_a_TICKED_purchase_to_card_releases_its_link(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """A reproducible unhandled 500, found by X-f3b's trace 2026-08-15.
+
+        ``ck_transaction_entries_card_purchase_clears_nowhere`` (plan step
+        X-f3a-1) refuses a purchase that is BOTH on a card and linked to a
+        statement -- a card purchase never touches this account, so the claim is
+        false by construction.  The edit door released the link when the POSTING
+        DAY moved and not when the CARD flag was set, so PATCHing ``is_credit``
+        on a purchase the reconcile panel had ticked raised an
+        ``IntegrityError`` no handler catches.  Reproduced on a production clone
+        against entry 87 before the fix.
+
+        The remedy is the one already beside it: the edit is a CORRECTION, so
+        the fact that contradicts the observation wins and the observation is
+        released.  Asserted on both columns -- a fix that swallowed the flip
+        would satisfy a status check alone.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(
+                txn, seed_user, "50.00", "Kroger",
+                purchased_on=_PURCHASED_ON,
+            )
+            entry.settled_on = _PURCHASED_ON
+            statement = append_balance_assertion(
+                db.session, seed_user["account"], seed_periods[0],
+                Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
+            )
+            entry.reconciled_by_id = statement.id
+            db.session.commit()
+            entry_id = entry.id
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry_id}",
+                data={"is_credit": "true"},
+            )
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            flipped = db.session.get(TransactionEntry, entry_id)
+            assert flipped.is_credit is True
+            assert flipped.reconciled_by_id is None, (
+                "a card purchase clears nowhere on this account, so the "
+                "statement it named is released rather than left to violate "
+                "the CHECK"
+            )
 
     def test_the_edit_form_records_a_posting_day(
         self, app, auth_client, seed_user, seed_periods,
@@ -1224,21 +1282,29 @@ class TestTheSettledOnEditPath:
                 TransactionEntry, entry.id,
             ).settled_on is None
 
-    def test_a_posting_day_after_today_is_ALLOWED(
+    def test_a_posting_day_after_today_is_REFUSED(
         self, app, auth_client, seed_user, seed_periods,
         seed_entry_template,
     ):
-        """There is deliberately NO upper bound (ruling R-M as re-ruled).
+        """The upper bound plan step X-f3b added, and why it inverted.
 
-        "I bought this and my bank has not taken it yet" is a true statement,
-        and it is the one the single ``entry_date`` column could not express.
-        Any "at most N days ahead" ceiling would be a constant nobody can
-        justify, and a wrong forward date is visible on the row and
-        self-corrects at the next true-up.
+        **This test asserted the OPPOSITE until X-f3b** (ruling **R-FM**), on a
+        reason that was true then: a forward posting day was the conservative
+        direction, because no assertion closed over it, so the purchase stayed
+        outstanding and its whole budget stayed reserved.  A recorded posting
+        day is now the moment the money leaves the book, so a forward one
+        RELEASES the reservation today and books the cash later -- already-spent
+        money back in today's projection, which is exactly what
+        ``status_seam.reject_future_settle_day`` refuses on a transaction and
+        why the two columns' rationales no longer differ.
 
-        The contrast with ``purchased_on`` is the whole split: that column
-        keeps R-M's guard verbatim, and the sibling class
-        ``TestAFutureEntryDateIsRefused`` pins its refusal.
+        Nothing expressible is lost: "I bought this and my bank has not taken it
+        yet" is ``settled_on`` LEFT EMPTY, which is what that state has always
+        meant and which holds the whole budget back.  Measured before the bound
+        was added: ZERO of 91 production purchases carried a forward day.
+
+        The refusal must also leave the stored value ALONE -- a guard that
+        refuses and writes anyway is worse than no guard.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -1253,11 +1319,12 @@ class TestTheSettledOnEditPath:
                 data={"settled_on": forward.isoformat()},
             )
 
-            assert resp.status_code == 200
+            assert resp.status_code == 400
+            assert b"cannot be in the future" in resp.data
             db.session.expire_all()
             assert db.session.get(
                 TransactionEntry, entry.id,
-            ).settled_on == forward
+            ).settled_on is None
 
     def test_another_users_entry_cannot_be_dated(
         self, app, auth_client, seed_user, seed_periods,
@@ -1273,6 +1340,7 @@ class TestTheSettledOnEditPath:
             other = _create_other_user_txn()
             other_entry = TransactionEntry(
                 transaction_id=other["transaction"].id,
+                account_id=other["transaction"].account_id,
                 user_id=other["user"].id,
                 amount=Decimal("50.00"),
                 description="Other",
@@ -1674,12 +1742,7 @@ class TestEntryTransactionMismatch:
                 Status,
             ).filter_by(name="Projected").one()
 
-            rule2 = RecurrenceRule(
-                user_id=seed_user["user"].id,
-                pattern_id=every_period.id,
-            )
-            db.session.add(rule2)
-            db.session.flush()
+            rule2 = make_every_period_rule(db.session, seed_user["user"].id)
 
             template_hidden = TransactionTemplate(
                 user_id=seed_user["user"].id,

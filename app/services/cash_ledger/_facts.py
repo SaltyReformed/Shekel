@@ -55,9 +55,18 @@ class AnchorPoint:
     """Immutable date-anchored anchor (E-19 single source of truth).
 
     Attributes:
-        balance: The real-money anchor balance as a ``Decimal``.  Zero
-            is a legitimate value per E-12 and is preserved verbatim;
-            consumers MUST NOT treat ``Decimal("0.00")`` as "missing".
+        anchor_id: The ``budget.account_anchor_history`` row's own id -- the
+            value a cleared line NAMES (``reconciled_by_id``, ruling **R-FL**,
+            plan step X-f3a-1).  The reconcile panel needs the STATEMENT it is
+            reconciling against, not merely the day it was true for: two
+            assertions can share a day (production carries 3 such days on
+            Checking), so a day cannot identify one.  Carried here rather than
+            re-queried because this record is already the answer to "which
+            assertion governs", and a second query for its id would be a second
+            answer to that question with a write in between.
+        balance: The real-money anchor balance as a ``Decimal``.  Zero is a
+            legitimate value per E-12 and is preserved verbatim; consumers MUST
+            NOT treat ``Decimal("0.00")`` as "missing".
         observed_on: The civil day the asserted balance was TRUE -- the
             stored ``AccountAnchorHistory.observed_on`` (ruling R-DH, plan
             step 2).  **This is the "as of" a caption means.**  It was the same
@@ -88,6 +97,7 @@ class AnchorPoint:
     seventh derivation of "which day".
     """
 
+    anchor_id: int
     balance: Decimal
     observed_on: date
     created_at: datetime
@@ -126,6 +136,56 @@ def _governing_row(
     ).first()
 
 
+def _anchor_point(row: AccountAnchorHistory) -> AnchorPoint:
+    """Return the :class:`AnchorPoint` for one assertion row.
+
+    The ONE construction, shared by every resolver here, so a field added to the
+    record cannot reach some callers and not others -- which is exactly what
+    ``anchor_id`` would have done at plan step X-f3a-1 had the two builders
+    stayed hand-written.
+
+    Args:
+        row: The governing :class:`~app.models.account.AccountAnchorHistory`.
+
+    Returns:
+        Its :class:`AnchorPoint`.
+    """
+    return AnchorPoint(
+        anchor_id=row.id,
+        balance=Decimal(str(row.anchor_balance)),
+        observed_on=row.observed_on,
+        created_at=row.created_at,
+    )
+
+
+def governing_anchor(account_id: int) -> AnchorPoint | None:
+    """Return the assertion that governs *account_id* now, or ``None``.
+
+    The NON-RAISING twin of :func:`resolve_anchor`, and the difference is the
+    caller rather than the question: a READER cannot proceed without an
+    assertion and gets the ``RuntimeError``, while the reconcile panel renders
+    an honest empty state for an account whose owner has never declared a
+    balance ("there is nothing for an offer to be inside of").  Both go through
+    :func:`_governing_row`, so they cannot disagree about which row governs.
+
+    **The panel needs the ROW, not the day** (plan step X-f3a-1, ruling
+    **R-FL**): a tick records which STATEMENT showed the money, two assertions
+    can share a civil day, and it asked ``reconciled_through(...).observed_day``
+    -- a ``MAX`` over the column -- which cannot name one.
+
+    Args:
+        account_id: The account whose governing assertion to resolve.
+
+    Returns:
+        The governing :class:`AnchorPoint`, or ``None`` for an account with no
+        assertion at all -- fixture-only in production (migration
+        ``cfb15e782f86`` plus ``account_service.create_account`` guarantee an
+        opening row).
+    """
+    governing = _governing_row(account_id, on_or_before=None)
+    return None if governing is None else _anchor_point(governing)
+
+
 def governing_anchor_on(
     account_id: int, observed_on: date,
 ) -> AnchorPoint | None:
@@ -160,11 +220,7 @@ def governing_anchor_on(
     governing = _governing_row(account_id, on_or_before=observed_on)
     if governing is None:
         return None
-    return AnchorPoint(
-        balance=Decimal(str(governing.anchor_balance)),
-        observed_on=governing.observed_on,
-        created_at=governing.created_at,
-    )
+    return _anchor_point(governing)
 
 
 def resolve_anchor(account: Account) -> AnchorPoint:
@@ -255,11 +311,7 @@ def resolve_anchor(account: Account) -> AnchorPoint:
             "canonical factory."
         )
 
-    return AnchorPoint(
-        balance=Decimal(str(latest.anchor_balance)),
-        observed_on=latest.observed_on,
-        created_at=latest.created_at,
-    )
+    return _anchor_point(latest)
 
 
 def reconciled_through(account_id: int) -> ReconciledThrough:

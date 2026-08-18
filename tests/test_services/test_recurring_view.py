@@ -28,7 +28,7 @@ import pytest
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.extensions import db
-from app.models.recurrence_rule import RecurrenceRule
+from tests._test_helpers import make_pattern_rule
 from app.models.ref import AccountType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
@@ -86,18 +86,18 @@ def _calendar(periods):
 
 def _create_rule(seed_user, pattern_enum, *, interval_n=1,
                  day_of_month=None, month_of_year=None, end_date=None):
-    """Create and flush a RecurrenceRule for the seed user."""
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=ref_cache.recurrence_pattern_id(pattern_enum),
+    """Author and flush a RecurrenceRule for the seed user.
+
+    Through the write door since plan step R7c-b, which made the two-axis
+    columns NOT NULL: a rule naming only a pattern no longer produces a row.
+    """
+    return make_pattern_rule(
+        seed_user["user"].id, pattern_enum,
         interval_n=interval_n,
-        day_of_month=day_of_month,
-        month_of_year=month_of_year,
+        fires_on_day=day_of_month,
+        fires_in_month=month_of_year,
         end_date=end_date,
     )
-    db.session.add(rule)
-    db.session.flush()
-    return rule
 
 
 def _create_txn_template(seed_user, rule, amount, *, type_enum, name):

@@ -34,6 +34,7 @@ from app.utils import archive_helpers
 from app.services import (
     account_service,
     category_service,
+    loan_loaders,
     pay_period_service,
     template_amount_service,
     transfer_recurrence,
@@ -41,25 +42,26 @@ from app.services import (
 )
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
+    STALE_ACTION_MESSAGE,
+    STALE_EDITING_MESSAGE,
     StaleConflictContext,
     commit_or_handle_stale,
     handle_stale_conflict,
+    handle_stale_form_conflict,
 )
 from app.routes._amount_version_actions import (
     AmountVersionAction,
     withdraw_amount_version,
 )
+from app.services.cash_ledger import resolve_transfer_amount
 from app.routes._recurrence_conflict_chooser import (
     PreEditTemplateState,
     RecurrenceConflictKind,
     regenerate_or_conflict_chooser,
 )
 from app.routes._recurrence_form_helpers import (
-    STALE_ACTION_MESSAGE,
-    STALE_EDITING_MESSAGE,
     RecurrenceFormContext,
     build_recurrence_rule_for_create,
-    handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
 from app.routes._recurrence_form_render import recurrence_form_state
@@ -69,6 +71,7 @@ from app.schemas.validation import RECURRENCE_END_BOUND_KEY
 from app.routes._transfer_creation_helpers import (
     flush_template_or_namedup_redirect,
     generate_transfers_for_all_periods,
+    settle_first_occurrence,
 )
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._instances import (
@@ -143,10 +146,18 @@ def new_transfer_template():
         accounts=accounts,
         categories=categories,
         # One value for every recurrence control (see the transaction-template
-        # twin).  A transfer template only becomes a loan payment through the
-        # loan flow, never through this form, so a CREATE never locks its
-        # bounds.
+        # twin).  A CREATE form locks nothing on the SERVER -- there is no
+        # template yet to ask ``owns_validity_window`` about -- but this form
+        # offers every active account as a destination, so the definition it
+        # is about to create may be a loan payment.  Which accounts those are
+        # rides to the browser below and ``recurrence_form.js`` locks the
+        # "Starts on" row when one is chosen; the derivation itself is the
+        # route's (``settle_first_occurrence``), so the lock is an affordance
+        # rather than the enforcement.
         recurrence=recurrence_form_state(None),
+        loan_account_ids=loan_loaders.load_loan_account_ids_for_user(
+            current_user.id,
+        ),
         periods=periods,
         current_period=current_period,
         prefill_from=prefill_from,
@@ -159,41 +170,51 @@ def new_transfer_template():
     )
 
 
-@transfers_bp.route("/transfers", methods=["POST"])
-@login_required
-@require_owner
-def create_transfer_template():
-    """Create a new transfer template with optional recurrence rule.
+def _settle_create_references(data, start_period_id):
+    """Refuse, or settle, everything the create payload REFERS to.
 
-    Route-boundary FK ownership checks (commit C-27 / F-043 of the
-    2026-04-15 security remediation plan): every user-scoped FK
-    accepted from the form -- ``from_account_id``, ``to_account_id``,
-    ``category_id`` -- is verified against ``current_user.id`` before
-    the row is persisted.  ``start_period_id`` is verified HERE since plan
-    step R7b-4 -- it used to be the F-24 builder's, because the same
-    ``<select>`` was also the recurrence's opening bound and a foreign period
-    would have shifted this owner's generation timing.  The recurrence takes a
-    DATE now, so the field has one job (which period a NON-REPEATING transfer
-    lands in) and it is checked where that job lives.  The follow-up branch
-    (:func:`_materialize_one_time_transfer`) re-fetches the period and
-    verifies ownership a second time, so a malicious ``start_period_id``
-    cannot leak into the transfer service.  The flash + redirect UX matches the
-    existing template-form pattern; the security response rule
-    (404 for both not-found and not-yours) is preserved indirectly
-    by re-rendering the same form page rather than confirming
-    whether the FK exists for someone else.
+    One step rather than three consecutive guards, and the reason is the route
+    rather than the count: each of these asks whether a submitted reference is
+    the current user's to use, and the last one READS the destination it has
+    just checked.  Splitting them across the route left three
+    ``return redirect`` arms in a function whose own docstring records the
+    single-return FK loop it already grew for the same reason -- and plan step
+    R7c-b's fourth arm pushed it past pylint's ``too-many-return-statements``.
+    Decomposing is this project's answer to that count, never a disable.
+
+    Three things, in the one order they can be asked in:
+
+    1. **Every user-scoped FK is the owner's** (commit C-27 / F-043).  A
+       single-return loop so a future FK adds a row rather than an arm; the
+       message-per-FK detail rides on the label.
+    2. **The pay period a NON-REPEATING transfer lands in** is the owner's too.
+       Owner-checked at the route since plan step R7b-4: the check used to live
+       inside ``build_recurrence_rule_from_form``, because the same ``<select>``
+       was ALSO the recurrence's "First paycheck" and a cross-user period would
+       have shifted this owner's generation timing.  The recurrence takes a
+       DATE now, so the field has one job and one owner.  Guarded on presence
+       rather than folded into the loop, because it is OPTIONAL: a repeating
+       transfer submits no period at all and ``_user_owns`` reads ``None`` as
+       "no row".  Checked unconditionally when present, so a crafted POST
+       pairing a foreign period with a repeating cadence is refused rather than
+       ignored; ``_materialize_one_time_transfer`` re-checks as defence in
+       depth.
+    3. **A loan destination's first occurrence is DERIVED**, and it must be
+       settled before the rule is built so nothing is authored that
+       ``bind_rule_to_loan`` then replaces (plan step R7c-b, developer ruling
+       2026-08-15).  It runs LAST because it reads the destination's loan
+       parameters, which step 1 has just proved are the owner's -- reading them
+       first would be an IDOR.
+
+    Args:
+        data: The validated payload, mutated in place by step 3.
+        start_period_id: The submitted pay period, already popped from *data*
+            by the caller, or ``None``.
+
+    Returns:
+        * ``None`` -- every reference checks out and *data* is ready to build.
+        * :class:`Response` -- the refusal redirect, returned verbatim.
     """
-    payload = load_form_or_redirect(
-        _create_schema, RedirectTarget("transfers.new_transfer_template"),
-    )
-    if isinstance(payload, Response):
-        return payload
-    data = payload
-
-    # --- Route-boundary FK ownership ---
-    # Single-return loop so adding a future FK does not push the
-    # function past pylint's too-many-returns threshold.  The
-    # message-per-FK detail is preserved via the per-row label.
     for model, pk, label in (
         (Account, data.get("from_account_id"), "source account"),
         (Account, data.get("to_account_id"), "destination account"),
@@ -203,25 +224,48 @@ def create_transfer_template():
             flash(f"Invalid {label}.", "danger")
             return redirect(url_for("transfers.new_transfer_template"))
 
-    # The pay period a NON-REPEATING transfer lands in.  Owner-checked HERE
-    # since plan step R7b-4, and the move is what that step's fold makes
-    # correct: the check used to live inside
-    # :func:`build_recurrence_rule_from_form`, because the same ``<select>``
-    # was ALSO the recurrence's "First paycheck" and a cross-user period would
-    # have shifted this owner's generation timing.  The recurrence takes a
-    # DATE now, so the field has one job and one owner -- this route -- and a
-    # kind-agnostic helper no longer checks a field only one kind submits.
-    #
-    # Guarded on presence rather than folded into the loop above, because it
-    # is OPTIONAL: a repeating transfer submits no period at all, and
-    # ``_user_owns`` reads ``None`` as "no row" and would refuse it.  Checked
-    # unconditionally when present, so a crafted POST pairing a foreign period
-    # with a repeating cadence is refused rather than ignored.
-    # ``_materialize_one_time_transfer`` re-checks as defence in depth.
-    start_period_id = data.pop("start_period_id", None)
     if start_period_id is not None and not _user_owns(PayPeriod, start_period_id):
         flash("Invalid start period.", "danger")
         return redirect(url_for("transfers.new_transfer_template"))
+
+    return settle_first_occurrence(
+        data, redirect=RedirectTarget("transfers.new_transfer_template"),
+    )
+
+
+@transfers_bp.route("/transfers", methods=["POST"])
+@login_required
+@require_owner
+def create_transfer_template():
+    """Create a new transfer template with optional recurrence rule.
+
+    Route-boundary FK ownership checks (commit C-27 / F-043 of the
+    2026-04-15 security remediation plan): every user-scoped FK
+    accepted from the form -- ``from_account_id``, ``to_account_id``,
+    ``category_id``, and the optional ``start_period_id`` -- is verified
+    against ``current_user.id`` before the row is persisted, by
+    :func:`_settle_create_references`.  That helper also settles a LOAN
+    destination's derived first occurrence, which is why the three steps are
+    one call: it reads the destination it has just proved is the owner's.  The
+    follow-up branch (:func:`_materialize_one_time_transfer`) re-fetches the
+    period and verifies ownership a second time, so a malicious
+    ``start_period_id`` cannot leak into the transfer service.  The flash +
+    redirect UX matches the existing template-form pattern; the security
+    response rule (404 for both not-found and not-yours) is preserved
+    indirectly by re-rendering the same form page rather than confirming
+    whether the FK exists for someone else.
+    """
+    payload = load_form_or_redirect(
+        _create_schema, RedirectTarget("transfers.new_transfer_template"),
+    )
+    if isinstance(payload, Response):
+        return payload
+    data = payload
+
+    start_period_id = data.pop("start_period_id", None)
+    refusal = _settle_create_references(data, start_period_id)
+    if refusal is not None:
+        return refusal
 
     # Create the recurrence rule via the F-24 preamble, or NO rule when the
     # form says "Does not repeat".  ``rule is None`` is the one-time transfer
@@ -326,7 +370,10 @@ def edit_transfer_template(template_id):
 # Mutations route through transfer_recurrence (shadow-safe resolve).
 _TRANSFER_TEMPLATE_KIND = RecurrenceConflictKind(
     model=Transfer,
-    amount_attr="amount",
+    # A transfer's amount rule (plan step X-au-c2b): rule 5's own entry, which
+    # needs no basis -- a parent transfer is priced by its own figure or by its
+    # definition's series, never by a live producer.
+    resolve_amount=resolve_transfer_amount,
     regenerate_fn=transfer_recurrence.regenerate_for_template,
     resolve_fn=transfer_recurrence.resolve_conflicts,
     update_endpoint="transfers.update_transfer_template",

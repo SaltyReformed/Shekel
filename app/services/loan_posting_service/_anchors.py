@@ -257,7 +257,9 @@ def reconcile_loan_anchor_corrections(
     per-``(source kind, pay period, date)`` target legs
     (:func:`_anchor_correction_targets`), reads back what is posted
     (:func:`app.services._posting_reconcile.posted_correction_legs`, scoped to
-    the loan's linked ledger), and
+    the loan's OWN chart rows -- its linked row and its per-loan rows -- rather
+    than to the linked row alone, which is the widening plan step X-f3d made on
+    the account side and this reader shares), and
     emits ONE balanced delta per key that differs
     (:func:`app.services._posting_reconcile.emit_correction_deltas`, the loop
     shared with the account twin) -- posting a new opening /
@@ -305,7 +307,7 @@ def reconcile_loan_anchor_corrections(
         scenario_id,
         target=_anchor_correction_targets(corrections, owner_id, calendar),
         posted=posted_correction_legs(
-            _ledger_account_for(loan_account_id).id,
+            loan_account_id,
             scenario_id,
             [
                 ref_cache.posting_source_id(PostingSourceEnum.LOAN_OPENING),

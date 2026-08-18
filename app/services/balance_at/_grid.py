@@ -103,25 +103,16 @@ place and belongs there.
 """
 
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import TYPE_CHECKING
 
 from app.models.account import Account
-from app.services.pay_calendar import PeriodWindow
+from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 
 from ._context import BalanceContext
 from . import _asset_fold, _cash_fold, _cash_periods
 from ._inputs import _contribution_inputs_for_account, _require_scenario
-
-if TYPE_CHECKING:
-    # Type-only: the ORM row is named by :meth:`GridBalanceView.row_flags`'s
-    # signature and by nothing this module executes.  Plan step C4 moves that
-    # last display window onto the calendar and the name goes with it.
-    # It sits BELOW every import rather than between them: a statement in the
-    # middle of an import block is ``wrong-import-position`` on each import
-    # that follows it, three messages a 10.00/10 score still rounds away.
-    from app.models.pay_period import PayPeriod
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -140,7 +131,7 @@ class GridColumn:  # pylint: disable=too-many-instance-attributes
 
     Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because this
     is the flat per-period bundle the grid's footer renders row by row
-    (``columns[period.id].<figure>``, one template row per attribute); every
+    (``columns[period.period_id].<figure>``, one row per attribute); every
     field is a line on screen and the identity below names all of them, so
     nesting a sub-bundle would add an access level no template reads as a unit
     while splitting one visible row set across two objects.  It reached 8 at
@@ -312,7 +303,7 @@ class GridBalanceView:
     columns: "OrderedDict[int, GridColumn]"
     amount_overrides: "dict[int, Decimal]"
 
-    def row_flags(self, periods: "list[PayPeriod]") -> GridRowFlags:
+    def row_flags(self, periods: "Iterable[DerivedPeriod]") -> GridRowFlags:
         """Return which conditional rows *periods* renders (ruling R-O).
 
         The one place a caller still names periods, and deliberately: this
@@ -320,18 +311,36 @@ class GridBalanceView:
         question rather than an input to the projection.  The columns
         themselves are the pass's own (plan step C2-c).
 
+        **It takes DERIVED periods rather than the ORM rows it took until plan
+        step C2-f2b**, which is what removed the last ``PayPeriod`` name from
+        this package.  It takes an ITERABLE of them rather than the
+        :class:`~app.services.pay_calendar.PeriodWindow` its callers happen to
+        hold, and an adversarial design review of that step is why: this rule
+        reads ``period_id`` and nothing else, so a window's two guarantees --
+        order and contiguity -- take no part in the answer, while the one
+        guarantee that WOULD matter here is the one that type does not carry.
+        A ``PeriodWindow`` has no ``user_id`` (``PayCalendar`` does, and its
+        docstring says why), so it cannot refuse another owner's periods
+        against these columns, which is the only way this method can be asked a
+        wrong question.  Demanding the stronger type bought a contiguity check
+        the rule ignores, put a raising constructor on a display path, and left
+        :func:`~app.services.grid_view_service.build_matched_by_row_period` --
+        handed the SAME value one line away in the route -- typed to the
+        element while this was typed to the container.  One value, one type.
+
         Args:
-            periods: The visible pay periods, in display order -- the ORM rows
-                the route already holds for rendering.  Only their ``id`` is
-                read.  Periods absent from :attr:`columns` contribute
-                nothing.
+            periods: The visible pay periods, in any order.  Only their
+                ``period_id`` is read.  Periods absent from :attr:`columns`
+                contribute nothing -- the Plan tab's window reaches past the
+                grid's, and a projected period carries no ``period_id`` a
+                column could be keyed under.
 
         Returns:
             The window's :class:`GridRowFlags`.
         """
         columns = [
-            self.columns[period.id] for period in periods
-            if period.id in self.columns
+            self.columns[period.period_id] for period in periods
+            if period.period_id in self.columns
         ]
         # ``!= ZERO`` on every arm, with no ``None`` member beside it: both
         # modelled fields are total ``Decimal``s since plan step X-g3a (ruling
@@ -493,13 +502,22 @@ def grid_balance_view(
         # window -- the same guard :func:`._asset_fold.asset_period_view` and
         # :func:`._asset_fold.period_columns` already carry.
         return empty_grid_view()
-    folded = _cash_fold.assemble(account, ctx.scenario_id, ctx.as_of)
+    folded = _cash_fold.assemble(account, ctx.amounts(), ctx.as_of)
     view = _cash_periods.period_view_of(folded, window)
     modelled = _asset_fold.period_columns(
         _asset_fold.resolve(
             account, folded,
             max(period.end_date for period in window),
             _contribution_inputs_for_account(account),
+            # The pass's OWN calendar, and ``window`` above is its
+            # ``saved()`` view -- one memoized derivation read twice, not two
+            # readings of one schedule.  Plan step C2-f2a made this an
+            # argument rather than a query the contribution tier issued for
+            # itself (ledger row **P37**), and it is the CALENDAR rather than
+            # the window so that no caller here can hand that tier a slice:
+            # the annual limit is a calendar-year accumulation and a slice
+            # restarts it mid-year.
+            ctx.calendar(),
         ),
         window,
     )

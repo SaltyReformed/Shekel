@@ -107,7 +107,7 @@
 {%- if value > 0 %}+{% endif %}{{ money(value, cents=cents) }}
 {%- endmacro %}
 
-{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, txn_type_id, account, today, current_period_id=none, band=none) -%}
+{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, budgets, txn_type_id, account, today, current_period_id=none, band=none) -%}
 {#- Desktop grid row.  Emits one <tr> containing the sticky row
     label (<th scope="row">) followed by one <td class="text-end
     cell"> per visible period.  Group-header rows are emitted by
@@ -145,8 +145,8 @@
     {{ rk.display_name }}
   </th>
   {% for period in periods %}
-    {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
-    <td class="text-end cell{{ ' cur' if period.id == current_period_id else '' }}{{ mstart(periods, loop.index0) }}">
+    {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id), []) %}
+    <td class="text-end cell{{ ' cur' if period.period_id == current_period_id else '' }}{{ mstart(periods, loop.index0) }}">
       {% if matched %}
         {% for txn in matched %}
           <div id="txn-cell-{{ txn.id }}">
@@ -156,6 +156,15 @@
         {% endfor %}
       {% else %}
         {% set category = rk.category %}
+        {#- The partial takes the ID, not the period: its other render entry
+            (`transactions.get_empty_cell`) resolves an ORM `PayPeriod` to
+            check ownership of a submitted id, so the two callers carry
+            different TYPES and only the id is common to both (plan step
+            C2-f2b).  Whitespace-controlled (`{%-`): this row renders once per
+            EMPTY cell, 226 of them on the real 6-period grid and ~1,200 at
+            `?periods=52`, so an uncontrolled tag costs 29 KB of blank lines on
+            the widest window -- measured before it was controlled. -#}
+        {%- set period_id = period.period_id %}
         {% include "grid/_transaction_empty_cell.html" with context %}
       {% endif %}
     </td>
@@ -163,7 +172,7 @@
 </tr>
 {%- endmacro %}
 
-{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
+{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
 {#- Mobile grid cards for one (rk, period) cell.
 
     Looks up the matched transactions for the cell and emits one card
@@ -178,18 +187,29 @@
     matching the v1 _mobile_grid.html pattern where the header
     lives inside the `{% if matched %}` guard.
 
-    All parameters are forwarded verbatim to `render_one_card`; see
-    that macro for `can_edit` / `id_prefix` / `entry_lists` / `today`
-    semantics.
+    `period` is read ONLY to key the cell lookup below -- `render_one_card`
+    renders one transaction and names no period at all (plan step C2-f2b
+    dropped the parameter it had been passed through).  Every other
+    parameter is forwarded verbatim; see that macro for `can_edit` /
+    `id_prefix` / `entry_lists` / `today` semantics.
 -#}
-{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id), []) %}
 {% for txn in matched %}
-{{ render_one_card(rk, period, txn, entry_sums, can_edit, id_prefix, entry_lists, today) }}
+{{ render_one_card(rk, txn, entry_sums, budgets, can_edit, id_prefix, entry_lists, today) }}
 {% endfor %}
 {%- endmacro %}
 
-{% macro render_one_card(rk, period, txn, entry_sums, can_edit=True, id_prefix='', entry_lists=none, today=none, error=none) -%}
+{% macro render_one_card(rk, txn, entry_sums, budgets, can_edit=True, id_prefix='', entry_lists=none, today=none, error=none) -%}
 {#- Render exactly one mobile transaction card.
+
+    It took a `period` between `rk` and `txn` until plan step C2-f2b and
+    never read it -- neither this body nor the `_mobile_card_actions.html`
+    it includes `with context` names one.  The argument was dead weight the
+    day the cell lookup moved up into `render_row_card`, and it stopped
+    being harmless when the grid's periods became `DerivedPeriod` values:
+    it would have obliged `transactions._render_mobile_card` to keep
+    handing an ORM `PayPeriod` into a macro family that no longer speaks
+    that type, for a parameter nothing reads.
 
     error (default none): optional message string.  When set, a danger
     banner renders as the wrapper's first child: a rejected mutation
@@ -298,10 +318,15 @@
     the one-tap shortcut.  Mark Paid still lives in the action
     button row inside the expansion one tap below the card.
 -#}
-  {# Workstream B: live projected salary income via the route-set
-     txn.live_estimated_amount, with a safe fallback to the stored
-     estimated_amount wherever it is absent. #}
-  {% set est_display = txn.live_estimated_amount if txn.live_estimated_amount is defined else txn.estimated_amount %}
+  {#- The row's amount comes off the page's ``budgets`` map (plan step
+      X-au-c2b).  It was a transient ``txn.live_estimated_amount`` the route
+      annotated onto each row, read behind an ``is defined`` guard that fell
+      back to ``txn.estimated_amount``: both halves had to go.  A derived row
+      stores nothing in that column, and a Jinja ``Undefined`` answers
+      silently, so a render path that forgot to set the attribute showed the
+      stale column with nothing on screen to say so.  Indexing a published map
+      is what a template cannot read half of. -#}
+  {% set est_display = budgets[txn.id] %}
   {% set display_amount = txn.actual_amount if txn.actual_amount is not none else est_display %}
   {% set es = entry_sums.get(txn.id) if entry_sums is defined else none %}
   {% set show_progress = es is not none and txn.status_id == STATUS_PROJECTED %}
@@ -325,7 +350,7 @@
         role="button" tabindex="0"
         aria-expanded="false"
         aria-controls="{{ _aid }}"
-        aria-label="{% if show_progress %}{{ txn.name }}: {{ money(es.total) }} / {{ money(txn.estimated_amount) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: {{ money(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
+        aria-label="{% if show_progress %}{{ txn.name }}: {{ money(es.total) }} / {{ money(es.budget) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ txn.name }}: {{ money(display_amount) }}{% if txn.status %} -- {{ txn.status.name }}{% endif %}{% endif %}">
       <span class="text-truncate me-2">
         {{ rk.display_name }}
         {% if txn.status %}
@@ -344,7 +369,7 @@
       </span>
       <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
         {% if show_progress %}
-          {{ money(es.total, cents=false) }} / {{ money(txn.estimated_amount, cents=false) }}
+          {{ money(es.total, cents=false) }} / {{ money(es.budget, cents=false) }}
         {% else %}
           {{ money(display_amount, cents=false) }}
         {% endif %}
@@ -439,16 +464,15 @@
           {% set entries = _entry_data.entries %}
           {% set remaining = _entry_data.remaining %}
           {% set out_of_period_ids = _entry_data.out_of_period_ids %}
-          {# The reconciled indicator's two keys.  They were MISSING here until
-             2026-08-13 while the HTMX refresh supplied them, and Jinja answers
+          {# The POSTED indicator's key.  It was MISSING here until 2026-08-13
+             while the HTMX refresh supplied it, and Jinja answers
              `entry.id in Undefined` as False SILENTLY -- so on every initial
-             render a reconciled purchase read "Still outstanding" against a
-             projection that had already released its reservation (9 of 9 such
+             render an already-posted purchase read "Still outstanding" against
+             a projection that had already released its reservation (9 of 9 such
              purchases on the 2026-08-13 production clone).  Every key
              `_entry_data` carries must be set here;
              `entry_service.entry_list_view` is the one producer of that set. #}
-          {% set reconciled_ids = _entry_data.reconciled_ids %}
-          {% set reconciled_through = _entry_data.reconciled_through %}
+          {% set posted_ids = _entry_data.posted_ids %}
           {% set editing_id = none %}
           {% set entry_list_host = id_prefix %}
           {% set entry_list_host_id = "entry-list-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}
@@ -460,7 +484,7 @@
   </div>
 {%- endmacro %}
 
-{% macro render_row_static(rk, period, matched_by_row_period) -%}
+{% macro render_row_static(rk, period, matched_by_row_period, budgets) -%}
 {#- Mobile Plan tab static row.  Emits zero or more non-interactive
     `<li class="list-group-item">` rows, one per matched transaction
     for the given (rk, period) cell.  Used exclusively by the read-
@@ -499,12 +523,17 @@
     in a "future" period that has nevertheless been advanced) renders
     consistently with This Period.
 -#}
-{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+{% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id), []) %}
 {% for txn in matched %}
-  {# Workstream B: live projected salary income via the route-set
-     txn.live_estimated_amount, with a safe fallback to the stored
-     estimated_amount wherever it is absent. #}
-  {% set est_display = txn.live_estimated_amount if txn.live_estimated_amount is defined else txn.estimated_amount %}
+  {#- The row's amount comes off the page's ``budgets`` map (plan step
+      X-au-c2b).  It was a transient ``txn.live_estimated_amount`` the route
+      annotated onto each row, read behind an ``is defined`` guard that fell
+      back to ``txn.estimated_amount``: both halves had to go.  A derived row
+      stores nothing in that column, and a Jinja ``Undefined`` answers
+      silently, so a render path that forgot to set the attribute showed the
+      stale column with nothing on screen to say so.  Indexing a published map
+      is what a template cannot read half of. -#}
+  {% set est_display = budgets[txn.id] %}
   {% set display_amount = txn.actual_amount if txn.actual_amount is not none else est_display %}
   <li class="list-group-item d-flex justify-content-between align-items-center py-2 px-3">
     <span class="text-truncate me-2">

@@ -280,7 +280,7 @@ def _grid_value(ctx):
     """Read the grid surface's balance for the anchor period.
 
     Through ``balance_at.grid_balance_view`` -- the entry the grid ROUTE calls
-    (``routes/grid.py:_build_grid_view``) -- so this reader is on the production
+    (``routes/grid/_shared.py:_build_grid_view``) -- so this reader is on the production
     path rather than one producer beneath it.
 
     **It read ``cash_balance_map`` until plan step X-g3b**, which was harmless

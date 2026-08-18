@@ -29,7 +29,7 @@ run, which is a corruption generator rather than a cache (plan step A3,
 ``4e46a0a8``).
 
 **ONE CIVIL DAY per fact, and it is the USER'S day** (ruling R-DH,
-``docs/audits/balance_architecture/anchor_settle_partition.md``).  A settled row
+``docs/audits/balance_architecture/archive/anchor_settle_partition.md``).  A settled row
 carries :attr:`CashSourceFact.settled_on` and an assertion carries
 :attr:`CashAnchorFact.observed_on`; both are resolved ONCE at construction, and
 every consumer -- the partition, the fold's sampling, the period bucketing, the
@@ -91,10 +91,16 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
-from app.utils.balance_predicates import settled_day, settled_status_ids
+from app.models.transaction_entry import TransactionEntry
+from app.utils.balance_predicates import (
+    balance_contributing_clause,
+    settled_day,
+    settled_status_ids,
+)
 from app.utils.dates import utc_instant
 
 from ._amounts import ReconciledThrough, settled_cash_leg
+from ._clearing import StatementCoverage, statement_coverage
 from ._facts import _unwindowed_contributing_rows
 
 
@@ -132,6 +138,12 @@ class CashAnchorFact:
     (:meth:`app.services.pay_calendar.PayCalendar.filing_period`).
 
     Attributes:
+        anchor_id: The ``budget.account_anchor_history`` row's own id -- the
+            value a cleared line NAMES (``reconciled_by_id``, ruling **R-FL**),
+            so :class:`~._clearing.StatementCoverage` can say WHICH assertion
+            cleared a movement rather than only that one did.  It is the row's
+            identity and nothing more: no rule reads it as an ordering, which is
+            :attr:`observed_on`'s job with :attr:`asserted_at` breaking a tie.
         account_id: The ``budget.accounts`` id the assertion belongs to.
         anchor_balance: The asserted balance, LEDGER-NATIVE sign: an
             owed-as-negative liability anchor stays negative.  The walk never
@@ -171,6 +183,7 @@ class CashAnchorFact:
             ``$2,057.42`` of period 0's remainder while it was.
     """
 
+    anchor_id: int
     account_id: int
     anchor_balance: Decimal
     observed_on: date
@@ -199,13 +212,24 @@ class CashAnchorFact:
 
 @dataclass(frozen=True)
 class CashSourceFact:
-    """One settled transaction's signed effect on the account, when, and whose column.
+    """One cash movement's signed effect on the account, when, and whose column.
 
-    The ACTUAL half of the event stream: cash that really moved.  Its delta is
-    the SHARED :func:`app.services.cash_ledger.settled_cash_leg` -- the same
-    ``owned_contribution - Sigma(credit entries)`` the posting writer books -- so
-    for an ORDINARY transaction the walk and the posted ledger value one row
-    identically by construction, not by two rules that happen to agree.
+    The ACTUAL half of the event stream: cash that really moved.  TWO kinds of
+    row produce one, and ruling **R-FM** is why the second exists (plan step
+    X-f3b): a SETTLED TRANSACTION, and a PURCHASE whose bank posting day the
+    owner has recorded.  They are one record rather than two because the fold,
+    the period regrouping and the posted walk ask the same four questions of
+    both -- how much, on which day, in whose budget column, and which statement
+    showed it -- and a second record would be a second set of consumers that
+    could come to answer them differently.
+
+    A transaction's delta is the SHARED
+    :func:`app.services.cash_ledger.settled_cash_leg` -- the same
+    ``owned_contribution - Sigma(credit entries) - Sigma(posted purchases)`` the
+    posting writer books -- so for an ORDINARY transaction the walk and the
+    posted ledger value one row identically by construction, not by two rules
+    that happen to agree.  A purchase's is its own amount, negated: a purchase
+    is always an expense, and its whole amount leaves the account.
 
     **It carries TWO clocks, and the second one is not decoration** (plan step
     X-c1).  :attr:`settled_on` is the CASH clock -- the day the money moved,
@@ -251,15 +275,29 @@ class CashSourceFact:
     The projection's own read-time adjustments cannot reach a settled row and are
     deliberately not applied: the entries-aware RESERVATION models money still to
     leave (this has left), and the live override map is built from
-    ``live_projected_net`` / ``live_loan_transfer_amounts``, both of which filter
-    to ``is_projected`` candidates.
+    ``income_service.live_projected_net`` / ``LoanPricing.live_cash``, both of
+    which filter to ``is_projected`` candidates.
 
     Attributes:
-        transaction_id: The source row's id (identity for the walk's output and
-            for the posting writer's attribution at plan step X-d).
+        transaction_id: The source row's id -- the transaction itself, or for a
+            PURCHASE the envelope it was recorded against (identity for the
+            walk's output and for the posting writer's attribution at plan step
+            X-d).
+        entry_id: The ``budget.transaction_entries`` id when this fact is a
+            PURCHASE, else ``None``.  It is what makes the pair
+            ``(transaction_id, entry_id)`` the fact's identity: an envelope and
+            each of its posted purchases are distinct movements sharing one
+            parent, and the sort below breaks their tie with it.  REQUIRED at
+            construction rather than defaulted -- a fact built without saying
+            which kind it is would sort and attribute as the parent's.
         pay_period_id: The BUDGET clock -- the ``budget.pay_periods`` row the
-            transaction is attributed to (NOT NULL on the column).  Never used
-            to date the event; the cash clock is :attr:`settled_on` alone.
+            transaction is attributed to (NOT NULL on the column).  A purchase
+            takes its PARENT's, because a purchase spends the envelope's budget
+            and has no column of its own; that is what keeps the budget-clock
+            regrouping (``balance_at._cash_periods._budget_legs``) reading a
+            partially-spent envelope at its whole cost -- the spent part as
+            movements and the rest as the reservation.  Never used to date the
+            event; the cash clock is :attr:`settled_on` alone.
         is_income: Whether the source row is an INCOME transaction (its
             ``transaction_type_id``), so a budget-clock reduction can split the
             income and expense legs by type rather than by the sign of
@@ -267,8 +305,9 @@ class CashSourceFact:
         settled_on: The civil day this row's cash MOVED -- the one date the
             assertion partition compares against, the fold samples on, and the
             period index buckets by.  **Read from the stored
-            ``transactions.settled_on``, not derived** (plan step X-f1, ruling
-            R-EC), through the shared
+            ``transactions.settled_on`` (or, for a purchase, from
+            ``transaction_entries.settled_on``), not derived** (plan step X-f1,
+            ruling R-EC), through the shared
             :func:`app.utils.balance_predicates.settled_day` so a settled row
             missing one fails loudly here rather than being dated by a fallback.
             It was ``paid_at``'s display-timezone day with the pay period's
@@ -277,10 +316,20 @@ class CashSourceFact:
             no figure and every row keeps the day the engine already gave it.
             The partition now compares two real-world dates and guesses at
             neither.
+        reconciled_by_id: WHICH statement was recorded as showing this row --
+            the ``account_anchor_history`` id its ``reconciled_by_id`` names, or
+            ``None`` when none has been (ruling **R-FL**).  It sits beside
+            :attr:`settled_on` rather than replacing it because the two are
+            different facts: one is when the money moved, the other is which
+            statement was seen to show it, and a statement legitimately shows a
+            line that moved days earlier.  What the walk does with the pair is
+            :class:`~._clearing.StatementCoverage`'s rule and not this record's.
         delta: The signed confirmed cash effect
             (:func:`app.services.cash_ledger.settled_cash_leg`): positive for
             income, negative for an expense, and ``0.00`` for a row whose entries
-            are entirely credit-card purchases.
+            are entirely credit-card purchases or entirely already posted.  For
+            a PURCHASE it is ``-amount``: a purchase is always an expense and
+            its whole amount leaves the account.
 
     **There is no instant on this record, and its absence is the ruling** (R-DH).
     It carried ``occurred_at`` -- ``paid_at`` normalized to UTC -- until
@@ -295,9 +344,11 @@ class CashSourceFact:
     """
 
     transaction_id: int
+    entry_id: "int | None"
     pay_period_id: int
     is_income: bool
     settled_on: date
+    reconciled_by_id: "int | None"
     delta: Decimal
 
 
@@ -357,6 +408,7 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
     )
     return [
         CashAnchorFact(
+            anchor_id=row.id,
             account_id=account_id,
             anchor_balance=Decimal(str(row.anchor_balance)),
             # The business date the partition turns on, READ rather than
@@ -373,17 +425,135 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
     ]
 
 
+def coverage_for(account_id: int) -> StatementCoverage:
+    """Return *account_id*'s clearing rule, loading its assertions.
+
+    The DATABASE twin of :func:`~._clearing.statement_coverage`, for the callers
+    that do not already hold an account's facts -- the entry list's indicator,
+    reached from the grid (``entry_service.build_entry_lists_dict``) and from
+    the HTMX refresh (``routes/entries.py``).  The entry RESERVATION is not one
+    of them: it takes ``walk.coverage`` off the read pass's own walk
+    (``balance_at._cash_fold``), and the reconcile panel takes the governing
+    assertion itself (``cash_ledger.governing_anchor``).  It exists for the
+    reason :func:`~._facts.reconciled_through` exists beside
+    :attr:`~._walk.CashLedgerWalk.reconciled_through` -- a caller holding the
+    walk must not pay a query, and a caller rendering one template row must not
+    walk an account -- and it is a WRAPPER rather than a second rule, so the two
+    cannot come to disagree.
+
+    **It loads ROWS where the boundary it replaces was one ``MAX``**, and that
+    cost belongs to the fact rather than to this function: which statement
+    cleared a line is a question about a PARTICULAR assertion, so an aggregate
+    over the day column cannot answer it.  It is one indexed read per ACCOUNT
+    (``idx_anchor_history_account`` leads on ``account_id``) and every caller
+    already memoises per account -- ``entry_service.build_entry_lists_dict``
+    because a grid render passes ~60 envelopes across ~6 accounts, and the
+    reservation because its basis is built once per account per read pass.
+
+    Args:
+        account_id: The account whose clearing rule to build.
+
+    Returns:
+        Its :class:`~._clearing.StatementCoverage`.  An account with no
+        assertion history yields one that clears nothing -- the same honest
+        emptiness :func:`~._facts.reconciled_through` answers with a ``None``
+        day.
+    """
+    return statement_coverage(cash_anchor_facts(account_id))
+
+
+def _posted_purchase_facts(
+    account_id: int, scenario_id: int,
+) -> list[CashSourceFact]:
+    """Return an account's POSTED purchases as dated facts -- ruling **R-FM**.
+
+    The second kind of ACTUAL event (plan step X-f3b): a purchase recorded
+    against an envelope whose bank posting day the owner has recorded is cash
+    that left the account on that day, whatever its envelope has or has not
+    done.  Until this step a purchase was never a cash movement -- it only shrank
+    its envelope's reservation, and the money left the book when the WHOLE
+    envelope closed, which is finding **N-274**.
+
+    Three narrowings, each load-bearing:
+
+    * ``settled_on IS NOT NULL`` -- the trigger itself (ruling R-FM as refined
+      by **R-FR**).  It is the same fact that makes a TRANSACTION an actual
+      event, asked of the row in front of it; whether a statement was recorded
+      as showing it is :class:`~._clearing.StatementCoverage`'s separate
+      question, asked identically of both kinds by the walk.
+    * ``is_credit IS FALSE`` -- a card purchase never touches checking; it
+      leaves later through its own CC Payback sibling, which is why
+      :func:`~._amounts.credit_entry_sum` removes it from the parent's leg too.
+    * the parent is BALANCE-CONTRIBUTING -- the same
+      :func:`~app.utils.balance_predicates.balance_contributing_clause` gate the
+      transaction half applies, so a soft-deleted or Credit / Cancelled envelope
+      contributes nothing and neither do its purchases.  That is
+      :func:`~._amounts.settled_cash_leg`'s totality rule extended to the family
+      it now has, and it is what a delete or a cancel reverses in the ledger.
+
+    Deliberately NOT narrowed by the parent's STATUS: a purchase against a
+    still-Projected envelope has left the bank exactly as one against a closed
+    envelope has.  Measured on a production clone 2026-08-14: 2 of the 9 posted
+    purchases (``$45.85``) sit on a Projected row.
+
+    Args:
+        account_id: The account whose purchases to load.
+        scenario_id: The budget scenario the parent rows live in.
+
+    Returns:
+        One :class:`CashSourceFact` per posted debit purchase, unordered (the
+        caller sorts the merged set).
+    """
+    rows = (
+        db.session.query(
+            TransactionEntry.id,
+            TransactionEntry.amount,
+            TransactionEntry.settled_on,
+            TransactionEntry.reconciled_by_id,
+            Transaction.id,
+            Transaction.pay_period_id,
+        )
+        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+        .filter(
+            Transaction.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
+            balance_contributing_clause(),
+            TransactionEntry.settled_on.isnot(None),
+            TransactionEntry.is_credit.is_(False),
+        )
+        .all()
+    )
+    return [
+        CashSourceFact(
+            transaction_id=transaction_id,
+            entry_id=entry_id,
+            pay_period_id=pay_period_id,
+            is_income=False,
+            settled_on=settled_on,
+            reconciled_by_id=reconciled_by_id,
+            delta=-Decimal(str(amount)),
+        )
+        for (
+            entry_id, amount, settled_on, reconciled_by_id,
+            transaction_id, pay_period_id,
+        ) in rows
+    ]
+
+
 def settled_cash_facts(
     account_id: int, scenario_id: int,
 ) -> list[CashSourceFact]:
-    """Return an account's SETTLED transaction rows as dated facts.
+    """Return an account's cash movements as dated facts.
 
-    The ACTUAL events the walk folds: every balance-contributing row for the
-    account in the scenario whose status is settled, valued and dated once --
-    and carrying the budget column it was attributed to, so the ONE valued row
-    set can be grouped on either clock (see :class:`CashSourceFact`).  Both
-    extra fields are free: the shared loader already joins ``pay_period``, and
-    the transaction TYPE is a column on the row it already holds.
+    The ACTUAL events the walk folds, and since plan step X-f3b there are TWO
+    kinds of them (ruling **R-FM**): every balance-contributing row for the
+    account in the scenario whose status is settled, and every POSTED PURCHASE
+    recorded against one of its rows (:func:`_posted_purchase_facts`).  Both are
+    valued and dated once, and both carry the budget column they were attributed
+    to, so the ONE valued row set can be grouped on either clock (see
+    :class:`CashSourceFact`).  For the transaction half both extra fields are
+    free: the shared loader already joins ``pay_period``, and the transaction
+    TYPE is a column on the row it already holds.
 
     **It loads its own rows and takes no period window, deliberately.**  An
     argument a caller can get wrong is a defect, not a contract (plan Section 8):
@@ -421,15 +591,16 @@ def settled_cash_facts(
         scenario_id: The budget scenario the rows live in.
 
     Returns:
-        One :class:`CashSourceFact` per settled row, ASCENDING by
-        ``(settled_on, transaction_id)`` -- the order the walk consumes them in,
-        with the id breaking a same-day tie deterministically.  Order WITHIN a
-        day is not observable: the walk only sums a day's sources before its
-        assertions close it (ruling R-DH), and the fold reads a day's boundary
-        after every step on it, so only the day's total can be read back.  The
-        sort is total anyway, because a nondeterministic order in a financial
-        replay is a reproducibility defect even where it is arithmetically
-        inert.
+        One :class:`CashSourceFact` per settled row and per posted purchase,
+        ASCENDING by ``(settled_on, transaction_id, entry_id)`` -- the order the
+        walk consumes them in, with the ids breaking a same-day tie
+        deterministically and a parent sorting before its own purchases.  Order
+        WITHIN a day is not observable: the walk only sums a day's sources
+        before its assertions close it (ruling R-DH), and the fold reads a day's
+        boundary after every step on it, so only the day's total can be read
+        back.  The sort is total anyway, because a nondeterministic order in a
+        financial replay is a reproducibility defect even where it is
+        arithmetically inert.
     """
     rows = _unwindowed_contributing_rows(
         account_id, scenario_id, Transaction.status_id.in_(settled_status_ids()),
@@ -437,12 +608,22 @@ def settled_cash_facts(
     facts = [
         CashSourceFact(
             transaction_id=txn.id,
+            entry_id=None,
             pay_period_id=txn.pay_period_id,
             is_income=txn.is_income,
             settled_on=settled_day(txn.id, txn.settled_on),
+            reconciled_by_id=txn.reconciled_by_id,
             delta=settled_cash_leg(txn),
         )
         for txn in rows
     ]
-    facts.sort(key=lambda fact: (fact.settled_on, fact.transaction_id))
+    facts.extend(_posted_purchase_facts(account_id, scenario_id))
+    # ``entry_id or 0`` orders a parent's own leg before its purchases and keeps
+    # the key total: entry ids are positive, so ``0`` is unambiguously "the
+    # transaction itself" and no ``None`` reaches the comparison.
+    facts.sort(
+        key=lambda fact: (
+            fact.settled_on, fact.transaction_id, fact.entry_id or 0,
+        )
+    )
     return facts

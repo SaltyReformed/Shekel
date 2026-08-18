@@ -45,6 +45,7 @@ from app.services.recurrence import (
     NeverEnds,
     RecurrenceDescription,
     RecurrenceDescriptionError,
+    RecurrenceResolutionError,
     ResolvedRecurrence,
     describe,
 )
@@ -84,7 +85,7 @@ class TestTheCadencePhrase:
         """
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.PERIOD,
-            anchor_date=date(2026, 3, 26),
+            starts_on=date(2026, 3, 26),
             interval_n=interval_n,
         )
 
@@ -112,7 +113,7 @@ class TestTheCadencePhrase:
         """
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 4, 22),
+            starts_on=date(2026, 4, 22),
             interval_n=interval_n,
         )
 
@@ -131,7 +132,7 @@ class TestTheCadencePhrase:
         """A yearly cadence fires in one month, so naming it is the answer."""
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.YEAR,
-            anchor_date=date(2026, 11, 1),
+            starts_on=date(2026, 11, 1),
             interval_n=interval_n,
         )
 
@@ -153,7 +154,7 @@ class TestTheCadencePhrase:
         """
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.WEEK,
-            anchor_date=date(2026, 4, 23),
+            starts_on=date(2026, 4, 23),
             interval_n=interval_n,
         )
 
@@ -164,17 +165,17 @@ class TestTheDayItNames:
     """The day comes from ``ResolvedRecurrence.day_of_month``, not the anchor."""
 
     def test_a_month_end_rule_names_the_day_it_MEANS(self):
-        """A day-31 rule anchored in a 30-day month still reads "day 31".
+        """A day-31 rule starting in a 30-day month still reads "day 31".
 
-        The anchor CLAMPS -- April has no 31st -- and ``nominal_day`` is what
-        carries the day the user actually stated.  Reading ``anchor_date.day``
-        instead would show "day 30" for a rule that fires on the last day of
-        every month, and the cell and the grid would disagree about the same
-        bill.
+        The first occurrence CLAMPS -- April has no 31st -- and ``nominal_day``
+        is what carries the day the user actually stated.  Reading
+        ``starts_on.day`` instead would show "day 30" for a rule that fires on
+        the last day of every month, and the cell and the grid would disagree
+        about the same bill.
         """
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 4, 30),
+            starts_on=date(2026, 4, 30),
             nominal_day=31,
         )
 
@@ -188,7 +189,7 @@ class TestTheDayItNames:
         """
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.YEAR,
-            anchor_date=date(2027, 2, 28),
+            starts_on=date(2027, 2, 28),
             nominal_day=29,
         )
 
@@ -198,7 +199,7 @@ class TestTheDayItNames:
         """With no ``nominal_day`` the anchor holds the day itself."""
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 4, 22),
+            starts_on=date(2026, 4, 22),
         )
 
         assert describe(resolved).cadence == "Monthly (day 22)"
@@ -217,7 +218,7 @@ class TestThePlacementNote:
         """
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 3, 1),
+            starts_on=date(2026, 3, 1),
             placement=_DEFER,
         )
 
@@ -232,7 +233,7 @@ class TestThePlacementNote:
         """
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 3, 15),
+            starts_on=date(2026, 3, 15),
             placement=_DEFER,
         )
 
@@ -242,7 +243,7 @@ class TestThePlacementNote:
         """The shortcut is scoped to the every-month cadence, not to the note."""
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 3, 1),
+            starts_on=date(2026, 3, 1),
             interval_n=3,
             placement=_DEFER,
         )
@@ -258,7 +259,7 @@ class TestThePlacementNote:
         """
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 3, 1),
+            starts_on=date(2026, 3, 1),
             placement=_CONTAIN,
         )
 
@@ -272,7 +273,7 @@ class TestThePlacementNote:
         """
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.PERIOD,
-            anchor_date=date(2026, 3, 26),
+            starts_on=date(2026, 3, 26),
             placement=_DEFER,
         )
 
@@ -286,7 +287,7 @@ class TestTheBounds:
         """The cell reads a ``date``, so it formats it like any other."""
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 4, 22),
+            starts_on=date(2026, 4, 22),
             end_bound=EndsOnDate(on=date(2029, 1, 22)),
         )
 
@@ -308,7 +309,7 @@ class TestTheBounds:
         """
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 4, 22),
+            starts_on=date(2026, 4, 22),
             end_bound=EndsAfterOccurrences(count=12),
         )
 
@@ -319,7 +320,7 @@ class TestTheBounds:
     def test_an_unbounded_rule_carries_neither(self):
         """The ordinary case: indefinite, so both column reads are absent."""
         resolved = resolved_value(
-            unit=RecurrenceUnitEnum.PERIOD, anchor_date=date(2026, 3, 26),
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 3, 26),
         )
 
         assert describe(resolved) == RecurrenceDescription(
@@ -341,7 +342,7 @@ class TestItRefusesWhatItCannotWord:
             offset_periods=0,
             interval_n=1,
             unit="every blue moon",
-            anchor_date=date(2026, 4, 22),
+            starts_on=date(2026, 4, 22),
             placement=_CONTAIN,
             shift=BusinessDayShiftEnum.NONE,
             end_bound=NEVER_ENDS,
@@ -371,7 +372,7 @@ class TestItRefusesWhatItCannotWord:
             offset_periods=0,
             interval_n=2,
             unit="fortnight",
-            anchor_date=date(2026, 4, 22),
+            starts_on=date(2026, 4, 22),
             placement=_CONTAIN,
             shift=BusinessDayShiftEnum.NONE,
             end_bound=NEVER_ENDS,
@@ -384,17 +385,21 @@ class TestItRefusesWhatItCannotWord:
             describe(half_worded)
 
     def test_a_placement_with_no_wording_raises(self):
-        """Plan step R8 adds a third placement; it must be worded, not assumed.
+        """Plan step R11 adds a third placement; it must be worded, not assumed.
 
         Falling back to the containing-date phrasing would tell the user the
-        money moves on a day it does not -- the "fund in advance" placement
-        ledger row D20 names funds from an EARLIER paycheck.
+        money moves on a day it does not -- the LEAD placement plan ledger row
+        **D40** names funds from a paycheck EARLIER than the one containing the
+        occurrence.  (It was "the fund in advance placement ledger row D20
+        names"; plan step R8-a closed D20 on the measurement that
+        ``CONTAINING_DATE`` already funds on or before every occurrence, and
+        the LEAD is what survived it.)
         """
         unworded = ResolvedRecurrence(
             offset_periods=0,
             interval_n=1,
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 4, 22),
+            starts_on=date(2026, 4, 22),
             placement="the paycheck before",
             shift=BusinessDayShiftEnum.NONE,
             end_bound=NEVER_ENDS,
@@ -413,19 +418,19 @@ class TestTheDayOfMonthAccessor:
     @pytest.mark.parametrize(
         "unit", [RecurrenceUnitEnum.MONTH, RecurrenceUnitEnum.YEAR],
     )
-    def test_an_unclamped_anchor_answers_its_own_day(self, unit):
-        """No ``nominal_day`` means the anchor holds the day itself."""
-        resolved = resolved_value(unit=unit, anchor_date=date(2026, 4, 22))
+    def test_an_unclamped_date_answers_its_own_day(self, unit):
+        """No ``nominal_day`` means the date holds the day itself."""
+        resolved = resolved_value(unit=unit, starts_on=date(2026, 4, 22))
 
         assert resolved.day_of_month == 22
 
     @pytest.mark.parametrize(
         "unit", [RecurrenceUnitEnum.MONTH, RecurrenceUnitEnum.YEAR],
     )
-    def test_a_clamped_anchor_answers_the_nominal_day(self, unit):
-        """Presence of ``nominal_day`` means the anchor month clamped it."""
+    def test_a_clamped_date_answers_the_nominal_day(self, unit):
+        """Presence of ``nominal_day`` means the date's month clamped it."""
         resolved = resolved_value(
-            unit=unit, anchor_date=date(2026, 4, 30), nominal_day=31,
+            unit=unit, starts_on=date(2026, 4, 30), nominal_day=31,
         )
 
         assert resolved.day_of_month == 31
@@ -434,31 +439,38 @@ class TestTheDayOfMonthAccessor:
         "unit", [RecurrenceUnitEnum.PERIOD, RecurrenceUnitEnum.WEEK],
     )
     def test_a_unit_with_no_month_day_answers_none(self, unit):
-        """Absence, not the anchor's day.
+        """Absence, not the first occurrence's day.
 
         A paycheck-space or weekly rule has no day-of-month to name, and
-        answering ``anchor_date.day`` would invent a coordinate the cadence
-        never uses -- which is what a caller reading the anchor directly would
-        get.
+        answering ``starts_on.day`` would invent a coordinate the cadence never
+        uses -- which is what a caller reading the date directly would get.
         """
-        resolved = resolved_value(unit=unit, anchor_date=date(2026, 4, 22))
+        resolved = resolved_value(unit=unit, starts_on=date(2026, 4, 22))
 
         assert resolved.day_of_month is None
 
-    def test_it_answers_the_nominal_day_even_when_it_equals_the_anchors(self):
-        """``is None``, never truthiness.
+    def test_a_day_the_date_already_holds_is_refused_before_it_gets_here(self):
+        """The accessor cannot be handed a pair that states one day twice.
 
-        ``nominal_day``'s domain is 29-31, so no falsy value can reach it -- but
-        a truthiness test here would silently re-clamp every later month if one
-        ever did, and the accessor is the single place that would happen.
+        It read ``nominal_day is None`` rather than its truthiness, and this
+        asserted that on ``(2026-01-31, 31)`` -- January HAS a 31st, so the two
+        halves named the same day and a truthiness test would have been
+        indistinguishable from an ``is None`` one.
+
+        **Plan step R7c-b removed the state instead of grading the reader.**  A
+        nominal day records a day the month CLAMPED (ruling R-R3), so a date
+        that is not its own month's last day leaves no day open; both value
+        types refuse the pair in ``__post_init__`` and
+        ``ck_recurrence_rules_nominal_day`` refuses the row.  Nothing falsy can
+        reach the accessor because nothing but 29, 30 or 31 beside a
+        short-month date can reach it at all.
         """
-        resolved = resolved_value(
-            unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 1, 31),
-            nominal_day=31,
-        )
-
-        assert resolved.day_of_month == 31
+        with pytest.raises(RecurrenceResolutionError, match="nominal_day 31"):
+            resolved_value(
+                unit=RecurrenceUnitEnum.MONTH,
+                starts_on=date(2026, 1, 31),
+                nominal_day=31,
+            )
 
 
 class TestTheStopLineIsTotalOverTheShapes:
@@ -577,24 +589,32 @@ class TestTheDeferredCollapseNamesItsPlacement:
     """The day is dropped only under the placement whose words imply it."""
 
     def test_a_future_advance_placement_keeps_the_day(self):
-        """Plan step R8's fund-in-ADVANCE member must not inherit the collapse.
+        """Plan step R11's LEAD member must not inherit the collapse.
 
         "The first paycheck on or after the 1st" IS the month's first
-        paycheck; "the LAST paycheck on or before the 1st" is the PREVIOUS
-        month's last, so the two are different facts and the day is half the
-        answer.  A condition keyed only on unit / interval / day would delete
-        it silently the day ledger row D20's placement lands.
+        paycheck; "the paycheck BEFORE the one covering the 1st" is the
+        previous month's last, so the two are different facts and the day is
+        half the answer.  A condition keyed only on unit / interval / day would
+        delete it silently the day plan ledger row **D40**'s placement lands.
+
+        **The member this stands in for was re-decided at plan step R8-a.**  It
+        was D20's "the LAST paycheck on or before the occurrence", which that
+        step measured to be ``CONTAINING_DATE`` under another name -- 0
+        disagreements with ``period_containing`` over 8,460 days of a tiling
+        calendar -- so D20 closed and the LEAD carries the gap under D40.  The
+        collapse guard is unchanged either way: both readings put the money in
+        a different month from the one the day names.
 
         Reached by wording a hypothetical third member, which is exactly the
-        edit R8 will make.
+        edit R11 will make.
         """
-        # A stand-in for the placement R8 adds; wording it is all this needs.
-        advance = "PERIOD_ENDING_ON_OR_BEFORE"
+        # A stand-in for the placement R11 adds; wording it is all this needs.
+        advance = "PERIOD_BEFORE_THE_CONTAINING_ONE"
         resolved = ResolvedRecurrence(
             offset_periods=0,
             interval_n=1,
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 3, 1),
+            starts_on=date(2026, 3, 1),
             placement=advance,
             shift=BusinessDayShiftEnum.NONE,
             end_bound=NEVER_ENDS,
@@ -610,7 +630,7 @@ class TestTheDeferredCollapseNamesItsPlacement:
         """...and the member that DOES imply the day still drops it."""
         resolved = resolved_value(
             unit=RecurrenceUnitEnum.MONTH,
-            anchor_date=date(2026, 3, 1),
+            starts_on=date(2026, 3, 1),
             placement=_DEFER,
         )
 

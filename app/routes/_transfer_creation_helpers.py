@@ -31,6 +31,7 @@ and ``transfer_service`` -- so the transfer invariants are unaffected by
 routing a call through this module.
 """
 import logging
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -43,9 +44,16 @@ from app.models.account import Account
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transfer_template import TransferTemplate
 from app.routes._redirect_target import RedirectTarget
-from app.services import transfer_recurrence
+from app.schemas.validation import (
+    RECURRENCE_END_BOUND_KEY,
+    RECURRENCE_NEEDS_A_START,
+    RECURRENCE_NOMINAL_DAY_KEY,
+    RECURRENCE_STARTS_ON_KEY,
+    end_bound_before_start_message,
+)
+from app.services import loan_loaders, loan_recurrence_sync, transfer_recurrence
 from app.services.generation_schedule import GenerationSchedule
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.scenario_resolver import require_baseline_scenario
 from app.utils.auth_helpers import get_or_404
 
 logger = logging.getLogger(__name__)
@@ -183,6 +191,112 @@ def build_recurring_transfer_template(
     return template
 
 
+def settle_first_occurrence(
+    data: dict[str, Any], *, redirect: RedirectTarget,
+) -> Response | None:
+    """Derive a loan payment's first occurrence, or refuse a missing one.
+
+    **The CREATE-form half of the rule the EDIT form states as
+    ``LOAN_PAYMENT_BOUND_IS_DERIVED``** (plan step R7c-b, developer ruling
+    2026-08-15).  A recurring loan payment's first occurrence is the loan's
+    first contractual installment; the app writes it, so the form's control is
+    locked and posts nothing, and this is what fills the gap the lock leaves.
+
+    **It DERIVES before the rule is built rather than after**, which is the
+    whole of what that ruling changed.  ``bind_rule_to_loan`` still runs later
+    and is now a no-op for this path; before this, the generic transfer form
+    authored a rule from the date the USER typed and had it silently replaced a
+    few lines on -- the shape
+    :func:`~app.services.loan_recurrence_sync.loan_cadence_start`'s own
+    docstring records as worse than duplication.
+
+    **The refusal is here rather than in the schema, for the reason the update
+    path's is in the route**: whether a start is required depends on the
+    DESTINATION -- a loan derives one, anything else must state one -- and a
+    schema never learns which accounts are loans.  So
+    ``TransferTemplateCreateSchema`` carries
+    ``recurrence_start_is_required = False`` and this states the rule with the
+    schema's own message, exactly as
+    ``_recurrence_form_helpers.resolve_recurrence_rule_for_update`` does.
+
+    A submission naming NO cadence authors no rule and is left alone: "does
+    not repeat" needs no first occurrence.
+
+    Args:
+        data: The validated payload, mutated in place.  Its ``to_account_id``
+            must already be ownership-checked -- this reads the destination's
+            loan parameters, so an unchecked id would be an IDOR.
+        redirect: Where to send the user when the submission is refused.
+
+    Returns:
+        * ``None`` -- ``data`` now carries a first occurrence, or names no
+          cadence at all; the caller continues.
+        * :class:`Response` -- the refusal redirect, returned verbatim -- an
+          unstated first occurrence for a non-loan destination, or a closing
+          bound below the one just derived for a loan
+          (:func:`_refuse_bound_before_derived_start`).
+    """
+    if data.get("recurrence_unit") is None:
+        return None
+    params = loan_loaders.load_loan_params(data.get("to_account_id"))
+    if params is not None:
+        cadence_start = loan_recurrence_sync.loan_cadence_start(
+            data["recurrence_unit"], params,
+        )
+        data[RECURRENCE_STARTS_ON_KEY] = cadence_start.starts_on
+        data[RECURRENCE_NOMINAL_DAY_KEY] = cadence_start.nominal_day
+        return _refuse_bound_before_derived_start(
+            data, cadence_start.starts_on, redirect=redirect,
+        )
+    if data.get(RECURRENCE_STARTS_ON_KEY) is not None:
+        return None
+    for message in RECURRENCE_NEEDS_A_START[RECURRENCE_STARTS_ON_KEY]:
+        flash(message, "danger")
+    return redirect.to_response()
+
+
+def _refuse_bound_before_derived_start(
+    data: dict[str, Any], starts_on: date, *, redirect: RedirectTarget,
+) -> Response | None:
+    """Refuse a stated closing bound that precedes the DERIVED first occurrence.
+
+    **The comparison the schema could not make**, and leaving it out was an
+    unhandled 500.  ``RecurrenceFormFieldsMixin.build_end_bound`` runs
+    ``require_end_bound_after_start`` at load time, which early-returns when
+    ``starts_on`` is absent -- and absent is exactly what the loan branch above
+    produces, because the form's "Starts on" control is locked and posts
+    nothing.  So any past "Ends on" passed every validator and the pair reached
+    the write door with the derived start beside it, generating a rule that
+    names no occurrence at all.  The create form does not lock the "Ends"
+    control (the server cannot know the destination at render), so the form
+    invites exactly this.
+
+    Worded through
+    :func:`~app.schemas.validation.end_bound_before_start_message`, the same
+    sentence both other doors use, so a user who states an impossible window
+    reads one refusal wherever they state it.
+
+    Args:
+        data: The validated payload.  Read for the composed closing bound,
+            which the create preamble pops later; not mutated.
+        starts_on: The first occurrence just derived from the loan's contract.
+        redirect: Where to send the user when the submission is refused.
+
+    Returns:
+        * ``None`` -- the submission states no bound, or one at or after the
+          derived start.
+        * :class:`Response` -- the refusal redirect, returned verbatim.
+    """
+    bound = data.get(RECURRENCE_END_BOUND_KEY)
+    if bound is None:
+        return None
+    end_date = bound.columns().end_date
+    if end_date is None or end_date >= starts_on:
+        return None
+    flash(end_bound_before_start_message(end_date, starts_on), "danger")
+    return redirect.to_response()
+
+
 def flush_template_or_namedup_redirect(
     *,
     redirect: RedirectTarget,
@@ -227,10 +341,17 @@ def generate_transfers_for_all_periods(
     The shared ``resolve baseline scenario -> load the owner's schedule ->
     transfer_recurrence.generate_for_template`` idiom used by the
     investment / loan / transfers create paths (and the unarchive
-    restore path).  A no-op when the user has no baseline scenario yet,
-    matching the pre-extraction guard.  Shadow-transaction atomicity is
-    owned by ``generate_for_template``; this helper only orchestrates
-    its inputs.
+    restore path).  Shadow-transaction atomicity is owned by
+    ``generate_for_template``; this helper only orchestrates its inputs.
+
+    **It REQUIRES the baseline scenario (ruling R-BW), and the silent no-op it
+    replaces was ledger row F-9.**  Every caller is a CREATE that reports
+    success to the user afterwards, so "generate nothing and return normally"
+    told them a recurring transfer existed that did not -- the same outcome the
+    adjacent missing-period branch is written to refuse
+    (``transfers/_instances.ONE_TIME_TRANSFER_NEEDS_PERIOD``).  The raise is
+    answered by the one application-level handler, which rolls the pending
+    create back and renders the repair.
 
     Args:
         template: The flushed :class:`TransferTemplate` whose recurrence
@@ -239,18 +360,24 @@ def generate_transfers_for_all_periods(
             ``generate_for_template``; ``None`` (the default) generates
             across every period, matching the create paths, while the
             unarchive path passes ``date.today()`` to fill only forward.
+
+    Raises:
+        BaselineMissingError: When the owner has no baseline scenario, so
+            there is nothing to generate INTO.  Unreachable through any door
+            today -- registration writes one and nothing deletes one -- which
+            is why this changes no live behaviour.
     """
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario:
-        transfer_recurrence.generate_for_template(
-            template,
-            GenerationSchedule.for_user(current_user.id),
-            scenario.id,
-            effective_from=effective_from,
-        )
+    scenario = require_baseline_scenario(current_user.id)
+    transfer_recurrence.generate_for_template(
+        template,
+        GenerationSchedule.for_user(current_user.id),
+        scenario.id,
+        effective_from=effective_from,
+    )
 
 
 __all__ = [
+    "settle_first_occurrence",
     "TRANSFER_NAME_DUP_MESSAGE",
     "validate_and_resolve_source_account",
     "build_recurring_transfer_template",

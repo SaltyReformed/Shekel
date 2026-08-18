@@ -14,7 +14,8 @@ place, where the two cannot drift:
   - the generate row fetch + repeat refusal
     (:func:`existing_rows_refusing_repeats`, over
     :func:`existing_rows_by_period` and :func:`refuse_unstorable_repeats`),
-  - the regenerate row-partition (:func:`partition_regeneration_rows`),
+  - the regenerate row-partition (:func:`partition_regeneration_rows`) --
+    **the TRANSFER engine's only, since plan step R10-a**; see its docstring,
   - the regenerate sweep bound (:func:`regeneration_bound`),
   - the regenerate row fetch (:func:`query_rows_from_effective_date`),
   - the cross-user audit ``log_event(...)`` blocks (the ``log_*`` helpers
@@ -334,13 +335,23 @@ def regeneration_bound(schedule, effective_from):
 
 
 def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:
-    """Partition existing rows for the regenerate state machine.
+    """Partition existing rows for the DELETE-and-recreate regenerate machine.
 
-    Shared by both recurrence engines' ``regenerate_for_template``: an
-    existing template-linked row is classified per §4.8 as either a
-    conflict to surface to the user (overridden or soft-deleted), an
-    immutable row to leave untouched, or an auto-generated row that is
-    safe to delete and regenerate.
+    An existing template-linked row is classified per §4.8 as either a conflict
+    to surface to the user (overridden or soft-deleted), an immutable row to
+    leave untouched, or an auto-generated row that is safe to delete and
+    regenerate.
+
+    **The TRANSFER engine is its only caller since plan step R10-a.**  It was
+    shared by both until that step (ruling **R-R19**) gave the transaction
+    engine a pass that MAINTAINS the rows it already generated -- the last
+    class in the tuple below, "safe to delete and regenerate", is the premise
+    that step deleted, because ``transaction_entries`` CASCADE and a projected
+    envelope holds the owner's purchases.  A transfer holds none, which is why
+    the transfer engine still reads this and why moving it onto the same shape
+    is plan step R10-b rather than an emergency.  **Do not extend this for the
+    transaction engine**; the classifier that replaced it is
+    ``recurrence_engine._maintain._classify_maintain_work``.
 
     Args:
         existing_rows: All existing (Transaction|Transfer) rows whose
@@ -357,16 +368,18 @@ def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:
     deleted_ids = []
     to_delete = []
     for row in existing_rows:
-        # Immutable -- never touch.  Build-Order Step 3 note: a settled row is
-        # immutable, and every posted row is settled, so neither the regenerate
-        # sweep (which deletes ``to_delete`` rows) nor
-        # ``recurrence_engine.resolve_conflicts`` (which restores / re-amounts
-        # the overridden / deleted conflict ids) ever touches a row with ledger
-        # postings -- both operate only on the mutable (Projected) rows that
-        # fall through below.  Whoever relaxes this skip MUST reverse a settled
-        # row's postings before deleting it and re-sync after a mutation (see
-        # posting_service.reverse_postings_before_delete /
-        # sync_transaction_postings), or the double-entry ledger desyncs.
+        # Immutable -- never touch.  **The Build-Order Step 3 note that stood
+        # here rested on a premise plan step X-f3b DELETED** (ruling **R-FM**):
+        # "a settled row is immutable, and every posted row is settled, so
+        # neither the regenerate sweep nor ``resolve_conflicts`` ever touches a
+        # row with ledger postings".  A PROJECTED envelope holds postings the
+        # moment one of its purchases carries a recorded bank posting day, and
+        # both of that sentence's consumers reach exactly such rows -- so both
+        # now reconcile: the sweep reverses each row's family before deleting it
+        # (``recurrence_engine.regenerate_for_template``) and the conflict
+        # chooser re-syncs each row it restores (``resolve_conflicts``).  What
+        # this skip still guarantees is only what it says: a settled row is
+        # untouched here.
         if row.status and row.status.is_immutable:
             continue
         # Overridden -- flag as conflict for user prompt.

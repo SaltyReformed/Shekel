@@ -312,7 +312,13 @@ get_current, get_next, get_all, get_periods_in_range all covered.
 | HP       | Returns correct window by index                 |
 | BE       | Range beyond available periods → partial result |
 
-#### `get_next_period()`
+#### `get_next_period()` -- RETIRED at plan step `pay_calendar:C2-f1`
+
+Deleted with `companion_service.get_previous_period`.  Both cases below moved,
+with the behaviour, to
+`test_services/test_pay_calendar_value.py::TestPeriodStartingAfter`, which
+grades `PayCalendar.period_starting_after` and its `period_starting_before`
+mirror.
 
 | Category | Tests Needed                             |
 | -------- | ---------------------------------------- |
@@ -740,7 +746,7 @@ was the hardcoded `26` this table used to name.
 
 ---
 
-### 2.9 `routes/grid.py` -- Priority P2
+### 2.9 `routes/grid/` -- Priority P2
 
 **Status: Complete (12 tests in `test_routes/test_grid.py` -- 8 existing + 4 new).**
 

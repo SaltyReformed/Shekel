@@ -50,6 +50,7 @@ from app.models.user import User, UserSettings
 from app.services import pay_period_service, transfer_service
 from app.services.auth_service import hash_password
 from app.services import account_service
+from tests._test_helpers import make_every_period_rule
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -68,12 +69,7 @@ def _make_envelope_template(
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
@@ -118,7 +114,7 @@ def _make_envelope_txn(
 def _add_entry(txn, seed_user, amount):
     """Attach a debit entry to *txn*."""
     db.session.add(TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description="Test purchase",

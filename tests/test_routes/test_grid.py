@@ -5,12 +5,14 @@ Tests the main budget grid view and transaction CRUD endpoints.
 """
 
 from datetime import date, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from decimal import Decimal
 
 import pytest
 
 from app.extensions import db
+from app.routes._render_helpers import fragment_budgets
 from app.models.account import Account
 from app.models.category import Category
 from app.models.scenario import Scenario
@@ -29,6 +31,7 @@ from app.services import (
 )
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import DerivedPeriod
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
@@ -43,6 +46,32 @@ from tests._test_helpers import (
     settle_instant_on,
 )
 from app.services.row_valuation import owned_contribution
+
+#: Where the grid route's source lives, for the three STATIC guards below.
+#: It was the single file ``app/routes/grid.py`` until plan step C2-f2b split
+#: it into a package (991 of pylint's 1000-line ceiling).
+_GRID_ROUTE_PACKAGE = Path("app/routes/grid")
+
+
+def _grid_route_source() -> str:
+    """Return every module of the grid route package, concatenated.
+
+    The three static guards in this file read the route's own source to
+    refuse a shape rather than a behaviour -- an inline subtotal loop, a
+    producer swap, a direct read of a canonical producer's source column.
+    They each read ``app/routes/grid.py`` by name until plan step C2-f2b
+    made that file a package.
+
+    **It globs the DIRECTORY rather than naming the modules**, and that is
+    what keeps the guards from weakening as the package grows: a named list
+    would let the next module added to it carry the very line these refuse,
+    and every guard would still pass.  Sorted so a failure message's line
+    ordering is stable across filesystems.
+    """
+    return "\n".join(
+        module.read_text(encoding="utf-8")
+        for module in sorted(_GRID_ROUTE_PACKAGE.glob("*.py"))
+    )
 
 
 class TestGridView:
@@ -3810,7 +3839,7 @@ class TestTransactionNameRows:
             # Finding cash D1 survives for the case that is actually about
             # money: a settle dated a LATER DAY than the assertion still rides
             # on top (pinned in ``test_cash_walk``).  See
-            # ``docs/audits/balance_architecture/anchor_settle_partition.md``.
+            # ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.
             assert b"$4,850" in resp.data
             assert b"$4,550" in resp.data
 
@@ -4487,7 +4516,7 @@ class TestGridSubtotalsRegressionBaseline:
     """Regression baseline: per-period subtotal reflects actual_amount.
 
     Pre-Commit-10 the grid subtotal was an inline ``sum(...
-    effective_amount ...)`` loop in ``app/routes/grid.py``.  The subtotal now
+    effective_amount ...)`` loop in ``app/routes/grid/``.  The subtotal now
     comes off the seam's ``GridColumn`` (plan steps X-c2b1 / X-c2b2), which
     uses ``effective_amount`` for income and the entries-aware reduction for
     expenses; for income with no entries the ``effective_amount`` rule is
@@ -4563,7 +4592,7 @@ class TestGridPeriodSubtotalCanonical:
     """Commit 10: per-period subtotals routed through ONE shared reduction.
 
     Pre-Commit-10 the grid's per-period subtotal was an inline
-    ``sum(... effective_amount ...)`` loop in ``app/routes/grid.py``
+    ``sum(... effective_amount ...)`` loop in ``app/routes/grid/``
     that did NOT apply the entries-aware reduction.  F-002 Pair C /
     F-004 (Q-10) flagged this as a same-page divergence: the subtotal
     row and the balance row consumed the same in-memory transactions
@@ -4581,17 +4610,26 @@ class TestGridPeriodSubtotalCanonical:
     ):
         """Rendered grid subtotal reflects the entry-aware reduction.
 
-        Setup: a Projected $500.00 envelope expense in the visible
-        current period carries three cleared debit entries summing
-        $462.34.  Pre-Commit-10 the subtotal row showed $500
-        (raw ``effective_amount``); the corrected entries-aware
-        impact is $37.66.
+        Setup: a Projected $500.00 envelope expense in the visible current
+        period, OVERSPENT -- three purchases the bank has taken, summing
+        $562.34.
 
-        Hand arithmetic (F-002 Pair C / F-004):
-          cleared_debit = 20.00 + 442.34 + 0.00 = 462.34
-          uncleared_debit = 0
+        Hand arithmetic (F-002 Pair C / F-004, on ruling **R-FM**'s two halves):
+          posted_debit = 20.00 + 442.34 + 100.00 = 562.34
+          unposted_debit = 0
           sum_credit = 0
-          impact = max(500.00 - 462.34 - 0, 0) = 37.66.
+          reservation = max(500.00 - 562.34 - 0, 0) = 0.00
+          subtotal = 562.34 posted + 0.00 still reserved = **$562.34**.
+
+        **The overspend is what keeps this test able to fail** (plan step
+        X-f3b).  Before it, a posted purchase was no fact at all and the
+        subtotal was the reservation ALONE, so an under-budget envelope
+        distinguished the entry-aware answer ($37.66) from the raw
+        ``effective_amount`` ($500).  The subtotal now counts both halves, and
+        for an under-budget envelope they sum to exactly the estimate -- the
+        same $500 the F-002 defect printed, which would leave this guard unable
+        to tell them apart.  Overspending separates all three: $562 correct,
+        $500 the raw-estimate defect, $0 the reservation-only answer.
         """
         from app.models.transaction_entry import TransactionEntry
 
@@ -4637,9 +4675,10 @@ class TestGridPeriodSubtotalCanonical:
             for amt in (
                 Decimal("20.00"),
                 Decimal("442.34"),
+                Decimal("100.00"),
             ):
                 entry = TransactionEntry(
-                    transaction_id=txn.id,
+                    transaction_id=txn.id, account_id=txn.account_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
                     description="confirmed purchase",
@@ -4657,16 +4696,23 @@ class TestGridPeriodSubtotalCanonical:
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # Grid formats subtotals as "${:,.0f}", so $37.66 -> $38.
-            # The pre-Commit-10 value would have rounded $500 -> $500.
-            assert "$38" in html, (
-                "Expense subtotal should be entry-aware: "
-                "$500 estimated - $462.34 cleared = $37.66 (-> $38)"
+            # Grid formats subtotals as "${:,.0f}", so $562.34 -> $562.
+            expense_cell = html.split(
+                "subtotal-row-expense",
+            )[1].split("</tr>")[0]
+            assert "$562" in expense_cell, (
+                "Expense subtotal is what the period COSTS: $562.34 of "
+                "purchases the bank has taken plus $0.00 still reserved"
             )
-            assert "$500" not in html.split("subtotal-row-expense")[1].split("</tr>")[0], (
+            assert "$500" not in expense_cell, (
                 "Subtotal expense cell must not show the raw "
                 "effective_amount $500 (F-002 Pair C / F-004 regression)"
             )
+            # The reservation-only answer ($0.00, what this cell showed while
+            # a posted purchase was no fact) is refused by the $562 assertion
+            # above rather than by a "$0 absent" one: the subtotal ROW spans
+            # every reported period, and the periods with no rows in them
+            # legitimately print $0.
 
     def test_grid_subtotal_reconciles_balance_delta(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -4689,15 +4735,26 @@ class TestGridPeriodSubtotalCanonical:
         remainder terms are the ones R-K added and ruling R-DH (f) split in two.
 
         Setup: anchor $1000 at periods[0]; one Projected $300.00
-        envelope expense in the CURRENT period with two cleared debits
-        summing $250.00, dated that period's start.
+        envelope expense in the CURRENT period with two purchases the bank has
+        taken summing $250.00, dated that period's start, and a re-assertion of
+        $750.00 on that same day.
 
-        Hand arithmetic:
-          impact = max(300.00 - 250.00 - 0, 0) = 50.00.
-          columns[current].expense = 50.00, .income = 0.00, .net = -50.00.
-          Nothing has SETTLED and nobody re-anchored, so the remainder is
-          0.00 and a PLAIN account carries no accrual:
-          balance[current] - balance[current - 1] = -50.00 == net.
+        Hand arithmetic (ruling **R-FM**'s two halves, plan step X-f3b):
+          posted = 250.00, reservation = max(300.00 - 250.00 - 0, 0) = 50.00.
+          columns[current].expense = 250.00 + 50.00 = 300.00, .income = 0.00,
+          .net = -300.00.
+          balance[current] = 750.00 - 50.00 = 700.00, and
+          balance[current - 1] = 1000.00, so the delta is -300.00 == net.
+
+        **The re-assertion is $750.00 and that figure is the fixture's
+        correctness, not a detail.**  It re-stated $1,000.00 while a posted
+        purchase was no fact, which then booked a $0.00 correction; the two
+        purchases ARE facts now, so the records read $750.00 that day and
+        asserting $1,000.00 would book a $250.00 ``book_vs_bank`` correction --
+        a true diagnosis of a fixture whose owner had spent $250.00 out of
+        $1,000.00 and claimed to still hold all of it.  Asserting what the
+        records say keeps BOTH remainders at $0.00, which is what lets this test
+        grade the identity rather than a remainder absorbing a mis-grouped row.
 
         **The rows were in ``periods[5]`` -- a FUTURE period -- until plan step
         X-c2b3, and moving them to the current one is a fixture correction, not
@@ -4752,19 +4809,19 @@ class TestGridPeriodSubtotalCanonical:
             )
             db.session.add(txn)
             db.session.flush()
-            # As in the sibling test above: the balance the user read that
-            # day is what puts the purchases inside it, and re-stating the
-            # $1,000.00 the records already hold books a $0.00 correction --
-            # so ``book_vs_bank`` stays $0.00 and the identity below is
-            # unchanged by it.
+            # $750.00 is what the RECORDS say that day -- the $1,000.00
+            # opening less the $250.00 of purchases the bank has taken -- so
+            # this assertion books a $0.00 correction and ``book_vs_bank``
+            # stays $0.00.  See the docstring: it was $1,000.00 while a posted
+            # purchase was no fact.
             append_balance_assertion(
                 db.session, seed_user["account"], target_period,
-                Decimal("1000.00"),
+                Decimal("750.00"),
                 settle_instant_on(target_period.start_date),
             )
             for amt in (Decimal("100.00"), Decimal("150.00")):
                 entry = TransactionEntry(
-                    transaction_id=txn.id,
+                    transaction_id=txn.id, account_id=txn.account_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
                     description="confirmed purchase",
@@ -4795,11 +4852,12 @@ class TestGridPeriodSubtotalCanonical:
             prior_period = periods[target_index - 1]
             delta = column.balance - columns[prior_period.id].balance
 
-            # 0 - max(300 - 100 - 150, 0) = -50.00.
-            assert column.expense == Decimal("50.00"), (
-                f"expected $50.00 entry-aware expense, got {column.expense!r}"
+            # 250.00 posted + max(300 - 250, 0) = 250.00 + 50.00 = 300.00.
+            assert column.expense == Decimal("300.00"), (
+                f"expected $300.00 -- what the period costs, posted plus "
+                f"reserved -- got {column.expense!r}"
             )
-            assert column.net == Decimal("-50.00")
+            assert column.net == Decimal("-300.00")
             # Nothing settled and nobody re-anchored, so BOTH remainders are
             # zero and a PLAIN account carries no accrual: asserting all of
             # them is what keeps the identity below from passing on a
@@ -4820,24 +4878,24 @@ class TestGridPeriodSubtotalCanonical:
             )
 
     def test_grid_inline_subtotal_loop_removed(self):
-        """Static guard: no inline ``sum(... effective_amount ...)`` in grid.py.
+        """Static guard: no inline ``sum(... effective_amount ...)`` in the route.
 
         The plan's verification gate -- if the inline loop is ever
         reintroduced, the canonical-producer routing is silently
         bypassed.  This regression lock fires the moment a future edit
         re-grows the loop.
+
+        Scoped to the whole ``app/routes/grid/`` package since plan step
+        C2-f2b; see :func:`_grid_route_source`.
         """
-        import re
+        import re  # pylint: disable=import-outside-toplevel
 
-        from pathlib import Path
-
-        grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
         pattern = re.compile(
             r"sum\([^\)]*(effective_amount|estimated_amount)",
         )
-        offenders = pattern.findall(grid_source)
+        offenders = pattern.findall(_grid_route_source())
         assert not offenders, (
-            "app/routes/grid.py contains an inline subtotal loop "
+            "app/routes/grid/ contains an inline subtotal loop "
             f"({offenders!r}); read the seam's "
             "balance_at.grid_balance_view instead (F-002 Pair C, "
             "F-004 same-page regression)"
@@ -4852,7 +4910,7 @@ class TestGridPeriodSubtotalCanonical:
         bypass of the canonical producer because its grid reader
         re-runs the seam itself rather than parsing the rendered HTML.  A
         regression that re-introduces a hand-rolled balance loop in
-        ``app/routes/grid.py`` would therefore drift silently.  This static
+        the grid route package would therefore drift silently.  This static
         lock closes that gap.
 
         Updated for plan step X-c2b2: the grid reads EVERY per-period figure
@@ -4875,8 +4933,9 @@ class TestGridPeriodSubtotalCanonical:
         that can never fail, and reads as coverage while being none.
 
         Two assertions:
-          1. ``balance_at.grid_balance_view(`` must appear in
-             ``app/routes/grid.py`` (positive: the seam wiring is intact).
+          1. ``balance_at.grid_balance_view(`` must appear in the
+             ``app/routes/grid/`` package (positive: the seam wiring is
+             intact).
           2. ``balance_at.balance_map(`` (the KIND-CORRECT map) must NOT
              appear: the grid account may be interest-bearing, and reading
              the accrued balance without the accrual row beside it is the
@@ -4885,12 +4944,13 @@ class TestGridPeriodSubtotalCanonical:
         Complements ``test_grid_inline_subtotal_loop_removed`` above:
         that guard catches an inline ``sum(... effective_amount ...)``
         accumulator; this guard catches a swap to a producer.
-        """
-        from pathlib import Path  # pylint: disable=import-outside-toplevel
 
-        grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
+        Scoped to the whole package since plan step C2-f2b; see
+        :func:`_grid_route_source`.
+        """
+        grid_source = _grid_route_source()
         assert "balance_at.grid_balance_view(" in grid_source, (
-            "app/routes/grid.py no longer CALLS "
+            "app/routes/grid/ no longer CALLS "
             "``balance_at.grid_balance_view`` -- regression on the "
             "balance-at seam contract.  Route every per-period grid figure "
             "through the seam's one kind-aware view instead of a "
@@ -4899,7 +4959,7 @@ class TestGridPeriodSubtotalCanonical:
             "row with no row to explain it)."
         )
         assert "balance_at.balance_map(" not in grid_source, (
-            "app/routes/grid.py calls the KIND-CORRECT ``balance_map`` -- "
+            "app/routes/grid/ calls the KIND-CORRECT ``balance_map`` -- "
             "an interest account's accrued balance would then reach the "
             "balance row without the 'Interest' row that explains it "
             "(ruling R-K).  ``grid_balance_view`` owns that dispatch."
@@ -5240,11 +5300,13 @@ class TestGridMatchedByRowPeriod:
         ``test_grid_balance_computation_routed_through_resolver``
         (F-6 lock) by pinning the *count* of legacy reads rather
         than the presence/absence of the canonical-producer symbol.
+
+        Scoped to the whole ``app/routes/grid/`` package since plan step
+        C2-f2b; see :func:`_grid_route_source`.
         """
         import re  # pylint: disable=import-outside-toplevel
-        from pathlib import Path  # pylint: disable=import-outside-toplevel
 
-        grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
+        grid_source = _grid_route_source()
         current_anchor_balance_reads = len(
             re.findall(r"\.current_anchor_balance\b", grid_source),
         )
@@ -5259,7 +5321,7 @@ class TestGridMatchedByRowPeriod:
         )
 
         assert current_anchor_balance_reads == 0, (
-            "app/routes/grid.py contains "
+            "app/routes/grid/ contains "
             f"{current_anchor_balance_reads} reads of "
             "``.current_anchor_balance`` (expected 0 -- ruling R-EH deleted "
             "the column, and the header reads the account's latest assertion "
@@ -5267,16 +5329,16 @@ class TestGridMatchedByRowPeriod:
             "values through a canonical producer"
         )
         assert current_anchor_period_id_reads == 0, (
-            "app/routes/grid.py reads "
+            "app/routes/grid/ reads "
             "``.current_anchor_period_id`` directly; route through "
             "``balance_resolver`` instead"
         )
         assert current_principal_reads == 0, (
-            "app/routes/grid.py reads ``.current_principal`` directly; "
+            "app/routes/grid/ reads ``.current_principal`` directly; "
             "route through ``loan_resolver`` instead"
         )
         assert interest_rate_reads == 0, (
-            "app/routes/grid.py reads ``.interest_rate`` directly; "
+            "app/routes/grid/ reads ``.interest_rate`` directly; "
             "route through ``loan_resolver`` instead"
         )
 
@@ -6803,28 +6865,41 @@ class TestMobileCardActionBar:
                 txn_name=txn.name,
                 display_name=txn.name,
             )
-            period = SimpleNamespace(id=current.id)
+            period = DerivedPeriod(
+                period_id=current.id, period_index=current.period_index,
+                start_date=current.start_date, end_date=current.end_date,
+                end_is_projected=False,
+            )
             matched = {
-                (rk.category_id, rk.template_id, rk.txn_name, period.id): [txn],
+                (
+                    rk.category_id, rk.template_id, rk.txn_name,
+                    period.period_id,
+                ): [txn],
             }
 
+            # The card reads its amount off a published ``budgets`` map
+            # since plan step X-au-c2b, where it read a transient
+            # ``txn.live_estimated_amount`` behind an ``is defined`` guard.
+            # Resolved through the app's own door so the figure rendered here
+            # is the one the grid would show.
+            budgets = fragment_budgets(txn)
             tmpl = app.jinja_env.from_string(
                 "{% from 'grid/_grid_row_macros.html'"
                 " import render_row_card %}"
-                "{{ render_row_card(rk, period, matched, {},"
+                "{{ render_row_card(rk, period, matched, {}, budgets,"
                 " can_edit, prefix) }}",
             )
             with app.test_request_context("/"):
                 no_prefix = tmpl.render(
-                    rk=rk, period=period, matched=matched,
+                    rk=rk, period=period, matched=matched, budgets=budgets,
                     can_edit=True, prefix="",
                 )
                 tp_prefix = tmpl.render(
-                    rk=rk, period=period, matched=matched,
+                    rk=rk, period=period, matched=matched, budgets=budgets,
                     can_edit=True, prefix="tp",
                 )
                 plan_prefix = tmpl.render(
-                    rk=rk, period=period, matched=matched,
+                    rk=rk, period=period, matched=matched, budgets=budgets,
                     can_edit=True, prefix="plan",
                 )
 
@@ -7150,20 +7225,23 @@ class TestMobilePlanTab:
         from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            p_neg = SimpleNamespace(
-                id=101, start_date=_date(2026, 6, 1),
-                end_date=_date(2026, 6, 14), period_index=10,
+            p_neg = DerivedPeriod(
+                period_id=101, period_index=10,
+                start_date=_date(2026, 6, 1), end_date=_date(2026, 6, 14),
+                end_is_projected=False,
             )
-            p_low = SimpleNamespace(
-                id=102, start_date=_date(2026, 6, 15),
-                end_date=_date(2026, 6, 28), period_index=11,
+            p_low = DerivedPeriod(
+                period_id=102, period_index=11,
+                start_date=_date(2026, 6, 15), end_date=_date(2026, 6, 28),
+                end_is_projected=False,
             )
-            p_ok = SimpleNamespace(
-                id=103, start_date=_date(2026, 6, 29),
-                end_date=_date(2026, 7, 12), period_index=12,
+            p_ok = DerivedPeriod(
+                period_id=103, period_index=12,
+                start_date=_date(2026, 6, 29), end_date=_date(2026, 7, 12),
+                end_is_projected=False,
             )
             plan_columns = {
-                period.id: balance_at.GridColumn(
+                period.period_id: balance_at.GridColumn(
                     balance=balance,
                     income=Decimal("0"), expense=Decimal("0"),
                     net=Decimal("0"), period_timing=Decimal("0.00"),
@@ -7213,9 +7291,9 @@ class TestMobilePlanTab:
                             item_end = next_item
                 return html[item_start:item_end]
 
-            neg_chunk = card_chunk(p_neg.id)
-            low_chunk = card_chunk(p_low.id)
-            ok_chunk = card_chunk(p_ok.id)
+            neg_chunk = card_chunk(p_neg.period_id)
+            low_chunk = card_chunk(p_low.period_id)
+            ok_chunk = card_chunk(p_ok.period_id)
 
             assert "balance-negative" in neg_chunk
             assert "bi-exclamation-triangle-fill" in neg_chunk
@@ -7299,9 +7377,10 @@ class TestMobilePlanTab:
         from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            period = SimpleNamespace(
-                id=200, start_date=_date(2026, 6, 1),
-                end_date=_date(2026, 6, 14), period_index=10,
+            period = DerivedPeriod(
+                period_id=200, period_index=10,
+                start_date=_date(2026, 6, 1), end_date=_date(2026, 6, 14),
+                end_is_projected=False,
             )
             rk_exp = SimpleNamespace(
                 category_id=1, template_id=None,
@@ -7322,10 +7401,18 @@ class TestMobilePlanTab:
                 plan_expense_row_keys=[rk_exp],
                 plan_matched_by_row_period={
                     (rk_exp.category_id, rk_exp.template_id,
-                     rk_exp.txn_name, period.id): [txn_exp],
+                     rk_exp.txn_name, period.period_id): [txn_exp],
                 },
+                # The Plan row reads its amount off a published map since
+                # plan step X-au-c2b (it read a transient
+                # ``txn.live_estimated_amount`` behind an ``is defined``
+                # guard).  A literal here rather than a resolve: these rows are
+                # ``SimpleNamespace`` stand-ins and the assertions below are
+                # STRUCTURAL -- which sections render, how many rows -- so what
+                # the map contains is not the subject.
+                budgets={txn_exp.id: txn_exp.estimated_amount},
                 plan_columns={
-                    period.id: balance_at.GridColumn(
+                    period.period_id: balance_at.GridColumn(
                         balance=Decimal("3000.00"),
                         income=Decimal("0"),
                         expense=Decimal("1200"),
@@ -7361,9 +7448,10 @@ class TestMobilePlanTab:
         from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            period = SimpleNamespace(
-                id=201, start_date=_date(2026, 6, 1),
-                end_date=_date(2026, 6, 14), period_index=10,
+            period = DerivedPeriod(
+                period_id=201, period_index=10,
+                start_date=_date(2026, 6, 1), end_date=_date(2026, 6, 14),
+                end_is_projected=False,
             )
             rk_inc = SimpleNamespace(
                 category_id=2, template_id=None,
@@ -7384,10 +7472,18 @@ class TestMobilePlanTab:
                 plan_expense_row_keys=[],
                 plan_matched_by_row_period={
                     (rk_inc.category_id, rk_inc.template_id,
-                     rk_inc.txn_name, period.id): [txn_inc],
+                     rk_inc.txn_name, period.period_id): [txn_inc],
                 },
+                # The Plan row reads its amount off a published map since
+                # plan step X-au-c2b (it read a transient
+                # ``txn.live_estimated_amount`` behind an ``is defined``
+                # guard).  A literal here rather than a resolve: these rows are
+                # ``SimpleNamespace`` stand-ins and the assertions below are
+                # STRUCTURAL -- which sections render, how many rows -- so what
+                # the map contains is not the subject.
+                budgets={txn_inc.id: txn_inc.estimated_amount},
                 plan_columns={
-                    period.id: balance_at.GridColumn(
+                    period.period_id: balance_at.GridColumn(
                         balance=Decimal("3000.00"),
                         income=Decimal("2500"),
                         expense=Decimal("0"),
@@ -7424,9 +7520,10 @@ class TestMobilePlanTab:
         from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            period = SimpleNamespace(
-                id=300, start_date=_date(2026, 6, 1),
-                end_date=_date(2026, 6, 14), period_index=10,
+            period = DerivedPeriod(
+                period_id=300, period_index=10,
+                start_date=_date(2026, 6, 1), end_date=_date(2026, 6, 14),
+                end_is_projected=False,
             )
             rk = SimpleNamespace(
                 category_id=3, template_id=42,
@@ -7454,10 +7551,21 @@ class TestMobilePlanTab:
                 plan_expense_row_keys=[rk],
                 plan_matched_by_row_period={
                     (rk.category_id, rk.template_id,
-                     rk.txn_name, period.id): [txn_a, txn_b],
+                     rk.txn_name, period.period_id): [txn_a, txn_b],
+                },
+                # The Plan row reads its amount off a published map since
+                # plan step X-au-c2b (it read a transient
+                # ``txn.live_estimated_amount`` behind an ``is defined``
+                # guard).  A literal here rather than a resolve: these rows are
+                # ``SimpleNamespace`` stand-ins and the assertions below are
+                # STRUCTURAL -- which sections render, how many rows -- so what
+                # the map contains is not the subject.
+                budgets={
+                    txn_a.id: txn_a.estimated_amount,
+                    txn_b.id: txn_b.estimated_amount,
                 },
                 plan_columns={
-                    period.id: balance_at.GridColumn(
+                    period.period_id: balance_at.GridColumn(
                         balance=Decimal("3000.00"),
                         income=Decimal("0"),
                         expense=Decimal("125"),
@@ -7700,15 +7808,24 @@ class TestMobileJumpToPeriod:
 
 
 def _summary_periods():
-    """Two period stand-ins carrying what the summary templates read."""
+    """Two periods carrying what the summary templates read.
+
+    REAL :class:`~app.services.pay_calendar.DerivedPeriod` values rather than
+    ``SimpleNamespace`` stand-ins since plan step C2-f2b, which is the type the
+    grid's templates now receive.  A stand-in cannot go stale against the type
+    it imitates -- it keeps answering the attribute the template stopped asking
+    for -- and these render tests are the only proof several of these rows have.
+    """
     return [
-        SimpleNamespace(
-            id=101, start_date=date(2026, 6, 1),
-            end_date=date(2026, 6, 14), period_index=10,
+        DerivedPeriod(
+            period_id=101, period_index=10,
+            start_date=date(2026, 6, 1), end_date=date(2026, 6, 14),
+            end_is_projected=False,
         ),
-        SimpleNamespace(
-            id=102, start_date=date(2026, 6, 15),
-            end_date=date(2026, 6, 28), period_index=11,
+        DerivedPeriod(
+            period_id=102, period_index=11,
+            start_date=date(2026, 6, 15), end_date=date(2026, 6, 28),
+            end_is_projected=False,
         ),
     ]
 
@@ -7729,7 +7846,7 @@ def _summary_columns(
     money moves.
     """
     return {
-        period.id: balance_at.GridColumn(
+        period.period_id: balance_at.GridColumn(
             balance=Decimal("3000.00"),
             income=Decimal("2400.00"),
             expense=Decimal("1450.00"),
@@ -7940,7 +8057,7 @@ class TestTheTwoRemainderRows:
         with app.app_context():
             periods = self._periods()
             columns = self._columns(periods=periods)
-            columns[periods[0].id] = balance_at.GridColumn(
+            columns[periods[0].period_id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
                 period_timing=Decimal("-788.68"),
@@ -8077,17 +8194,20 @@ class TestTheTwoRemainderRows:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            all_periods = pay_period_service.get_all_periods(user_id)
-            current = pay_period_service.get_current_period(user_id)
-            window = [
-                p for p in all_periods
-                if p.period_index >= current.period_index
-            ][:6]
+            # The windows the route itself cuts (plan step C2-f2b): the
+            # visible six off the pass's own calendar, and the ONE-period
+            # window the mobile card's flags are asked of.  Built the same way
+            # here so the precondition below cannot hold for a window shape
+            # production never renders.
+            calendar = bctx.calendar()
+            current = calendar.period_containing(bctx.as_of)
+            window = calendar.window(current.period_index, 6)
+            card_window = [window[0]]
             view = balance_at.grid_balance_view(hysa, bctx)
             # The shape this test needs: the window accrues, its first
             # column does not.
             assert view.row_flags(window).accrual is True
-            assert view.row_flags(window[:1]).accrual is False
+            assert view.row_flags(card_window).accrual is False
 
         resp = auth_client.get(f"/grid?account_id={hysa.id}&periods=6")
         assert resp.status_code == 200
@@ -8117,7 +8237,7 @@ class TestTheTwoRemainderRows:
         ``/grid`` also renders ``grid/_mobile_plan.html``, whose space-constrained
         chips say "Timing" and "Bank" rather than the full row labels -- and they
         are gated on ``plan_row_flags``, computed over the PLAN window
-        (``app/routes/grid.py``) rather than the tfoot's visible window.  So a
+        (``app/routes/grid/page.py``) rather than the tfoot's visible window.  So a
         regression could light a permanently-``$0`` chip on the Plan tab while
         the desktop ``reconciliation-row`` stayed hidden and the two full-label
         assertions below stayed green.  HEAD asserted ``b"Timing"``; narrowing to
@@ -8222,7 +8342,7 @@ class TestTheContributionsRow:
         with app.app_context():
             periods = _summary_periods()
             columns = _summary_columns(periods)
-            columns[periods[0].id] = balance_at.GridColumn(
+            columns[periods[0].period_id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
                 period_timing=Decimal("0.00"),
@@ -8428,7 +8548,7 @@ class TestTheAccrualRowSignReachesItsStyling:
         periods = _summary_periods()
         with app.app_context():
             columns = _summary_columns(periods)
-            columns[periods[0].id] = balance_at.GridColumn(
+            columns[periods[0].period_id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
                 period_timing=Decimal("0.00"),
@@ -8607,6 +8727,65 @@ class TestTheAccrualRowLabelIsPerKind:
         assert "Interest" in bar[:bar.index("</div>")]
 
 
+class TestTheMobileSummaryRefusesAnotherOwnersPaycheck:
+    """``/grid/this-period-summary`` answers only for the requester's own periods.
+
+    **This class did not exist until plan step C2-f2b, and the endpoint's IDOR
+    guard had no direct test at all** -- which is exactly why it is here, since
+    that step REPLACED the guard.  It was ``db.session.get(PayPeriod,
+    period_id)`` followed by ``period.user_id != user_id``, written out by
+    hand; it is now ``ctx.calendar().period_by_id(period_id)``, and a calendar
+    holds ONE owner's paydays, so another owner's id is absent rather than
+    rejected.
+
+    Both spellings answer ``204`` -- and the whole risk is that they answer it
+    for different REASONS, so a test asserting only the status code would pass
+    just as happily against a guard deleted outright.  The first test therefore
+    also pins that the body is EMPTY: a 204 carrying the other owner's Net Cash
+    Flow and Projected Balance is the leak, and 204 is exactly the status this
+    endpoint's swap-nothing no-op already uses for a transient miss.
+
+    The two cases are separate tests rather than one (``conventions.md``: merge
+    what shares KEYS, split what shares only a READER).  "That id does not
+    exist" and "that id is someone else's" are two states this route must
+    answer IDENTICALLY, and a single test asserting both cannot show that they
+    agree.
+    """
+
+    def test_another_owners_period_id_is_answered_204(
+        self, app, auth_client, seed_user, seed_periods_today,
+        seed_second_user, seed_second_periods,
+    ):
+        """A real period id belonging to a DIFFERENT owner leaks nothing."""
+        foreign = seed_second_periods[0]
+        with app.app_context():
+            assert foreign.user_id != seed_user["user"].id, (
+                "the fixture must supply another OWNER's period or this "
+                "test proves nothing"
+            )
+        resp = auth_client.get(
+            f"/grid/this-period-summary?period_id={foreign.id}",
+        )
+        assert resp.status_code == 204
+        assert resp.data == b"", (
+            "a 204 carrying a body would be the leak: this partial renders "
+            "the Net Cash Flow and Projected Balance of whatever period it is "
+            "given, and that period belongs to another owner"
+        )
+
+    def test_a_nonexistent_period_id_is_answered_the_same_way(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """"Not found" and "not yours" are indistinguishable to the caller.
+
+        The project's security response rule, on the one endpoint whose answer
+        to both is a swap-nothing ``204`` rather than a ``404``.
+        """
+        resp = auth_client.get("/grid/this-period-summary?period_id=99999999")
+        assert resp.status_code == 204
+        assert resp.data == b""
+
+
 class TestGridInterestAccrual:
     """The grid accrues interest + shows an Interest row for an INTEREST account.
 
@@ -8764,7 +8943,9 @@ class TestGridInterestAccrual:
         # The live recompute revalues this income at $5,000 (vs $1,000 stored).
         monkeypatch.setattr(
             income_service, "live_projected_net",
-            lambda uid, sid, txns: {income.id: Decimal("5000.00")},
+            lambda txn, pricing: (
+                Decimal("5000.00") if txn.id == income.id else None
+            ),
         )
         current = pay_period_service.get_current_period(user_id)
         # The seam builds the live map itself (ruling R-Q), so no override is

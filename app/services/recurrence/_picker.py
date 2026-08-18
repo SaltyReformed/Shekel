@@ -7,28 +7,52 @@ for a cadence ("Quarterly"); it authors the two axes directly -- how often
 (``placement``) -- and this module is the one producer of which of those
 readings may be offered and how each reads to a human.
 
-**The offer set is DERIVED from the encoder's own table**, through
-:func:`~app.services.recurrence._frequency.authorable_cadences`, and that is the
-whole point of the step.  ``budget.recurrence_rules`` still names its cadence
-with a closed pattern set until plan step R7c, so ``(2, MONTH)`` is perfectly
-well-defined, walks correctly, and has nowhere to be written.  While the picker
-iterated ``RecurrencePatternEnum`` and the encoder read ``PATTERN_DERIVATIONS``,
-"nothing offers an unstorable cadence" held only because the two sets happened
-to coincide -- a coincidence no gate protected.  Serving the options from the
-encoder's table makes ``encode_cadence``'s refusal UNREACHABLE through the form
-rather than fenced behind it (developer ruling 2026-08-12).
+**The offer set is DERIVED from the producer that would REFUSE the cadence**,
+through :func:`~app.services.recurrence._frequency.authorable_cadences`, and
+that is the whole point.  While the picker iterated ``RecurrencePatternEnum``
+and the write door read a different table, "nothing offers an uncreatable
+cadence" held only because the two sets happened to coincide -- a coincidence no
+gate protected.  Serving the options from the refusing producer makes that
+refusal UNREACHABLE through the form rather than fenced behind it (developer
+ruling 2026-08-12).
 
-**A flat list of storable triples, not a nested tree**, and the shape is a DRY
-decision rather than a convenience.  The form needs three linked answers -- which
-units, which intervals for a unit, which placements for a ``(unit, interval)``
-pair -- and emitting them as a nested structure would state the grouping rule a
-second time, in a producer that could drift from the set it groups.  A consumer
-filters the triples instead, which cannot mean anything the table does not.
+**What that producer IS moved at plan step R7c-c**, and the offer set widened
+with it.  The binding constraint used to be storage: ``budget.recurrence_rules``
+named its cadence with a closed pattern set, so ``(2, MONTH)`` walked correctly
+and had nowhere to be written.  With ``unit_id`` and ``interval_n`` authored
+columns every reading can be stored, and what is left is whether the
+application can HONOUR it -- which since plan step R8-a is
+:func:`~app.services.recurrence._frequency.authorable_cadences`' two derived
+rules, replacing the ``anchor_family`` router that gated it on
+first-occurrence derivations ruling **R-R16** had already deleted.  Three
+consequences here:
 
-Everything here dies at plan step R7c except the labels: with ``unit_id`` and
-``interval_n`` authored columns, every ``(interval, unit, placement)`` is
-storable, so the offer set stops being a subset and the interval control stops
-being a select.
+* **the interval is a free number box for every unit.**  ``fixed_intervals``
+  and ``free_unit_ids`` are deleted with the ``<select>`` they fed, and
+  :class:`CadenceWire` no longer carries an ``interval_n`` at all -- an offer
+  names a ``(unit, placement)`` pair and every positive interval is authorable
+  on it;
+* **a placement stopped being a property of the ``(unit, interval)`` PAIR.**
+  ``MONTHLY_FIRST`` had no quarterly twin, so "MONTH allows either placement"
+  was true at interval 1 and false at 3 and 6; that dependency was the closed
+  set's, and it is gone.  The MONTH unit offers both placements at every
+  interval, which is plan ledger row **D32**'s measured defect ceasing to
+  exist rather than being warned about;
+* **the "Funded from" row is always RENDERED** (developer ruling 2026-08-16,
+  the rest of D32).  ONE cadence still admits one placement -- the ``PERIOD``
+  unit, where it is inert
+  (:func:`~app.services.recurrence._frequency.emits_period_starts`) -- and
+  hiding the row for it is what let a funding rule change with nothing on
+  screen saying so.  It was TWO until plan step **R8-a**, which admitted the
+  ``YEAR`` unit's deferring reading; the row's two help sentences are unchanged
+  and only the set each applies to moved.
+
+**A flat list of pairs, not a nested tree**, and the shape is a DRY decision
+rather than a convenience.  The form needs two linked answers -- which units,
+and which placements for a unit -- and emitting them as a nested structure would
+state the grouping rule a second time, in a producer that could drift from the
+set it groups.  A consumer filters the pairs instead, which cannot mean anything
+the offer set does not.
 
 Pure: no Flask, no ORM, no clock.  The ``ref`` ids come from
 :mod:`app.ref_cache`, the project's IDs-for-logic seam.
@@ -46,13 +70,10 @@ from app.services.recurrence._bounds import (
     NeverEnds,
 )
 from app.services.recurrence._frequency import (
+    CadenceReading,
     authorable_cadences,
-    decode_pattern,
     fires_on_day_of_month,
-)
-from app.services.recurrence._months import (
-    MONTH_SPANNING_UNITS,
-    months_per_step,
+    has_day_of_month_coordinate,
 )
 
 #: What each cadence UNIT is called on the form, singular and plural.
@@ -65,10 +86,12 @@ from app.services.recurrence._months import (
 #: Keyed by enum member, so a unit added to
 #: :class:`~app.enums.RecurrenceUnitEnum` without copy raises ``KeyError`` at
 #: the first render rather than shipping a blank option.  ``WEEK`` is absent
-#: DELIBERATELY: no closed-set pattern stores it, so
-#: :func:`~app.services.recurrence._frequency.authorable_cadences` never yields
-#: it and this map is never asked.  Plan step R8 is its first writer and adds
-#: the copy with the pattern that stores it.
+#: DELIBERATELY, and since plan step R8-a the reason is a LIVE one:
+#: :func:`~app.services.recurrence._frequency.has_row_date_coordinate` keeps the
+#: unit out of the offer set because ``recurrence_engine.compute_due_date`` has
+#: no way to date a weekly row, so this map is never asked for it.  Plan step
+#: **R5** deletes that function; the leaf that adds the copy is the one that
+#: makes the unit authorable.
 _UNIT_LABELS: dict[RecurrenceUnitEnum, tuple[str, str]] = {
     RecurrenceUnitEnum.PERIOD: ("paycheck", "paychecks"),
     RecurrenceUnitEnum.MONTH: ("month", "months"),
@@ -90,87 +113,103 @@ _PLACEMENT_LABELS: dict[PeriodPlacementEnum, str] = {
 }
 
 
-def _months_per_unit(unit: RecurrenceUnitEnum) -> int | None:
-    """Return the months one *unit* spans, or ``None`` when it spans none.
+@dataclass(frozen=True)
+class CadenceWire:
+    """One storable cadence, as the SCRIPT reads it.
 
-    :func:`~app.services.recurrence._months.months_per_step` made TOTAL over
-    the unit enum, which is what a form needs: that function refuses a unit
-    with no reading in months because its callers reach it only after routing
-    to the calendar family, while this one is asked about every offered unit
-    including the pay-period one.  Membership is tested against
-    :data:`~app.services.recurrence._months.MONTH_SPANNING_UNITS`, which IS
-    that function's own key set, so the guard and the call cannot come to
-    disagree about which units have an answer.
+    **Plan ledger row D31**, closed at plan step R7c-b.  The offer set has two
+    consumers that read disjoint halves of it: ``recurrence_form.js`` filters
+    on ids and facts, the templates render labels.  One flat value served both
+    and was serialised whole into :attr:`PickerModel.options_json`, so every
+    render shipped three labels to a browser that discards them -- and the
+    ``too-many-instance-attributes`` disable :class:`CadenceOption` carried was
+    spent on holding the union together.  Splitting along the consumer line is
+    what an adversarial review of plan step R7b-2 measured as available; it
+    waited for this step because it changes the wire shape the script parses
+    and that needs a browser pass.
 
-    Args:
-        unit: The cadence unit.
+    Attributes:
+        unit_id: The ``ref.recurrence_units`` id the form posts.
+        placement_id: The ``ref.period_placements`` id the form posts.
+        schedules_on_day_of_month: Whether a row generated from this cadence is
+            DATED from a day of the month, which is what decides whether the
+            form shows its Due Day input -- that field states the servicer's
+            date only where the cadence has a scheduling day to differ from.
+            Answered by
+            :func:`~app.services.recurrence._frequency.fires_on_day_of_month`
+            rather than by a unit test the script could repeat, because it is
+            a property of the ``(unit, placement)`` PAIR: a monthly cadence
+            funded from the month's first paycheck dates its rows from the
+            PAYCHECK.
 
-    Returns:
-        1 for ``MONTH``, 12 for ``YEAR``, ``None`` for a unit not measured in
-        calendar months.
+            **It was ``anchors_day_of_month`` until plan step R8-a**, named for
+            the anchor-family router that answered it; that router selected
+            between first-occurrence derivations ruling **R-R16** deleted, and
+            the name outlived the concept.  The fact and its producer are
+            unchanged -- what moved is that the wire now says what the value
+            decides, in the same word ``scheduling_day_of_month`` uses to
+            answer it for a STORED rule.
+        has_day_of_month_coordinate: Whether occurrences land on a day of the
+            month at all, which is what decides whether the "repeating on"
+            control has anything to ask.  **Not the same fact as the one
+            above**, and shipping only that one was a wrong-money defect plan
+            step R7c-b introduced: this one is ``True`` for ``Monthly First``
+            where the one above is ``False``, so
+            the script cleared and disabled a control the SERVER had rendered
+            enabled -- and the update door reads ``nominal_day`` off the same
+            presence key as ``starts_on``, so changing only "Funded from" on a
+            "last day of every month" rent wrote ``nominal_day = NULL`` and
+            moved every later occurrence to the 30th forever.  Answered by
+            :func:`~app.services.recurrence.has_day_of_month_coordinate`, the
+            same function ``offerable_nominal_days`` is built on, so the
+            control the browser shows and the set the server offers cannot
+            disagree.
     """
-    if unit not in MONTH_SPANNING_UNITS:
-        return None
-    return months_per_step(unit, 1)
+
+    unit_id: int
+    placement_id: int
+    schedules_on_day_of_month: bool
+    has_day_of_month_coordinate: bool
 
 
 @dataclass(frozen=True)
-class CadenceOption:  # pylint: disable=too-many-instance-attributes
+class CadenceOption:
     """One storable cadence, identified and worded for the form.
 
     A plain value so the form templates DISPLAY and never compute: every id
     goes in an ``<option value>`` and every label between the tags, with no
     lookup, no fallback expression and no ``name`` string in the template at
-    all.
+    all.  The ids it renders live on :attr:`wire`, which is also exactly what
+    the script is sent -- so the two consumers read ONE statement of the offer
+    set rather than two copies that agree.
 
-    Pylint: ``too-many-instance-attributes`` (8/7) -- one row of the offer set,
-    serving TWO consumers that between them read every field, and FLATNESS is
-    what both need.  The three labels are the template's (through the
-    projections on :class:`PickerModel`); the five ids and facts are
-    ``recurrence_form.js``'s, through :attr:`PickerModel.options_json`.
-    Grouping either group into a nested value would put back exactly the lookup
-    the first paragraph says this class exists to remove, in the layer least
-    able to afford it.  **An adversarial review of plan step R7b-2 noted that
-    the split along those two consumers IS available** -- the JSON currently
-    carries three labels the browser never reads -- and it is ledger finding
-    **D31** rather than this step's, because it changes the wire shape the
-    script parses and that needs its own browser pass.  Mirrors the
-    :class:`~app.services.recurrence.RecurrenceSpec` precedent one module over.
+    **``months_per_unit`` left at plan step R7c-b**, with the Month control it
+    fed.  It said how many calendar months one unit spans, which decided
+    whether a cycle SKIPS months and therefore whether a "Month" select
+    narrowed anything; ruling R-R16 put the cycle's month on ``starts_on``, so
+    there is no such control and no consumer for the fact.
 
     Attributes:
-        unit_id: The ``ref.recurrence_units`` id the form posts.  An id because
-            that is the project's IDs-for-logic invariant and what plan step
-            R7c's ``unit_id`` column will hold; the enum member it names is
-            this package's business, not the template's.
+        wire: The ids and facts both the template and the script read.
         unit_label_one: What the unit is called after a ``1``.
         unit_label_many: What it is called after any other count.
-        interval_n: The interval this option fixes, or ``None`` when ANY
-            positive interval is storable -- which is what tells the form to
-            render a number box rather than a select.
-        placement_id: The ``ref.period_placements`` id the form posts.
         placement_label: The human copy for the placement option.
-        anchors_day_of_month: Whether occurrences land on a DAY of the month,
-            which is what decides whether the form shows its Day of Month
-            input.  Answered by the anchor router itself
-            (:func:`~app.services.recurrence._frequency.fires_on_day_of_month`)
-            rather than by a unit test the script could repeat, because it is
-            a property of the ``(unit, placement)`` PAIR: a monthly cadence
-            funded from the month's first paycheck reads no day at all.
-        months_per_unit: How many calendar months ONE of this unit spans -- 1
-            for a month, 12 for a year -- or ``None`` for a unit not measured
-            in months.  With the chosen interval it gives the cycle's month
-            span, and a Month control narrows nothing unless that span exceeds
-            one.
     """
 
-    unit_id: int
+    wire: CadenceWire
     unit_label_one: str
     unit_label_many: str
-    interval_n: int | None
-    placement_id: int
     placement_label: str
-    anchors_day_of_month: bool
-    months_per_unit: int | None
+
+    @property
+    def unit_id(self) -> int:
+        """Return the ``ref.recurrence_units`` id this option posts."""
+        return self.wire.unit_id
+
+    @property
+    def placement_id(self) -> int:
+        """Return the ``ref.period_placements`` id this option posts."""
+        return self.wire.placement_id
 
 
 def cadence_options() -> tuple[CadenceOption, ...]:
@@ -180,31 +219,36 @@ def cadence_options() -> tuple[CadenceOption, ...]:
     kinds and both the create and edit forms.
 
     Returns:
-        One :class:`CadenceOption` per storable reading, most frequent cadence
-        first (paycheck, month, year) -- the order the picker has always
-        rendered.  Every entry RECURS: "does not repeat" is the form's own
-        empty option, not a cadence (plan step R2e-3).
+        One :class:`CadenceOption` per authorable ``(unit, placement)`` pair,
+        most frequent cadence first (paycheck, month, year) -- the order the
+        picker has always rendered.  Every entry RECURS: "does not repeat" is
+        the form's own empty option, not a cadence (plan step R2e-3).
 
     Raises:
         RuntimeError: If ``ref_cache`` has not been initialized.
-        KeyError: If a unit or placement the closed set can store has no copy
-            in :data:`_UNIT_LABELS` or :data:`_PLACEMENT_LABELS`.
+        KeyError: If an authorable unit or placement has no copy in
+            :data:`_UNIT_LABELS` or :data:`_PLACEMENT_LABELS`.
     """
     options = []
     for cadence in authorable_cadences():
         label_one, label_many = _UNIT_LABELS[cadence.unit]
         options.append(
             CadenceOption(
-                unit_id=ref_cache.recurrence_unit_id(cadence.unit),
+                wire=CadenceWire(
+                    unit_id=ref_cache.recurrence_unit_id(cadence.unit),
+                    placement_id=ref_cache.period_placement_id(
+                        cadence.placement,
+                    ),
+                    schedules_on_day_of_month=fires_on_day_of_month(
+                        cadence.unit, cadence.placement,
+                    ),
+                    has_day_of_month_coordinate=(
+                        has_day_of_month_coordinate(cadence.unit)
+                    ),
+                ),
                 unit_label_one=label_one,
                 unit_label_many=label_many,
-                interval_n=cadence.interval_n,
-                placement_id=ref_cache.period_placement_id(cadence.placement),
                 placement_label=_PLACEMENT_LABELS[cadence.placement],
-                anchors_day_of_month=fires_on_day_of_month(
-                    cadence.unit, cadence.placement,
-                ),
-                months_per_unit=_months_per_unit(cadence.unit),
             )
         )
     return tuple(options)
@@ -216,13 +260,15 @@ def _first_by(
 ) -> tuple["CadenceOption", ...]:
     """Return the first option for each distinct *key*, in offer order.
 
-    The ONE deduplication rule the three controls share, differing only in what
-    they are keyed on.  Written once here rather than three times in Jinja: the
-    template's contract is to DISPLAY (see :class:`CadenceOption`), a projection
-    is a computation, and the interval control shipped a visible defect from
-    having taken the un-projected list -- ``MONTHLY`` and ``MONTHLY_FIRST`` are
-    two triples over one ``(1, MONTH)`` interval, so it rendered "1 month"
-    twice, with ``selected`` on BOTH.
+    The ONE deduplication rule the two cadence ``<select>``\\ s share, differing
+    only in what they are keyed on.  Written once here rather than twice in
+    Jinja: the template's contract is to DISPLAY (see :class:`CadenceOption`), a
+    projection is a computation, and a control that took the un-projected list
+    shipped a visible defect -- the interval ``<select>`` plan step R7c-c
+    deleted rendered "1 month" twice, with ``selected`` on BOTH, because
+    ``MONTHLY`` and ``MONTHLY_FIRST`` were two offers over one ``(1, MONTH)``
+    interval.  The same shape is why the UNIT select needs this: the MONTH unit
+    still has two offers and must render one entry.
 
     Args:
         options: The offer set.
@@ -268,6 +314,64 @@ _END_BOUND_COPY: dict[str, tuple[str, str | None]] = {
 }
 
 
+#: What each NOMINAL DAY is called on the form.
+#:
+#: The days a month can fail to hold, and no others: every month holds its
+#: first 28, so 29-31 is the whole domain -- the same one
+#: ``ck_recurrence_rules_nominal_day`` bounds the column to and
+#: :func:`~app.services.recurrence.offerable_nominal_days` selects from.
+#:
+#: **31 is worded as the LAST DAY rather than as a number**, and that is what
+#: the value means rather than a friendlier way of saying it: the occurrence
+#: walk clamps the day into each month
+#: (:func:`~app.services.recurrence._months.clamped_day`), so a day-31 rule
+#: fires on the 31st in January and the 30th in April.  "The 31st" would be a
+#: label the cadence contradicts eight months a year.
+_NOMINAL_DAY_LABELS: dict[int, str] = {
+    29: "the 29th",
+    30: "the 30th",
+    31: "the last day of the month",
+}
+
+
+@dataclass(frozen=True)
+class NominalDayOption:
+    """One day a clamped first occurrence could have MEANT, worded.
+
+    The offer set behind the form's "repeating on" control, which is rendered
+    only where the chosen date leaves the question open -- see
+    :func:`~app.services.recurrence.offerable_nominal_days` for when that is.
+    A plain value so the template DISPLAYS: the day goes in the
+    ``<option value>`` and the label between the tags.
+
+    Attributes:
+        day: The nominal day, 29-31, and what the control posts.
+        label: The human copy.
+    """
+
+    day: int
+    label: str
+
+
+def nominal_day_options() -> tuple[NominalDayOption, ...]:
+    """Return every nominal day the form may offer, worded, ascending.
+
+    The WHOLE domain rather than the subset a particular date leaves open:
+    which of them apply is a property of the chosen date, so the control
+    renders them all and enables the ones
+    :func:`~app.services.recurrence.offerable_nominal_days` names.  That is
+    what lets the script re-enable them as the user edits the date without
+    holding any copy of its own.
+
+    Returns:
+        One :class:`NominalDayOption` per day, ascending.
+    """
+    return tuple(
+        NominalDayOption(day=day, label=label)
+        for day, label in sorted(_NOMINAL_DAY_LABELS.items())
+    )
+
+
 @dataclass(frozen=True)
 class EndBoundOption:
     """One shape a closing bound can take, worded for the form's mode select.
@@ -291,9 +395,9 @@ class EndBoundOption:
         needs_field_id: The id of the control this shape needs a value from,
             or ``None`` for the shape that needs none.  The script shows that
             one and disables the others, so exactly the input the chosen shape
-            reads is the input that submits -- the same idiom the two interval
-            controls use, and what keeps a stale value from a shape the user
-            moved off from reaching the door.
+            reads is the input that submits -- the same idiom the nominal-day
+            and due-day controls use, and what keeps a stale value from a shape
+            the user moved off from reaching the door.
     """
 
     token: str
@@ -336,46 +440,47 @@ class PickerModel:
     one request -- the redundancy this project treats as a DRY violation rather
     than a cost question, since two calls are two chances to disagree.
 
+    **Two projections LEFT at plan step R7c-c**, with the control they fed:
+    ``fixed_intervals`` (one option per ``(unit, interval)`` whose interval the
+    closed set fixed) and ``free_unit_ids`` (the units that took any positive
+    interval, which was exactly one).  Every unit takes any positive interval
+    now, so the interval ``<select>`` and the free/fixed toggle are both gone
+    and the number box is the only interval control.  The value is back under
+    the attribute count that needed a suppression, so the suppression went too.
+
     Attributes:
         options: The whole offer set.  Read by :attr:`options_json`'s own
             construction and by nothing in the templates -- each control
-            renders from its projection below -- so it is the value the other
-            five are derived FROM rather than one a consumer reaches for.
-        options_json: The same set as JSON, for the script that LINKS the
-            controls.  It needs the whole set rather than the subset any one
-            control renders: the unit decides which intervals may show, and the
-            ``(unit, interval)`` pair decides which placements may.
+            renders from its projection below -- so it is the value the others
+            are derived FROM rather than one a consumer reaches for.
+        options_json: The set's WIRE half as JSON, for the script that LINKS
+            the controls: the chosen unit decides which placements may show and
+            what the day-of-month controls do.  It carries
+            :class:`CadenceWire` rather than the whole option since plan step
+            R7c-b, because the labels beside it were shipped to a browser that
+            discards them (plan ledger row **D31**).
+        nominal_days: Every day a clamped first occurrence could have MEANT,
+            worded.  The "repeating on" control renders them all and enables
+            the ones the chosen date leaves open, so the script re-enables them
+            as the user edits that date without holding any copy of the wording.
         units: One option per UNIT, for the unit ``<select>``.  The MONTH unit
-            has four offered readings and must render one entry, or the user is
-            asked to choose between four things called "months".
-        fixed_intervals: One option per ``(unit, interval)`` whose interval is
-            FIXED, for the interval ``<select>``.  A unit that takes any
-            positive interval is absent from it and uses the number box.
+            has two offered readings and must render one entry, or the user is
+            asked to choose between two things called "months".
         placements: One option per PLACEMENT, for the funding ``<select>``.  The
-            script hides the whole row where the chosen ``(unit, interval)``
-            pair allows only one.
+            script enables the ones the chosen unit admits and explains the row
+            rather than hiding it when that is one (plan ledger row **D32**).
         end_bounds: Every shape the "Ends" control offers, worded.  It rides
             on this bundle rather than being resolved separately for the same
-            reason the five cadence projections do: a route that took them
-            apart would resolve two producers for one render.  Unlike the
-            others it SURVIVES plan step R7c -- the closing bound is authored
-            the same way before and after the cutover.
-        free_unit_ids: The units that take ANY positive interval, and therefore
-            use the number box rather than the ``<select>``.  A fourth
-            projection, and it decides which of the two ``interval_n`` controls
-            is ENABLED in the server's own render -- so it is the one that
-            matters before any script runs.  An adversarial review of plan step
-            R7b-2 found it still being computed in Jinja while the template's
-            own comment said projections belong here.
+            reason the cadence projections do: a route that took them apart
+            would resolve two producers for one render.
     """
 
     options: tuple["CadenceOption", ...]
     options_json: str
+    nominal_days: tuple["NominalDayOption", ...]
     end_bounds: tuple["EndBoundOption", ...]
     units: tuple["CadenceOption", ...]
-    fixed_intervals: tuple["CadenceOption", ...]
     placements: tuple["CadenceOption", ...]
-    free_unit_ids: frozenset[int]
 
 
 def picker_model() -> PickerModel:
@@ -397,17 +502,13 @@ def picker_model() -> PickerModel:
     options = cadence_options()
     return PickerModel(
         options=options,
-        options_json=json.dumps([asdict(option) for option in options]),
+        options_json=json.dumps(
+            [asdict(option.wire) for option in options],
+        ),
+        nominal_days=nominal_day_options(),
         end_bounds=end_bound_options(),
         units=_first_by(options, lambda option: option.unit_id),
-        fixed_intervals=_first_by(
-            [option for option in options if option.interval_n is not None],
-            lambda option: (option.unit_id, option.interval_n),
-        ),
         placements=_first_by(options, lambda option: option.placement_id),
-        free_unit_ids=frozenset(
-            option.unit_id for option in options if option.interval_n is None
-        ),
     )
 
 
@@ -431,12 +532,22 @@ class SelectedCadence:
     placement_id: int
 
 
-def selected_cadence(pattern_id: int, interval_n: int) -> SelectedCadence:
-    """Return the controls' starting state for a STORED rule.
+def selected_cadence(reading: CadenceReading) -> SelectedCadence:
+    """Return the controls' starting state for a STORED rule's cadence.
 
-    Decodes the closed-set columns through the same seam every other reader
-    uses and projects the result onto the ids the form posts, so the edit
-    form's preselection cannot disagree with what the rule actually means.
+    Projects a rule's cadence onto the ids the form posts, so the edit form's
+    preselection cannot disagree with what the rule actually means.
+
+    **It takes the READING rather than the stored columns, and plan step R7c-b
+    is why.**  It used to take ``(pattern_id, interval_n)`` and decode them
+    here -- which made the edit form the ONE reader still deriving a rule's
+    unit and placement from the closed pattern set, while
+    :func:`~app.services.recurrence.recurrence_spec` had moved to the authored
+    ``unit_id`` / ``placement_id`` columns.  Two readers of one cadence, in a
+    step whose whole claim is that every reader moved across.  The reading
+    arrives from :func:`~app.services.recurrence.stored_cadence`, which is
+    where "what the row's cadence columns say" is stated once -- and since plan
+    step R7c-c that is a straight read of three columns rather than a decode.
 
     **A ``<select>`` whose selected value is absent from its options does not
     fail -- it silently becomes a different value**, which is why this is
@@ -444,25 +555,20 @@ def selected_cadence(pattern_id: int, interval_n: int) -> SelectedCadence:
     form before plan step R2e-2: no option carried ``selected``, so the browser
     fell back to the first in document order, which is the empty "Does not
     repeat" entry -- and submitting THAT deletes the rule and sweeps its future
-    rows.  The caller checks membership FIRST
-    (:func:`~app.services.recurrence.modelled_pattern`) and renders the
-    controls unset when the answer is "none", so this function is never asked
-    about a pattern it cannot decode.
+    rows.  The caller asks :func:`~app.services.recurrence.stored_cadence`
+    FIRST and renders the controls unset when the answer is ``None``, so this
+    function is never asked about a cadence it cannot project.
 
     Args:
-        pattern_id: The stored ``recurrence_rules.pattern_id``.
-        interval_n: The stored ``recurrence_rules.interval_n``.
+        reading: What the stored rule says on both authored axes, from
+            :func:`~app.services.recurrence.stored_cadence`.
 
     Returns:
         The :class:`SelectedCadence`.
 
     Raises:
-        RecurrenceResolutionError: *pattern_id* names no modelled pattern, or
-            the stored interval is not positive -- see
-            :func:`~app.services.recurrence.decode_pattern`.
         RuntimeError: If ``ref_cache`` has not been initialized.
     """
-    reading = decode_pattern(pattern_id, interval_n)
     return SelectedCadence(
         unit_id=ref_cache.recurrence_unit_id(reading.cadence.unit),
         interval_n=reading.cadence.interval_n,
@@ -472,11 +578,14 @@ def selected_cadence(pattern_id: int, interval_n: int) -> SelectedCadence:
 
 __all__ = [
     "CadenceOption",
+    "CadenceWire",
     "EndBoundOption",
+    "NominalDayOption",
     "PickerModel",
     "SelectedCadence",
     "cadence_options",
     "end_bound_options",
+    "nominal_day_options",
     "picker_model",
     "selected_cadence",
 ]

@@ -26,6 +26,7 @@ from __future__ import annotations
 import pytest
 
 import _registry as registry
+from _tables import UNESCAPED_PIPE_RX
 from _plan_gate import (
     PlanSpec,
     arc_state_violation,
@@ -242,7 +243,7 @@ class TestTheDocumentsPointAtTheRegistries:
         for line in SPECS[arc].read().splitlines():
             if not line.strip().startswith("|"):
                 continue
-            cells = registry.UNESCAPED_PIPE_RX.split(line)[1:-1]
+            cells = UNESCAPED_PIPE_RX.split(line)[1:-1]
             assert not (len(cells) == 5 and cells[0].strip() == "id"), (
                 f"{arc} has re-grown a findings table; findings live in ledger.md"
             )

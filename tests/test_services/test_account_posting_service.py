@@ -47,6 +47,7 @@ from app.models.ledger_account import LedgerAccount
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
 from app.services import (
     account_posting_service,
@@ -64,6 +65,7 @@ from app.utils.dates import to_display_date
 from tests._test_helpers import (
     correction_net_in_period,
     create_account_of_type,
+    create_envelope_txn,
     create_loan_account,
     create_settled_cash_transaction,
     create_settled_transfer,
@@ -277,7 +279,7 @@ class TestWalkAccountLedger:
 
     The day is the user's (``America/New_York``) and an assertion is the
     closing balance for it -- EVERY assertion, opening and true-up alike --
-    ruling R-DH, ``docs/audits/balance_architecture/anchor_settle_partition.md``.
+    ruling R-DH, ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.
     It was an INSTANT partition until 2026-07-31, which decided the question by
     which button the user pressed first and cost production $4,001.42; the
     OPENING then carried an exception for one day, until finding N-133 / F1
@@ -455,6 +457,152 @@ class TestWalkAccountLedger:
                     account.id, seed_user["scenario"].id,
                 )
             assert str(txn.id) in str(exc.value)
+
+    def test_a_transfers_clearing_link_is_read_off_THIS_accounts_leg(
+        self, app, db, seed_user,
+    ):
+        """Walking one account reads its OWN shadow's link, not the other's.
+
+        **The defect this closes was not in ruling R-FL's own amendment**; it
+        was found tracing the loader at plan step X-f3a-1.
+        ``_transfer_source_days`` resolved the transfer's INCOME shadow whatever
+        account was being walked, which is harmless for the DAY -- Transfer
+        Invariant 3 mirrors ``settled_on`` onto both legs -- and wrong for the
+        LINK, because clearing is deliberately NOT mirrored: a transfer leaves
+        one bank and arrives at another, and each statement reports its own leg.
+
+        The fixture makes the two answers differ.  A $200.00 Checking ->
+        Savings transfer settles the day AFTER Savings' origination.  The
+        SAVINGS (income) leg then names a LATER Savings assertion -- exactly
+        what ticking it on the next Savings statement writes.  Walking CHECKING
+        must be unmoved by that: the Checking leg names nothing, so Checking's
+        own date rule decides and the transfer is inside the Checking assertion
+        that closes after it.
+
+        Hand-computed on Checking, whose own opening asserts $1,000.00 long
+        before the transfer:
+
+            opening: ledger_before      0.00, resets the walk to 1000.00
+            true-up: ledger_before   1000.00 - 200.00 = 800.00
+
+        Read off the income leg instead, Checking's walk would file its own
+        outgoing money under an assertion belonging to another ACCOUNT -- an id
+        Checking's ``StatementCoverage`` does not contain -- so the transfer
+        would be cleared by no assertion of Checking's at all, ride on top of
+        every one of them, and the true-up's ``ledger_before`` would read the
+        bare ``$1,000.00`` reset.
+        """
+        with app.app_context():
+            savings = _make_account(seed_user, "500.00")
+            checking = seed_user["account"]
+            origin = _origin_day(savings)
+            create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("200.00"),
+                settled_on=origin + timedelta(days=1),
+            )
+            # A Checking assertion closing AFTER the transfer, so Checking's own
+            # date rule has something to put it inside of.
+            _add_assertion(
+                checking, "1000.00", _PINNED_OPENING_AT + timedelta(days=40),
+            )
+            income_leg = (
+                _db.session.query(Transaction)
+                .filter(
+                    Transaction.account_id == savings.id,
+                    Transaction.transfer_id.isnot(None),
+                )
+                .one()
+            )
+            later_savings = _add_assertion(
+                savings, "900.00", _PINNED_OPENING_AT + timedelta(days=50),
+            )
+            income_leg.reconciled_by_id = later_savings.id
+            _db.session.commit()
+
+            checking_corrections = (
+                account_posting_service.walk_account_ledger(
+                    checking.id, seed_user["scenario"].id,
+                )
+            )
+            assert checking_corrections[-1].ledger_before == Decimal("800.00")
+
+    def test_a_purchases_clearing_link_is_read_off_the_PURCHASE(
+        self, app, db, seed_user,
+    ):
+        """The posted walk reads a purchase's own link, not its parent's.
+
+        Plan step X-f3b (ruling **R-FM**) gave the walk a FOURTH source loader,
+        and it is the only one whose rows carry a link the parent cannot supply:
+        a still-PROJECTED envelope has no ``reconciled_by_id`` of its own, so a
+        loader reading the parent would answer ``None`` for every purchase and
+        the record would decide nothing here while deciding on the read side.
+
+        The shape that discriminates it is the one the reconcile panel writes --
+        TWO assertions sharing a civil day, where the link picks between them
+        (``StatementCoverage._recorded_anchor_id``).  A ``$40.00`` purchase the
+        bank took before both; the account's opening asserts ``$1,000.00`` and
+        the two same-day assertions declare ``$1,000.00`` then ``$2,000.00``.
+
+        Hand-computed, with the walk resetting to each asserted balance:
+
+            unlinked   first  ledger_before = 1000.00 - 40.00 = 960.00
+                       second ledger_before = 1000.00          (nothing left)
+            linked to  first  ledger_before = 1000.00          (nothing cleared)
+            the SECOND second ledger_before = 1000.00 - 40.00 =  960.00
+
+        Read off the still-Projected PARENT instead, the link would be ``None``
+        and the pair would stay on the unlinked answer.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            scenario_id = seed_user["scenario"].id
+            period = seed_user["bootstrap_period"]
+            posted_on = _origin_day(checking) + timedelta(days=1)
+            txn = create_envelope_txn(
+                seed_user, _db.session, period, "Groceries", Decimal("500.00"),
+            )
+            entry = TransactionEntry(
+                transaction_id=txn.id, account_id=txn.account_id,
+                user_id=seed_user["user"].id,
+                amount=Decimal("40.00"),
+                description="ticked on the second reading",
+                purchased_on=posted_on,
+                settled_on=posted_on,
+                is_credit=False,
+            )
+            _db.session.add(entry)
+            _db.session.flush()
+            posting_service.sync_transaction_postings(txn, settled=False)
+            day_at = _PINNED_OPENING_AT + timedelta(days=40)
+            _add_assertion(checking, "1000.00", day_at)
+            governing = _add_assertion(
+                checking, "2000.00", day_at + timedelta(hours=8),
+            )
+            _db.session.commit()
+
+            control = account_posting_service.walk_account_ledger(
+                checking.id, scenario_id,
+            )
+            assert [c.ledger_before for c in control[-2:]] == [
+                Decimal("960.00"), Decimal("1000.00"),
+            ], (
+                "CONTROL: unlinked, the date rule puts the purchase in the "
+                "FIRST assertion of that day."
+            )
+
+            entry.reconciled_by_id = governing.id
+            _db.session.commit()
+
+            corrections = account_posting_service.walk_account_ledger(
+                checking.id, scenario_id,
+            )
+            assert [c.ledger_before for c in corrections[-2:]] == [
+                Decimal("1000.00"), Decimal("960.00"),
+            ], (
+                "the purchase's OWN link moved it to the governing assertion; "
+                "its still-Projected parent has no link to read instead"
+            )
 
     def test_transfer_attribution_uses_income_shadow_day(
         self, app, db, seed_user,

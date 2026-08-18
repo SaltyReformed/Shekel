@@ -611,6 +611,7 @@ from tests._test_helpers import (
     create_loan_account,
     insert_trueup_event,
     make_appreciating_account,
+    make_every_period_rule,
     make_investment_account,
     posted_loan_balance_at,
     restamp_opening_assertion,
@@ -1618,7 +1619,7 @@ def seed_cross_page_account(app, db, seed_user):
         # the resolver's anchor-period balance by construction.
         for amount, is_credit, is_settled in entries:
             db.session.add(TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=amount,
                 description="PT-01 entry",
@@ -2377,10 +2378,6 @@ def _build_full_user_data(db, seed_user, periods):
     scenario = seed_user["scenario"]
 
     # Look up reference data.
-    every_period = (
-        db.session.query(RecurrencePattern)
-        .filter_by(name="Every Period").one()
-    )
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
@@ -2395,12 +2392,7 @@ def _build_full_user_data(db, seed_user, periods):
     )
 
     # a) Recurrence rule + transaction template + transaction.
-    rule = RecurrenceRule(
-        user_id=user.id,
-        pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, user.id)
 
     template = TransactionTemplate(
         user_id=user.id,
@@ -2537,10 +2529,6 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
     periods = seed_second_periods
 
     # Look up reference data.
-    every_period = (
-        db.session.query(RecurrencePattern)
-        .filter_by(name="Every Period").one()
-    )
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
@@ -2555,12 +2543,7 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
     )
 
     # a) Recurrence rule + transaction template + transaction.
-    rule = RecurrenceRule(
-        user_id=user.id,
-        pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, user.id)
 
     template = TransactionTemplate(
         user_id=user.id,
@@ -2656,10 +2639,6 @@ def seed_entry_template(app, db, seed_user, seed_periods):
     Returns:
         dict with keys: template, transaction, category, recurrence_rule.
     """
-    every_period = (
-        db.session.query(RecurrencePattern)
-        .filter_by(name="Every Period").one()
-    )
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
@@ -2667,12 +2646,7 @@ def seed_entry_template(app, db, seed_user, seed_periods):
         db.session.query(Status).filter_by(name="Projected").one()
     )
 
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=every_period.id,
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     category = seed_user["categories"]["Groceries"]
 

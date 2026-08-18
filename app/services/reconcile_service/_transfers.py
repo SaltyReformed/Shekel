@@ -50,13 +50,13 @@ Architecture (``CLAUDE.md``):
     boundary.
 """
 
-from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import transfer_service
+from app.services.cash_ledger import AnchorPoint
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
@@ -97,11 +97,19 @@ def _settle_one(
         predicate asked beforehand is also what stops the loan freeze being
         resolved twice for one tick.
     """
-    return transfer_service.settle_transfer(
+    corrected = transfer_service.settle_transfer(
         shadow.transfer_id, statement.owner_id,
         actual_amount=submitted,
         settled_on=statement.observed_on,
     )
+    # WHICH statement showed THIS LEG (ruling **R-FL**), through the transfer
+    # service because the row is a SHADOW and ``CLAUDE.md``'s transfer invariant
+    # 4 admits no direct mutation of one.  Only this leg takes it, even though
+    # the settle above moved both: the other leg is on another account, whose
+    # own statement nobody read in this act.  ``transfer_service.record_clearing``
+    # carries why that asymmetry is correct.
+    transfer_service.record_clearing(shadow, statement.anchor.anchor_id)
+    return corrected
 
 
 def arm(owner_id: int) -> _rows.Arm:
@@ -156,7 +164,7 @@ def arm(owner_id: int) -> _rows.Arm:
 
 
 def outstanding_transfers(
-    owner_id: int, account_id: int, observed_on: date,
+    owner_id: int, account_id: int, anchor: AnchorPoint,
 ) -> "dict[int, OutstandingTransaction]":
     """Return this arm's offers, ``{shadow transaction id: offer}``.
 
@@ -187,7 +195,9 @@ def outstanding_transfers(
     Args:
         owner_id: The user_id whose rows to list.
         account_id: The cash account whose balance was asserted.
-        observed_on: The civil day that balance was true for.
+        anchor: The governing assertion -- the STATEMENT being
+            reconciled against.  Its ``observed_on`` bounds the offer
+            set and its id is what a tick records (ruling **R-FL**).
 
     Returns:
         ``{transaction_id: OutstandingTransaction}`` keyed on the SHADOW's own
@@ -197,7 +207,7 @@ def outstanding_transfers(
         holding no overdue transfer, which is production's state at its latest
         assertion today.
     """
-    statement = _rows.Statement(owner_id, account_id, observed_on)
+    statement = _rows.Statement(owner_id, account_id, anchor)
     return {
         shadow.id: OutstandingTransaction(
             transaction_id=shadow.id,

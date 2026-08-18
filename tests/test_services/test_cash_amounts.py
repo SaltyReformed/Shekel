@@ -40,38 +40,56 @@ correction is recorded at the step.
 
 The reservation formula under test::
 
-    settled_debit     = sum(amount where not is_credit
-                            and settled_on <= reconciled_through)
-    outstanding_debit = sum(amount where not is_credit and every other case)
-    sum_credit        = sum(amount where is_credit)
+    posted_debit   = sum(amount where not is_credit and settled_on is not None)
+    unposted_debit = sum(amount where not is_credit and settled_on is None)
+    sum_credit     = sum(amount where is_credit)
 
-    impact = max(estimated - settled_debit - sum_credit, outstanding_debit)
+    impact = max(estimated - posted_debit - sum_credit, unposted_debit)
 
-**Which bucket a debit falls in is DERIVED from a DATE** (plan step S1-c, ruling
-R-DH (d)).  It was a stored ``is_cleared`` boolean, and every fixture below
-carried it as a third bool in a triple.  The boolean was an unconditional claim
-that a purchase was inside the anchor -- a claim its own account could not
-always support -- so the triples now carry the day the bank was SEEN to take the
-money, and the bucket is ``settled_on <= reconciled_through`` evaluated here.
-Three consequences are new test cases rather than renames: a NULL posting day is
-OUTSTANDING, a posting day AFTER the day the balance was read is OUTSTANDING,
-and an account that has never asserted a balance reconciles nothing.  None of
-the three was expressible while the answer was a flag.
+**Which bucket a debit falls in is whether the BANK HAS TAKEN IT** (plan step
+X-f3b, ruling **R-FM**), and its history is four answers deep -- each a
+narrowing, and the last one a deletion.  It was a stored ``is_cleared``
+boolean, carried in every fixture below as a third bool in a triple: an
+unconditional claim that a purchase was inside the anchor, which its own
+account could not always support.  Ruling R-DH (d) replaced it with a DATE
+comparison against the account's latest asserted day, and the triples took the
+day the bank was seen to take the money.  The developer's bank exports
+falsified that comparison (33 of 110 matched movements carry the day the bank
+posted them), so ruling R-FL made it the RECORDED statement, with the date rule
+as the fallback.
+
+**R-FM then removed the question from this module entirely**, which is the
+simplification rather than a fifth answer.  A purchase carrying a posting day
+is now a cash movement of its OWN in the walk, so the reservation asks what it
+always should have -- has this money left -- and *which statement cleared it*
+is asked once, where the money is replayed (see the `_STATEMENT_DAY` comment
+below for the two tests that grade it).  Two consequences are re-ruled test cases rather than
+renames, and both are marked as such below: a purchase the bank took AFTER the
+balance was read now releases the reservation, and the account's assertion
+history is not an input at all.  A NULL posting day is still OUTSTANDING, which
+is the arm that never moved.
 """
 
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from app.services.cash_ledger._amount_source import AmountBasis
+import pytest
+import sqlalchemy.exc
+
 from app.services.cash_ledger._amounts import (
-    ProjectedBasis,
-    ReconciledThrough,
     _entry_aware_amount,
     _expense_amount,
     income_amount,
 )
-from tests._test_helpers import add_entry, add_txn, create_envelope_txn
+from app.extensions import db
+from app.models.account import AccountAnchorHistory
+from tests._test_helpers import (
+    add_entry,
+    add_txn,
+    create_envelope_txn,
+    planted_basis,
+)
 
 
 # The four days these tests turn on, named for the fact each one is.  They are
@@ -80,32 +98,41 @@ from tests._test_helpers import add_entry, add_txn, create_envelope_txn
 # collapsing them onto one date would hide which comparison the rule makes.
 _PURCHASED_ON = date(2026, 1, 20)
 _POSTED_ON = date(2026, 1, 21)
+# The day a statement was read.  It is SCENERY since plan step X-f3b (ruling
+# **R-FM**) and kept for exactly that reason: the reservation no longer asks
+# which statement showed a purchase, so a day that once decided which bucket a
+# debit fell in now decides nothing here, and
+# `test_the_accounts_assertion_history_is_not_an_input` is the control that
+# says so.  Which statement CLEARED a movement is the walk's question, and a
+# PURCHASE's own link is graded there rather than here:
+# `test_cash_walk.py`'s
+# `TestARecordedClearingFactMayNotMoveALineAcrossAStatement
+# ::test_a_PURCHASE_carries_its_OWN_link_not_its_parents` on the read side, and
+# `test_account_posting_service.py`'s
+# `TestWalkAccountLedger::test_a_purchases_clearing_link_is_read_off_the_PURCHASE`
+# on the posted one.  Both were ADDED at this step: the class existed for
+# transactions only, and citing it for purchases before that was an invented
+# citation an adversarial review caught.
 _STATEMENT_DAY = date(2026, 1, 22)
-# The BOUNDARY that day establishes.  It is a type and not a date so that
-# `settled_on <= reconciled_through` cannot be written anywhere but inside
-# `ReconciledThrough.covers` -- see that class for what the fifth spelling
-# of this rule cost production.
-_ASSERTED_THROUGH = ReconciledThrough(_STATEMENT_DAY)
 
 
-def _basis(*rows, overrides=None, reconciled_through=_ASSERTED_THROUGH):
-    """The :class:`ProjectedBasis` a producer would hand these rows.
+def _basis(*rows, overrides=None):
+    """The :class:`AmountBasis` a producer would hand these rows.
 
-    Built HONESTLY rather than zeroed: ``priced_ids`` covers exactly the rows
-    passed, because the resolver refuses a row its basis was not built over, and
-    a test that reached a refusal by violating that contract would be grading
-    the contract instead of the rule.  ``overrides`` lands in the SALARY map --
-    either producer's map answers :func:`live_override` identically, and which
-    rule prices a row is never decided by which map its id turned up in.
+    ``overrides`` is planted on the live DERIVATIONS
+    (:class:`~tests._test_helpers.PlantedPricing`) rather than into a
+    ``{transaction_id: Decimal}`` map the basis carries: plan step X-au-c2b
+    made a basis hold the derivations themselves, keyed on an owner and a
+    scenario rather than on a row set.  Either half answers
+    :func:`live_override` identically, and which rule prices a row is never
+    decided by which one its id turned up in.
+
+    **It was a ``ProjectedBasis`` carrying the account's clearing rule beside
+    this until plan step X-f3b** (ruling **R-FM**), because the reservation
+    asked which statement had cleared a purchase.  It asks the purchase now, so
+    the wrapper and its second field went with the question.
     """
-    return ProjectedBasis(
-        amounts=AmountBasis(
-            priced_ids=frozenset(row.id for row in rows),
-            salary_net=dict(overrides or {}),
-            loan_cash={},
-        ),
-        reconciled_through=reconciled_through,
-    )
+    return planted_basis(*rows, overrides=overrides)
 _POSTED_AFTER_THE_STATEMENT = date(2026, 1, 23)
 
 
@@ -348,10 +375,14 @@ class TestTheRecordedPostingDay:
     (ruling R-DH (d)).  The flag was written by a bulk UPDATE at every anchor
     true-up over "every entry dated on or before the SERVER's today", so which
     bucket a purchase fell in was decided by the order two buttons were
-    pressed.  The bucket is now
-    ``reconciled_through.covers(entry.settled_on)``, evaluated at read time --
-    the same rule, in the same units, the read replay and the posting walk
-    apply to a settled transaction.
+    pressed.  The bucket is now ``coverage.is_cleared(entry)``, evaluated at
+    read time -- the same rule, in the same units, the read replay and the
+    posting walk apply to a settled transaction.
+
+    **No purchase here names a statement**, so every case exercises that rule's
+    DATE fallback and answers exactly what it answered under R-DH (d).  That is
+    the point of these cases surviving X-f3a-1 unchanged: the recording step
+    moves no figure.  ``TestALinkOutranksTheDate`` grades the arm that is new.
 
     Three of the cases below could not be WRITTEN against a flag, and they are
     the ones that matter: an unobserved purchase (NULL), a purchase the bank
@@ -478,26 +509,29 @@ class TestTheRecordedPostingDay:
             assert txn.entries[0].settled_on is None
             assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
 
-    def test_a_purchase_posted_after_the_statement_is_outstanding(
+    def test_a_purchase_posted_after_the_statement_still_releases(
         self, app, db, seed_user, seed_periods,
     ):
-        """The case a flag could not hold: posted, but AFTER the balance was read.
+        """The case ruling **R-FM** RE-RULED: posted after the balance was read.
 
         A ``$200.00`` purchase made 01-20 whose bank took it on 01-23, against a
-        balance the user read for 01-22.  ``23 > 22``, so it is NOT inside that
-        balance and stays on the floor: max(500 - 0 - 0, 200) = 500.
+        balance the user read for 01-22.  max(500 - 200 - 0, 0) = **300.00**.
 
-        Under the retired ``is_cleared`` boolean this state was INEXPRESSIBLE.
-        The flag said "inside the anchor" with no day attached, so a purchase
-        the bank had taken was reconciled against every balance the account had
-        ever asserted -- including ones read before the money moved.  That is
-        the direction of the defect that opened the arc: subtracting a purchase
-        from a reservation whose anchor never contained it double-counts it out
-        of the projection, and the resulting figure is too HIGH by the purchase.
+        **It answered ``$500.00`` until plan step X-f3b**, and the reason it
+        moved is that the reservation stopped being the only way this money
+        could reach the book.  While a purchase was not a cash movement, a
+        purchase no assertion covered had to stay reserved or it would vanish
+        from the projection entirely; now it is a movement of its own on 01-23
+        (``cash_ledger._events._posted_purchase_facts``), so holding it back
+        HERE as well would count the same ``$200.00`` twice.  WHICH assertion
+        absorbs it -- none, until the owner declares a balance dated on or after
+        01-23 -- is the walk's question about that movement, and
+        ``test_cash_walk.py`` is where it is graded.
 
-        The mirror of this is the test above it, one day earlier
-        (``test_partial_settled_and_outstanding``'s ``$100.00`` on 01-21), so
-        the pair straddles the boundary rather than probing one side of it.
+        The mirror of this is the test below it, one day earlier, and the pair
+        now answers the SAME on both sides of a boundary the reservation no
+        longer has.  Keeping both is the point: they are the control that the
+        rule really is a fact about the purchase.
         """
         with app.app_context():
             txn = _envelope(
@@ -505,23 +539,24 @@ class TestTheRecordedPostingDay:
                 [("200.00", False, _POSTED_AFTER_THE_STATEMENT)],
             )
 
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
+            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("300.00")
 
-    def test_a_purchase_posted_ON_the_statement_day_is_inside_it(
+    def test_a_purchase_posted_ON_the_statement_day_releases_too(
         self, app, db, seed_user, seed_periods,
     ):
-        """The boundary itself: an assertion is its day's CLOSING balance.
+        """The other side of the retired boundary, answering identically.
 
         A ``$200.00`` purchase the bank took on 01-22, against a balance read
-        for 01-22.  ``22 <= 22``, so it is inside -- ruling R-DH (a), the same
-        inclusive boundary the read fold and the posting walk apply to a settled
-        transaction.  max(500 - 200 - 0, 0) = 300.
+        for 01-22.  max(500 - 200 - 0, 0) = 300.00 -- the same figure the test
+        above it now gives for 01-23.
 
-        The off-by-one this pins is worth a cent-exact figure rather than a
-        direction: an EXCLUSIVE boundary here would hold the full $500.00 and
-        the projection would be $200.00 too low every time a user entered their
-        balance the same day they shopped -- which, on the developer's real
-        data, is 53 of 53 same-day entries.
+        Under the DATE rule this side answered ``$300.00`` and that one
+        answered ``$500.00``, and the off-by-one between them was worth a
+        cent-exact pin: an exclusive boundary held the full ``$500.00`` and made
+        the projection ``$200.00`` too low every time a user entered their
+        balance on a day they shopped, which on the developer's real data is 53
+        of 53 same-day entries.  The boundary is gone rather than moved, so what
+        this pair pins now is that no boundary is left to get wrong.
         """
         with app.app_context():
             txn = _envelope(
@@ -531,23 +566,26 @@ class TestTheRecordedPostingDay:
 
             assert _entry_aware_amount(txn, _basis(txn)) == Decimal("300.00")
 
-    def test_an_account_that_has_never_asserted_reconciles_nothing(
+    def test_the_accounts_assertion_history_is_not_an_input(
         self, app, db, seed_user, seed_periods,
     ):
-        """A boundary that declares nothing puts every purchase on the floor.
+        """ONE envelope, priced with its account's statement on either side.
 
-        A ``$200.00`` purchase the bank was seen to take on 01-21, priced on a
-        boundary whose ``observed_day`` is ``None`` -- what
-        ``cash_ledger.reconciled_through`` returns for an account that has
-        never asserted a balance.  There is nothing for the purchase to be
-        inside of, so it is outstanding and the reservation stays at
-        max(500 - 0 - 0, 200) = 500.
+        A ``$200.00`` purchase the bank took on 01-21, against the account's
+        only assertion moved first to 01-22 (after the money moved) and then to
+        01-01 (before it).  Both answer ``$300.00``.
 
-        ``ReconciledThrough.covers`` is TOTAL in both the argument and the
-        boundary for exactly this reason -- both absences mean "not inside" --
-        so no caller has to remember a precondition.  A rule that treated a missing assertion as
-        "everything is reconciled" would empty every envelope on an account the
-        user had never trued up.
+        **Under the DATE rule those two states gave $300.00 and $500.00.**  That
+        is the whole of what plan step X-f3b changed here, stated as one
+        experiment rather than inferred from two tests that share no envelope:
+        the reservation is a function of the ROW, and moving the day the owner
+        happened to read their bank moves nothing about what this purchase cost.
+
+        **It replaces a test that could not survive the step.**  That one priced
+        a purchase against an EMPTY ``StatementCoverage`` -- an account that had
+        never asserted a balance -- and expected ``$500.00``.  Ruling **R-FM**
+        removed the coverage argument, so its mechanism is unwritable, and the
+        property worth keeping is the stronger one it was a special case of.
         """
         with app.app_context():
             txn = _envelope(
@@ -555,9 +593,18 @@ class TestTheRecordedPostingDay:
                 [("200.00", False, _POSTED_ON)],
             )
 
-            assert _entry_aware_amount(
-                txn, _basis(txn, reconciled_through=ReconciledThrough(None)),
-            ) == Decimal("500.00")
+            for observed_on in (_STATEMENT_DAY, date(2026, 1, 1)):
+                db.session.query(AccountAnchorHistory).filter_by(
+                    account_id=txn.account_id,
+                ).update({"observed_on": observed_on})
+                db.session.flush()
+
+                assert _entry_aware_amount(
+                    txn, _basis(txn),
+                ) == Decimal("300.00"), (
+                    f"the account's statement day ({observed_on}) is not an "
+                    f"input to what one purchase costs its envelope"
+                )
 
 
 class TestTheEntriesRelationshipIsNotASeam:
@@ -661,13 +708,22 @@ class TestTheEntriesRelationshipIsNotASeam:
 class _FakeRow:  # pylint: disable=too-few-public-methods
     """A non-ORM stand-in carrying only what a valuation rule may read.
 
-    Deliberately missing ``entries`` and ``status_id``: the ordering of
-    :func:`_entry_aware_amount`'s two guards is load-bearing, and this shape is
-    what proves it (see
+    Deliberately missing ``entries``, and missing ``status_id`` too when
+    *statusless* is set: the ordering of :func:`_entry_aware_amount`'s two
+    guards is load-bearing, and that shape is what proves it (see
     :meth:`TestTheLiveOverride.test_no_entries_short_circuits_before_the_status_read`).
+
+    **It grew the override seam's columns at plan step X-au-c2b**, and the
+    reason is the restructure itself: :func:`live_override` indexed a
+    ``{transaction_id: Decimal}`` map the basis carried, so it read no column at
+    all; it asks the two live DERIVATIONS per row now, and each answers ``None``
+    from the row's own columns before touching anything expensive.  Those reads
+    are the same ones the producers made when they BUILT that map over a row
+    set -- moved, not added -- so a stand-in for a row a valuation may see
+    carries them.
     """
 
-    def __init__(self, txn_id=None, effective_amount="77.00"):
+    def __init__(self, txn_id=None, effective_amount="77.00", statusless=False):
         self.id = txn_id
         # What the row OWNS, which since plan step X-au-c2 is what the
         # valuation reads: ``amount_source_id IS NULL`` says the figure is the
@@ -679,6 +735,22 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
         self.actual_amount = None
         self.is_deleted = False
         self.status = None
+        # What the live-override seam reads before it answers "nothing
+        # supersedes this row": the loan half asks for a transfer, the salary
+        # half for an income row on a template, and both for the two status
+        # facts.  ``None`` / ``False`` throughout, so neither derivation is
+        # reached and the fall-through under test is what runs.
+        self.transfer_id = None
+        # The scenario the basis this row is priced against declares.  Zero on
+        # both sides, matching ``planted_basis``'s default: a mismatch is what
+        # ``resolve_transaction_amount`` refuses (plan step X-au-c2b).
+        self.scenario_id = 0
+        self.is_override = False
+        self.is_income = False
+        self.template_id = None
+        self.pay_period_id = None
+        if not statusless:
+            self.status_id = None
 
 
 class TestTheLiveOverride:
@@ -781,5 +853,5 @@ class TestTheLiveOverride:
         ``is_projected`` reads ``status_id`` BEFORE it consults ``ref_cache``,
         so that attribute, not the cache, is what the ordering protects.
         """
-        row = _FakeRow(txn_id=1)
+        row = _FakeRow(txn_id=1, statusless=True)
         assert _entry_aware_amount(row, _basis(row)) == Decimal("77.00")

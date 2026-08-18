@@ -12,10 +12,14 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.services import pay_period_service, posting_service, status_seam
+from app.services import posting_service, status_seam
+from app.services.cash_ledger import (
+    amount_basis,
+    resolve_transaction_amount,
+)
+from app.services.pay_calendar import DerivedPeriod, calendar_for
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.balance_predicates import is_credit, is_projected
 from app.utils.log_events import (
@@ -341,19 +345,39 @@ def mark_as_credit(transaction_id, user_id):
     status_seam.apply_status_change(txn, credit_id)
 
     # Find or create the CC Payback category for this user.
-    period = db.session.get(PayPeriod, txn.pay_period_id)
-
     category = get_or_create_cc_category(user_id)
 
-    # Find the next pay period.
-    next_period = pay_period_service.get_next_period(period)
+    # Find the next pay period, asked of the owner's one calendar (plan step
+    # C2-f) rather than of a ``period_index + 1`` query.  The payday comes off
+    # the relationship ``lock_source_transaction_for_payback`` has already
+    # loaded -- this line was a second ``db.session.get(PayPeriod, ...)`` for a
+    # row the session was holding -- and it is the payday rather than the end
+    # deliberately: ``start_date`` is the only fact in that row, so this
+    # survives plan step C4 unchanged.  The entry-level twin
+    # (``entry_credit_workflow._create_payback``) reads it the same way.
+    next_period = calendar_for(user_id).period_starting_after(
+        txn.pay_period.start_date,
+    )
     if next_period is None:
         raise ValidationError(
             "No next pay period exists.  Generate more periods first."
         )
 
-    # Determine the payback amount (use actual if set, else estimated).
-    payback_amount = txn.actual_amount if txn.actual_amount is not None else txn.estimated_amount
+    # Determine the payback amount (use actual if set, else the source row's
+    # RESOLVED amount).  That second term was ``txn.estimated_amount``, the
+    # COLUMN, until plan step X-au-c2b: this runs on a row that is still
+    # Projected -- ``is_projected`` is asserted twenty lines up -- so it is
+    # exactly the state a per-kind cutover declares derived, and the column
+    # would be ``None`` in a money path.  What the payback's own figure SHOULD
+    # be is a different question, and it is plan step X-au-i's (finding
+    # **N-243**): a payback is worth the credit entries it repays, and neither
+    # of this line's two terms is that.
+    payback_amount = (
+        txn.actual_amount if txn.actual_amount is not None
+        else resolve_transaction_amount(
+            txn, amount_basis(txn.account.user_id, txn.scenario_id),
+        )
+    )
 
     # Create the payback transaction via the shared factory (see
     # entry_credit_workflow for the entry-level twin).
@@ -377,7 +401,7 @@ def mark_as_credit(transaction_id, user_id):
         user_id=user_id,
         transaction_id=txn.id,
         payback_id=payback.id,
-        next_period_id=next_period.id,
+        next_period_id=next_period.period_id,
         amount=str(payback_amount),
     )
     return payback
@@ -495,7 +519,7 @@ def get_or_create_cc_category(user_id: int) -> Category:
 
 def create_cc_payback_transaction(
     source_txn: Transaction,
-    next_period: PayPeriod,
+    next_period: DerivedPeriod,
     cc_category: Category,
     amount: Decimal,
 ) -> Transaction:
@@ -512,12 +536,31 @@ def create_cc_payback_transaction(
     estimated amount).  PROJECTED status and EXPENSE type are invariants
     of a payback, so they are resolved here rather than passed in.
 
+    **``next_period.period_id`` is an ``int`` by a PROPERTY of the search that
+    produced it**, which is what makes the ``NOT NULL`` write below safe with
+    no guard here (plan step C2-f1).
+    :meth:`~app.services.pay_calendar.PayCalendar.period_starting_after`
+    searches the MATERIALISED periods only -- the same enforcement
+    :meth:`~app.services.pay_calendar.PayCalendar.filing_period` carries, and
+    for the same reason -- so it cannot answer a projection or an unsaved
+    candidate, the two states in which
+    :attr:`~app.services.pay_calendar.DerivedPeriod.period_id` is ``None``.
+    Past the last payday it answers ``None`` outright and both callers raise a
+    :class:`~app.exceptions.ValidationError` instead of reaching here.
+
+    *An earlier draft argued this from a CALL-SITE census instead -- both
+    callers build their calendar with ``calendar_for``, which reads saved rows
+    only.  That was true and is not a property*, which is the distinction an
+    adversarial review of C2-f1 made and which this package had already been
+    corrected on once, at ``filing_period``.
+
     Args:
         source_txn: The credit transaction being paid back.  Supplies
             the account, scenario, name, and ``credit_payback_for_id``
             link.
         next_period: The pay period the payback lands in (the period
-            after ``source_txn``'s).
+            after ``source_txn``'s), as the calendar's own
+            :class:`~app.services.pay_calendar.DerivedPeriod`.
         cc_category: The user's "Credit Card: Payback" category (from
             :func:`get_or_create_cc_category`).
         amount: The payback's ``estimated_amount`` (a Decimal).
@@ -529,7 +572,7 @@ def create_cc_payback_transaction(
     payback = Transaction(
         account_id=source_txn.account_id,
         template_id=None,
-        pay_period_id=next_period.id,
+        pay_period_id=next_period.period_id,
         scenario_id=source_txn.scenario_id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name=f"CC Payback: {source_txn.name}",

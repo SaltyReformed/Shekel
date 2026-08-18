@@ -1800,7 +1800,7 @@ class TestTheReconcileRoute:
 
         for amount, purchased_on, is_credit, settled_on in entries:
             db.session.add(TransactionEntry(
-                transaction_id=txn.id,
+                transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal(amount),
                 description="Test purchase",
@@ -3623,8 +3623,10 @@ class TestTheTransferArmThroughItsROUTE:
 class TestTheCashFigureRendersBesideTheBookedOne:
     """Finding **N-226**'s caption, from the template rather than the producer.
 
-    An envelope books ``sum(entries)`` over EVERY entry, and a card purchase
-    is one of those -- but it never touches checking, so a `$40` debit plus a
+    An envelope books ``sum(entries)`` over EVERY entry, and TWO kinds of those
+    do not leave checking at the tick: a card purchase (it leaves through its
+    own CC Payback sibling) and, since plan step X-f3b (ruling **R-FM**), one
+    that has ALREADY posted on its own recorded day.  So a `$40` debit plus a
     `$60` card purchase is offered at `$100.00` on a screen captioned "tick
     everything your statement shows", against a statement showing `$40`.
 
@@ -3663,8 +3665,8 @@ class TestTheCashFigureRendersBesideTheBookedOne:
             ).data.decode()
 
             assert "$100.00" in body, "the figure a tick BOOKS"
-            assert "$40.00 on your statement" in body
-            assert "the rest went on a card" in body
+            assert "$40.00 leaves your account now" in body
+            assert "on a card or has already posted" in body
 
     def test_an_envelope_with_NO_card_purchase_prints_one_figure(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3673,7 +3675,11 @@ class TestTheCashFigureRendersBesideTheBookedOne:
 
         Without it, a template that printed the line unconditionally -- or
         printed the booked figure twice -- would satisfy the case above while
-        telling every user that part of every envelope went on a card.
+        telling every user that part of every envelope had gone elsewhere.
+
+        The single purchase here carries NO posting day, which is what keeps
+        this a negative control after plan step X-f3b: one that had already
+        posted would legitimately print the caption.
         """
         with app.app_context():
             past = display_today() - timedelta(days=1)
@@ -3687,8 +3693,8 @@ class TestTheCashFigureRendersBesideTheBookedOne:
                 f"/accounts/{seed_user['account'].id}/reconcile",
             ).data.decode()
 
-            assert "on your statement" not in body
-            assert "went on a card" not in body
+            assert "leaves your account now" not in body
+            assert "on a card or has already posted" not in body
 
 
 class TestAccountTypes:
@@ -5467,7 +5473,7 @@ def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
     from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
 
     db_session.add(TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=user_id,
         amount=amount,
         description="Cleared purchase",

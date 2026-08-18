@@ -1,17 +1,11 @@
-"""
-Shekel Budget App -- Transaction Entry Service
+"""The WRITE doors: what a user may do to one purchase, and what follows.
 
-CRUD operations, validation, and computation for individual purchase
-entries on entry-capable transactions.  This service is the foundation
-consumed by the balance calculator (Commit 3), entry credit workflow
-(Commit 4), mark-paid logic (Commit 5), and all entry UI (Commits
-7, 8, 10).
-
-**The OUTSTANDING SET left this module at plan step X-f2-c1** for
-:mod:`app.services.reconcile_service`: "which of these had the bank taken by
-the day you asserted a balance for" stopped being a question about ENTRIES
-when ruling R-EW widened it to bills, envelope closes and transfer shadows.
-That module carries the rule and the measurement that forced the cut.
+``entry_service``'s CRUD half -- the guards a mutation must pass, the three
+doors themselves (create, update, delete), the owner resolution they share, and
+the re-derivation every one of them triggers.  What a set of purchases ADDS UP
+TO, and the screen contexts built from those sums, is the sibling leaf
+(:mod:`._sums`); the arrow runs one way -- this module reads
+:func:`~._sums.compute_actual_from_entries` and that module reads nothing here.
 
 Architecture:
   - No Flask imports.  Receives plain data, returns ORM objects or
@@ -34,7 +28,6 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import posting_service
-from app.services.cash_ledger import ReconciledThrough, reconciled_through
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.utils.balance_predicates import is_archived, is_cancelled
 # ``is_credit`` from balance_predicates collides with the
@@ -44,7 +37,6 @@ from app.utils.balance_predicates import is_archived, is_cancelled
 # function signatures stable.
 from app.utils.balance_predicates import is_credit as txn_is_credit
 from app.utils.dates import display_today
-from app.utils.entry_partition import partition_entries
 from app.utils.log_events import (
     BUSINESS,
     EVT_ENTRY_CREATED,
@@ -52,7 +44,8 @@ from app.utils.log_events import (
     EVT_ENTRY_UPDATED,
     log_event,
 )
-from app.utils.money import percent_complete
+
+from ._sums import compute_actual_from_entries
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +67,7 @@ def _reject_archived_parent(txn: Transaction) -> None:
 
     It is the ARCHIVE status, not the settled band: a Paid envelope must keep
     accepting late-posting purchases, which is the whole reason
-    :func:`_resync_settled_envelope` exists.  See
+    :func:`_resync_after_entry_change` exists.  See
     :func:`app.utils.balance_predicates.is_archived` for why that distinction
     gets a name.
 
@@ -91,40 +84,42 @@ def _reject_archived_parent(txn: Transaction) -> None:
         )
 
 
-def _resync_settled_envelope(txn: Transaction) -> None:
-    """Re-derive a settled envelope's actual and its postings after an entry change.
+def _resync_after_entry_change(txn: Transaction) -> None:
+    """Re-derive an envelope's actual and its postings after an entry change.
 
-    **ONE predicate for what used to be two, and the split was finding N-229.**
+    **ONE door for what used to be two, and the split was finding N-229.**
     This was ``_update_actual_if_paid`` (gated on ``is_done`` -- exactly Paid)
     followed by ``_resync_postings_if_settled`` (gated on the settled BAND), so
     the two halves of one act graded the same row differently: on any settled
     status that is not Paid the actual was NOT recomputed while the postings
     WERE reconciled -- to the stale figure.  The books moved and
     the figure they were derived from did not.  Two predicates for one act is
-    two answers; the band is the right one, because the act is "this row's money
-    has moved and its purchases just changed".
+    two answers, and one door with one answer per half is what replaced them.
 
     Both halves, in the order they must run:
 
       1. ``actual_amount = sum(entries)`` -- the late-posting case (scope doc
          section 4.2: once entries exist, the entry sum takes precedence over
-         any manually entered actual).  Skipped for an EMPTY entry list, which
-         is the deliberate part: deleting the last purchase from a Paid envelope
-         leaves the previous figure rather than silently rewriting a settled
-         row's cost to ``$0.00``.
+         any manually entered actual).  Gated on the settled BAND, because a
+         Projected envelope's actual is not yet a fact.  Skipped for an EMPTY
+         entry list, which is the deliberate part: deleting the last purchase
+         from a Paid envelope leaves the previous figure rather than silently
+         rewriting a settled row's cost to ``$0.00``.
       2. the ledger reconcile (Build-Order Step 3), which must read the actual
-         act 1 just wrote.  An entry mutation on a settled envelope changes its
-         confirmed cash effect (``owned_contribution - Sigma(credit entries)``):
-         adding a debit purchase grows the checking outflow, flipping an entry
-         to or from credit moves the credit-excluded portion, deleting one
-         shrinks it.
+         act 1 just wrote.  An entry mutation changes the row's confirmed cash
+         effect (``owned_contribution - Sigma(credit entries) - Sigma(posted
+         purchases)``): adding a debit purchase grows the checking outflow,
+         flipping an entry to or from credit moves the credit-excluded portion,
+         deleting one shrinks it, and recording a posting day moves that
+         purchase's amount out of the close and into its own dated leg.
 
-    Gated whole on the settled band because a Projected envelope -- the common
-    case for entry edits -- has no postings and its actual is not yet a fact, so
-    both acts would be wasted.  Recording a purchase's own ``settled_on`` DOES
-    reach here through :func:`update_entry` and is a no-op in value: the
-    confirmed cash effect does not contain the posting day, so the sync
-    reconciles to the same target.
+    **Act 2 is UNGATED since plan step X-f3b, and that is ruling R-FM.**  It ran
+    only on the settled band, on the premise that "a Projected envelope has no
+    postings" -- false once a purchase carrying a recorded bank posting day
+    books its own leg whatever its envelope's status is.  One call reconciles
+    the whole family, so this door needs no second list of what changed; on a
+    Projected row with no posted purchases it reads an empty ledger and writes
+    nothing.
 
     Does NOT commit -- the calling service function owns the session boundary
     (the reconcile flushes but does not commit, matching this module's
@@ -132,13 +127,13 @@ def _resync_settled_envelope(txn: Transaction) -> None:
 
     Args:
         txn: The parent envelope transaction whose entries changed.  Its
-            ``status`` relationship is read to gate both acts.
+            ``status`` relationship is read to gate act 1 and to tell act 2
+            whether the row's OWN cash leg belongs in the ledger.
     """
-    if not txn.status.is_settled:
-        return
-    if txn.entries:
+    settled = txn.status.is_settled
+    if settled and txn.entries:
         txn.actual_amount = compute_actual_from_entries(txn.entries)
-    posting_service.sync_transaction_postings(txn, settled=True)
+    posting_service.sync_transaction_postings(txn, settled=settled)
 
 
 def resolve_owner_id(user_id: int) -> int:
@@ -277,6 +272,45 @@ def _reject_future_purchase_date(purchased_on: date) -> None:
         )
 
 
+def _reject_future_posting_day(settled_on: "date | None") -> None:
+    """Refuse a bank posting day after the user's today -- ruling **R-FM**.
+
+    The purchase twin of
+    :func:`app.services.status_seam.reject_future_settle_day`, and it arrived at
+    plan step X-f3b because that step INVERTED the reason this column had no
+    upper bound: a forward day was conservative while a purchase was not a cash
+    movement, and now RELEASES the reservation today while booking the cash
+    later.  The argument is stated once, at the rule it is about
+    (``cash_ledger._amounts._entry_aware_amount``), rather than a second time
+    here.  A purchase the bank has not taken yet leaves ``settled_on`` NULL,
+    which is what that state has always meant, so nothing expressible is lost;
+    measured before the bound was added, ZERO of 91 production purchases carried
+    a forward day.
+
+    The clock is the USER's (:func:`~app.utils.dates.display_today`), for the
+    reason :func:`_reject_future_purchase_date` beside it states.
+
+    Args:
+        settled_on: The posting day the caller wants the entry to carry, or
+            ``None`` to clear it (always allowed -- it is the outstanding
+            state).
+
+    Raises:
+        ValidationError: When *settled_on* is after the user's today.
+    """
+    if settled_on is None:
+        return
+    today = display_today()
+    if settled_on > today:
+        raise ValidationError(
+            f"A posting date records the day your bank TOOK the money, so it "
+            f"cannot be in the future: {settled_on.isoformat()} is after today "
+            f"({today.isoformat()}).  Leave the posting date empty until you "
+            f"see the purchase on a statement -- an unposted purchase already "
+            f"holds its whole budget back."
+        )
+
+
 def _reject_settled_before_purchase(
     purchased_on: date, settled_on: date | None,
 ) -> None:
@@ -292,12 +326,14 @@ def _reject_settled_before_purchase(
     posting day already recorded breaks the invariant just as surely as
     entering an early posting day does.
 
-    There is deliberately NO upper bound.  A posting day after today is a
-    legitimate statement -- "I bought this and my bank has not taken it yet" --
-    and that is exactly the case ruling R-DH (e) exists for and ruling R-M
-    could not express while one column carried both facts.  Any "at most N days
-    ahead" ceiling would be a constant nobody can justify, and a wrong forward
-    date is visible on the entry row and self-corrects at the next true-up.
+    The UPPER bound is :func:`_reject_future_posting_day`'s and it arrived at
+    plan step X-f3b (ruling **R-FM**), which inverted the reason there was
+    none: a recorded posting day is now the moment the money leaves the book,
+    so a forward one takes already-spent money out of today's projection instead
+    of holding it conservatively.  The two bounds are separate functions because
+    they are separate rules -- this one is about a PAIR of the row's own dates
+    and that one is about the clock -- and both are checked on the RESULT of an
+    update rather than on its submission.
 
     Args:
         purchased_on: The day the purchase was made, after any pending update.
@@ -404,6 +440,11 @@ def create_entry(
 
     entry = TransactionEntry(
         transaction_id=transaction_id,
+        # The parent's account, written explicitly rather than derived at flush
+        # time.  ``fk_transaction_entries_parent_account`` refuses any other
+        # value, so this line cannot be silently wrong -- it can only be absent,
+        # and absent is a NOT NULL violation.
+        account_id=txn.account_id,
         user_id=user_id,
         amount=details.amount,
         description=details.description,
@@ -425,7 +466,7 @@ def create_entry(
     )
 
     sync_entry_payback(transaction_id, owner_id)
-    _resync_settled_envelope(txn)
+    _resync_after_entry_change(txn)
 
     return entry
 
@@ -486,16 +527,65 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     # alone must not be refused for a value it is not setting (ruling R-M).
     if "purchased_on" in valid_updates:
         _reject_future_purchase_date(valid_updates["purchased_on"])
-    # The pair invariant is checked on the RESULT, not the submission: a
+    # Both date rules are checked on the RESULT, not the submission: a
     # partial update moves one side against a stored other side, and both
-    # directions can break it.
+    # directions can break the pair invariant.
+    resulting_settled_on = valid_updates.get("settled_on", entry.settled_on)
     _reject_settled_before_purchase(
         valid_updates.get("purchased_on", entry.purchased_on),
-        valid_updates.get("settled_on", entry.settled_on),
+        resulting_settled_on,
     )
+    # The posting day's own bound (ruling **R-FM**, plan step X-f3b): a day the
+    # bank has not reached yet would release this purchase's reservation now and
+    # book its cash later.  On the RESULT for the same reason as the pair above,
+    # and it therefore also re-refuses a stored forward day a partial update
+    # would otherwise carry through -- of which production has none.
+    _reject_future_posting_day(resulting_settled_on)
 
+    # The two edits that make a recorded clearing fact FALSE.  Both release it
+    # below; see the comment there for why releasing rather than refusing.
+    releases_the_link = (
+        "settled_on" in valid_updates
+        and valid_updates["settled_on"] != entry.settled_on
+    ) or (
+        "is_credit" in valid_updates
+        and valid_updates["is_credit"]
+        and not entry.is_credit
+    )
     for field, value in valid_updates.items():
         setattr(entry, field, value)
+    # **Moving the posting day RELEASES the clearing fact** (plan step X-f3a-1,
+    # ruling **R-FL**).  ``reconciled_by_id`` records that a named statement was
+    # seen to show this purchase ON that day; a user moving the day is
+    # correcting the observation, not confirming it, and the two facts must not
+    # be left to disagree.
+    #
+    # **Releasing rather than refusing is deliberate, and the alternative was
+    # measured.**  A link whose day the date rule would not pick is
+    # UNRENDERABLE while an assertion resets the ledger -- the fold emits the
+    # purchase on its settle day and the correction on the statement's, so the
+    # balance stops equalling what the user asserted (see
+    # ``StatementCoverage._recorded_anchor_id`` for the theorem and the
+    # production figure).  Refusing the edit would trap a user who is doing
+    # exactly what the panel's own copy asks -- *"correct it if your statement
+    # shows a different day"* -- so the day wins and the observation is dropped
+    # back to UNKNOWN, where the date rule answers it exactly as it did before
+    # any of this shipped.  Re-ticking on the next statement records it again.
+    #
+    # It fires on ANY move, including to ``None``, which is also what
+    # ``ck_transaction_entries_cleared_needs_settle_day`` requires.
+    #
+    # **Flipping a purchase to CARD releases it too, and that arm is a 500 fix**
+    # (found by X-f3b's trace, 2026-08-15).  A card purchase never touches this
+    # account, so ``ck_transaction_entries_card_purchase_clears_nowhere``
+    # refuses the pair -- and this door wrote the flag without touching the
+    # link, so PATCHing ``is_credit`` on a purchase the reconcile panel had
+    # ticked raised an unhandled ``IntegrityError``.  Reproduced on a production
+    # clone against entry 87.  Releasing is the same answer for the same reason:
+    # the user is correcting the observation, not confirming it, and the two
+    # facts must not be left to disagree -- here they could not even be stored.
+    if releases_the_link:
+        entry.reconciled_by_id = None
     db.session.flush()
 
     log_event(
@@ -511,7 +601,7 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     )
 
     sync_entry_payback(entry.transaction_id, owner_id)
-    _resync_settled_envelope(entry.transaction)
+    _resync_after_entry_change(entry.transaction)
 
     return entry
 
@@ -550,6 +640,15 @@ def delete_entry(entry_id: int, user_id: int) -> int:
 
     txn = entry.transaction
     transaction_id = entry.transaction_id
+    # Reverse the purchase's OWN cash leg while the row still exists (ruling
+    # **R-FM**, plan step X-f3b).  ``journal_entries.transaction_entry_id`` is
+    # ON DELETE SET NULL, so reversing afterwards is impossible: the link is
+    # severed and the legs are stranded on their ledger accounts with nothing
+    # to offset them.  The transaction analog is
+    # ``posting_service.reverse_postings_before_delete``, called at the
+    # transaction-delete doors for the identical reason.  Idempotent no-op for a
+    # purchase that never posted.
+    posting_service.reverse_purchase_postings_before_delete(entry)
     db.session.delete(entry)
     db.session.flush()
 
@@ -563,7 +662,7 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     )
 
     sync_entry_payback(transaction_id, owner_id)
-    _resync_settled_envelope(txn)
+    _resync_after_entry_change(txn)
 
     return transaction_id
 
@@ -597,326 +696,3 @@ def get_entries_for_transaction(
     # ``order_by`` on ``Transaction.entries`` -- the BUDGET clock, which is
     # the order a user reads their purchases in.
     return list(txn.entries)
-
-
-def compute_entry_sums(
-    entries: list[TransactionEntry],
-) -> tuple[Decimal, Decimal]:
-    """Compute (sum_debit, sum_credit) from a list of entries.
-
-    Pure function -- no database access.
-
-    Args:
-        entries: List of TransactionEntry objects.
-
-    Returns:
-        Tuple of (sum_debit, sum_credit) as Decimals.
-    """
-    debit_entries, credit_entries = partition_entries(entries)
-    sum_debit = sum((e.amount for e in debit_entries), Decimal("0"))
-    sum_credit = sum((e.amount for e in credit_entries), Decimal("0"))
-    return sum_debit, sum_credit
-
-
-def build_entry_sums_dict(
-    transactions: list,
-) -> dict[int, dict]:
-    """Build a {txn_id: sums_dict} mapping for transactions with entries.
-
-    Used by grid routes and HTMX cell-render endpoints to pre-compute
-    entry aggregates for the cell template.  Only transactions with
-    non-empty entries are included in the result.
-
-    The dict carries ``remaining`` and ``over_budget`` so the grid
-    cell template renders without inline Jinja arithmetic
-    (E-16 / MED-04).  ``remaining`` is computed via
-    :func:`compute_remaining` (the E-21 declared base
-    ``estimated_amount`` minus the sum of all entries), so the cell's
-    over-budget styling is driven by the same single rule that the
-    dashboard bill row sees via ``bill.entry_remaining``.
-
-    Pure function -- no database access beyond what was already loaded
-    on the Transaction objects (expects entries to be accessible, either
-    via eager load or lazy access).
-
-    Args:
-        transactions: List of Transaction objects with entries accessible.
-
-    Returns:
-        dict mapping transaction ID to {"debit": Decimal, "credit": Decimal,
-        "total": Decimal, "count": int, "remaining": Decimal,
-        "over_budget": bool, "pct": Decimal}.  Empty dict if no transactions
-        have entries.  ``pct`` is the entries-to-estimate ratio clamped
-        to [0, 100] via :func:`pct_complete`; it drives the mobile
-        progress-bar's ``data-progress-pct`` attribute on the unified
-        ``render_row_card`` macro per mobile-first v3 plan Commit 13.
-    """
-    result: dict[int, dict] = {}
-    for txn in transactions:
-        if txn.entries:
-            debit, credit = compute_entry_sums(txn.entries)
-            total = debit + credit
-            estimated = Decimal(str(txn.estimated_amount))
-            remaining = compute_remaining(estimated, txn.entries)
-            result[txn.id] = {
-                "debit": debit,
-                "credit": credit,
-                "total": total,
-                "count": len(txn.entries),
-                "remaining": remaining,
-                "over_budget": remaining < Decimal("0"),
-                "pct": pct_complete(total, estimated),
-            }
-    return result
-
-
-def build_entry_lists_dict(
-    transactions: list,
-) -> dict[int, dict]:
-    """Build a {txn_id: entry_list_data} mapping for envelope transactions.
-
-    Pre-computes the entry-list rendering inputs that
-    ``_render_entry_list`` in ``app/routes/entries.py`` produces per
-    HTMX request, so the mobile grid macro can render entries inline
-    on the initial grid response instead of lazy-loading them one
-    request per envelope card.  With 6 visible pay periods and ~10
-    envelope templates each, the lazy-load fan-out is ~60 parallel
-    GETs on the entries endpoint, which exceeds the
-    ``RATELIMIT_DEFAULT`` ceiling of ``30 per minute`` and leaves the
-    over-limit cards stuck on the loading spinner.  Server-side
-    rendering eliminates the fan-out entirely.
-
-    Only purchase-tracking rows (``txn.tracks_purchases`` -- a template
-    with ``is_envelope`` set, or an ad-hoc row carrying its own
-    ``is_envelope`` flag) get an entry, matching the macro's guard for
-    whether to render the inline entries section.  Non-tracking
-    transactions are silently skipped.
-
-    Expects ``entries`` and ``template`` eager-loaded on the
-    Transaction objects.  **It stopped being a PURE function on
-    2026-08-13**: the reconciled indicator needs each account's
-    coverage boundary, which is a read.  One indexed ``MAX`` per
-    distinct account is the cost, and the alternative -- taking the
-    boundaries as an argument -- is the defect this change fixes,
-    one tier up (an argument a caller can get wrong is a defect,
-    not a contract).
-
-    Args:
-        transactions: List of Transaction objects with ``entries`` and
-            ``template`` accessible.
-
-    Returns:
-        dict mapping envelope transaction ID to one
-        :func:`entry_list_view` -- the WHOLE context
-        ``grid/_transaction_entries.html`` renders an envelope from.
-
-        Empty dict when no transaction in the input has an envelope
-        template.
-    """
-    result: dict[int, dict] = {}
-    # One boundary per distinct ACCOUNT, not per transaction: a grid render
-    # passes every visible envelope of every account, and
-    # ``reconciled_through`` is one indexed ``MAX`` per account rather than a
-    # row load.  Memoising here keeps the count at the number of accounts on
-    # screen (six on the developer's grid) instead of the number of envelopes
-    # (~sixty), which is the fan-out this function exists to remove.
-    boundaries: dict[int, ReconciledThrough] = {}
-    for txn in transactions:
-        if not txn.tracks_purchases:
-            continue
-        if txn.account_id not in boundaries:
-            boundaries[txn.account_id] = reconciled_through(txn.account_id)
-        result[txn.id] = entry_list_view(
-            txn, list(txn.entries), boundaries[txn.account_id],
-        )
-    return result
-
-
-def entry_list_view(
-    txn: Transaction,
-    entries: list[TransactionEntry],
-    boundary: ReconciledThrough,
-) -> dict:
-    """Return the WHOLE derived context one envelope's entry list renders from.
-
-    **The ONE producer of that context, and it exists because a caller-built
-    one was measured wrong.**  ``grid/_transaction_entries.html`` was assembled
-    independently by the HTMX refresh (``routes/entries.py``) and by the grid
-    macro (via :func:`build_entry_lists_dict`), and only the refresh supplied
-    ``reconciled_ids`` -- so on every INITIAL render of the grid, the mobile
-    card, the companion view and the full-edit popover, ``entry.id in
-    reconciled_ids`` asked a Jinja ``Undefined``, which answers ``False``
-    silently.  Every reconciled purchase read *"Not yet seen on a statement, so
-    the budget is still held back"* while the projection had already released
-    its reservation: the screen contradicted the number beside it, on 9 of 9
-    such purchases on the 2026-08-13 production clone (`$640.70`).
-
-    Two callers assembling one template's context is the shape; a forgotten key
-    was the instance.  Returning the whole context from one place makes the
-    omission unrepresentable at the service tier -- the route splats this
-    mapping rather than naming its keys.
-
-    Args:
-        txn: The envelope transaction being rendered.  Its
-            ``estimated_amount`` sets the remaining figure and its pay period
-            bounds the out-of-period warning.
-        entries: The transaction's entries, already loaded and ordered by
-            ``purchased_on``.  Taken as an argument rather than read off *txn*
-            because the two callers load them differently -- the route through
-            the owner-scoped :func:`get_entries_for_transaction`, the grid off
-            an eager-loaded relationship -- and neither may lose its scoping to
-            share this derivation.
-        boundary: The account's coverage boundary
-            (:func:`app.services.cash_ledger.reconciled_through`).  An
-            ARGUMENT so a caller rendering many envelopes resolves it once per
-            account; :func:`build_entry_lists_dict` memoises it.
-
-    Returns:
-        The five keys the template consumes:
-
-          - ``entries``: the list as given.
-          - ``remaining`` (Decimal): estimated_amount minus the sum of all
-            entries (debit + credit), via :func:`compute_remaining`.
-          - ``out_of_period_ids`` (set[int]): entry IDs whose ``purchased_on``
-            falls outside the parent pay period, surfacing the OP-4
-            date-awareness warning.
-          - ``reconciled_ids`` (set[int]): entry IDs the account's latest
-            asserted balance already contains, derived from the SHARED
-            predicate (ruling **R-DH (d)**) rather than from a stored flag, so
-            what the row shows and what the projection held back cannot
-            disagree.
-          - ``reconciled_through`` (date | None): the civil day that boundary
-            names, for the tooltip that renders it.  Which entries it
-            reconciles is decided HERE, in Python; the template renders the
-            answer and never re-derives it.
-    """
-    return {
-        "entries": entries,
-        "remaining": compute_remaining(txn.estimated_amount, entries),
-        "out_of_period_ids": {
-            e.id for e in entries
-            if not check_purchase_date_in_period(e.purchased_on, txn)
-        },
-        "reconciled_ids": {
-            e.id for e in entries if boundary.covers(e.settled_on)
-        },
-        "reconciled_through": boundary.observed_day,
-    }
-
-
-def compute_remaining(
-    estimated_amount: Decimal,
-    entries: list[TransactionEntry],
-) -> Decimal:
-    """Compute remaining budget: estimated_amount - sum of ALL entries.
-
-    Uses the sum of ALL entries regardless of payment method (debit +
-    credit) because the remaining balance represents budget consumption,
-    not checking impact.  Negative values indicate overspending.
-
-    Per E-21 (audit MED-03 / F-028 / F-056) the budget base for an
-    entry-tracked bill row is ``estimated_amount`` unconditionally --
-    never ``actual_amount`` and never status-dependent.  This is why
-    the signature takes ``estimated_amount`` directly rather than the
-    whole ``Transaction``: the base cannot be switched on at runtime;
-    callers that want to display "remaining" against a different base
-    are out of contract and must compute it themselves.  The dashboard
-    bill row, the companion entry data builder, and the entries
-    partial all pass ``txn.estimated_amount`` (verified) so they
-    share one declared base with the row's amount cell and
-    over-budget flag.
-
-    Pure function -- no database access.
-
-    Args:
-        estimated_amount: The transaction's budgeted amount -- the
-            E-21 declared base for the row's plan-vs-actual figures.
-        entries: List of TransactionEntry objects.
-
-    Returns:
-        Decimal -- the remaining budget (negative means overspent).
-    """
-    total_spent = sum((e.amount for e in entries), Decimal("0"))
-    return estimated_amount - total_spent
-
-
-def pct_complete(total: Decimal, target: Decimal) -> Decimal:
-    """Compute percent complete, clamped to [0, 100].
-
-    Feeds the entry-tracking progress-bar widths on the companion
-    transaction card (and any other surface that needs an entry
-    aggregate as a percentage of its declared budget base).  Returns a
-    Decimal so money math never crosses the Decimal/float boundary at
-    the route layer (MED-04 / E-16): the companion route used to
-    ``float(total / estimated * Decimal("100"))`` inline, which violated
-    the "money math is service-layer Decimal, not route-layer float"
-    standard.  Thin domain-named wrapper over
-    :func:`app.utils.money.percent_complete` -- the single numeric
-    contract the dashboard and companion progress surfaces both share.
-
-    The two-decimal-place result is safe to render as-is in CSS width
-    values: ``data-progress-pct="55.50"`` is parsed by
-    ``app/static/js/progress_bar.js`` via ``parseFloat`` before being
-    applied as an inline width, and CSS itself accepts the decimal
-    notation in ``%`` values.
-
-    Args:
-        total: Sum of entries against the budgeted line.
-        target: Budgeted estimated amount.  If <= 0 the function
-            returns ``Decimal("0")`` rather than dividing by zero or
-            producing a misleading negative percentage.
-
-    Returns:
-        Decimal in [0, 100] quantised to two decimal places when the
-        guard does not fire; ``Decimal("0")`` when ``target <= 0``.
-    """
-    return percent_complete(total, target)
-
-
-def compute_actual_from_entries(
-    entries: list[TransactionEntry],
-) -> Decimal:
-    """Compute actual_amount for a Paid transaction: sum of ALL entries.
-
-    The actual_amount represents total spending for analytics and
-    reporting.  Both debit and credit entries contribute to the total.
-    The credit portion is already handled by the CC Payback in the
-    next period.
-
-    Pure function -- no database access.
-
-    Args:
-        entries: List of TransactionEntry objects.
-
-    Returns:
-        Decimal -- sum of all entry amounts (Decimal("0") if empty).
-    """
-    return sum((e.amount for e in entries), Decimal("0"))
-
-
-def check_purchase_date_in_period(
-    purchased_on: date,
-    transaction: Transaction,
-) -> bool:
-    """Check whether a purchase's date falls within the pay period range.
-
-    Informational utility for UI warnings (OP-4).  Does NOT block
-    entry creation or updates -- late-posting purchases may
-    legitimately fall outside the period range.
-
-    It reads ``purchased_on`` and not ``settled_on``, and that is the
-    distinction the split exists for: this warning asks "is this purchase
-    budgeted to the right pay period", which is a BUDGET-clock question.  When
-    the money reached the bank is a cash-clock fact and belongs to the balance
-    fold, not to a budgeting warning.
-
-    Args:
-        purchased_on: The day the purchase was made.
-        transaction: The parent Transaction (with pay_period loaded).
-
-    Returns:
-        True if *purchased_on* is within [start_date, end_date], False
-        otherwise.
-    """
-    period = transaction.pay_period
-    return period.start_date <= purchased_on <= period.end_date

@@ -212,8 +212,17 @@ class TestTemplateCreateSchema:
         })
         assert "offset_periods" not in data
 
-    def test_day_of_month_range(self):
-        """day_of_month outside 1-31 fails Range validation."""
+    def test_nominal_day_range(self):
+        """nominal_day outside 29-31 fails Range validation.
+
+        ``day_of_month`` was this field's predecessor and its domain was 1-31,
+        because it stated the cycle's day outright.  Plan step R7c-b made the
+        first occurrence AUTHORED, so ``starts_on`` carries that day; what is
+        left is the 0-or-1 day the date's own month was too SHORT to hold
+        (ruling R-R3).  Every month holds its first 28 days, so a value below
+        29 could only be a second statement of the day ``starts_on`` already
+        carries -- which is the two-representations defect the ruling removes.
+        """
         with pytest.raises(ValidationError) as exc:
             TemplateCreateSchema().load({
                 "name": "Test",
@@ -221,9 +230,9 @@ class TestTemplateCreateSchema:
                 "category_id": "1",
                 "transaction_type_id": "1",
                 "account_id": "1",
-                "day_of_month": "0",
+                "nominal_day": "28",
             })
-        assert "day_of_month" in exc.value.messages
+        assert "nominal_day" in exc.value.messages
 
     def test_empty_strings_stripped(self):
         """@pre_load drops empty non-nullable fields and nulls the nullable ones.
@@ -257,11 +266,19 @@ class TestTemplateCreateSchema:
             "recurrence_unit": "",
             "recurrence_placement": "",
             "interval_n": "",
-            "day_of_month": "",
+            "starts_on": "",
         })
         # Not nullable -- "" means "not provided", so the key goes.
         assert "interval_n" not in data
-        assert "day_of_month" not in data
+        # ``starts_on`` replaced a ``day_of_month`` probe at plan step R7c-b,
+        # and the swap is not cosmetic: that field no longer EXISTS on this
+        # schema, so ``unknown = EXCLUDE`` dropped the key whatever the
+        # empty-input rule did -- the assertion passed for the wrong reason.
+        # This one is a declared, non-nullable field, and its drop-on-empty is
+        # load-bearing: ``refuse_inverted_window`` reads an ABSENT start as
+        # "leave the stored date alone", so a cleared box arriving as a stated
+        # ``None`` instead would erase the rule's first occurrence.
+        assert "starts_on" not in data
         # Nullable -- "" IS the value, so the key stays and carries None.
         assert "recurrence_unit" in data
         assert data["recurrence_unit"] is None
@@ -1134,32 +1151,61 @@ class TestTemplateCreateSchemaBoundary:
         data.update(overrides)
         return data
 
-    def test_day_of_month_zero_rejected(self):
-        """day_of_month=0 fails Range(min=1, max=31) validation."""
+    def test_nominal_day_28_rejected(self):
+        """nominal_day=28 fails Range(min=29, max=31) validation.
+
+        The lower boundary, and it is a real rule rather than an arbitrary
+        floor: every month holds its first 28 days, so no first occurrence can
+        ever have CLAMPED a 28.  Such a value would restate the day
+        ``starts_on`` already carries, which
+        ``ck_recurrence_rules_nominal_day`` refuses in the table.
+        """
         with pytest.raises(ValidationError) as exc:
             TemplateCreateSchema().load(
-                self._valid_template_data(day_of_month="0")
+                self._valid_template_data(nominal_day="28")
             )
-        assert "day_of_month" in exc.value.messages
+        assert "nominal_day" in exc.value.messages
 
-    def test_day_of_month_32_rejected(self):
-        """day_of_month=32 fails Range(min=1, max=31) validation.
+    def test_nominal_day_32_rejected(self):
+        """nominal_day=32 fails Range(min=29, max=31) validation.
 
         No month has 32 days. The schema must reject this before it reaches
         the recurrence engine.
         """
         with pytest.raises(ValidationError) as exc:
             TemplateCreateSchema().load(
-                self._valid_template_data(day_of_month="32")
+                self._valid_template_data(nominal_day="32")
             )
-        assert "day_of_month" in exc.value.messages
+        assert "nominal_day" in exc.value.messages
 
-    def test_day_of_month_31_accepted(self):
-        """day_of_month=31 is valid -- months with 31 days exist."""
+    def test_nominal_day_31_accepted(self):
+        """nominal_day=31 is valid -- it is the day a 30-day month clamps.
+
+        The schema grades the DOMAIN alone; whether 31 may sit beside this
+        particular ``starts_on`` is a two-field rule the field cannot see, and
+        ``RecurrenceSpec.__post_init__`` refuses the contradicting pair at the
+        write door (mirroring ``ck_recurrence_rules_nominal_day``).
+        """
         data = TemplateCreateSchema().load(
-            self._valid_template_data(day_of_month="31")
+            self._valid_template_data(nominal_day="31")
         )
-        assert data["day_of_month"] == 31
+        assert data["nominal_day"] == 31
+
+    def test_starts_on_outside_the_calendar_window_rejected(self):
+        """A five-digit-year typo in the date box is a FIELD error.
+
+        ``<input type="date">`` accepts ``9999-12-31``, and past the saved
+        horizon the pay calendar projects the covering paycheck by ADDING
+        ``cadence_days`` to a start -- which raised ``OverflowError`` on the
+        recurrence-preview endpoint for any signed-in user (found at plan step
+        R7c-b).  The window is ``app.utils.dates.CALENDAR_DATE_MIN``..``_MAX``,
+        mirrored by ``ck_recurrence_rules_starts_on_range``.
+        """
+        with pytest.raises(ValidationError) as exc:
+            TemplateCreateSchema().load(
+                self._valid_template_data(starts_on="9999-12-31")
+            )
+        assert "starts_on" in exc.value.messages
 
     def test_interval_n_zero_rejected(self):
         """interval_n=0 fails Range(min=1) validation.

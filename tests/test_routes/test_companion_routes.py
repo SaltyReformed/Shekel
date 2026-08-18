@@ -413,7 +413,7 @@ class TestEntryIntegration:
         )
         txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         entry = TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_companion["user"].id,
             amount=Decimal("30.00"),
             description="Kroger",
@@ -440,7 +440,7 @@ class TestEntryIntegration:
         )
         txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
         entry = TransactionEntry(
-            transaction_id=txn.id,
+            transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_companion["user"].id,
             amount=Decimal("30.00"),
             description="Kroger",
@@ -577,12 +577,12 @@ class TestMarkDoneIntegration:
             name="Groceries", amount=Decimal("500.00"),
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("100.00"), description="Kroger",
             purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="Walmart",
             purchased_on=date(2026, 1, 6),
         ))
@@ -618,7 +618,7 @@ class TestEntryDataInHTML:
             name="Groceries", amount=Decimal("500.00"),
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("200.00"), description="Kroger",
             purchased_on=date(2026, 1, 5),
         ))
@@ -691,7 +691,7 @@ class TestEntryDataInHTML:
             name="Gas", amount=Decimal("100.00"),
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("120.00"), description="Shell",
             purchased_on=date(2026, 1, 5),
         ))
@@ -729,7 +729,7 @@ class TestEntryDataInHTML:
             name="Groceries", amount=Decimal("100.00"),
         )
         db.session.add(TransactionEntry(
-            transaction_id=txn.id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("55.50"), description="Kroger",
             purchased_on=date(2026, 1, 5),
         ))
@@ -1035,3 +1035,80 @@ class TestCardTapToExpand:
         html = resp.data.decode()
         assert "Edit Amount" not in html
         assert "Open Full" not in html
+
+
+class TestTheCompanionAddPurchaseFormReadsTheUsersClock:
+    """The companion page's ``today`` is ``display_today()``, never the process's.
+
+    **The owner's mobile card was corrected for this at plan step S1-c and the
+    companion page was left behind**, on the surface that SHARES its macro:
+    ``routes/companion._build_partial_context`` passed ``today=date.today()``
+    into ``grid/_transaction_entries.html``, whose ``purchased_on`` input takes
+    it as both the default ``value`` and the ``max``.  ``entry_service``
+    judges that field against ``display_today()`` (ruling R-M,
+    ``_reject_future_purchase_date``), so on any process not pinned to
+    ``America/New_York`` the companion's own form defaulted to -- and capped at
+    -- a date its own server refuses.  Found by an adversarial design review of
+    plan step **C2-f2b** and fixed there, because that step was already editing
+    the two lines above it; the review's other correct point was that a fix
+    without a test is not a fix, which is what this class is.
+
+    Latent in production, which pins ``TZ: America/New_York`` in both compose
+    files.  NOT latent in CI, which runs ``TZ=Pacific/Kiritimati`` (UTC+14)
+    precisely to catch this shape.
+
+    **It pins WHICH CLOCK the route reads rather than arranging for the two to
+    disagree**, for the reason
+    ``test_grid.TestTheAddPurchaseFormReadsTheUsersClock`` states at length: the
+    C library's zone is process-global and survives ``monkeypatch``'s env
+    restore, so a ``TZ`` mutation leaks into every later test in the same xdist
+    worker.  Substituting ``display_today`` for a sentinel is exact and
+    side-effect free -- the rendered form carries it if and only if the route
+    reads that function, which IS the defect.
+    """
+
+    #: A date no clock can produce on its own, so its appearance in the
+    #: rendered form can only have come from ``display_today``.
+    _SENTINEL = date(2019, 7, 4)
+
+    def test_the_companion_card_form_defaults_to_the_users_civil_day(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+        monkeypatch,
+    ):
+        """The companion's add-purchase input comes from ``display_today``.
+
+        Both halves are asserted.  The positive alone would pass a build that
+        rendered the sentinel somewhere unrelated; the negative alone would
+        pass a page that rendered no date at all.
+
+        Negative control (standard 4): restoring ``today=date.today()`` in
+        ``_build_partial_context`` fails this on
+        ``assert 'value="2019-07-04"' in html``.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.routes import companion as companion_routes
+
+        template = _make_template(
+            seed_user, companion_visible=True, track=True, name="Groceries",
+        )
+        _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
+        db.session.commit()
+
+        # The premise: the sentinel is not what any real clock answers, so a
+        # route reading ``date.today()`` cannot produce it by coincidence.
+        assert date.today() != self._SENTINEL
+        monkeypatch.setattr(
+            companion_routes, "display_today", lambda: self._SENTINEL,
+        )
+
+        comp = _login_companion(app)
+        resp = comp.get(f"/companion/period/{seed_periods_today[0].id}")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        assert 'name="purchased_on"' in html, (
+            "the add-purchase form must actually have rendered"
+        )
+        assert f'value="{self._SENTINEL.isoformat()}"' in html
+        assert f'max="{self._SENTINEL.isoformat()}"' in html
+        assert date.today().isoformat() not in html

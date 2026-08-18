@@ -46,6 +46,8 @@ from app.models.account import Account, AccountAnchorHistory
 from app.models.journal_entry import JournalEntry
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import recurrence_spec, resolve
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
@@ -68,6 +70,7 @@ from tests._test_helpers import (
     create_savings_account,
     freeze_today,
     make_expense_template,
+    make_pattern_rule,
     make_transfer_template,
     seam_cash_balance_at,
 )
@@ -143,24 +146,26 @@ def _all_indices(user_id):
 def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
     """Build an EVERY_N_PERIODS expense template phased to ``start_period``.
 
-    States the OPENING BOUND -- ``start_period``'s own payday -- and lets the
-    resolver derive the phase from it (plan step R7b-4), which is the exact
-    phased state a reset must re-base onto the new schedule.  The stale
-    ``offset_periods`` column is written to match, because that is what a
-    pre-reset rule really holds and the point of the case is what happens to
-    it.  Returns the created template (flushed; the caller commits).
+    States the FIRST OCCURRENCE -- ``start_period``'s own payday -- and lets
+    the write door derive the phase from it (plan step R7b-4), which is the
+    exact phased state a reset must re-base onto the new schedule.  The
+    ``offset_periods`` column comes out of that derivation against the OLD
+    schedule, so it really is the stale value a pre-reset rule holds, and the
+    point of the case is what happens to it.
+
+    **Authored through the write door since plan step R7c-b** rather than
+    written column by column: the two-axis columns are ``NOT NULL``, and the
+    phase is now derived on every read rather than trusted off the column, so
+    hand-writing a phase would state a fact nothing consults.
+
+    Returns the created template (flushed; the caller commits).
     """
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.EVERY_N_PERIODS,
-        ),
+    rule = make_pattern_rule(
+        seed_user["user"].id,
+        RecurrencePatternEnum.EVERY_N_PERIODS,
+        starts_on=start_period.start_date,
         interval_n=interval_n,
-        offset_periods=start_period.period_index % interval_n,
-        start_date=start_period.start_date,
     )
-    db_session.add(rule)
-    db_session.flush()
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
@@ -371,15 +376,33 @@ class TestResetHappyPath:
         There is nothing to capture, nothing to re-point, and the stated start
         is still stated when the reset returns -- so the rule opens where the
         user said, measured against whatever schedule now exists.
+
+        **Asserted on ``starts_on``, which is where the fact lives since plan
+        step R7c-b.**  This read ``start_date`` and set it directly, and both
+        halves rotted with that step: the write door stopped writing that
+        column and ``start_period_id`` entirely, so BOTH assertions read
+        ``None``-forever values and held for any reset -- including one that
+        rewrote the rule from end to end, which is the whole state they exist
+        to refuse.  The rule is authored through the door here for the same
+        reason: a hand-set column is not a bound the application would ever
+        produce.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
+            # A date inside the OLD schedule and a year before the rebuilt
+            # one, so a reset that re-pointed anything could not leave it here.
+            stated_start = date(2026, 1, 30)
+            rule = make_pattern_rule(
+                seed_user["user"].id,
+                RecurrencePatternEnum.EVERY_PERIOD,
+                starts_on=stated_start,
+            )
             template = make_expense_template(db.session, seed_user)
-            rule = template.recurrence_rule
-            stated_start = seed_user["bootstrap_period"].start_date
-            rule.start_date = stated_start
+            template.recurrence_rule_id = rule.id
             db.session.commit()
+            assert rule.starts_on == stated_start
+            assert stated_start < _NEW_START
 
             pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
@@ -388,8 +411,7 @@ class TestResetHappyPath:
             db.session.commit()
 
             rule = db.session.get(RecurrenceRule, rule.id)
-            assert rule.start_date == stated_start
-            assert rule.start_period_id is None
+            assert rule.starts_on == stated_start
 
     def test_every_n_rule_rephased_onto_new_schedule(self, app, db, seed_user):
         """An EVERY_N_PERIODS rule re-phases onto the rebuilt schedule.
@@ -414,7 +436,10 @@ class TestResetHappyPath:
             template = _make_every_n_template(
                 db.session, seed_user, old_periods[3], interval_n=2,
             )
-            assert template.recurrence_rule.offset_periods == 1
+            rule = template.recurrence_rule
+            assert resolve(
+                recurrence_spec(rule), calendar_for(rule.user_id),
+            ).offset_periods == 1
             db.session.commit()
 
             new_periods = pay_period_admin.reset_pay_periods(
@@ -433,33 +458,6 @@ class TestResetHappyPath:
             }
             assert counts == {0: 1, 1: 0, 2: 1, 3: 0, 4: 1, 5: 0}
             assert_pay_period_invariants(db.session, user_id)
-
-    def test_rule_without_start_period_stays_unanchored(self, app, db, seed_user):
-        """A rule that states no opening bound still states none afterwards.
-
-        The reset re-pointed only the rules that CARRIED a start period, so a
-        NULL-start rule (the common case) had to stay NULL or its semantics --
-        "no explicit start, open with the schedule" -- would have been
-        replaced by an explicit one.  Nothing re-points anything since plan
-        step R7b-4, so this holds for a stronger reason than it used to: the
-        reset does not write to the table at all.
-        """
-        with app.app_context():
-            user_id = seed_user["user"].id
-            _seed_old_schedule(db.session, seed_user)
-            template = make_expense_template(db.session, seed_user)
-            rule_id = template.recurrence_rule.id
-            assert template.recurrence_rule.start_date is None
-            db.session.commit()
-
-            pay_period_admin.reset_pay_periods(
-                user_id, new_start_date=_NEW_START, num_periods=4,
-                cadence_days=14,
-            )
-            db.session.commit()
-
-            rule = db.session.get(RecurrenceRule, rule_id)
-            assert rule.start_date is None
 
     def test_multiple_accounts_all_reanchored(self, app, db, seed_user):
         """Every account re-anchors with its own balance preserved.

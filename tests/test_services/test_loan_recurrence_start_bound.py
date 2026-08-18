@@ -1,8 +1,12 @@
 """C9a: a recurring loan payment cannot start before the loan does.
 
-``RecurrenceRule.start_date`` is the opening half of a recurrence's validity
+``RecurrenceRule.starts_on`` is the opening half of a recurrence's validity
 window, derived by ``loan_recurrence_sync.sync_recurring_payment_bounds`` from
-the loan's FIRST CONTRACTUAL INSTALLMENT.
+the loan's FIRST CONTRACTUAL INSTALLMENT.  It was ``start_date`` until plan
+step R7c-b, which made the column the rule's FIRST OCCURRENCE rather than a
+bound the occurrences were filtered against (ruling R-R16); for a loan payment
+billing on a day of the month the two are the same date, because the first
+installment IS the first occurrence.
 
 **What it prevents, measured.** Before this bound, ``create_payment_transfer``
 built its rule with no start at all and generated across every materialized pay
@@ -20,10 +24,15 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
-from app.enums import AcctTypeEnum, RecurrenceUnitEnum
+from app.enums import (
+    AcctTypeEnum,
+    PeriodPlacementEnum,
+    RecurrenceUnitEnum,
+)
 from app.models.category import Category
 from app.models.scenario import Scenario
 from app.models.transfer import Transfer
@@ -35,10 +44,17 @@ from app.services import (
     transfer_recurrence,
 )
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import (
+    RecurrenceSpec,
+    resolve,
+    scheduling_day_of_month,
+)
 from app.services.generation_schedule import GenerationSchedule
 from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
+from app.utils.dates import display_today
 from tests._test_helpers import (
     cadence_payload,
     create_account_of_type,
@@ -160,28 +176,37 @@ class TestStartBoundIsSynced:
         )
         rule = xfer.template.recurrence_rule
         # One month after the 2026-04-15 closing, on payment day 1.
-        assert rule.start_date == date(2026, 5, 1)
+        assert rule.starts_on == date(2026, 5, 1)
         assert rule.end_date is not None
 
     def test_a_payment_day_edit_moves_the_bound_and_the_billing_day(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """A ``payment_day`` edit must move BOTH derived values, together.
+        """A ``payment_day`` edit moves the bound and the billing day AS ONE.
 
-        ``start_date`` and ``rule.day_of_month`` both derive from
-        ``params.payment_day``, and moving one without the other is worse than
-        leaving both stale.  Measured on the real rule shape when only
-        ``start_date`` moved (payment_day 1 -> 20): the bound advanced to the
-        20th while the rule still matched the 1st, no surviving period contained
-        a matching day, and regeneration produced **ZERO** installments -- the
-        loan's entire recurring payment silently disappeared.
+        Both used to be separate columns deriving from ``params.payment_day``,
+        and moving one without the other was worse than leaving both stale.
+        Measured on the real rule shape when only the bound moved (payment_day
+        1 -> 20): it advanced to the 20th while the rule still matched the 1st,
+        no surviving period contained a matching day, and regeneration produced
+        **ZERO** installments -- the loan's entire recurring payment silently
+        disappeared.
+
+        **Plan step R7c-b made that divergence unconstructible** rather than
+        guarded against: ``starts_on`` is the first occurrence, so its own day
+        IS the cycle's day, and ``day_of_month`` is a storage encoding derived
+        from it in the write door.  This test still asserts BOTH, because the
+        encoded column is what ``recurrence_engine.compute_due_date`` dates
+        every generated row from until plan step R5 deletes it -- so a write
+        door that stopped deriving it would reproduce the same empty list.
 
         This must use the loan route's real MONTHLY rule: an EVERY_PERIOD
-        template carries no ``day_of_month``, so it cannot observe the
-        divergence at all.
+        template has no day-of-month coordinate at all, so it cannot observe
+        the divergence.
 
         NEGATIVE CONTROL: drop the ``day_of_month`` assignment from
-        ``_sync_loan_cadence`` and the regenerated due-date list goes empty.
+        ``recurrence._authoring._author`` and the regenerated due-date list
+        goes empty.
         """
         acct = _upcoming_mortgage(seed_user, db.session, seed_periods)
         checking = seed_user["account"]
@@ -197,8 +222,8 @@ class TestStartBoundIsSynced:
             .first()
         ).template
         rule = template.recurrence_rule
-        assert rule.start_date == date(2026, 5, 1)
-        assert rule.day_of_month == 1
+        assert rule.starts_on == date(2026, 5, 1)
+        assert scheduling_day_of_month(rule) == 1
 
         params = loan_loaders.load_loan_params(acct.id)
         params.payment_day = 20
@@ -209,8 +234,8 @@ class TestStartBoundIsSynced:
             db.session.commit()
 
         db.session.refresh(rule)
-        assert rule.start_date == date(2026, 5, 20)
-        assert rule.day_of_month == 20, (
+        assert rule.starts_on == date(2026, 5, 20)
+        assert scheduling_day_of_month(rule) == 20, (
             "day_of_month must follow payment_day, or the rule bills a day the "
             "bound excludes"
         )
@@ -235,10 +260,19 @@ class TestStartBoundIsSynced:
     ):
         """An every-paycheck loan payment is bounded but NOT re-dayed.
 
-        A rule with no ``day_of_month`` schedules by pay period, so it has no
-        contractual due day to keep in step; writing one would re-date every
+        A rule that bills by PAYCHECK has no day-of-month coordinate, so it has
+        no contractual due day to keep in step; writing one would re-date every
         generated instance from the period start onto a monthly day. The start
         bound still applies -- it is about the loan's life, not its cadence.
+
+        **This is the one shape whose stored ``starts_on`` is not the
+        installment date itself** (plan ledger row **D6**).  A pay-period
+        cadence's occurrences are PAYDAYS, so ``resolve`` normalises the
+        2026-05-01 first installment onto the payday of the paycheck that hosts
+        it.  On this fixture's biweekly schedule from 2026-01-02 that paycheck
+        is period 8, 2026-04-24..2026-05-07, so the column holds 2026-04-24 --
+        the SAME paycheck the old ``end_date >= start_date`` filter admitted
+        first, so nothing about generation moved.
         """
         with app.app_context():
             acct = _upcoming_mortgage(seed_user, db.session, seed_periods)
@@ -246,12 +280,13 @@ class TestStartBoundIsSynced:
                 db.session, seed_user, to_account=acct,
             )
             db.session.commit()
-            assert template.recurrence_rule.day_of_month is None
+            assert scheduling_day_of_month(template.recurrence_rule) is None
 
             loan_recurrence_sync.sync_recurring_payment_bounds(acct.id)
 
-            assert template.recurrence_rule.start_date == date(2026, 5, 1)
-            assert template.recurrence_rule.day_of_month is None
+            assert template.recurrence_rule.starts_on == date(2026, 4, 24)
+            assert template.recurrence_rule.nominal_day is None
+            assert scheduling_day_of_month(template.recurrence_rule) is None
 
     def test_the_start_bound_survives_a_missing_baseline_scenario(
         self, app, db, seed_user, seed_periods,
@@ -266,9 +301,11 @@ class TestStartBoundIsSynced:
         loan configured while the baseline was gone (finding G1: a real,
         repairable state) generating payments from the beginning of time.
 
-        NEGATIVE CONTROL: move the ``_sync_start_date`` call below the
+        NEGATIVE CONTROL: move the ``_sync_loan_cadence`` call below the
         ``ctx.scenario is None`` return in ``sync_recurring_payment_bounds`` and
-        this goes red.
+        this goes red.  (It was ``_sync_start_date`` until plan step R7c-b gave
+        the function the whole cadence to keep, and the control named the old
+        symbol for a step after it stopped existing.)
         """
         with app.app_context():
             acct = _upcoming_mortgage(seed_user, db.session, seed_periods)
@@ -284,7 +321,9 @@ class TestStartBoundIsSynced:
             db.session.commit()
 
             loan_recurrence_sync.sync_recurring_payment_bounds(acct.id)
-            assert template.recurrence_rule.start_date == date(2026, 5, 1)
+            # The pay-period normalisation, as in the day-less test above:
+            # the 2026-05-01 installment is billed in period 8's paycheck.
+            assert template.recurrence_rule.starts_on == date(2026, 4, 24)
 
 
 class TestNoPaymentGeneratesBeforeTheLoan:
@@ -298,8 +337,12 @@ class TestNoPaymentGeneratesBeforeTheLoan:
         Pre-C9a this generated 3 pre-origination payments out of 4 (due
         2026-02-01 / 03-01 / 04-01 against a 2026-04-15 closing).
 
-        NEGATIVE CONTROL: drop the ``rule.start_date`` filter from
-        ``recurrence.rule_occurrences`` and this goes red with those three.
+        NEGATIVE CONTROL: move the rule's ``starts_on`` back to the
+        schedule's opening and this goes red with those three.  (It named a
+        ``rule.start_date`` FILTER until plan step R7c-b, and that reading was
+        already two steps stale: since R4a nothing filters -- the walk SEEDS at
+        the first occurrence, so a pre-origination date is never emitted rather
+        than emitted and dropped.)
         """
         acct = _upcoming_mortgage(seed_user, db.session, seed_periods)
         checking = seed_user["account"]
@@ -367,12 +410,13 @@ class TestNoPaymentGeneratesBeforeTheLoan:
         ``effective_from``, which suppresses the rule's ``start_period_id``
         entirely -- so a bound expressed there would be silently discarded and
         the phantom installments would come back on the next template edit.
-        ``start_date`` is filtered in the occurrence walk instead, which no caller
-        can bypass.
+        ``starts_on`` is where the occurrence walk BEGINS instead, which no
+        caller can bypass: since plan step R7c-b it is the cadence's first
+        occurrence, so there is no earlier date for the walk to emit rather
+        than an earlier date it filters out.
 
-        NEGATIVE CONTROL: move the ``start_date`` filter out of
-        the occurrence walk and into ``resolve_generation_plan``'s
-        ``effective_from`` defaulting and this goes red.
+        NEGATIVE CONTROL: seed the occurrence walk at anything below
+        ``resolved.starts_on`` and this goes red.
         """
         acct = _upcoming_mortgage(seed_user, db.session, seed_periods)
         checking = seed_user["account"]
@@ -410,13 +454,28 @@ class TestNoPaymentGeneratesBeforeTheLoan:
         The transfer form offers every active account as a destination, so a
         loan payment can be created here as readily as on the loan page -- but
         this route builds its rule from the FORM, so nothing ever handed it the
-        loan's ``start_date``.  Measured unbounded: 3 pre-origination
+        loan's first installment.  Measured unbounded: 3 pre-origination
         installments (2026-02-01 / 03-01 / 04-01), byte-for-byte the defect the
         loan route produced, on a path ``sync_recurring_payment_bounds`` never
         touches because it runs at loan mutations, not transfer creations.
 
-        NEGATIVE CONTROL: remove the ``bind_rule_to_loan`` call from
-        ``_materialize_initial_transfers`` and those three come back.
+        **The form's own "Starts on" is OVERWRITTEN here, deliberately.**  The
+        posted payload carries today (2026-03-20, what a create form opens on),
+        and ``bind_rule_to_loan`` replaces it with the loan's contract -- which
+        is the rule ``LOAN_PAYMENT_BOUND_IS_DERIVED`` states on the EDIT path,
+        where the control renders locked so the user is never asked for a value
+        the app is going to discard.  What this test pins is that the SERVER
+        wins whatever the client posts, which is what makes the lock a
+        presentation choice rather than the enforcement.
+
+        NEGATIVE CONTROL: remove the ``settle_first_occurrence`` call from
+        ``transfers.templates._settle_create_references`` and those three come
+        back.  It named ``bind_rule_to_loan`` until plan step R7c-b, and that
+        control is now FALSE: the derivation moved AHEAD of the rule being
+        built (developer ruling 2026-08-15, so nothing is authored and then
+        replaced), and the sync that runs afterwards finds the date already
+        right.  A negative control that no longer fires is worse than none --
+        it reports a guard as tested.
         """
         acct = _upcoming_mortgage(seed_user, db.session, seed_periods)
         checking = seed_user["account"]
@@ -436,7 +495,6 @@ class TestNoPaymentGeneratesBeforeTheLoan:
             "default_amount": "1200.00",
             "category_id": str(category.id),
             **monthly,
-            "day_of_month": "1",
         })
         assert resp.status_code == 302
 
@@ -447,7 +505,7 @@ class TestNoPaymentGeneratesBeforeTheLoan:
             .all()
         )
         assert [x.due_date for x in xfers] == [date(2026, 5, 1)]
-        assert xfers[0].template.recurrence_rule.start_date == date(2026, 5, 1)
+        assert xfers[0].template.recurrence_rule.starts_on == date(2026, 5, 1)
 
     def test_a_non_loan_destination_is_left_unbounded(
         self, auth_client, seed_user, db, seed_periods,
@@ -455,8 +513,15 @@ class TestNoPaymentGeneratesBeforeTheLoan:
         """The bind is a no-op for every non-loan destination.
 
         ``bind_rule_to_loan`` is called unconditionally on the generic route, so
-        it must not invent a bound for an ordinary savings transfer -- which
-        would clip the user's own schedule.
+        it must not overwrite an ordinary savings transfer's start -- which
+        would move the user's own schedule onto a loan's contract.
+
+        **"Unbounded" is no longer expressible as a NULL** (plan step R7c-b
+        made ``starts_on`` ``NOT NULL``), and the honest statement is stronger:
+        the rule keeps exactly what the FORM authored.  ``cadence_payload``
+        posts what a create form opens on -- today, 2026-03-20 on this suite's
+        frozen clock -- so the first monthly occurrence is that date and not
+        the loan-derived 2026-05-01.
         """
         savings = create_account_of_type(
             seed_user, db.session, "Savings", "Sav",
@@ -478,7 +543,6 @@ class TestNoPaymentGeneratesBeforeTheLoan:
             "default_amount": "100.00",
             "category_id": str(category.id),
             **monthly,
-            "day_of_month": "1",
         })
 
         xfers = (
@@ -488,9 +552,12 @@ class TestNoPaymentGeneratesBeforeTheLoan:
             .all()
         )
         assert xfers
-        assert xfers[0].template.recurrence_rule.start_date is None
-        # Unbounded, so the whole window generates -- nothing clipped.
-        assert xfers[0].due_date == date(2026, 2, 1)
+        rule = xfers[0].template.recurrence_rule
+        assert rule.starts_on == display_today()
+        # The form's own date, untouched by the bind: the first occurrence is
+        # what the user asked for, not the loan contract of a loan they do not
+        # have.
+        assert xfers[0].due_date == display_today()
 
     def test_an_already_originated_loan_generates_normally(
         self, auth_client, seed_user, db, seed_periods,
@@ -529,3 +596,363 @@ class TestNoPaymentGeneratesBeforeTheLoan:
             date(2026, 2, 1), date(2026, 3, 1),
             date(2026, 4, 1), date(2026, 5, 1),
         ]
+
+
+class TestTheCreateFormNeverAsksForADateItDiscards:
+    """Plan step R7c-b's create-side half of ``LOAN_PAYMENT_BOUND_IS_DERIVED``.
+
+    The edit form has rendered a loan payment's "Starts on" locked since plan
+    step R7b-4, because the app derives it.  The CREATE form could not: the
+    destination is chosen in the form, so the server does not know at render
+    whether the definition will be a loan payment.  It asked anyway, and threw
+    the answer away -- measured on the case above, where the form posts today
+    and the rule stores the first installment.
+
+    Plan step R7c-b closes it at the door
+    (``_transfer_creation_helpers.settle_first_occurrence``): a loan
+    destination's first occurrence is DERIVED before the rule is built, so
+    nothing is authored and replaced, and the form's control is locked by
+    ``recurrence_form.js`` rather than asked.  The two cases here are the two
+    sides of that: what a loan destination does with an unstated start, and
+    what everything else does.
+    """
+
+    def _post_a_monthly_transfer(self, auth_client, seed_user, db, to_account):
+        """POST /transfers with a MONTHLY cadence and NO ``starts_on``.
+
+        What a locked control produces: the field is disabled, so the browser
+        sends no key at all -- which is a different submission from sending a
+        blank one, and the distinction is the whole of the 2026-08-15 ruling.
+
+        Args:
+            auth_client: The signed-in test client.
+            seed_user: The owner fixture.
+            db: The session fixture.
+            to_account: The destination :class:`Account`.
+
+        Returns:
+            The Flask response.
+        """
+        category = Category(
+            user_id=seed_user["user"].id,
+            group_name="Debt", item_name="Mortgage",
+        )
+        db.session.add(category)
+        db.session.commit()
+
+        with auth_client.application.app_context():
+            monthly = cadence_payload(
+                unit=RecurrenceUnitEnum.MONTH, states_a_start=False,
+            )
+        return auth_client.post("/transfers", data={
+            "name": f"To {to_account.name}",
+            "from_account_id": str(seed_user["account"].id),
+            "to_account_id": str(to_account.id),
+            "default_amount": "1200.00",
+            "category_id": str(category.id),
+            **monthly,
+        })
+
+    def test_a_loan_destination_derives_the_start_it_was_not_given(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """No ``starts_on`` posted, and the loan's own contract supplies it.
+
+        NEGATIVE CONTROL: drop the ``params is not None`` branch from
+        ``settle_first_occurrence`` and this fails on the refusal instead --
+        the submission a locked control produces would be unsavable.
+        """
+        acct = _upcoming_mortgage(seed_user, db.session, seed_periods)
+        db.session.commit()
+
+        resp = self._post_a_monthly_transfer(
+            auth_client, seed_user, db, acct,
+        )
+        assert resp.status_code == 302
+
+        xfer = (
+            db.session.query(Transfer)
+            .filter(Transfer.to_account_id == acct.id)
+            .first()
+        )
+        # One month after the 2026-04-15 closing, on payment day 1 -- the same
+        # date the loan page's own create route writes.
+        assert xfer.template.recurrence_rule.starts_on == date(2026, 5, 1)
+
+    def test_a_non_loan_destination_still_has_to_state_one(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The requirement did not lapse, it moved to where it can be judged.
+
+        ``TransferTemplateCreateSchema`` stopped requiring a first occurrence
+        because a schema never learns which accounts are loans.  For every
+        other destination the rule is unchanged, and it is a MONEY rule: an
+        unstated start used to resolve to the schedule's opening, and the
+        create routes generate over every period the owner has, so a $2,000.00
+        rent wrote five backdated rows into pay periods that had already
+        closed.
+
+        NEGATIVE CONTROL: delete the refusal arm of
+        ``settle_first_occurrence`` and this saves instead of redirecting.
+        """
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "Sav",
+            anchor_balance=Decimal("100.00"),
+        )
+        db.session.commit()
+
+        resp = self._post_a_monthly_transfer(
+            auth_client, seed_user, db, savings,
+        )
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/transfers/new")
+        assert not (
+            db.session.query(Transfer)
+            .filter(Transfer.to_account_id == savings.id)
+            .all()
+        ), "a submission naming no first occurrence must persist nothing"
+
+
+class TestAMonthEndLoanKeepsItsMonthEnd:
+    """``loan_cadence_start`` asks the READER's question (plan step R7c-b).
+
+    ``nominal_day`` is what stops a servicer's day-31 payment decaying to the
+    30th forever when the first installment lands in a 30-day month.  Whether a
+    cadence can carry one is a property of the UNIT --
+    :func:`~app.services.recurrence.has_day_of_month_coordinate`, which
+    :func:`~app.services.recurrence.offerable_nominal_days` and
+    :attr:`ResolvedRecurrence.day_of_month` both read.
+
+    The producer asked a DIFFERENT question: ``fires_on_day_of_month``, which
+    answers whether a generated ROW is dated from a day of the month (it read
+    an ANCHOR FAMILY router until plan step R8-a, which deleted it).  The two agree everywhere except ``Monthly First``, whose
+    occurrences ARE days of the month even though its anchor is a paycheck --
+    so under that placement the producer recorded no nominal day and the reader
+    then answered the CLAMPED day.
+    """
+
+    #: ``(label, placement)``: both placements a MONTH-unit loan payment can
+    #: carry.  Swept rather than sampled because the defect was visible on
+    #: exactly one of them, and a case fixed on the wrong one passes.
+    _PLACEMENTS = (
+        ("the paycheck covering the date", PeriodPlacementEnum.CONTAINING_DATE),
+        (
+            "the first paycheck on or after",
+            PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+        ),
+    )
+
+    @pytest.mark.parametrize("label,placement", _PLACEMENTS)
+    def test_a_day_31_payment_records_its_nominal_day(
+        self, app, seed_user, db, label, placement,  # pylint: disable=unused-argument
+    ):
+        """Originate 2026-03-10 with ``payment_day`` 31: April clamps it to 30.
+
+        ``first_installment_date`` answers the ``payment_day`` of the month
+        AFTER origination, so 2026-04-30 -- April's last day, and one the month
+        was too short to hold 31 on.  The pair must therefore be
+        ``(2026-04-30, 31)``, which is what keeps May's occurrence on the 31st.
+
+        Under ``Monthly First`` the producer used to answer ``nominal_day
+        None`` here, and the reader then said day 30 -- moving the FUNDING
+        PAYCHECK a period early in every month whose schedule puts a payday on
+        the 30th, on a mortgage-sized debit, for the life of the loan.
+        """
+        with app.app_context():
+            params = SimpleNamespace(
+                origination_date=date(2026, 3, 10),
+                payment_day=31,
+                account_id=1,
+            )
+
+            start = loan_recurrence_sync.loan_cadence_start(
+                RecurrenceUnitEnum.MONTH, params,
+            )
+
+            assert start.starts_on == date(2026, 4, 30), label
+            assert start.nominal_day == 31, label
+
+    @pytest.mark.parametrize("label,placement", _PLACEMENTS)
+    def test_the_reader_then_answers_the_day_the_contract_names(
+        self, app, seed_user, db, label, placement,  # pylint: disable=unused-argument
+    ):
+        """The half that makes the pair matter: what the walk reads back.
+
+        Asserting only the stored pair would leave this passing against a
+        reader that ignored it.  ``ResolvedRecurrence.day_of_month`` is the ONE
+        place ``starts_on``'s day and ``nominal_day`` are joined, and it is
+        what the occurrence walk clamps into each month.
+        """
+        with app.app_context():
+            params = SimpleNamespace(
+                origination_date=date(2026, 3, 10),
+                payment_day=31,
+                account_id=1,
+            )
+            start = loan_recurrence_sync.loan_cadence_start(
+                RecurrenceUnitEnum.MONTH, params,
+            )
+
+            resolved = resolve(
+                RecurrenceSpec(
+                    user_id=seed_user["user"].id,
+                    unit=RecurrenceUnitEnum.MONTH,
+                    placement=placement,
+                    starts_on=start.starts_on,
+                    nominal_day=start.nominal_day,
+                ),
+                calendar_for(seed_user["user"].id),
+            )
+
+            assert resolved.day_of_month == 31, label
+
+    def test_a_paycheck_cadence_records_NO_nominal_day(
+        self, app, seed_user, db,  # pylint: disable=unused-argument
+    ):
+        """The control: the drop is conditional on the unit, not general.
+
+        A loan payment that bills by PAYCHECK has no day-of-month coordinate at
+        all -- ``resolve`` normalises the installment onto the paycheck hosting
+        it -- so there is no contractual day to keep, and recording one would
+        be a pair ``RecurrenceSpec`` refuses at construction.  Without this arm
+        a producer that recorded ``payment_day`` unconditionally would pass
+        every case above.
+        """
+        with app.app_context():
+            params = SimpleNamespace(
+                origination_date=date(2026, 3, 10),
+                payment_day=31,
+                account_id=1,
+            )
+
+            start = loan_recurrence_sync.loan_cadence_start(
+                RecurrenceUnitEnum.PERIOD, params,
+            )
+
+            assert start.nominal_day is None
+
+    def test_a_day_the_installment_month_HELD_records_nothing(
+        self, app, seed_user, db,  # pylint: disable=unused-argument
+    ):
+        """The second control: a day no month clamped is not a nominal day.
+
+        ``payment_day`` 15 originating 2026-03-10 first bills 2026-04-15, which
+        April holds -- so the date already says which day the rule fires on and
+        a nominal day beside it would be the second representation ruling
+        R-R16 removes (and one ``ck_recurrence_rules_nominal_day`` refuses).
+        """
+        with app.app_context():
+            params = SimpleNamespace(
+                origination_date=date(2026, 3, 10),
+                payment_day=15,
+                account_id=1,
+            )
+
+            start = loan_recurrence_sync.loan_cadence_start(
+                RecurrenceUnitEnum.MONTH, params,
+            )
+
+            assert start.starts_on == date(2026, 4, 15)
+            assert start.nominal_day is None
+
+
+class TestALoanCreateMayNotStopBeforeTheDerivedStart:
+    """The CREATE door's half of the window rule (plan step R7c-b).
+
+    ``require_end_bound_after_start`` runs inside the schema's ``@post_load``
+    and early-returns when ``starts_on`` is absent -- which is exactly what a
+    loan destination's submission looks like, because the form locks that
+    control and a disabled input posts nothing.  The route then DERIVES the
+    date from the loan's contract, after validation has finished, so any past
+    "Ends on" passed every validator and reached the write door beside a start
+    it had never been compared to.
+
+    The "Ends" control is NOT locked on the create form -- the server does not
+    know the destination at render -- so the form invites this.
+    """
+
+    def _post_a_bounded_monthly_transfer(
+        self, auth_client, seed_user, db, to_account, ends_on,
+    ):
+        """POST /transfers with a MONTHLY cadence, no start, and *ends_on*.
+
+        Args:
+            auth_client: The signed-in test client.
+            seed_user: The owner fixture.
+            db: The session fixture.
+            to_account: The destination :class:`Account`.
+            ends_on: The closing date to state.
+
+        Returns:
+            The Flask response.
+        """
+        category = Category(
+            user_id=seed_user["user"].id,
+            group_name="Debt", item_name="Mortgage bound",
+        )
+        db.session.add(category)
+        db.session.commit()
+
+        with auth_client.application.app_context():
+            monthly = cadence_payload(
+                unit=RecurrenceUnitEnum.MONTH, states_a_start=False,
+            )
+        return auth_client.post("/transfers", data={
+            "name": f"To {to_account.name} bounded",
+            "from_account_id": str(seed_user["account"].id),
+            "to_account_id": str(to_account.id),
+            "default_amount": "1200.00",
+            "category_id": str(category.id),
+            "recurrence_end_mode": "on_date",
+            "end_date": ends_on.isoformat(),
+            **monthly,
+        })
+
+    def test_an_end_before_the_derived_first_installment_is_refused(
+        self, auth_client, seed_user, db, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """A past "Ends on" beside a loan destination, refused at the door.
+
+        The loan originates 2026-04-15 with ``payment_day`` 1, so the derived
+        first installment is 2026-05-01; an end of 2026-01-01 is before it.
+        The rule such a submission would author names no occurrence at all.
+        """
+        loan = create_loan_account(
+            seed_user, db.session, origination_date=ORIGINATION,
+            principal=PRINCIPAL, payment_day=1,
+        )
+        db.session.commit()
+
+        resp = self._post_a_bounded_monthly_transfer(
+            auth_client, seed_user, db, loan, date(2026, 1, 1),
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/transfers/new")
+        assert not (
+            db.session.query(Transfer)
+            .filter(Transfer.to_account_id == loan.id)
+            .all()
+        ), "a submission stating an impossible window must persist nothing"
+
+    def test_an_end_AFTER_it_still_saves(
+        self, auth_client, seed_user, db, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """The control, and it is what stops the door refusing every loan create.
+
+        Without this arm a comparison inverted the wrong way -- or one that
+        refused whenever a bound was stated at all -- would pass the refusal
+        above while making a bounded loan payment uncreatable.
+        """
+        loan = create_loan_account(
+            seed_user, db.session, origination_date=ORIGINATION,
+            principal=PRINCIPAL, payment_day=1,
+        )
+        db.session.commit()
+
+        resp = self._post_a_bounded_monthly_transfer(
+            auth_client, seed_user, db, loan, date(2030, 1, 1),
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/transfers")

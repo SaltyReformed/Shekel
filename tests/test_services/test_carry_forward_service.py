@@ -46,6 +46,7 @@ from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.row_valuation import owned_contribution
+from tests._test_helpers import make_every_period_rule
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
@@ -1060,14 +1061,11 @@ class TestCarryForwardOverrideSibling:
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
             )
-            rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
-                pattern_id=pattern.id,
-                interval_n=1,
-                offset_periods=0,
-            )
-            db.session.add(rule)
-            db.session.flush()
+            # Authored through the write door (plan step R7c-b): the
+            # two-axis columns are NOT NULL, so a rule naming only a pattern
+            # cannot be stored.  It starts on the schedule's opening payday,
+            # which is where an unbounded rule always resolved to.
+            rule = make_every_period_rule(db.session, seed_user["user"].id)
 
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
@@ -1252,14 +1250,11 @@ class TestCarryForwardOverrideSiblingTransfers:
                 .filter_by(name=RecurrencePatternEnum.EVERY_PERIOD.value)
                 .one()
             )
-            rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
-                pattern_id=pattern.id,
-                interval_n=1,
-                offset_periods=0,
-            )
-            db.session.add(rule)
-            db.session.flush()
+            # Authored through the write door (plan step R7c-b): the
+            # two-axis columns are NOT NULL, so a rule naming only a pattern
+            # cannot be stored.  It starts on the schedule's opening payday,
+            # which is where an unbounded rule always resolved to.
+            rule = make_every_period_rule(db.session, seed_user["user"].id)
 
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
@@ -1346,12 +1341,7 @@ def _create_envelope_template(
             .filter_by(name=RecurrencePatternEnum.EVERY_PERIOD.value)
             .one()
         )
-        rule = RecurrenceRule(
-            user_id=seed_user["user"].id,
-            pattern_id=every_period_pattern.id,
-        )
-        db.session.add(rule)
-        db.session.flush()
+        rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -1406,7 +1396,7 @@ def _add_entry(txn, seed_user, amount, *, description="Test purchase",
     from datetime import date as _date  # local import keeps top clean
 
     entry = TransactionEntry(
-        transaction_id=txn.id,
+        transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description=description,

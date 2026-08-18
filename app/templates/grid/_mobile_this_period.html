@@ -15,19 +15,29 @@
      - the companion route in Commit 13 (shared partial per
        design decision D-B in the mobile-first v3 plan).
 
+   Every period below is a `DerivedPeriod` since plan step C2-f2b -- the
+   owner's grid reads them off the read pass's own pay calendar, and the
+   companion route off the linked owner's.  Their identity is `period_id`
+   and never `.id`: that type carries no `.id` alias by ruling, because the
+   same type also expresses a PROJECTED period whose id is `None` (ledger
+   row P21), and an alias would put that nullable behind the name a
+   template trusts most.
+
    Expected Jinja context (* required):
-     periods *           -- list[PayPeriod]; this partial uses
+     periods *           -- the visible `PeriodWindow` (companion passes a
+                            one-element list); this partial uses
                             `periods[0]` (the leftmost visible period;
                             equals `current_period` when
                             `start_offset == 0`).
-     current_period *    -- PayPeriod; the period containing today.
+     current_period *    -- DerivedPeriod; the period containing the read
+                            pass's `as_of`.
                             Anchors the offsets emitted by the
                             jump-to <select> (each option's `value`
                             is `p.period_index - current_period.period_index`,
                             mirroring the desktop selector convention
                             at `grid/grid.html:24-49`).
-     all_periods *       -- list[PayPeriod] in `period_index` order;
-                            the option list for the jump-to <select>.
+     all_periods *       -- the owner's whole saved `PeriodWindow`, in payday
+                            order; the option list for the jump-to <select>.
      start_offset *      -- int; offset of `periods[0]` relative to
                             `current_period.period_index`. Drives the
                             prev / next arrow hrefs.
@@ -69,8 +79,8 @@
                             the whole summary block are gracefully
                             omitted; row cards still render.  When
                             defined but missing the key for
-                            `period.id`, the Projected Balance card is
-                            gracefully omitted.
+                            `period.period_id`, the Projected Balance card
+                            is gracefully omitted.
      period_row_flags    -- (optional) GridRowFlags for `periods[0]`, the
                             ONE period this partial renders, forwarded to the
                             summary partial for ruling R-O / R-P's FOUR
@@ -110,7 +120,7 @@
 {% set can_edit = can_edit | default(True) %}
 {% set show_period_nav = show_period_nav | default(True) %}
 
-<div data-period-id="{{ period.id }}">
+<div data-period-id="{{ period.period_id }}">
 
   {% if show_period_nav %}
   {# --- Period Navigation Header --
@@ -159,7 +169,7 @@
       {% for p in all_periods %}
         {% set p_offset = p.period_index - current_period.period_index %}
         <option value="{{ p_offset }}"
-                {{ 'selected' if p.id == period.id else '' }}>
+                {{ 'selected' if p.period_id == period.period_id else '' }}>
           {{ p.label }} ({{ p.start_date.strftime('%-m/%-d/%y') }})
         </option>
       {% endfor %}
@@ -170,21 +180,21 @@
   {# --- Income Section (collapsible) --- #}
   <div class="card mb-3">
     <div class="card-header d-flex justify-content-between align-items-center py-2 mobile-section-income"
-         data-bs-toggle="collapse" data-bs-target="#mobile-tp-income-{{ period.id }}"
-         aria-expanded="true" aria-controls="mobile-tp-income-{{ period.id }}">
+         data-bs-toggle="collapse" data-bs-target="#mobile-tp-income-{{ period.period_id }}"
+         aria-expanded="true" aria-controls="mobile-tp-income-{{ period.period_id }}">
       <span class="fw-bold small text-uppercase">
         <i class="bi bi-chevron-down me-1"></i> Income
       </span>
-      {% if columns is defined and columns.get(period.id) is not none %}
+      {% if columns is defined and columns.get(period.period_id) is not none %}
         {# Span id lets the self-refreshing _mobile_tp_summary partial
            update this header total out-of-band on mobileCardSettled. #}
-        <span id="mobile-tp-income-total-{{ period.id }}" class="font-mono fw-bold">
-          {% set inc_total = columns[period.id].income %}
+        <span id="mobile-tp-income-total-{{ period.period_id }}" class="font-mono fw-bold">
+          {% set inc_total = columns[period.period_id].income %}
           {% if inc_total %}{{ money(inc_total, cents=false) }}{% else %}$0{% endif %}
         </span>
       {% endif %}
     </div>
-    <div class="collapse show" id="mobile-tp-income-{{ period.id }}">
+    <div class="collapse show" id="mobile-tp-income-{{ period.period_id }}">
       <ul class="list-group list-group-flush">
         {# S12 category spine, mobile half (D3+D4 ruling): the group
            header is skipped when it restates the section card header
@@ -195,7 +205,7 @@
            consistently across views. #}
         {% set ns_inc = namespace(current_group='', current_item=none) %}
         {% for rk in income_row_keys %}
-          {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+          {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id), []) %}
           {% if matched %}
             {% if rk.group_name != ns_inc.current_group %}
               {% set ns_inc.current_group = rk.group_name %}
@@ -220,7 +230,7 @@
                 {% endif %}
               {% endif %}
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'tp', entry_lists, today) }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, can_edit, 'tp', entry_lists, today) }}
           {% endif %}
         {% endfor %}
       </ul>
@@ -230,27 +240,27 @@
   {# --- Expense Section (collapsible) --- #}
   <div class="card mb-3">
     <div class="card-header d-flex justify-content-between align-items-center py-2 mobile-section-expense"
-         data-bs-toggle="collapse" data-bs-target="#mobile-tp-expense-{{ period.id }}"
-         aria-expanded="true" aria-controls="mobile-tp-expense-{{ period.id }}">
+         data-bs-toggle="collapse" data-bs-target="#mobile-tp-expense-{{ period.period_id }}"
+         aria-expanded="true" aria-controls="mobile-tp-expense-{{ period.period_id }}">
       <span class="fw-bold small text-uppercase">
         <i class="bi bi-chevron-down me-1"></i> Expenses
       </span>
-      {% if columns is defined and columns.get(period.id) is not none %}
+      {% if columns is defined and columns.get(period.period_id) is not none %}
         {# Span id lets the self-refreshing _mobile_tp_summary partial
            update this header total out-of-band on mobileCardSettled. #}
-        <span id="mobile-tp-expense-total-{{ period.id }}" class="font-mono fw-bold">
-          {% set exp_total = columns[period.id].expense %}
+        <span id="mobile-tp-expense-total-{{ period.period_id }}" class="font-mono fw-bold">
+          {% set exp_total = columns[period.period_id].expense %}
           {% if exp_total %}{{ money(exp_total, cents=false) }}{% else %}$0{% endif %}
         </span>
       {% endif %}
     </div>
-    <div class="collapse show" id="mobile-tp-expense-{{ period.id }}">
+    <div class="collapse show" id="mobile-tp-expense-{{ period.period_id }}">
       <ul class="list-group list-group-flush">
         {# S12 category spine, mobile half -- same structure as the
            income list above. #}
         {% set ns_exp = namespace(current_group='', current_item=none) %}
         {% for rk in expense_row_keys %}
-          {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.id), []) %}
+          {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id), []) %}
           {% if matched %}
             {% if rk.group_name != ns_exp.current_group %}
               {% set ns_exp.current_group = rk.group_name %}
@@ -275,7 +285,7 @@
                 {% endif %}
               {% endif %}
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, can_edit, 'tp', entry_lists, today) }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, can_edit, 'tp', entry_lists, today) }}
           {% endif %}
         {% endfor %}
       </ul>

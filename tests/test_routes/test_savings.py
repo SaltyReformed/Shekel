@@ -36,6 +36,7 @@ from app.services import balance_at, pay_period_write, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
+    make_pattern_rule,
     create_hysa_account,
     create_loan_account,
     freeze_today,
@@ -283,14 +284,9 @@ def _create_recurrence_rule(seed_user, pattern_enum, interval_n=1):
     Returns:
         RecurrenceRule: the new rule, flushed for id assignment.
     """
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=ref_cache.recurrence_pattern_id(pattern_enum),
-        interval_n=interval_n,
+    return make_pattern_rule(
+        seed_user["user"].id, pattern_enum, interval_n=interval_n,
     )
-    db.session.add(rule)
-    db.session.flush()
-    return rule
 
 
 def _create_expense_template(seed_user, rule, amount, name="Test Expense",
@@ -2894,15 +2890,9 @@ class TestTrajectoryDisplay:
         with app.app_context():
             acct = _create_savings_account(seed_user)
 
-            monthly_pattern_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.MONTHLY
+            rule = make_pattern_rule(
+                seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
             )
-            rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
-                pattern_id=monthly_pattern_id,
-            )
-            db.session.add(rule)
-            db.session.flush()
 
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
@@ -3016,15 +3006,9 @@ class TestTrajectoryDisplay:
         with app.app_context():
             acct = _create_savings_account(seed_user)
 
-            biweekly_pattern_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.EVERY_PERIOD
+            rule = make_pattern_rule(
+                seed_user["user"].id, RecurrencePatternEnum.EVERY_PERIOD,
             )
-            rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
-                pattern_id=biweekly_pattern_id,
-            )
-            db.session.add(rule)
-            db.session.flush()
 
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
@@ -3147,6 +3131,7 @@ class TestDebtSummaryDisplay:
         """
         # pylint: disable=import-outside-toplevel
         from tests._test_helpers import (
+    make_pattern_rule,
             create_account_of_type, create_loan_account,
         )
 
