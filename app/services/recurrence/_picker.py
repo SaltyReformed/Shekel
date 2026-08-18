@@ -20,9 +20,11 @@ ruling 2026-08-12).
 with it.  The binding constraint used to be storage: ``budget.recurrence_rules``
 named its cadence with a closed pattern set, so ``(2, MONTH)`` walked correctly
 and had nowhere to be written.  With ``unit_id`` and ``interval_n`` authored
-columns every reading can be stored, and what is left is whether a first
-occurrence can be DERIVED -- which is
-:func:`~app.services.recurrence._frequency.anchor_family`'s question.  Three
+columns every reading can be stored, and what is left is whether the
+application can HONOUR it -- which since plan step R8-a is
+:func:`~app.services.recurrence._frequency.authorable_cadences`' two derived
+rules, replacing the ``anchor_family`` router that gated it on
+first-occurrence derivations ruling **R-R16** had already deleted.  Three
 consequences here:
 
 * **the interval is a free number box for every unit.**  ``fixed_intervals``
@@ -37,12 +39,13 @@ consequences here:
   interval, which is plan ledger row **D32**'s measured defect ceasing to
   exist rather than being warned about;
 * **the "Funded from" row is always RENDERED** (developer ruling 2026-08-16,
-  the rest of D32).  Two cadences still admit one placement -- the ``PERIOD``
+  the rest of D32).  ONE cadence still admits one placement -- the ``PERIOD``
   unit, where it is inert
-  (:func:`~app.services.recurrence._frequency.emits_period_starts`), and the
-  ``YEAR`` unit, whose first-paycheck anchor is plan step R8's -- and hiding
-  the row for them is what let a funding rule change with nothing on screen
-  saying so.
+  (:func:`~app.services.recurrence._frequency.emits_period_starts`) -- and
+  hiding the row for it is what let a funding rule change with nothing on
+  screen saying so.  It was TWO until plan step **R8-a**, which admitted the
+  ``YEAR`` unit's deferring reading; the row's two help sentences are unchanged
+  and only the set each applies to moved.
 
 **A flat list of pairs, not a nested tree**, and the shape is a DRY decision
 rather than a convenience.  The form needs two linked answers -- which units,
@@ -70,8 +73,8 @@ from app.services.recurrence._frequency import (
     CadenceReading,
     authorable_cadences,
     fires_on_day_of_month,
+    has_day_of_month_coordinate,
 )
-from app.services.recurrence._resolution import has_day_of_month_coordinate
 
 #: What each cadence UNIT is called on the form, singular and plural.
 #:
@@ -83,10 +86,12 @@ from app.services.recurrence._resolution import has_day_of_month_coordinate
 #: Keyed by enum member, so a unit added to
 #: :class:`~app.enums.RecurrenceUnitEnum` without copy raises ``KeyError`` at
 #: the first render rather than shipping a blank option.  ``WEEK`` is absent
-#: DELIBERATELY: no closed-set pattern stores it, so
-#: :func:`~app.services.recurrence._frequency.authorable_cadences` never yields
-#: it and this map is never asked.  Plan step R8 is its first writer and adds
-#: the copy with the pattern that stores it.
+#: DELIBERATELY, and since plan step R8-a the reason is a LIVE one:
+#: :func:`~app.services.recurrence._frequency.has_row_date_coordinate` keeps the
+#: unit out of the offer set because ``recurrence_engine.compute_due_date`` has
+#: no way to date a weekly row, so this map is never asked for it.  Plan step
+#: **R5** deletes that function; the leaf that adds the copy is the one that
+#: makes the unit authorable.
 _UNIT_LABELS: dict[RecurrenceUnitEnum, tuple[str, str]] = {
     RecurrenceUnitEnum.PERIOD: ("paycheck", "paychecks"),
     RecurrenceUnitEnum.MONTH: ("month", "months"),
@@ -126,19 +131,30 @@ class CadenceWire:
     Attributes:
         unit_id: The ``ref.recurrence_units`` id the form posts.
         placement_id: The ``ref.period_placements`` id the form posts.
-        anchors_day_of_month: Whether this cadence's ANCHOR is derived from a
-            day of the month, which is what decides whether the form shows its
-            Due Day input.  Answered by the anchor router itself
-            (:func:`~app.services.recurrence._frequency.fires_on_day_of_month`)
+        schedules_on_day_of_month: Whether a row generated from this cadence is
+            DATED from a day of the month, which is what decides whether the
+            form shows its Due Day input -- that field states the servicer's
+            date only where the cadence has a scheduling day to differ from.
+            Answered by
+            :func:`~app.services.recurrence._frequency.fires_on_day_of_month`
             rather than by a unit test the script could repeat, because it is
             a property of the ``(unit, placement)`` PAIR: a monthly cadence
-            funded from the month's first paycheck anchors on a PAYCHECK.
+            funded from the month's first paycheck dates its rows from the
+            PAYCHECK.
+
+            **It was ``anchors_day_of_month`` until plan step R8-a**, named for
+            the anchor-family router that answered it; that router selected
+            between first-occurrence derivations ruling **R-R16** deleted, and
+            the name outlived the concept.  The fact and its producer are
+            unchanged -- what moved is that the wire now says what the value
+            decides, in the same word ``scheduling_day_of_month`` uses to
+            answer it for a STORED rule.
         has_day_of_month_coordinate: Whether occurrences land on a day of the
             month at all, which is what decides whether the "repeating on"
             control has anything to ask.  **Not the same fact as the one
-            above**, and shipping only that one was a wrong-money defect this
-            step introduced: ``anchors_day_of_month`` is ``False`` for
-            ``Monthly First`` while its occurrences ARE days of the month, so
+            above**, and shipping only that one was a wrong-money defect plan
+            step R7c-b introduced: this one is ``True`` for ``Monthly First``
+            where the one above is ``False``, so
             the script cleared and disabled a control the SERVER had rendered
             enabled -- and the update door reads ``nominal_day`` off the same
             presence key as ``starts_on``, so changing only "Funded from" on a
@@ -152,7 +168,7 @@ class CadenceWire:
 
     unit_id: int
     placement_id: int
-    anchors_day_of_month: bool
+    schedules_on_day_of_month: bool
     has_day_of_month_coordinate: bool
 
 
@@ -223,7 +239,7 @@ def cadence_options() -> tuple[CadenceOption, ...]:
                     placement_id=ref_cache.period_placement_id(
                         cadence.placement,
                     ),
-                    anchors_day_of_month=fires_on_day_of_month(
+                    schedules_on_day_of_month=fires_on_day_of_month(
                         cadence.unit, cadence.placement,
                     ),
                     has_day_of_month_coordinate=(

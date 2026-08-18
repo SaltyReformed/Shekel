@@ -295,7 +295,9 @@ class TestBuildRecurrenceRuleFromForm:
         Uses EVERY_PERIOD so the every-N phase derivation is skipped and the
         helper exercises the straight RecurrenceRule construction path.  Named
         the ``Once`` pattern for the same reason until plan step R2e-3 retired
-        it; EVERY_PERIOD is the surviving member of the same anchor family.
+        it; EVERY_PERIOD is the surviving cadence in pay-period space, which is
+        what both had in common.  (That was worded "the same anchor family"
+        until plan step R8-a deleted the router the phrase named.)
         """
         with app.test_request_context():
             data = {

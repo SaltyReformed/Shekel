@@ -154,9 +154,15 @@ def validate_authorable_cadence(data):
     STORAGE: the set covered every N pay periods but only 1, 3 or 6 months, and
     paired the first-paycheck placement with a ONE-month interval only.  With
     ``interval_n`` and ``unit_id`` authored columns every reading can be stored,
-    so what is left is whether a first occurrence can be DERIVED for the
-    ``(unit, placement)`` PAIR -- the ``WEEK`` unit, and a YEAR-scale cadence
-    deferred onto a month's first paycheck, both plan step R8's.  **The
+    so what is left is whether the application can HONOUR the
+    ``(unit, placement)`` PAIR.  Until plan step **R8-a** that meant "can a
+    first occurrence be DERIVED", which refused two pairs by naming derivations
+    ruling **R-R16** had already deleted; it is the two live rules
+    :func:`~app.services.recurrence.authorable_cadences` states now, and the
+    only reading still refused is the ``WEEK`` unit -- whose occurrences are
+    neither paydays nor days of the month, so
+    ``recurrence_engine.compute_due_date`` has nothing to date its rows from
+    until plan step **R5** gives a generated row its own ``occurs_on``.  **The
     interval is no longer able to make a cadence unauthorable**, which is what
     the refusal's own copy had to stop saying.
 

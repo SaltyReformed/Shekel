@@ -4337,3 +4337,60 @@ class TestDueDateGeneration:
                 rule_every, period,
             )
             assert result == date(2026, 3, 13)
+
+    def test_this_function_is_why_the_WEEK_unit_is_unofferable(self, app, db):
+        """The tie between the offer set's rule and this function's two sources.
+
+        **``_frequency.has_row_date_coordinate`` exists for THIS function**, and
+        until this case nothing but a docstring said so -- which an adversarial
+        review of plan step R8-a named as the coupling's weak point: if a later
+        step gave ``compute_due_date`` a third date source, that predicate
+        would go on withholding the ``WEEK`` unit with every gate green.
+
+        The two sources are all there are, and the assertions below are them:
+        the rule's scheduling DAY OF THE MONTH, and -- when it has none -- the
+        funding paycheck's own ``start_date``.  For the ``PERIOD`` unit the
+        second IS the occurrence, so a row dated from it carries the date the
+        cadence named.  For the ``WEEK`` unit it is NOT: a weekly occurrence is
+        a calendar date strictly inside its paycheck, so dating from the
+        paycheck discards the authored weekday for the life of the rule.
+
+        That is why the unit is withheld rather than refused at the door, and
+        it is why plan step **R5** -- which gives a generated row its own
+        ``occurs_on`` -- is what deletes both the predicate and this case.
+        """
+        with app.app_context():
+            period = FakePeriod(
+                id=1,
+                start_date=date(2026, 3, 13),
+                end_date=date(2026, 3, 26),
+                period_index=5,
+            )
+            starts_on = date(2026, 1, 20)
+
+            # A hand-edited or restored row naming the WEEK unit: the one way
+            # to reach this state, since the write door and the picker both
+            # refuse the cadence.
+            weekly = build_rule(
+                pattern_name="Monthly", starts_on=starts_on,
+            )
+            weekly.unit_id = ref_cache.recurrence_unit_id(
+                RecurrenceUnitEnum.WEEK,
+            )
+
+            with pytest.raises(
+                RecurrenceResolutionError, match="generated row",
+            ):
+                recurrence_engine.compute_due_date(weekly, period)
+
+            # And what the refusal is standing in front of: the paycheck's own
+            # start, which is not any date a weekly cadence from ``starts_on``
+            # fires on.  Both facts asserted, because the refusal is only worth
+            # having while the fallback would be WRONG.
+            weekly_occurrences = {
+                starts_on + timedelta(days=7 * step) for step in range(60)
+            }
+            assert period.start_date not in weekly_occurrences
+            assert weekly_occurrences & {
+                date(2026, 3, 17), date(2026, 3, 24),
+            } == {date(2026, 3, 17), date(2026, 3, 24)}

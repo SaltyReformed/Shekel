@@ -71,6 +71,7 @@ from app.services.recurrence import (
     RecurrenceGenerationError,
     RecurrenceResolutionError,
     ResolvedRecurrence,
+    has_day_of_month_coordinate,
     occurrence_placements,
     occurrences,
     place,
@@ -1500,19 +1501,26 @@ class TestRefusals:
         **This case used to manufacture the defect and assert the guard; plan
         step R7b-1 deleted both** (adversarial review, 2026-08-12).  There were
         two refusals -- "this unit names no day" and "this unit names a day but
-        has no stride" -- and the second was reachable only when
-        ``_resolution._DAY_OF_MONTH_UNITS`` and ``_months``' month-span table
-        disagreed about which units are calendar units.  Two hand-written
-        statements of one class, and the only way to exercise the guard between
-        them was to monkeypatch them apart, which is what this case did.
+        has no stride" -- and the second was reachable only when the
+        day-of-month unit set and ``_months``' month-span table disagreed about
+        which units are calendar units.  Two hand-written statements of one
+        class, and the only way to exercise the guard between them was to
+        monkeypatch them apart, which is what this case did.
 
-        They are ONE statement now: ``_DAY_OF_MONTH_UNITS`` IS
-        ``MONTH_SPANNING_UNITS``, which is the key set of the table
-        ``months_per_step`` reads.  A unit that names a day of the month
-        therefore has a stride by construction, and the guard that used to say
-        so was a fence over an impossible state.  What replaces it is the
-        identity the proof rests on, which fails the moment either set is
-        written out separately again.
+        They are ONE statement:
+        :func:`~app.services.recurrence.has_day_of_month_coordinate` is a
+        membership test against ``MONTH_SPANNING_UNITS`` itself, which is the
+        key set of the table ``months_per_step`` reads.  A unit that names a day
+        of the month therefore has a stride by construction, and the guard that
+        used to say so was a fence over an impossible state.
+
+        **The intermediate alias went at plan step R8-a.**  R7b-1 left
+        ``_resolution._DAY_OF_MONTH_UNITS = MONTH_SPANNING_UNITS`` -- one
+        statement wearing two names, which this case asserted the identity of;
+        R8-a moved the predicate into ``_frequency`` beside the offer set that
+        reads it and deleted the alias, so there is no second name left to
+        compare and the property is asserted over the PREDICATE instead.  It
+        still fails the moment a separate list is written out again.
 
         The refusal itself is not untested -- ``months_per_step`` still refuses
         a unit with no month span, asserted on the function directly by
@@ -1520,10 +1528,12 @@ class TestRefusals:
         can no longer happen is REACHING it from either of this package's two
         walks.
         """
-        assert (
-            tuple(_resolution._DAY_OF_MONTH_UNITS)  # pylint: disable=protected-access
-            == tuple(_months.MONTH_SPANNING_UNITS)
-        ), (
+        naming_a_day = tuple(
+            unit for unit in RecurrenceUnitEnum
+            if has_day_of_month_coordinate(unit)
+        )
+
+        assert naming_a_day == tuple(_months.MONTH_SPANNING_UNITS), (
             "the day-of-month units and the month-spanning units have been "
             "written out separately again.  While they are one statement, a "
             "cadence that names a day of the month provably has a month "
@@ -1531,8 +1541,8 @@ class TestRefusals:
         )
         # An identity between two EMPTY tuples would satisfy the assert above,
         # so the members are exercised too.
-        assert _months.MONTH_SPANNING_UNITS
-        for unit in _months.MONTH_SPANNING_UNITS:
+        assert naming_a_day
+        for unit in naming_a_day:
             assert _months.months_per_step(unit, 1) >= 1
 
     @pytest.mark.parametrize(
