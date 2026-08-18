@@ -75,8 +75,13 @@ wall-clock drifts linearly. Measured progression starting from a freshly-restart
 
 The slowdown is entirely in `DROP DATABASE WITH (FORCE)`; the fixture profile harness
 (`SHEKEL_TEST_FIXTURE_PROFILE=1`) shows DROP dominating ~80 % of per-test fixture cost in the
-degraded state. `CREATE DATABASE ... TEMPLATE` stays constant at ~5 ms because
-`file_copy_method=clone` is a reflink, independent of catalog state.
+degraded state. `CREATE DATABASE ... TEMPLATE` stays roughly constant, independent of catalog state.
+
+The figures above were measured when the clone used `STRATEGY FILE_COPY`. The clone now uses
+`STRATEGY WAL_LOG`; see `tests/conftest.py::_clone_worker_database` for the measurements that forced
+the change. `FILE_COPY` forces three cluster-wide checkpoints per drop+create cycle against one for
+`WAL_LOG`, which costs nothing on this cluster (`fsync=off`) and 20x on any cluster with durability
+on, including CI until 2026-08-18.
 
 **Cause.** Not on-disk bloat. Verified with `VACUUM`, `VACUUM (FULL)` on `pg_database` /
 `pg_shdepend` / `pg_shseclabel` / `pg_db_role_setting`, and `CHECKPOINT` -- none of them moved DROP
