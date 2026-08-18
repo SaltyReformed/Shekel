@@ -49,7 +49,14 @@ Module map:
   write door.  A fourth subject beside ``anchor``'s assertion, ``reconcile``'s
   outstanding set and ``history``'s record of past assertions -- and the only
   one of them sourced from outside the app.  It RECORDS and does not
-  reconcile; matching a recorded line to the app's own rows is ``X-f6a-2``.
+  reconcile.
+* :mod:`app.routes.accounts.statement_matches` -- What the app DOES about it
+  (plan step ``bank_import:X-f6a-2``, ruling R-FS): the review screen that
+  proposes which of this account's rows each recorded line IS, and the two
+  write doors that accept and release one.  Its boundary against ``statements``
+  is the one ``reconcile`` cuts against ``anchor``: a read of an outside record
+  against the door that acts on it.  **It MOVES MONEY** -- an accepted match
+  writes the bank's posted day onto every row it names.
 * :mod:`app.routes.accounts.types` -- Account-type CRUD for the
   per-user custom catalogue (commit C-28 / F-044).
 * :mod:`app.routes.accounts.detail` -- Per-account detail pages.  The
@@ -89,6 +96,7 @@ from app.routes.accounts import difference  # noqa: F401, E402
 from app.routes.accounts import types  # noqa: F401, E402
 from app.routes.accounts import detail  # noqa: F401, E402
 from app.routes.accounts import statements  # noqa: F401, E402
+from app.routes.accounts import statement_matches  # noqa: F401, E402
 
 
 __all__ = ["accounts_bp"]

@@ -36,13 +36,14 @@ import logging
 
 from flask import flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.enums import StatementSourceEnum
 from app.exceptions import StatementImportError
-from app.extensions import db
-from app.routes._commit_helpers import DbErrorContext, handle_db_error
 from app.routes.accounts._bp import accounts_bp
+from app.routes.accounts._statement_doors import (
+    StatementDoorContext,
+    run_statement_door,
+)
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.schemas.validation.statements import StatementUploadSchema
 from app.services.statement_import import (
@@ -186,22 +187,35 @@ def import_statement(account_id):
     # many times over in list overhead.
     payload = upload.read()
 
-    try:
-        outcome = record_statement(
-            account_id=account.id,
-            user_id=current_user.id,
-            source=source,
-            file_name=upload.filename,
-            payload=payload,
+    def _report(outcome):
+        """Log the business event and return the flash, AFTER the commit.
+
+        The event asserting "a bank statement was recorded" must not sit in the
+        log when the transaction that would have recorded it failed, which is
+        why it is here rather than in the service.
+
+        Args:
+            outcome: The :class:`~app.services.statement_import.ImportOutcome`.
+
+        Returns:
+            ``(message, category)``.
+        """
+        log_event(
+            _logger, logging.INFO, EVT_STATEMENT_IMPORTED, BUSINESS,
+            "Recorded a bank statement.",
+            account_id=account.id, source=source.value,
+            import_id=outcome.import_id,
+            line_count=outcome.line_count,
+            recorded_count=outcome.recorded_count,
+            period_start=outcome.period_start.isoformat(),
+            period_end=outcome.period_end.isoformat(),
         )
-        db.session.commit()
-    except StatementImportError as exc:
-        db.session.rollback()
-        flash(str(exc), "danger")
-        return redirect(target)
-    except SQLAlchemyError:
-        return handle_db_error(DbErrorContext(
+        return _import_flash(outcome)
+
+    return run_statement_door(
+        StatementDoorContext(
             logger=_logger,
+            refusal=StatementImportError,
             log_message=(
                 "user_id=%d failed to import a statement for account %d"
             ),
@@ -210,19 +224,14 @@ def import_statement(account_id):
                 "Something went wrong saving this statement.  Nothing was "
                 "imported."
             ),
-            redirect=target,
-        ))
-
-    log_event(
-        _logger, logging.INFO, EVT_STATEMENT_IMPORTED, BUSINESS,
-        "Recorded a bank statement.",
-        account_id=account.id, source=source.value,
-        import_id=outcome.import_id,
-        line_count=outcome.line_count,
-        recorded_count=outcome.recorded_count,
-        period_start=outcome.period_start.isoformat(),
-        period_end=outcome.period_end.isoformat(),
+            target=target,
+        ),
+        lambda: record_statement(
+            account_id=account.id,
+            user_id=current_user.id,
+            source=source,
+            file_name=upload.filename,
+            payload=payload,
+        ),
+        _report,
     )
-    message, category = _import_flash(outcome)
-    flash(message, category)
-    return redirect(target)

@@ -75,10 +75,12 @@ def _cash_amount(txn: Transaction, booked: Decimal) -> "Decimal | None":
     (``cash_ledger.settled_cash_leg``), and moving the booked figure would make
     the panel disagree with the grid and the analytics.
 
-    Both terms are the cash ledger's own -- ``credit_entry_sum`` and
-    ``posted_purchase_sum`` -- rather than reductions restated here: one rule,
-    one statement, so a change to what either means cannot leave the panel
-    saying the old thing.
+    Both terms are the cash ledger's own, taken as ONE published sum
+    (``cash_ledger.off_statement_sum``) rather than as two additions restated
+    here: one rule, one statement, so a change to what either means cannot
+    leave the panel saying the old thing.  Its other callers are
+    ``cash_ledger.cash_leg_of`` -- and therefore ``settled_cash_leg`` -- and
+    the statement matcher, which asks the same question of a bank line.
 
     Args:
         txn: The row being offered, with ``entries`` loaded.
@@ -92,10 +94,7 @@ def _cash_amount(txn: Transaction, booked: Decimal) -> "Decimal | None":
         envelope, so the card term is latent; the posted term is LIVE, on 2 of
         the 9 posted purchases (`$45.85`) measured 2026-08-14.
     """
-    not_on_this_statement = (
-        cash_ledger.credit_entry_sum(txn)
-        + cash_ledger.posted_purchase_sum(txn)
-    )
+    not_on_this_statement = cash_ledger.off_statement_sum(txn)
     if not not_on_this_statement:
         return None
     return booked - not_on_this_statement

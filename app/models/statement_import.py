@@ -300,6 +300,15 @@ class BankStatementLine(db.Model):
 
     __tablename__ = "bank_statement_lines"
     __table_args__ = (
+        # The SUPERKEY ``statement_match_members`` names to prove its own
+        # ``account_id`` is this line's (plan step ``bank_import:X-f6a-2``).  It
+        # constrains nothing -- ``id`` is already the primary key, so this key
+        # can reject no row -- and exists only because PostgreSQL requires a
+        # UNIQUE over exactly the referenced columns before a composite foreign
+        # key may target them.
+        db.UniqueConstraint(
+            "id", "account_id", name="uq_bank_statement_lines_id_account",
+        ),
         # THE IDENTITY.  Re-importing an overlapping span cannot duplicate a
         # line, structurally rather than by the importer remembering to check.
         db.UniqueConstraint(

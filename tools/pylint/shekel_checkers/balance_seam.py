@@ -428,6 +428,22 @@ _FENCED_MODULE_RULINGS = {
         # the reason its sibling above is, and refused for the same one: it is a
         # component of an amount per transaction, not a balance per account.
         "posted_purchase_sum",
+        # The SUM of the two terms above, published at plan step
+        # ``bank_import:X-f6a-2`` because THREE readers now ask for it -- the
+        # rule below, the reconcile panel's "what a statement shows" caption,
+        # and the statement matcher -- and two additions written out is one
+        # place for them to drift.  A non-producer for its components' own
+        # reason: a component of an amount per transaction is not a balance per
+        # account.
+        "off_statement_sum",
+        # ``settled_cash_leg`` with its first term supplied, so one rule serves
+        # a SETTLED row (whose gross it owns) and a PROJECTED one (whose gross
+        # is what settling would book) alike.  Its second caller is the
+        # statement matcher, which must value a row the bank names whether the
+        # app has settled it or not.  Non-producing for the same reason as the
+        # function it generalises: it answers what ONE ROW moves, never what an
+        # account HOLDS.
+        "cash_leg_of",
         # ``_flows`` -- what a SET of rows sums to: what MOVED, not what is HELD
         # at a date.  A peer reduction over the same rows a balance folds, not a
         # step toward one.  ``sum_projected`` is the shared engine BOTH cash

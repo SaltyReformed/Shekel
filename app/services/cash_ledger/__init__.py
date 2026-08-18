@@ -96,13 +96,17 @@ from ._amounts import (
     contributed_amount,
     contribution_of,
     contributions_by_id,
-    credit_entry_sum,
     display_amounts_by_id,
     income_amount,
     live_amounts,
     live_override,
     owned_amount,
     owned_contribution,
+)
+from ._cash_leg import (
+    cash_leg_of,
+    credit_entry_sum,
+    off_statement_sum,
     posted_purchase_sum,
     settled_cash_leg,
 )
@@ -161,6 +165,8 @@ __all__ = [
     "income_amount",
     "live_amounts",
     "live_override",
+    "cash_leg_of",
+    "off_statement_sum",
     "owned_amount",
     "owned_contribution",
     "planned_cash_rows",

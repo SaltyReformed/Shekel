@@ -397,3 +397,45 @@ def _reject_envelope_on_income(data, message):
         return
     if ref_cache.transaction_type_is_income(txn_type_id):
         raise ValidationError(message, field_name="is_envelope")
+
+
+def form_payload(form, schema):
+    """Return *form* as a plain dict, expanding *schema*'s LIST fields.
+
+    **A repeated form key is a list, and a ``MultiDict`` does not say so.**
+    ``request.form["ids"]`` returns the FIRST value, so a
+    :class:`marshmallow.fields.List` handed a raw form reads one submission of
+    many -- and then refuses it as "Not a valid list", because one string is not
+    a list either.  The failure is silent in every unit test that builds a plain
+    dict and total in a browser, which is exactly the shape this project has
+    twice paid to find late.
+
+    So the expansion is stated ONCE, against the schema's own field map, rather
+    than as a ``getlist`` per field name in each route.  A route listing the
+    names itself is a route that can be extended with a fourth list field and
+    not updated.
+
+    Args:
+        form: The request's ``MultiDict`` (or any mapping; a plain dict is
+            returned as an ordinary copy, which is what unit tests pass).
+        schema: The :class:`marshmallow.Schema` about to load it, read for
+            which of its declared fields are lists.
+
+    Returns:
+        A plain ``dict`` in which every key naming a ``List`` field holds a
+        list of every value submitted under it, and every other key holds the
+        single value a scalar field expects.  A list field absent from the form
+        is absent here too, so the field's own ``load_default`` still applies.
+    """
+    list_fields = {
+        name for name, field in schema.fields.items()
+        if isinstance(field, fields.List)
+    }
+    getlist = getattr(form, "getlist", None)
+    payload = {}
+    for key in form.keys():
+        if key in list_fields and getlist is not None:
+            payload[key] = getlist(key)
+        else:
+            payload[key] = form[key]
+    return payload

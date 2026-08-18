@@ -67,6 +67,10 @@ from app.models.statement_import import (
     BankStatementLine,
     StatementImport,
 )
+from app.models.statement_match import (
+    StatementMatch,
+    StatementMatchMember,
+)
 
 # Salary domain
 from app.models.salary_profile import SalaryProfile
@@ -147,6 +151,8 @@ __all__ = [
     "AccountExternalIdentity",
     "BankStatementLine",
     "StatementImport",
+    "StatementMatch",
+    "StatementMatchMember",
     # Salary domain
     "SalaryProfile",
     "SalaryRaise",

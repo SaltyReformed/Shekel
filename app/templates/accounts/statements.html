@@ -12,7 +12,7 @@
    would be read as having reconciled, and the whole reason this leaf is
    separable is that no figure the app publishes moves when it runs.  Matching
    a recorded line to the app's own rows -- and correcting a settle date from
-   it -- is the next leaf (X-f6a-2).
+   it -- happens on the REVIEW page (X-f6a-2), which this one links to.
 
    Context (accounts.statements): account, sources (the adapters with a
    parser), span (RecordedSpan), imports (StatementImport, newest first),
@@ -24,7 +24,13 @@
     <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
     <span class="acctd-type-tag">Bank statements</span>
   </div>
-  {{ back_link(url_for('accounts.cash_detail', account_id=account.id), 'Account') }}
+  <div class="d-flex align-items-center gap-2">
+    <a class="btn btn-sm btn-primary"
+       href="{{ url_for('accounts.review_statements', account_id=account.id) }}">
+      <i class="bi bi-link-45deg"></i> Review matches
+    </a>
+    {{ back_link(url_for('accounts.cash_detail', account_id=account.id), 'Account') }}
+  </div>
 </div>
 
 <div class="alert alert-info d-flex gap-2 align-items-start" role="alert">
@@ -33,8 +39,9 @@
     <strong>This records what your bank said. It changes no balance.</strong>
     Importing a statement stores the bank's own lines so the app has a record
     of when money actually moved. Nothing is marked paid, no settle date is
-    corrected and no projection changes until you review matches -- which is a
-    later step.
+    corrected and no projection changes here -- that happens when you
+    <a href="{{ url_for('accounts.review_statements', account_id=account.id) }}">review
+    the matches</a>, and only for the ones you accept.
   </div>
 </div>
 
