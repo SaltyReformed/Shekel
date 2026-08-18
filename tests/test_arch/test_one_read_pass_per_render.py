@@ -442,7 +442,11 @@ class TestOneSubjectResolutionPerRender:
     ):
         """GET / resolves the account once and the settings row once.
 
-        Measured at 2 and 2 on the merge base over this fixture's owner.
+        Measured at 2 and 2 on the merge base over this fixture's owner --
+        with the settings target repointed at ``app.services.dashboard_service``,
+        because the package this names does not exist there.  Said because
+        "shown firing" means the CLAIM was graded on that tree, not that this
+        file ran on it unchanged.
         """
         with app.app_context():
             _seed_dashboard_owner(db, seed_user, seed_periods_today)
