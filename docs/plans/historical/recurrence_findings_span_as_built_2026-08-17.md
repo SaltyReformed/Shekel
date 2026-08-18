@@ -26,7 +26,7 @@ parent DECLARED rather than derived: `R-F1` is a string prefix of `R-F10`,
 out of the corpus entirely (measured: zero prefix traps remain in any arc), so
 the control lost its premise. Leaving the row in place was the smaller move
 than editing a gate that a rule-5 archival had merely walked into; the
-control's own brittleness is recorded as **D41**.
+control's own brittleness is recorded as **D42**.
 
 | arc | id | commit | what it closed |
 |---|---|---|---|

@@ -651,7 +651,7 @@ nothing; that record names all three hashes, and says why `R-F1` stayed.
       `historical/recurrence_as_built_2026-08-15.md`.
       **Kept in the index when its three siblings were archived** (2026-08-17): a plan-gate control
       uses this id as its worked example of the PREFIX trap, and archiving it emptied that trap out
-      of the corpus. Finding **D41**.
+      of the corpus. Finding **D42**.
 
 - [ ] **R-F6 -- Close the recurrence-rule leak, then delete what leaked** (finding F-6).
 
